@@ -1,8 +1,8 @@
-# TubeMaster — YouTube Playlist Manager
+# TubeMaster — YouTube Channel Operations Manager
 
 ![TubeMaster banner](docs/assets/tubemaster-banner.png)
 
-TubeMaster helps you **authenticate once and safely manage YouTube video metadata + playlists** via **Web UI, CLI, MCP, or API Route Handlers** with shared contracts and typed JSON responses.
+TubeMaster helps you **authenticate once and safely operate a YouTube channel end-to-end**: videos, metadata, transcripts, playlists, rules, and agent integrations via **Web UI, CLI, MCP, or API Route Handlers**.
 
 <p>
   <img src="docs/assets/tubemaster.png" alt="TubeMaster logo" width="140" />
@@ -28,7 +28,7 @@ Full walkthrough: **[docs/getting-started.md](docs/getting-started.md)**
 
 | Interface | Entry point | Best for |
 | --- | --- | --- |
-| Web UI | `http://localhost:3000` | Visual management (manual playlist ops + rules) |
+| Web UI | `http://localhost:3000` | Visual channel operations: videos, playlists, and rules |
 | CLI | `npm run cli:video-metadata -- <command>` | Local automation, scripts, manual ops |
 | MCP Server (stdio) | `npm run mcp:video-metadata` | Agent/tool integrations |
 | API Route Handlers | `/api/youtube/videos`, `/api/video-metadata/*` | App/backend integrations |

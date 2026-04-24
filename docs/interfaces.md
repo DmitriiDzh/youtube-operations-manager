@@ -2,7 +2,7 @@
 
 <- [Back to README](../README.md)
 
-Use this as operational reference after setup.
+Use this as the operational reference after setup: TubeMaster covers channel workflows across metadata, transcripts, playlists, rules, and automation surfaces.
 
 ## Web UI (`http://localhost:3000`)
 

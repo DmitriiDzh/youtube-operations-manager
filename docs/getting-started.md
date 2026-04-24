@@ -2,7 +2,7 @@
 
 <- [Back to README](../README.md)
 
-This guide gets you from a fresh machine to a working TubeMaster setup for **Web UI + CLI + MCP**.
+This guide gets you from a fresh machine to a working TubeMaster setup for **Web UI + CLI + MCP** channel operations.
 
 ## 1) Google Cloud Console setup
 
@@ -141,7 +141,7 @@ When `--dryRun` is present, TubeMaster returns the proposed metadata without cal
 
 ## 6) Where local state is stored
 
-- `data/playlist-manager.db` → users, tokens, rule data, selected channel
+- `data/playlist-manager.db` → local SQLite database for users, tokens, rule data, and selected channel. The filename is legacy; TubeMaster now covers broader channel operations.
 - `data/auth-context.json` → active local auth user for CLI/MCP fallback
 
 ---
