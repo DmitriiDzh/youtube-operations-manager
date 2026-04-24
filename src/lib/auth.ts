@@ -7,12 +7,15 @@ import { upsertUserOAuthOnSignIn } from "./db";
 export const YOUTUBE_READ_SCOPE =
   "https://www.googleapis.com/auth/youtube.readonly";
 export const YOUTUBE_WRITE_SCOPE = "https://www.googleapis.com/auth/youtube";
+export const YOUTUBE_FORCE_SSL_SCOPE =
+  "https://www.googleapis.com/auth/youtube.force-ssl";
 
 export const GOOGLE_AUTH_BASE_SCOPES = ["openid", "email", "profile"] as const;
 export const YOUTUBE_SCOPES = [
   ...GOOGLE_AUTH_BASE_SCOPES,
   YOUTUBE_READ_SCOPE,
   YOUTUBE_WRITE_SCOPE,
+  YOUTUBE_FORCE_SSL_SCOPE,
 ] as const;
 
 export const YOUTUBE_SCOPES_STRING = YOUTUBE_SCOPES.join(" ");

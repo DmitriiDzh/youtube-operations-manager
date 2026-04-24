@@ -52,7 +52,21 @@ Fix:
 1. Confirm OAuth consent screen includes:
    - `https://www.googleapis.com/auth/youtube.readonly`
    - `https://www.googleapis.com/auth/youtube`
-2. Re-login to grant new scopes.
+   - `https://www.googleapis.com/auth/youtube.force-ssl`
+2. Revoke prior authorization (Google Account → Security → Third-party access) or run local logout, then log in again to grant the new scope set.
+
+### Transcript unavailable: `permissions-insufficient`
+
+Meaning: transcript provider reached YouTube captions endpoints, but current token does not have the required scope set.
+
+Fix:
+
+1. Ensure OAuth consent/client includes `https://www.googleapis.com/auth/youtube.force-ssl` (alongside `youtube.readonly` and `youtube`).
+2. Revoke prior authorization or logout to clear old grants.
+3. Login again:
+   - `npm run cli:video-metadata -- auth login`
+4. Retry transcript command:
+   - `npm run cli:video-metadata -- transcript --videoId <VIDEO_ID>`
 
 ---
 

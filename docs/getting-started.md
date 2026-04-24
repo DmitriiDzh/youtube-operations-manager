@@ -30,8 +30,10 @@ TubeMaster uses Google OAuth + YouTube Data API v3. You must configure both.
    - `profile`
    - `https://www.googleapis.com/auth/youtube.readonly`
    - `https://www.googleapis.com/auth/youtube`
+   - `https://www.googleapis.com/auth/youtube.force-ssl`
 
 > These scopes are enforced by the app (`src/lib/auth.ts`).
+> If you add a new scope to an existing OAuth client, previously authorized users must re-authenticate to grant it.
 
 ### 1.4 Create OAuth client credentials
 
@@ -149,7 +151,7 @@ When `--dryRun` is present, TubeMaster returns the proposed metadata without cal
 ## Common setup pitfalls
 
 - **OAuth redirect mismatch** → verify both redirect URIs exactly.
-- **Scope-related errors** (`AUTH_SCOPE_INSUFFICIENT`) → include YouTube scopes in consent/client and re-auth.
+- **Scope-related errors** (`AUTH_SCOPE_INSUFFICIENT`) → include all TubeMaster YouTube scopes (`youtube.readonly`, `youtube`, `youtube.force-ssl`) in consent/client, then revoke or logout and re-auth.
 - **No active auth context** (`AUTH_USER_NOT_FOUND`) → run `auth login` and retry.
 - **Write guardrail failures** (`WRITE_CHANNEL_*`) → set/select expected channel and ensure OAuth account matches it.
 

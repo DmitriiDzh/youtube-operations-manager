@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildGoogleLoopbackAuthUrl } from "./auth";
+import {
+  buildGoogleLoopbackAuthUrl,
+  YOUTUBE_FORCE_SSL_SCOPE,
+  YOUTUBE_SCOPES,
+} from "./auth";
+
+test("default YouTube scopes include youtube.force-ssl", () => {
+  assert.equal(YOUTUBE_SCOPES.includes(YOUTUBE_FORCE_SSL_SCOPE), true);
+});
 
 test("buildGoogleLoopbackAuthUrl includes redirect_uri in generated URL", () => {
   process.env.GOOGLE_CLIENT_ID = "test-client-id";
@@ -19,4 +27,8 @@ test("buildGoogleLoopbackAuthUrl includes redirect_uri in generated URL", () => 
   assert.equal(url.searchParams.get("state"), "test-state");
   assert.equal(url.searchParams.get("code_challenge"), "test-challenge");
   assert.equal(url.searchParams.get("code_challenge_method"), "S256");
+  assert.equal(
+    decodeURIComponent(url.searchParams.get("scope") ?? "").includes(YOUTUBE_FORCE_SSL_SCOPE),
+    true
+  );
 });
