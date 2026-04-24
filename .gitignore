@@ -38,6 +38,7 @@ yarn-error.log*
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/auth-context.json
 
 # vercel
 .vercel
