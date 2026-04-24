@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { getAuthenticatedYoutube, getRecentVideos } from "@/lib/youtube";
+import { getAuthenticatedYoutube } from "@/lib/youtube";
+import { createVideoMetadataCore } from "@/lib/video-metadata";
+
+const videoMetadataCore = createVideoMetadataCore();
 
 export async function GET(request: Request) {
   const session = await getServerSession(authOptions);
@@ -26,6 +29,9 @@ export async function GET(request: Request) {
     });
   }
 
-  const videos = await getRecentVideos(session.user.id);
-  return NextResponse.json(videos);
+  const listed = await videoMetadataCore.listVideos({
+    credentialRef: { userId: session.user.id },
+  });
+
+  return NextResponse.json(listed.videos);
 }

@@ -1,0 +1,146 @@
+# TubeMaster Troubleshooting
+
+<- [Back to README](../README.md)
+
+This page maps common errors to concrete fixes.
+
+## OAuth / login errors
+
+### `AUTH_CALLBACK_INVALID`
+
+Typical causes:
+
+- Loopback callback timeout in CLI login
+- Redirect URI mismatch in Google Cloud
+- Invalid callback state/code
+
+Checks:
+
+1. Verify OAuth redirect URIs in Google Cloud:
+   - `http://localhost:3000/api/auth/callback/google`
+   - `http://127.0.0.1:8787` (or your configured callback port)
+2. Retry CLI login:
+   - `npm run cli:video-metadata -- auth login`
+3. If callback port is custom, set `CLI_OAUTH_CALLBACK_PORT` and update redirect URI.
+
+### `AUTH_USER_NOT_FOUND`
+
+Meaning: no active local auth context was resolved.
+
+Fix:
+
+1. Login again:
+   - `npm run cli:video-metadata -- auth login`
+2. Verify:
+   - `npm run cli:video-metadata -- auth whoami`
+
+### `AUTH_REFRESH_TOKEN_MISSING`
+
+Meaning: stored credentials cannot refresh access token.
+
+Fix:
+
+1. Re-authenticate with consent prompt (CLI login does this by default).
+2. Ensure OAuth consent flow can issue offline access.
+
+### `AUTH_SCOPE_INSUFFICIENT`
+
+Meaning: token exists but lacks required scope(s).
+
+Fix:
+
+1. Confirm OAuth consent screen includes:
+   - `https://www.googleapis.com/auth/youtube.readonly`
+   - `https://www.googleapis.com/auth/youtube`
+2. Re-login to grant new scopes.
+
+---
+
+## Write guardrail errors
+
+TubeMaster protects sensitive writes with expected channel checks.
+
+### `WRITE_CHANNEL_REQUIRED`
+
+Meaning: write operation needs expected channel, but none was provided/resolved.
+
+Fix:
+
+- Pass `--expectedChannelId <UC...>` on CLI mutation commands.
+- Or persist channel selection first:
+  - `npm run cli:video-metadata -- auth list-channels`
+  - `npm run cli:video-metadata -- auth select-channel --channelId <UC...>`
+
+### `WRITE_CHANNEL_MISMATCH`
+
+Meaning: expected channel does not match active OAuth channel.
+
+Fix:
+
+1. Re-auth with the intended account/channel.
+2. Or select the currently active channel as expected.
+
+### `WRITE_CHANNEL_UNRESOLVED`
+
+Meaning: expected channel exists, but active OAuth channel could not be resolved.
+
+Fix:
+
+1. Re-authenticate.
+2. Re-check context with `auth whoami`.
+
+---
+
+## Metadata/API errors
+
+### `target_language_unresolvable`
+
+Meaning: app could not infer target language for metadata apply.
+
+Fix the YouTube video metadata state so one of these is true:
+
+- `snippet.defaultLanguage` is set, or
+- exactly one localization locale exists.
+
+### `validation_failed`
+
+Common reasons:
+
+- Missing required CLI flags (`--videoId`, `--expectedChannelId`, etc.)
+- Invalid JSON payload in API routes
+- Invalid tool input in MCP
+
+Fix: check command/JSON payload against [docs/interfaces.md](./interfaces.md).
+
+### `unauthorized` / HTTP `401`
+
+Meaning: no authenticated session/token for current interface.
+
+Fix:
+
+- Web UI: sign in again from `/`
+- CLI/MCP: run CLI `auth login`
+
+---
+
+## Environment issues
+
+### App starts but auth fails immediately
+
+Check required env vars exist in `.env.local`:
+
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `NEXTAUTH_URL`
+- `NEXTAUTH_SECRET`
+
+### Wrong callback host/port
+
+- Web callback uses `NEXTAUTH_URL` + `/api/auth/callback/google`
+- CLI callback uses `http://127.0.0.1:<CLI_OAUTH_CALLBACK_PORT|8787>`
+
+Make sure Google OAuth redirect URIs match these exactly.
+
+-> Next: [docs/getting-started.md](./getting-started.md)
+
+<- [Back to README](../README.md)

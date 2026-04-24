@@ -1,24 +1,39 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { createPlaylist } from "@/lib/youtube";
+import { createPlaylistManagementCore } from "@/lib/playlist-management";
 
-export async function POST(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+type CreatePlaylistRouteDeps = {
+  getSession: () => Promise<{ user?: { id?: string | null } } | null>;
+  core: Pick<ReturnType<typeof createPlaylistManagementCore>, "createPlaylist">;
+};
+
+export function createCreatePlaylistPostHandler(
+  deps: CreatePlaylistRouteDeps = {
+    getSession: () => getServerSession(authOptions),
+    core: createPlaylistManagementCore(),
   }
+) {
+  return async function POST(request: Request) {
+    const session = await deps.getSession();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
-  const { title, privacyStatus } = await request.json();
-  if (!title?.trim()) {
-    return NextResponse.json({ error: "Title is required" }, { status: 400 });
-  }
+    const { title, description, privacyStatus } = await request.json();
+    if (!title?.trim()) {
+      return NextResponse.json({ error: "Title is required" }, { status: 400 });
+    }
 
-  const playlist = await createPlaylist(
-    session.user.id,
-    title.trim(),
-    privacyStatus ?? "private"
-  );
+    const result = await deps.core.createPlaylist({
+      credentialRef: { userId: session.user.id },
+      title: title.trim(),
+      description,
+      privacyStatus,
+    });
 
-  return NextResponse.json(playlist, { status: 201 });
+    return NextResponse.json(result.playlist, { status: 201 });
+  };
 }
+
+export const POST = createCreatePlaylistPostHandler();

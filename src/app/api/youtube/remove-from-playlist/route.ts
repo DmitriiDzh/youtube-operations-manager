@@ -1,27 +1,41 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { removeVideosFromPlaylist } from "@/lib/youtube";
+import { createPlaylistManagementCore } from "@/lib/playlist-management";
 
-export async function POST(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+type RemoveFromPlaylistRouteDeps = {
+  getSession: () => Promise<{ user?: { id?: string | null } } | null>;
+  core: Pick<ReturnType<typeof createPlaylistManagementCore>, "removeVideosFromPlaylist">;
+};
+
+export function createRemoveFromPlaylistPostHandler(
+  deps: RemoveFromPlaylistRouteDeps = {
+    getSession: () => getServerSession(authOptions),
+    core: createPlaylistManagementCore(),
   }
+) {
+  return async function POST(request: Request) {
+    const session = await deps.getSession();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
-  const { videoIds, playlistId } = await request.json();
-  if (!videoIds?.length || !playlistId) {
-    return NextResponse.json(
-      { error: "Missing videoIds or playlistId" },
-      { status: 400 }
-    );
-  }
+    const { videoIds, playlistId } = await request.json();
+    if (!videoIds?.length || !playlistId) {
+      return NextResponse.json(
+        { error: "Missing videoIds or playlistId" },
+        { status: 400 }
+      );
+    }
 
-  const removed = await removeVideosFromPlaylist(
-    session.user.id,
-    videoIds,
-    playlistId
-  );
+    const result = await deps.core.removeVideosFromPlaylist({
+      credentialRef: { userId: session.user.id },
+      videoIds,
+      playlistId,
+    });
 
-  return NextResponse.json({ removed });
+    return NextResponse.json({ removed: result.removed });
+  };
 }
+
+export const POST = createRemoveFromPlaylistPostHandler();

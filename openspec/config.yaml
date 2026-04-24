@@ -1,0 +1,62 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Next.js 16 App Router + React 19 + TypeScript 5 on Node.js.
+  Architecture: Route Handlers in src/app/api with service helpers in src/lib.
+  Data/Auth: Drizzle ORM + libSQL (SQLite file) and NextAuth Google OAuth.
+  Style: ESLint 9 (next/core-web-vitals + next/typescript), strict TS, Tailwind CSS 4.
+
+strict_tdd: false
+
+testing:
+  strict_tdd_mode: disabled
+  detected: "2026-04-23"
+  test_runner:
+    available: true
+    framework: "node:test + tsx"
+    command: "npm test"
+  layers:
+    unit:
+      available: true
+      tool: "node:test"
+    integration:
+      available: true
+      tool: "node:test"
+    e2e:
+      available: false
+      tool: "—"
+  coverage:
+    available: false
+    command: "—"
+  quality:
+    linter:
+      available: true
+      command: "npm run lint"
+    type_checker:
+      available: true
+      command: "npx tsc --noEmit"
+    formatter:
+      available: false
+      command: "—"
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Identify affected modules/packages
+  specs:
+    - Use Given/When/Then format for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+  tasks:
+    - Group tasks by phase (infrastructure, implementation, testing)
+    - Use hierarchical numbering (1.1, 1.2, etc.)
+    - Keep tasks small enough to complete in one session
+  apply:
+    - Follow existing code patterns and conventions
+  verify:
+    - Run tests if test infrastructure exists
+    - Compare implementation against every spec scenario
+  archive:
+    - Warn before merging destructive deltas (large removals)

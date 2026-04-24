@@ -47,8 +47,10 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (session) {
-      fetchRules();
-      fetchChannel();
+      queueMicrotask(() => {
+        void fetchRules();
+        void fetchChannel();
+      });
     }
   }, [session, fetchRules, fetchChannel]);
 
