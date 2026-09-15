@@ -8,6 +8,7 @@ import { RuleList } from "@/components/rule-list";
 import { RunButton } from "@/components/run-button";
 import { ManualMode } from "@/components/manual-mode";
 import { ChannelSync } from "@/components/channel-sync";
+import { LocalizationManager } from "@/components/localization-manager";
 
 type ChannelInfo = {
   id: string;
@@ -26,7 +27,7 @@ type Rule = {
   enabled: boolean;
 };
 
-type Tab = "manual" | "rules" | "sync";
+type Tab = "manual" | "rules" | "sync" | "localizations";
 
 export default function Dashboard() {
   const { data: session, status } = useSession();
@@ -155,6 +156,16 @@ export default function Dashboard() {
         >
           Sync
         </button>
+        <button
+          onClick={() => setTab("localizations")}
+          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
+            tab === "localizations"
+              ? "bg-zinc-800 text-white"
+              : "text-zinc-400 hover:text-zinc-200"
+          }`}
+        >
+          Localizations
+        </button>
       </div>
 
       {tab === "manual" && (
@@ -192,6 +203,16 @@ export default function Dashboard() {
             languages. Read-only: no metadata is written to YouTube.
           </p>
           <ChannelSync />
+        </div>
+      )}
+
+      {tab === "localizations" && (
+        <div>
+          <p className="mb-4 text-sm text-zinc-400">
+            Review existing localizations per video and export them to XLSX. Read-only: no
+            metadata is written to YouTube and no XLSX import exists yet.
+          </p>
+          <LocalizationManager />
         </div>
       )}
     </div>

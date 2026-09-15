@@ -28,6 +28,13 @@ Use this as the operational reference after setup: TubeMaster covers channel wor
   - Browse locally synchronized channels (`/api/channels`) and their videos with existing localization
     languages (`/api/channels/[channelId]/videos`).
   - No YouTube writes occur in this tab.
+- **Localizations** (read-only, Phase 3)
+  - Overview table of existing localizations per synchronized video (`/api/channels/[channelId]/localizations`),
+    with search and status (All/Missing/Complete) filtering.
+  - Click a video to see its original metadata plus every existing remote locale's title/description
+    (`/api/channels/[channelId]/localizations/[videoId]`).
+  - Export selected/filtered/all videos to XLSX (`/api/channels/[channelId]/localizations/export`).
+  - No XLSX import and no YouTube writes exist yet.
 
 ---
 
@@ -114,6 +121,13 @@ All routes are App Router handlers and require authenticated session user.
 - `POST /api/channels/sync` — synchronize a channel (`{ "channelId"?: "UC..." }`; omitted = the
   authenticated account's own channel)
 - `GET /api/channels/[channelId]/videos` — list synchronized videos + existing localization languages
+
+### Localization API (read-only)
+
+- `GET /api/channels/[channelId]/localizations` — localization overview table (present/missing languages per video)
+- `GET /api/channels/[channelId]/localizations/[videoId]` — per-video original metadata + existing remote locales
+- `GET /api/channels/[channelId]/localizations/export` — XLSX download; optional `?videoIds=a,b,c` to scope the
+  export, otherwise exports the entire synchronized channel
 
 ### Playlist / video API used by UI
 

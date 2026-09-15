@@ -2,7 +2,7 @@
 
 Living architecture reference for this repository. For the historical TubeMaster-derived baseline and Phase 0/1 verification, see `docs/UPSTREAM_ANALYSIS.md` and `docs/UPSTREAM_BASELINE.md`. For the product roadmap and safety rules, see `docs/PROJECT_SPEC.md`.
 
-This document is updated whenever a phase changes the architecture. Current as of **Phase 2 (channel/video synchronization, read-only)**.
+This document is updated whenever a phase changes the architecture. Current as of **Phase 3 (Localization Manager read-only UI + XLSX export)**.
 
 ---
 
@@ -48,7 +48,8 @@ index.ts       — core factory wiring real adapters into the services
 | `video-metadata/` | Transcript, AI-assisted draft preview, single-video metadata apply | Yes — guarded, dry-run capable |
 | `playlist-management/` | Playlist CRUD + video membership | Yes — guarded, ownership-checked |
 | `write-context/` | `expectedChannelId` fail-closed identity guardrail, shared by every write path | N/A (guardrail only) |
-| `channel-sync/` **(new, Phase 2)** | Full-channel video enumeration + local persistence | **No — read-only** |
+| `channel-sync/` (Phase 2) | Full-channel video enumeration + local persistence | **No — read-only** |
+| `localization/` **(new, Phase 3)** | Read model over synced videos' existing localizations, missing-language computation, XLSX export | **No — read-only** |
 | `cli-auth/` | Local credential resolution for CLI/MCP (active-user pointer, storage) | Local state only |
 
 ## 4. Phase 2: Channel/Video Synchronization (`src/lib/channel-sync/`)
@@ -83,7 +84,7 @@ Both are unit-tested directly against a mocked `youtube_v3.Youtube`-shaped clien
 
 ### 4.3 Why this phase has no write-context guardrail check
 
-`write-context`'s `assertWriteChannel` exists to fail-close **write** operations against the wrong channel. `syncChannel` never writes to YouTube — it only reads whatever channel the resolved credentials can see (`mine`) or an explicitly-requested `channelId` the credentials have read access to. Adding a write-channel guardrail to a read path would be scope creep with no safety benefit; the guardrail will be reused as-is (not re-implemented) once Phase 3+ introduces the first localization **write** path, per `docs/PROJECT_SPEC.md` §27 ("generalize, don't remove").
+`write-context`'s `assertWriteChannel` exists to fail-close **write** operations against the wrong channel. `syncChannel` never writes to YouTube — it only reads whatever channel the resolved credentials can see (`mine`) or an explicitly-requested `channelId` the credentials have read access to. Adding a write-channel guardrail to a read path would be scope creep with no safety benefit; the guardrail will be reused as-is (not re-implemented) once Phase 4+ introduces the first localization **write** path, per `docs/PROJECT_SPEC.md` §27 ("generalize, don't remove").
 
 ### 4.4 Persisted fields per video
 
@@ -95,17 +96,70 @@ defaultLanguage, defaultAudioLanguage, thumbnails, existingLocalizations,
 lastSyncedAt, etag
 ```
 
-`existingLocalizations` stores the full `{ [locale]: { title, description } }` map fetched via `videos.list(part: localizations)` — not just language codes — because the future Localization Manager (Phase 3+) needs the actual remote title/description per locale, not only which locales exist. `existingLocalizationLanguages` (a derived, sorted array of the map's keys) is exposed alongside it purely for cheap UI rendering (badges) without every consumer having to re-derive it.
+`existingLocalizations` stores the full `{ [locale]: { title, description } }` map fetched via `videos.list(part: localizations)` — not just language codes — because the Localization Manager (Phase 3, `src/lib/localization/`) needs the actual remote title/description per locale, not only which locales exist. `existingLocalizationLanguages` (a derived, sorted array of the map's keys) is exposed alongside it purely for cheap UI rendering (badges) without every consumer having to re-derive it.
 
 ### 4.5 Re-sync semantics (no draft/remote distinction yet)
 
-A re-sync **replaces** each video's persisted remote-mirror fields (title, description, localizations, etc.) with the freshly fetched values — there is currently no draft or change-set concept for this phase to protect (per `docs/PROJECT_SPEC.md` §58, the localization draft/apply workflow is an explicit non-goal until Phase 3+). Once drafts exist, sync must be revisited to detect and flag conflicts (`docs/PROJECT_SPEC.md` §30) rather than silently overwriting — **this is a known, intentional limitation of Phase 2**, not an oversight; see `docs/UPSTREAM_ANALYSIS.md` §7 item 4 and §10 below.
+A re-sync **replaces** each video's persisted remote-mirror fields (title, description, localizations, etc.) with the freshly fetched values — there is currently no draft or change-set concept for this phase to protect (per `docs/PROJECT_SPEC.md` §58, the localization draft/apply workflow is an explicit non-goal until Phase 4+). Once drafts exist, sync must be revisited to detect and flag conflicts (`docs/PROJECT_SPEC.md` §30) rather than silently overwriting — **this is a known, intentional limitation of Phase 2, still true after Phase 3** (which adds no draft state either), not an oversight; see `docs/UPSTREAM_ANALYSIS.md` §7 item 4 and §10 (Extension points) below.
 
 ---
 
-## 5. Persistence
+## 5. Phase 3: Localization Manager (read-only) + XLSX export (`src/lib/localization/`)
 
-### 5.1 Schema (additive to the existing TubeMaster-derived tables)
+### 5.1 Purpose and scope
+
+Adds a read-only view over the localization data already captured by Phase 2 sync (`videos.existingLocalizations`), plus an XLSX export. **No new YouTube API calls, no new database tables, and no write path exist in this module** — it is a pure read model over data `channel-sync` already persisted, plus a local file-generation adapter (`exceljs`). Matches `docs/PROJECT_SPEC.md` §62 (Third Agent Assignment): "Implement the Localization Manager read-only UI and XLSX export. Do not implement live localization writes yet."
+
+### 5.2 Data flow
+
+```text
+Web UI / API → core.getLocalizationOverview({ credentialRef, channelId })
+  1. channelStore.getChannel(channelId)              — from src/lib/db.ts, fails not_found if never synced
+  2. channelStore.listVideosByChannel(channelId)      — from src/lib/db.ts (same table channel-sync writes)
+  3. collectChannelLanguages(videos)                  — union of every existingLocalizations key across all
+                                                          videos in this channel (never a hard-coded language list,
+                                                          per docs/PROJECT_SPEC.md §13)
+  4. per video: present/missing languages vs. that union → status "complete" | "missing"
+  5. return { channelId, channelTitle, languages, totalVideos, videos[] }
+
+Web UI / API → core.getVideoLocalizationDetail({ credentialRef, channelId, videoId })
+  → original title/description (from synced snippet) + every existing remote locale's title/description
+
+Web UI / API → core.exportLocalizations({ credentialRef, channelId, videoIds? })
+  1. same read as above, optionally scoped to a videoIds subset (validated to belong to the channel)
+  2. xlsxBuilder.buildWorkbook({ channel, videos })    — exceljs, two sheets, see §5.3
+  3. return { filename, buffer, videoCount, rowCount }
+```
+
+No `authResolver`/OAuth scope check occurs inside this module (there is no YouTube call to authorize) — the API routes still require a valid NextAuth session before reaching the service, consistent with every other route handler.
+
+### 5.3 XLSX workbook shape (`src/lib/localization/adapters/xlsx.ts`)
+
+Two sheets, per `docs/PROJECT_SPEC.md` §15, built with `exceljs` (bold frozen header row, `autoFilter`, sensible column widths, wrapped description cells):
+
+```text
+Videos          — channel_id, channel_name, video_id, youtube_url, published_at,
+                  default_language, original_title, original_description
+                  (one row per exported video; video_id is canonical, never title)
+
+Localizations   — video_id, language, language_name, title, description,
+                  remote_title, remote_description, status ("Existing" | "Missing")
+                  (one row per exported video × every language that exists anywhere
+                  in the channel's synced data; title/description are left blank —
+                  they are the future XLSX-import input columns, not populated here)
+```
+
+Export scope (`videoIds?`) covers all three cases from `docs/PROJECT_SPEC.md` §15 ("selected videos / all filtered videos / entire channel"): the Web UI computes the relevant id list client-side (selection checkboxes, or the currently-filtered table rows) and passes it as a query param; omitting it exports the entire synced channel.
+
+### 5.4 Known limitation: no target-language configuration yet
+
+The Localizations sheet only emits rows for languages that **already exist** somewhere in the channel's synced localizations — there is no concept yet of a channel's "configured target languages" (spec §11's language-chip picker). A channel with zero existing localizations exports an empty Localizations sheet. Introducing a target-language configuration step (so operators can generate blank rows inviting *new* translations, not just review existing ones) is deferred to the XLSX-import phase (`docs/PROJECT_SPEC.md` §63), where "language to add" becomes a meaningful input rather than a display-only computation.
+
+---
+
+## 6. Persistence
+
+### 6.1 Schema (additive to the existing TubeMaster-derived tables)
 
 ```text
 users     (unchanged)   — id, email, name, image, accessToken, refreshToken, tokenExpiry, oauthScope, selectedChannelId
@@ -150,45 +204,47 @@ listStoredVideosByChannel(id)  — all videos for a channel, newest first
 
 ---
 
-## 6. API Routes (additive)
+## 7. API Routes (additive)
 
 Following the existing `src/app/api/video-metadata/*` route-handler + shared `error-status.ts` + `parse-json-body.ts` pattern — no parallel API surface was introduced.
 
 ```text
-GET  /api/channels                       — list locally synced channels
-POST /api/channels/sync                  — trigger a sync ({ channelId? } body; omitted = the
-                                            authenticated account's own channel)
-GET  /api/channels/[channelId]/videos    — list synced videos + existing localization languages
-                                            for one channel
+GET  /api/channels                                       — list locally synced channels
+POST /api/channels/sync                                  — trigger a sync ({ channelId? } body; omitted = the
+                                                             authenticated account's own channel)
+GET  /api/channels/[channelId]/videos                     — list synced videos + existing localization languages
+
+GET  /api/channels/[channelId]/localizations              — localization overview table (Phase 3)
+GET  /api/channels/[channelId]/localizations/[videoId]    — per-video localization detail (Phase 3)
+GET  /api/channels/[channelId]/localizations/export       — XLSX download, optional ?videoIds=a,b,c (Phase 3)
 ```
 
-All three require an authenticated NextAuth session (`getServerSession`), matching every existing route handler, and reuse `getVideoMetadataErrorStatus` for `DomainError` → HTTP status mapping (the error codes are shared across domain modules via the common `DomainErrorCode` type).
+All routes require an authenticated NextAuth session (`getServerSession`), matching every existing route handler, and reuse `getVideoMetadataErrorStatus` for `DomainError` → HTTP status mapping (the error codes are shared across domain modules via the common `DomainErrorCode` type). The export route returns raw XLSX bytes with `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` and a `Content-Disposition: attachment` header instead of JSON.
 
-## 7. Web UI (additive)
+## 8. Web UI (additive)
 
-A new **Sync** tab was added to the existing dashboard (`src/app/dashboard/page.tsx`), alongside **Manual** and **Rules**, via a new `ChannelSync` component (`src/components/channel-sync.tsx`) following the existing component conventions (Tailwind dark theme, same button/card styling as `ManualMode`). It lets the operator:
+Two tabs were added to the existing dashboard (`src/app/dashboard/page.tsx`), alongside **Manual** and **Rules**:
 
-- select a previously-synced channel from a dropdown, or trigger a first sync of their own channel;
-- trigger (re-)synchronization with a visible summary (`Synced "X" — N videos`);
-- browse the resulting local video list with thumbnail, title, publish date, privacy status, default language;
-- see each video's existing localization languages as badges (derived from `existingLocalizationLanguages`).
+- **Sync** (Phase 2) — `src/components/channel-sync.tsx`: select a previously-synced channel or trigger a first sync, browse the resulting video list with thumbnail/title/publish date/privacy/default language, see existing localization languages as badges.
+- **Localizations** (Phase 3) — `src/components/localization-manager.tsx`: channel picker, search + status filter (All/Missing/Complete), a table with one column per language that exists anywhere in the channel (✓/— per video), click-to-expand per-video detail (original metadata + every existing remote locale's title/description), and three export actions (selected rows / currently filtered rows / entire channel) that download the XLSX file client-side.
 
-No existing tab, route, or component was modified beyond adding the new tab entry and its conditional render branch.
+Both follow the existing component conventions (Tailwind dark theme, same button/card styling as `ManualMode`). No existing tab, route, or component was modified beyond adding the new tab entries and their conditional render branches.
 
-## 8. What Phase 2 deliberately does not add
+## 9. What Phase 2 and Phase 3 deliberately do not add
 
-Per this phase's explicit scope boundaries (also see `docs/PROJECT_SPEC.md` §58 non-goals):
+Per each phase's explicit scope boundaries (also see `docs/PROJECT_SPEC.md` §58 non-goals):
 
-- No localization **writes** (no `videos.update` call anywhere in `channel-sync/`).
-- No XLSX import/export.
+- No localization **writes** anywhere in the codebase (no `videos.update` call in `channel-sync/` or `localization/`).
+- No XLSX **import** (export only) — see `docs/PROJECT_SPEC.md` §63 for the deferred import/validate/change-set workflow.
 - No AI generation.
-- No change-set, backup, audit, or batch-execution infrastructure — none of Phase 2's operations are destructive or irreversible (it only reads YouTube and upserts a local read cache), so none of that infrastructure is "strictly required" for this phase, per the phase's own instruction.
-- No CLI or MCP sync tools yet — only the Web UI and the underlying API routes were required for this phase's definition of done; CLI/MCP parity is a natural, low-risk Phase 3 addition (see recommended plan in `docs/UPSTREAM_BASELINE.md`-style phase reports).
-- No conflict detection between local video cache and remote state — not needed yet since there is no draft to protect (§4.5 above).
+- No change-set, backup, audit, or batch-execution infrastructure — none of Phase 2/3's operations are destructive or irreversible (they only read YouTube/the local cache and, for export, generate a local file), so none of that infrastructure is "strictly required" yet.
+- No CLI or MCP sync/localization tools yet — only the Web UI and the underlying API routes exist so far; CLI/MCP parity for both `channel-sync` and `localization` is additive future work (see §10).
+- No conflict detection between local video cache and remote state — not needed yet since there is no draft to protect (§4.5 above); still true after Phase 3, since Phase 3 introduces no draft/change-set state either.
+- No configured target-language list for a channel (§5.4 above) — the Localizations sheet only reflects what already exists remotely.
 
-## 9. Extension points confirmed by this phase
+## 10. Extension points confirmed by these phases
 
-- **Localization writes (Phase 3+)**: will reuse `write-context.assertWriteChannel` (unchanged) and the `videos` table's `existingLocalizations`/`defaultLanguage` columns as the "before" state for `mergeLocalizations`/`buildSafeVideoUpdatePayload` (`docs/PROJECT_SPEC.md` §21).
-- **XLSX export (Phase 3+)**: `listStoredVideosByChannel` already returns every field the spec's Videos/Localizations worksheet needs (§15) without any additional YouTube API calls.
-- **Change sets / drafts (Phase 3+)**: a new `changesets` table can reference `videos.id` directly; no change to `videos`' shape is anticipated.
-- **CLI/MCP sync parity (Phase 3+)**: `createChannelSyncCore()` is already interface-agnostic; adding a `sync` CLI namespace and `channel_sync`/`channel_list`/`video_list` MCP tools is additive, following the exact registration pattern already used for `metadata`/`playlist` tools in `src/cli/video-metadata.ts` and `src/mcp/server.ts`.
+- **Localization writes (Phase 4+)**: will reuse `write-context.assertWriteChannel` (unchanged) and the `videos` table's `existingLocalizations`/`defaultLanguage` columns as the "before" state for `mergeLocalizations`/`buildSafeVideoUpdatePayload` (`docs/PROJECT_SPEC.md` §21). `localization/services.ts`'s `getVideoLocalizationDetail` already shapes the exact "before" view a diff/approval UI would need.
+- **XLSX import (Phase 4+)**: the export workbook's column names (`video_id`, `language`, `title`, `description`) were chosen to be the exact columns a future import parser reads back — `video_id` is the only join key, per `docs/PROJECT_SPEC.md` §15/§16.
+- **Change sets / drafts (Phase 4+)**: a new `changesets` table can reference `videos.id` directly; no change to `videos`' shape is anticipated.
+- **CLI/MCP sync + localization parity (Phase 4+)**: `createChannelSyncCore()` and `createLocalizationCore()` are already interface-agnostic; adding `sync`/`localization` CLI namespaces and `channel_sync`/`channel_list`/`video_list`/`localization_list`/`localization_export` MCP tools is additive, following the exact registration pattern already used for `metadata`/`playlist` tools in `src/cli/video-metadata.ts` and `src/mcp/server.ts`.

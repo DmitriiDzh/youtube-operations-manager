@@ -1,11 +1,11 @@
 # SYSTEM_MAP.md
 
-Быстрая карта репозитория для агентов-кодеров (Claude/Codex), заходящих в проект впервые. Описывает систему **как она есть** после завершения Phase 2 (read-only синхронизация каналов/видео). Не описывает нереализованные фичи как существующие — см. раздел 12 про статус компонентов.
+Быстрая карта репозитория для агентов-кодеров (Claude/Codex), заходящих в проект впервые. Описывает систему **как она есть** после завершения Phase 3 (read-only синхронизация каналов/видео + Localization Manager read-only UI/XLSX export). Не описывает нереализованные фичи как существующие — см. раздел 4 про статус компонентов.
 
 Смежные документы:
 
 - `docs/PROJECT_SPEC.md` — продуктовый roadmap, модель безопасности записи, фазы.
-- `docs/ARCHITECTURE.md` — подробное описание архитектуры Phase 2 (channel-sync), решение по стратегии миграций БД.
+- `docs/ARCHITECTURE.md` — подробное описание архитектуры Phase 2 (channel-sync) и Phase 3 (localization + XLSX export), решение по стратегии миграций БД.
 - `docs/UPSTREAM_ANALYSIS.md` — анализ архитектуры унаследованного от TubeMaster кода (Phase 0).
 - `docs/UPSTREAM_BASELINE.md` — верификация baseline (тесты/lint/build), состояние npm audit.
 
@@ -74,7 +74,7 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 - **Точки входа:** прямой импорт функций из `db.ts` внутри адаптеров каждого модуля (`channel-sync/adapters/store.ts`, `write-context`'s `channelSelectionStore` и т.д.).
 - **Зависимости:** нет (нижний уровень).
 - **Read/Write:** и то, и другое (это и есть хранилище).
-- **Важные ограничения безопасности:** OAuth-токены хранятся в открытом виде — приемлемо только для локального однопользовательского инструмента (см. `docs/UPSTREAM_ANALYSIS.md` §9, риск №1). Схема создаётся идемпотентно при старте (`CREATE TABLE IF NOT EXISTS` + `ALTER TABLE` в try/catch) — **это осознанное решение, не миграционный инструмент**; решение и условие его пересмотра задокументированы в `docs/ARCHITECTURE.md` §5.2.
+- **Важные ограничения безопасности:** OAuth-токены хранятся в открытом виде — приемлемо только для локального однопользовательского инструмента (см. `docs/UPSTREAM_ANALYSIS.md` §9, риск №1). Схема создаётся идемпотентно при старте (`CREATE TABLE IF NOT EXISTS` + `ALTER TABLE` в try/catch) — **это осознанное решение, не миграционный инструмент**; решение и условие его пересмотра задокументированы в `docs/ARCHITECTURE.md` §6.2.
 
 ### 2.6 Channel synchronization (Phase 2, новое)
 
@@ -94,20 +94,24 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 - **Read/Write:** только чтение YouTube; upsert в таблицу `videos`.
 - **Важные ограничения безопасности:** батчинг ≤50 id за вызов `videos.list` — обязательное требование (проверено тестами на реальной форме клиента `googleapis`, не только на моках уровня сервиса).
 
-### 2.8 Localization-related read model
+### 2.8 Localization-related read model (Phase 3, новое)
 
-- **Статус: частично реализовано, только чтение.** Полноценного модуля `localization/` (как описано в `docs/PROJECT_SPEC.md` §11–17) **не существует**.
-- **Что есть:** таблица `videos.localizationsJson` хранит полную карту `{ [locale]: { title, description } }`, полученную через `videos.list(part: localizations)` при синхронизации; поле `existingLocalizationLanguages` в `SyncedVideo` (`src/lib/channel-sync/contracts.ts`) — производный отсортированный список языковых кодов для UI.
-- **Файлы:** `src/lib/channel-sync/{contracts,services}.ts`, отображение в `src/components/channel-sync.tsx`.
-- **Чего нет:** draft/remote-состояний, change set, diff/approval UI, XLSX, записи локализаций — см. раздел 12.
+- **Статус: реализовано как отдельный read-only доменный модуль `src/lib/localization/`.** Никаких новых таблиц БД и никаких новых вызовов YouTube API — это чистый read-model поверх того, что уже синхронизировал `channel-sync` (таблица `videos`).
+- **Ответственность:** сводная таблица локализаций по каналу (какие языки есть/отсутствуют у каждого видео), детальный просмотр одного видео (оригинал + все существующие remote-локали), экспорт в XLSX (две вкладки: Videos, Localizations).
+- **Файлы:** `src/lib/localization/{contracts,schemas,services,index,languages}.ts`, `adapters/{store,xlsx}.ts` (использует `exceljs`); UI — `src/components/localization-manager.tsx`.
+- **Точки входа:** `core.getLocalizationOverview({credentialRef, channelId})`, `core.getVideoLocalizationDetail({credentialRef, channelId, videoId})`, `core.exportLocalizations({credentialRef, channelId, videoIds?})` — через `createLocalizationCore()`.
+- **Зависимости:** persistence (`getStoredChannel`, `listStoredVideosByChannel` из `src/lib/db.ts` — те же функции, что использует `channel-sync`); `exceljs` для генерации файла.
+- **Read/Write:** **только чтение** (ни одного вызова YouTube API вообще — нет даже `authResolver`, только проверка сессии на уровне API route); экспорт — генерация локального файла, не запись куда-либо.
+- **Важные ограничения безопасности:** язык — производится как объединение (union) всех `existingLocalizations` по каналу, никогда не хардкодится (`docs/PROJECT_SPEC.md` §13); `video_id` — единственный canonical идентификатор в экспорте, никогда title.
+- **Чего нет:** draft/remote-состояний, change set, diff/approval UI, XLSX **import**, записи локализаций, конфигурации целевых языков канала — см. раздел 4.
 
 ### 2.9 Web UI
 
-- **Ответственность:** дашборд оператора (`/dashboard`) с вкладками Manual / Rules / Sync.
-- **Файлы:** `src/app/page.tsx` (страница входа), `src/app/dashboard/page.tsx`, `src/components/{manual-mode,rule-form,rule-list,run-button,session-provider,channel-sync}.tsx`.
+- **Ответственность:** дашборд оператора (`/dashboard`) с вкладками Manual / Rules / Sync / Localizations.
+- **Файлы:** `src/app/page.tsx` (страница входа), `src/app/dashboard/page.tsx`, `src/components/{manual-mode,rule-form,rule-list,run-button,session-provider,channel-sync,localization-manager}.tsx`.
 - **Точки входа:** браузер → `http://localhost:3000` → NextAuth Google sign-in → `/dashboard`.
 - **Зависимости:** API routes (`src/app/api/**`), сессия NextAuth.
-- **Read/Write:** вкладка **Sync** — только чтение YouTube; вкладка **Manual** — может писать (add/remove из плейлиста, создание плейлиста).
+- **Read/Write:** вкладки **Sync** и **Localizations** — только чтение YouTube (Localizations вообще не вызывает YouTube API, только локальный кэш + генерация XLSX); вкладка **Manual** — может писать (add/remove из плейлиста, создание плейлиста).
 - **Важные ограничения безопасности:** каждый API route, к которому обращается UI, сам проверяет сессию (`getServerSession`) и (для write) guardrail канала — UI не является границей безопасности.
 
 ### 2.10 API routes
@@ -116,9 +120,10 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 - **Файлы:**
   - Существующие: `src/app/api/video-metadata/{apply,preview,transcript}/route.ts`, `src/app/api/youtube/{videos,playlists,create-playlist,add-to-playlist,remove-from-playlist,channel-info}/route.ts`, `src/app/api/rules/route.ts`, `src/app/api/run/route.ts`, `src/app/api/auth/[...nextauth]/route.ts`.
   - **Новые (Phase 2):** `GET /api/channels` (`route.ts`), `POST /api/channels/sync` (`sync/route.ts`), `GET /api/channels/[channelId]/videos` (`[channelId]/videos/route.ts`).
+  - **Новые (Phase 3):** `GET /api/channels/[channelId]/localizations` (обзорная таблица), `GET /api/channels/[channelId]/localizations/[videoId]` (детали видео), `GET /api/channels/[channelId]/localizations/export` (XLSX-файл, `?videoIds=a,b,c` опционально).
 - **Точки входа:** HTTP-запросы, каждый начинается с `getServerSession(authOptions)`.
-- **Зависимости:** соответствующий доменный core (`createVideoMetadataCore()`, `createPlaylistManagementCore()`, `createChannelSyncCore()`), общие `error-status.ts`/`parse-json-body.ts` из `video-metadata` (переиспользуются, не дублируются).
-- **Read/Write:** зависит от роута; все три новых Phase 2 роута — read-only.
+- **Зависимости:** соответствующий доменный core (`createVideoMetadataCore()`, `createPlaylistManagementCore()`, `createChannelSyncCore()`, `createLocalizationCore()`), общие `error-status.ts`/`parse-json-body.ts` из `video-metadata` (переиспользуются, не дублируются).
+- **Read/Write:** зависит от роута; все новые роуты Phase 2 и Phase 3 — read-only (export XLSX генерирует файл, но не пишет ничего внешнего).
 - **Важные ограничения безопасности:** без валидной сессии — `401` до вызова доменной логики.
 
 ### 2.11 CLI
@@ -129,7 +134,7 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 - **Зависимости:** `createVideoMetadataCore()`, `createPlaylistManagementCore()`, `createCliAuthService()`.
 - **Read/Write:** оба (например, `apply`, `playlist create/update/delete`).
 - **Важные ограничения безопасности:** JSON-конверты на stdout (`{ ok: true|false, ... }`), ненулевой exit code при ошибке.
-- **Phase 2 ограничение: команд синхронизации каналов/видео в CLI нет.**
+- **Ограничение (Phase 2/3): команд синхронизации каналов/видео и локализаций в CLI нет.**
 
 ### 2.12 MCP
 
@@ -139,14 +144,15 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 - **Зависимости:** те же core-фабрики, что и CLI; `resolveEffectiveCredentialRef` из `cli-auth`.
 - **Read/Write:** оба (`apply`, `playlist_*` — write, с `dryRun`-поддержкой для `apply`).
 - **Важные ограничения безопасности:** все входы — строгие Zod-схемы; все ошибки — структурированный JSON, никогда голый текст.
-- **Phase 2 ограничение: MCP-инструментов синхронизации каналов/видео нет.**
+- **Ограничение (Phase 2/3): MCP-инструментов синхронизации каналов/видео и локализаций нет.**
 
 ### 2.13 Tests
 
 - **Ответственность:** unit/integration-тесты на моках (без реальных сетевых вызовов к YouTube).
 - **Файлы:** `*.test.ts` рядом с тестируемым модулем; раннер — `node --import tsx --test "src/**/*.test.ts"` (встроенный `node:test`, без Jest/Vitest).
 - **Новые файлы Phase 2:** `src/lib/youtube.test.ts` (батчинг/пагинация против моков реальной формы `googleapis`-клиента), `src/lib/channel-sync/services.test.ts` (sync/list на фейковом store).
-- **Текущее состояние:** 177 тестов, все проходят (`npm test`).
+- **Новые файлы Phase 3:** `src/lib/localization/services.test.ts` (overview/detail/export на фейковом store), `src/lib/localization/adapters/xlsx.test.ts` (реальная сборка workbook через `exceljs` + чтение обратно, без моков библиотеки).
+- **Текущее состояние:** 188 тестов, все проходят (`npm test`).
 - **Важное ограничение:** ни один тест не пишет в реальный YouTube-канал (`docs/PROJECT_SPEC.md` §42).
 
 ### 2.14 Configuration / local state
@@ -166,7 +172,7 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 | Добавить новый API route | `src/app/api/<path>/route.ts`, переиспользуя `getVideoMetadataErrorStatus` и `parseVideoMetadataJsonBody` из `src/app/api/video-metadata/` |
 | Добавить новую CLI-команду | Новый namespace/command в `src/cli/video-metadata.ts`, по образцу существующих `metadata`/`auth`/`playlist` |
 | Добавить новый MCP-инструмент | `server.registerTool(...)` в `src/mcp/server.ts` + обработчик в `createMcpToolHandlers` |
-| Добавить новую персистентную сущность | Новая `sqliteTable` + `CREATE TABLE IF NOT EXISTS` в `initializeDatabase()` внутри `src/lib/db.ts` (пока схема аддитивна — см. `docs/ARCHITECTURE.md` §5.2 про решение по миграциям) |
+| Добавить новую персистентную сущность | Новая `sqliteTable` + `CREATE TABLE IF NOT EXISTS` в `initializeDatabase()` внутри `src/lib/db.ts` (пока схема аддитивна — см. `docs/ARCHITECTURE.md` §6.2 про решение по миграциям) |
 | Добавить новый safe write workflow | Переиспользовать `write-context.assertWriteChannel` (не копировать проверку); придерживаться модели identity check → validation → backup → diff → approval → dry-run → audit → verification из `docs/PROJECT_SPEC.md` |
 
 ---
@@ -174,16 +180,16 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 ## 4. Статус компонентов
 
 **Реализовано и работает (проверено тестами):**
-Auth (Web + CLI PKCE/device flow), credential resolution, write-context guardrail, YouTube client layer (read + write методы для metadata/playlist), persistence (`users`, `rules`, `channels`, `videos`), channel-sync (канал + видео, батчинг), Web UI (Manual/Rules/Sync), API routes (metadata/playlist/youtube/rules/run/channels), CLI (metadata/auth/playlist), MCP (metadata/playlist tools), 177 тестов.
+Auth (Web + CLI PKCE/device flow), credential resolution, write-context guardrail, YouTube client layer (read + write методы для metadata/playlist), persistence (`users`, `rules`, `channels`, `videos`), channel-sync (канал + видео, батчинг), localization read model + XLSX export (Phase 3), Web UI (Manual/Rules/Sync/Localizations), API routes (metadata/playlist/youtube/rules/run/channels/localizations), CLI (metadata/auth/playlist), MCP (metadata/playlist tools), 188 тестов.
 
-**Запланировано, но не реализовано (Phase 3+):**
-- CLI-команды синхронизации каналов/видео.
-- MCP-инструменты синхронизации каналов/видео (`channel_sync`, `channel_list`, `video_list` и т.п.).
+**Запланировано, но не реализовано (Phase 4+):**
+- CLI-команды и MCP-инструменты для синхронизации каналов/видео и для localization (`channel_sync`, `channel_list`, `video_list`, `localization_list`, `localization_export` и т.п.).
+- XLSX **import** (экспорт уже есть — см. §2.8; импорт/валидация/change set — нет).
 - Draft/change-set модель (`ChangeSet`, approval workflow).
-- XLSX import/export.
 - Пайплайн записи локализаций (`mergeLocalizations`, `buildSafeVideoUpdatePayload` для локализаций конкретно — сейчас есть только single-locale merge в `video-metadata/services.ts`, не полноценный localization-write pipeline).
 - Durable backup / audit log / batch execution с ledger.
 - Conflict detection между локальным кэшем и remote-состоянием (не нужен, пока нет draft-состояния — см. `docs/ARCHITECTURE.md` §4.5).
+- Конфигурация целевых языков канала (сейчас язык — это только то, что уже есть в существующих локализациях; см. `docs/ARCHITECTURE.md` §5.4).
 
 **Осознанно отложено (не входит в текущий MVP, см. `docs/PROJECT_SPEC.md` §58):**
 YouTube Analytics, AI-генерация метаданных, publishing/upload видео, thumbnail-модуль, multi-user SaaS/RBAC, миграция БД-инструментария (Drizzle Kit) — до первого неаддитивного изменения схемы.
