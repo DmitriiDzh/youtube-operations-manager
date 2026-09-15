@@ -34,10 +34,25 @@ yarn-error.log*
 .env*
 !.env.example
 
+# OAuth / secrets
+data/oauth/
+data/tokens/
+credentials/
+client_secret*.json
+token*.json
+
+# local app state
+data/backups/
+data/imports/
+data/exports/
+data/logs/
+
 # sqlite
 data/*.db
 data/*.db-wal
 data/*.db-shm
+
+# local auth context
 data/auth-context.json
 
 # vercel

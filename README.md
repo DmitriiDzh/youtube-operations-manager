@@ -1,41 +1,72 @@
-# TubeMaster — YouTube Channel Operations Manager
+# YouTube Operations Manager
 
-![TubeMaster banner](docs/assets/tubemaster-banner.png)
+A private/internal operations tool for managing one or more YouTube channels through the official YouTube APIs.
 
-TubeMaster helps you **authenticate once and safely operate a YouTube channel end-to-end**: videos, metadata, transcripts, playlists, rules, and agent integrations via **Web UI, CLI, MCP, or API Route Handlers**.
+The project is an **independent private repository initialized from the TubeMaster codebase** and is being extended into a broader YouTube operations platform for human operators and future AI agents.
 
-<p>
-  <img src="docs/assets/tubemaster.png" alt="TubeMaster logo" width="140" />
-  <img src="docs/assets/tubemaster-lite.png" alt="TubeMaster light logo" width="140" />
-</p>
+Core goals:
 
-## Start here (from zero to working app)
+- safe YouTube metadata operations;
+- localization management;
+- bulk import/export;
+- approval and audit workflows;
+- Web UI, CLI, MCP, and API access;
+- future analytics, publishing, and automation.
+
+## Project specification
+
+Before making architectural or product changes, read:
+
+[`docs/PROJECT_SPEC.md`](docs/PROJECT_SPEC.md)
+
+It defines:
+
+- project roadmap;
+- YouTube write-safety requirements;
+- localization workflow;
+- upstream relationship;
+- agent rules;
+- implementation phases;
+- acceptance criteria.
+
+## Start here
 
 1. **Configure Google Cloud OAuth + YouTube API**
-   - Follow: [docs/getting-started.md#1-google-cloud-console-setup](docs/getting-started.md#1-google-cloud-console-setup)
-2. **Create `.env.local`** with required credentials
-   - Follow: [docs/getting-started.md#2-local-environment-envlocal](docs/getting-started.md#2-local-environment-envlocal)
-3. **Install and run locally**
-   - `npm install`
-   - `npm run dev`
-4. **Authenticate and verify access** (CLI recommended first)
-   - `npm run cli:video-metadata -- auth login`
-   - `npm run cli:video-metadata -- auth whoami`
+   - Follow: [`docs/getting-started.md#1-google-cloud-console-setup`](docs/getting-started.md#1-google-cloud-console-setup)
 
-Full walkthrough: **[docs/getting-started.md](docs/getting-started.md)**
+2. **Create `.env.local`** with required credentials
+   - Follow: [`docs/getting-started.md#2-local-environment-envlocal`](docs/getting-started.md#2-local-environment-envlocal)
+
+3. **Install and run locally**
+   ```bash
+   npm install
+   npm run dev
+   ```
+
+4. **Authenticate and verify access**
+   ```bash
+   npm run cli:video-metadata -- auth login
+   npm run cli:video-metadata -- auth whoami
+   ```
+
+Full walkthrough:
+
+[`docs/getting-started.md`](docs/getting-started.md)
 
 ## Interfaces
 
 | Interface | Entry point | Best for |
 | --- | --- | --- |
-| Web UI | `http://localhost:3000` | Visual channel operations: videos, playlists, and rules |
-| CLI | `npm run cli:video-metadata -- <command>` | Local automation, scripts, manual ops |
-| MCP Server (stdio) | `npm run mcp:video-metadata` | Agent/tool integrations |
+| Web UI | `http://localhost:3000` | Visual channel operations |
+| CLI | `npm run cli:video-metadata -- <command>` | Local automation and manual operations |
+| MCP Server (stdio) | `npm run mcp:video-metadata` | AI-agent/tool integrations |
 | API Route Handlers | `/api/youtube/videos`, `/api/video-metadata/*` | App/backend integrations |
 
-Detailed usage by interface: **[docs/interfaces.md](docs/interfaces.md)**
+Detailed usage:
 
-## Quick command examples
+[`docs/interfaces.md`](docs/interfaces.md)
+
+## Quick commands
 
 ```bash
 npm run dev
@@ -57,7 +88,7 @@ npm run cli:video-metadata -- preview --videoId <VIDEO_ID> --editorialPrompt "Ha
 npm run cli:video-metadata -- apply --videoId <VIDEO_ID> --finalTitle "Nuevo título" --description "Nueva descripción" --expectedChannelId <CHANNEL_ID> --dryRun
 ```
 
-## Environment Variables
+## Environment variables
 
 ### Required
 
@@ -66,43 +97,91 @@ npm run cli:video-metadata -- apply --videoId <VIDEO_ID> --finalTitle "Nuevo tí
 - `NEXTAUTH_SECRET`
 - `NEXTAUTH_URL`
 
-See full env setup + Google credentials mapping: **[docs/getting-started.md#2-local-environment-envlocal](docs/getting-started.md#2-local-environment-envlocal)**
+See:
+
+[`docs/getting-started.md#2-local-environment-envlocal`](docs/getting-started.md#2-local-environment-envlocal)
 
 ### Optional
 
-- `YOUTUBE_TRANSCRIPT_PROVIDER` (`youtube-captions` by default)
-- `METADATA_GENERATOR_MODE` (`rule-based` by default, `raw-json` for strict output checks)
-- `METADATA_GENERATOR_RAW_OUTPUT` (used only when mode is `raw-json`)
-- `CLI_OAUTH_CALLBACK_PORT` (`8787` by default; if changed, update OAuth redirect URI accordingly)
+- `YOUTUBE_TRANSCRIPT_PROVIDER`
+- `METADATA_GENERATOR_MODE`
+- `METADATA_GENERATOR_RAW_OUTPUT`
+- `CLI_OAUTH_CALLBACK_PORT`
 
-## Contracts and Safety Guarantees
+Use the existing documentation for current defaults and behavior.
 
-- **Stable JSON envelopes** across CLI/MCP/core with typed errors and non-zero exit status on failures.
-- **Strict credential precedence**: explicit `credentialRef` → active local context (`data/auth-context.json`) → typed auth error.
-- **Fail-closed write operations** (`apply`, `playlist_create`, `playlist_update`, `playlist_delete`) requiring `expectedChannelId`.
-- **Safe playlist partial results** for add/remove operations (`attempted`/`added` + `failures[]`).
-- **Transcript compatibility contract** with stable `status` and additive diagnostics.
+## Safety model
 
-Troubleshooting these guardrails and auth errors: **[docs/troubleshooting.md](docs/troubleshooting.md)**
+The project must preserve and extend the existing safety guarantees.
+
+Current important guarantees include:
+
+- stable JSON envelopes across CLI/MCP/core;
+- typed errors and non-zero exit status on failures;
+- strict credential resolution;
+- fail-closed write operations requiring expected channel identity;
+- safe partial results for bulk playlist operations;
+- transcript compatibility contracts.
+
+All future YouTube write operations must follow the safety model in:
+
+[`docs/PROJECT_SPEC.md`](docs/PROJECT_SPEC.md)
+
+At minimum, safety-critical writes should support:
+
+```text
+identity check
+validation
+backup
+diff
+approval
+dry-run
+audit
+verification
+```
+
+Troubleshooting:
+
+[`docs/troubleshooting.md`](docs/troubleshooting.md)
 
 ## Documentation
 
-- **Getting started (Google Cloud + local setup):** [docs/getting-started.md](docs/getting-started.md)
-- **Web UI, CLI, MCP, API usage:** [docs/interfaces.md](docs/interfaces.md)
-- **Common auth/API/env errors and fixes:** [docs/troubleshooting.md](docs/troubleshooting.md)
+- Project specification: [`docs/PROJECT_SPEC.md`](docs/PROJECT_SPEC.md)
+- Getting started: [`docs/getting-started.md`](docs/getting-started.md)
+- Interfaces: [`docs/interfaces.md`](docs/interfaces.md)
+- Troubleshooting: [`docs/troubleshooting.md`](docs/troubleshooting.md)
 
-## Contributing
+Additional project documentation may be added under `docs/` as development progresses.
 
-TubeMaster is open source under the [MIT License](LICENSE).
+## Repository relationship to TubeMaster
 
-- Open an issue for bugs, contract changes, or feature requests.
-- Open a PR with focused changes and clear reproduction/validation notes.
-- Keep changes backward-compatible where possible, especially for CLI/MCP JSON contracts.
+This repository is **not a GitHub fork** and should not be treated as permanently coupled to the original TubeMaster repository.
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, validation, and PR expectations.
+Recommended Git remote model:
 
-If you are integrating with agents, start the MCP server with:
+```text
+origin   → independent private repository
+upstream → original TubeMaster repository, optional reference only
+```
+
+The `upstream` remote is used only for explicit manual operations such as:
 
 ```bash
-npm run mcp:video-metadata
+git fetch upstream
+git log main..upstream/<branch> --oneline
+git diff main..upstream/<branch>
 ```
+
+No automatic merge, rebase, or synchronization from `upstream` is required.
+
+Useful upstream changes may be reviewed and adopted selectively.
+
+## Attribution and license
+
+This project contains code derived from TubeMaster.
+
+Code inherited from TubeMaster remains subject to the original MIT license and required copyright/license notices.
+
+Keep the repository's `LICENSE` file and any required attribution notices for inherited code.
+
+New project-specific code may evolve independently, but inherited MIT-licensed code must remain compliant with its original license terms.
