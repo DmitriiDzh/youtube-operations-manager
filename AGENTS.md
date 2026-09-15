@@ -1,5 +1,11 @@
 # Coding Agent Instructions
 
+## Communication preferences
+
+- Communicate with the user in Russian by default.
+- Git commit messages should preferably be written in Russian, unless an existing repository convention clearly requires English.
+- Keep technical identifiers, file names, API names, code symbols, and standard protocol terms in their original form (do not translate them).
+
 Before making architectural, product, or safety-critical changes, read:
 
 `docs/PROJECT_SPEC.md`
