@@ -1,0 +1,249 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { DomainError } from "./contracts";
+import { createChannelSyncServices, type StoredChannelRecord, type StoredVideoRecord } from "./services";
+
+function createFakeStore() {
+  const channels = new Map<string, StoredChannelRecord>();
+  const videos = new Map<string, StoredVideoRecord[]>();
+
+  return {
+    channels,
+    videos,
+    async upsertChannel(args: {
+      channelId: string;
+      title: string;
+      thumbnailUrl: string | null;
+      uploadsPlaylistId: string;
+      connectedUserId: string | null;
+    }) {
+      const existing = channels.get(args.channelId);
+      channels.set(args.channelId, {
+        channelId: args.channelId,
+        title: args.title,
+        thumbnailUrl: args.thumbnailUrl,
+        uploadsPlaylistId: args.uploadsPlaylistId,
+        connectedUserId: args.connectedUserId,
+        connectedAt: existing?.connectedAt ?? new Date("2026-01-01T00:00:00.000Z"),
+        lastSyncedAt: existing?.lastSyncedAt ?? null,
+      });
+    },
+    async markChannelSynced(channelId: string, syncedAt: Date) {
+      const existing = channels.get(channelId);
+      if (!existing) return;
+      channels.set(channelId, { ...existing, lastSyncedAt: syncedAt });
+    },
+    async listChannels() {
+      return [...channels.values()];
+    },
+    async getChannel(channelId: string) {
+      return channels.get(channelId) ?? null;
+    },
+    async upsertVideos(
+      entries: Array<{
+        videoId: string;
+        channelId: string;
+        title: string;
+        description: string;
+        publishedAt: string;
+        privacyStatus: string;
+        defaultLanguage: string | null;
+        defaultAudioLanguage: string | null;
+        thumbnails: Record<string, { url: string; width: number | null; height: number | null }>;
+        existingLocalizations: Record<string, { title: string; description: string }>;
+        etag: string | null;
+      }>,
+      syncedAt: Date
+    ) {
+      for (const entry of entries) {
+        const current = videos.get(entry.channelId) ?? [];
+        const withoutEntry = current.filter((v) => v.videoId !== entry.videoId);
+        withoutEntry.push({ ...entry, lastSyncedAt: syncedAt });
+        videos.set(entry.channelId, withoutEntry);
+      }
+    },
+    async listVideosByChannel(channelId: string) {
+      return videos.get(channelId) ?? [];
+    },
+  };
+}
+
+function createServicesFixture(
+  overrides: Partial<{
+    videoIds: string[];
+    videoMetadataCalls: string[][];
+  }> = {}
+) {
+  const store = createFakeStore();
+  const videoMetadataCalls: string[][] = overrides.videoMetadataCalls ?? [];
+  const videoIds = overrides.videoIds ?? Array.from({ length: 120 }, (_, i) => `v${i + 1}`);
+
+  const services = createChannelSyncServices({
+    authResolver: {
+      resolve: async (args) => ({
+        credentialRef: args.credentialRef as { userId: string },
+        accessToken: "access",
+        refreshToken: "refresh",
+        tokenExpiry: Math.floor(Date.now() / 1000) + 3600,
+        scopeSet: new Set(args.requiredScopes),
+      }),
+    },
+    youtubeApi: {
+      getChannelForSync: async ({ channelId }) => ({
+        channelId: channelId ?? "UC_MINE",
+        title: "Tropico Jazz",
+        thumbnailUrl: "https://example.com/thumb.jpg",
+        uploadsPlaylistId: "UU_MINE",
+      }),
+      listUploadsPlaylistVideoIds: async () => videoIds,
+      getVideosMetadataBatch: async ({ videoIds: batch }) => {
+        videoMetadataCalls.push(batch);
+        return batch.map((videoId) => ({
+          videoId,
+          title: `Title ${videoId}`,
+          description: `Description ${videoId}`,
+          publishedAt: "2026-01-01T00:00:00.000Z",
+          privacyStatus: "public",
+          defaultLanguage: "en",
+          defaultAudioLanguage: "en",
+          thumbnails: { default: { url: `https://example.com/${videoId}.jpg`, width: 120, height: 90 } },
+          existingLocalizations: { es: { title: `ES ${videoId}`, description: `ES desc ${videoId}` } },
+          etag: `etag-${videoId}`,
+        }));
+      },
+    },
+    channelStore: store,
+    logger: { info: () => undefined, error: () => undefined },
+  });
+
+  return { services, store, videoMetadataCalls };
+}
+
+test("syncChannel persists channel and videos and returns a stable summary", async () => {
+  const { services, store } = createServicesFixture({ videoIds: ["v1", "v2"] });
+
+  const result = await services.syncChannel({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_TEST",
+  });
+
+  assert.equal(result.channel.channelId, "UC_TEST");
+  assert.equal(result.channel.title, "Tropico Jazz");
+  assert.equal(result.videoCount, 2);
+  assert.equal(typeof result.syncedAt, "string");
+  assert.ok(result.channel.lastSyncedAt);
+
+  const storedVideos = await store.listVideosByChannel("UC_TEST");
+  assert.equal(storedVideos.length, 2);
+});
+
+test("syncChannel delegates all enumerated video ids to the batch adapter in one logical call, never one call per video", async () => {
+  const videoIds = Array.from({ length: 120 }, (_, i) => `v${i + 1}`);
+  const { services, videoMetadataCalls } = createServicesFixture({ videoIds });
+
+  const result = await services.syncChannel({
+    credentialRef: { userId: "user-1" },
+  });
+
+  assert.equal(result.videoCount, 120);
+  // The service hands the full enumerated id list to the adapter in a single call; chunking
+  // into groups of <=50 ids per YouTube API request is the adapter's responsibility and is
+  // covered directly against the real googleapis client shape in src/lib/youtube.test.ts.
+  assert.equal(videoMetadataCalls.length, 1);
+  assert.equal(videoMetadataCalls[0]?.length, 120);
+});
+
+test("syncChannel exposes existing localization languages per video", async () => {
+  const { services } = createServicesFixture({ videoIds: ["v1"] });
+
+  await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+
+  const listed = await services.listSyncedVideos({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_TEST",
+  });
+
+  assert.equal(listed.videos.length, 1);
+  assert.deepEqual(listed.videos[0]?.existingLocalizationLanguages, ["es"]);
+  assert.deepEqual(listed.videos[0]?.existingLocalizations, {
+    es: { title: "ES v1", description: "ES desc v1" },
+  });
+});
+
+test("syncChannel re-sync replaces prior video rows for the same channel without duplication", async () => {
+  const { services, store } = createServicesFixture({ videoIds: ["v1", "v2"] });
+
+  await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+
+  const storedVideos = await store.listVideosByChannel("UC_TEST");
+  assert.equal(storedVideos.length, 2);
+});
+
+test("syncChannel fails with not_found when the channel cannot be resolved", async () => {
+  const { services } = createServicesFixture();
+  const failingServices = createChannelSyncServices({
+    authResolver: {
+      resolve: async (args) => ({
+        credentialRef: args.credentialRef as { userId: string },
+        accessToken: "access",
+        refreshToken: "refresh",
+        tokenExpiry: undefined,
+        scopeSet: new Set(args.requiredScopes),
+      }),
+    },
+    youtubeApi: {
+      getChannelForSync: async () => null,
+      listUploadsPlaylistVideoIds: async () => [],
+      getVideosMetadataBatch: async () => [],
+    },
+    channelStore: createFakeStore(),
+    logger: { info: () => undefined, error: () => undefined },
+  });
+
+  await assert.rejects(
+    () => failingServices.syncChannel({ credentialRef: { userId: "user-1" } }),
+    (error: unknown) => {
+      assert.ok(error instanceof DomainError);
+      assert.equal(error.code, "not_found");
+      return true;
+    }
+  );
+
+  void services;
+});
+
+test("syncChannel rejects invalid input before calling the YouTube adapter", async () => {
+  const { services } = createServicesFixture();
+
+  await assert.rejects(
+    () => services.syncChannel({ credentialRef: {} }),
+    (error: unknown) => {
+      assert.ok(error instanceof DomainError);
+      assert.equal(error.code, "validation_failed");
+      return true;
+    }
+  );
+});
+
+test("listChannels returns persisted channels", async () => {
+  const { services } = createServicesFixture({ videoIds: [] });
+
+  await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  const result = await services.listChannels({ credentialRef: { userId: "user-1" } });
+
+  assert.equal(result.channels.length, 1);
+  assert.equal(result.channels[0]?.channelId, "UC_TEST");
+});
+
+test("listSyncedVideos returns an empty list for a channel that has never been synced", async () => {
+  const { services } = createServicesFixture({ videoIds: [] });
+
+  const result = await services.listSyncedVideos({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_NEVER_SYNCED",
+  });
+
+  assert.deepEqual(result.videos, []);
+  assert.equal(result.channelId, "UC_NEVER_SYNCED");
+});

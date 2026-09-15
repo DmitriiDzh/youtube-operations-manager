@@ -22,6 +22,12 @@ Use this as the operational reference after setup: TubeMaster covers channel wor
   - Create rule (field + match type + target playlist).
   - List/delete rules.
   - Run matching engine (`/api/run`) over recent videos.
+- **Sync** (read-only, Phase 2)
+  - Trigger full-channel synchronization (`/api/channels/sync`), enumerating the uploads playlist and
+    batch-fetching video metadata (up to 50 IDs per request).
+  - Browse locally synchronized channels (`/api/channels`) and their videos with existing localization
+    languages (`/api/channels/[channelId]/videos`).
+  - No YouTube writes occur in this tab.
 
 ---
 
@@ -101,6 +107,13 @@ All routes are App Router handlers and require authenticated session user.
   - body: `{ "videoId": "...", "editorialPrompt": "..." }`
 - `POST /api/video-metadata/apply`
   - body: `{ "videoId": "...", "finalTitle": "...", "description": "...", "expectedChannelId": "UC...", "dryRun": true|false }`
+
+### Channel sync API (read-only)
+
+- `GET /api/channels` — list locally synchronized channels
+- `POST /api/channels/sync` — synchronize a channel (`{ "channelId"?: "UC..." }`; omitted = the
+  authenticated account's own channel)
+- `GET /api/channels/[channelId]/videos` — list synchronized videos + existing localization languages
 
 ### Playlist / video API used by UI
 

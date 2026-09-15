@@ -1,0 +1,148 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { youtube_v3 } from "googleapis";
+import {
+  getChannelForSync,
+  getVideosMetadataContextBatch,
+  listUploadsPlaylistVideoIds,
+} from "./youtube";
+
+function fakeYoutubeClient(overrides: {
+  channelsList?: youtube_v3.Youtube["channels"]["list"];
+  playlistItemsList?: youtube_v3.Youtube["playlistItems"]["list"];
+  videosList?: youtube_v3.Youtube["videos"]["list"];
+}): youtube_v3.Youtube {
+  return {
+    channels: { list: overrides.channelsList },
+    playlistItems: { list: overrides.playlistItemsList },
+    videos: { list: overrides.videosList },
+  } as unknown as youtube_v3.Youtube;
+}
+
+test("getVideosMetadataContextBatch chunks requests into groups of at most 50 video ids", async () => {
+  const requestedBatches: string[][] = [];
+  const videoIds = Array.from({ length: 120 }, (_, i) => `v${i + 1}`);
+
+  const youtube = fakeYoutubeClient({
+    videosList: (async (args: { id?: string[] }) => {
+      const batch = args.id ?? [];
+      requestedBatches.push(batch);
+      return {
+        data: {
+          items: batch.map((id) => ({
+            id,
+            etag: `etag-${id}`,
+            snippet: {
+              title: `Title ${id}`,
+              description: `Description ${id}`,
+              publishedAt: "2026-01-01T00:00:00.000Z",
+              defaultLanguage: "en",
+              defaultAudioLanguage: "en",
+              thumbnails: { default: { url: `https://example.com/${id}.jpg`, width: 120, height: 90 } },
+            },
+            status: { privacyStatus: "public" },
+            localizations: { es: { title: `ES ${id}`, description: `ES desc ${id}` } },
+          })),
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["videos"]["list"],
+  });
+
+  const results = await getVideosMetadataContextBatch(youtube, videoIds);
+
+  assert.equal(results.length, 120);
+  assert.equal(requestedBatches.length, 3);
+  assert.equal(requestedBatches[0]?.length, 50);
+  assert.equal(requestedBatches[1]?.length, 50);
+  assert.equal(requestedBatches[2]?.length, 20);
+
+  const first = results[0];
+  assert.equal(first?.videoId, "v1");
+  assert.equal(first?.privacyStatus, "public");
+  assert.equal(first?.defaultLanguage, "en");
+  assert.deepEqual(first?.existingLocalizations, {
+    es: { title: "ES v1", description: "ES desc v1" },
+  });
+  assert.deepEqual(first?.thumbnails.default, {
+    url: "https://example.com/v1.jpg",
+    width: 120,
+    height: 90,
+  });
+});
+
+test("getVideosMetadataContextBatch returns an empty array without calling the API for an empty id list", async () => {
+  let calls = 0;
+  const youtube = fakeYoutubeClient({
+    videosList: (async () => {
+      calls += 1;
+      return { data: { items: [] } };
+    }) as unknown as youtube_v3.Youtube["videos"]["list"],
+  });
+
+  const results = await getVideosMetadataContextBatch(youtube, []);
+
+  assert.deepEqual(results, []);
+  assert.equal(calls, 0);
+});
+
+test("listUploadsPlaylistVideoIds paginates through all pages and dedupes ids", async () => {
+  const pages = [
+    { items: [{ contentDetails: { videoId: "v1" } }, { contentDetails: { videoId: "v2" } }], nextPageToken: "page-2" },
+    { items: [{ contentDetails: { videoId: "v2" } }, { contentDetails: { videoId: "v3" } }], nextPageToken: undefined },
+  ];
+  let call = 0;
+
+  const youtube = fakeYoutubeClient({
+    playlistItemsList: (async () => {
+      const page = pages[call];
+      call += 1;
+      return { data: page };
+    }) as unknown as youtube_v3.Youtube["playlistItems"]["list"],
+  });
+
+  const videoIds = await listUploadsPlaylistVideoIds(youtube, "UU_TEST");
+
+  assert.deepEqual(videoIds, ["v1", "v2", "v3"]);
+  assert.equal(call, 2);
+});
+
+test("getChannelForSync resolves the authenticated channel's own uploads playlist when no channelId is given", async () => {
+  let receivedArgs: unknown;
+  const youtube = fakeYoutubeClient({
+    channelsList: (async (args: unknown) => {
+      receivedArgs = args;
+      return {
+        data: {
+          items: [
+            {
+              id: "UC_MINE",
+              snippet: { title: "My Channel", thumbnails: { default: { url: "https://example.com/t.jpg" } } },
+              contentDetails: { relatedPlaylists: { uploads: "UU_MINE" } },
+            },
+          ],
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["channels"]["list"],
+  });
+
+  const channel = await getChannelForSync(youtube);
+
+  assert.deepEqual(channel, {
+    channelId: "UC_MINE",
+    title: "My Channel",
+    thumbnailUrl: "https://example.com/t.jpg",
+    uploadsPlaylistId: "UU_MINE",
+  });
+  assert.deepEqual(receivedArgs, { part: ["snippet", "contentDetails"], mine: true });
+});
+
+test("getChannelForSync returns null when the channel has no uploads playlist", async () => {
+  const youtube = fakeYoutubeClient({
+    channelsList: (async () => ({
+      data: { items: [{ id: "UC_X", snippet: { title: "X" }, contentDetails: {} }] },
+    })) as unknown as youtube_v3.Youtube["channels"]["list"],
+  });
+
+  const channel = await getChannelForSync(youtube, "UC_X");
+  assert.equal(channel, null);
+});

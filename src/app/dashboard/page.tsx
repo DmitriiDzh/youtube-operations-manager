@@ -7,6 +7,7 @@ import { RuleForm } from "@/components/rule-form";
 import { RuleList } from "@/components/rule-list";
 import { RunButton } from "@/components/run-button";
 import { ManualMode } from "@/components/manual-mode";
+import { ChannelSync } from "@/components/channel-sync";
 
 type ChannelInfo = {
   id: string;
@@ -25,7 +26,7 @@ type Rule = {
   enabled: boolean;
 };
 
-type Tab = "manual" | "rules";
+type Tab = "manual" | "rules" | "sync";
 
 export default function Dashboard() {
   const { data: session, status } = useSession();
@@ -144,16 +145,28 @@ export default function Dashboard() {
         >
           Rules
         </button>
+        <button
+          onClick={() => setTab("sync")}
+          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
+            tab === "sync"
+              ? "bg-zinc-800 text-white"
+              : "text-zinc-400 hover:text-zinc-200"
+          }`}
+        >
+          Sync
+        </button>
       </div>
 
-      {tab === "manual" ? (
+      {tab === "manual" && (
         <div>
           <p className="mb-4 text-sm text-zinc-400">
             Select videos and add them to a playlist directly.
           </p>
           <ManualMode />
         </div>
-      ) : (
+      )}
+
+      {tab === "rules" && (
         <div className="space-y-8">
           <RuleForm onCreated={fetchRules} />
 
@@ -169,6 +182,16 @@ export default function Dashboard() {
             </p>
             <RunButton />
           </div>
+        </div>
+      )}
+
+      {tab === "sync" && (
+        <div>
+          <p className="mb-4 text-sm text-zinc-400">
+            Synchronize a channel&rsquo;s videos locally and review existing localization
+            languages. Read-only: no metadata is written to YouTube.
+          </p>
+          <ChannelSync />
         </div>
       )}
     </div>

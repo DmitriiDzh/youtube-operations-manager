@@ -20,6 +20,37 @@ export const users = sqliteTable("users", {
   selectedChannelId: text("selected_channel_id"),
 });
 
+export const channels = sqliteTable("channels", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(),
+  thumbnailUrl: text("thumbnail_url"),
+  uploadsPlaylistId: text("uploads_playlist_id").notNull(),
+  connectedUserId: text("connected_user_id"),
+  connectedAt: integer("connected_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  lastSyncedAt: integer("last_synced_at", { mode: "timestamp" }),
+});
+
+export const videos = sqliteTable("videos", {
+  id: text("id").primaryKey(),
+  channelId: text("channel_id")
+    .notNull()
+    .references(() => channels.id),
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+  publishedAt: text("published_at").notNull(),
+  privacyStatus: text("privacy_status").notNull(),
+  defaultLanguage: text("default_language"),
+  defaultAudioLanguage: text("default_audio_language"),
+  thumbnailsJson: text("thumbnails_json").notNull(),
+  localizationsJson: text("localizations_json").notNull(),
+  etag: text("etag"),
+  lastSyncedAt: integer("last_synced_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
 export const rules = sqliteTable("rules", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: text("user_id")
@@ -62,6 +93,30 @@ async function initializeDatabase() {
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
+    CREATE TABLE IF NOT EXISTS channels (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      thumbnail_url TEXT,
+      uploads_playlist_id TEXT NOT NULL,
+      connected_user_id TEXT,
+      connected_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      last_synced_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS videos (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL REFERENCES channels(id),
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      published_at TEXT NOT NULL,
+      privacy_status TEXT NOT NULL,
+      default_language TEXT,
+      default_audio_language TEXT,
+      thumbnails_json TEXT NOT NULL,
+      localizations_json TEXT NOT NULL,
+      etag TEXT,
+      last_synced_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS videos_channel_id_idx ON videos(channel_id);
   `);
 
   // Migration: add selected_channel_id if missing (idempotent)
@@ -108,7 +163,7 @@ const client = new Proxy(rawClient, {
   },
 });
 
-export const db = drizzle(client, { schema: { users, rules } });
+export const db = drizzle(client, { schema: { users, rules, channels, videos } });
 
 export type StoredOAuthToken = {
   userId: string;
@@ -298,4 +353,162 @@ export async function setSelectedChannelId(userId: string, channelId: string): P
     .update(users)
     .set({ selectedChannelId: channelId })
     .where(eq(users.id, userId));
+}
+
+export type ThumbnailInfo = {
+  url: string;
+  width: number | null;
+  height: number | null;
+};
+
+export type LocaleMetadataRecord = {
+  title: string;
+  description: string;
+};
+
+export type StoredChannel = {
+  channelId: string;
+  title: string;
+  thumbnailUrl: string | null;
+  uploadsPlaylistId: string;
+  connectedUserId: string | null;
+  connectedAt: Date;
+  lastSyncedAt: Date | null;
+};
+
+export type StoredVideo = {
+  videoId: string;
+  channelId: string;
+  title: string;
+  description: string;
+  publishedAt: string;
+  privacyStatus: string;
+  defaultLanguage: string | null;
+  defaultAudioLanguage: string | null;
+  thumbnails: Record<string, ThumbnailInfo>;
+  existingLocalizations: Record<string, LocaleMetadataRecord>;
+  etag: string | null;
+  lastSyncedAt: Date;
+};
+
+function mapStoredChannel(row: typeof channels.$inferSelect): StoredChannel {
+  return {
+    channelId: row.id,
+    title: row.title,
+    thumbnailUrl: row.thumbnailUrl,
+    uploadsPlaylistId: row.uploadsPlaylistId,
+    connectedUserId: row.connectedUserId,
+    connectedAt: row.connectedAt,
+    lastSyncedAt: row.lastSyncedAt,
+  };
+}
+
+function mapStoredVideo(row: typeof videos.$inferSelect): StoredVideo {
+  return {
+    videoId: row.id,
+    channelId: row.channelId,
+    title: row.title,
+    description: row.description,
+    publishedAt: row.publishedAt,
+    privacyStatus: row.privacyStatus,
+    defaultLanguage: row.defaultLanguage,
+    defaultAudioLanguage: row.defaultAudioLanguage,
+    thumbnails: JSON.parse(row.thumbnailsJson) as Record<string, ThumbnailInfo>,
+    existingLocalizations: JSON.parse(row.localizationsJson) as Record<
+      string,
+      LocaleMetadataRecord
+    >,
+    etag: row.etag,
+    lastSyncedAt: row.lastSyncedAt,
+  };
+}
+
+export async function upsertChannel(input: {
+  channelId: string;
+  title: string;
+  thumbnailUrl: string | null;
+  uploadsPlaylistId: string;
+  connectedUserId: string | null;
+}): Promise<void> {
+  await db
+    .insert(channels)
+    .values({
+      id: input.channelId,
+      title: input.title,
+      thumbnailUrl: input.thumbnailUrl,
+      uploadsPlaylistId: input.uploadsPlaylistId,
+      connectedUserId: input.connectedUserId,
+    })
+    .onConflictDoUpdate({
+      target: channels.id,
+      set: {
+        title: input.title,
+        thumbnailUrl: input.thumbnailUrl,
+        uploadsPlaylistId: input.uploadsPlaylistId,
+        connectedUserId: input.connectedUserId,
+      },
+    });
+}
+
+export async function markChannelSynced(channelId: string, syncedAt: Date): Promise<void> {
+  await db.update(channels).set({ lastSyncedAt: syncedAt }).where(eq(channels.id, channelId));
+}
+
+export async function listStoredChannels(): Promise<StoredChannel[]> {
+  const rows = await db.select().from(channels);
+  return rows.map(mapStoredChannel);
+}
+
+export async function getStoredChannel(channelId: string): Promise<StoredChannel | null> {
+  const [row] = await db.select().from(channels).where(eq(channels.id, channelId));
+  return row ? mapStoredChannel(row) : null;
+}
+
+export async function upsertVideos(
+  entries: Array<{
+    videoId: string;
+    channelId: string;
+    title: string;
+    description: string;
+    publishedAt: string;
+    privacyStatus: string;
+    defaultLanguage: string | null;
+    defaultAudioLanguage: string | null;
+    thumbnails: Record<string, ThumbnailInfo>;
+    existingLocalizations: Record<string, LocaleMetadataRecord>;
+    etag: string | null;
+  }>,
+  syncedAt: Date
+): Promise<void> {
+  for (const entry of entries) {
+    const values = {
+      id: entry.videoId,
+      channelId: entry.channelId,
+      title: entry.title,
+      description: entry.description,
+      publishedAt: entry.publishedAt,
+      privacyStatus: entry.privacyStatus,
+      defaultLanguage: entry.defaultLanguage,
+      defaultAudioLanguage: entry.defaultAudioLanguage,
+      thumbnailsJson: JSON.stringify(entry.thumbnails),
+      localizationsJson: JSON.stringify(entry.existingLocalizations),
+      etag: entry.etag,
+      lastSyncedAt: syncedAt,
+    };
+
+    await db
+      .insert(videos)
+      .values(values)
+      .onConflictDoUpdate({ target: videos.id, set: values });
+  }
+}
+
+export async function listStoredVideosByChannel(channelId: string): Promise<StoredVideo[]> {
+  const rows = await db
+    .select()
+    .from(videos)
+    .where(eq(videos.channelId, channelId))
+    .orderBy(videos.publishedAt);
+
+  return rows.map(mapStoredVideo).reverse();
 }

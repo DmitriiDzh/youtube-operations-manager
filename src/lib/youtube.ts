@@ -115,6 +115,147 @@ export async function listVideosByChannel(args: {
   return videos;
 }
 
+export type ChannelForSync = {
+  channelId: string;
+  title: string;
+  thumbnailUrl: string | null;
+  uploadsPlaylistId: string;
+};
+
+export async function getChannelForSync(
+  youtube: youtube_v3.Youtube,
+  channelId?: string
+): Promise<ChannelForSync | null> {
+  const res = await youtube.channels.list(
+    channelId
+      ? { part: ["snippet", "contentDetails"], id: [channelId] }
+      : { part: ["snippet", "contentDetails"], mine: true }
+  );
+
+  const channel = res.data.items?.[0];
+  const uploadsPlaylistId = channel?.contentDetails?.relatedPlaylists?.uploads;
+  if (!channel?.id || !uploadsPlaylistId) return null;
+
+  return {
+    channelId: channel.id,
+    title: channel.snippet?.title ?? "",
+    thumbnailUrl:
+      channel.snippet?.thumbnails?.medium?.url ??
+      channel.snippet?.thumbnails?.default?.url ??
+      null,
+    uploadsPlaylistId,
+  };
+}
+
+export async function listUploadsPlaylistVideoIds(
+  youtube: youtube_v3.Youtube,
+  uploadsPlaylistId: string
+): Promise<string[]> {
+  const seen = new Set<string>();
+  const videoIds: string[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const res = await youtube.playlistItems.list({
+      part: ["contentDetails"],
+      playlistId: uploadsPlaylistId,
+      maxResults: 50,
+      pageToken,
+    });
+
+    for (const item of res.data.items ?? []) {
+      const videoId = item.contentDetails?.videoId;
+      if (!videoId || seen.has(videoId)) continue;
+      seen.add(videoId);
+      videoIds.push(videoId);
+    }
+
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return videoIds;
+}
+
+const YOUTUBE_VIDEOS_LIST_BATCH_SIZE = 50;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+export type ThumbnailInfo = {
+  url: string;
+  width: number | null;
+  height: number | null;
+};
+
+export type VideoSyncMetadata = {
+  videoId: string;
+  title: string;
+  description: string;
+  publishedAt: string;
+  privacyStatus: string;
+  defaultLanguage: string | null;
+  defaultAudioLanguage: string | null;
+  thumbnails: Record<string, ThumbnailInfo>;
+  existingLocalizations: Record<string, LocaleMetadata>;
+  etag: string | null;
+};
+
+function toThumbnailMap(
+  thumbnails: youtube_v3.Schema$ThumbnailDetails | null | undefined
+): Record<string, ThumbnailInfo> {
+  const map: Record<string, ThumbnailInfo> = {};
+  for (const [size, value] of Object.entries(thumbnails ?? {})) {
+    if (!value?.url) continue;
+    map[size] = {
+      url: value.url,
+      width: value.width ?? null,
+      height: value.height ?? null,
+    };
+  }
+  return map;
+}
+
+export async function getVideosMetadataContextBatch(
+  youtube: youtube_v3.Youtube,
+  videoIds: string[]
+): Promise<VideoSyncMetadata[]> {
+  const results: VideoSyncMetadata[] = [];
+
+  for (const batch of chunk(videoIds, YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
+    if (batch.length === 0) continue;
+
+    const res = await youtube.videos.list({
+      part: ["snippet", "status", "localizations"],
+      id: batch,
+      maxResults: YOUTUBE_VIDEOS_LIST_BATCH_SIZE,
+    });
+
+    for (const item of res.data.items ?? []) {
+      if (!item.id || !item.snippet) continue;
+
+      results.push({
+        videoId: item.id,
+        title: item.snippet.title ?? "",
+        description: item.snippet.description ?? "",
+        publishedAt: item.snippet.publishedAt ?? "",
+        privacyStatus: item.status?.privacyStatus ?? "private",
+        defaultLanguage: item.snippet.defaultLanguage ?? null,
+        defaultAudioLanguage: item.snippet.defaultAudioLanguage ?? null,
+        thumbnails: toThumbnailMap(item.snippet.thumbnails),
+        existingLocalizations: toLocaleMetadataMap(item.localizations),
+        etag: item.etag ?? null,
+      });
+    }
+  }
+
+  return results;
+}
+
 export async function getVideoById(
   youtube: youtube_v3.Youtube,
   videoId: string
