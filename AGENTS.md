@@ -139,6 +139,19 @@ Every one of these actions requires **explicit authorization** from the project 
 
 The project owner retains authority over product priorities, significant architectural decisions, security tradeoffs, scope expansion, production operations, releases, and Git pushes when authorization is required. Claude Code (or any coding agent working from this file) should handle ordinary implementation decisions independently within approved requirements and established architecture — do not ask for approval on every minor implementation detail, but do escalate decisions involving substantial architecture, security, compatibility, data-loss risk, or scope changes.
 
+## L. Specification-driven and independent testing
+
+**Tests must derive expected behavior from product requirements and external contracts — `docs/PROJECT_SPEC.md`, documented API/MCP contracts, ADRs, official YouTube API documentation — never from reading the implementation under test and writing down what it happens to do.** A test that merely confirms "the code does what the code does" provides no evidence of correctness; it only proves the code is self-consistent. See `docs/DEVELOPMENT_PLAYBOOK.md` §6.14 for the full workflow this rule requires.
+
+For substantial or safety-critical changes (anything touching write-safety, channel identity, conflict detection, approval integrity, or data preservation — see `docs/PROJECT_SPEC.md` §21/§27/§30 and `docs/TECHNICAL_DEBT.md`'s Gate B list):
+
+- Define acceptance criteria **before** implementation, from the requirement, not from a draft implementation.
+- Define expected outputs independently of the code that will produce them (compute or state the expected value by hand from the spec, not by running the implementation and copying its output into the test).
+- Include negative and boundary scenarios, not only the happy path.
+- **Never weaken a test merely to make the implementation pass.** A failing test is evidence requiring investigation of the implementation — it is not, by itself, an instruction to change the test.
+- **Never replace a fixed expected value with a dynamically generated value derived from the implementation** (e.g. asserting `result === computeResult(input)` using the same function under test, or a snapshot taken from a first run without independent verification that the snapshot itself is correct).
+- Changing a previously-approved acceptance test requires explicit justification: state which requirement the old test was wrong about (or which requirement changed), not "the implementation doesn't do this" alone. See `docs/DEVELOPMENT_PLAYBOOK.md` §6.14's "Test changes during implementation" for the required procedure — do not silently rewrite an acceptance test.
+
 ## Standard development workflow
 
 1. Read project instructions (this file, plus §A's reading list as relevant to the task).

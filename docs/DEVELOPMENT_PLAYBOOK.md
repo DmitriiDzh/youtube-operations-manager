@@ -134,11 +134,14 @@ Entry point: `src/mcp/server.ts` (`createMcpServer()`, `createMcpToolHandlers()`
 2. Route the tool through `createMcpToolHandlers(core)` — a handler function calling the same core factory (`createChangeSetCore()`, etc.) that the API routes and CLI already use. Never re-implement domain logic inside `server.ts`.
 3. **Credential resolution:** most tools accept an optional `credentialRef`; when omitted, fall back to `resolveEffectiveCredentialRef` from `cli-auth` (whoever is the locally active user). `changesets/` currently makes no YouTube calls at all, so its future MCP tools may not need `credentialRef` in the same way `apply`/`playlist_*` do — but should still resolve the active local user for logging/traceability if a future multi-user model (RISK-02) is introduced.
 4. **Stable error contracts:** every tool error is `DomainError`-shaped JSON, never bare text — see `toolErrorResult(error)` in `server.ts`.
-5. **Read/propose/apply classification** (`docs/PROJECT_SPEC.md` §26): a new tool must be classified honestly.
-   - **Read:** `changeset_list`, `changeset_get` — always safe to expose.
-   - **Propose:** `localization_import_preview`, `changeset_validate`-style tools — produce/validate a draft, never write.
-   - **Apply:** anything that could result in an actual YouTube write. **Do not expose an apply-class tool for localization writes until the Phase 5 write pipeline (§6.5) exists and is tested** — an MCP tool that calls an unfinished/unsafe write path is worse than no tool at all.
-6. **Safety requirement:** the operations agent (Codex) consumes only the **released, versioned** MCP surface (`AGENTS.md`'s "Development / operations separation" section) — do not add instructions here or anywhere in this repository about how Codex should conduct YouTube operations; that knowledge lives outside this repository entirely.
+5. **Classify every tool honestly by what it actually mutates — a tool being read-only with respect to YouTube does not make it automatically safe to expose.** There are three distinct categories, not two:
+   - **Read-only:** returns data, mutates nothing anywhere (e.g. `changeset_list`, `changeset_get`, `whoami`). Still requires the same authentication/authorization/channel-scope checks as any other tool (point 7 below) — a read tool that leaks another operator's channel data, or another user's change-set contents, is a real exposure even though nothing was written anywhere.
+   - **Local state mutation:** writes to this application's own SQLite, never to YouTube (e.g. a future `changeset_approve`/`changeset_reject`, or the existing `write_channel_select`/`auth_user_select`). **This is a mutation and must be treated as one** — it needs input validation, channel-context scoping, and a clear audit trail, exactly like `docs/DEVELOPMENT_PLAYBOOK.md` §6.6 requires of a local-only API route (*"an operation is not automatically secure merely because it modifies only local SQLite data"* applies identically to MCP tools). Do not classify a local-approval tool as "propose" or "read" just because it never reaches YouTube.
+   - **Remote YouTube mutation:** anything that could result in an actual `videos.update`/playlist write reaching YouTube (e.g. `apply`, `playlist_create`, and any future `changeset_apply`-class tool once Phase 5 exists). **Do not expose a remote-mutation tool for localization writes until the Phase 5 write pipeline (§6.5) exists and is tested** — an MCP tool that calls an unfinished/unsafe write path is worse than no tool at all.
+
+   `docs/PROJECT_SPEC.md` §26's "read / propose / apply" model maps onto this: "propose" tools (e.g. a future `localization_import_preview`) are local-state-mutation or read-only depending on whether they persist anything — classify by the rule above, not by the READ/PROPOSE/APPLY label alone.
+6. **Every MCP tool — read, local-mutation, or remote-mutation alike — enforces authentication, authorization, and channel scope**, the same way every API route must (§6.6, point 2 and point 8). Resolve the active identity (`credentialRef`/`resolveEffectiveCredentialRef`) before returning or mutating anything scoped to a channel, and verify the requested `channelId` actually owns the resource being read or mutated (e.g. a `changeSetId` must be checked against its `channelId`, mirroring `requireChangeSet()`'s check in `services.ts`) — an MCP tool is a network-adjacent entry point exactly like an API route, not an inherently trusted internal call.
+7. **Safety requirement:** the operations agent (Codex) consumes only the **released, versioned** MCP surface (`AGENTS.md`'s "Development / operations separation" section) — do not add instructions here or anywhere in this repository about how Codex should conduct YouTube operations; that knowledge lives outside this repository entirely.
 
 ---
 
@@ -192,7 +195,9 @@ Reference: `src/lib/localization/adapters/xlsx.ts` (export) and `src/lib/changes
 - **Unit tests:** for pure logic (`diff.ts`-style modules), construct inputs directly and assert on outputs — no mocking needed. For a `services.ts`, inject a **fake** adapter object matching the `ServiceDependencies` shape (an in-memory `Map`-backed fake store is the established pattern — see `createFakeStore()` in `channel-sync/services.test.ts` or `createFixture()` in `changesets/services.test.ts`).
 - **Integration tests within a module:** exercise the full `createXServices(fakeDeps)` → multiple calls → assert on persisted state, e.g. `changesets/services.test.ts`'s "re-sync draft preservation" test (import → approve → simulate a re-sync by mutating the fake store's video data → re-fetch → assert the approval was invalidated).
 - **Mock YouTube adapters:** never call real `googleapis` in a test. Every existing YouTube-touching test mocks the client at the shape boundary (`youtube.test.ts` mocks a `youtube_v3.Youtube`-shaped object, not `googleapis` itself) so the actual request-shaping logic (batching, pagination, field selection) is still verified.
-- **Temporary/real-database testing:** for a change that affects `src/lib/db.ts`'s schema, verify boot against **both** an empty database and the existing `data/playlist-manager.db` before considering the change done. Never delete or overwrite the real local database file without first moving it aside and restoring it afterward — the safe pattern used during Phase 4's acceptance review was: `mv data/playlist-manager.db data/playlist-manager.db.bak`, run the check, `mv` it back. A scratch verification script should be written under the session's scratchpad directory (or deleted immediately after use if written into the repo) — never left committed.
+- **Schema-initialization testing uses isolated temporary databases, never the operator's real `data/playlist-manager.db`.** For a change that affects `src/lib/db.ts`'s schema, verify `initializeDatabase()` boots correctly against **both** a brand-new empty database file and a database file that already has the pre-change schema (to prove the additive `ALTER TABLE`/`CREATE TABLE IF NOT EXISTS` path is still idempotent). Do this by pointing a throwaway libSQL client at a file under the session's scratchpad directory (or an `os.tmpdir()` path), never by touching the file at `data/playlist-manager.db` — that file may hold the operator's real local state (connected channels, synced videos, in-review change sets) and **must never be renamed, moved aside, overwritten, or deleted by a test or a verification script, under any circumstance, including "temporarily" with an intent to restore it afterward.** A rename-and-restore approach was used once during Phase 4's acceptance review and is retracted here — it is not safe practice and must not be repeated: a crash, an interrupted session, or a forgotten restore step would silently destroy the operator's data.
+  - **SQLite WAL/SHM:** libSQL/SQLite in WAL mode keeps in-flight data in sidecar `-wal` and `-shm` files next to the main `.db` file, not only in the `.db` file itself. A test database is therefore three files, not one (`test.db`, `test.db-wal`, `test.db-shm`) — clean up all three when a temporary test database is done with, and never assume the main `.db` file alone reflects the complete on-disk state (this also means a "verify by copying just the `.db` file" approach is unreliable; use a fresh client against a fresh path instead of file-copying a live database).
+  - A throwaway verification script (if one is needed beyond what `*.test.ts` already covers) must be written under the session's scratchpad directory and never committed; if it must briefly exist inside the repository working tree for tooling reasons, delete it before the task is considered done and confirm via `git status` that it was never staged.
 - **Regression testing:** run the **full** `npm test` suite after any change, not just the new module's tests — a schema or shared-contract change (e.g. adding a `DomainErrorCode`) can affect other modules' tests.
 - **Production YouTube mutations must never be used as part of automated tests.** This is absolute — no test, ever, under any circumstance, calls a real YouTube write endpoint. Every write path in every test is exercised against a mocked/fake adapter.
 
@@ -229,3 +234,114 @@ Reusable checklist for any change, regardless of size:
 - [ ] Known limitations documented (in `docs/TECHNICAL_DEBT.md` if new, or in the relevant `docs/ARCHITECTURE.md` section if it's a narrower implementation note).
 
 This checklist does not replace human review or authorization — it is what should be true **before** presenting work for that review, per `AGENTS.md`'s Git/release authorization boundaries.
+
+**For safety-critical work specifically** (write-safety, channel identity, conflict detection, approval integrity, data preservation — see §6.14 below), the checklist above is necessary but not sufficient. Completion additionally requires:
+
+- [ ] Acceptance criteria documented **before** implementation (§6.14 Step 1–2), not reconstructed afterward to match what was built.
+- [ ] Expected results defined independently of the implementation (§6.14 Step 3) — not copied from the implementation's own output.
+- [ ] Both positive and negative tests present for the behavior in scope.
+- [ ] The relevant safety invariants from §6.14 verified, not merely assumed to still hold.
+- [ ] Full regression suite passing (already covered above, restated because safety-critical work must never skip it).
+- [ ] No prohibited side effect occurs — in particular, no test performs a real YouTube mutation (§6.11), and no code path introduced reaches a YouTube write method it should not (§6.5's IMPLEMENTED/PLANNED table still accurately reflects reality after the change).
+- [ ] Adversarial review completed (§6.14 Step 6) — someone (or a separate review pass) actively tried to find an incorrect implementation that would still pass the tests.
+- [ ] Mutation testing performed where practical (§6.14 Step 7) for the specific module changed.
+
+**A 100% test pass rate alone is not sufficient evidence of correctness for safety-critical work.** Tests that were written by reading the implementation and recording its behavior can pass at 100% while verifying nothing about whether that behavior is correct. The checklist above exists specifically to catch that failure mode.
+
+---
+
+## 6.14 Specification-Driven and Independent Testing
+
+**Purpose:** prevent tests from being written merely to confirm what the implementation already does. A test suite built by reading the code and recording its behavior proves the code is self-consistent — it proves nothing about whether the code is *correct*. This section defines the workflow that keeps a test's expected behavior anchored to the requirement it verifies, not to the implementation under test. See `AGENTS.md` §L for the mandatory rule this section implements.
+
+This workflow applies in full to **substantial or safety-critical changes** — write-safety, channel identity, conflict detection, approval integrity, and data-preservation logic (`docs/PROJECT_SPEC.md` §21/§27/§30, `docs/TECHNICAL_DEBT.md`'s Gate B list). For a small, low-risk change, apply it proportionately: Steps 1-5 always apply in spirit (know what you're building before you build it, test the requirement not the code); Steps 6-7 (adversarial review, mutation testing) are most valuable exactly where the cost of being wrong is highest.
+
+### Step 1 - Requirements extraction
+
+Before writing any test or implementation code, identify the actual requirement from an authoritative source: `docs/PROJECT_SPEC.md`, a documented API/MCP contract (`docs/interfaces.md`), an ADR (`docs/decisions/`), or an official external specification (the current YouTube Data API v3 documentation for anything touching request/response shape or field limits - `AGENTS.md`'s Development rules already require verifying YouTube API behavior against official docs rather than assumption). Write down which requirement is being implemented, in your own words, before looking at any existing code that might already do something similar.
+
+### Step 2 - Acceptance matrix
+
+From the extracted requirement, define explicitly:
+
+- **Inputs** - the range of values the behavior must handle, including ones outside the obvious happy path.
+- **Expected outputs** - stated from the requirement, not computed by running a draft implementation.
+- **Invariants** - properties that must hold across every input (see "Safety invariants for YouTube metadata workflows" below for the standing set that applies to this project's write paths).
+- **Failure scenarios** - inputs that must be rejected, and what the rejection must look like (a specific `DomainError` code, not just "it should fail somehow").
+- **Prohibited side effects** - what must demonstrably *not* happen (e.g. "no YouTube write call occurs," "no unrelated localization is touched," "no change set row is created for an unchanged value").
+
+Write this matrix down (in the task's working notes, the PR description, or directly as comments guiding the test file) before Step 3 - it is the artifact Step 8 compares results against.
+
+### Step 3 - Independent test design
+
+Write the tests - and any fixed expected-value fixtures - **before** implementing the feature, directly from the acceptance matrix, not from a draft implementation's output. A fixed expected value in a test must be something a human could compute or state by hand from the requirement (e.g. "a title of 101 characters must be rejected because the YouTube API limit is 100" - see `src/lib/changesets/diff.ts`'s `YOUTUBE_TITLE_MAX_LENGTH` for where that constant itself needs to trace back to the official API docs, not to a guess). **Never derive an expected value by calling the function under test and copying its return value into the assertion** - that produces a test that can only ever confirm the implementation agrees with itself.
+
+If the feature already has a draft or prior implementation (e.g. this is a refactor, not new work), design the tests from the requirement anyway, then run them against the existing code as a check - do not let the existing code's behavior silently become the specification.
+
+### Step 4 - Implementation
+
+Implement the smallest solution that satisfies the contract defined in Step 2, following the established patterns in §6.2-§6.10. Do not expand scope to also handle inputs or cases the acceptance matrix did not define - if implementation reveals the matrix was incomplete, that is new information requiring Step 2 to be revisited (and, if it changes a previously-agreed acceptance test, follow "Test changes during implementation" below), not a reason to silently implement beyond what was specified.
+
+### Step 5 - Verification
+
+Run the full test suite: positive cases (the input is handled correctly), negative cases (invalid/malicious/out-of-contract input is rejected correctly), boundary cases (values exactly at a documented limit, one past it, one before it), and the full existing regression suite (`npm test`) to confirm nothing else broke.
+
+### Step 6 - Adversarial review
+
+Actively search for an incorrect implementation that would still make the current tests pass. Concretely: could a version of this code that silently skips the channel-identity check still pass every test? Could a version that approves a conflicted change still pass? Could a version that treats a blank cell as a deletion instruction still pass? If such a gap is found, it means a test is missing or an existing test's assertion is too weak (e.g. asserting `result.ok === true` instead of asserting the specific fields that prove the safety property held) - add the missing test or strengthen the assertion; do not treat the adversarial pass as merely academic.
+
+### Step 7 - Mutation testing
+
+For safety-critical modules specifically, evaluate (manually, if no mutation-testing tool is introduced - this policy alone introduces no new testing dependency) whether the existing tests would actually detect a deliberate, small, realistic mistake:
+
+- flip a validation condition (`>` to `>=`, `===` to `!==`);
+- skip the channel-identity guardrail call;
+- swap which side of a conflict comparison is "baseline" vs. "current";
+- drop the "preserve other locales" merge step and overwrite the whole object instead.
+
+If a test suite would still pass 100% after one of these mutations, the suite has a coverage gap at exactly the place safety depends on - this is the single most concrete way to discover that a test is checking the wrong thing.
+
+### Step 8 - Acceptance
+
+Compare the actual results against the **original** acceptance matrix from Step 2 - not a version of the matrix revised to match what got built. **Do not redefine success based on the implementation.** If the implementation's actual behavior differs from the matrix, that is a discrepancy to resolve explicitly (fix the implementation, or follow "Test changes during implementation" below if the matrix itself was wrong) - it is never resolved by silently updating the matrix (or the tests) to describe whatever the code does.
+
+### Safety invariants for YouTube metadata workflows
+
+Every safety-critical test suite touching YouTube metadata (existing or future write paths) should, where applicable, verify these standing invariants - they come from `docs/PROJECT_SPEC.md`'s write-safety model and this project's established safe-merge/guardrail patterns, not from any specific implementation:
+
+- Existing unrelated localizations remain unchanged (a write targeting one locale must not touch any other locale's stored title/description).
+- Wrong-channel writes are impossible (`write-context.assertWriteChannel` must fail closed before any write call is reachable).
+- Blank spreadsheet cells never cause deletion (`docs/PROJECT_SPEC.md` §8 - a blank cell means "no proposed change," never "clear this field").
+- Approval applies only to the exact approved payload (`Change.approvedValue` must be invalidated, not silently reused, if the underlying proposal or remote state changes after approval - `docs/ARCHITECTURE.md` §6.9/§6.7).
+- Conflicting changes cannot be silently applied (a `conflictStatus: "conflict"` change must be blocked from approval/application until the conflict is resolved).
+- Dry-run produces no remote mutations (a `dryRun: true` code path must be provably free of any YouTube write call - not just "didn't call it this time," but structurally incapable of reaching one).
+- Retried operations do not duplicate completed work (idempotent resume - re-running a batch must not re-apply an already-successful item).
+- Failed operations preserve recovery information (see `docs/TECHNICAL_DEBT.md` RISK-09's backup-vs-rollback distinction - a failure must not leave the system with less recovery information than it had before the attempt).
+- No test performs real YouTube mutations (absolute, per `docs/DEVELOPMENT_PLAYBOOK.md` §6.11 - every write path in every test runs against a mocked/fake adapter).
+
+### Independent test review
+
+For substantial or safety-critical features, use a separate review - a distinct agent session, a fresh subagent with no prior context on the implementation, or (when working solo) a deliberately isolated review pass - rather than relying solely on the same session/context that wrote the implementation to also judge it. Give the reviewer the specification and the tests **before** it inspects the implementation, so its read of "does this test verify the requirement" is not anchored by having already seen how the code satisfies it.
+
+The reviewer's task is to identify:
+
+- missing scenarios (a requirement with no corresponding test);
+- circular test logic (a test whose expected value was derived from the implementation, per Step 3's prohibition);
+- shared incorrect assumptions (the same misunderstanding of the requirement baked into both the code and the test, so they agree with each other and disagree with the spec);
+- missing negative tests (only happy-path coverage exists);
+- unverified side effects (the test checks the return value but never checks what else changed - or didn't - as a result);
+- weak assertions (e.g. `assert.ok(result)` where `assert.equal(result.field, expectedValue)` was actually needed to prove the property in question);
+- tests that merely reproduce implementation behavior (Step 3's failure mode, caught late).
+
+**If a separate reviewer is genuinely unavailable, say so explicitly in the work presented for approval - do not claim independent review occurred, and do not claim self-review provides the same guarantee.** A self-review can still be useful (re-reading Steps 1-2 against the actual tests before presenting the work), but it is not a substitute for this section's independence requirement, and must not be described as one.
+
+### Test changes during implementation
+
+If implementation reveals a genuine ambiguity or error in an already-written acceptance test (not "the implementation doesn't match the test," which is normally a bug in the implementation, but "the test itself encodes a requirement that turns out to be wrong or ambiguous"):
+
+1. Identify the specific conflicting requirement - quote or cite the exact source (a `docs/PROJECT_SPEC.md` section, an official API doc, an ADR) that the test's original assumption conflicts with.
+2. Explain the proposed correction - what the test should assert instead, and why that is what the requirement actually demands.
+3. **Preserve the original expectation for review** - do not delete or silently overwrite the old assertion; show both (e.g. in the diff, or explicitly in the report presented for approval) so the change is auditable.
+4. **Request approval for material changes** before proceeding - per `AGENTS.md` §L, changing a previously-approved acceptance test requires explicit justification and, for anything non-trivial, the project owner's sign-off, exactly like any other substantial/security-relevant decision under `AGENTS.md` §K.
+
+**Do not silently rewrite an acceptance test.** A failing test is evidence requiring investigation of the implementation - it is not, by itself, an instruction to change the test.
