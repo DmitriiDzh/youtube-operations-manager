@@ -9,11 +9,12 @@ This file intentionally does **not** duplicate `docs/PROJECT_SPEC.md` (product r
 Before making architectural, product, or safety-critical changes, read (in this order, skip only what is genuinely irrelevant to the task at hand):
 
 1. `docs/PROJECT_SPEC.md` — product roadmap, YouTube write-safety rules, upstream relationship, phases, acceptance criteria.
-2. `docs/SYSTEM_MAP.md` — current, concise map of every subsystem (what exists, where, IMPLEMENTED/PLANNED/DEFERRED).
-3. `docs/ARCHITECTURE.md` — detailed internal architecture, data flows, and documented limitations.
-4. `docs/DEVELOPMENT_PLAYBOOK.md` — how to extend the actual codebase following established patterns.
-5. `docs/TECHNICAL_DEBT.md` — known risks and the release gates they block; check before touching anything a risk entry references.
-6. `docs/decisions/` — architectural decision records; check before replacing/altering anything an ADR governs.
+2. `docs/ROADMAP_STATUS.md` — which phase is actually complete, as of which commit, and what is assigned next; check this before assuming a phase's status from `docs/PROJECT_SPEC.md`'s numbering alone.
+3. `docs/SYSTEM_MAP.md` — current, concise map of every subsystem (what exists, where, IMPLEMENTED/PLANNED/DEFERRED).
+4. `docs/ARCHITECTURE.md` — detailed internal architecture, data flows, and documented limitations.
+5. `docs/DEVELOPMENT_PLAYBOOK.md` — how to extend the actual codebase following established patterns.
+6. `docs/TECHNICAL_DEBT.md` — known risks and the release gates they block; check before touching anything a risk entry references.
+7. `docs/decisions/` — architectural decision records; check before replacing/altering anything an ADR governs.
 
 For historical/baseline context only (not requirements sources): `docs/UPSTREAM_ANALYSIS.md`, `docs/UPSTREAM_BASELINE.md`.
 
@@ -58,6 +59,7 @@ Do not create `OPERATIONS_AGENT_GUIDE.md` or any equivalently-scoped document. O
 - Do not implement an entire roadmap phase (or the whole roadmap) in one unverified pass.
 - Do not begin a phase that has not been explicitly assigned, even if the roadmap implies it is next.
 - For large tasks: inspect the repository → inspect `docs/PROJECT_SPEC.md` and `docs/SYSTEM_MAP.md` → identify the smallest safe implementation slice → avoid broad rewrites → run tests before proceeding → document architectural deviations.
+- **After a phase is completed and accepted, update `docs/ROADMAP_STATUS.md`** (status, completion date, commit hash, next assignment, open blockers) — this is a log of what happened, not a rewrite of `docs/PROJECT_SPEC.md`'s requirements. **Recording a phase as complete never authorizes starting the next one** — the next phase still requires an explicit assignment from the project owner, exactly as the point above already requires.
 
 ## D. Preservation of working functionality
 

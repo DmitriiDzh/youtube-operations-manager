@@ -155,6 +155,7 @@ For a human operator getting started:
 
 For a coding agent picking up development work (see `AGENTS.md` for the persistent rules — start there):
 
+- Roadmap execution status (which phase is done, next assignment, open blockers): [`docs/ROADMAP_STATUS.md`](docs/ROADMAP_STATUS.md)
 - System map (what exists, where): [`docs/SYSTEM_MAP.md`](docs/SYSTEM_MAP.md)
 - Architecture (why, and current limitations): [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - Development playbook (how to extend it): [`docs/DEVELOPMENT_PLAYBOOK.md`](docs/DEVELOPMENT_PLAYBOOK.md)

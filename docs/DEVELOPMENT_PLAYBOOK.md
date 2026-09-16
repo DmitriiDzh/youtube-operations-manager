@@ -212,7 +212,7 @@ Reference: `src/lib/localization/adapters/xlsx.ts` (export) and `src/lib/changes
 | Database schema changes | `docs/ARCHITECTURE.md` (schema section), and — only if the change is non-additive — a new ADR under `docs/decisions/` per §10 of `AGENTS.md`/this playbook's §6.3 |
 | API or MCP contracts change | `docs/interfaces.md`, and `docs/ARCHITECTURE.md`'s API-routes/MCP section if the change affects the security model, not just the route list |
 | Security boundaries change | `docs/ARCHITECTURE.md` (the specific limitation section), `docs/TECHNICAL_DEBT.md` (add/update/resolve the relevant RISK entry — do not silently drop a risk without recording it as `RESOLVED` with evidence) |
-| A development phase is completed | `docs/SYSTEM_MAP.md`'s header ("Current as of Phase N") and §4, `docs/ARCHITECTURE.md`'s header, `docs/PROJECT_SPEC.md` is **not** rewritten (it is the requirements source of truth, not a changelog) |
+| A development phase is completed | `docs/ROADMAP_STATUS.md` (status, completion date, commit hash, next assignment, open blockers — the canonical execution log), `docs/SYSTEM_MAP.md`'s header ("Current as of Phase N") and §4, `docs/ARCHITECTURE.md`'s header, `docs/PROJECT_SPEC.md` is **not** rewritten (it is the requirements source of truth, not a changelog) |
 
 Never describe a deferred or planned capability as implemented in any of these documents — mark it explicitly `PLANNED`/`DEFERRED`/`NOT YET IMPLEMENTED` (§7 of the Phase 4.5 assignment; also `docs/SYSTEM_MAP.md`'s existing §4 convention).
 
