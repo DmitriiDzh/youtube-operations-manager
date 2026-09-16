@@ -100,6 +100,22 @@ export function createXlsxBuilder() {
         }
       }
 
+      // Meta sheet (Phase 4, additive): schema_version/exported_at/channel_id let the
+      // Phase 4 importer verify a workbook was exported for the intended channel and
+      // (informationally) how fresh it is. A workbook without this sheet (older
+      // Phase 3 export) remains importable -- Phase 4 falls back to per-row
+      // remote_title/remote_description as the conflict-detection baseline, which
+      // has existed since the first Phase 3 export. See docs/ARCHITECTURE.md.
+      const metaSheet = workbook.addWorksheet("Meta");
+      metaSheet.columns = [
+        { header: "key", key: "key", width: 18 },
+        { header: "value", key: "value", width: 40 },
+      ];
+      styleHeaderRow(metaSheet.getRow(1));
+      metaSheet.addRow({ key: "schema_version", value: "2" });
+      metaSheet.addRow({ key: "exported_at", value: new Date().toISOString() });
+      metaSheet.addRow({ key: "channel_id", value: args.channel.channelId });
+
       const arrayBuffer = await workbook.xlsx.writeBuffer();
       return { buffer: Buffer.from(arrayBuffer), rowCount };
     },

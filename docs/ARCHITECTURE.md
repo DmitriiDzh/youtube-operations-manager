@@ -2,7 +2,7 @@
 
 Living architecture reference for this repository. For the historical TubeMaster-derived baseline and Phase 0/1 verification, see `docs/UPSTREAM_ANALYSIS.md` and `docs/UPSTREAM_BASELINE.md`. For the product roadmap and safety rules, see `docs/PROJECT_SPEC.md`.
 
-This document is updated whenever a phase changes the architecture. Current as of **Phase 3 (Localization Manager read-only UI + XLSX export)**.
+This document is updated whenever a phase changes the architecture. Current as of **Phase 4 (XLSX import, draft state, change sets, diff/approval UI)**.
 
 ---
 
@@ -49,7 +49,8 @@ index.ts       — core factory wiring real adapters into the services
 | `playlist-management/` | Playlist CRUD + video membership | Yes — guarded, ownership-checked |
 | `write-context/` | `expectedChannelId` fail-closed identity guardrail, shared by every write path | N/A (guardrail only) |
 | `channel-sync/` (Phase 2) | Full-channel video enumeration + local persistence | **No — read-only** |
-| `localization/` **(new, Phase 3)** | Read model over synced videos' existing localizations, missing-language computation, XLSX export | **No — read-only** |
+| `localization/` (Phase 3) | Read model over synced videos' existing localizations, missing-language computation, XLSX export | **No — read-only** |
+| `changesets/` **(new, Phase 4)** | XLSX import parsing/validation, field-level diff, persistent change sets, local approve/reject | **No YouTube write — local DB only** |
 | `cli-auth/` | Local credential resolution for CLI/MCP (active-user pointer, storage) | Local state only |
 
 ## 4. Phase 2: Channel/Video Synchronization (`src/lib/channel-sync/`)
@@ -157,9 +158,149 @@ The Localizations sheet only emits rows for languages that **already exist** som
 
 ---
 
-## 6. Persistence
+## 6. Phase 4: XLSX Import, Draft State, Change Sets & Diff/Approval (`src/lib/changesets/`)
 
-### 6.1 Schema (additive to the existing TubeMaster-derived tables)
+### 6.1 Purpose and scope
+
+Turns the read-only Phase 3 localization view into a local preparation/approval workflow: import an edited XLSX export, validate it, persist it as a **Change Set** of field-level **Changes**, review a diff against the currently synchronized remote value, and locally approve/reject. **No YouTube write call exists anywhere in this module** — approval is purely a local database state transition. Matches `docs/PROJECT_SPEC.md` §61–64 (Fourth Agent Assignment) with the write pipeline itself explicitly deferred to Phase 5.
+
+### 6.2 Why a new domain module instead of extending `localization/`
+
+`localization/` is a pure read model (§5 above) with no persistence beyond what `channel-sync` already owns. Import/validation/diff/approval is a materially different bounded context — it owns its own persisted entities, its own lifecycle, and (per `docs/PROJECT_SPEC.md` §47) was explicitly suggested as a separate `changesets/` module. `changesets/` depends on `localization`'s sibling `channel-sync` persistence (`getStoredChannel`/`listStoredVideosByChannel`) for the "current remote" side of every comparison, and on `localization/adapters/xlsx.ts`'s workbook shape as its import format — but introduces no reverse dependency (channel-sync and localization remain unaware `changesets/` exists, preserving §4.5/§9's "no draft concept" statement as still true for those two modules specifically).
+
+### 6.3 Data flow
+
+```text
+Web UI → POST .../localizations/import/preview  (multipart file, not persisted)
+  1. requireChannel(channelId)                        — must already be synced (channel-sync)
+  2. channelStore.listVideosByChannel(channelId)        — current remote snapshot
+  3. parseAndValidateWorkbook({ buffer, channelId, syncedVideos })
+       - structural checks: valid XLSX, required "Localizations" sheet + columns,
+         file-size/row-count limits, Meta-sheet channel_id match (blocks entire import)
+       - per row: video_id exists in this channel's synced data, language format,
+         duplicate video_id+language, blank cell = no proposed change (§8 below)
+       - per non-blank field: classifyFieldChange (ADD/MODIFY/UNCHANGED vs. *current*
+         remote) + computeConflictStatus (workbook's remote_title/remote_description
+         baseline vs. *current* remote — §6.6 below) + length validation
+  4. summarizeParsedWorkbook(parsed) → { videosFound, localizationRows, validChanges,
+     unchangedValues, invalidRows, conflicts }
+  5. return summary + bounded row-error list (nothing written to the database)
+
+Web UI → POST .../localizations/import  (multipart, same file re-submitted after preview)
+  1. same parse+validate as above
+  2. persist only rows that are an actual proposed edit (ADD/MODIFY) or invalid
+     (unchanged-and-valid rows are counted in the summary but never stored — §6.5)
+  3. changeSetStore.createChangeSetWithChanges(...)     — one SQLite transaction
+  4. return the created ChangeSet + the same summary/errors
+
+Web UI → GET .../change-sets/[changeSetId]  (also runs before every approve/reject/bulk action)
+  1. loadRevalidated(): re-fetch current synced videos, recompute each change's
+     conflictStatus against its baseline, persist any that changed, and invalidate
+     approval if a change newly became conflicted (§6.7) — never a static/stale flag
+  2. recompute + persist the change set's aggregate status (diff.ts:computeChangeSetStatus)
+  3. apply status/language/videoId filters + pagination, return the page
+```
+
+There is deliberately no separate "confirm creation" endpoint that consumes a server-side cached parse result: the browser already holds the uploaded `File` after selection, so the UI simply re-submits the same file to `.../import` after the user reviews the `.../import/preview` summary — satisfying `docs/PROJECT_SPEC.md` §18's "preview before persist" flow without inventing an upload-token cache (no queues/temp storage introduced, per §25/§31).
+
+### 6.4 Workbook compatibility (no schema-incompatible change)
+
+Inspecting the actual Phase 3 export (`src/lib/localization/adapters/xlsx.ts`) found that the `Localizations` sheet **already contains `remote_title`/`remote_description` columns** (the live remote value at export time) alongside the blank `title`/`description` input columns — since the very first Phase 3 export, not something Phase 4 had to add. This means the "baseline for conflict detection" `docs/PROJECT_SPEC.md` §6 worried might be missing was already present. Phase 4 adds exactly one small, additive, backward-compatible piece: a third **`Meta`** worksheet (`schema_version`, `exported_at`, `channel_id`) written by `buildWorkbook()`. An older (pre-`Meta`-sheet) Phase 3 export is still importable — `readMetaSheet()` tolerates a missing sheet and returns `null`s — it only loses the channel-mismatch guard and the informational "exported at" timestamp, never conflict detection itself (that still works off `remote_title`/`remote_description`, present since day one).
+
+### 6.5 What gets persisted as a `Change`
+
+Only rows that represent an actual proposed edit are stored as `Change` rows — a field whose proposed value equals the current remote value (`changeType: "unchanged"`) is counted in the import summary but **not persisted**, keeping the table free of no-op rows. Invalid fields (e.g. a title over 100 characters) *are* persisted (with `validationStatus: "invalid"` and a `validationError` message) so they remain visible/actionable in the review UI rather than silently disappearing. A row that fails identity checks entirely (unknown `video_id`, malformed `language`, duplicate row) never becomes a `Change` — it is reported only in the row-error list.
+
+### 6.6 Conflict detection and its documented limitation
+
+A `Change`'s `baselineValue` is the workbook's `remote_title`/`remote_description` cell — the remote value **as it was when the workbook was exported**. Conflict detection compares that baseline against the **currently synchronized** remote value (`channel-sync`'s local mirror, refreshed by re-sync) — never a live YouTube call. This means: **Phase 4 conflict detection is only as fresh as the last channel sync.** If YouTube Studio changed a value *after* the last sync but the local mirror hasn't caught up, Phase 4 cannot see it and will not flag a conflict. `docs/PROJECT_SPEC.md` §14 requires this limitation to be documented rather than silently assumed away — a fresh remote-state check immediately before any actual write is explicitly deferred to Phase 5.
+
+### 6.7 Draft preservation across re-sync + approval invalidation
+
+`channel-sync`'s re-sync (`upsertVideos`) only ever touches the `videos` table — it has no awareness of `change_sets`/`changes` and never deletes or overwrites them, so a draft is preserved across re-sync by construction, not by special-case logic. What *does* need to happen after a re-sync is **revalidation**: `loadRevalidated()` (services.ts) runs on every change-set read and before every approve/reject/bulk action, recomputing each change's `conflictStatus` against the freshly synced remote value via `diff.ts:revalidateChangeAgainstCurrentRemote`. Critically, if a change was already `approved` and the remote value has since drifted (new conflict), that function resets it to `pending` and clears `approvedValue` — the concrete mechanism behind `docs/PROJECT_SPEC.md` §16's "an old approval must not authorize a different payload." Covered by `src/lib/changesets/services.test.ts`'s "re-sync draft preservation" test.
+
+### 6.8 Change Set lifecycle
+
+`ChangeSet.status` is derived (never hand-set) by `diff.ts:computeChangeSetStatus` from its changes' `validationStatus`/`conflictStatus`/`approvalStatus`, and persisted after every mutation:
+
+```text
+in_review          — default; also sticky whenever ANY change is invalid or conflicted,
+                      even if every actionable change has been approved
+approved           — every actionable (valid, non-conflicting) change is approved
+partially_approved — a mix of approved and rejected actionable changes
+rejected           — every actionable change is rejected
+```
+
+Deterministic and pure (`diff.test.ts`) — the same change list always yields the same status. Phase 5's future execution states (`APPLYING`/`SUCCESS`/`FAILED`/...) are a separate concern layered on top later, not conflated with this approval-lifecycle status.
+
+### 6.9 Approval semantics
+
+Approving a `Change` snapshots `approvedValue = proposedValue` and requires `validationStatus: "valid"` and `conflictStatus: "none"` (`DomainError("change_not_approvable")` otherwise — invalid/conflicted changes must be resolved, e.g. by re-syncing and re-importing, before they can be approved). Rejecting has no such guard — rejecting an invalid or conflicted change is always safe and always allowed. Bulk "approve all valid" only ever touches `pending` + valid + non-conflicting changes; it can never silently approve something broken. Approval is a **local database write only** — no code path in `changesets/` calls `googleapis`.
+
+### 6.10 Schema (additive)
+
+```text
+change_sets (new)  — id (uuid, PK), channelId (FK → channels.id), source ("xlsx_import"),
+                      status, importedFilename, schemaVersion, exportedAt, createdAt, updatedAt
+changes     (new)  — id (uuid, PK), changeSetId (FK → change_sets.id), videoId, language,
+                      field ("title"|"description"), baselineValue, proposedValue,
+                      changeType, validationStatus, validationError, conflictStatus,
+                      approvalStatus, approvedValue, createdAt, updatedAt
+                      + index on changeSetId, index on videoId
+```
+
+Purely additive `CREATE TABLE IF NOT EXISTS` inside the same `initializeDatabase()` idempotent-boot pattern as Phase 2/3 (§6.13 below) — no changes to `users`/`channels`/`videos`. `createChangeSetWithChanges()` wraps the change-set insert plus all of its change rows in one `db.transaction(...)` so a change set is never left half-persisted. Verified booting cleanly against both an empty database file and the existing Phase 2/3 database file (`docs/PROJECT_SPEC.md` §23).
+
+### 6.11 Persistence access (`src/lib/db.ts`, additive)
+
+```text
+createChangeSetWithChanges(input)                — transactional insert of a change set + its changes
+listStoredChangeSetsByChannel(channelId)         — all change sets for a channel, newest first
+getStoredChangeSet(changeSetId)
+listStoredChangesByChangeSet(changeSetId)
+updateStoredChangeSetStatus(changeSetId, status)
+updateStoredChange(changeId, patch)              — conflictStatus/approvalStatus/approvedValue only
+bulkUpdateStoredChanges(updates)                 — same patch shape, transactional
+```
+
+`src/lib/changesets/adapters/store.ts` wraps these, following the same store-adapter pattern as `channel-sync`/`localization`.
+
+### 6.12 API Routes (additive)
+
+```text
+POST /api/channels/[channelId]/localizations/import/preview   — multipart file; parse+validate only, no persistence
+POST /api/channels/[channelId]/localizations/import           — multipart file; creates a Change Set
+
+GET  /api/channels/[channelId]/change-sets                                    — list change sets for a channel
+GET  /api/channels/[channelId]/change-sets/[changeSetId]                      — detail (revalidates on every read);
+                                                                                  ?status=&language=&videoId=&page=&pageSize=
+POST /api/channels/[channelId]/change-sets/[changeSetId]/changes/[changeId]/approve
+POST /api/channels/[channelId]/change-sets/[changeSetId]/changes/[changeId]/reject
+POST /api/channels/[channelId]/change-sets/[changeSetId]/approve-all
+POST /api/channels/[channelId]/change-sets/[changeSetId]/reject-all
+```
+
+Every route requires a NextAuth session and maps `DomainError` via the same shared `getVideoMetadataErrorStatus`, which gained one new code: `change_not_approvable` → 409 (§6.9). A `changeSetId` is always resolved together with its `channelId` (`requireChangeSet` in services.ts checks `changeSet.channelId === channelId`) so a change set cannot be read or mutated through a mismatched channel path — the channel-scoping equivalent of `docs/PROJECT_SPEC.md` §20's "must not create changes under the wrong channel," enforced here since there is no YouTube write to guard with `write-context` in this phase.
+
+The two multipart import routes reject a request whose `Content-Length` header already exceeds `MAX_WORKBOOK_BYTES` (25MB) before calling `request.formData()`, in addition to `parseAndValidateWorkbook`'s own size/row-count checks that run after parsing. This is a **best-effort** guard, not a complete one: `request.formData()` in this runtime has no built-in body-size cap, so a request sent without a `Content-Length` header (e.g. chunked transfer) is still fully buffered into memory before the post-parse limit takes effect. A byte-counting streaming multipart reader would close this residually but was judged disproportionate for a local-first, single-operator tool where the only way to reach this endpoint at all is an authenticated NextAuth session on the operator's own machine; revisit if this application is ever exposed beyond localhost.
+
+**No per-user ownership boundary on channels or change sets exists** — this is not a Phase 4 gap but the same app-wide model already in place for `channel-sync`/`localization` (`listChannels()` returns every locally synced channel regardless of which session requested it; see §7.1's "not an ownership boundary, since this is a single-operator local-first tool," `docs/PROJECT_SPEC.md` §37). Any authenticated session can read/import/approve for any locally synced channel. This is an explicit, pre-existing product assumption (single trusted local operator), not something Phase 4 introduced or should silently work around; it would need to be revisited before this app is ever exposed to more than one trusted operator or beyond localhost.
+
+### 6.13 Web UI (additive)
+
+`src/components/localization-manager.tsx` gained an "Import XLSX" panel (file picker → Preview → Create Change Set, with the returned summary/error report) and a change-set list; `src/components/change-set-review.tsx` (new) renders one change set's diff/approval UI — status/language/videoId filters, per-change Approve/Reject (disabled while invalid/conflicted), and bulk "Approve all valid"/"Reject all pending." Pagination (`pageSize=100` per request) keeps a large change set from rendering hundreds of descriptions at once (`docs/PROJECT_SPEC.md` §17/§25).
+
+### 6.14 Deviations from a literal reading of `docs/PROJECT_SPEC.md` §11 (Fourth Agent Assignment)
+
+- **No `credentialRef`/OAuth involvement in `changesets/`**: like `localization/`, this module makes no YouTube API calls, so there is nothing to authorize beyond the existing NextAuth session check every route already performs. `credentialRef` was deliberately not threaded through (it would be accepted-but-unused, as it effectively already is in `localization/`'s schemas).
+- **Deletion remains fully deferred** (not just soft-deferred): Phase 4 has no explicit "propose deletion of a localization" affordance at all, per §8's stated preference ("prefer deferring deletion if that produces a safer and simpler design").
+- **A pure `applyProposedValueUpdate`-style function for manual edits was not added**: no Phase 4 interface lets a human edit a `proposedValue` directly (values only ever come from the imported XLSX). The one real in-scope trigger for "approval must be invalidated because what it approved is no longer valid" — a re-sync revealing the remote changed — **is** implemented and tested (§6.7/§6.9). A generic "edit an approved proposal directly" pathway is left for a future `MANUAL_EDIT` source, which the `ChangeSetSource` type already reserves space for.
+
+---
+
+## 7. Persistence (Phase 2/3)
+
+### 7.1 Schema (additive to the existing TubeMaster-derived tables)
 
 ```text
 users     (unchanged)   — id, email, name, image, accessToken, refreshToken, tokenExpiry, oauthScope, selectedChannelId
@@ -177,7 +318,7 @@ videos    (new)         — id (videoId, PK), channelId (FK → channels.id), ti
 
 `channels.id` is the canonical YouTube `channelId` (never a title) and is the primary key — a channel is a single global entity; `connectedUserId` records which local OAuth user last connected/synced it, for traceability only (not an ownership boundary, since this is a single-operator local-first tool per `docs/PROJECT_SPEC.md` §37).
 
-### 5.2 Migration strategy decision (documented per this phase's explicit requirement)
+### 7.2 Migration strategy decision (documented per this phase's explicit requirement)
 
 **Decision: keep the existing boot-time idempotent schema pattern (`CREATE TABLE IF NOT EXISTS` / try-catch `ALTER TABLE ADD COLUMN` inside `initializeDatabase()` in `src/lib/db.ts`) for Phase 2. Do not introduce Drizzle Kit migrations yet.**
 
@@ -185,9 +326,9 @@ Reasoning:
 
 1. **The Phase 2 schema change is purely additive** — two brand-new tables (`channels`, `videos`), zero changes to existing table shapes, zero data migrations, zero destructive operations. The existing pattern already handles this exact case correctly (it was used to add `selected_channel_id` and `oauth_scope` to `users` previously) and was re-verified working in this phase (`channels`/`videos` tables confirmed created on boot against a real SQLite file).
 2. **`AGENTS.md`/`docs/PROJECT_SPEC.md` both require avoiding broad rewrites and explaining *why* before changing database architecture** (§3, Rule 5). Switching to Drizzle Kit migrations now — while `drizzle-kit` is an installed-but-unused devDependency — would be exactly the kind of architectural change the spec asks to justify in writing before doing, and there is no concrete need yet: no destructive schema change, no multi-environment migration ordering problem, no team-coordination requirement (single local SQLite file per operator).
-3. **This is not a permanent decision.** `docs/UPSTREAM_ANALYSIS.md` §9 (risk #2) already flagged that the idempotent-ALTER pattern will become error-prone as more tables accumulate (`localizations`, `changesets`, `batches`, `audit`, `backups` are all still to come per the roadmap). The threshold for revisiting this is: **the first schema change that is not purely additive** (a column type change, a `NOT NULL` backfill, a data transformation, or a multi-step migration ordering requirement) — at that point, introduce Drizzle Kit migrations via a dedicated ADR (`docs/decisions/00X-database-migrations.md`, per `docs/PROJECT_SPEC.md` §45), not silently.
+3. **This is not a permanent decision.** `docs/UPSTREAM_ANALYSIS.md` §9 (risk #2) already flagged that the idempotent-ALTER pattern will become error-prone as more tables accumulate. Phase 4 added two more tables (`change_sets`, `changes`, §6.10) purely additively, confirming the decision still holds; `batches`/`audit`/`backups` remain future additions per the roadmap. The threshold for revisiting this is unchanged: **the first schema change that is not purely additive** (a column type change, a `NOT NULL` backfill, a data transformation, or a multi-step migration ordering requirement) — at that point, introduce Drizzle Kit migrations via a dedicated ADR (`docs/decisions/00X-database-migrations.md`, per `docs/PROJECT_SPEC.md` §45), not silently.
 
-### 5.3 Persistence access (`src/lib/db.ts`)
+### 7.3 Persistence access (`src/lib/db.ts`)
 
 New exported functions, following the existing file's flat function-per-operation style (not a repository class):
 
@@ -204,7 +345,7 @@ listStoredVideosByChannel(id)  — all videos for a channel, newest first
 
 ---
 
-## 7. API Routes (additive)
+## 8. API Routes (Phase 2/3, additive)
 
 Following the existing `src/app/api/video-metadata/*` route-handler + shared `error-status.ts` + `parse-json-body.ts` pattern — no parallel API surface was introduced.
 
@@ -221,30 +362,29 @@ GET  /api/channels/[channelId]/localizations/export       — XLSX download, opt
 
 All routes require an authenticated NextAuth session (`getServerSession`), matching every existing route handler, and reuse `getVideoMetadataErrorStatus` for `DomainError` → HTTP status mapping (the error codes are shared across domain modules via the common `DomainErrorCode` type). The export route returns raw XLSX bytes with `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` and a `Content-Disposition: attachment` header instead of JSON.
 
-## 8. Web UI (additive)
+## 9. Web UI (Phase 2/3, additive)
 
 Two tabs were added to the existing dashboard (`src/app/dashboard/page.tsx`), alongside **Manual** and **Rules**:
 
 - **Sync** (Phase 2) — `src/components/channel-sync.tsx`: select a previously-synced channel or trigger a first sync, browse the resulting video list with thumbnail/title/publish date/privacy/default language, see existing localization languages as badges.
-- **Localizations** (Phase 3) — `src/components/localization-manager.tsx`: channel picker, search + status filter (All/Missing/Complete), a table with one column per language that exists anywhere in the channel (✓/— per video), click-to-expand per-video detail (original metadata + every existing remote locale's title/description), and three export actions (selected rows / currently filtered rows / entire channel) that download the XLSX file client-side.
+- **Localizations** (Phase 3, extended in Phase 4) — `src/components/localization-manager.tsx`: channel picker, search + status filter (All/Missing/Complete), a table with one column per language that exists anywhere in the channel (✓/— per video), click-to-expand per-video detail, three export actions (selected/filtered/all) that download the XLSX file client-side, plus the Phase 4 Import panel and change-set list (§6.13).
 
 Both follow the existing component conventions (Tailwind dark theme, same button/card styling as `ManualMode`). No existing tab, route, or component was modified beyond adding the new tab entries and their conditional render branches.
 
-## 9. What Phase 2 and Phase 3 deliberately do not add
+## 10. What remains deliberately unimplemented after Phase 4
 
 Per each phase's explicit scope boundaries (also see `docs/PROJECT_SPEC.md` §58 non-goals):
 
-- No localization **writes** anywhere in the codebase (no `videos.update` call in `channel-sync/` or `localization/`).
-- No XLSX **import** (export only) — see `docs/PROJECT_SPEC.md` §63 for the deferred import/validate/change-set workflow.
+- **No YouTube localization writes anywhere in the codebase** — no `videos.update` call in `channel-sync/`, `localization/`, or `changesets/`. Approving a change is a local database state transition only (§6.9). This is the single most important invariant Phase 5 must preserve until its write pipeline is proven safe.
 - No AI generation.
-- No change-set, backup, audit, or batch-execution infrastructure — none of Phase 2/3's operations are destructive or irreversible (they only read YouTube/the local cache and, for export, generate a local file), so none of that infrastructure is "strictly required" yet.
-- No CLI or MCP sync/localization tools yet — only the Web UI and the underlying API routes exist so far; CLI/MCP parity for both `channel-sync` and `localization` is additive future work (see §10).
-- No conflict detection between local video cache and remote state — not needed yet since there is no draft to protect (§4.5 above); still true after Phase 3, since Phase 3 introduces no draft/change-set state either.
-- No configured target-language list for a channel (§5.4 above) — the Localizations sheet only reflects what already exists remotely.
+- No backup/audit/batch-execution infrastructure for *remote writes* — Phase 4 introduced `change_sets`/`changes` (local, reversible, non-destructive persistence) but nothing that would back a YouTube write batch (immutable pre-write backup, per-item execution ledger, audit log) — those remain Phase 5 scope (`docs/PROJECT_SPEC.md` §64).
+- No CLI or MCP tools for sync, localization, import, or change-set review yet — only the Web UI and the underlying API routes exist; CLI/MCP parity is additive future work (see §11). `docs/PROJECT_SPEC.md` §21 explicitly said not to implement this in Phase 4 unless essential, and it was not essential here.
+- No configured target-language list for a channel (§5.4 above) — the Localizations sheet only reflects what already exists remotely; still true after Phase 4 (import validates against arbitrary language codes, it does not introduce a per-channel target-language configuration).
+- No deletion proposal model (§6.14) — deferred per `docs/PROJECT_SPEC.md` §8's stated preference.
+- **A fresh, immediately-pre-write remote-state check does not exist** — Phase 4's conflict detection is bounded by the last channel sync (§6.6); Phase 5 must add a live check right before any actual `videos.update` call.
 
-## 10. Extension points confirmed by these phases
+## 11. Extension points confirmed by these phases
 
-- **Localization writes (Phase 4+)**: will reuse `write-context.assertWriteChannel` (unchanged) and the `videos` table's `existingLocalizations`/`defaultLanguage` columns as the "before" state for `mergeLocalizations`/`buildSafeVideoUpdatePayload` (`docs/PROJECT_SPEC.md` §21). `localization/services.ts`'s `getVideoLocalizationDetail` already shapes the exact "before" view a diff/approval UI would need.
-- **XLSX import (Phase 4+)**: the export workbook's column names (`video_id`, `language`, `title`, `description`) were chosen to be the exact columns a future import parser reads back — `video_id` is the only join key, per `docs/PROJECT_SPEC.md` §15/§16.
-- **Change sets / drafts (Phase 4+)**: a new `changesets` table can reference `videos.id` directly; no change to `videos`' shape is anticipated.
-- **CLI/MCP sync + localization parity (Phase 4+)**: `createChannelSyncCore()` and `createLocalizationCore()` are already interface-agnostic; adding `sync`/`localization` CLI namespaces and `channel_sync`/`channel_list`/`video_list`/`localization_list`/`localization_export` MCP tools is additive, following the exact registration pattern already used for `metadata`/`playlist` tools in `src/cli/video-metadata.ts` and `src/mcp/server.ts`.
+- **Localization writes (Phase 5)**: will reuse `write-context.assertWriteChannel` (unchanged) and a `changesets`-approved `Change`'s `approvedValue` as the payload source, merged against the *freshly re-fetched* remote localizations via `mergeLocalizations`/`buildSafeVideoUpdatePayload` (`docs/PROJECT_SPEC.md` §21) — Phase 4's `Change.approvalStatus === "approved"` rows are exactly the input Phase 5's batch executor should consume.
+- **Batch execution / ledger / audit (Phase 5)**: `changesets/services.ts`'s `approveAllValid`/`getChangeSet` already return the "what should be applied" set; Phase 5 adds the write-time ledger (`PENDING`/`APPLYING`/`SUCCESS`/`FAILED`/`CONFLICT` per change) as a new concern layered on top of, not replacing, `Change.approvalStatus`.
+- **CLI/MCP sync + localization + changesets parity (Phase 5+)**: `createChannelSyncCore()`, `createLocalizationCore()`, and now `createChangeSetCore()` are all interface-agnostic; adding CLI namespaces and MCP tools (`changeset_list`, `changeset_get`, `changeset_approve`, per `docs/PROJECT_SPEC.md` §49) is additive, following the exact registration pattern already used for `metadata`/`playlist` tools.

@@ -21,7 +21,8 @@ export type DomainErrorCode =
   | "AUTH_SCOPE_INSUFFICIENT"
   | "WRITE_CHANNEL_REQUIRED"
   | "WRITE_CHANNEL_MISMATCH"
-  | "WRITE_CHANNEL_UNRESOLVED";
+  | "WRITE_CHANNEL_UNRESOLVED"
+  | "change_not_approvable";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

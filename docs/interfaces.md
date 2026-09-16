@@ -28,13 +28,21 @@ Use this as the operational reference after setup: TubeMaster covers channel wor
   - Browse locally synchronized channels (`/api/channels`) and their videos with existing localization
     languages (`/api/channels/[channelId]/videos`).
   - No YouTube writes occur in this tab.
-- **Localizations** (read-only, Phase 3)
+- **Localizations** (Phase 3 read-only view + Phase 4 import/change-set/approval)
   - Overview table of existing localizations per synchronized video (`/api/channels/[channelId]/localizations`),
     with search and status (All/Missing/Complete) filtering.
   - Click a video to see its original metadata plus every existing remote locale's title/description
     (`/api/channels/[channelId]/localizations/[videoId]`).
   - Export selected/filtered/all videos to XLSX (`/api/channels/[channelId]/localizations/export`).
-  - No XLSX import and no YouTube writes exist yet.
+  - **Import (Phase 4):** upload an edited XLSX export to preview proposed changes
+    (`/api/channels/[channelId]/localizations/import/preview`, no persistence), then create a persistent
+    Change Set from the same file (`/api/channels/[channelId]/localizations/import`).
+  - **Change Set review (Phase 4):** browse change sets for the channel, filter by status/language/video,
+    approve or reject individual changes or bulk-approve all valid/non-conflicting ones
+    (`/api/channels/[channelId]/change-sets/**`, see below).
+  - No YouTube writes exist anywhere in this tab, including after approval: an "approved" change is a local
+    database state only. Conflict detection compares each row's export-time baseline against the last
+    *synchronized* remote value, not a live YouTube check (re-sync the channel to refresh it).
 
 ---
 
@@ -128,6 +136,28 @@ All routes are App Router handlers and require authenticated session user.
 - `GET /api/channels/[channelId]/localizations/[videoId]` — per-video original metadata + existing remote locales
 - `GET /api/channels/[channelId]/localizations/export` — XLSX download; optional `?videoIds=a,b,c` to scope the
   export, otherwise exports the entire synchronized channel
+
+### XLSX import / Change Sets API (Phase 4, local-only — no YouTube writes)
+
+- `POST /api/channels/[channelId]/localizations/import/preview` — multipart `file`; parses and validates the
+  workbook, returns a summary + bounded row-error list, **persists nothing**
+- `POST /api/channels/[channelId]/localizations/import` — multipart `file`; same parse/validate, then persists
+  a new Change Set (only real proposed edits and invalid rows become `Change` rows; no-op rows are counted but
+  not stored)
+- `GET /api/channels/[channelId]/change-sets` — list change sets for a channel
+- `GET /api/channels/[channelId]/change-sets/[changeSetId]` — change set detail; re-validates conflict status
+  against the current synced state on every read; query params `?status=pending|approved|rejected|conflict|invalid|all`,
+  `&language=`, `&videoId=`, `&page=`, `&pageSize=`
+- `POST /api/channels/[channelId]/change-sets/[changeSetId]/changes/[changeId]/approve` — approve one change
+  (rejected with `change_not_approvable` if it is currently invalid or conflicted)
+- `POST /api/channels/[channelId]/change-sets/[changeSetId]/changes/[changeId]/reject` — reject one change
+  (always allowed, including for invalid/conflicted changes)
+- `POST /api/channels/[channelId]/change-sets/[changeSetId]/approve-all` — bulk-approve every pending,
+  valid, non-conflicting change
+- `POST /api/channels/[channelId]/change-sets/[changeSetId]/reject-all` — bulk-reject every pending change
+
+An approved `Change` is never sent to YouTube by any of these routes — Phase 5 is expected to consume
+`approvalStatus: "approved"` changes as its write-batch input.
 
 ### Playlist / video API used by UI
 

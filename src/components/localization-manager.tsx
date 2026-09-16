@@ -1,6 +1,7 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeSetReview } from "./change-set-review";
 
 type SyncedChannel = {
   channelId: string;
@@ -43,6 +44,35 @@ type Detail = {
 
 type StatusFilter = "all" | "missing" | "complete";
 
+type ImportSummary = {
+  videosFound: number;
+  localizationRows: number;
+  validChanges: number;
+  unchangedValues: number;
+  invalidRows: number;
+  conflicts: number;
+};
+
+type ImportRowError = {
+  row: number;
+  videoId: string | null;
+  language: string | null;
+  message: string;
+};
+
+type ChangeSetSummary = {
+  id: string;
+  status: "in_review" | "approved" | "partially_approved" | "rejected";
+  importedFilename: string | null;
+  totalChanges: number;
+  pendingCount: number;
+  approvedCount: number;
+  rejectedCount: number;
+  conflictCount: number;
+  invalidCount: number;
+  createdAt: string;
+};
+
 export function LocalizationManager() {
   const [channels, setChannels] = useState<SyncedChannel[]>([]);
   const [channelId, setChannelId] = useState("");
@@ -56,6 +86,15 @@ export function LocalizationManager() {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [exporting, setExporting] = useState(false);
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [previewSummary, setPreviewSummary] = useState<ImportSummary | null>(null);
+  const [previewErrors, setPreviewErrors] = useState<ImportRowError[]>([]);
+  const [previewTotalErrors, setPreviewTotalErrors] = useState(0);
+  const [previewing, setPreviewing] = useState(false);
+  const [creatingChangeSet, setCreatingChangeSet] = useState(false);
+  const [changeSets, setChangeSets] = useState<ChangeSetSummary[]>([]);
+  const [openChangeSetId, setOpenChangeSetId] = useState<string | null>(null);
 
   const fetchChannels = useCallback(async () => {
     const res = await fetch("/api/channels");
@@ -90,13 +129,89 @@ export function LocalizationManager() {
     }
   }, []);
 
+  const fetchChangeSets = useCallback(async (id: string) => {
+    if (!id) {
+      setChangeSets([]);
+      return;
+    }
+    const res = await fetch(`/api/channels/${encodeURIComponent(id)}/change-sets`);
+    const data = await res.json();
+    if (res.ok && Array.isArray(data.changeSets)) {
+      setChangeSets(data.changeSets);
+    }
+  }, []);
+
   useEffect(() => {
     fetchChannels();
   }, [fetchChannels]);
 
   useEffect(() => {
-    if (channelId) fetchOverview(channelId);
-  }, [channelId, fetchOverview]);
+    if (channelId) {
+      fetchOverview(channelId);
+      fetchChangeSets(channelId);
+      setPreviewSummary(null);
+      setPreviewErrors([]);
+      setOpenChangeSetId(null);
+    }
+  }, [channelId, fetchOverview, fetchChangeSets]);
+
+  async function handlePreviewImport() {
+    const file = fileInputRef.current?.files?.[0];
+    if (!channelId || !file) return;
+    setPreviewing(true);
+    setError(null);
+    setPreviewSummary(null);
+    setPreviewErrors([]);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/localizations/import/preview`, {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        return;
+      }
+      setPreviewSummary(data.summary);
+      setPreviewErrors(data.errors ?? []);
+      setPreviewTotalErrors(data.totalErrors ?? (data.errors ?? []).length);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
+  async function handleCreateChangeSet() {
+    const file = fileInputRef.current?.files?.[0];
+    if (!channelId || !file) return;
+    setCreatingChangeSet(true);
+    setError(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/localizations/import`, {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        return;
+      }
+      setPreviewSummary(null);
+      setPreviewErrors([]);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      await fetchChangeSets(channelId);
+      setOpenChangeSetId(data.changeSet.id);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setCreatingChangeSet(false);
+    }
+  }
 
   async function toggleExpand(videoId: string) {
     if (expandedVideoId === videoId) {
@@ -218,6 +333,98 @@ export function LocalizationManager() {
 
       {error && (
         <div className="rounded-lg border border-red-900 bg-red-950/50 p-3 text-sm text-red-400">{error}</div>
+      )}
+
+      {channelId && (
+        <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+          <h3 className="text-sm font-semibold">Import XLSX</h3>
+          <p className="text-xs text-zinc-500">
+            Upload an edited export to preview proposed changes, then create a change set for review. Nothing is
+            written to YouTube here or during approval &mdash; imported values remain local drafts until a future
+            write phase applies them.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx"
+              className="text-xs text-zinc-400 file:mr-3 file:rounded-lg file:border file:border-zinc-700 file:bg-zinc-800 file:px-3 file:py-1.5 file:text-xs file:text-zinc-300"
+            />
+            <button
+              onClick={handlePreviewImport}
+              disabled={previewing}
+              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              {previewing ? "Parsing..." : "Preview"}
+            </button>
+            <button
+              onClick={handleCreateChangeSet}
+              disabled={creatingChangeSet || !previewSummary}
+              className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+            >
+              {creatingChangeSet ? "Creating..." : "Create Change Set"}
+            </button>
+          </div>
+
+          {previewSummary && (
+            <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+              <div className="flex flex-wrap gap-2 text-xs">
+                <span className="rounded bg-zinc-800 px-2 py-1">Videos found: {previewSummary.videosFound}</span>
+                <span className="rounded bg-zinc-800 px-2 py-1">Rows: {previewSummary.localizationRows}</span>
+                <span className="rounded bg-green-900/40 px-2 py-1 text-green-400">
+                  Valid changes: {previewSummary.validChanges}
+                </span>
+                <span className="rounded bg-zinc-800 px-2 py-1 text-zinc-400">
+                  Unchanged: {previewSummary.unchangedValues}
+                </span>
+                <span className="rounded bg-red-900/40 px-2 py-1 text-red-400">Invalid: {previewSummary.invalidRows}</span>
+                <span className="rounded bg-amber-900/40 px-2 py-1 text-amber-400">
+                  Conflicts: {previewSummary.conflicts}
+                </span>
+              </div>
+              {previewErrors.length > 0 && (
+                <div className="max-h-40 overflow-y-auto rounded border border-zinc-800 p-2 text-xs text-zinc-400">
+                  {previewErrors.map((e, i) => (
+                    <p key={i}>
+                      Row {e.row}
+                      {e.videoId ? ` (${e.videoId})` : ""}: {e.message}
+                    </p>
+                  ))}
+                  {previewTotalErrors > previewErrors.length && (
+                    <p className="text-zinc-600">...and {previewTotalErrors - previewErrors.length} more</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {changeSets.length > 0 && (
+            <div className="space-y-2">
+              <h4 className="text-xs font-medium text-zinc-400">Change sets</h4>
+              {changeSets.map((cs) => (
+                <button
+                  key={cs.id}
+                  onClick={() => setOpenChangeSetId(cs.id === openChangeSetId ? null : cs.id)}
+                  className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
+                    openChangeSetId === cs.id
+                      ? "border-zinc-500 bg-zinc-800"
+                      : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"
+                  }`}
+                >
+                  <span>
+                    {cs.importedFilename ?? "XLSX import"} · {cs.totalChanges} changes ·{" "}
+                    {new Date(cs.createdAt).toLocaleString()}
+                  </span>
+                  <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-300">{cs.status}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {openChangeSetId && (
+            <ChangeSetReview channelId={channelId} changeSetId={openChangeSetId} onClose={() => setOpenChangeSetId(null)} />
+          )}
+        </div>
       )}
 
       {overview && (

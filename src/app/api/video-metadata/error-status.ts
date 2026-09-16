@@ -15,6 +15,7 @@ const DOMAIN_ERROR_STATUS = {
   WRITE_CHANNEL_REQUIRED: 422,
   WRITE_CHANNEL_UNRESOLVED: 422,
   WRITE_CHANNEL_MISMATCH: 409,
+  change_not_approvable: 409,
 } as const satisfies Partial<Record<DomainErrorCode, number>>;
 
 export function getVideoMetadataErrorStatus(code: DomainErrorCode) {

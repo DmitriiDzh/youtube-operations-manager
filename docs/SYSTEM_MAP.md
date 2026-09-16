@@ -1,6 +1,6 @@
 # SYSTEM_MAP.md
 
-Быстрая карта репозитория для агентов-кодеров (Claude/Codex), заходящих в проект впервые. Описывает систему **как она есть** после завершения Phase 3 (read-only синхронизация каналов/видео + Localization Manager read-only UI/XLSX export). Не описывает нереализованные фичи как существующие — см. раздел 4 про статус компонентов.
+Быстрая карта репозитория для агентов-кодеров (Claude/Codex), заходящих в проект впервые. Описывает систему **как она есть** после завершения Phase 4 (read-only синхронизация каналов/видео + Localization Manager read-only UI/XLSX export + XLSX import, draft state, change sets, diff/approval UI). Не описывает нереализованные фичи как существующие — см. раздел 4 про статус компонентов.
 
 Смежные документы:
 
@@ -103,30 +103,42 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 - **Зависимости:** persistence (`getStoredChannel`, `listStoredVideosByChannel` из `src/lib/db.ts` — те же функции, что использует `channel-sync`); `exceljs` для генерации файла.
 - **Read/Write:** **только чтение** (ни одного вызова YouTube API вообще — нет даже `authResolver`, только проверка сессии на уровне API route); экспорт — генерация локального файла, не запись куда-либо.
 - **Важные ограничения безопасности:** язык — производится как объединение (union) всех `existingLocalizations` по каналу, никогда не хардкодится (`docs/PROJECT_SPEC.md` §13); `video_id` — единственный canonical идентификатор в экспорте, никогда title.
-- **Чего нет:** draft/remote-состояний, change set, diff/approval UI, XLSX **import**, записи локализаций, конфигурации целевых языков канала — см. раздел 4.
+- **Чего нет (после Phase 3):** draft/remote-состояний, change set, diff/approval UI, XLSX **import**, записи локализаций, конфигурации целевых языков канала. **Реализовано в Phase 4** — см. 2.9 ниже. По-прежнему нет: записи локализаций в YouTube (это Phase 5) — см. раздел 4.
 
-### 2.9 Web UI
+### 2.9 Change sets / XLSX import / diff & approval (Phase 4, новое)
+
+- **Статус: реализовано как отдельный доменный модуль `src/lib/changesets/`.** Новые таблицы БД (`change_sets`, `changes`), новый парсер XLSX-импорта, чистый (без React/DB) diff-движок, доменные сервисы, API-роуты, UI. **Ни одного вызова `videos.update` или любого другого write-метода YouTube API нигде в модуле** — approve/reject это только запись в локальную SQLite.
+- **Ответственность:** парсинг и валидация загруженного XLSX (совместим с форматом экспорта Phase 3 — `remote_title`/`remote_description` уже были в экспорте с самого начала Phase 3 и служат baseline для conflict detection; Phase 4 лишь добавил необязательный лист `Meta` со `schema_version`/`exported_at`/`channel_id`), сопоставление `video_id`+`language` с синхронизированными данными канала, построение персистентного Change Set из валидных/невалидных строк (unchanged-и-валидные строки не сохраняются, только учитываются в сводке), field-level diff (ADD/MODIFY/UNCHANGED + conflictStatus), детерминированный жизненный цикл Change Set (`in_review`/`approved`/`partially_approved`/`rejected`, вычисляется чистой функцией `computeChangeSetStatus`), локальные approve/reject (одиночные и массовые), ревалидация конфликтов и инвалидация устаревшего approval при каждом чтении/действии.
+- **Файлы:** `src/lib/changesets/{contracts,schemas,diff,import,services,index}.ts`, `adapters/store.ts`; UI — `src/components/change-set-review.tsx` + новый блок импорта в `src/components/localization-manager.tsx`.
+- **Точки входа:** `core.previewImport(...)`, `core.createChangeSetFromImport(...)`, `core.listChangeSets(...)`, `core.getChangeSet(...)`, `core.approveChange(...)`, `core.rejectChange(...)`, `core.approveAllValid(...)`, `core.rejectAllPending(...)` — через `createChangeSetCore()`.
+- **Зависимости:** persistence (`getStoredChannel`, `listStoredVideosByChannel` — те же функции, что использует `channel-sync`/`localization`, для получения *текущего* синхронизированного remote-значения), новые CRUD-функции в `src/lib/db.ts` для `change_sets`/`changes`, `exceljs` для парсинга (без вычисления формул — только `cell.result`/текст, импортируемый контент никогда не исполняется).
+- **Read/Write:** **ноль вызовов YouTube API** (ни read, ни write) — весь модуль работает поверх уже синхронизированных локальных данных; запись — только в локальные таблицы `change_sets`/`changes`.
+- **Важные ограничения безопасности:** blank-ячейка = нет изменения (`docs/PROJECT_SPEC.md` §8); `video_id` — единственный canonical идентификатор, строка с несуществующим/чужим `video_id` отклоняется как невалидная, а лист `Meta.channel_id`, не совпадающий с целевым каналом, блокирует **весь** импорт целиком (защита от импорта книги, экспортированной для другого канала); conflict detection сравнивает baseline экспорта с *последним синхронизированным* remote-значением — **не свежий вызов YouTube API** (задокументированное ограничение, см. `docs/ARCHITECTURE.md` §6.6); approve возможен только для `validationStatus: valid` + `conflictStatus: none`, а ранее выданный approval автоматически инвалидируется, если после ре-синхронизации remote-значение разошлось с baseline (`docs/ARCHITECTURE.md` §6.7).
+- **Чего нет:** реальной записи локализаций в YouTube, immutable backup/audit log для write-операций, per-item execution ledger, batch executor, CLI/MCP-инструментов для change sets, конфигурации deletion-предложений — всё это Phase 5, см. раздел 4.
+
+### 2.10 Web UI
 
 - **Ответственность:** дашборд оператора (`/dashboard`) с вкладками Manual / Rules / Sync / Localizations.
-- **Файлы:** `src/app/page.tsx` (страница входа), `src/app/dashboard/page.tsx`, `src/components/{manual-mode,rule-form,rule-list,run-button,session-provider,channel-sync,localization-manager}.tsx`.
+- **Файлы:** `src/app/page.tsx` (страница входа), `src/app/dashboard/page.tsx`, `src/components/{manual-mode,rule-form,rule-list,run-button,session-provider,channel-sync,localization-manager,change-set-review}.tsx`.
 - **Точки входа:** браузер → `http://localhost:3000` → NextAuth Google sign-in → `/dashboard`.
 - **Зависимости:** API routes (`src/app/api/**`), сессия NextAuth.
-- **Read/Write:** вкладки **Sync** и **Localizations** — только чтение YouTube (Localizations вообще не вызывает YouTube API, только локальный кэш + генерация XLSX); вкладка **Manual** — может писать (add/remove из плейлиста, создание плейлиста).
+- **Read/Write:** вкладки **Sync** и **Localizations** — читают YouTube только через уже синхронизированные данные (Localizations вообще не вызывает YouTube API); XLSX-импорт и approve/reject в Localizations (Phase 4) — только локальная запись в БД, тоже без вызовов YouTube API; вкладка **Manual** — может писать в YouTube (add/remove из плейлиста, создание плейлиста).
 - **Важные ограничения безопасности:** каждый API route, к которому обращается UI, сам проверяет сессию (`getServerSession`) и (для write) guardrail канала — UI не является границей безопасности.
 
-### 2.10 API routes
+### 2.11 API routes
 
 - **Ответственность:** HTTP-граница между Web UI (и потенциально внешними интеграциями) и доменными сервисами.
 - **Файлы:**
   - Существующие: `src/app/api/video-metadata/{apply,preview,transcript}/route.ts`, `src/app/api/youtube/{videos,playlists,create-playlist,add-to-playlist,remove-from-playlist,channel-info}/route.ts`, `src/app/api/rules/route.ts`, `src/app/api/run/route.ts`, `src/app/api/auth/[...nextauth]/route.ts`.
   - **Новые (Phase 2):** `GET /api/channels` (`route.ts`), `POST /api/channels/sync` (`sync/route.ts`), `GET /api/channels/[channelId]/videos` (`[channelId]/videos/route.ts`).
   - **Новые (Phase 3):** `GET /api/channels/[channelId]/localizations` (обзорная таблица), `GET /api/channels/[channelId]/localizations/[videoId]` (детали видео), `GET /api/channels/[channelId]/localizations/export` (XLSX-файл, `?videoIds=a,b,c` опционально).
+  - **Новые (Phase 4):** `POST /api/channels/[channelId]/localizations/import/preview` (multipart, без персистентности), `POST /api/channels/[channelId]/localizations/import` (multipart, создаёт Change Set), `GET /api/channels/[channelId]/change-sets` (список), `GET /api/channels/[channelId]/change-sets/[changeSetId]` (детали + ревалидация конфликтов, фильтры/пагинация), `POST .../change-sets/[changeSetId]/changes/[changeId]/approve`, `POST .../changes/[changeId]/reject`, `POST .../change-sets/[changeSetId]/approve-all`, `POST .../change-sets/[changeSetId]/reject-all`.
 - **Точки входа:** HTTP-запросы, каждый начинается с `getServerSession(authOptions)`.
-- **Зависимости:** соответствующий доменный core (`createVideoMetadataCore()`, `createPlaylistManagementCore()`, `createChannelSyncCore()`, `createLocalizationCore()`), общие `error-status.ts`/`parse-json-body.ts` из `video-metadata` (переиспользуются, не дублируются).
-- **Read/Write:** зависит от роута; все новые роуты Phase 2 и Phase 3 — read-only (export XLSX генерирует файл, но не пишет ничего внешнего).
-- **Важные ограничения безопасности:** без валидной сессии — `401` до вызова доменной логики.
+- **Зависимости:** соответствующий доменный core (`createVideoMetadataCore()`, `createPlaylistManagementCore()`, `createChannelSyncCore()`, `createLocalizationCore()`, `createChangeSetCore()`), общие `error-status.ts`/`parse-json-body.ts` из `video-metadata` (переиспользуются, не дублируются).
+- **Read/Write:** зависит от роута; все новые роуты Phase 2–4 не пишут в YouTube (export/import/approve — либо чтение, либо только локальная запись в БД).
+- **Важные ограничения безопасности:** без валидной сессии — `401` до вызова доменной логики; каждый change-set роут проверяет, что `changeSetId` принадлежит указанному `channelId` (`not_found` иначе), чтобы нельзя было прочитать/изменить change set через чужой канал.
 
-### 2.11 CLI
+### 2.12 CLI
 
 - **Ответственность:** локальный терминальный интерфейс для metadata/auth/playlist операций.
 - **Файлы:** `src/cli/video-metadata.ts` (namespaces: `metadata`, `auth`, `playlist`).
@@ -134,9 +146,9 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 - **Зависимости:** `createVideoMetadataCore()`, `createPlaylistManagementCore()`, `createCliAuthService()`.
 - **Read/Write:** оба (например, `apply`, `playlist create/update/delete`).
 - **Важные ограничения безопасности:** JSON-конверты на stdout (`{ ok: true|false, ... }`), ненулевой exit code при ошибке.
-- **Ограничение (Phase 2/3): команд синхронизации каналов/видео и локализаций в CLI нет.**
+- **Ограничение (Phase 2–4): команд синхронизации каналов/видео, локализаций и change sets в CLI нет.**
 
-### 2.12 MCP
+### 2.13 MCP
 
 - **Ответственность:** stdio MCP-сервер для AI-агентов.
 - **Файлы:** `src/mcp/server.ts` (`createMcpServer`, `createMcpToolHandlers`).
@@ -144,18 +156,19 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 - **Зависимости:** те же core-фабрики, что и CLI; `resolveEffectiveCredentialRef` из `cli-auth`.
 - **Read/Write:** оба (`apply`, `playlist_*` — write, с `dryRun`-поддержкой для `apply`).
 - **Важные ограничения безопасности:** все входы — строгие Zod-схемы; все ошибки — структурированный JSON, никогда голый текст.
-- **Ограничение (Phase 2/3): MCP-инструментов синхронизации каналов/видео и локализаций нет.**
+- **Ограничение (Phase 2–4): MCP-инструментов синхронизации каналов/видео, локализаций и change sets нет.**
 
-### 2.13 Tests
+### 2.14 Tests
 
 - **Ответственность:** unit/integration-тесты на моках (без реальных сетевых вызовов к YouTube).
 - **Файлы:** `*.test.ts` рядом с тестируемым модулем; раннер — `node --import tsx --test "src/**/*.test.ts"` (встроенный `node:test`, без Jest/Vitest).
 - **Новые файлы Phase 2:** `src/lib/youtube.test.ts` (батчинг/пагинация против моков реальной формы `googleapis`-клиента), `src/lib/channel-sync/services.test.ts` (sync/list на фейковом store).
 - **Новые файлы Phase 3:** `src/lib/localization/services.test.ts` (overview/detail/export на фейковом store), `src/lib/localization/adapters/xlsx.test.ts` (реальная сборка workbook через `exceljs` + чтение обратно, без моков библиотеки).
-- **Текущее состояние:** 188 тестов, все проходят (`npm test`).
-- **Важное ограничение:** ни один тест не пишет в реальный YouTube-канал (`docs/PROJECT_SPEC.md` §42).
+- **Новые файлы Phase 4:** `src/lib/changesets/diff.test.ts` (чистая классификация/статусы/инвалидация approval), `src/lib/changesets/import.test.ts` (парсинг/валидация реальных XLSX-книг через `exceljs`: blank=no-change, дубликаты, невалидный язык, конфликт, channel mismatch, лимиты размера), `src/lib/changesets/services.test.ts` (сквозные сценарии: создание change set, approve/reject, ре-синхронизация инвалидирует approval, bulk approve не трогает невалидные/конфликтующие строки, изоляция между каналами).
+- **Текущее состояние:** 226 тестов, все проходят (`npm test`).
+- **Важное ограничение:** ни один тест не пишет в реальный YouTube-канал (`docs/PROJECT_SPEC.md` §42); Phase 4 тесты дополнительно доказывают, что import/approve не может вызвать ни одного YouTube write-метода (нет такого метода в зависимостях сервисов вообще).
 
-### 2.14 Configuration / local state
+### 2.15 Configuration / local state
 
 - **Ответственность:** переменные окружения и локальные файлы состояния.
 - **Файлы:** `.env.local` (не в репозитории; обязательные `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `NEXTAUTH_URL`, `NEXTAUTH_SECRET`; опциональные `CLI_OAUTH_CALLBACK_PORT`, `YOUTUBE_TRANSCRIPT_PROVIDER`, `METADATA_GENERATOR_MODE`, `METADATA_GENERATOR_RAW_OUTPUT`), `data/playlist-manager.db` (SQLite), `data/auth-context.json` (активный локальный пользователь CLI/MCP).
@@ -180,16 +193,17 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 ## 4. Статус компонентов
 
 **Реализовано и работает (проверено тестами):**
-Auth (Web + CLI PKCE/device flow), credential resolution, write-context guardrail, YouTube client layer (read + write методы для metadata/playlist), persistence (`users`, `rules`, `channels`, `videos`), channel-sync (канал + видео, батчинг), localization read model + XLSX export (Phase 3), Web UI (Manual/Rules/Sync/Localizations), API routes (metadata/playlist/youtube/rules/run/channels/localizations), CLI (metadata/auth/playlist), MCP (metadata/playlist tools), 188 тестов.
+Auth (Web + CLI PKCE/device flow), credential resolution, write-context guardrail, YouTube client layer (read + write методы для metadata/playlist), persistence (`users`, `rules`, `channels`, `videos`, `change_sets`, `changes`), channel-sync (канал + видео, батчинг), localization read model + XLSX export (Phase 3), **XLSX import + draft state + change sets + field-level diff + local approve/reject + conflict detection (Phase 4)**, Web UI (Manual/Rules/Sync/Localizations, включая Import и Change Set Review), API routes (metadata/playlist/youtube/rules/run/channels/localizations/change-sets), CLI (metadata/auth/playlist), MCP (metadata/playlist tools), 226 тестов.
 
-**Запланировано, но не реализовано (Phase 4+):**
-- CLI-команды и MCP-инструменты для синхронизации каналов/видео и для localization (`channel_sync`, `channel_list`, `video_list`, `localization_list`, `localization_export` и т.п.).
-- XLSX **import** (экспорт уже есть — см. §2.8; импорт/валидация/change set — нет).
-- Draft/change-set модель (`ChangeSet`, approval workflow).
-- Пайплайн записи локализаций (`mergeLocalizations`, `buildSafeVideoUpdatePayload` для локализаций конкретно — сейчас есть только single-locale merge в `video-metadata/services.ts`, не полноценный localization-write pipeline).
-- Durable backup / audit log / batch execution с ledger.
-- Conflict detection между локальным кэшем и remote-состоянием (не нужен, пока нет draft-состояния — см. `docs/ARCHITECTURE.md` §4.5).
+**Запланировано, но не реализовано (Phase 5+):**
+- Реальная запись локализаций в YouTube (`videos.update` для localizations) — Phase 4 доводит изменения только до статуса `approved` локально, ни один approved change не отправляется в YouTube.
+- Immutable backup перед write-батчем, audit log, per-item execution ledger, batch executor с retry/resume.
+- Свежая проверка remote-состояния непосредственно перед записью (Phase 4's conflict detection ограничена последней синхронизацией — см. `docs/ARCHITECTURE.md` §6.6).
+- Пайплайн `mergeLocalizations`/`buildSafeVideoUpdatePayload` именно для localization-записи (сейчас есть только single-locale merge для основного metadata во `video-metadata/services.ts`; Phase 4's `Change.approvedValue` — готовый вход для этого пайплайна, но сам пайплайн не реализован).
+- CLI-команды и MCP-инструменты для синхронизации каналов/видео, localization и change sets (`channel_sync`, `channel_list`, `video_list`, `localization_list`, `localization_export`, `changeset_list`, `changeset_approve` и т.п.).
 - Конфигурация целевых языков канала (сейчас язык — это только то, что уже есть в существующих локализациях; см. `docs/ARCHITECTURE.md` §5.4).
+- Явная модель deletion-предложений (осознанно отложена в Phase 4, см. `docs/ARCHITECTURE.md` §6.14).
+- AI-генерация локализаций (провайдер-агностичный интерфейс, драфты через тот же approval pipeline).
 
 **Осознанно отложено (не входит в текущий MVP, см. `docs/PROJECT_SPEC.md` §58):**
 YouTube Analytics, AI-генерация метаданных, publishing/upload видео, thumbnail-модуль, multi-user SaaS/RBAC, миграция БД-инструментария (Drizzle Kit) — до первого неаддитивного изменения схемы.

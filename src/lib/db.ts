@@ -51,6 +51,48 @@ export const videos = sqliteTable("videos", {
     .$defaultFn(() => new Date()),
 });
 
+export const changeSets = sqliteTable("change_sets", {
+  id: text("id").primaryKey(),
+  channelId: text("channel_id")
+    .notNull()
+    .references(() => channels.id),
+  source: text("source").notNull(),
+  status: text("status").notNull(),
+  importedFilename: text("imported_filename"),
+  schemaVersion: text("schema_version"),
+  exportedAt: text("exported_at"),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+export const changes = sqliteTable("changes", {
+  id: text("id").primaryKey(),
+  changeSetId: text("change_set_id")
+    .notNull()
+    .references(() => changeSets.id),
+  videoId: text("video_id").notNull(),
+  language: text("language").notNull(),
+  field: text("field").notNull(),
+  baselineValue: text("baseline_value").notNull(),
+  proposedValue: text("proposed_value").notNull(),
+  changeType: text("change_type").notNull(),
+  validationStatus: text("validation_status").notNull(),
+  validationError: text("validation_error"),
+  conflictStatus: text("conflict_status").notNull(),
+  approvalStatus: text("approval_status").notNull().default("pending"),
+  approvedValue: text("approved_value"),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
 export const rules = sqliteTable("rules", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: text("user_id")
@@ -117,6 +159,37 @@ async function initializeDatabase() {
       last_synced_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
     CREATE INDEX IF NOT EXISTS videos_channel_id_idx ON videos(channel_id);
+    CREATE TABLE IF NOT EXISTS change_sets (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL REFERENCES channels(id),
+      source TEXT NOT NULL,
+      status TEXT NOT NULL,
+      imported_filename TEXT,
+      schema_version TEXT,
+      exported_at TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS change_sets_channel_id_idx ON change_sets(channel_id);
+    CREATE TABLE IF NOT EXISTS changes (
+      id TEXT PRIMARY KEY,
+      change_set_id TEXT NOT NULL REFERENCES change_sets(id),
+      video_id TEXT NOT NULL,
+      language TEXT NOT NULL,
+      field TEXT NOT NULL,
+      baseline_value TEXT NOT NULL,
+      proposed_value TEXT NOT NULL,
+      change_type TEXT NOT NULL,
+      validation_status TEXT NOT NULL,
+      validation_error TEXT,
+      conflict_status TEXT NOT NULL,
+      approval_status TEXT NOT NULL DEFAULT 'pending',
+      approved_value TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS changes_change_set_id_idx ON changes(change_set_id);
+    CREATE INDEX IF NOT EXISTS changes_video_id_idx ON changes(video_id);
   `);
 
   // Migration: add selected_channel_id if missing (idempotent)
@@ -163,7 +236,9 @@ const client = new Proxy(rawClient, {
   },
 });
 
-export const db = drizzle(client, { schema: { users, rules, channels, videos } });
+export const db = drizzle(client, {
+  schema: { users, rules, channels, videos, changeSets, changes },
+});
 
 export type StoredOAuthToken = {
   userId: string;
@@ -511,4 +586,185 @@ export async function listStoredVideosByChannel(channelId: string): Promise<Stor
     .orderBy(videos.publishedAt);
 
   return rows.map(mapStoredVideo).reverse();
+}
+
+export type ChangeField = "title" | "description";
+export type ChangeType = "add" | "modify" | "unchanged";
+export type ChangeValidationStatus = "valid" | "invalid";
+export type ChangeConflictStatus = "none" | "conflict";
+export type ChangeApprovalStatus = "pending" | "approved" | "rejected";
+export type ChangeSetStatus = "in_review" | "approved" | "partially_approved" | "rejected";
+
+export type StoredChangeSet = {
+  id: string;
+  channelId: string;
+  source: string;
+  status: ChangeSetStatus;
+  importedFilename: string | null;
+  schemaVersion: string | null;
+  exportedAt: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type StoredChange = {
+  id: string;
+  changeSetId: string;
+  videoId: string;
+  language: string;
+  field: ChangeField;
+  baselineValue: string;
+  proposedValue: string;
+  changeType: ChangeType;
+  validationStatus: ChangeValidationStatus;
+  validationError: string | null;
+  conflictStatus: ChangeConflictStatus;
+  approvalStatus: ChangeApprovalStatus;
+  approvedValue: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+function mapStoredChangeSet(row: typeof changeSets.$inferSelect): StoredChangeSet {
+  return {
+    id: row.id,
+    channelId: row.channelId,
+    source: row.source,
+    status: row.status as ChangeSetStatus,
+    importedFilename: row.importedFilename,
+    schemaVersion: row.schemaVersion,
+    exportedAt: row.exportedAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function mapStoredChange(row: typeof changes.$inferSelect): StoredChange {
+  return {
+    id: row.id,
+    changeSetId: row.changeSetId,
+    videoId: row.videoId,
+    language: row.language,
+    field: row.field as ChangeField,
+    baselineValue: row.baselineValue,
+    proposedValue: row.proposedValue,
+    changeType: row.changeType as ChangeType,
+    validationStatus: row.validationStatus as ChangeValidationStatus,
+    validationError: row.validationError,
+    conflictStatus: row.conflictStatus as ChangeConflictStatus,
+    approvalStatus: row.approvalStatus as ChangeApprovalStatus,
+    approvedValue: row.approvedValue,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export async function createChangeSetWithChanges(input: {
+  id: string;
+  channelId: string;
+  source: string;
+  status: ChangeSetStatus;
+  importedFilename: string | null;
+  schemaVersion: string | null;
+  exportedAt: string | null;
+  changes: Array<{
+    id: string;
+    videoId: string;
+    language: string;
+    field: ChangeField;
+    baselineValue: string;
+    proposedValue: string;
+    changeType: ChangeType;
+    validationStatus: ChangeValidationStatus;
+    validationError: string | null;
+    conflictStatus: ChangeConflictStatus;
+  }>;
+}): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.insert(changeSets).values({
+      id: input.id,
+      channelId: input.channelId,
+      source: input.source,
+      status: input.status,
+      importedFilename: input.importedFilename,
+      schemaVersion: input.schemaVersion,
+      exportedAt: input.exportedAt,
+    });
+
+    for (const change of input.changes) {
+      await tx.insert(changes).values({
+        id: change.id,
+        changeSetId: input.id,
+        videoId: change.videoId,
+        language: change.language,
+        field: change.field,
+        baselineValue: change.baselineValue,
+        proposedValue: change.proposedValue,
+        changeType: change.changeType,
+        validationStatus: change.validationStatus,
+        validationError: change.validationError,
+        conflictStatus: change.conflictStatus,
+        approvalStatus: "pending",
+        approvedValue: null,
+      });
+    }
+  });
+}
+
+export async function listStoredChangeSetsByChannel(channelId: string): Promise<StoredChangeSet[]> {
+  const rows = await db
+    .select()
+    .from(changeSets)
+    .where(eq(changeSets.channelId, channelId))
+    .orderBy(changeSets.createdAt);
+
+  return rows.map(mapStoredChangeSet).reverse();
+}
+
+export async function getStoredChangeSet(changeSetId: string): Promise<StoredChangeSet | null> {
+  const [row] = await db.select().from(changeSets).where(eq(changeSets.id, changeSetId));
+  return row ? mapStoredChangeSet(row) : null;
+}
+
+export async function listStoredChangesByChangeSet(changeSetId: string): Promise<StoredChange[]> {
+  const rows = await db.select().from(changes).where(eq(changes.changeSetId, changeSetId));
+  return rows.map(mapStoredChange);
+}
+
+export async function updateStoredChangeSetStatus(
+  changeSetId: string,
+  status: ChangeSetStatus
+): Promise<void> {
+  await db
+    .update(changeSets)
+    .set({ status, updatedAt: new Date() })
+    .where(eq(changeSets.id, changeSetId));
+}
+
+export async function updateStoredChange(
+  changeId: string,
+  patch: Partial<
+    Pick<StoredChange, "conflictStatus" | "approvalStatus" | "approvedValue">
+  >
+): Promise<void> {
+  await db
+    .update(changes)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(eq(changes.id, changeId));
+}
+
+export async function bulkUpdateStoredChanges(
+  updates: Array<{
+    id: string;
+    patch: Partial<Pick<StoredChange, "conflictStatus" | "approvalStatus" | "approvedValue">>;
+  }>
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    for (const update of updates) {
+      await tx
+        .update(changes)
+        .set({ ...update.patch, updatedAt: new Date() })
+        .where(eq(changes.id, update.id));
+    }
+  });
 }

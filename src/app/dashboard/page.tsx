@@ -209,8 +209,9 @@ export default function Dashboard() {
       {tab === "localizations" && (
         <div>
           <p className="mb-4 text-sm text-zinc-400">
-            Review existing localizations per video and export them to XLSX. Read-only: no
-            metadata is written to YouTube and no XLSX import exists yet.
+            Review existing localizations per video, export to XLSX, and import edited
+            workbooks to build local change sets for review and approval. No metadata is
+            written to YouTube anywhere in this tab &mdash; approval is a local decision only.
           </p>
           <LocalizationManager />
         </div>
