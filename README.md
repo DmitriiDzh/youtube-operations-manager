@@ -146,10 +146,21 @@ Troubleshooting:
 
 ## Documentation
 
+For a human operator getting started:
+
 - Project specification: [`docs/PROJECT_SPEC.md`](docs/PROJECT_SPEC.md)
 - Getting started: [`docs/getting-started.md`](docs/getting-started.md)
 - Interfaces: [`docs/interfaces.md`](docs/interfaces.md)
 - Troubleshooting: [`docs/troubleshooting.md`](docs/troubleshooting.md)
+
+For a coding agent picking up development work (see `AGENTS.md` for the persistent rules — start there):
+
+- System map (what exists, where): [`docs/SYSTEM_MAP.md`](docs/SYSTEM_MAP.md)
+- Architecture (why, and current limitations): [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- Development playbook (how to extend it): [`docs/DEVELOPMENT_PLAYBOOK.md`](docs/DEVELOPMENT_PLAYBOOK.md)
+- Technical debt / risk register / release gates: [`docs/TECHNICAL_DEBT.md`](docs/TECHNICAL_DEBT.md)
+- Architectural decision records: [`docs/decisions/`](docs/decisions/README.md)
+- Historical baseline (Phase 0/1): [`docs/UPSTREAM_ANALYSIS.md`](docs/UPSTREAM_ANALYSIS.md), [`docs/UPSTREAM_BASELINE.md`](docs/UPSTREAM_BASELINE.md)
 
 Additional project documentation may be added under `docs/` as development progresses.
 
