@@ -313,12 +313,38 @@ function toLocaleMetadataMap(
   return normalized;
 }
 
+/**
+ * RISK-11 (closed 2026-09-18 for src/lib/batches/, extended here to every write path):
+ * the exhaustive, documentation-verified list of `snippet` sub-properties the YouTube
+ * Data API v3 actually treats as mutable/writable via `videos.update`
+ * (developers.google.com/youtube/v3/docs/videos, checked field-by-field 2026-09-18).
+ * Everything NOT in this list is read-only (`publishedAt`, `channelId`, `channelTitle`,
+ * `thumbnails`, `liveBroadcastContent`) or a separate read-only echo of the
+ * `localizations` object (`localized`). This is the single canonical source for every
+ * write path in this repository -- `src/lib/batches/merge.ts` re-exports it rather than
+ * keeping its own copy, and `src/lib/video-metadata/services.ts` imports it directly --
+ * so a future addition to YouTube's writable-field set is a one-line change here, never
+ * three independently-drifting copies.
+ */
+export const WRITABLE_SNIPPET_FIELDS = [
+  "title",
+  "description",
+  "tags",
+  "categoryId",
+  "defaultLanguage",
+  "defaultAudioLanguage",
+] as const;
+
+export function pickWritableSnippetFields(snippet: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const field of WRITABLE_SNIPPET_FIELDS) {
+    if (field in snippet) result[field] = snippet[field];
+  }
+  return result;
+}
+
 function removeReadOnlySnippetFields(snippet: youtube_v3.Schema$VideoSnippet) {
-  const sanitized = { ...snippet } as youtube_v3.Schema$VideoSnippet & {
-    localized?: youtube_v3.Schema$VideoLocalization;
-  };
-  delete sanitized.localized;
-  return sanitized;
+  return pickWritableSnippetFields(snippet as Record<string, unknown>) as youtube_v3.Schema$VideoSnippet;
 }
 
 export async function getVideoMetadataContext(

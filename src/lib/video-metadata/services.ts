@@ -1,4 +1,5 @@
 import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
+import { pickWritableSnippetFields } from "@/lib/youtube";
 import {
   DomainError,
   isDomainError,
@@ -94,10 +95,17 @@ function mapUnknownError(error: unknown, fallbackCode: DomainError["code"]) {
   });
 }
 
+/**
+ * RISK-11 (extended to this legacy single-item write path, 2026-09-18): previously
+ * stripped only `.localized`, leaving five other documented read-only `snippet`
+ * sub-properties (`publishedAt`, `channelId`, `channelTitle`, `thumbnails`,
+ * `liveBroadcastContent`) echoed back unchanged on every real `videos.update` call this
+ * function's callers make. Now delegates to the shared, canonical whitelist
+ * (`src/lib/youtube.ts`'s `pickWritableSnippetFields`) instead of keeping its own,
+ * narrower copy -- the exact same fix already applied to `src/lib/batches/merge.ts`.
+ */
 function removeReadOnlySnippetFields(snippet: Record<string, unknown>) {
-  const sanitized = { ...snippet };
-  delete sanitized.localized;
-  return sanitized;
+  return pickWritableSnippetFields(snippet);
 }
 
 function resolveTargetLanguage(context: VideoMetadataContext): {

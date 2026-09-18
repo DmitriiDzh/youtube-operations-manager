@@ -1,7 +1,9 @@
 import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
+import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "./ledger-state";
 
 export type { DomainErrorCode, DomainErrorShape };
 export { DomainError, isDomainError };
+export type { AttemptOutcome, AttemptPhase, LedgerStatus };
 
 // ---------------------------------------------------------------------------
 // Phase 5, Slice 1 -- FOUNDATION.
@@ -33,38 +35,28 @@ export { DomainError, isDomainError };
 
 export type BatchStatus = "PENDING" | "RUNNING" | "COMPLETED" | "ABORTED";
 
-export type LedgerStatus =
-  | "PENDING"
-  /**
-   * Slice 3 (revised 2026-09-17, per the project owner's "execution-state correctness"
-   * review of Slice 2): a live batch's per-video preparation (identity check, approval
-   * re-check, fresh fetch, defaultLanguage check, conflict check, backup, merge/diff) has
-   * completed successfully and the row is ready for its first attempt -- but no attempt
-   * has begun. This is what a Slice-2-only "leave it APPLYING" used to mean; it is now
-   * its own explicit state so APPLYING unambiguously means "an attempt is genuinely
-   * active" (a durable INTENDED record exists, unresolved), never "prepared but idle."
-   * A row also returns here after an UNKNOWN resolution re-runs the full safety pipeline
-   * (§0.F Step 4) and finds no conflict/invalid-approval -- ready for a brand new attempt.
-   */
-  | "AWAITING_EXECUTION"
-  | "APPLYING"
-  | "SUCCESS"
-  | "FAILED"
-  | "CONFLICT"
-  | "UNKNOWN"
-  | "ABORTED_SYSTEMIC"
-  /**
-   * Slice 2: a dry-run batch's per-video preparation completed successfully (identity
-   * check, fresh fetch, defaultLanguage check, conflict check, backup, merge/diff all
-   * ran) but no write was attempted or simulated as sent. Distinct from SUCCESS so a
-   * report can never conflate a dry-run with a real write (AC-DRYRUN-01/03) and terminal
-   * so a later live run of the same batch id is a fully independent execution rather than
-   * resuming from this row (AC-DRYRUN-03).
-   */
-  | "DRY_RUN_COMPLETE";
-
-export type AttemptPhase = "INTENDED" | "RESULT_RECORDED";
-export type AttemptOutcome = "SUCCESS" | "FAILED" | "UNKNOWN";
+// LedgerStatus/AttemptPhase/AttemptOutcome now live in ./ledger-state (RISK-10 fix,
+// 2026-09-18) -- imported and re-exported above so every existing consumer of this
+// module keeps working unchanged. Their meaning:
+//
+//   PENDING            -- never attempted.
+//   AWAITING_EXECUTION -- Slice 3 (revised 2026-09-17, per the project owner's
+//     "execution-state correctness" review of Slice 2): a live batch's per-video
+//     preparation (identity check, approval re-check, fresh fetch, defaultLanguage
+//     check, conflict check, backup, merge/diff) has completed successfully and the row
+//     is ready for its first attempt -- but no attempt has begun. This is what a
+//     Slice-2-only "leave it APPLYING" used to mean; it is now its own explicit state so
+//     APPLYING unambiguously means "an attempt is genuinely active" (a durable INTENDED
+//     record exists, unresolved), never "prepared but idle." A row also returns here
+//     after an UNKNOWN resolution re-runs the full safety pipeline (§0.F Step 4) and
+//     finds no conflict/invalid-approval -- ready for a brand new attempt.
+//   APPLYING, SUCCESS, FAILED, CONFLICT, UNKNOWN, ABORTED_SYSTEMIC -- as their names say.
+//   DRY_RUN_COMPLETE   -- Slice 2: a dry-run batch's per-video preparation completed
+//     successfully (identity check, fresh fetch, defaultLanguage check, conflict check,
+//     backup, merge/diff all ran) but no write was attempted or simulated as sent.
+//     Distinct from SUCCESS so a report can never conflate a dry-run with a real write
+//     (AC-DRYRUN-01/03) and terminal so a later live run of the same batch id is a fully
+//     independent execution rather than resuming from this row (AC-DRYRUN-03).
 
 /**
  * The ledger state machine (DEC-OQ-1/§0.C). This is the single source of truth for which
@@ -289,6 +281,17 @@ export type PendingChangeRecord = {
   field: "title" | "description";
   baselineValue: string;
   proposedValue: string;
+  /**
+   * Independent-review finding (2026-09-18, Slice 5): a frozen snapshot of `proposedValue`
+   * taken at the moment `approvalStatus` last became `"approved"` (`null` if never
+   * approved, or after a rejection) -- mirrors `src/lib/changesets/contracts.ts`'s
+   * `Change.approvedValue`. Required so `assertApprovalStillValid` can detect AC-BATCH-03
+   * sub-case (c)/AC-TIMEOUT-02: a change whose `proposedValue` was edited after approval
+   * while `approvalStatus` itself was left `"approved"`. Checking `approvalStatus` alone
+   * (this module's only check before this fix) cannot catch that case -- the status
+   * genuinely still says "approved", just no longer for the value now present.
+   */
+  approvedValue: string | null;
   approvalStatus: "pending" | "approved" | "rejected";
   validationStatus: "valid" | "invalid";
   conflictStatus: "none" | "conflict";
@@ -300,7 +303,19 @@ export type PreparedRowOutcome =
   | { ledgerRowId: string; videoId: string; status: "FAILED"; error: string }
   | { ledgerRowId: string; videoId: string; status: "CONFLICT"; conflictingChangeIds: string[] };
 
+/**
+ * Slice 4 addition: `videoId` was missing from this type through Slices 1-3 -- nothing
+ * in those slices ever needed to address a specific video from the payload alone, since
+ * no real WriteExecutor existed yet and every caller had `row.videoId` available
+ * separately. A real `WriteExecutor.attemptWrite(payload)` genuinely cannot call
+ * `videos.update` without knowing which video to target, so `videoId` is added here
+ * (the single canonical payload shape) rather than passed as a second, parallel
+ * argument to `attemptWrite` -- this keeps the durable attempt snapshot (`payloadSnapshot`
+ * in `src/lib/db.ts`), the audit trail, and what the executor actually receives all
+ * identically shaped, with no separate "enrichment" step that could drift out of sync.
+ */
 export type PreparedPayload = {
+  videoId: string;
   snippet: Record<string, unknown>;
   localizations: Record<string, { title: string; description: string }>;
 };

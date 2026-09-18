@@ -94,6 +94,7 @@ function createFakeStore() {
         field: "title",
         baselineValue: "baseline",
         proposedValue: "proposed",
+        approvedValue: "proposed",
         approvalStatus: "approved",
         validationStatus: "valid",
         conflictStatus: "none",
@@ -138,6 +139,9 @@ function createFakeStore() {
     },
     async getBatch(batchId: string) {
       return batches.get(batchId) ?? null;
+    },
+    async listBatchesByChannel(channelId: string) {
+      return [...batches.values()].filter((b) => b.channelId === channelId).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
     },
     async listLedgerRowsByBatch(batchId: string) {
       return [...ledgerRows.values()].filter((row) => row.batchId === batchId);
@@ -371,6 +375,7 @@ test("AC-MERGE-04 (creation-time): a change that is not approved is rejected fro
     field: "title",
     baselineValue: "b",
     proposedValue: "p",
+    approvedValue: null,
     approvalStatus: "pending",
     validationStatus: "valid",
     conflictStatus: "none",
@@ -642,4 +647,36 @@ test("REGRESSION: reacquiring a video lock already held by the same batch/ledger
     () => harness.services.acquireVideoLock({ batchId: otherBatch.id, ledgerRowId: otherRow.id, videoId: "v1" }),
     (error: unknown) => error instanceof DomainError && error.code === "video_locked"
   );
+});
+
+test("listBatchesByChannel only returns batches for that channel; requireBatchForChannel fails closed on a cross-channel batchId (AGENTS.md §F)", async () => {
+  const harness = createHarness();
+
+  const batchOnChannelA = await createApprovedBatch(harness, {
+    channelId: "UC_CHANNEL_A",
+    selections: [{ videoId: "v1", changeIds: ["c1"] }],
+  });
+  const batchOnChannelB = await createApprovedBatch(harness, {
+    channelId: "UC_CHANNEL_B",
+    selections: [{ videoId: "v2", changeIds: ["c2"] }],
+  });
+
+  const channelABatches = await harness.services.listBatchesByChannel("UC_CHANNEL_A");
+  assert.equal(channelABatches.length, 1);
+  assert.equal(channelABatches[0]!.id, batchOnChannelA.id);
+
+  const channelBBatches = await harness.services.listBatchesByChannel("UC_CHANNEL_B");
+  assert.equal(channelBBatches.length, 1);
+  assert.equal(channelBBatches[0]!.id, batchOnChannelB.id);
+
+  // Fetching channel B's real batch through channel A's URL segment must fail closed --
+  // it must never silently return another channel's batch just because the batchId is
+  // otherwise valid.
+  await assert.rejects(
+    () => harness.services.requireBatchForChannel("UC_CHANNEL_A", batchOnChannelB.id),
+    (error: unknown) => error instanceof DomainError && error.code === "batch_not_found"
+  );
+
+  const correct = await harness.services.requireBatchForChannel("UC_CHANNEL_B", batchOnChannelB.id);
+  assert.equal(correct.id, batchOnChannelB.id);
 });

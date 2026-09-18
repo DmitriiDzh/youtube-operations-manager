@@ -559,8 +559,11 @@ export function createMcpServer(
   server.registerTool(
     "apply",
     {
+      // RISK-12 fix (2026-09-18, breaking behavioral change): dryRun now defaults to
+      // true if omitted -- previously it defaulted to a REAL write. Callers must pass
+      // dryRun: false explicitly to perform a real YouTube write.
       description:
-        "Apply metadata with optional dryRun. credentialRef is OPTIONAL: if omitted, the server uses the active local auth context established via CLI auth login.",
+        "Apply metadata. dryRun defaults to true (a preview, no write) if omitted -- pass dryRun: false explicitly to perform a real YouTube write. credentialRef is OPTIONAL: if omitted, the server uses the active local auth context established via CLI auth login.",
       inputSchema: applyInputSchema,
     },
     (args) => handlers.apply(args)

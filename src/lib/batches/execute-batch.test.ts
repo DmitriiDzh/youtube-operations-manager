@@ -61,13 +61,18 @@ function createFakeStore() {
     changes,
     ledgerRows,
     registerApprovedChange(entry: Partial<PendingChangeRecord> & { id: string; videoId: string }) {
+      const proposedValue = entry.proposedValue ?? "New Value";
       changes.set(entry.id, {
         id: entry.id,
         videoId: entry.videoId,
         language: entry.language ?? "es",
         field: entry.field ?? "title",
         baselineValue: entry.baselineValue ?? "",
-        proposedValue: entry.proposedValue ?? "New Value",
+        proposedValue,
+        // Defaults to matching proposedValue (i.e. "approved and unedited since") --
+        // a test exercising AC-BATCH-03 sub-case (c) passes an explicit mismatched
+        // approvedValue to simulate an edit-after-approval.
+        approvedValue: entry.approvedValue !== undefined ? entry.approvedValue : proposedValue,
         approvalStatus: entry.approvalStatus ?? "approved",
         validationStatus: entry.validationStatus ?? "valid",
         conflictStatus: entry.conflictStatus ?? "none",
@@ -112,6 +117,9 @@ function createFakeStore() {
     },
     async getBatch(batchId: string) {
       return batches.get(batchId) ?? null;
+    },
+    async listBatchesByChannel(channelId: string) {
+      return [...batches.values()].filter((b) => b.channelId === channelId).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
     },
     async listLedgerRowsByBatch(batchId: string) {
       return [...ledgerRows.values()].filter((row) => row.batchId === batchId);

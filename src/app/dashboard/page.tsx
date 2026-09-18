@@ -9,6 +9,7 @@ import { RunButton } from "@/components/run-button";
 import { ManualMode } from "@/components/manual-mode";
 import { ChannelSync } from "@/components/channel-sync";
 import { LocalizationManager } from "@/components/localization-manager";
+import { BatchManager } from "@/components/batch-manager";
 
 type ChannelInfo = {
   id: string;
@@ -27,7 +28,7 @@ type Rule = {
   enabled: boolean;
 };
 
-type Tab = "manual" | "rules" | "sync" | "localizations";
+type Tab = "manual" | "rules" | "sync" | "localizations" | "batches";
 
 export default function Dashboard() {
   const { data: session, status } = useSession();
@@ -166,6 +167,16 @@ export default function Dashboard() {
         >
           Localizations
         </button>
+        <button
+          onClick={() => setTab("batches")}
+          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
+            tab === "batches"
+              ? "bg-zinc-800 text-white"
+              : "text-zinc-400 hover:text-zinc-200"
+          }`}
+        >
+          Batches
+        </button>
       </div>
 
       {tab === "manual" && (
@@ -214,6 +225,17 @@ export default function Dashboard() {
             written to YouTube anywhere in this tab &mdash; approval is a local decision only.
           </p>
           <LocalizationManager />
+        </div>
+      )}
+
+      {tab === "batches" && (
+        <div>
+          <p className="mb-4 text-sm text-zinc-400">
+            Select approved changes into a Batch and preview it in dry-run mode. Real
+            YouTube writes are disabled by a server-side safety barrier &mdash; this tab
+            never performs a live write.
+          </p>
+          <BatchManager />
         </div>
       )}
     </div>

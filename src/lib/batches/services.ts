@@ -45,6 +45,7 @@ type BatchStoreDeps = {
     ledgerRows: Array<{ id: string; videoId: string; changeIds: string[] }>;
   }): Promise<void>;
   getBatch(batchId: string): Promise<StoredBatchRecord | null>;
+  listBatchesByChannel(channelId: string): Promise<StoredBatchRecord[]>;
   listLedgerRowsByBatch(batchId: string): Promise<StoredLedgerRowRecord[]>;
   getLedgerRow(ledgerRowId: string): Promise<StoredLedgerRowRecord | null>;
   claimBatchExecution(batchId: string, runId: string): Promise<boolean>;
@@ -116,6 +117,23 @@ type BatchYoutubeApiDeps = {
     credentials: ResolvedCredentials;
     videoId: string;
   }): Promise<{ snippet: Record<string, unknown>; localizations: Record<string, { title: string; description: string }> } | null>;
+  /**
+   * AC-QUOTA-01 (Slice 5): optional so every pre-existing test double that never
+   * implemented it keeps working unchanged. When present, `prepareBatchExecution` calls
+   * it exactly once per batch, batched (<=50 ids/call, per the existing
+   * `getVideosMetadataContextBatch` chunking already used elsewhere), purely for an
+   * early, informational, batch-wide overview -- per architectural decision #2 (Slice
+   * 2), its result is NEVER used for any individual video's conflict detection, merge,
+   * defaultLanguage check, or backup decision. The mandatory single-video
+   * `fetchFreshVideoContext` immediately before each write remains completely unchanged
+   * and unbatched, by design (RISK-03/AC-MERGE-02) -- this preliminary pass reduces the
+   * *informational* overview's own quota cost, it does not (and must not) replace or
+   * reduce the number of mandatory per-video fresh-fetch calls a live batch still makes.
+   */
+  fetchPreliminaryBatchContext?(args: {
+    credentials: ResolvedCredentials;
+    videoIds: string[];
+  }): Promise<Array<{ videoId: string; defaultLanguage: string | null }>>;
 };
 
 type BackupDeps = {
@@ -207,6 +225,23 @@ function assertApprovalStillValid(change: PendingChangeRecord): void {
       code: "change_approval_invalid",
       message: `Change ${change.id} is not (or is no longer) approved/valid/non-conflicting -- approvalStatus=${change.approvalStatus}, validationStatus=${change.validationStatus}, conflictStatus=${change.conflictStatus}`,
       details: { changeId: change.id },
+    });
+  }
+
+  // Independent-review finding (2026-09-18, Slice 5) / AC-BATCH-03 sub-case (c),
+  // AC-TIMEOUT-02: `approvalStatus === "approved"` alone does not prove the CURRENT
+  // `proposedValue` is the one that was actually approved -- a change edited in place
+  // after approval, without a fresh approve/reject cycle, would pass the check above
+  // while carrying a value nobody ever approved. `approvedValue` is the frozen snapshot
+  // taken at approval time (mirrors changesets' own `Change.approvedValue`); a mismatch
+  // means the payload would be built from neither a known-good stale value nor a
+  // properly re-approved new one, so the write must be blocked outright, exactly as an
+  // already-invalidated approval is.
+  if (change.approvedValue !== null && change.approvedValue !== change.proposedValue) {
+    throw new DomainError({
+      code: "change_approval_invalid",
+      message: `Change ${change.id} was edited after approval -- its current proposedValue no longer matches the value that was actually approved`,
+      details: { changeId: change.id, approvedValue: change.approvedValue, proposedValue: change.proposedValue },
     });
   }
 }
@@ -303,6 +338,30 @@ export function createBatchServices(deps: ServiceDependencies) {
 
   async function getBatch(batchId: string): Promise<Batch> {
     return toBatch(await requireBatch(batchId));
+  }
+
+  async function listBatchesByChannel(channelId: string): Promise<Batch[]> {
+    const rows = await batchStore.listBatchesByChannel(channelId);
+    return rows.map(toBatch);
+  }
+
+  /**
+   * Channel-context validation is not automatic (AGENTS.md §F/`docs/DEVELOPMENT_PLAYBOOK.md`
+   * §6.6) -- a route taking both a `channelId` and a `batchId` must itself verify the
+   * requested batch actually belongs to that channel, exactly like
+   * `changesets/services.ts`'s `loadRevalidated` already does for Change Sets. Reused by
+   * every Web UI/API entry point below instead of trusting the URL's channelId alone.
+   */
+  async function requireBatchForChannel(channelId: string, batchId: string): Promise<Batch> {
+    const batch = await getBatch(batchId);
+    if (batch.channelId !== channelId) {
+      throw new DomainError({
+        code: "batch_not_found",
+        message: `Batch ${batchId} does not belong to channel ${channelId}`,
+        details: { batchId, channelId },
+      });
+    }
+    return batch;
   }
 
   /** Membership is fixed at creation (AC-BATCH-01/02) -- this never filters or re-derives it. */
@@ -454,7 +513,11 @@ export function createBatchServices(deps: ServiceDependencies) {
       }
     }
 
-    const payload = buildSafeLocalizationsPayload(fresh, pendingChanges);
+    const merged = buildSafeLocalizationsPayload(fresh, pendingChanges);
+    // videoId is attached here, once, at the single point PreparedPayload is constructed
+    // -- see contracts.ts's PreparedPayload doc comment for why it lives on the payload
+    // itself rather than as a second argument threaded separately into attemptWrite.
+    const payload: PreparedPayload = { videoId: row.videoId, ...merged };
     return { outcome: "READY", payload, changes: changeRecords };
   }
 
@@ -553,21 +616,69 @@ export function createBatchServices(deps: ServiceDependencies) {
     }
 
     const ledgerRows = await batchStore.listLedgerRowsByBatch(input.batchId);
+
+    // AC-QUOTA-01: one batched, informational-only preliminary pass over every target
+    // video in this batch, distinct from (and never a substitute for) the mandatory
+    // per-video fresh fetch each row's own prepareLedgerRow/runSafetyPipeline performs
+    // below. Never awaited into the per-row loop's decisions -- a failure here is
+    // logged, never thrown, since this pass is optional overview, not a safety gate.
+    if (deps.youtubeApi.fetchPreliminaryBatchContext) {
+      try {
+        const preliminary = await deps.youtubeApi.fetchPreliminaryBatchContext({
+          credentials,
+          videoIds: ledgerRows.map((row) => row.videoId),
+        });
+        logger.info({
+          event: "batch.preliminary_fetch_completed",
+          context: { batchId: input.batchId, videoCount: ledgerRows.length, resultCount: preliminary.length },
+        });
+      } catch (error) {
+        logger.error({
+          event: "batch.preliminary_fetch_failed",
+          context: { batchId: input.batchId, error: error instanceof Error ? error.message : String(error) },
+        });
+      }
+    }
+
     const outcomes: PreparedRowOutcome[] = [];
 
     for (const row of ledgerRows) {
       try {
         outcomes.push(await prepareLedgerRow({ row, batch, credentials }));
       } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
         logger.error({
           event: "ledger_row.preparation_failed",
-          context: { ledgerRowId: row.id, error: error instanceof Error ? error.message : String(error) },
+          context: { ledgerRowId: row.id, error: message },
         });
+        // AC-CONCURRENCY-03 fix (2026-09-18): prepareLedgerRow can throw before it ever
+        // transitions the row itself (acquireVideoLock, its first step, throws rather
+        // than returning a result when a DIFFERENT batch already holds this video's
+        // lock). Previously this catch only reported an in-memory FAILED outcome
+        // without persisting it -- the row silently stayed PENDING forever, so a later
+        // resume would retry it indefinitely against a video another batch may still
+        // legitimately be writing. Persist the same terminal state the outcome reports.
+        try {
+          await transitionLedgerStatus(row.id, "FAILED", { error: message });
+        } catch {
+          // The row already left PENDING by some other path (e.g. a concurrent
+          // recovery/resume pass) between the throw above and this persist attempt --
+          // whatever it settled on is authoritative; do not fight it.
+        }
+        // Independent-review finding (2026-09-18): acquireVideoLock (prepareLedgerRow's
+        // FIRST step) can succeed and THEN a later step (e.g. audit.record) throw before
+        // any of prepareLedgerRow's own FAILED/CONFLICT branches ever run their own
+        // releaseVideoLock -- leaving this batch holding the video's lock under a now-
+        // terminal FAILED row, unreleasable until an explicit recoverBatch pass. This
+        // call is unconditional and safe to attempt even when the lock was never
+        // acquired at all (releaseVideoLock is scoped to "only the batch that holds it
+        // may release it" at the persistence layer, so it is a safe no-op otherwise).
+        await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
         outcomes.push({
           ledgerRowId: row.id,
           videoId: row.videoId,
           status: "FAILED",
-          error: error instanceof Error ? error.message : "Unknown error",
+          error: message,
         });
       }
     }
@@ -1063,13 +1174,55 @@ export function createBatchServices(deps: ServiceDependencies) {
   }
 
   /**
+   * AC-CONCURRENCY-01 (2026-09-18, Slice 5): runs `items` through `worker`, never more
+   * than `limit` in flight at once. A simple cursor-based worker pool -- each of `limit`
+   * concurrent "lanes" repeatedly claims the next unclaimed index and awaits `worker` on
+   * it until the queue is exhausted. `results[index]` is written directly by index, so
+   * the returned array is always in the original `items` order regardless of completion
+   * order (results ordering is unaffected by execution ordering).
+   */
+  async function runWithConcurrencyLimit<T>(
+    items: T[],
+    limit: number,
+    worker: (item: T, index: number) => Promise<void>
+  ): Promise<void> {
+    let cursor = 0;
+    async function lane(): Promise<void> {
+      for (;;) {
+        const index = cursor++;
+        if (index >= items.length) return;
+        await worker(items[index], index);
+      }
+    }
+    const lanes = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, () => lane());
+    await Promise.all(lanes);
+  }
+
+  /**
    * Slice 3 batch-level execution: continues a batch already prepared by
    * prepareBatchExecution (auto-preparing it first if it is still PENDING). For each
    * AWAITING_EXECUTION row, re-runs the mandatory fresh pre-send safety check (never
    * reusing the preparation-time payload as-is) and, if still safe, drives it through
    * executeWithRetry. Item-level failures never stop the batch (AC-ISOLATION-01); a
-   * `systemic: true` WriteExecutorResult halts all remaining not-yet-attempted rows
-   * (marked ABORTED_SYSTEMIC) without touching already-completed ones (AC-ISOLATION-02).
+   * `systemic: true` WriteExecutorResult halts all *not-yet-started* rows (marked
+   * ABORTED_SYSTEMIC), without touching already-completed ones or interrupting rows
+   * already in flight when the systemic result was observed (AC-ISOLATION-02).
+   *
+   * Slice 5 addition (AC-CONCURRENCY-01): rows run through `runWithConcurrencyLimit`,
+   * bounded by `batch.concurrency` (validated 1-5 at creation time, `schemas.ts`) --
+   * default 1 (fully sequential, DEC-OQ-4) or a configured `K` up to 5. Per-video
+   * exclusivity (AC-CONCURRENCY-01's own lock guarantee, AC-CONCURRENCY-02/03) and the
+   * active-attempt-slot invariant are enforced independently at the persistence layer
+   * (`acquireVideoExecutionLock`/`beginAttemptIntent` in `src/lib/db.ts`), not by this
+   * loop -- raising `limit` only changes how many *different* videos' rows may be
+   * in-progress simultaneously, never how many concurrent attempts a single video can
+   * have (that remains exactly one, by construction, regardless of `limit`). Each
+   * row's own audit sequence (PREPARATION -> ATTEMPT -> RESULT -> VERIFICATION) is
+   * still produced by a single, sequentially-awaited call chain inside `worker` below,
+   * so per-video audit ordering is unaffected by cross-video concurrency -- only the
+   * *interleaving* of different videos' events in the shared audit log can vary run to
+   * run, which `docs/acceptance/PHASE_5_ACCEPTANCE.md` §0.B item C never requires to be
+   * globally ordered, only reconstructable per video.
    */
   async function executeBatch(input: {
     batchId: string;
@@ -1090,25 +1243,71 @@ export function createBatchServices(deps: ServiceDependencies) {
     const credentials = await deps.authResolver.resolve({ credentialRef: input.credentialRef, requiredScopes: [YOUTUBE_WRITE_SCOPE] });
 
     const rows = await batchStore.listLedgerRowsByBatch(input.batchId);
-    const results: ExecutionResult[] = [];
+    const results: ExecutionResult[] = new Array(rows.length);
     let haltedSystemically = false;
 
-    for (const row of rows) {
+    async function processRow(row: StoredLedgerRowRecord, index: number): Promise<void> {
       if (haltedSystemically) {
         if (row.status === "PENDING" || row.status === "AWAITING_EXECUTION") {
           await batchStore.transitionLedgerRowStatus({ ledgerRowId: row.id, from: [row.status], to: "ABORTED_SYSTEMIC" });
-          results.push({ ledgerRowId: row.id, videoId: row.videoId, status: "ABORTED_SYSTEMIC" });
+          results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: "ABORTED_SYSTEMIC" };
         } else {
-          results.push({ ledgerRowId: row.id, videoId: row.videoId, status: row.status, detail: row.error ?? undefined });
+          results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: row.status, detail: row.error ?? undefined };
         }
-        continue;
+        return;
       }
 
-      if (row.status !== "AWAITING_EXECUTION") {
-        // Already terminal from preparation (FAILED/CONFLICT/DRY_RUN_COMPLETE), or some
-        // other non-executable state -- report as-is, do not re-attempt.
-        results.push({ ledgerRowId: row.id, videoId: row.videoId, status: row.status, detail: row.error ?? undefined });
-        continue;
+      let effectiveStatus = row.status;
+      if (effectiveStatus === "PENDING") {
+        // AC-RESUME-01: a row can still be PENDING here only on a RESUMED batch (a
+        // wholly-fresh batch is fully prepared by prepareBatchExecution above before
+        // this loop ever runs) -- "PENDING may continue execution directly" means
+        // through the same first-time preparation path a fresh attempt would use, never
+        // a special-cased shortcut. Terminal preparation outcomes (FAILED/CONFLICT/
+        // DRY_RUN_COMPLETE) are reported as-is, exactly like any other terminal status.
+        //
+        // AC-CONCURRENCY-03 (2026-09-18 fix): prepareLedgerRow's very first step,
+        // acquireVideoLock, throws (not returns a result) when a DIFFERENT batch
+        // already holds this video's lock -- exactly the two-distinct-batches race this
+        // AC describes. prepareBatchExecution's own per-row loop already catches this
+        // (see its `catch` block above); this inline call must do the same, or a
+        // resumed batch racing another batch for a video would crash this entire
+        // executeBatch call instead of reporting one clean FAILED row.
+        let prepared;
+        try {
+          prepared = await prepareLedgerRow({ row, batch, credentials });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          try {
+            await transitionLedgerStatus(row.id, "FAILED", { error: message });
+          } catch {
+            // Already left PENDING by another path; whatever it settled on stands.
+          }
+          // Independent-review finding (2026-09-18): see the identical comment in
+          // prepareBatchExecution's own catch block above -- acquireVideoLock can
+          // succeed before a later step throws, leaking this batch's hold on the
+          // video's lock under a now-terminal FAILED row. Safe no-op if never acquired.
+          await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
+          results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: "FAILED", detail: message };
+          return;
+        }
+        if (prepared.status !== "AWAITING_EXECUTION") {
+          results[index] = {
+            ledgerRowId: prepared.ledgerRowId,
+            videoId: prepared.videoId,
+            status: prepared.status,
+            detail: "error" in prepared ? prepared.error : undefined,
+          };
+          return;
+        }
+        effectiveStatus = "AWAITING_EXECUTION";
+      }
+
+      if (effectiveStatus !== "AWAITING_EXECUTION") {
+        // Already terminal (FAILED/CONFLICT/DRY_RUN_COMPLETE/UNKNOWN/etc.) -- report
+        // as-is, do not re-attempt.
+        results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: row.status, detail: row.error ?? undefined };
+        return;
       }
 
       // Mandatory fresh pre-send check -- immediately before this row's actual attempt,
@@ -1119,15 +1318,15 @@ export function createBatchServices(deps: ServiceDependencies) {
       if (safety.outcome === "FAILED") {
         await transitionLedgerStatus(row.id, "FAILED", { error: safety.error });
         await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
-        results.push({ ledgerRowId: row.id, videoId: row.videoId, status: "FAILED", detail: safety.error });
-        continue;
+        results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: "FAILED", detail: safety.error };
+        return;
       }
       if (safety.outcome === "CONFLICT") {
         await transitionLedgerStatus(row.id, "CONFLICT");
         await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "CONFLICT", detail: { conflictingChangeIds: safety.conflictingChangeIds } });
         await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
-        results.push({ ledgerRowId: row.id, videoId: row.videoId, status: "CONFLICT" });
-        continue;
+        results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: "CONFLICT" };
+        return;
       }
 
       const result = await executeWithRetry({
@@ -1138,13 +1337,15 @@ export function createBatchServices(deps: ServiceDependencies) {
         credentials,
         executor: input.executor,
       });
-      results.push(result);
+      results[index] = result;
 
       if (result.systemic) {
         haltedSystemically = true;
         logger.error({ event: "batch.systemic_failure_mid_execution", context: { batchId: batch.id, ledgerRowId: row.id, detail: result.detail } });
       }
     }
+
+    await runWithConcurrencyLimit(rows, batch.concurrency, processRow);
 
     if (!haltedSystemically) {
       await batchStore.markBatchTerminal(input.batchId, "COMPLETED");
@@ -1179,6 +1380,8 @@ export function createBatchServices(deps: ServiceDependencies) {
   return {
     createBatch,
     getBatch,
+    listBatchesByChannel,
+    requireBatchForChannel,
     listLedgerRows,
     claimBatchExecution,
     completeBatchExecution,

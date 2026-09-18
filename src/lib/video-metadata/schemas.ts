@@ -107,6 +107,19 @@ export const previewMetadataOutputSchema = z
   })
   .strict();
 
+/**
+ * RISK-12 fix (2026-09-18, project-owner-approved BREAKING BEHAVIORAL CHANGE): `dryRun`
+ * used to default to `false`, so omitting it from an `applyMetadata` call (via
+ * `/api/video-metadata/apply` or the MCP `apply` tool) performed a REAL YouTube write.
+ * This contradicted `docs/PROJECT_SPEC.md` §20 ("dryRun = true until the user explicitly
+ * confirms a live operation") and the fail-safe default already established for the
+ * newer batch pipeline (AC-DRYRUN-02). The default is now `true` -- omitting `dryRun`
+ * is a preview, never a write. Any caller (the MCP `apply` tool included) that relied on
+ * the old default to perform a live write without passing `dryRun: false` explicitly
+ * will now get a dry-run preview instead and MUST be updated to pass `dryRun: false`
+ * explicitly to keep writing live -- this is a deliberate, approved safety-first
+ * behavior change, not a bug fix that preserves prior behavior.
+ */
 export const applyMetadataInputSchema = z
   .object({
     credentialRef: credentialRefSchema,
@@ -114,7 +127,7 @@ export const applyMetadataInputSchema = z
     finalTitle: z.string().min(1),
     description: z.string().min(1),
     expectedChannelId: z.string().min(1).optional(),
-    dryRun: z.boolean().optional().default(false),
+    dryRun: z.boolean().optional().default(true),
   })
   .strict();
 

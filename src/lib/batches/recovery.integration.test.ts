@@ -89,6 +89,7 @@ function reopenServices(changeRegistry: Map<string, PendingChangeRecord>, freshF
   const batchStore = {
     createBatchWithLedger: (input: Parameters<typeof createBatchWithLedger>[0]) => createBatchWithLedger(input, dbHandle),
     getBatch: (id: string) => import("@/lib/db").then((m) => m.getStoredBatch(id, dbHandle)),
+    listBatchesByChannel: (channelId: string) => import("@/lib/db").then((m) => m.listStoredBatchesByChannel(channelId, dbHandle)),
     listLedgerRowsByBatch: (batchId: string) => import("@/lib/db").then((m) => m.listStoredLedgerRowsByBatch(batchId, dbHandle)),
     getLedgerRow: (id: string) => getStoredLedgerRow(id, dbHandle),
     claimBatchExecution: (batchId: string, runId: string) => claimBatchExecution(batchId, runId, dbHandle),
@@ -150,6 +151,7 @@ function approvedChange(id: string, videoId: string): PendingChangeRecord {
     field: "title",
     baselineValue: "",
     proposedValue: "New Value",
+    approvedValue: "New Value",
     approvalStatus: "approved",
     validationStatus: "valid",
     conflictStatus: "none",

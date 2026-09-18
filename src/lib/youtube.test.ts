@@ -70,6 +70,25 @@ test("getVideosMetadataContextBatch chunks requests into groups of at most 50 vi
   });
 });
 
+test("AC-QUOTA-01: the exact approved 75-video fixture issues 2 videos.list calls (chunks of 50 and 25), never 75", async () => {
+  const requestedBatches: string[][] = [];
+  const videoIds = Array.from({ length: 75 }, (_, i) => `v${i + 1}`);
+
+  const youtube = fakeYoutubeClient({
+    videosList: (async (args: { id?: string[] }) => {
+      const batch = args.id ?? [];
+      requestedBatches.push(batch);
+      return { data: { items: [] } };
+    }) as unknown as youtube_v3.Youtube["videos"]["list"],
+  });
+
+  await getVideosMetadataContextBatch(youtube, videoIds);
+
+  assert.equal(requestedBatches.length, 2, "ceil(75/50) = 2 calls");
+  assert.equal(requestedBatches[0]?.length, 50);
+  assert.equal(requestedBatches[1]?.length, 25);
+});
+
 test("getVideosMetadataContextBatch returns an empty array without calling the API for an empty id list", async () => {
   let calls = 0;
   const youtube = fakeYoutubeClient({

@@ -34,7 +34,8 @@ export type DomainErrorCode =
   | "change_approval_invalid"
   | "default_language_missing"
   | "backup_item_failed"
-  | "backup_infrastructure_unavailable";
+  | "backup_infrastructure_unavailable"
+  | "live_writes_disabled";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

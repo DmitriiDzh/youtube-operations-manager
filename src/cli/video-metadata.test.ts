@@ -560,6 +560,25 @@ test("CLI apply dry-run forwards dryRun=true and returns proposal", async () => 
   assert.equal(envelope.data.localizations.affected[0].locale, "es");
 });
 
+test("RISK-12 (2026-09-18): CLI apply omits dryRun from the request entirely when --dryRun is not passed, letting applyMetadataInputSchema's safe default (true) apply -- never sends an explicit dryRun: false", async () => {
+  let capturedInput: unknown;
+  const core = makeCoreStub();
+  core.applyMetadata = async (input: unknown) => {
+    capturedInput = input;
+    return makeApplyPayload(false);
+  };
+
+  const exitCode = await runCliCommand({
+    argv: ["apply", "--videoId", "v1", "--finalTitle", "Draft", "--description", "Draft desc", "--expectedChannelId", "UC_ACTIVE"],
+    core,
+    auth: makeAuthStub(),
+    writeStdout: () => {},
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal((capturedInput as { dryRun?: boolean }).dryRun, undefined, "dryRun must be omitted, not sent as an explicit false, when the flag is absent");
+});
+
 test("CLI apply keeps payload parity between dryRun and apply", async () => {
   const core = makeCoreStub();
   core.applyMetadata = async (input: unknown) => {
@@ -588,6 +607,8 @@ test("CLI apply keeps payload parity between dryRun and apply", async () => {
     writeStdout: (line) => dryRunStdout.push(line),
   });
 
+  // RISK-12 (2026-09-18): a live write now requires an explicit `--dryRun false` --
+  // omitting the flag entirely means dry-run, not live (see resolveDryRunFlag).
   const applyExit = await runCliCommand({
     argv: [
       "apply",
@@ -599,6 +620,8 @@ test("CLI apply keeps payload parity between dryRun and apply", async () => {
       "Draft desc",
       "--expectedChannelId",
       "UC_ACTIVE",
+      "--dryRun",
+      "false",
     ],
     core,
     auth: makeAuthStub(),

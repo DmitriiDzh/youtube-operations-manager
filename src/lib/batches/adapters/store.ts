@@ -11,6 +11,7 @@ import {
   getVideoExecutionLockHolder,
   listStoredAttemptsByBatch,
   listStoredAttemptsByLedgerRow,
+  listStoredBatchesByChannel,
   listStoredLedgerRowsByBatch,
   markBatchTerminal,
   recordAttemptResult,
@@ -23,6 +24,7 @@ export function createBatchStoreAdapter() {
   return {
     createBatchWithLedger,
     getBatch: getStoredBatch,
+    listBatchesByChannel: listStoredBatchesByChannel,
     listLedgerRowsByBatch: listStoredLedgerRowsByBatch,
     getLedgerRow: getStoredLedgerRow,
     claimBatchExecution,
@@ -61,6 +63,7 @@ export function createChangeSetStoreAdapter() {
         field: change.field,
         baselineValue: change.baselineValue,
         proposedValue: change.proposedValue,
+        approvedValue: change.approvedValue,
         approvalStatus: change.approvalStatus,
         validationStatus: change.validationStatus,
         conflictStatus: change.conflictStatus,

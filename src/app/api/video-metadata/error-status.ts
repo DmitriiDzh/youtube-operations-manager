@@ -28,6 +28,7 @@ const DOMAIN_ERROR_STATUS = {
   default_language_missing: 422,
   backup_item_failed: 422,
   backup_infrastructure_unavailable: 503,
+  live_writes_disabled: 503,
 } as const satisfies Partial<Record<DomainErrorCode, number>>;
 
 export function getVideoMetadataErrorStatus(code: DomainErrorCode) {

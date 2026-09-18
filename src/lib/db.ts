@@ -2,7 +2,8 @@ import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import path from "path";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 
 const rawClient = createClient({
   url: `file:${path.join(process.cwd(), "data", "playlist-manager.db")}`,
@@ -994,20 +995,14 @@ export async function bulkUpdateStoredChanges(
 // ---------------------------------------------------------------------------
 
 export type BatchStatus = "PENDING" | "RUNNING" | "COMPLETED" | "ABORTED";
-// Kept in sync by hand with src/lib/batches/contracts.ts's LedgerStatus -- this file only
-// persists the value, contracts.ts is the authoritative definition and state machine.
-export type LedgerStatus =
-  | "PENDING"
-  | "AWAITING_EXECUTION"
-  | "APPLYING"
-  | "SUCCESS"
-  | "FAILED"
-  | "CONFLICT"
-  | "UNKNOWN"
-  | "ABORTED_SYSTEMIC"
-  | "DRY_RUN_COMPLETE";
-export type AttemptPhase = "INTENDED" | "RESULT_RECORDED";
-export type AttemptOutcome = "SUCCESS" | "FAILED" | "UNKNOWN";
+// RISK-10 fix (2026-09-18): LedgerStatus/AttemptPhase/AttemptOutcome used to be a
+// hand-maintained copy here, which silently fell out of sync with
+// src/lib/batches/contracts.ts's definitions (see docs/TECHNICAL_DEBT.md RISK-10 for the
+// incident). Both files now import from the single canonical, import-free
+// src/lib/batches/ledger-state.ts instead -- this file (the domain-agnostic persistence
+// layer) imports only that leaf types module, never the batches domain's own
+// contracts.ts, preserving the existing pattern of db.ts depending on no domain module.
+export type { LedgerStatus, AttemptPhase, AttemptOutcome };
 
 export type StoredBatch = {
   id: string;
@@ -1131,6 +1126,19 @@ export async function getStoredBatch(
 ): Promise<StoredBatch | null> {
   const [row] = await database.select().from(batches).where(eq(batches.id, batchId));
   return row ? mapStoredBatch(row) : null;
+}
+
+/** Newest first -- the natural order for a "your batches" list. */
+export async function listStoredBatchesByChannel(
+  channelId: string,
+  database: AppDb = db
+): Promise<StoredBatch[]> {
+  const rows = await database
+    .select()
+    .from(batches)
+    .where(eq(batches.channelId, channelId))
+    .orderBy(desc(batches.createdAt));
+  return rows.map(mapStoredBatch);
 }
 
 export async function listStoredLedgerRowsByBatch(

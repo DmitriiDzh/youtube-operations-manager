@@ -84,6 +84,50 @@ test("AC-MERGE-03: unrelated snippet fields survive a localizations-only change"
   assert.equal(result.snippet.description, "Main Description");
 });
 
+test("RISK-11: documented read-only snippet fields are never echoed back into the write payload, even though the fresh fetch legitimately returns them", () => {
+  // Fixture shape matches a real videos.list(part=snippet) response, per
+  // developers.google.com/youtube/v3/docs/videos (verified 2026-09-18): publishedAt,
+  // channelId, channelTitle, thumbnails, liveBroadcastContent, and localized are ALL
+  // documented read-only sub-properties of snippet -- none may be sent back on write.
+  const fresh: FreshVideoContext = {
+    snippet: {
+      title: "Main Title",
+      description: "Main Description",
+      defaultLanguage: "en",
+      categoryId: "10",
+      tags: ["jazz", "cuba"],
+      defaultAudioLanguage: "es",
+      publishedAt: "2026-01-01T00:00:00.000Z",
+      channelId: "UC_TEST",
+      channelTitle: "Tropico Jazz",
+      thumbnails: { default: { url: "https://example.com/v1.jpg" } },
+      liveBroadcastContent: "none",
+      localized: { title: "Main Title", description: "Main Description" },
+    },
+    localizations: {},
+  };
+  const changes: PendingChange[] = [
+    { id: "c1", language: "en", field: "description", baselineValue: "Main Description", proposedValue: "New Description" },
+  ];
+
+  const result = buildSafeLocalizationsPayload(fresh, changes);
+
+  for (const readOnlyField of ["publishedAt", "channelId", "channelTitle", "thumbnails", "liveBroadcastContent", "localized"]) {
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(result.snippet, readOnlyField),
+      false,
+      `read-only field "${readOnlyField}" must never appear in the write payload`
+    );
+  }
+  // Writable fields still survive -- this is a whitelist, not a wholesale strip.
+  assert.equal(result.snippet.title, "Main Title");
+  assert.equal(result.snippet.description, "New Description");
+  assert.equal(result.snippet.categoryId, "10");
+  assert.deepEqual(result.snippet.tags, ["jazz", "cuba"]);
+  assert.equal(result.snippet.defaultAudioLanguage, "es");
+  assert.equal(result.snippet.defaultLanguage, "en");
+});
+
 test("AC-MULTI-01: three changes to one video merge into one payload, untouched fields survive", () => {
   const fresh: FreshVideoContext = {
     snippet: { title: "irrelevant", description: "irrelevant", defaultLanguage: "en" },

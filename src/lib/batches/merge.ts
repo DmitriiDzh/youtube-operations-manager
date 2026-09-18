@@ -10,6 +10,8 @@
 //     RISK-03-affected behavior, see docs/TECHNICAL_DEBT.md RISK-03)
 //   - AC-MERGE-01/02/03/04, AC-MULTI-01 (buildSafeLocalizationsPayload)
 
+import { pickWritableSnippetFields } from "@/lib/youtube";
+
 export type FreshVideoLocale = { title: string; description: string };
 
 export type FreshVideoContext = {
@@ -97,20 +99,28 @@ export type SafeLocalizationsPayload = {
 };
 
 /**
+ * RISK-11 fix (2026-09-18, extended repository-wide 2026-09-18): re-exported from
+ * `src/lib/youtube.ts`, the single canonical source, so every write path (this module,
+ * `src/lib/video-metadata/services.ts`) shares one definition instead of three
+ * independently-drifting copies. See that module's doc comment for the full rationale.
+ */
+export { WRITABLE_SNIPPET_FIELDS, pickWritableSnippetFields } from "@/lib/youtube";
+
+/**
  * AC-MERGE-01 (preserve untouched locales byte-for-byte), AC-MERGE-02 (built from the
  * FRESH fetch passed in, never a stale local mirror -- enforced by this function only
  * ever reading its `fresh` parameter, never touching any cache itself), AC-MERGE-03
  * (unrelated snippet fields like categoryId/tags/defaultAudioLanguage survive via the
- * initial spread), AC-MERGE-04 (caller's responsibility: only pass already-approved,
- * valid, non-conflicting changes in -- this function applies whatever it is given),
- * AC-MULTI-01 (multiple changes to one video merge into a single payload, one call).
+ * explicit whitelist copy below), AC-MERGE-04 (caller's responsibility: only pass
+ * already-approved, valid, non-conflicting changes in -- this function applies whatever
+ * it is given), AC-MULTI-01 (multiple changes to one video merge into a single payload,
+ * one call).
  */
 export function buildSafeLocalizationsPayload(
   fresh: FreshVideoContext,
   changes: PendingChange[]
 ): SafeLocalizationsPayload {
-  const snippet: Record<string, unknown> = { ...fresh.snippet };
-  delete snippet.localized; // read-only field YouTube echoes back, never sent on write
+  const snippet: Record<string, unknown> = pickWritableSnippetFields(fresh.snippet);
 
   const localizations: Record<string, FreshVideoLocale> = {};
   for (const [locale, value] of Object.entries(fresh.localizations)) {

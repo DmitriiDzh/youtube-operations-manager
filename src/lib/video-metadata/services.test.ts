@@ -349,8 +349,12 @@ test("applyMetadata dryRun and apply share the exact same proposed payload", asy
     expectedChannelId: "UC_ACTIVE",
   };
 
+  // RISK-12 (2026-09-18): dryRun now defaults to true, so the live case must request
+  // dryRun: false explicitly -- this test's own intent (compare dry-run vs. live
+  // payloads) is unchanged; only the means of requesting the live path changed, per the
+  // project owner's approved safety-first default flip (see applyMetadataInputSchema).
   const dryRunResult = await services.applyMetadata({ ...input, dryRun: true });
-  const applyResult = await services.applyMetadata(input);
+  const applyResult = await services.applyMetadata({ ...input, dryRun: false });
 
   assert.equal(dryRunResult.dryRun, true);
   assert.equal(applyResult.dryRun, false);
@@ -358,6 +362,32 @@ test("applyMetadata dryRun and apply share the exact same proposed payload", asy
   assert.deepEqual(dryRunResult.snippet.proposed, applyResult.snippet.proposed);
   assert.deepEqual(dryRunResult.localizations.proposed, applyResult.localizations.proposed);
   assert.equal(dryRunResult.targetLanguage, "es");
+});
+
+test("RISK-12 (2026-09-18, project-owner-approved safety-first default): omitting dryRun from applyMetadata is a preview, never a real write", async () => {
+  let applyCalls = 0;
+  const services = createVideoMetadataServices(
+    makeDeps({
+      youtubeApi: {
+        applyMetadataProposal: async () => {
+          applyCalls += 1;
+        },
+      },
+    })
+  );
+
+  const inputWithoutDryRun = {
+    credentialRef: { userId: "user-1" },
+    videoId: "video-1",
+    finalTitle: "New title",
+    description: "New description",
+    expectedChannelId: "UC_ACTIVE",
+  };
+
+  const result = await services.applyMetadata(inputWithoutDryRun);
+
+  assert.equal(result.dryRun, true, "omitting dryRun must default to a preview, not a live write");
+  assert.equal(applyCalls, 0, "omitting dryRun must never call the real YouTube write adapter");
 });
 
 test("applyMetadata preserves non-editorial snippet fields and non-target localizations", async () => {
@@ -378,6 +408,8 @@ test("applyMetadata preserves non-editorial snippet fields and non-target locali
     finalTitle: "Updated title",
     description: "Updated description",
     expectedChannelId: "UC_ACTIVE",
+    dryRun: false, // RISK-12 (2026-09-18): dryRun now defaults to true; this test's own
+    // intent (verify the real write's proposed payload) requires requesting it explicitly.
   });
 
   assert.equal(result.dryRun, false);
@@ -405,6 +437,62 @@ test("applyMetadata preserves non-editorial snippet fields and non-target locali
     title: "Original title EN",
     description: "Original description EN",
   });
+});
+
+test("RISK-11 (legacy single-item path, 2026-09-18): every documented read-only snippet field is stripped from the real videos.update request, not only 'localized'", async () => {
+  let capturedProposal: unknown;
+  const services = createVideoMetadataServices(
+    makeDeps({
+      youtubeApi: {
+        getVideoMetadataContext: async () => ({
+          snippet: {
+            title: "Original title",
+            description: "Original description",
+            categoryId: "22",
+            defaultLanguage: "es",
+            tags: ["youtube", "metadata"],
+            defaultAudioLanguage: "es",
+            // The other five documented read-only snippet sub-properties
+            // (developers.google.com/youtube/v3/docs/videos), exactly as a real
+            // videos.list(part=snippet) response would legitimately include them.
+            publishedAt: "2026-01-01T00:00:00.000Z",
+            channelId: "UC_TEST",
+            channelTitle: "Tropico Jazz",
+            thumbnails: { default: { url: "https://example.com/v1.jpg" } },
+            liveBroadcastContent: "none",
+            localized: { title: "No debería persistirse", description: "Campo read-only" },
+          },
+          localizations: { es: { title: "Título original", description: "Descripción original" } },
+        }),
+        applyMetadataProposal: async ({ proposal }) => {
+          capturedProposal = proposal;
+        },
+      },
+    })
+  );
+
+  const result = await services.applyMetadata({
+    credentialRef: { userId: "user-1" },
+    videoId: "video-1",
+    finalTitle: "Updated title",
+    description: "Updated description",
+    expectedChannelId: "UC_ACTIVE",
+    dryRun: false, // RISK-12 (2026-09-18): must request the real write explicitly now.
+  });
+
+  for (const readOnlyField of ["publishedAt", "channelId", "channelTitle", "thumbnails", "liveBroadcastContent", "localized"]) {
+    assert.equal(readOnlyField in result.snippet.proposed, false, `"${readOnlyField}" must never appear in the response's proposed snippet`);
+  }
+
+  const proposal = capturedProposal as { update: { snippet: Record<string, unknown> } };
+  for (const readOnlyField of ["publishedAt", "channelId", "channelTitle", "thumbnails", "liveBroadcastContent", "localized"]) {
+    assert.equal(readOnlyField in proposal.update.snippet, false, `"${readOnlyField}" must never reach the real videos.update request body`);
+  }
+  // Writable fields still survive -- this is a whitelist, not a wholesale strip.
+  assert.equal(proposal.update.snippet.title, "Updated title");
+  assert.equal(proposal.update.snippet.categoryId, "22");
+  assert.deepEqual(proposal.update.snippet.tags, ["youtube", "metadata"]);
+  assert.equal(proposal.update.snippet.defaultAudioLanguage, "es");
 });
 
 test("applyMetadata resolves target language from defaultLanguage or single localization fallback", async () => {

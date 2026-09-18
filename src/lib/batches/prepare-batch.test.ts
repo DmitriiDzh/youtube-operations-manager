@@ -56,6 +56,7 @@ function createFakeStore() {
     changes,
     locks,
     registerApprovedChange(entry: Partial<PendingChangeRecord> & { id: string; videoId: string }) {
+      const proposedValue = entry.proposedValue ?? "Proposed";
       changes.set(entry.id, {
         id: entry.id,
         videoId: entry.videoId,
@@ -64,7 +65,10 @@ function createFakeStore() {
         // Matches the default fresh fixture's empty localizations map below, so a test
         // that doesn't care about conflict detection doesn't accidentally trip it.
         baselineValue: entry.baselineValue ?? "",
-        proposedValue: entry.proposedValue ?? "Proposed",
+        proposedValue,
+        // Defaults to matching proposedValue ("approved and unedited since"); a test for
+        // AC-BATCH-03 sub-case (c) passes an explicit mismatched approvedValue.
+        approvedValue: entry.approvedValue !== undefined ? entry.approvedValue : proposedValue,
         approvalStatus: entry.approvalStatus ?? "approved",
         validationStatus: entry.validationStatus ?? "valid",
         conflictStatus: entry.conflictStatus ?? "none",
@@ -109,6 +113,9 @@ function createFakeStore() {
     },
     async getBatch(batchId: string) {
       return batches.get(batchId) ?? null;
+    },
+    async listBatchesByChannel(channelId: string) {
+      return [...batches.values()].filter((b) => b.channelId === channelId).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
     },
     async listLedgerRowsByBatch(batchId: string) {
       return [...ledgerRows.values()].filter((row) => row.batchId === batchId);
@@ -208,6 +215,7 @@ function createHarness(options: {
   guardrailFails?: boolean;
   backupHealthy?: boolean;
   backupFailsForVideoId?: string;
+  auditFailsForVideoId?: string;
 } = {}) {
   const store = createFakeStore();
   let counter = 0;
@@ -233,16 +241,23 @@ function createHarness(options: {
       },
     },
     youtubeApi: {
-      // fetchPreliminaryBatchContext deliberately not part of the service's own
-      // dependency contract -- nothing in services.ts calls it (reserved for future
-      // quota-aware batching work); fetchPreliminaryCalls below stays empty by
-      // construction, which is exactly what AC-MERGE-02 asserts.
       async fetchFreshVideoContext(args: { videoId: string }) {
         fetchFreshCalls.push(args.videoId);
         const fixture = options.freshByVideoId?.[args.videoId];
         return fixture === undefined
           ? { snippet: { title: "T", description: "D", defaultLanguage: "en" }, localizations: {} }
           : fixture;
+      },
+      // AC-QUOTA-01 (Slice 5): prepareBatchExecution now calls this once per batch,
+      // purely for an informational overview -- fetchPreliminaryCalls records each
+      // call's exact videoId chunk (<=50 ids) so AC-QUOTA-01's own test can assert call
+      // count/chunk size, while every other test in this file (predating this wiring)
+      // continues to assert its RESULT is never what conflict/merge/backup decisions are
+      // built from (that remains fetchFreshCalls' job, unchanged -- see AC-MERGE-02
+      // below).
+      async fetchPreliminaryBatchContext(args: { videoIds: string[] }) {
+        fetchPreliminaryCalls.push([...args.videoIds]);
+        return args.videoIds.map((videoId) => ({ videoId, defaultLanguage: "en" }));
       },
     },
     backup: {
@@ -257,7 +272,13 @@ function createHarness(options: {
         return { path: `/fake/${args.videoId}.json`, capturedAt: new Date().toISOString() };
       },
     },
-    audit: { async record() {} },
+    audit: {
+      async record(input: { videoId: string }) {
+        if (input.videoId === options.auditFailsForVideoId) {
+          throw new Error("simulated audit-store failure");
+        }
+      },
+    },
     clock: { async wait() {} },
     idGenerator: () => `id-${++counter}`,
     logger: { info() {}, error() {} },
@@ -364,6 +385,50 @@ test("AC-BATCH-03 (send-time re-check): a change revoked after batch creation bl
   assert.equal(harness.backupWrites.length, 0); // never reached backup -- blocked before it
 });
 
+test("AC-BATCH-03 sub-case (c) / AC-TIMEOUT-02 (independent-review finding, 2026-09-18): a change's proposedValue edited after approval, with approvalStatus left 'approved', blocks the write -- neither the stale nor the newly-edited value is ever sent", async () => {
+  const harness = createHarness();
+  const batch = await createApprovedBatch(
+    harness,
+    { channelId: "UC_TEST", dryRun: true, selections: [{ videoId: "v1", changeIds: ["c1"] }] },
+    { c1: { proposedValue: "Originally Approved Value" } }
+  );
+  // At this point c1 is approved with approvedValue === proposedValue === "Originally
+  // Approved Value" (createHarness's registerApprovedChange default). Now simulate an
+  // in-place content edit that leaves approvalStatus untouched -- approvalStatus alone
+  // would wrongly pass "approved"; only the approvedValue-vs-proposedValue mismatch this
+  // finding added can catch it.
+  harness.store.registerApprovedChange({
+    id: "c1",
+    videoId: "v1",
+    proposedValue: "Edited After Approval",
+    approvedValue: "Originally Approved Value",
+    approvalStatus: "approved",
+  });
+
+  const result = await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } });
+
+  assert.equal(result.rows[0].status, "FAILED");
+  assert.equal(harness.backupWrites.length, 0, "must never reach backup/payload construction with either the stale or the edited value");
+});
+
+test("independent-review finding (2026-09-18): a failure AFTER acquireVideoLock succeeds (e.g. an audit-store outage) still releases the video lock, never leaving it held under a terminal FAILED row", async () => {
+  const harness = createHarness({ auditFailsForVideoId: "v1" });
+  const batch = await createApprovedBatch(harness, {
+    channelId: "UC_TEST",
+    dryRun: true,
+    selections: [{ videoId: "v1", changeIds: ["c1"] }],
+  });
+
+  const result = await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } });
+
+  assert.equal(result.rows[0].status, "FAILED");
+  assert.equal(
+    harness.store.locks.has("v1"),
+    false,
+    "the video lock must be released, not leaked, when a step after acquireVideoLock throws"
+  );
+});
+
 test("AC-CONFLICT-01 / AC-LEDGER-04 (service level): a baseline mismatch against the fresh fetch blocks with CONFLICT", async () => {
   const harness = createHarness({
     freshByVideoId: {
@@ -402,8 +467,39 @@ test("AC-MERGE-02 (RISK-03): the payload is built from fetchFreshVideoContext, n
   const result = await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } });
 
   assert.equal(result.rows[0].status, "DRY_RUN_COMPLETE");
-  assert.equal(harness.fetchPreliminaryCalls.length, 0); // Slice 2's per-video pipeline never calls the batched pass at all
+  // Slice 5 (AC-QUOTA-01): the preliminary batched pass now runs once per batch, but its
+  // result shape (videoId/defaultLanguage only, per this harness's own fixture above)
+  // cannot structurally supply a title/description/localizations value at all -- the
+  // per-video merge/conflict decision below is still built exclusively from
+  // fetchFreshVideoContext's (deliberately different) fixture, proving the preliminary
+  // pass is informational-only, never a substitute for the mandatory per-video fetch.
+  assert.equal(harness.fetchPreliminaryCalls.length, 1);
+  assert.deepEqual(harness.fetchPreliminaryCalls[0], ["v1"]);
   assert.equal(harness.fetchFreshCalls.length, 1);
+});
+
+test("AC-QUOTA-01: a 75-video batch dispatches the preliminary pass as a single service-level call (the adapter chunks it into <=50-id videos.list requests internally, proven separately in src/lib/youtube.test.ts), never one videos.list-equivalent call per video -- while the mandatory per-video fresh fetch still runs once per video", async () => {
+  const harness = createHarness();
+  const videoIds = Array.from({ length: 75 }, (_, i) => `v${i + 1}`);
+  const batch = await createApprovedBatch(harness, {
+    channelId: "UC_TEST",
+    dryRun: true,
+    selections: videoIds.map((videoId) => ({ videoId, changeIds: [`c-${videoId}`] })),
+  });
+
+  await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } });
+
+  // services.ts calls the youtubeApi.fetchPreliminaryBatchContext dependency exactly
+  // once per batch, with the full videoId list -- the real adapter
+  // (src/lib/batches/adapters/youtube-api.ts) delegates this to
+  // getVideosMetadataContextBatch, which internally issues ceil(75/50)=2 videos.list
+  // calls (already proven generically for N=120 in src/lib/youtube.test.ts's
+  // "chunks requests into groups of at most 50 video ids").
+  assert.equal(harness.fetchPreliminaryCalls.length, 1, "the service layer dispatches one logical preliminary pass per batch, not one per video");
+  assert.equal(harness.fetchPreliminaryCalls[0].length, 75);
+  // The mandatory per-video fresh fetch is completely unaffected by the preliminary
+  // pass -- still exactly one call per video (RISK-03/AC-MERGE-02: never batched away).
+  assert.equal(harness.fetchFreshCalls.length, 75);
 });
 
 test("AC-BACKUP-04 (service level): backup infrastructure down halts the whole batch before any per-video work", async () => {

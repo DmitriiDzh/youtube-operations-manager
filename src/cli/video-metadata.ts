@@ -148,6 +148,24 @@ export function getCredentialRef(flags: Record<string, string | boolean>): Crede
   return null;
 }
 
+/**
+ * RISK-12 fix (2026-09-18): `--dryRun` used to be read as `flags.dryRun === true`,
+ * which sent an EXPLICIT `dryRun: false` to `applyMetadata` whenever the flag was
+ * simply omitted (the CLI's own default was live, independent of and unprotected by
+ * `applyMetadataInputSchema`'s own default, since an explicit `false` always overrides
+ * a schema default). Now: omitting `--dryRun` entirely omits the field from the
+ * request, so the schema's own safe default (`true`, a preview) applies; `--dryRun`
+ * alone means `true` (preview); `--dryRun false` is the only way to request a real
+ * write, an explicit, deliberate flag value rather than an accidental default.
+ */
+export function resolveDryRunFlag(flags: Record<string, string | boolean>): boolean | undefined {
+  const raw = flags.dryRun;
+  if (raw === undefined) return undefined;
+  if (typeof raw === "boolean") return raw;
+  if (raw.toLowerCase() === "false") return false;
+  return true;
+}
+
 export function requiredStringFlag(
   flags: Record<string, string | boolean>,
   key: string
@@ -408,13 +426,17 @@ export async function runCliCommand(args: {
       return 0;
     }
 
+    const dryRun = resolveDryRunFlag(parsedArgs.flags);
     const result = await core.applyMetadata({
       credentialRef,
       videoId: requiredStringFlag(parsedArgs.flags, "videoId"),
       finalTitle: requiredStringFlag(parsedArgs.flags, "finalTitle"),
       description: requiredStringFlag(parsedArgs.flags, "description"),
       expectedChannelId: requiredStringFlag(parsedArgs.flags, "expectedChannelId"),
-      dryRun: parsedArgs.flags.dryRun === true,
+      // Omitted entirely (not sent as `false`) when the flag itself was omitted, so
+      // applyMetadataInputSchema's own safe default (true) applies -- see
+      // resolveDryRunFlag's doc comment (RISK-12).
+      ...(dryRun !== undefined ? { dryRun } : {}),
     });
 
     writeStdout(serializeSuccess(result));
