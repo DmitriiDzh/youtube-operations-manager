@@ -50,7 +50,10 @@ test("buildWorkbook produces a Videos sheet with one row per video and canonical
   const { buffer } = await builder.buildWorkbook({ channel, videos });
 
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(buffer);
+  // Pre-existing @types/node vs. exceljs Buffer-generic mismatch (same as
+  // changesets/import.ts) -- cast is data-safe, load() only reads bytes.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await workbook.xlsx.load(buffer as any);
 
   const videosSheet = workbook.getWorksheet("Videos");
   assert.ok(videosSheet);
@@ -71,7 +74,8 @@ test("buildWorkbook produces a Localizations sheet with a row per video x channe
   const { buffer, rowCount } = await builder.buildWorkbook({ channel, videos });
 
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(buffer);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await workbook.xlsx.load(buffer as any);
 
   const localizationsSheet = workbook.getWorksheet("Localizations");
   assert.ok(localizationsSheet);
@@ -91,7 +95,8 @@ test("buildWorkbook scopes to the exact videos passed in, regardless of full cha
   const { buffer } = await builder.buildWorkbook({ channel, videos: [videos[0]!] });
 
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(buffer);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await workbook.xlsx.load(buffer as any);
 
   const videosSheet = workbook.getWorksheet("Videos");
   assert.equal(videosSheet!.rowCount, 2); // header + 1 video
