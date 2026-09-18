@@ -22,7 +22,19 @@ export type DomainErrorCode =
   | "WRITE_CHANNEL_REQUIRED"
   | "WRITE_CHANNEL_MISMATCH"
   | "WRITE_CHANNEL_UNRESOLVED"
-  | "change_not_approvable";
+  | "change_not_approvable"
+  | "batch_invalid_selection"
+  | "batch_not_found"
+  | "batch_already_running"
+  | "ledger_row_not_found"
+  | "ledger_invalid_transition"
+  | "video_locked"
+  | "attempt_already_resolved"
+  | "attempt_already_active"
+  | "change_approval_invalid"
+  | "default_language_missing"
+  | "backup_item_failed"
+  | "backup_infrastructure_unavailable";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

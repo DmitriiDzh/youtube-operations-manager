@@ -16,6 +16,18 @@ const DOMAIN_ERROR_STATUS = {
   WRITE_CHANNEL_UNRESOLVED: 422,
   WRITE_CHANNEL_MISMATCH: 409,
   change_not_approvable: 409,
+  batch_invalid_selection: 400,
+  batch_not_found: 404,
+  batch_already_running: 409,
+  ledger_row_not_found: 404,
+  ledger_invalid_transition: 409,
+  video_locked: 409,
+  attempt_already_resolved: 409,
+  attempt_already_active: 409,
+  change_approval_invalid: 409,
+  default_language_missing: 422,
+  backup_item_failed: 422,
+  backup_infrastructure_unavailable: 503,
 } as const satisfies Partial<Record<DomainErrorCode, number>>;
 
 export function getVideoMetadataErrorStatus(code: DomainErrorCode) {
