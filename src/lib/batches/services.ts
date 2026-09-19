@@ -1242,6 +1242,26 @@ export function createBatchServices(deps: ServiceDependencies) {
     const batch = await requireBatch(input.batchId);
     const credentials = await deps.authResolver.resolve({ credentialRef: input.credentialRef, requiredScopes: [YOUTUBE_WRITE_SCOPE] });
 
+    // RISK-28 (docs/TECHNICAL_DEBT.md): prepareBatchExecution's own assertWriteChannel call
+    // above only runs when this batch was still PENDING (a wholly-fresh execution). Resuming a
+    // batch already RUNNING (after a crash/restart, or a new process picking it up later)
+    // skipped straight past that check with the credentials resolved here -- if the local OAuth
+    // session had since been reauthenticated to a different YouTube channel, writes would
+    // proceed against the wrong channel instead of failing closed (AGENTS.md §G). Re-run the
+    // exact same guardrail here, against the exact credentials this call will actually use for
+    // every row below, regardless of whether the batch was PENDING or already RUNNING.
+    try {
+      await deps.writeContext.assertWriteChannel({
+        credentialRef: input.credentialRef,
+        credentials,
+        expectedChannelId: input.expectedChannelId ?? batch.channelId,
+      });
+    } catch (error) {
+      await batchStore.markBatchTerminal(input.batchId, "ABORTED");
+      logger.error({ event: "batch.aborted_systemic", context: { batchId: input.batchId, reason: "identity_guardrail" } });
+      throw error;
+    }
+
     const rows = await batchStore.listLedgerRowsByBatch(input.batchId);
     const results: ExecutionResult[] = new Array(rows.length);
     let haltedSystemically = false;
@@ -1249,8 +1269,24 @@ export function createBatchServices(deps: ServiceDependencies) {
     async function processRow(row: StoredLedgerRowRecord, index: number): Promise<void> {
       if (haltedSystemically) {
         if (row.status === "PENDING" || row.status === "AWAITING_EXECUTION") {
-          await batchStore.transitionLedgerRowStatus({ ledgerRowId: row.id, from: [row.status], to: "ABORTED_SYSTEMIC" });
-          results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: "ABORTED_SYSTEMIC" };
+          // RISK-31 (docs/TECHNICAL_DEBT.md): `row` is the in-memory snapshot taken before this
+          // async call; a concurrent worker (batch.concurrency up to 5) may have already
+          // changed this row's real persisted status, making the guarded UPDATE below a no-op.
+          // The reported outcome must reflect what was *actually persisted*, not be assumed --
+          // otherwise the returned summary drifts from the ledger it is supposed to describe.
+          const transitioned = await batchStore.transitionLedgerRowStatus({
+            ledgerRowId: row.id,
+            from: [row.status],
+            to: "ABORTED_SYSTEMIC",
+          });
+          if (transitioned) {
+            results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: "ABORTED_SYSTEMIC" };
+          } else {
+            const current = await batchStore.getLedgerRow(row.id);
+            results[index] = current
+              ? { ledgerRowId: row.id, videoId: row.videoId, status: current.status, detail: current.error ?? undefined }
+              : { ledgerRowId: row.id, videoId: row.videoId, status: "ABORTED_SYSTEMIC", detail: "ledger row disappeared" };
+          }
         } else {
           results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: row.status, detail: row.error ?? undefined };
         }

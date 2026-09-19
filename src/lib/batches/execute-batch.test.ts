@@ -214,6 +214,9 @@ type Fixture = { snippet: Record<string, unknown>; localizations: Record<string,
 function createHarness(options: {
   freshSequenceByVideoId?: Record<string, Array<Fixture | null>>;
   backupHealthy?: boolean;
+  assertWriteChannel?: (args: {
+    expectedChannelId?: string;
+  }) => Promise<{ expectedChannelId: string; shouldPersistSelection: boolean; userId: string | null }>;
 } = {}) {
   const store = createFakeStore();
   let counter = 0;
@@ -229,9 +232,9 @@ function createHarness(options: {
       },
     },
     writeContext: {
-      async assertWriteChannel(args) {
-        return { expectedChannelId: args.expectedChannelId ?? "UC_TEST", shouldPersistSelection: false, userId: "user-1" };
-      },
+      assertWriteChannel:
+        options.assertWriteChannel ??
+        (async (args) => ({ expectedChannelId: args.expectedChannelId ?? "UC_TEST", shouldPersistSelection: false, userId: "user-1" })),
     },
     youtubeApi: {
       async fetchFreshVideoContext(args: { videoId: string }) {
@@ -630,4 +633,45 @@ test("resolveUnknownLedgerRow rejects a row that is not UNKNOWN", async () => {
     () => harness.services.resolveUnknownLedgerRow({ ledgerRowId: rowId, credentialRef: { userId: "user-1" } }),
     (error: unknown) => error instanceof DomainError && error.code === "ledger_invalid_transition"
   );
+});
+
+// RISK-28 (docs/TECHNICAL_DEBT.md): executeBatch previously only re-checked the write-channel
+// identity guardrail via prepareBatchExecution, which only runs when the batch is still
+// PENDING. Resuming a batch already RUNNING (e.g. a new process picking it up after a crash)
+// skipped that check entirely. This simulates exactly that: claimBatchExecution flips the
+// batch straight to RUNNING without ever calling assertWriteChannel (as a prior process would
+// have already done before crashing), then executeBatch is called against it -- the guardrail
+// must still run and fail closed if the currently-active credentials resolve to a different
+// channel than the batch expects.
+test("AGENTS.md §G / RISK-28: resuming a RUNNING batch still enforces the write-channel guardrail", async () => {
+  let assertWriteChannelCalls = 0;
+  const harness = createHarness({
+    assertWriteChannel: async (args) => {
+      assertWriteChannelCalls++;
+      if (args.expectedChannelId !== "UC_TEST") {
+        throw new DomainError({
+          code: "WRITE_CHANNEL_MISMATCH",
+          message: "Active credentials do not match the batch's expected channel",
+        });
+      }
+      return { expectedChannelId: args.expectedChannelId, shouldPersistSelection: false, userId: "user-1" };
+    },
+  });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+
+  // Simulate "already RUNNING, resumed by a new process" without ever going through
+  // prepareBatchExecution's own guardrail call.
+  await harness.store.claimBatchExecution(batch.id, "prior-run");
+
+  const executor = scriptedExecutor([]); // must never be reached
+  await assert.rejects(
+    () => harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, expectedChannelId: "UC_OTHER", executor }),
+    (error: unknown) => error instanceof DomainError && error.code === "WRITE_CHANNEL_MISMATCH"
+  );
+
+  assert.equal(assertWriteChannelCalls, 1, "the guardrail must actually run on resume, not be silently skipped");
+  const row = (await harness.services.listLedgerRows(batch.id))[0];
+  assert.equal(row.status, "PENDING", "no row should have been touched before the guardrail check");
+  const finalBatch = await harness.store.getBatch(batch.id);
+  assert.equal(finalBatch?.status, "ABORTED");
 });

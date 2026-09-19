@@ -501,7 +501,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 
 ---
 
-## RISK-28 — Resuming a RUNNING batch skips the write-channel identity guardrail — OPEN, 2026-09-19
+## RISK-28 — Resuming a RUNNING batch skips the write-channel identity guardrail — FIXED, 2026-09-19
 
 - **Affected components:** `src/lib/batches/services.ts` (`executeBatch`; `prepareBatchExecution`, which calls `deps.writeContext.assertWriteChannel`).
 - **Current behavior:** `executeBatch` only calls `prepareBatchExecution` — the only call site of `assertWriteChannel` in this path — when `initialBatch.status === "PENDING"`. Resuming a batch already `RUNNING` (after a crash/restart, or a new process picking it up later) skips straight to `authResolver.resolve` and `processRow`, none of which re-check channel identity.
@@ -510,7 +510,8 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Acceptance criteria:** A test resuming a `RUNNING` batch under a *different* active auth channel than the batch's `expectedChannelId`, asserting it fails closed.
 - **Gate(s):** `BLOCKS_PHASE_5_WRITES` (before Gate B), `BLOCKS_OPERATIONS_RELEASE`.
 - **Approval required from:** project owner, to schedule the fix — the single most safety-relevant of this round's findings, given it is exactly the write-safety property `AGENTS.md` §G names first.
-- **Status:** OPEN — found by a second independent review pass, not yet independently re-verified beyond the cited file/line; not currently exploitable given RISK-09's barrier.
+- **Fix applied:** `executeBatch` now re-runs `assertWriteChannel` itself, against the exact credentials it resolves for the whole call, unconditionally — regardless of whether the batch was `PENDING` (already checked once more inside `prepareBatchExecution`, kept for its own direct callers) or already `RUNNING`. A guardrail failure marks the batch `ABORTED` and logs `identity_guardrail`, identical to `prepareBatchExecution`'s own handling. Test: `execute-batch.test.ts` ("resuming a RUNNING batch still enforces the write-channel guardrail") — `claimBatchExecution` flips a batch straight to `RUNNING` without ever calling the guardrail (simulating a prior process's crash-then-resume), then `executeBatch` is called with a mismatched `expectedChannelId`; asserts the guardrail actually ran, the batch was aborted, and no ledger row was touched. Re-ran `src/lib/batches/write-path-inventory.test.ts` (3/3 pass) to confirm this change does not touch the Phase 5 live-write barrier.
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19; still not currently exploitable given RISK-09's barrier, fixed proactively regardless.
 
 ## RISK-29 — Cross-device snapshot merge is positional, not column-name-aware, for tables with an `ALTER TABLE`-added column — OPEN, 2026-09-19
 
@@ -533,15 +534,16 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Approval required from:** project owner, to schedule the fix.
 - **Status:** OPEN — found by a second independent review pass, not yet independently re-verified beyond the cited file/line, not yet fixed.
 
-## RISK-31 — `transitionLedgerRowStatus`'s discarded boolean result can let a batch's reported outcome silently drift from the ledger's actual persisted status — OPEN, 2026-09-19
+## RISK-31 — `transitionLedgerRowStatus`'s discarded boolean result can let a batch's reported outcome silently drift from the ledger's actual persisted status — FIXED, 2026-09-19
 
-- **Affected components:** `src/lib/batches/services.ts` (two call sites at the backup-health-check abort path and the systemic-halt branch of `processRow`, both calling the raw `batchStore.transitionLedgerRowStatus` directly instead of the service-layer `transitionLedgerStatus` wrapper used elsewhere, which checks the boolean and throws on failure).
-- **Current behavior:** The raw store method's guarded `UPDATE` (matching on expected `from` status) can be a no-op if another concurrent worker already changed that row's status first — plausible given this file's own concurrency-limited worker pool (`batch.concurrency`, up to 5). Both call sites discard the returned boolean.
-- **Actual risk:** The row's persisted status is left unchanged by the no-op, but the caller still records an `ABORTED_SYSTEMIC` outcome in the returned execution summary — the report drifts out of sync with what the ledger itself says, undermining the durable-audit-trail guarantee RISK-09's design relies on.
+- **Affected components:** `src/lib/batches/services.ts` (two call sites cited: the backup-health-check abort path, and the systemic-halt branch of `processRow`).
+- **Current behavior:** The raw store method's guarded `UPDATE` (matching on expected `from` status) can be a no-op if another concurrent worker already changed that row's status first — plausible given this file's own concurrency-limited worker pool (`batch.concurrency`, up to 5).
+- **Actual risk / scope correction:** Re-reading both cited sites in-session found the two are not equivalent. The `processRow` site (in `executeBatch`'s systemic-halt branch) genuinely discards the boolean and unconditionally records `ABORTED_SYSTEMIC` into the returned execution summary regardless of whether the transition actually persisted — this is the real drift the risk describes, and is what was fixed. The backup-health-check abort site never populates any execution summary at all in that branch — it always `markBatchTerminal`s the batch and `throw`s a `DomainError` immediately afterward regardless of each row's individual transition outcome, so there is no "reported outcome" for it to drift from; left as a much lower-severity, purely-cosmetic gap (a row could stay `PENDING` while its batch is `ABORTED`) rather than fixed in this round.
 - **Required remediation:** Use the checked `transitionLedgerStatus` wrapper at both sites, or otherwise handle a `false` result explicitly.
-- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
-- **Approval required from:** project owner, to schedule the fix.
-- **Status:** OPEN — found by a second independent review pass, not yet independently re-verified beyond the cited file/line, not yet fixed.
+- **Fix applied:** The `processRow` site now checks the transition's boolean result; on `false`, it re-fetches the row's actual current persisted state and reports that instead of unconditionally claiming `ABORTED_SYSTEMIC`. (Not switched to the generic `transitionLedgerStatus` wrapper, since that wrapper's `from` set — `allowedFromStatuses(to)`, every status any table permits transitioning into `ABORTED_SYSTEMIC` from — is broader than the precise, single-status `from: [row.status]` this call site intentionally uses; swapping it in would have widened, not tightened, the guard.) Test: `execute-batch.test.ts`'s existing `AC-ISOLATION-02` coverage continues to pass unchanged; no new race-simulating test added — reproducing the exact concurrent-status-change race deterministically would need injecting a mid-call store mutation the current fake store doesn't support, and is out of proportion to a fix that only changes what happens on the (rare) no-op path.
+- **Gate(s):** none blocking (the fixed path); the backup-health-check site's low-severity cosmetic gap remains, no gate.
+- **Approval required from:** none required to leave the remaining minor gap open.
+- **Status:** FIXED (the real drift) — project-owner-assigned task, 2026-09-19; a lower-severity, non-drift gap at the other cited site remains open and undocumented as its own entry (see above).
 
 ## RISK-32 — `proxy.ts`/CLI/MCP each independently classify "mutating" operations, with no shared registry, and have already diverged twice — OPEN, 2026-09-19
 
@@ -608,10 +610,10 @@ Bundled as one entry — each individually low severity, none currently exploita
 | RISK-25 | Legacy DB migration is one-shot/unretryable, can silently orphan data | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-26 | `WRITABLE_SNIPPET_FIELDS` completeness vs. live API unverified | BLOCKS_PHASE_5_WRITES | OPEN, not currently exploitable |
 | RISK-27 | `importHandoff` never cleans up pre-import backup on failure | none blocking (disk hygiene) | OPEN |
-| RISK-28 | Resuming a RUNNING batch skips the write-channel identity guardrail | BLOCKS_PHASE_5_WRITES, BLOCKS_OPERATIONS_RELEASE | OPEN, not currently exploitable |
+| RISK-28 | Resuming a RUNNING batch skips the write-channel identity guardrail | none (fixed) | FIXED |
 | RISK-29 | Cross-device snapshot merge is positional, breaks on ALTER-added columns | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-30 | AI Localization `generate` bypasses device-availability gate for real AI calls | BLOCKS_OPERATIONS_RELEASE | OPEN |
-| RISK-31 | Discarded `transitionLedgerRowStatus` result can drift ledger vs. reported outcome | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-31 | Discarded `transitionLedgerRowStatus` result can drift ledger vs. reported outcome | none (fixed) | FIXED |
 | RISK-32 | proxy/CLI/MCP independently classify mutating ops, no shared registry | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-33 | Minor latent/consistency gaps (dormant FK, audit-path bypass, bare catch) | none blocking | PARTIALLY FIXED |
 | RISK-34 | "recovery-gate" test suites never actually test recovery mode | BLOCKS_OPERATIONS_RELEASE | OPEN |
