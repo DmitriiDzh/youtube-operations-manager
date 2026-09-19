@@ -4,7 +4,14 @@ import { getServerSession } from "next-auth";
 import { NextRequest, NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { importHandoff } from "@/lib/device-handoff";
-import { appDataPaths, rawSqlClient, resolveSnapshotsDir, resolveWorkingDir, deviceHandoffErrorResponse } from "../shared";
+import {
+  appDataPaths,
+  rawSqlClient,
+  resolveSnapshotsDir,
+  resolveWorkingDir,
+  deviceHandoffErrorResponse,
+  isValidSnapshotId,
+} from "../shared";
 
 /**
  * "Continue work on this device / Import handoff" (task §3E). Body: { snapshotId }.
@@ -28,6 +35,12 @@ export async function POST(request: NextRequest) {
   if (typeof snapshotId !== "string" || snapshotId.length === 0) {
     return NextResponse.json(
       { error: "invalid_request", message: "snapshotId is required" },
+      { status: 400 }
+    );
+  }
+  if (!isValidSnapshotId(snapshotId)) {
+    return NextResponse.json(
+      { error: "invalid_request", message: "snapshotId must be a UUID" },
       { status: 400 }
     );
   }

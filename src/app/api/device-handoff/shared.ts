@@ -20,6 +20,15 @@ export function resolveWorkingDir(): string {
   return path.join(appDataPaths.appDataDir, "import-work");
 }
 
+// RISK-18 (docs/TECHNICAL_DEBT.md): every real snapshot id is a `randomUUID()`
+// (src/lib/snapshot/services.ts). A caller must reject anything else *before* joining it into a
+// filesystem path -- otherwise a value like "../../../../some/other/dir" resolves outside the
+// intended snapshots directory.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function isValidSnapshotId(value: unknown): value is string {
+  return typeof value === "string" && UUID_RE.test(value);
+}
+
 export { bootstrapConfigStore, rawSqlClient, appDataPaths, SCHEMA_CURRENT_VERSION };
 
 const ERROR_STATUS: Record<string, number> = {

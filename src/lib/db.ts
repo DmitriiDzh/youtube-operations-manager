@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "fs";
+import { chmodSync, existsSync, mkdirSync } from "fs";
 import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
@@ -26,6 +26,12 @@ export { appPaths as appDataPaths };
 // The local libSQL/SQLite driver does not create intermediate directories itself -- ensure
 // the app-data directory exists before the client ever tries to open a file inside it.
 mkdirSync(appPaths.appDataDir, { recursive: true });
+// RISK-24 (docs/TECHNICAL_DEBT.md): this directory holds the DB file that stores plaintext
+// OAuth tokens (RISK-07's accepted tradeoff assumes directory-level protection). Previously
+// this chmod only happened as a side effect of src/lib/atomic-json-file's CLI-auth-only writes
+// -- a Web-UI-only install (no CLI login ever run) never got it. Apply it unconditionally here,
+// on every boot, matching the same 0700 mode atomic-json-file already uses for the same reason.
+chmodSync(appPaths.appDataDir, 0o700);
 
 // Captured *before* `createClient()` below -- verified empirically that `@libsql/client`'s
 // `createClient()` synchronously creates an empty file at the given path as a side effect of

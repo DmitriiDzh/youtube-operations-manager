@@ -394,7 +394,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 
 ---
 
-## RISK-18 — Device-handoff import: unvalidated `snapshotId` path traversal — CONFIRMED, 2026-09-19
+## RISK-18 — Device-handoff import: unvalidated `snapshotId` path traversal — FIXED, 2026-09-19
 
 - **Affected components:** `src/app/api/device-handoff/import/route.ts` (`POST`, line ~43: `path.join(snapshotsDir, snapshotId)`).
 - **Current behavior:** The route only checks that the client-supplied `snapshotId` is a non-empty string, then joins it directly into a filesystem path with no traversal/format validation. Every real snapshot id is an internally-generated `randomUUID()` (`src/lib/snapshot/services.ts`) — nothing in the chain (`resolveSnapshotsDir`, `verifySnapshotForImport`, `importHandoff`) checks the incoming id's shape.
@@ -403,7 +403,8 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Acceptance criteria:** A test asserting a `snapshotId` containing `../`, an absolute path, or any non-UUID shape is rejected before any filesystem access.
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`, `BLOCKS_NETWORK_DEPLOYMENT`.
 - **Approval required from:** project owner, to schedule the fix as its own task (out of scope for the task that discovered it).
-- **Status:** OPEN — newly discovered by independent review, confirmed in-session; not yet fixed.
+- **Fix applied:** `isValidSnapshotId` (`src/app/api/device-handoff/shared.ts`) rejects any `snapshotId` not matching `randomUUID()`'s exact shape before the route ever reaches `path.join`; the import route now calls it. Tests: `src/app/api/device-handoff/shared.test.ts` (traversal string, absolute path, a UUID embedded inside a longer traversal string, non-string, empty string — all rejected; a real UUID accepted).
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19 ("Начни с 1. Отработай найденные риски").
 
 ## RISK-19 — `readSchemaVersion` fails open on any read error, not only "table missing" — OPEN, 2026-09-19
 
@@ -455,7 +456,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Approval required from:** none required to leave open; project owner if a rename is scheduled.
 - **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, latent (no known active trigger).
 
-## RISK-24 — App-data directory no longer locked to `0700` on every boot for Web-UI-only installs — OPEN, 2026-09-19
+## RISK-24 — App-data directory no longer locked to `0700` on every boot for Web-UI-only installs — FIXED, 2026-09-19
 
 - **Affected components:** `src/lib/db.ts` (unconditional `mkdirSync(appPaths.appDataDir, { recursive: true })` at module load).
 - **Current behavior:** On `main`, `ensureDataDir` (`cli-auth/storage.ts`) did `mkdir` + `chmod(dataDir, 0o700)` on the directory holding the DB file. On this branch, that `chmod` only happens as a side effect of `writeJsonFileAtomic` (used for `auth-context.json`/`bootstrap-config.json`), reached only via CLI-auth flows — confirmed via grep that no file under `src/app/` (the Web/NextAuth login path) references cli-auth at all.
@@ -463,7 +464,8 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Required remediation:** Apply the same `chmod(appDataDir, 0o700)` unconditionally in `db.ts`'s own directory-creation path, not only as an incidental side effect of an unrelated CLI-only write helper.
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`, `BLOCKS_NETWORK_DEPLOYMENT` — directly weakens RISK-07's stated mitigation.
 - **Approval required from:** project owner, to schedule the fix.
-- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, not yet fixed.
+- **Fix applied:** `chmodSync(appPaths.appDataDir, 0o700)` added unconditionally right after `mkdirSync` in `src/lib/db.ts`, independent of any CLI-auth code path. Test: `src/lib/db.dir-permissions.test.ts` (POSIX only — Windows has no equivalent permission-bits concept; skipped there, not silently claimed).
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
 
 ## RISK-25 — Legacy database migration is one-shot and unretryable; a mid-copy failure permanently and silently orphans the operator's original data — OPEN, 2026-09-19
 
@@ -594,13 +596,13 @@ Bundled as one entry — each individually low severity, none currently exploita
 | RISK-15 | AI Connections encryption key has no rotation/backup procedure | DEFERRED | OPEN |
 | RISK-16 | Restricted recovery mode has no in-app resolution path (needs RISK-04) | DEFERRED, BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-17 | Cross-platform persistence validated on Windows only, not macOS | BLOCKS_OPERATIONS_RELEASE | OPEN |
-| RISK-18 | Device-handoff import: unvalidated `snapshotId` path traversal | BLOCKS_OPERATIONS_RELEASE, BLOCKS_NETWORK_DEPLOYMENT | OPEN, CONFIRMED |
+| RISK-18 | Device-handoff import: unvalidated `snapshotId` path traversal | none (fixed) | FIXED |
 | RISK-19 | `readSchemaVersion` fails open on any read error | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-20 | Boot-time schema migration never acquires the operation lock | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-21 | Operation-lock misattributes ownership when the lock table is missing | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-22 | `writeJsonFileAtomic` has no Windows EBUSY/EPERM retry | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-23 | `createActiveAuthStorage` parameter meaning changed with no type signal | none blocking yet (latent) | OPEN |
-| RISK-24 | App-data directory no longer locked to 0700 for Web-UI-only installs | BLOCKS_OPERATIONS_RELEASE, BLOCKS_NETWORK_DEPLOYMENT | OPEN |
+| RISK-24 | App-data directory no longer locked to 0700 for Web-UI-only installs | none (fixed) | FIXED |
 | RISK-25 | Legacy DB migration is one-shot/unretryable, can silently orphan data | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-26 | `WRITABLE_SNIPPET_FIELDS` completeness vs. live API unverified | BLOCKS_PHASE_5_WRITES | OPEN, not currently exploitable |
 | RISK-27 | `importHandoff` never cleans up pre-import backup on failure | none blocking (disk hygiene) | OPEN |
