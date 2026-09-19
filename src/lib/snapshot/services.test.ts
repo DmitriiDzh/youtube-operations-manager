@@ -361,6 +361,66 @@ test("applySnapshotToDatabase: replaces application-state tables and upserts ai_
     receiving.close();
   }));
 
+// RISK-29 (docs/TECHNICAL_DEBT.md): the merge previously used `SELECT *`, which is purely
+// positional. Two devices whose table has a genuinely different physical column order for the
+// identical logical schema (e.g. one built fresh from the current baseline CREATE TABLE, one
+// upgraded via a later ALTER TABLE ADD COLUMN, which SQLite always appends at the physical end)
+// would get their columns silently swapped on import. This test manually reorders `channels`'
+// physical columns on the source side (standing in for that real-world divergence) and asserts
+// the merge still lands every value in the receiving device's correctly-named column.
+test("applySnapshotToDatabase: merges by column name, not physical position (RISK-29)", () =>
+  withTempDir(async (dir) => {
+    const source = await makeClient(dir, "source.db");
+    await source.execute(`
+      CREATE TABLE channels_reordered (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        connected_user_id TEXT,
+        thumbnail_url TEXT,
+        uploads_playlist_id TEXT NOT NULL,
+        connected_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        last_synced_at INTEGER
+      )
+    `);
+    await source.execute({
+      sql: "INSERT INTO channels_reordered (id, title, connected_user_id, uploads_playlist_id) VALUES (?, ?, ?, ?)",
+      args: ["chan-1", "Channel chan-1", "user-x", "UUchan-1"],
+    });
+    await source.execute("DROP TABLE channels");
+    await source.execute("ALTER TABLE channels_reordered RENAME TO channels");
+
+    const manifest = await exportSnapshot({
+      client: source,
+      snapshotsDir: path.join(dir, "snapshots"),
+      deviceId: "device-a",
+      schemaVersion: 3,
+    });
+    const snapshotDir = path.join(dir, "snapshots", manifest.snapshotId);
+
+    const receiving = await makeClient(dir, "receiving.db"); // baseline (unreordered) column order
+
+    const workingCopyPath = path.join(dir, "working-copy.db");
+    await copyDatabaseConsistently(
+      createClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
+      workingCopyPath
+    );
+    await migrateStagedCopy(workingCopyPath);
+
+    await applySnapshotToDatabase(receiving, workingCopyPath);
+
+    const result = await receiving.execute({
+      sql: "SELECT title, connected_user_id, uploads_playlist_id FROM channels WHERE id = ?",
+      args: ["chan-1"],
+    });
+    assert.equal(result.rows.length, 1);
+    assert.equal(result.rows[0].title, "Channel chan-1");
+    assert.equal(result.rows[0].connected_user_id, "user-x");
+    assert.equal(result.rows[0].uploads_playlist_id, "UUchan-1");
+
+    source.close();
+    receiving.close();
+  }));
+
 test("scanForUnresolvedExecutionState finds APPLYING/UNKNOWN rows but not PENDING/SUCCESS", () =>
   withTempDir(async (dir) => {
     const client = await makeClient(dir, "source.db");
