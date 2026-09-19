@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "YouTube Playlist Manager",
+  title: "YouTube Operations Manager",
   description: "Automate your YouTube playlists with rules",
 };
 
