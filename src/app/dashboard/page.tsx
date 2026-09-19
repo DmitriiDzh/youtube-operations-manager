@@ -12,6 +12,7 @@ import { LocalizationManager } from "@/components/localization-manager";
 import { BatchManager } from "@/components/batch-manager";
 import { AiLocalizationPanel } from "@/components/ai-localization-panel";
 import { AiConnectionsManager } from "@/components/ai-connections-manager";
+import { DeviceHandoffPanel } from "@/components/device-handoff-panel";
 
 type ChannelInfo = {
   id: string;
@@ -30,7 +31,15 @@ type Rule = {
   enabled: boolean;
 };
 
-type Tab = "manual" | "rules" | "sync" | "localizations" | "ai-localization" | "batches" | "settings";
+type Tab =
+  | "manual"
+  | "rules"
+  | "sync"
+  | "localizations"
+  | "ai-localization"
+  | "batches"
+  | "settings"
+  | "device";
 
 export default function Dashboard() {
   const { data: session, status } = useSession();
@@ -199,6 +208,16 @@ export default function Dashboard() {
         >
           Settings
         </button>
+        <button
+          onClick={() => setTab("device")}
+          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
+            tab === "device"
+              ? "bg-zinc-800 text-white"
+              : "text-zinc-400 hover:text-zinc-200"
+          }`}
+        >
+          Device
+        </button>
       </div>
 
       {tab === "manual" && (
@@ -283,6 +302,18 @@ export default function Dashboard() {
             incur cost for a real (non-mock) connection.
           </p>
           <AiConnectionsManager />
+        </div>
+      )}
+
+      {tab === "device" && (
+        <div>
+          <p className="mb-4 text-sm text-zinc-400">
+            One active device at a time. Export a handoff snapshot when finishing work here,
+            import one to continue on this device. Syncthing only carries the snapshot files
+            &mdash; it is never treated as a database, and no OAuth token or AI connection
+            credential ever leaves this device.
+          </p>
+          <DeviceHandoffPanel />
         </div>
       )}
     </div>
