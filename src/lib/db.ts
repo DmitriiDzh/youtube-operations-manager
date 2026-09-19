@@ -94,6 +94,90 @@ export const changes = sqliteTable("changes", {
     .$defaultFn(() => new Date()),
 });
 
+// Phase 6, Channel Editorial Profiles. Purely additive (ADR 0001), owned entirely by
+// src/lib/ai-localization/ -- no existing table/column changes, no other domain module
+// reads these two tables. One row per channel (channelId is the primary key); `version`
+// increments on every save so a generation can record which version produced it
+// (docs/acceptance/PHASE_6_ACCEPTANCE.md AC-PROFILE-*). Never stores credentials/secrets
+// (AGENTS.md §F) -- every column here is free-text editorial guidance only.
+export const channelEditorialProfiles = sqliteTable("channel_editorial_profiles", {
+  channelId: text("channel_id")
+    .primaryKey()
+    .references(() => channels.id),
+  version: integer("version").notNull().default(1),
+  targetAudience: text("target_audience"),
+  toneNotes: text("tone_notes"),
+  terminologyNotes: text("terminology_notes"),
+  titleConstraints: text("title_constraints"),
+  descriptionConstraints: text("description_constraints"),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+// Immutable, append-only: one row per successful `createChangeSetFromGeneration` call,
+// recording exactly which profile version and/or per-request editorialBrief actually
+// produced that Change Set's proposals -- so editing or deleting the profile afterward
+// never loses this record (the reproducibility requirement). Never updated after insert.
+export const aiLocalizationGenerationProvenance = sqliteTable("ai_localization_generation_provenance", {
+  id: text("id").primaryKey(),
+  changeSetId: text("change_set_id")
+    .notNull()
+    .unique()
+    .references(() => changeSets.id),
+  channelId: text("channel_id")
+    .notNull()
+    .references(() => channels.id),
+  profileVersion: integer("profile_version"),
+  effectiveContextJson: text("effective_context_json"),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+// Phase 6, AI Connections (provider-agnostic). Purely additive (ADR 0001), owned
+// entirely by src/lib/ai-connections/. `ai_connections` never stores a credential
+// itself (only `hasCredential` is derivable from whether a row exists in
+// `ai_connection_credentials`) -- the credential lives in its own table, encrypted
+// (AES-256-GCM, key from AI_CONNECTIONS_ENCRYPTION_KEY, never in this repository),
+// so a query/export of the connections table alone can never leak a secret.
+export const aiConnections = sqliteTable("ai_connections", {
+  id: text("id").primaryKey(),
+  displayName: text("display_name").notNull(),
+  adapterType: text("adapter_type").notNull(),
+  baseUrl: text("base_url"),
+  modelId: text("model_id").notNull(),
+  localInferenceMode: integer("local_inference_mode", { mode: "boolean" }).notNull().default(false),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  status: text("status").notNull().default("unknown"),
+  statusMessage: text("status_message"),
+  statusCheckedAt: integer("status_checked_at", { mode: "timestamp" }),
+  capabilitiesJson: text("capabilities_json").notNull(),
+  assignedTasksJson: text("assigned_tasks_json").notNull().default('["ai_localization"]'),
+  pricingJson: text("pricing_json"),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+export const aiConnectionCredentials = sqliteTable("ai_connection_credentials", {
+  connectionId: text("connection_id")
+    .primaryKey()
+    .references(() => aiConnections.id),
+  ciphertext: text("ciphertext").notNull(),
+  iv: text("iv").notNull(),
+  authTag: text("auth_tag").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
 // Phase 5, Slice 1 (foundation). See docs/acceptance/PHASE_5_ACCEPTANCE.md and
 // docs/decisions/0001-additive-idempotent-schema-strategy.md -- these four tables are
 // purely additive, no existing table/column is changed.
@@ -306,6 +390,50 @@ export async function initializeDatabaseSchema(client: Client): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS changes_change_set_id_idx ON changes(change_set_id);
     CREATE INDEX IF NOT EXISTS changes_video_id_idx ON changes(video_id);
+    CREATE TABLE IF NOT EXISTS channel_editorial_profiles (
+      channel_id TEXT PRIMARY KEY REFERENCES channels(id),
+      version INTEGER NOT NULL DEFAULT 1,
+      target_audience TEXT,
+      tone_notes TEXT,
+      terminology_notes TEXT,
+      title_constraints TEXT,
+      description_constraints TEXT,
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE TABLE IF NOT EXISTS ai_localization_generation_provenance (
+      id TEXT PRIMARY KEY,
+      change_set_id TEXT NOT NULL UNIQUE REFERENCES change_sets(id),
+      channel_id TEXT NOT NULL REFERENCES channels(id),
+      profile_version INTEGER,
+      effective_context_json TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS ai_localization_generation_provenance_channel_id_idx ON ai_localization_generation_provenance(channel_id);
+    CREATE TABLE IF NOT EXISTS ai_connections (
+      id TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL,
+      adapter_type TEXT NOT NULL,
+      base_url TEXT,
+      model_id TEXT NOT NULL,
+      local_inference_mode INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'unknown',
+      status_message TEXT,
+      status_checked_at INTEGER,
+      capabilities_json TEXT NOT NULL,
+      assigned_tasks_json TEXT NOT NULL DEFAULT '["ai_localization"]',
+      pricing_json TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE TABLE IF NOT EXISTS ai_connection_credentials (
+      connection_id TEXT PRIMARY KEY REFERENCES ai_connections(id),
+      ciphertext TEXT NOT NULL,
+      iv TEXT NOT NULL,
+      auth_tag TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
     CREATE TABLE IF NOT EXISTS batches (
       id TEXT PRIMARY KEY,
       channel_id TEXT NOT NULL REFERENCES channels(id),
@@ -431,6 +559,10 @@ const dbSchema = {
   videos,
   changeSets,
   changes,
+  channelEditorialProfiles,
+  aiLocalizationGenerationProvenance,
+  aiConnections,
+  aiConnectionCredentials,
   batches,
   batchLedgerRows,
   batchAttempts,
@@ -986,6 +1118,279 @@ export async function bulkUpdateStoredChanges(
         .where(eq(changes.id, update.id));
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 -- Channel Editorial Profiles + generation provenance persistence.
+// ---------------------------------------------------------------------------
+
+export type StoredEditorialProfile = {
+  channelId: string;
+  version: number;
+  targetAudience: string | null;
+  toneNotes: string | null;
+  terminologyNotes: string | null;
+  titleConstraints: string | null;
+  descriptionConstraints: string | null;
+  updatedAt: Date;
+};
+
+function mapStoredEditorialProfile(row: typeof channelEditorialProfiles.$inferSelect): StoredEditorialProfile {
+  return {
+    channelId: row.channelId,
+    version: row.version,
+    targetAudience: row.targetAudience,
+    toneNotes: row.toneNotes,
+    terminologyNotes: row.terminologyNotes,
+    titleConstraints: row.titleConstraints,
+    descriptionConstraints: row.descriptionConstraints,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export async function getStoredEditorialProfile(channelId: string): Promise<StoredEditorialProfile | null> {
+  const [row] = await db.select().from(channelEditorialProfiles).where(eq(channelEditorialProfiles.channelId, channelId));
+  return row ? mapStoredEditorialProfile(row) : null;
+}
+
+/**
+ * Upserts a channel's editorial profile, incrementing `version` on every save
+ * (including the very first save, which starts at 1) so a later generation can record
+ * exactly which version it used (docs/acceptance/PHASE_6_ACCEPTANCE.md AC-PROFILE-04).
+ * A field explicitly submitted as `null` clears that field; a field left `undefined`
+ * leaves its stored value unchanged (services.ts is responsible for this distinction --
+ * this function trusts whatever it is given).
+ */
+export async function upsertStoredEditorialProfile(input: {
+  channelId: string;
+  targetAudience?: string | null;
+  toneNotes?: string | null;
+  terminologyNotes?: string | null;
+  titleConstraints?: string | null;
+  descriptionConstraints?: string | null;
+}): Promise<StoredEditorialProfile> {
+  const existing = await getStoredEditorialProfile(input.channelId);
+  const nextVersion = existing ? existing.version + 1 : 1;
+  const now = new Date();
+
+  const merged = {
+    targetAudience: input.targetAudience !== undefined ? input.targetAudience : (existing?.targetAudience ?? null),
+    toneNotes: input.toneNotes !== undefined ? input.toneNotes : (existing?.toneNotes ?? null),
+    terminologyNotes: input.terminologyNotes !== undefined ? input.terminologyNotes : (existing?.terminologyNotes ?? null),
+    titleConstraints: input.titleConstraints !== undefined ? input.titleConstraints : (existing?.titleConstraints ?? null),
+    descriptionConstraints:
+      input.descriptionConstraints !== undefined ? input.descriptionConstraints : (existing?.descriptionConstraints ?? null),
+  };
+
+  if (existing) {
+    await db
+      .update(channelEditorialProfiles)
+      .set({ ...merged, version: nextVersion, updatedAt: now })
+      .where(eq(channelEditorialProfiles.channelId, input.channelId));
+  } else {
+    await db.insert(channelEditorialProfiles).values({
+      channelId: input.channelId,
+      version: nextVersion,
+      ...merged,
+      updatedAt: now,
+    });
+  }
+
+  return { channelId: input.channelId, version: nextVersion, ...merged, updatedAt: now };
+}
+
+export type StoredGenerationProvenance = {
+  id: string;
+  changeSetId: string;
+  channelId: string;
+  profileVersion: number | null;
+  effectiveContextJson: string | null;
+  createdAt: Date;
+};
+
+function mapStoredGenerationProvenance(
+  row: typeof aiLocalizationGenerationProvenance.$inferSelect
+): StoredGenerationProvenance {
+  return {
+    id: row.id,
+    changeSetId: row.changeSetId,
+    channelId: row.channelId,
+    profileVersion: row.profileVersion,
+    effectiveContextJson: row.effectiveContextJson,
+    createdAt: row.createdAt,
+  };
+}
+
+export async function createGenerationProvenance(input: {
+  id: string;
+  changeSetId: string;
+  channelId: string;
+  profileVersion: number | null;
+  effectiveContextJson: string | null;
+}): Promise<void> {
+  await db.insert(aiLocalizationGenerationProvenance).values(input);
+}
+
+export async function getGenerationProvenanceByChangeSetId(
+  changeSetId: string
+): Promise<StoredGenerationProvenance | null> {
+  const [row] = await db
+    .select()
+    .from(aiLocalizationGenerationProvenance)
+    .where(eq(aiLocalizationGenerationProvenance.changeSetId, changeSetId));
+  return row ? mapStoredGenerationProvenance(row) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 -- AI Connections persistence. This file never encrypts/decrypts anything
+// itself (src/lib/ai-connections/crypto.ts owns that) -- it only stores/retrieves
+// whatever ciphertext/iv/authTag it is given, in a table separate from the
+// connection's own row, so a plain listing of connections can never include one.
+// ---------------------------------------------------------------------------
+
+export type StoredAiConnection = {
+  id: string;
+  displayName: string;
+  adapterType: string;
+  baseUrl: string | null;
+  modelId: string;
+  localInferenceMode: boolean;
+  enabled: boolean;
+  status: string;
+  statusMessage: string | null;
+  statusCheckedAt: Date | null;
+  capabilitiesJson: string;
+  assignedTasksJson: string;
+  pricingJson: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+function mapStoredAiConnection(row: typeof aiConnections.$inferSelect): StoredAiConnection {
+  return {
+    id: row.id,
+    displayName: row.displayName,
+    adapterType: row.adapterType,
+    baseUrl: row.baseUrl,
+    modelId: row.modelId,
+    localInferenceMode: row.localInferenceMode,
+    enabled: row.enabled,
+    status: row.status,
+    statusMessage: row.statusMessage,
+    statusCheckedAt: row.statusCheckedAt,
+    capabilitiesJson: row.capabilitiesJson,
+    assignedTasksJson: row.assignedTasksJson,
+    pricingJson: row.pricingJson,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export async function createStoredAiConnection(input: {
+  id: string;
+  displayName: string;
+  adapterType: string;
+  baseUrl: string | null;
+  modelId: string;
+  localInferenceMode: boolean;
+  enabled: boolean;
+  capabilitiesJson: string;
+  assignedTasksJson: string;
+  pricingJson: string | null;
+}): Promise<StoredAiConnection> {
+  const now = new Date();
+  await db.insert(aiConnections).values({
+    id: input.id,
+    displayName: input.displayName,
+    adapterType: input.adapterType,
+    baseUrl: input.baseUrl,
+    modelId: input.modelId,
+    localInferenceMode: input.localInferenceMode,
+    enabled: input.enabled,
+    status: "unknown",
+    statusMessage: null,
+    statusCheckedAt: null,
+    capabilitiesJson: input.capabilitiesJson,
+    assignedTasksJson: input.assignedTasksJson,
+    pricingJson: input.pricingJson,
+    createdAt: now,
+    updatedAt: now,
+  });
+  const stored = await getStoredAiConnection(input.id);
+  if (!stored) throw new Error("Connection disappeared immediately after creation");
+  return stored;
+}
+
+export async function listStoredAiConnections(): Promise<StoredAiConnection[]> {
+  const rows = await db.select().from(aiConnections).orderBy(desc(aiConnections.createdAt));
+  return rows.map(mapStoredAiConnection);
+}
+
+export async function getStoredAiConnection(connectionId: string): Promise<StoredAiConnection | null> {
+  const [row] = await db.select().from(aiConnections).where(eq(aiConnections.id, connectionId));
+  return row ? mapStoredAiConnection(row) : null;
+}
+
+export async function updateStoredAiConnection(
+  connectionId: string,
+  patch: Partial<{
+    displayName: string;
+    baseUrl: string | null;
+    modelId: string;
+    localInferenceMode: boolean;
+    enabled: boolean;
+    status: string;
+    statusMessage: string | null;
+    statusCheckedAt: Date | null;
+    capabilitiesJson: string;
+    assignedTasksJson: string;
+    pricingJson: string | null;
+  }>
+): Promise<StoredAiConnection | null> {
+  await db
+    .update(aiConnections)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(eq(aiConnections.id, connectionId));
+  return getStoredAiConnection(connectionId);
+}
+
+export async function deleteStoredAiConnection(connectionId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.delete(aiConnectionCredentials).where(eq(aiConnectionCredentials.connectionId, connectionId));
+    await tx.delete(aiConnections).where(eq(aiConnections.id, connectionId));
+  });
+}
+
+export type StoredAiConnectionCredential = {
+  connectionId: string;
+  ciphertext: string;
+  iv: string;
+  authTag: string;
+};
+
+export async function upsertStoredAiConnectionCredential(input: StoredAiConnectionCredential): Promise<void> {
+  const existing = await getStoredAiConnectionCredential(input.connectionId);
+  const now = new Date();
+  if (existing) {
+    await db
+      .update(aiConnectionCredentials)
+      .set({ ciphertext: input.ciphertext, iv: input.iv, authTag: input.authTag, updatedAt: now })
+      .where(eq(aiConnectionCredentials.connectionId, input.connectionId));
+  } else {
+    await db.insert(aiConnectionCredentials).values({ ...input, createdAt: now, updatedAt: now });
+  }
+}
+
+export async function getStoredAiConnectionCredential(connectionId: string): Promise<StoredAiConnectionCredential | null> {
+  const [row] = await db
+    .select()
+    .from(aiConnectionCredentials)
+    .where(eq(aiConnectionCredentials.connectionId, connectionId));
+  return row ? { connectionId: row.connectionId, ciphertext: row.ciphertext, iv: row.iv, authTag: row.authTag } : null;
+}
+
+export async function deleteStoredAiConnectionCredential(connectionId: string): Promise<void> {
+  await db.delete(aiConnectionCredentials).where(eq(aiConnectionCredentials.connectionId, connectionId));
 }
 
 // ---------------------------------------------------------------------------

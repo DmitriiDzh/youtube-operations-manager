@@ -9,7 +9,7 @@ export type ChangeValidationStatus = "valid" | "invalid";
 export type ChangeConflictStatus = "none" | "conflict";
 export type ChangeApprovalStatus = "pending" | "approved" | "rejected";
 export type ChangeSetStatus = "in_review" | "approved" | "partially_approved" | "rejected";
-export type ChangeSetSource = "xlsx_import";
+export type ChangeSetSource = "xlsx_import" | "ai_localization";
 
 // video-level metadata as currently mirrored by channel-sync (Phase 2). This is the
 // only "remote" view Phase 4 has available -- see docs/ARCHITECTURE.md Phase 4 section

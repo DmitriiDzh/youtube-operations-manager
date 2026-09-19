@@ -10,6 +10,8 @@ import { ManualMode } from "@/components/manual-mode";
 import { ChannelSync } from "@/components/channel-sync";
 import { LocalizationManager } from "@/components/localization-manager";
 import { BatchManager } from "@/components/batch-manager";
+import { AiLocalizationPanel } from "@/components/ai-localization-panel";
+import { AiConnectionsManager } from "@/components/ai-connections-manager";
 
 type ChannelInfo = {
   id: string;
@@ -28,7 +30,7 @@ type Rule = {
   enabled: boolean;
 };
 
-type Tab = "manual" | "rules" | "sync" | "localizations" | "batches";
+type Tab = "manual" | "rules" | "sync" | "localizations" | "ai-localization" | "batches" | "settings";
 
 export default function Dashboard() {
   const { data: session, status } = useSession();
@@ -168,6 +170,16 @@ export default function Dashboard() {
           Localizations
         </button>
         <button
+          onClick={() => setTab("ai-localization")}
+          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
+            tab === "ai-localization"
+              ? "bg-zinc-800 text-white"
+              : "text-zinc-400 hover:text-zinc-200"
+          }`}
+        >
+          AI Localization
+        </button>
+        <button
           onClick={() => setTab("batches")}
           className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
             tab === "batches"
@@ -176,6 +188,16 @@ export default function Dashboard() {
           }`}
         >
           Batches
+        </button>
+        <button
+          onClick={() => setTab("settings")}
+          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
+            tab === "settings"
+              ? "bg-zinc-800 text-white"
+              : "text-zinc-400 hover:text-zinc-200"
+          }`}
+        >
+          Settings
         </button>
       </div>
 
@@ -228,6 +250,18 @@ export default function Dashboard() {
         </div>
       )}
 
+      {tab === "ai-localization" && (
+        <div>
+          <p className="mb-4 text-sm text-zinc-400">
+            Generate localization proposals with a deterministic mock AI provider, review
+            and edit them, and turn them into a Change Set for the same approval workflow
+            as an XLSX import. No real AI provider is called and no metadata is written to
+            YouTube from this tab.
+          </p>
+          <AiLocalizationPanel />
+        </div>
+      )}
+
       {tab === "batches" && (
         <div>
           <p className="mb-4 text-sm text-zinc-400">
@@ -236,6 +270,19 @@ export default function Dashboard() {
             never performs a live write.
           </p>
           <BatchManager />
+        </div>
+      )}
+
+      {tab === "settings" && (
+        <div>
+          <p className="mb-4 text-sm text-zinc-400">
+            Configure AI provider connections for AI Localization. No specific vendor is
+            built into this app &mdash; every connection is a Base URL, model id, and
+            optional credential you supply. Credentials are encrypted at rest and never
+            shown again once saved. Testing a connection is an explicit action and may
+            incur cost for a real (non-mock) connection.
+          </p>
+          <AiConnectionsManager />
         </div>
       )}
     </div>
