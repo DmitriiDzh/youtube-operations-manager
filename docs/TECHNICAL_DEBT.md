@@ -417,7 +417,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Fix applied:** narrowed the catch to a new single shared `isMissingTableError` (moved to `src/lib/db-backup/services.ts` — previously duplicated verbatim in operation-lock and lineage-store; both now import it instead of keeping their own copy, `AGENTS.md` §D). Any other error now propagates. Test: `schema-versioning/services.test.ts` (closes the client mid-read, asserts the resulting `CLIENT_CLOSED` error propagates rather than becoming `null`).
 - **Status:** FIXED — project-owner-assigned task, 2026-09-19.
 
-## RISK-20 — Boot-time schema migration never acquires the operation lock — OPEN, 2026-09-19
+## RISK-20 — Boot-time schema migration never acquires the operation lock — FIXED, 2026-09-19
 
 - **Affected components:** `src/lib/operation-lock/contracts.ts` (`OperationType` includes `"migration"`); `src/lib/db.ts` (`initializeDatabase`/`initializeDatabaseSchema`/`runSchemaMigrations`).
 - **Current behavior:** The operation lock's own doc comment describes covering "export/import/migration," and export/import correctly call `withOperationLock`. Boot-time schema migration never references the operation-lock module at all (confirmed by grep).
@@ -425,7 +425,8 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Required remediation:** Acquire the operation lock (type `"migration"`) around `runSchemaMigrations`, consistent with export/import's existing pattern.
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
 - **Approval required from:** project owner, to schedule the fix.
-- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, not yet fixed.
+- **Fix applied:** `initializeDatabase` now acquires the `"migration"` operation lock (via `acquireOperationLock`) before `initializeDatabaseSchema` and releases it in a `finally`. One narrow, documented exception: `app_operation_locks` itself is created BY this migration path (`SCHEMA_MIGRATIONS` version 2) -- on a database still below that version, the lock table doesn't exist yet, so acquisition is attempted but an `isMissingTableError` is swallowed and migration proceeds unlocked for that one bootstrap-to-v2 step only (a low-risk, one-time, idempotent `CREATE TABLE`); every later boot, once the lock table exists, is properly serialized. Test: `db.migration-lock.test.ts` asserts the lock is never left held once boot completes (the acquire/release wiring itself couldn't be directly exercised mid-migration without risking re-running migrations outside their real boot path, since `initializeDatabase` runs once at module load).
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
 
 ## RISK-21 — Operation-lock acquisition misattributes lock ownership when the lock table is missing — FIXED, 2026-09-19
 
@@ -438,7 +439,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Fix applied:** `acquireOperationLock`'s catch now checks `isMissingTableError` first and rethrows the real error immediately, before falling through to the "row disappeared" contention-fallback logic. Test: `operation-lock/services.test.ts` (a fresh temp DB with no `app_operation_locks` table at all — asserts the rejection is the raw missing-table error, not an `OperationLockError`).
 - **Status:** FIXED — project-owner-assigned task, 2026-09-19.
 
-## RISK-22 — `writeJsonFileAtomic` has no Windows EBUSY/EPERM retry, unlike the sibling snapshot-publish path — OPEN, 2026-09-19
+## RISK-22 — `writeJsonFileAtomic` has no Windows EBUSY/EPERM retry, unlike the sibling snapshot-publish path — FIXED, 2026-09-19
 
 - **Affected components:** `src/lib/atomic-json-file/services.ts` (`writeJsonFileAtomic`); consumers `src/lib/cli-auth/storage.ts` (auth-context.json) and bootstrap-config's save path.
 - **Current behavior:** This module's own doc comment cites the Windows EBUSY/EPERM retry-with-backoff fix already applied in `src/lib/snapshot/adapters/filesystem.ts`'s `publishSnapshot` as the pattern it consolidates, but `writeJsonFileAtomic`'s own `rename(tmpPath, targetPath)` has no such retry.
@@ -446,7 +447,8 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Required remediation:** Apply the same retry-with-backoff already used by `filesystem.ts`'s `publishSnapshot`, in the one shared `writeJsonFileAtomic` implementation rather than a second copy.
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE` — directly relevant to Windows reliability given the current Windows-first test build priority.
 - **Approval required from:** project owner, to schedule the fix.
-- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, not yet fixed.
+- **Fix applied:** extracted `renameWithRetry` to a new shared `src/lib/rename-retry.ts` (10 attempts, 50ms×attempt backoff, retry only EBUSY/EPERM) -- both `writeJsonFileAtomic` and `filesystem.ts`'s `publishSnapshot` now use this single implementation instead of `publishSnapshot` having its own copy and `writeJsonFileAtomic` having none (`AGENTS.md` §D). Tests: `rename-retry.test.ts` (retries on EBUSY/EPERM then succeeds; rethrows an unrelated error immediately, no retry; gives up and rethrows after exhausting attempts; a real file rename with no injected error, exercising the actual default `rename` with no fake).
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
 
 ## RISK-23 — `createActiveAuthStorage`'s single string parameter silently changed meaning (breaking change with no type signal) — OPEN, 2026-09-19
 
@@ -487,6 +489,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Required remediation:** Cross-check `WRITABLE_SNIPPET_FIELDS` against `developers.google.com/youtube/v3/docs/videos`'s current per-property mutability table before Gate B (live writes) is ever passed; add this as an explicit Gate B pre-check.
 - **Gate(s):** `BLOCKS_PHASE_5_WRITES` (specifically before Gate B, not before continued mocked development).
 - **Approval required from:** project owner, as part of the Gate B live-validation planning.
+- **Disposition (2026-09-19 "отработай найденные риски" task):** not a code fix — its own required remediation is external research (the live YouTube API docs) plus a Gate B process checklist item, not a source change. Deliberately left for that planning step rather than forced into this round.
 - **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line; not currently exploitable given RISK-09's barrier.
 
 ## RISK-27 — `importHandoff`'s pre-import backup file is never cleaned up on a failed import — FIXED, 2026-09-19
@@ -526,7 +529,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Fix applied:** a new `getColumnNames` helper reads `PRAGMA table_info` from the *live* table (physical storage order) and builds an explicit column list used on both sides of the `INSERT` for every table in `SNAPSHOT_REPLACE_ON_IMPORT_TABLES`, replacing `SELECT *`. Test: `snapshot/services.test.ts` ("merges by column name, not physical position") manually reorders `channels`' physical columns on the source side and asserts values still land correctly on import. Empirically confirmed against the *unfixed* code first: the old positional merge doesn't even silently corrupt data in this exact scenario, it crashes outright with a `NOT NULL constraint failed` — an even more visible failure mode, but proof the test genuinely exercises the bug.
 - **Status:** FIXED — project-owner-assigned task, 2026-09-19.
 
-## RISK-30 — AI Localization's `generate` route is exempt from the device-availability/recovery-mode gate but can trigger a real, billable outbound AI call — OPEN, 2026-09-19
+## RISK-30 — AI Localization's `generate` route is exempt from the device-availability/recovery-mode gate but can trigger a real, billable outbound AI call — FIXED, 2026-09-19
 
 - **Affected components:** `src/proxy.ts` (`EXEMPT_READ_ONLY_PATH_SUFFIXES` includes `/ai-localization/generate`, on the stated rationale of "no local persistence writes, never calls YouTube"); `src/lib/ai-localization/services.ts` (`generateProposals` → `resolveConnectionProvider` → `openai_compatible` adapter's real outbound `POST`).
 - **Current behavior:** `assertDeviceAvailableForMutation` (the operation-lock + recovery-mode check) is invoked only from `proxy.ts`, `mcp/server.ts`, and `cli/video-metadata.ts` — never from `resolveConnectionProvider`/`generateProposals` itself.
@@ -534,7 +537,8 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Required remediation:** Either narrow the exemption to only the mock provider (no `connectionId`), or apply the device-availability gate to this route specifically when a real connection is used.
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
 - **Approval required from:** project owner, to schedule the fix.
-- **Status:** OPEN — found by a second independent review pass, not yet independently re-verified beyond the cited file/line, not yet fixed.
+- **Fix applied:** `proxy.ts`'s routing-level exemption is unchanged (it is body-blind and correctly stays exempt for the mock-provider case) -- the gate now lives one layer deeper, inside `generateProposals` itself (`src/lib/ai-localization/services.ts`), called only on the real-connection path (`connectionId` set) via a new optional `assertDeviceAvailable` dependency, wired in `index.ts` to `assertDeviceAvailableForMutation(rawSqlClient)`. The mock-provider path is untouched and still never calls it. Tests: `services.test.ts` (a real-connection generation checks device availability before resolving the provider; fails closed and never resolves the provider if the device isn't available; the mock-provider path never calls the check at all) plus the pre-existing `AC-CONN-17`/write-path-inventory suites re-run clean.
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
 
 ## RISK-31 — `transitionLedgerRowStatus`'s discarded boolean result can let a batch's reported outcome silently drift from the ledger's actual persisted status — FIXED, 2026-09-19
 
@@ -555,6 +559,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Required remediation:** A single shared registry/manifest of mutating operations that all three interfaces consult, rather than three independently-maintained classification lists.
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
 - **Approval required from:** project owner, to schedule the refactor (touches all three interface layers, `AGENTS.md` §D "one guardrail" pattern).
+- **Disposition (2026-09-19 "отработай найденные риски" task):** deliberately not attempted as a quick fix in this round — this is a cross-cutting refactor of the guardrail itself across all three interfaces, ADR-shaped, and a botched consolidation could silently disable the very gate it's trying to unify. Proposed as its own separately-scoped task for the project owner to schedule, not bundled here.
 - **Status:** OPEN — found by a second independent review pass; the underlying divergence risk (not any specific instance of it) is new to this log, though its recurrence was already known well enough to be commented on in-code.
 
 ## RISK-33 — Minor latent/consistency gaps found alongside the above — PARTIALLY FIXED, 2026-09-19
@@ -577,7 +582,8 @@ Bundled as one entry — each individually low severity, none currently exploita
 - **Required remediation:** Add an actual recovery-mode scenario (an unresolved `APPLYING`/`UNKNOWN` ledger row, no lock held) to both suites, asserting `RecoveryModeError` at the CLI/MCP choke points specifically.
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
 - **Approval required from:** project owner, to schedule the test addition.
-- **Status:** OPEN — found by a second independent review pass, not yet independently re-verified beyond the cited file/lines, not yet fixed.
+- **Fix applied:** both files gained a new test seeding a real `channels`/`batches`/`batch_ledger_rows` (status `UNKNOWN`) row with no operation lock held, asserting the mutating command/tool is rejected with `device_in_recovery_mode` specifically (not `operation_lock_held`), and that the read-only command/tool remains unaffected.
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
 
 ---
 
@@ -604,9 +610,9 @@ Bundled as one entry — each individually low severity, none currently exploita
 | RISK-17 | Cross-platform persistence validated on Windows only, not macOS | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-18 | Device-handoff import: unvalidated `snapshotId` path traversal | none (fixed) | FIXED |
 | RISK-19 | `readSchemaVersion` fails open on any read error | none (fixed) | FIXED |
-| RISK-20 | Boot-time schema migration never acquires the operation lock | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-20 | Boot-time schema migration never acquires the operation lock | none (fixed) | FIXED |
 | RISK-21 | Operation-lock misattributes ownership when the lock table is missing | none (fixed) | FIXED |
-| RISK-22 | `writeJsonFileAtomic` has no Windows EBUSY/EPERM retry | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-22 | `writeJsonFileAtomic` has no Windows EBUSY/EPERM retry | none (fixed) | FIXED |
 | RISK-23 | `createActiveAuthStorage` parameter meaning changed with no type signal | none blocking yet (latent) | OPEN |
 | RISK-24 | App-data directory no longer locked to 0700 for Web-UI-only installs | none (fixed) | FIXED |
 | RISK-25 | Legacy DB migration is one-shot/unretryable, can silently orphan data | BLOCKS_OPERATIONS_RELEASE | OPEN |
@@ -614,10 +620,10 @@ Bundled as one entry — each individually low severity, none currently exploita
 | RISK-27 | `importHandoff` never cleans up pre-import backup on failure | none (fixed) | FIXED |
 | RISK-28 | Resuming a RUNNING batch skips the write-channel identity guardrail | none (fixed) | FIXED |
 | RISK-29 | Cross-device snapshot merge is positional, breaks on ALTER-added columns | none (fixed) | FIXED |
-| RISK-30 | AI Localization `generate` bypasses device-availability gate for real AI calls | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-30 | AI Localization `generate` bypasses device-availability gate for real AI calls | none (fixed) | FIXED |
 | RISK-31 | Discarded `transitionLedgerRowStatus` result can drift ledger vs. reported outcome | none (fixed) | FIXED |
 | RISK-32 | proxy/CLI/MCP independently classify mutating ops, no shared registry | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-33 | Minor latent/consistency gaps (dormant FK, audit-path bypass, bare catch) | none blocking | PARTIALLY FIXED |
-| RISK-34 | "recovery-gate" test suites never actually test recovery mode | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-34 | "recovery-gate" test suites never actually test recovery mode | none (fixed) | FIXED |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

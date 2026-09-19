@@ -6,12 +6,13 @@ import path from "path";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
-import { copyDatabaseConsistently } from "@/lib/db-backup";
+import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
 import {
   assertSupportedSchemaVersion,
   runSchemaMigrations,
   type SchemaMigration,
 } from "@/lib/schema-versioning";
+import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 
 // Platform-aware app-data location (docs/decisions/0002-additive-schema-versioning.md's
 // companion task, "Pre-Release Cross-Platform Persistence"). getProductionAppPaths() is the
@@ -721,15 +722,36 @@ export async function initializeDatabaseSchema(
 
 async function initializeDatabase() {
   await migrateLegacyDatabaseIfNeeded();
-  await initializeDatabaseSchema(rawClient, {
-    beforeMigrations: async () => {
-      const destPath = path.join(
-        appPaths.migrationBackupsDir,
-        `pre-migration-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`
-      );
-      await copyDatabaseConsistently(rawClient, destPath);
-    },
-  });
+
+  // RISK-20 (docs/TECHNICAL_DEBT.md): serialize boot-time schema migration against export/
+  // import and a concurrent second process (CLI + web app, or two app instances) starting
+  // against the same DB file -- the same operation lock those already use via
+  // withOperationLock. One narrow, unavoidable exception: app_operation_locks itself is
+  // created BY this migration path (SCHEMA_MIGRATIONS version 2) -- on a database still below
+  // that version, the lock table doesn't exist yet, so there is structurally nothing to lock
+  // with. That one bootstrap-to-v2 step proceeds unlocked (a low-risk, one-time, idempotent
+  // CREATE TABLE); every later boot, once the lock table exists, is properly serialized.
+  let lockAcquired = false;
+  try {
+    await acquireOperationLock(rawClient, "migration");
+    lockAcquired = true;
+  } catch (error) {
+    if (!isMissingTableError(error)) throw error;
+  }
+
+  try {
+    await initializeDatabaseSchema(rawClient, {
+      beforeMigrations: async () => {
+        const destPath = path.join(
+          appPaths.migrationBackupsDir,
+          `pre-migration-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`
+        );
+        await copyDatabaseConsistently(rawClient, destPath);
+      },
+    });
+  } finally {
+    if (lockAcquired) await releaseOperationLock(rawClient);
+  }
 }
 
 export const databaseInitialization = initializeDatabase().catch((error: unknown) => {
