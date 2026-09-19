@@ -123,6 +123,15 @@ Key MCP tools:
   Deliberately **not** included in this slice: any apply-class Change Set/Batch tool (creating,
   approving, or executing) — blocked on Gate B's live-write validation track
   (`docs/TECHNICAL_DEBT.md`), tracked separately and unaffected by this slice.
+- Channel-sync tools (`BL-008`, `docs/roadmap/BACKLOG.md`) — closes the rest of RISK-04's MCP
+  portion:
+  - `channel_sync` — `{ channelId?, credentialRef? }` → `{ channel, videoCount, syncedAt }`.
+    Reads from YouTube, writes to the local `channels`/`videos` tables only — never a YouTube
+    write. **Mutating**: gated by the same device-availability check as `apply`/`playlist_create`
+    (it mutates local state even though it never touches YouTube).
+  - `channel_list` — `{ credentialRef? }` → `{ channels: SyncedChannel[] }`. Read-only.
+  - `channel_video_list` — `{ channelId, credentialRef? }` → `{ channelId, videos: SyncedVideo[] }`.
+    Read-only.
 
 Most tools accept optional `credentialRef`; if omitted, server falls back to active local auth context.
 
