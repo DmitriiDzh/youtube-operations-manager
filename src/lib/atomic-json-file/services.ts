@@ -24,20 +24,31 @@ export async function writeJsonFileAtomic(targetPath: string, data: unknown): Pr
   }
 
   // RISK-25's crash-vs-preexisting-data disambiguation (docs/TECHNICAL_DEBT.md) depends on this
-  // write actually surviving a hard crash/power loss, not just a graceful process crash (which
-  // a plain writeFile already survives, since the OS page cache outlives the process) --
-  // `fsync` (via a real file handle, not writeFile's own auto-closed one) forces the tmp file's
-  // content to disk before it is ever renamed into place (independent review, review series
-  // cycle 2). Deliberately narrow: this covers the data itself, not the directory entry the
-  // rename produces -- full POSIX rename crash-safety would also need an fsync of the
-  // directory, which is disproportionate for a single-operator local desktop app.
+  // write surviving a crash, not just a graceful process exit (which a plain writeFile already
+  // survives, since the OS page cache outlives the process) -- `fsync` (via a real file handle,
+  // not writeFile's own auto-closed one) forces the tmp file's content out of the OS page cache
+  // before it is ever renamed into place (independent review, review series cycle 2).
+  // Deliberately narrow, and *not* a full crash-safety guarantee on every platform: this is a
+  // plain POSIX fsync(2), which never covers the directory entry the rename produces (full
+  // rename crash-safety would also need an fsync of the directory -- disproportionate for a
+  // single-operator local desktop app), and on macOS specifically, fsync(2) does not flush the
+  // drive controller's own write cache the way `fcntl(F_FULLFSYNC)` does (Apple's own guidance;
+  // Node has no built-in binding for it) -- a real power-loss event on macOS, this project's own
+  // second supported platform, can still lose or tear this write. Reduces the original bug's
+  // window (any interruption at all) to a narrower one (an actual power/OS-crash mid-write), not
+  // to zero (independent review, review series cycle 3 -- corrects an earlier overclaim in this
+  // same comment).
   const tmpPath = path.join(dir, `.${path.basename(targetPath)}.${randomUUID()}.tmp`);
   const handle = await open(tmpPath, "w", fsConstants.S_IRUSR | fsConstants.S_IWUSR);
   try {
     await handle.writeFile(JSON.stringify(data, null, 2), "utf8");
     await handle.sync();
   } finally {
-    await handle.close();
+    // A close() failure (e.g. EIO on the same underlying fault that made sync() fail) must
+    // never replace whatever real error the try block already threw -- plain try/finally
+    // semantics would otherwise let it silently do exactly that (independent review, review
+    // series cycle 3).
+    await handle.close().catch(() => {});
   }
   if (process.platform !== "win32") {
     await chmod(tmpPath, 0o600);
