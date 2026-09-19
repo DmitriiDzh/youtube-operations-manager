@@ -129,7 +129,7 @@ Not every issue in this register must be fixed immediately. It must, however, al
 - **Acceptance criteria:** An authenticated session for user A receives `403`/`404` (not channel data) when requesting a channel/change-set connected to user B, with a test covering at least `GET /api/channels`, `GET /api/channels/[channelId]/change-sets`, and one write action.
 - **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON` (current single-operator model), `BLOCKS_NETWORK_DEPLOYMENT`.
 - **Approval required from:** project owner (product decision: is multi-operator ever in scope?).
-- **Status:** OPEN.
+- **Status:** OPEN. **Cross-reference (Pre-Release Cross-Platform Persistence task):** `users.id` was confirmed by inspection to be the Google OAuth `sub` claim (a stable, provider-issued identity — `src/lib/auth.ts`'s `session()` callback, `src/lib/db.ts`'s `upsertUserOAuthOnSignIn`), not a locally-generated artifact. This means a device-handoff snapshot importing `channels.connectedUserId`/`rules.userId` values never creates a *new* instance of this risk — the exposure (any authenticated session sees any locally synced channel) is exactly the same, pre-existing, already-accepted one described above, whether the channel was synced locally or arrived via an imported snapshot. Not resolved by that task; only confirmed not worsened.
 
 ---
 
@@ -230,7 +230,11 @@ Not every issue in this register must be fixed immediately. It must, however, al
 - **Acceptance criteria:** Reading `data/playlist-manager.db` directly (e.g. `sqlite3` CLI) no longer yields a usable access/refresh token without an additional secret not stored in the same file.
 - **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON` (current single-operator local model), `BLOCKS_NETWORK_DEPLOYMENT`.
 - **Approval required from:** project owner.
-- **Status:** OPEN — accepted tradeoff for now, not silently forgotten.
+- **Status:** OPEN — accepted tradeoff for now, not silently forgotten. **Cross-reference
+  (Pre-Release Cross-Platform Persistence task):** device-handoff snapshots (`src/lib/snapshot/`)
+  never carry `users` rows at all, in either direction — this task does not close this risk, but
+  ensures it is never propagated forward via a snapshot; see
+  `docs/acceptance/PRE_RELEASE_CROSS_PLATFORM_ACCEPTANCE.md` AC-CONN-02.
 
 ---
 
@@ -244,7 +248,7 @@ Not every issue in this register must be fixed immediately. It must, however, al
 - **Acceptance criteria:** N/A until triggered.
 - **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON`.
 - **Approval required from:** project owner, at the point the trigger condition is hit.
-- **Status:** OPEN, monitored — not currently actionable.
+- **Status:** OPEN, monitored — not currently actionable. **Progress (Pre-Release Cross-Platform Persistence task):** `docs/decisions/0002-additive-schema-versioning.md` adds an explicit `schema_meta.schema_version` label and an ordered migration list on top of this same additive pattern — this closes the "no way to know what shape an existing database is in" half of the original concern, but does **not** close this risk's core trigger: the pattern still cannot express a genuinely non-additive change. The trigger condition and required remediation (a new ADR proposing Drizzle Kit) are unchanged.
 
 ---
 
@@ -362,6 +366,34 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 
 ---
 
+## RISK-16 — Restricted recovery mode has no in-app resolution path
+
+- **Affected components:** `src/lib/device-handoff/services.ts` (`isDeviceInRecoveryMode`, `assertDeviceAvailableForMutation`); `src/proxy.ts`; `src/cli/video-metadata.ts`'s `runCliCommand`; `src/mcp/server.ts`'s `createMcpToolHandlers`.
+- **Current behavior:** Importing a device-handoff snapshot whose `batch_ledger_rows` contain an `APPLYING`/`UNKNOWN` execution row (an uncertain YouTube write outcome) leaves the receiving device in restricted recovery mode: every locally-mutating or remote-mutating route/command/tool is refused. The gate lifts only when those specific rows are resolved to a terminal state through Phase 5's own, existing, unmodified reconciliation mechanism (RISK-09 §0.F) — this task's own explicit, project-owner-approved constraint (never build a new recovery algorithm, never let acknowledgement alone lift the gate). But **no CLI/MCP/Web trigger for that reconciliation mechanism exists yet** (RISK-04 — Batches has no CLI/MCP interface at all, and the Web UI's Batches tab is dry-run-only, `docs/SYSTEM_MAP.md` §2.10). A device that enters recovery mode via import therefore has no in-app action available to leave it.
+- **Actual risk:** Operator inconvenience (a device stuck in read-only mode) rather than a safety defect — the alternative (letting acknowledgement lift the gate, or building a new ad hoc resolution path) was explicitly rejected as *less* safe during this task's design review. In the current build, real YouTube writes are barrier-disabled everywhere (RISK-09's two-layer barrier, still fully in place, unmodified) — so a real `APPLYING`/`UNKNOWN` row cannot actually occur yet from anything this application does today; this risk is forward-looking, for once Gate B is eventually passed and live batches can run.
+- **Existing mitigation:** The full audit trail and durable attempt/intent records survive import unmodified (`docs/acceptance/PRE_RELEASE_CROSS_PLATFORM_ACCEPTANCE.md` AC-HANDOFF-07), so a human operator can always manually inspect and, if truly necessary, resolve the underlying rows directly against the database with full information available — this is a workflow gap, not a data-loss or safety gap.
+- **Required remediation:** Once RISK-04 is addressed (CLI/MCP/Web tooling for `recoverBatch`/`resolveUnknownLedgerRow`), a device in recovery mode gains an actual in-app path out. Do not build a device-handoff-specific shortcut around RISK-09's existing reconciliation requirements to close this sooner.
+- **Acceptance criteria:** N/A until RISK-04 is addressed for Batches generally.
+- **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON` (no real `APPLYING`/`UNKNOWN` row is reachable today, RISK-09's barrier unchanged), `BLOCKS_OPERATIONS_RELEASE` (once Gate B/live writes are ever enabled, this becomes load-bearing).
+- **Approval required from:** project owner, when RISK-04 is scheduled.
+- **Status:** OPEN — documented as part of the Pre-Release Cross-Platform Persistence task rather than left implicit.
+
+---
+
+## RISK-17 — Cross-platform behavior validated on Windows only
+
+- **Affected components:** `src/lib/platform-paths/` (macOS branch of `resolveAppPaths`), the entire Pre-Release Cross-Platform Persistence feature set (`src/lib/snapshot/`, `src/lib/device-handoff/`, `src/lib/schema-versioning/`, `src/lib/operation-lock/`, `src/lib/db-backup/`).
+- **Current behavior:** macOS path-resolution logic is unit-tested via dependency injection (`platform: "darwin"`, a fake `homedir`) — `src/lib/platform-paths/services.test.ts`. No macOS machine was available in the environment this feature was implemented in, so no part of this feature (path resolution, snapshot export/import, schema migration, the local operation lock, `src/proxy.ts`) has actually been run on real macOS.
+- **Actual risk:** A macOS-specific behavior this task did not anticipate (file-locking semantics, case-sensitivity of the filesystem, a `VACUUM INTO`/libSQL native-binding difference from the Windows build this was developed against) could surface only on first real macOS use.
+- **Existing mitigation:** The Windows-specific issues that *were* found during development (a `VACUUM INTO`-then-`ATTACH` "database is locked" race, and an `EBUSY` race on a staging-directory rename — both real, reproduced, and fixed, see the `feature/cross-platform-persistence` branch history) suggest the underlying `@libsql/client` native binding has real, platform-specific timing quirks around file handle release; a macOS-equivalent quirk cannot be ruled out without actually running there.
+- **Required remediation:** A real macOS run of the acceptance scenarios in `docs/acceptance/PRE_RELEASE_CROSS_PLATFORM_ACCEPTANCE.md`, before this is treated as macOS-ready for an actual operator.
+- **Acceptance criteria:** A dated, documented run (mirroring RISK-05's own format) on real macOS hardware covering at minimum: first-run app-data directory creation, a full export→import round trip, and one schema-migration boot.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE` (for a release that will actually be used on macOS).
+- **Approval required from:** whoever performs the run must have access to real macOS hardware.
+- **Status:** OPEN — explicitly and honestly not closed by this task; see the final task report for the exact same caveat stated to the project owner.
+
+---
+
 ## Summary table
 
 | ID | Title | Gates | Status |
@@ -381,5 +413,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 | RISK-13 | AC-QUOTA-01 wording clarification | none | RESOLVED |
 | RISK-14 | AI Connections endpoint validation TOCTOU (DNS rebinding) | DEFERRED, BLOCKS_NETWORK_DEPLOYMENT | OPEN |
 | RISK-15 | AI Connections encryption key has no rotation/backup procedure | DEFERRED | OPEN |
+| RISK-16 | Restricted recovery mode has no in-app resolution path (needs RISK-04) | DEFERRED, BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-17 | Cross-platform persistence validated on Windows only, not macOS | BLOCKS_OPERATIONS_RELEASE | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
