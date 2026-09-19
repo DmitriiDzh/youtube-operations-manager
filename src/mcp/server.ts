@@ -20,6 +20,9 @@ import {
   playlistListInputSchema,
   playlistRemoveVideosInputSchema,
 } from "@/lib/playlist-management/schemas";
+import { createChangeSetCore, type ChangeSetCore } from "@/lib/changesets";
+import { getChangeSetInputSchema, listChangeSetsInputSchema } from "@/lib/changesets/schemas";
+import { createBatchCore, type BatchCore } from "@/lib/batches";
 
 loadEnvConfig(process.cwd());
 
@@ -37,6 +40,13 @@ type PlaylistManagementCoreSubset = Pick<
   | "addVideosToPlaylist"
   | "removeVideosFromPlaylist"
 >;
+
+// Phase 7 slice 1 (docs/roadmap/plans/PHASE_7_PLAN.md): read/propose-only MCP tools for
+// Change Sets and Batches, closing part of RISK-04. Deliberately excludes every
+// apply-class/write-capable method on either core -- `src/lib/batches/write-path-inventory.test.ts`
+// fails the build if any such symbol is ever referenced from this file.
+type ChangeSetCoreSubset = Pick<ChangeSetCore, "listChangeSets" | "getChangeSet" | "previewImport">;
+type BatchCoreSubset = Pick<BatchCore, "listBatchesByChannel" | "requireBatchForChannel" | "listLedgerRows">;
 
 type ToolResponse = {
   content: Array<{ type: "text"; text: string }>;
@@ -60,6 +70,11 @@ type McpToolHandlers = {
   playlistUpdate: (input: unknown) => Promise<ToolResponse>;
   playlistAddVideos: (input: unknown) => Promise<ToolResponse>;
   playlistRemoveVideos: (input: unknown) => Promise<ToolResponse>;
+  changesetList: (input: unknown) => Promise<ToolResponse>;
+  changesetGet: (input: unknown) => Promise<ToolResponse>;
+  localizationImportPreview: (input: unknown) => Promise<ToolResponse>;
+  batchList: (input: unknown) => Promise<ToolResponse>;
+  batchGet: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -207,6 +222,34 @@ export const authUserSelectInputSchema = z
   })
   .strict();
 
+// Phase 7 slice 1: batches has no existing exported Zod schema for its read-only
+// list/get operations (unlike changesets) -- `listBatchesByChannel`/`requireBatchForChannel`
+// take plain typed args, validated by the Web UI's API route inline. These two schemas are
+// the MCP-boundary equivalent of that same inline validation, not a new pattern.
+export const batchListInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+  })
+  .strict();
+
+export const batchGetInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    batchId: z.string().min(1),
+  })
+  .strict();
+
+// base64 length bound is a defensive pre-decode guard only -- `previewImport`'s own
+// MAX_WORKBOOK_BYTES check (src/lib/changesets/import.ts) is the real enforcement. Base64
+// inflates size by ~4/3, so this generously covers a 25MB workbook with room to spare.
+export const localizationImportPreviewInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    filename: z.string().min(1),
+    fileBase64: z.string().min(1).max(34_000_000),
+  })
+  .strict();
+
 const playlistUpdateToolInputSchema = z
   .object({
     credentialRef: credentialSchema.optional(),
@@ -236,7 +279,14 @@ export function createMcpToolHandlers(
     selectUser: (args: { userId: string }) => Promise<unknown>;
     listKnownWriteChannels: (args?: { credentialRef?: CredentialRef }) => Promise<unknown>;
     selectWriteChannel: (args: { channelId: string; credentialRef?: CredentialRef }) => Promise<unknown>;
-  } = createCliAuthService()
+  } = createCliAuthService(),
+  // Separate parameter (not merged into `core`) so every existing call site -- callers
+  // that only care about video-metadata/playlist tools -- is unaffected; only tests that
+  // actually exercise changeset_*/batch_* need to pass a fake here.
+  operationsCore: ChangeSetCoreSubset & BatchCoreSubset = {
+    ...createChangeSetCore(),
+    ...createBatchCore(),
+  }
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -502,6 +552,89 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    async changesetList(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listChangeSetsInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const changeSets = await operationsCore.listChangeSets(parsedInput.data);
+        return toolSuccessResult({ changeSets });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async changesetGet(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getChangeSetInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const result = await operationsCore.getChangeSet(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async localizationImportPreview(input: unknown): Promise<ToolResponse> {
+      const parsedInput = localizationImportPreviewInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const buffer = Buffer.from(parsedInput.data.fileBase64, "base64");
+        const result = await operationsCore.previewImport({
+          channelId: parsedInput.data.channelId,
+          filename: parsedInput.data.filename,
+          buffer,
+        });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async batchList(input: unknown): Promise<ToolResponse> {
+      const parsedInput = batchListInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const batches = await operationsCore.listBatchesByChannel(parsedInput.data.channelId);
+        return toolSuccessResult({ batches });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async batchGet(input: unknown): Promise<ToolResponse> {
+      const parsedInput = batchGetInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        // AGENTS.md §F: requireBatchForChannel verifies this batch actually belongs to
+        // the named channel before returning anything -- same guardrail the Web UI's
+        // own API route already applies for this exact read, reused rather than
+        // reimplemented against a bare `getBatch(batchId)`.
+        const batch = await operationsCore.requireBatchForChannel(
+          parsedInput.data.channelId,
+          parsedInput.data.batchId
+        );
+        const ledgerRows = await operationsCore.listLedgerRows(parsedInput.data.batchId);
+        return toolSuccessResult({ batch, ledgerRows });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -556,6 +689,13 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
       (await assertMcpDeviceAvailable()) ?? handlers.playlistAddVideos(input),
     playlistRemoveVideos: async (input) =>
       (await assertMcpDeviceAvailable()) ?? handlers.playlistRemoveVideos(input),
+    // Read/propose-only (Phase 7 slice 1) -- no mutation, so no device-availability gate,
+    // exactly like list/transcript/preview/playlistList above.
+    changesetList: handlers.changesetList,
+    changesetGet: handlers.changesetGet,
+    localizationImportPreview: handlers.localizationImportPreview,
+    batchList: handlers.batchList,
+    batchGet: handlers.batchGet,
   };
 }
 
@@ -723,6 +863,56 @@ export function createMcpServer(
       inputSchema: playlistRemoveVideosInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.playlistRemoveVideos(args)
+  );
+
+  server.registerTool(
+    "changeset_list",
+    {
+      description:
+        "List Change Sets for a synchronized channel's local database. Read-only -- never writes to YouTube or mutates any change's approval status.",
+      inputSchema: listChangeSetsInputSchema,
+    },
+    (args) => handlers.changesetList(args)
+  );
+
+  server.registerTool(
+    "changeset_get",
+    {
+      description:
+        "Get one Change Set and its changes, with optional status/language/videoId filters. Read-only.",
+      inputSchema: getChangeSetInputSchema,
+    },
+    (args) => handlers.changesetGet(args)
+  );
+
+  server.registerTool(
+    "localization_import_preview",
+    {
+      description:
+        "Preview an XLSX localization workbook (base64-encoded) against a channel's synced videos -- returns a validation summary and per-row errors. Propose-adjacent: never persists a Change Set and never writes to YouTube.",
+      inputSchema: localizationImportPreviewInputSchema,
+    },
+    (args) => handlers.localizationImportPreview(args)
+  );
+
+  server.registerTool(
+    "batch_list",
+    {
+      description:
+        "List Batches for a channel (dry-run-only pipeline state). Read-only -- never executes or prepares a batch.",
+      inputSchema: batchListInputSchema,
+    },
+    (args) => handlers.batchList(args)
+  );
+
+  server.registerTool(
+    "batch_get",
+    {
+      description:
+        "Get one Batch and its per-video ledger rows, after verifying the batch belongs to the given channel. Read-only.",
+      inputSchema: batchGetInputSchema,
+    },
+    (args) => handlers.batchGet(args)
   );
 
   return server;

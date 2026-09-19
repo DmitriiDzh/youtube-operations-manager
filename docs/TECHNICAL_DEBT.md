@@ -149,15 +149,15 @@ Not every issue in this register must be fixed immediately. It must, however, al
 
 ## RISK-04 — No CLI/MCP interfaces for Change Sets
 
-- **Affected components:** `src/cli/video-metadata.ts`, `src/mcp/server.ts` (neither has `changeset_*`/`localization_*`/`channel_sync` commands or tools yet).
-- **Current behavior:** All Phase 2–4 capabilities (channel sync, localization overview/export, XLSX import, change-set review/approval) exist only through the Web UI and its underlying API routes. `createChannelSyncCore()`, `createLocalizationCore()`, and `createChangeSetCore()` are already interface-agnostic (same pattern as `createVideoMetadataCore()`), so this is additive work, not a redesign.
-- **Actual risk:** The future operations agent (Codex) is meant to operate exclusively through MCP/API (`docs/PROJECT_SPEC.md` §26, this task's development/operations separation). Without `changeset_*` MCP tools, Codex cannot review or approve localization change sets at all — the entire Phase 4 workflow is currently human-Web-UI-only.
-- **Existing mitigation:** None needed yet — Phase 4.5 does not hand off to Codex.
-- **Required remediation:** Register MCP tools mirroring the existing `apply`/`playlist_*` read/propose/apply split (`docs/DEVELOPMENT_PLAYBOOK.md` §6.7): read tools (`changeset_list`, `changeset_get`), propose-adjacent tools (`localization_import_preview`), and — only once Phase 5's write pipeline exists — an apply-class tool with the same guardrails as `apply`. CLI parity is lower priority than MCP for the operations handoff but should follow the same namespace pattern as `metadata`/`auth`/`playlist`.
-- **Acceptance criteria:** MCP tool tests exist proving stable JSON schemas, `DomainError`-shaped errors (never bare prose), and that no tool in the read/propose class can trigger a YouTube write.
+- **Affected components:** `src/cli/video-metadata.ts` (still no `changeset_*`/`batch_*` commands), `src/mcp/server.ts` (read/propose-only `changeset_*`/`batch_*`/`localization_import_preview` tools added 2026-09-20; no apply-class Change Set/Batch tool, and no `channel_sync` tool of any kind, exist yet).
+- **Current behavior:** Channel sync (list/trigger) still has no CLI/MCP interface at all. Change Sets and Batches now have **read/propose-only** MCP tools (`changeset_list`, `changeset_get`, `localization_import_preview`, `batch_list`, `batch_get` — `docs/roadmap/plans/PHASE_7_PLAN.md` slice 1, `docs/interfaces.md`) reusing the same interface-agnostic `createChangeSetCore()`/`createBatchCore()` factories the Web UI's own API routes use — no new persistence or validation logic was introduced. Approving/rejecting/creating/executing a Change Set or Batch, and reviewing/approving/executing a localization change through MCP at all, still requires the Web UI.
+- **Actual risk:** The future operations agent (Codex) is meant to operate exclusively through MCP/API (`docs/PROJECT_SPEC.md` §26, this task's development/operations separation). Codex can now *inspect* Change Sets/Batches and preview an XLSX import via MCP, but still cannot approve, create, or execute anything — the propose→approve→execute pipeline remains human-Web-UI-only past the read/propose step. Channel sync itself (triggering a sync, listing synced channels) has no CLI/MCP path whatsoever yet.
+- **Existing mitigation:** None needed yet for the apply-class gap — Gate B (real YouTube writes) isn't satisfied regardless, so an apply-class Change Set/Batch MCP tool would have nothing safe to execute yet even if it existed.
+- **Required remediation:** (1) A `channel_sync` MCP tool (list/trigger), not yet started. (2) Once Gate B's live-write validation track is satisfied, an apply-class Change Set/Batch MCP tool with the same guardrails as `apply` (`docs/DEVELOPMENT_PLAYBOOK.md` §6.7). (3) CLI parity for all of the above — lower priority than MCP for the operations handoff, but should follow the same namespace pattern as `metadata`/`auth`/`playlist`.
+- **Acceptance criteria:** Met for the read/propose slice (12 new MCP tool tests, `src/mcp/server.test.ts`, proving stable JSON shapes, `DomainError`-shaped errors, and channel-ownership verification via `requireBatchForChannel`/`requireChannel` rather than a bare id lookup). Still needed for `channel_sync` and any future apply-class tool.
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
-- **Approval required from:** project owner (scope/timing of Phase 5 vs. a dedicated CLI/MCP-parity phase).
-- **Status:** OPEN — explicitly out of scope for Phase 4.5 per this assignment.
+- **Approval required from:** project owner (scope/timing of the apply-class tool vs. Gate B; scope/timing of `channel_sync`).
+- **Status:** PARTIALLY RESOLVED (2026-09-20) — read/propose-only Change Set/Batch MCP tools shipped; `channel_sync` MCP tool and any apply-class Change Set/Batch MCP tool remain OPEN.
 
 ---
 
@@ -646,7 +646,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-01 | XLSX upload size enforcement is best-effort | DEFERRED, BLOCKS_NETWORK_DEPLOYMENT | OPEN |
 | RISK-02 | No per-user channel ownership | DEFERRED, BLOCKS_NETWORK_DEPLOYMENT | OPEN |
 | RISK-03 | Conflict detection bounded by last sync | BLOCKS_PHASE_5_WRITES, BLOCKS_OPERATIONS_RELEASE | OPEN |
-| RISK-04 | No CLI/MCP Change Set interfaces | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-04 | No CLI/MCP Change Set interfaces | BLOCKS_OPERATIONS_RELEASE | PARTIALLY RESOLVED (read/propose MCP tools shipped 2026-09-20; channel_sync + apply-class tool still OPEN) |
 | RISK-05 | No real browser/OAuth verification | BLOCKS_OPERATIONS_RELEASE, BLOCKS_PHASE_5_WRITES | OPEN |
 | RISK-06 | Dependency security advisories (0 critical; 20 triaged, 2 prod-path) | BLOCKS_OPERATIONS_RELEASE, BLOCKS_NETWORK_DEPLOYMENT | next/next-auth portion CLOSED; remainder OPEN, triaged |
 | RISK-07 | Plaintext OAuth tokens | DEFERRED, BLOCKS_NETWORK_DEPLOYMENT | OPEN |

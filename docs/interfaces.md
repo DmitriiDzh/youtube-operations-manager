@@ -105,6 +105,24 @@ Key MCP tools:
 - Playlist tools:
   - `playlist_list`, `playlist_create`, `playlist_update`, `playlist_delete`
   - `playlist_add_videos`, `playlist_remove_videos`
+- Change Set / Batch tools (Phase 7 slice 1, `docs/roadmap/plans/PHASE_7_PLAN.md`; closes part of
+  `docs/TECHNICAL_DEBT.md` RISK-04) — all five are **read/propose-only**: none can reach a real
+  YouTube write, and none accepts or is gated by `credentialRef` (they read the local database
+  only, not the YouTube API):
+  - `changeset_list` — `{ channelId }` → `{ changeSets: ChangeSet[] }`
+  - `changeset_get` — `{ channelId, changeSetId, status?, language?, videoId? }` →
+    `{ changeSet, changes, pagination }`
+  - `localization_import_preview` — `{ channelId, filename, fileBase64 }` (workbook bytes,
+    base64-encoded — MCP's JSON transport has no native binary field) → the same
+    `{ summary, errors, totalErrors }` shape the Web UI's
+    `POST .../localizations/import/preview` route returns; **persists nothing**
+  - `batch_list` — `{ channelId }` → `{ batches: Batch[] }`
+  - `batch_get` — `{ channelId, batchId }` → `{ batch, ledgerRows }`; verifies the batch belongs
+    to `channelId` via `requireBatchForChannel` before returning anything (`AGENTS.md` §F)
+
+  Deliberately **not** included in this slice: any apply-class Change Set/Batch tool (creating,
+  approving, or executing) — blocked on Gate B's live-write validation track
+  (`docs/TECHNICAL_DEBT.md`), tracked separately and unaffected by this slice.
 
 Most tools accept optional `credentialRef`; if omitted, server falls back to active local auth context.
 
