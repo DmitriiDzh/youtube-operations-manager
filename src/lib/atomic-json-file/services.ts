@@ -78,13 +78,20 @@ export async function writeJsonFileAtomic(
     // Any failure above (write, sync, close, chmod, or a rename that exhausts its own
     // retries) leaves an orphaned tmp file behind unless removed here -- previously left to
     // accumulate as disk debris on every one of those paths, not a data-safety issue by
-    // itself, but real cleanup review series cycle 5 found missing (a no-op if the rename
-    // already succeeded and moved it, or if it was never created).
+    // itself, but real cleanup review series cycle 5 found missing. `renameWithRetry` never
+    // throws once the rename has actually succeeded (it returns immediately on success, see
+    // its own source), so this `catch` block -- and therefore this `rm` -- is structurally
+    // unreachable once the file has already been moved to `targetPath`; it is never a live
+    // "did the rename actually happen" check, it only ever runs for a tmp file that is still
+    // sitting at `tmpPath` (review series cycle 6 -- an earlier version of this comment
+    // wrongly implied the already-renamed case was being defended against here too).
     await rm(tmpPath, { force: true }).catch(() => {});
     throw error;
   }
-
-  if (process.platform !== "win32") {
-    await chmod(targetPath, 0o600);
-  }
+  // No trailing chmod(targetPath) here: POSIX rename() preserves the source inode's mode bits
+  // (same filesystem, same directory), and the tmp file was already chmod'd to 0600 above
+  // before the rename -- a second chmod on the exact same file after a successful rename was
+  // both redundant and, unlike everything above, unguarded: if it alone had thrown, the caller
+  // would have seen this whole write as failed even though the data was already durably
+  // written and renamed into place (review series cycle 6).
 }
