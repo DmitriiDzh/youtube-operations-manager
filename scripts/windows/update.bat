@@ -16,9 +16,7 @@ if errorlevel 1 (
 )
 
 echo Stopping any running instance first...
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr :3000 ^| findstr LISTENING') do (
-  taskkill /PID %%p /F >nul 2>nul
-)
+call "%~dp0stop.bat" /noconfirm
 
 echo Installing dependencies for this version...
 call npm install

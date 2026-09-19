@@ -76,6 +76,45 @@ Next.js 16.3.5, never against a mocked or simulated environment.
   `docs/getting-started.md` describing the required variables prose-only — added one, enumerating
   every `process.env.*` reference actually found in `src/` plus the NextAuth-only variables.
 
+## Independent review (`/code-review high`) and fixes applied
+
+An independent review was run against this branch's diff before integration (`AGENTS.md` §K.3).
+It correctly found the documentation accurate (fact-checked against `platform-paths`, `db.ts`,
+`crypto.ts`) and no `AGENTS.md` §B violations, but found real, concrete bugs in the launcher
+scripts themselves — the one piece of this task that had not been through the same
+build/test/lint scrutiny as application code. All were fixed and the fixed scripts were then
+re-executed for real on macOS (not just re-read):
+
+- **`findstr :3000` substring-match bug** (`scripts/windows/stop.bat`, `update.bat`): matched any
+  port in 30000–30009 too, so `stop.bat`/`update.bat` could force-kill an unrelated process.
+  Fixed to match the literal `":3000 "` (with the column's trailing space) instead, and
+  `update.bat` now calls the fixed `stop.bat` (with a `/noconfirm` flag to skip its interactive
+  pause) instead of duplicating the pattern a second time.
+- **`stop.bat` never closed the wrapper window** `start.bat` opened. Added a
+  `taskkill /FI "WINDOWTITLE eq ..." /T /F` alongside the port-based kill.
+- **macOS `stop.sh` trusted a possibly-stale pidfile PID** (PID reuse by the OS could make it kill
+  an unrelated process) **and mishandled multiple PIDs** from `lsof -ti tcp:3000`. Rewritten to
+  treat `lsof -ti tcp:3000` as the sole ground truth (loop over every PID actually listening,
+  never a recorded PID alone), and to wait (up to 10s) and re-check that the port is actually free
+  before reporting success, instead of reporting "Done" immediately after sending the signal.
+- **macOS `start.sh` didn't verify the server actually came up** before opening a browser tab and
+  writing the PID file — a failed `npm run start` would still be reported as running. Rewritten to
+  poll `http://localhost:3000/` (up to 20s) and check the process is still alive before declaring
+  success, and to refuse to start at all if port 3000 is already in use (preventing a second
+  instance from overwriting the first one's PID file).
+- **Shared, unscoped `/tmp/youtube-ops-manager.pid`** (risk on a shared machine or with two
+  checkouts): moved to a project-scoped `.launcher.pid` in the repo root (gitignored).
+- `update.sh`'s `"$(dirname "$0")/stop.sh" || true` unconditionally swallowed any failure from
+  `stop.sh`, not just its normal "nothing was running" case. Removed the blanket swallow now that
+  `stop.sh` itself reports its own outcome correctly.
+
+Re-tested for real after fixes: `start.sh` (readiness poll works, correctly refuses a second
+concurrent start), `stop.sh` (correctly found and stopped the real listening process, confirmed
+the port was actually free before printing success), `update.sh` (full stop → install → rebuild
+cycle). The Windows `.bat` changes were reasoned through against documented `cmd.exe`/`findstr`/
+`taskkill` semantics but, like the rest of the Windows launcher, could not be executed on a real
+Windows machine in this environment.
+
 ## Safety boundaries respected throughout
 
 No real YouTube mutation, no real/paid AI API call, no automatic Google OAuth login, no real

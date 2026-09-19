@@ -1,31 +1,41 @@
 #!/bin/sh
 # YouTube Operations Manager - macOS stop script.
+cd "$(dirname "$0")/../.."
+PIDFILE="$(pwd)/.launcher.pid"
+
 echo "Stopping YouTube Operations Manager..."
 
-PIDFILE=/tmp/youtube-ops-manager.pid
-STOPPED=0
+# Build the list of PIDs actually listening on port 3000 right now -- this is the ground truth;
+# a recorded pidfile PID is only trusted once corroborated against it, since PIDs get reused by
+# the OS and a stale pidfile could otherwise point at an unrelated process.
+PORT_PIDS=$(lsof -ti tcp:3000 2>/dev/null || true)
 
-if [ -f "$PIDFILE" ]; then
-  PID=$(cat "$PIDFILE")
-  if kill -0 "$PID" >/dev/null 2>&1; then
-    kill "$PID"
-    STOPPED=1
-    echo "Stopped process $PID (from $PIDFILE)."
-  fi
-  rm -f "$PIDFILE"
-fi
-
-if [ "$STOPPED" = "0" ]; then
-  PORT_PID=$(lsof -ti tcp:3000 2>/dev/null || true)
-  if [ -n "$PORT_PID" ]; then
-    kill "$PORT_PID"
-    echo "Stopped process $PORT_PID listening on port 3000."
-    STOPPED=1
-  fi
-fi
-
-if [ "$STOPPED" = "0" ]; then
-  echo "Nothing found running on port 3000 -- the application does not appear to be running."
+if [ -n "$PORT_PIDS" ]; then
+  for PID in $PORT_PIDS; do
+    if kill "$PID" 2>/dev/null; then
+      echo "Sent stop signal to process $PID (listening on port 3000)."
+    else
+      echo "[WARN] Could not signal process $PID -- it may already be gone, or need sudo."
+    fi
+  done
 else
-  echo "Done."
+  echo "Nothing is listening on port 3000 -- the application does not appear to be running."
+fi
+
+rm -f "$PIDFILE"
+
+if [ -n "$PORT_PIDS" ]; then
+  # Shutdown is asynchronous (SIGTERM is a request, not instant) -- wait briefly for the port to
+  # actually free up before reporting success, so a start.sh run immediately after this doesn't
+  # hit EADDRINUSE against a process that is still in the middle of shutting down.
+  ATTEMPT=0
+  while [ "$ATTEMPT" -lt 10 ]; do
+    if [ -z "$(lsof -ti tcp:3000 2>/dev/null)" ]; then
+      echo "Done -- port 3000 is free."
+      exit 0
+    fi
+    ATTEMPT=$((ATTEMPT + 1))
+    sleep 1
+  done
+  echo "[WARN] Port 3000 is still in use after waiting -- the process may need more time, or a manual kill (lsof -ti tcp:3000)."
 fi

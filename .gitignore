@@ -58,6 +58,9 @@ data/*.db-shm
 # local auth context
 data/auth-context.json
 
+# macOS launcher script's own PID file (scripts/macos/start.sh / stop.sh)
+/.launcher.pid
+
 # vercel
 .vercel
 
