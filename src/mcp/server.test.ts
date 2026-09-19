@@ -3,6 +3,8 @@ import test from "node:test";
 import { DomainError } from "@/lib/video-metadata/contracts";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import type { PlaylistManagementCore } from "@/lib/playlist-management";
+import type { ChangeSetCore } from "@/lib/changesets";
+import type { BatchCore } from "@/lib/batches";
 import { createMcpServer, createMcpToolHandlers } from "./server";
 
 function makeCoreStub(): Pick<
@@ -1194,4 +1196,255 @@ test("MCP playlist_delete fails closed on unresolved channel with stable details
   assert.deepEqual(payload.error.details, {
     expectedChannelId: "UC_ACTIVE",
   });
+});
+
+// Phase 7 slice 1 (docs/roadmap/plans/PHASE_7_PLAN.md): changeset_list, changeset_get,
+// localization_import_preview, batch_list, batch_get. All five are read/propose-only --
+// no test here needs device-lock setup, since none of them are wrapped by
+// wrapMcpHandlersWithMutationGate's assertMcpDeviceAvailable() gate.
+
+function makeChangeSet(overrides: Partial<import("@/lib/changesets/contracts").ChangeSet> = {}) {
+  return {
+    id: "cs-1",
+    channelId: "UC_1",
+    source: "xlsx_import" as const,
+    status: "in_review" as const,
+    importedFilename: "export.xlsx",
+    schemaVersion: "1",
+    exportedAt: "2026-09-01T00:00:00.000Z",
+    hasInvalid: false,
+    hasConflicts: false,
+    totalChanges: 1,
+    pendingCount: 1,
+    approvedCount: 0,
+    rejectedCount: 0,
+    conflictCount: 0,
+    invalidCount: 0,
+    createdAt: "2026-09-01T00:00:00.000Z",
+    updatedAt: "2026-09-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function makeChange(overrides: Partial<import("@/lib/changesets/contracts").Change> = {}) {
+  return {
+    id: "chg-1",
+    changeSetId: "cs-1",
+    videoId: "v1",
+    language: "es",
+    field: "title" as const,
+    baselineValue: "Before",
+    proposedValue: "After",
+    changeType: "modify" as const,
+    validationStatus: "valid" as const,
+    validationError: null,
+    conflictStatus: "none" as const,
+    approvalStatus: "pending" as const,
+    approvedValue: null,
+    createdAt: "2026-09-01T00:00:00.000Z",
+    updatedAt: "2026-09-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function makeBatch(overrides: Partial<import("@/lib/batches/contracts").Batch> = {}) {
+  return {
+    id: "batch-1",
+    channelId: "UC_1",
+    status: "PENDING" as const,
+    concurrency: 1,
+    dryRun: true,
+    runId: null,
+    createdAt: "2026-09-01T00:00:00.000Z",
+    startedAt: null,
+    completedAt: null,
+    ...overrides,
+  };
+}
+
+function makeLedgerRow(overrides: Partial<import("@/lib/batches/contracts").LedgerRow> = {}) {
+  return {
+    id: "row-1",
+    batchId: "batch-1",
+    videoId: "v1",
+    changeIds: ["chg-1"],
+    status: "PENDING" as const,
+    error: null,
+    verificationResult: null,
+    activeAttemptId: null,
+    createdAt: "2026-09-01T00:00:00.000Z",
+    updatedAt: "2026-09-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function makeOperationsCoreStub(): Pick<
+  ChangeSetCore,
+  "listChangeSets" | "getChangeSet" | "previewImport"
+> &
+  Pick<BatchCore, "listBatchesByChannel" | "requireBatchForChannel" | "listLedgerRows"> {
+  return {
+    listChangeSets: async () => [makeChangeSet()],
+    getChangeSet: async () => ({
+      changeSet: makeChangeSet(),
+      changes: [makeChange()],
+      pagination: { page: 1, pageSize: 50, total: 1 },
+    }),
+    previewImport: async () => ({
+      summary: {
+        videosFound: 1,
+        localizationRows: 1,
+        validChanges: 1,
+        unchangedValues: 0,
+        invalidRows: 0,
+        conflicts: 0,
+      },
+      errors: [],
+      totalErrors: 0,
+    }),
+    listBatchesByChannel: async () => [makeBatch()],
+    requireBatchForChannel: async () => makeBatch(),
+    listLedgerRows: async () => [makeLedgerRow()],
+  };
+}
+
+test("MCP changeset_list returns change sets for a channel", async () => {
+  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), makeOperationsCoreStub());
+  const result = await handlers.changesetList({ channelId: "UC_1" });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.changeSets.length, 1);
+  assert.equal(payload.changeSets[0].id, "cs-1");
+});
+
+test("MCP changeset_list rejects a missing channelId before calling the core", async () => {
+  let called = false;
+  const operationsCore = makeOperationsCoreStub();
+  operationsCore.listChangeSets = async () => {
+    called = true;
+    return [];
+  };
+
+  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), operationsCore);
+  const result = await handlers.changesetList({});
+
+  assert.equal(result.isError, true);
+  assert.equal(called, false);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP changeset_get returns a change set with its changes", async () => {
+  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), makeOperationsCoreStub());
+  const result = await handlers.changesetGet({ channelId: "UC_1", changeSetId: "cs-1" });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.changeSet.id, "cs-1");
+  assert.equal(payload.changes.length, 1);
+});
+
+test("MCP changeset_get propagates a not_found DomainError unchanged", async () => {
+  const operationsCore = makeOperationsCoreStub();
+  operationsCore.getChangeSet = async () => {
+    throw new DomainError({
+      code: "not_found",
+      message: "Change Set not found for this channel",
+      details: { changeSetId: "missing" },
+    });
+  };
+
+  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), operationsCore);
+  const result = await handlers.changesetGet({ channelId: "UC_1", changeSetId: "missing" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "not_found");
+  assert.deepEqual(payload.error.details, { changeSetId: "missing" });
+});
+
+test("MCP localization_import_preview decodes base64 and forwards the exact bytes to previewImport", async () => {
+  const original = "title,description\nHello,World\n";
+  const fileBase64 = Buffer.from(original, "utf8").toString("base64");
+
+  const captured: { buffer?: Buffer } = {};
+  const operationsCore = makeOperationsCoreStub();
+  operationsCore.previewImport = async (input: unknown) => {
+    captured.buffer = (input as { buffer: Buffer }).buffer;
+    return {
+      summary: { videosFound: 0, localizationRows: 0, validChanges: 0, unchangedValues: 0, invalidRows: 0, conflicts: 0 },
+      errors: [],
+      totalErrors: 0,
+    };
+  };
+
+  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), operationsCore);
+  const result = await handlers.localizationImportPreview({
+    channelId: "UC_1",
+    filename: "export.xlsx",
+    fileBase64,
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.ok(captured.buffer);
+  assert.equal(captured.buffer?.toString("utf8"), original);
+});
+
+test("MCP localization_import_preview rejects input missing fileBase64", async () => {
+  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), makeOperationsCoreStub());
+  const result = await handlers.localizationImportPreview({
+    channelId: "UC_1",
+    filename: "export.xlsx",
+  });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP batch_list returns batches for a channel", async () => {
+  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), makeOperationsCoreStub());
+  const result = await handlers.batchList({ channelId: "UC_1" });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.batches.length, 1);
+  assert.equal(payload.batches[0].id, "batch-1");
+});
+
+test("MCP batch_get verifies channel ownership via requireBatchForChannel, not a bare getBatch", async () => {
+  const seenArgs: unknown[] = [];
+  const operationsCore = makeOperationsCoreStub();
+  operationsCore.requireBatchForChannel = async (channelId: string, batchId: string) => {
+    seenArgs.push([channelId, batchId]);
+    return makeBatch();
+  };
+
+  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), operationsCore);
+  const result = await handlers.batchGet({ channelId: "UC_1", batchId: "batch-1" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(seenArgs, [["UC_1", "batch-1"]]);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.batch.id, "batch-1");
+  assert.equal(payload.ledgerRows.length, 1);
+});
+
+test("MCP batch_get fails closed when the batch does not belong to the given channel", async () => {
+  const operationsCore = makeOperationsCoreStub();
+  operationsCore.requireBatchForChannel = async () => {
+    throw new DomainError({
+      code: "not_found",
+      message: "Batch does not belong to this channel",
+      details: { batchId: "batch-1" },
+    });
+  };
+
+  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), operationsCore);
+  const result = await handlers.batchGet({ channelId: "UC_OTHER", batchId: "batch-1" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "not_found");
 });

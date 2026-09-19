@@ -197,15 +197,15 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 - **Важные ограничения безопасности:** JSON-конверты на stdout (`{ ok: true|false, ... }`), ненулевой exit code при ошибке.
 - **Ограничение (Phase 2–4): команд синхронизации каналов/видео, локализаций и change sets в CLI нет.**
 
-### 2.13 MCP — **IMPLEMENTED** (metadata/auth/playlist tools); sync/localization/changesets tools are **PLANNED** (see `docs/TECHNICAL_DEBT.md` RISK-04)
+### 2.13 MCP — **IMPLEMENTED** (metadata/auth/playlist tools; read/propose-only Change Set/Batch tools); channel-sync tools and any apply-class Change Set/Batch tool are **PLANNED** (see `docs/TECHNICAL_DEBT.md` RISK-04, now PARTIALLY RESOLVED)
 
 - **Ответственность:** stdio MCP-сервер для AI-агентов.
 - **Файлы:** `src/mcp/server.ts` (`createMcpServer`, `createMcpToolHandlers`).
-- **Точки входа:** `npm run mcp:video-metadata`; инструменты: `write_context`, `write_channel_list`, `write_channel_select`, `whoami`, `auth_user_select`, `list`, `transcript`, `preview`, `apply`, `playlist_list`, `playlist_create`, `playlist_update`, `playlist_delete`, `playlist_add_videos`, `playlist_remove_videos`.
-- **Зависимости:** те же core-фабрики, что и CLI; `resolveEffectiveCredentialRef` из `cli-auth`.
-- **Read/Write:** оба (`apply`, `playlist_*` — write, с `dryRun`-поддержкой для `apply`).
-- **Важные ограничения безопасности:** все входы — строгие Zod-схемы; все ошибки — структурированный JSON, никогда голый текст.
-- **Ограничение (Phase 2–4): MCP-инструментов синхронизации каналов/видео, локализаций и change sets нет.**
+- **Точки входа:** `npm run mcp:video-metadata`; инструменты: `write_context`, `write_channel_list`, `write_channel_select`, `whoami`, `auth_user_select`, `list`, `transcript`, `preview`, `apply`, `playlist_list`, `playlist_create`, `playlist_update`, `playlist_delete`, `playlist_add_videos`, `playlist_remove_videos`, `changeset_list`, `changeset_get`, `localization_import_preview`, `batch_list`, `batch_get` (последние 5 — Phase 7 slice 1, `docs/roadmap/plans/PHASE_7_PLAN.md`).
+- **Зависимости:** те же core-фабрики, что и CLI/Web UI (`createChangeSetCore()`, `createBatchCore()` — те же, что использует API этих доменов, без параллельной реализации, AGENTS.md §D); `resolveEffectiveCredentialRef` из `cli-auth`.
+- **Read/Write:** `apply`, `playlist_*` — write (с `dryRun`-поддержкой для `apply`); `changeset_list`/`changeset_get`/`localization_import_preview`/`batch_list`/`batch_get` — исключительно read/propose-only, не гейтятся `assertMcpDeviceAvailable` (не мутируют ничего).
+- **Важные ограничения безопасности:** все входы — строгие Zod-схемы; все ошибки — структурированный JSON, никогда голый текст; `batch_get` проверяет принадлежность батча каналу через `requireBatchForChannel`, а не голый `getBatch(batchId)` (AGENTS.md §F).
+- **Ограничение: MCP-инструмента синхронизации каналов/видео (`channel_sync`) и apply-класса для Change Sets/Batches до сих пор нет** — approve/reject/create/execute через MCP недоступны, только Web UI.
 
 ### 2.14 Tests — **IMPLEMENTED**
 
@@ -269,7 +269,7 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 - **Approval ≠ применено к YouTube.** `Change.approvalStatus === "approved"` — это только локальная запись в SQLite (`docs/ARCHITECTURE.md` §6.9). Ни один код-путь в `src/lib/changesets/` не вызывает `googleapis`.
 - **Conflict detection в Phase 4 сверяется с последним синхронизированным SQLite-снимком, а не с живым состоянием YouTube.** Свежая проверка remote-состояния непосредственно перед записью обязательна для Phase 5 (`docs/TECHNICAL_DEBT.md` RISK-03).
 - **Приложение работает по модели single-operator.** Нет per-user ownership-границы по каналам (`docs/TECHNICAL_DEBT.md` RISK-02) — это осознанное допущение для локального инструмента, а не завершённая multi-tenant модель.
-- **Change Set CLI/MCP-интерфейсов не существует** (`docs/TECHNICAL_DEBT.md` RISK-04) — вся Phase 4 функциональность доступна только через Web UI/API.
+- **Change Set/Batch CLI-интерфейсов не существует; MCP есть только read/propose-only** (`changeset_list`/`changeset_get`/`localization_import_preview`/`batch_list`/`batch_get`, см. §2.13; `docs/TECHNICAL_DEBT.md` RISK-04, PARTIALLY RESOLVED) — approve/reject/create/execute для Change Set/Batch по-прежнему доступны только через Web UI/API.
 - **Живая browser/OAuth-проверка не выполнена независимо** (`docs/TECHNICAL_DEBT.md` RISK-05) — автоматические тесты и один сквозной прогон на реальной БД/реальном экспорте существуют, но реального клика в браузере с настоящей Google-сессией не было.
 
 **Реализовано и работает (проверено тестами):**
@@ -279,7 +279,7 @@ Auth (Web + CLI PKCE/device flow), credential resolution, write-context guardrai
 
 **Запланировано, но не реализовано (Phase 5, Slice 4 — единственное оставшееся):**
 - Реальный YouTube-адаптер за портом `WriteExecutor` — Slices 1-3 построили весь pipeline (ledger/attempt/retry/reconciliation/verification/audit/recovery/isolation) поверх абстрактного порта; ни один approved change по-прежнему не отправляется в YouTube ни при каких обстоятельствах.
-- CLI-команды и MCP-инструменты для синхронизации каналов/видео, localization и change sets (`channel_sync`, `channel_list`, `video_list`, `localization_list`, `localization_export`, `changeset_list`, `changeset_approve` и т.п.).
+- CLI-команды для синхронизации каналов/видео, localization и change sets/batches (`channel_sync`, `channel_list`, `video_list`, `localization_list`, `localization_export`, `changeset_approve` и т.п.) — MCP read/propose-инструменты для Change Sets/Batches уже есть (§2.13), CLI-парности и MCP `channel_sync`/apply-класса пока нет.
 - Конфигурация целевых языков канала (сейчас язык — это только то, что уже есть в существующих локализациях; см. `docs/ARCHITECTURE.md` §5.4).
 - Явная модель deletion-предложений (осознанно отложена в Phase 4, см. `docs/ARCHITECTURE.md` §6.14).
 - AI-генерация локализаций (провайдер-агностичный интерфейс, драфты через тот же approval pipeline).
