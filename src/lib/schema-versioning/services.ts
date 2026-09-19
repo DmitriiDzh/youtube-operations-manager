@@ -1,4 +1,5 @@
 import { SchemaVersionError, type SchemaMigration, type SqlExecutor } from "./contracts";
+import { isMissingTableError } from "@/lib/db-backup";
 
 const SCHEMA_META_TABLE_SQL =
   "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)";
@@ -22,9 +23,14 @@ export async function readSchemaVersion(client: SqlExecutor): Promise<number | n
     const raw = result.rows[0].value;
     const parsed = Number(raw);
     return Number.isFinite(parsed) ? parsed : null;
-  } catch {
-    // schema_meta table does not exist yet -- a legacy/unversioned database, not an error.
-    return null;
+  } catch (error) {
+    // RISK-19 (docs/TECHNICAL_DEBT.md): only "schema_meta doesn't exist yet" (a legacy/
+    // unversioned database) is a legitimate null. Any other error (SQLITE_BUSY, I/O,
+    // corruption) must propagate -- treating it identically to "never initialized" would let
+    // assertSupportedSchemaVersion fail *open* on exactly the transient-error window it exists
+    // to guard against reaching with an unsupported/incompatible schema.
+    if (isMissingTableError(error)) return null;
+    throw error;
   }
 }
 
