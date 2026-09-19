@@ -866,11 +866,24 @@ export function createBatchServices(deps: ServiceDependencies) {
       return { ledgerRowId: row.id, videoId: row.videoId, status: "SUCCESS", ownResponseObserved: false };
     };
 
-    const finalizeConflict = async (): Promise<ExecutionResult> => {
+    // (independent review, review series cycle 2): the reconciliation-detected CONFLICT path
+    // is one of (now) four code paths that can produce a CONFLICT ExecutionResult -- the other
+    // three all include conflictingChangeIds, and this one previously didn't. `freshRead` is
+    // whichever read (`read1`/`read2`, below) actually classified as "diverged"; when no read
+    // was ever received at all (`null`, itself classified as "diverged"), every pending change
+    // for this row is conservatively reported as conflicting, since there is no fresh value to
+    // narrow the list down from.
+    const finalizeConflict = async (freshRead: FreshVideoContext | null): Promise<ExecutionResult> => {
+      const conflictingChangeIds = freshRead
+        ? (() => {
+            const result = detectPreWriteConflict(pendingChanges, freshRead);
+            return result.status === "conflict" ? result.conflictingChangeIds : pendingChanges.map((c) => c.id);
+          })()
+        : pendingChanges.map((c) => c.id);
       await transitionLedgerStatus(row.id, "CONFLICT");
-      await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "CONFLICT", detail: { detectedVia: "reconciliation" } });
+      await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "CONFLICT", detail: { detectedVia: "reconciliation", conflictingChangeIds } });
       await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
-      return { ledgerRowId: row.id, videoId: row.videoId, status: "CONFLICT" };
+      return { ledgerRowId: row.id, videoId: row.videoId, status: "CONFLICT", conflictingChangeIds };
     };
 
     const finalizeUnknown = async (reason: string): Promise<ExecutionResult> => {
@@ -886,7 +899,7 @@ export function createBatchServices(deps: ServiceDependencies) {
     await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "RECONCILIATION", detail: { step: 1, classification: classification1 } });
 
     if (classification1 === "matches_requested") return finalizeSuccess();
-    if (classification1 === "diverged") return finalizeConflict();
+    if (classification1 === "diverged") return finalizeConflict(read1 ? toFreshVideoContext(read1) : null);
 
     // matches_baseline -- inconclusive by itself (§0.F Step 1), proceed to Step 2.
     await deps.clock.wait(retryConfig.baseDelayMs);

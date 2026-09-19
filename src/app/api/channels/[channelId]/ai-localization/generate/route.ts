@@ -4,6 +4,8 @@ import { authOptions } from "@/lib/auth";
 import { createAiLocalizationCore } from "@/lib/ai-localization";
 import { DomainError } from "@/lib/ai-localization/contracts";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
+import { OperationLockError } from "@/lib/operation-lock";
+import { RecoveryModeError } from "@/lib/device-handoff";
 
 const core = createAiLocalizationCore();
 
@@ -38,6 +40,26 @@ export async function POST(
     const result = await core.generateProposals({ ...body, channelId });
     return NextResponse.json(result);
   } catch (error) {
+    // This route is the one place assertDeviceAvailable's OperationLockError/RecoveryModeError
+    // (RISK-30, docs/TECHNICAL_DEBT.md) can reach an API route handler directly -- proxy.ts
+    // exempts this specific path from its own blanket device-availability check, on the
+    // understanding that the real-connection path enforces it itself deeper in the service
+    // layer. Checked explicitly, the same way proxy.ts/mcp/server.ts/the CLI already do,
+    // instead of falling through to a generic 500 that discards the stable code/details
+    // (independent review, review series cycle 2 -- neither class extends DomainError, on
+    // purpose, AGENTS.md §D).
+    if (error instanceof OperationLockError) {
+      return NextResponse.json(
+        { error: error.code, message: error.message, details: error.details },
+        { status: 409 }
+      );
+    }
+    if (error instanceof RecoveryModeError) {
+      return NextResponse.json(
+        { error: error.code, message: error.message, details: error.details },
+        { status: 423 }
+      );
+    }
     if (error instanceof DomainError) {
       return NextResponse.json(
         { error: error.code, message: error.message, details: error.details },
