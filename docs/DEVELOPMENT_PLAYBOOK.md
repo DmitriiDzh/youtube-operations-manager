@@ -215,6 +215,7 @@ Reference: `src/lib/localization/adapters/xlsx.ts` (export) and `src/lib/changes
 | API or MCP contracts change | `docs/interfaces.md`, and `docs/ARCHITECTURE.md`'s API-routes/MCP section if the change affects the security model, not just the route list |
 | Security boundaries change | `docs/ARCHITECTURE.md` (the specific limitation section), `docs/TECHNICAL_DEBT.md` (add/update/resolve the relevant RISK entry — do not silently drop a risk without recording it as `RESOLVED` with evidence) |
 | A development phase is completed | `docs/ROADMAP_STATUS.md` (status, completion date, commit hash, next assignment, open blockers — the canonical execution log), `docs/SYSTEM_MAP.md`'s header ("Current as of Phase N") and §4, `docs/ARCHITECTURE.md`'s header, `docs/PROJECT_SPEC.md` is **not** rewritten (it is the requirements source of truth, not a changelog) |
+| The project owner records or updates strategic future-phase planning (not yet assigned/implemented) | `docs/roadmap/FUTURE_PHASES.md` — extend it, never create a competing document; never mark anything there as implemented; `docs/ROADMAP_STATUS.md` is untouched by this (it records only what actually happened) |
 
 Never describe a deferred or planned capability as implemented in any of these documents — mark it explicitly `PLANNED`/`DEFERRED`/`NOT YET IMPLEMENTED` (§7 of the Phase 4.5 assignment; also `docs/SYSTEM_MAP.md`'s existing §4 convention).
 

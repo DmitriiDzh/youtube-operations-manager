@@ -4,6 +4,10 @@
 
 Update this file whenever a phase completes — see `AGENTS.md` §C. **Completing a phase and recording it here does not authorize starting the next phase.** The next phase begins only when the project owner explicitly assigns it.
 
+For the strategic backlog of *not-yet-assigned* future phases (Phase 7 onward), see
+`docs/roadmap/FUTURE_PHASES.md` — that file is planning context only; this file remains the sole
+record of what has actually been implemented.
+
 ---
 
 ## Phase status
