@@ -55,3 +55,26 @@ test("proxy allows a mutating request through when the device is available", asy
   assert.notEqual(response.status, 409);
   assert.notEqual(response.status, 423);
 });
+
+// Regression: an earlier version of src/proxy.ts gated every POST regardless of what it
+// actually did, diverging from the CLI's/MCP's own read-only classification of these exact
+// operations (video-metadata preview/transcript, localizations import preview, AI localization
+// generate) -- found by independent review.
+test("proxy never gates genuinely read-only POST preview/generate routes, even while the operation lock is held", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const readOnlyPaths = [
+      "/api/video-metadata/preview",
+      "/api/video-metadata/transcript",
+      "/api/channels/chan-1/localizations/import/preview",
+      "/api/channels/chan-1/ai-localization/generate",
+    ];
+    for (const p of readOnlyPaths) {
+      const response = await proxy(mutatingRequest(p));
+      assert.notEqual(response.status, 409, `${p} must not be gated by the operation lock`);
+      assert.notEqual(response.status, 423, `${p} must not be gated by recovery mode`);
+    }
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});

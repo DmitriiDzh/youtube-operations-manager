@@ -27,33 +27,72 @@ export { appPaths as appDataPaths };
 // the app-data directory exists before the client ever tries to open a file inside it.
 mkdirSync(appPaths.appDataDir, { recursive: true });
 
+// Captured *before* `createClient()` below -- verified empirically that `@libsql/client`'s
+// `createClient()` synchronously creates an empty file at the given path as a side effect of
+// construction, before any query runs. An earlier version of this file checked
+// `existsSync(appPaths.dbPath)` *after* calling `createClient()`, which made that check always
+// true and silently skipped every legacy migration forever -- a real, previously-shipped bug,
+// found and fixed via independent review. This flag is the one piece of truth that check
+// needed; everything below is ordered around preserving it correctly.
+const dbAlreadyExistedAtModuleLoad = existsSync(appPaths.dbPath);
+
 const rawClient = createClient({
   url: `file:${appPaths.dbPath}`,
 });
 
 /**
+ * The testable core: copies every table from `legacyDbPath` into `destClient`'s already-open
+ * database via `ATTACH DATABASE` (mirroring `src/lib/snapshot/services.ts`'s
+ * `applySnapshotToDatabase` pattern) rather than `copyDatabaseConsistently`'s `VACUUM INTO` --
+ * `VACUUM INTO` requires an *absent* destination file, which is never true for `destClient`'s
+ * own already-open file. Recreates each legacy table from its own `sqlite_master.sql` (not the
+ * current baseline's `CREATE TABLE` statements), preserving whatever additive shape the legacy
+ * file actually has, exactly as if it were opened in place -- the normal
+ * `initializeDatabaseSchema` version-check/migration pipeline that runs immediately after this
+ * (see `initializeDatabase` below) then treats the result exactly like any other existing
+ * database. Exported so this real, previously entirely-untested logic has a direct unit test
+ * (`db.test.ts`) independent of the singleton wiring around it.
+ */
+export async function copyLegacyDatabaseInto(
+  destClient: Client,
+  legacyDbPath: string
+): Promise<void> {
+  await destClient.execute({ sql: "ATTACH DATABASE ? AS legacy", args: [legacyDbPath] });
+  try {
+    const tables = await destClient.execute(
+      "SELECT name, sql FROM legacy.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+    );
+    for (const row of tables.rows) {
+      const createTableSql = row.sql;
+      if (typeof createTableSql !== "string") continue;
+      await destClient.execute(createTableSql);
+      const tableName = String(row.name);
+      await destClient.execute(`INSERT INTO "${tableName}" SELECT * FROM legacy."${tableName}"`);
+    }
+  } finally {
+    await destClient.execute("DETACH DATABASE legacy");
+  }
+}
+
+/**
  * One-time, explicit, non-destructive migration from the pre-this-task location
  * (`<repo>/data/playlist-manager.db`) into the new platform-appropriate app-data location --
- * only when nothing already exists at the new location (never overwrites populated data,
- * AC-PATH-06) and only when a legacy database actually exists (AC-PATH-05). The legacy file
- * itself is never moved, renamed, or deleted -- copyDatabaseConsistently (VACUUM INTO) reads a
- * transactionally-consistent snapshot without disturbing the source. Never runs under the test
- * runner (see isRunningUnderTestRunner above) -- it must never even *read* the operator's real
- * legacy database as a side effect of `npm test`.
+ * only when nothing already existed at the new location before this module loaded (never
+ * overwrites populated data, AC-PATH-06, using `dbAlreadyExistedAtModuleLoad` above rather than
+ * re-checking `existsSync` here, which would now always see `rawClient`'s own empty stub file --
+ * see that flag's own doc comment for the real bug this guards against) and only when a legacy
+ * database actually exists (AC-PATH-05). The legacy file itself is never moved, renamed, or
+ * deleted. Never runs under the test runner (see `isRunningUnderTestRunner` above) -- it must
+ * never even *read* the operator's real legacy database as a side effect of `npm test`.
  */
 async function migrateLegacyDatabaseIfNeeded(): Promise<{ migrated: boolean }> {
   if (isRunningUnderTestRunner()) return { migrated: false };
-  if (existsSync(appPaths.dbPath)) return { migrated: false };
+  if (dbAlreadyExistedAtModuleLoad) return { migrated: false };
 
   const legacyDbPath = resolveLegacyDbPath(process.cwd());
   if (!existsSync(legacyDbPath)) return { migrated: false };
 
-  const legacyClient = createClient({ url: `file:${legacyDbPath}` });
-  try {
-    await copyDatabaseConsistently(legacyClient, appPaths.dbPath);
-  } finally {
-    legacyClient.close();
-  }
+  await copyLegacyDatabaseInto(rawClient, legacyDbPath);
   return { migrated: true };
 }
 

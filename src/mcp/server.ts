@@ -11,6 +11,8 @@ import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth/service";
 import type { CredentialRef } from "@/lib/video-metadata/contracts";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
+import { OperationLockError } from "@/lib/operation-lock";
+import { RecoveryModeError } from "@/lib/device-handoff";
 import {
   playlistAddVideosInputSchema,
   playlistCreateInputSchema,
@@ -82,22 +84,19 @@ function toolErrorResult(error: unknown) {
 
   // OperationLockError / RecoveryModeError (src/lib/operation-lock, src/lib/device-handoff)
   // carry the same stable {code, message, details} shape without being a DomainError instance
-  // (a deliberately separate error class, AGENTS.md §D) -- structured the same way rather than
-  // falling into the generic "internal_error" bucket below.
-  if (
-    error &&
-    typeof error === "object" &&
-    "code" in error &&
-    typeof (error as { code: unknown }).code === "string"
-  ) {
-    const typed = error as { code: string; message: string; details?: unknown };
+  // (a deliberately separate error class, AGENTS.md §D). Checked by explicit `instanceof`
+  // against exactly these two known classes -- NOT "any object with a string .code property",
+  // which would also match a raw libsql driver error (e.g. SQLITE_BUSY) or a Node `fs` error
+  // and echo its internal detail as if it were a stable, documented error code (found by
+  // independent review).
+  if (error instanceof OperationLockError || error instanceof RecoveryModeError) {
     return {
       content: [
         {
           type: "text" as const,
           text: JSON.stringify({
             ok: false,
-            error: { code: typed.code, message: typed.message, details: typed.details },
+            error: { code: error.code, message: error.message, details: error.details },
           }),
         },
       ],

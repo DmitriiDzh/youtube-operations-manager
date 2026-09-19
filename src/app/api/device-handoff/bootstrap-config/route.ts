@@ -29,13 +29,19 @@ export async function PUT(request: NextRequest) {
   } catch {
     return NextResponse.json({ error: "invalid_request", message: "Body must be JSON" }, { status: 400 });
   }
-  const syncthingRootPath = (body as { syncthingRootPath?: unknown } | null)?.syncthingRootPath;
-  if (syncthingRootPath !== null && typeof syncthingRootPath !== "string") {
+  const rawSyncthingRootPath = (body as { syncthingRootPath?: unknown } | null)?.syncthingRootPath;
+  if (rawSyncthingRootPath !== null && typeof rawSyncthingRootPath !== "string") {
     return NextResponse.json(
       { error: "invalid_request", message: "syncthingRootPath must be a string or null" },
       { status: 400 }
     );
   }
+  // `bootstrapConfigSchema` requires a non-empty string (z.string().min(1)) -- coerce an empty
+  // string to `null` ("not configured") here, at the boundary, rather than letting it reach
+  // `setSyncthingRootPath` and persist a value that fails validation on every subsequent read
+  // (found by independent review: this previously bricked the whole device-handoff subsystem
+  // with a 500 on every call until the on-disk JSON was manually fixed).
+  const syncthingRootPath = rawSyncthingRootPath === "" ? null : rawSyncthingRootPath;
 
   try {
     const config = await bootstrapConfigStore.setSyncthingRootPath(syncthingRootPath);

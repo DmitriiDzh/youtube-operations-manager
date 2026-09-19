@@ -332,3 +332,53 @@ test("importHandoff refuses a snapshot from a newer, unsupported schema version 
     source.close();
     receiving.close();
   }));
+
+// Regression, found by independent review: a device already in restricted recovery mode must
+// refuse another import outright, because applySnapshotToDatabase's merge step would otherwise
+// silently discard this device's own unresolved batch_ledger_rows -- exactly what
+// UNRESOLVED_EXECUTION_STATUSES's contract says must never happen. src/proxy.ts's exemption for
+// /api/device-handoff/** only avoids a lock self-deadlock; this is the real enforcement point.
+test("importHandoff refuses to run at all when this device is already in recovery mode, and never touches the live DB", () =>
+  withTempDir(async (dir) => {
+    const source = await makeClient(dir, "source.db");
+    await seedChannel(source, "chan-2");
+    const exportResult = await exportHandoff({
+      client: source,
+      snapshotsDir: path.join(dir, "snapshots"),
+      deviceId: "device-a",
+      schemaVersion: 3,
+    });
+
+    const receiving = await makeClient(dir, "receiving.db");
+    await seedChannel(receiving, "chan-1");
+    await receiving.execute({
+      sql: "INSERT INTO batches (id, channel_id, status) VALUES (?, ?, ?)",
+      args: ["batch-1", "chan-1", "RUNNING"],
+    });
+    await seedLedgerRow(receiving, "row-unknown", "batch-1", "UNKNOWN");
+    assert.equal(await isDeviceInRecoveryMode(receiving), true);
+
+    await mkdir(path.join(dir, "backups"), { recursive: true });
+    await mkdir(path.join(dir, "work"), { recursive: true });
+
+    await assert.rejects(
+      () =>
+        importHandoff({
+          liveClient: receiving,
+          snapshotDir: path.join(dir, "snapshots", exportResult.manifest.snapshotId),
+          migrationBackupsDir: path.join(dir, "backups"),
+          workingDir: path.join(dir, "work"),
+        }),
+      (error: unknown) => error instanceof RecoveryModeError
+    );
+
+    // The unresolved row and the pre-existing channel must both survive untouched -- the
+    // rejection happens before any backup/merge/lineage step runs.
+    const rows = await receiving.execute("SELECT id, status FROM batch_ledger_rows");
+    assert.deepEqual(rows.rows, [{ id: "row-unknown", status: "UNKNOWN" }]);
+    const channels = await receiving.execute("SELECT id FROM channels");
+    assert.deepEqual(channels.rows.map((r) => r.id), ["chan-1"]);
+
+    source.close();
+    receiving.close();
+  }));

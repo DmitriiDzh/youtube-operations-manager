@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createClient, type Client } from "@libsql/client";
 import {
+  copyLegacyDatabaseInto,
   initializeDatabaseSchema,
   SCHEMA_BASELINE_VERSION,
   SCHEMA_CURRENT_VERSION,
@@ -139,4 +140,49 @@ test("initializeDatabaseSchema: is idempotent -- re-running against an already-c
     const second = await readSchemaVersion(client);
     assert.equal(first, second);
     assert.equal(second, SCHEMA_CURRENT_VERSION);
+  }));
+
+// AC-PATH-05: the previously entirely-untested legacy-migration core, found by independent
+// review to be unreachable in a prior version of this file (a module-load-order bug meant
+// existsSync(appPaths.dbPath) was always true by the time it was checked, silently skipping
+// every legacy migration forever). This test exercises copyLegacyDatabaseInto directly,
+// against real temp files, independent of the singleton/module-load wiring around it.
+test("copyLegacyDatabaseInto: copies every table's schema and rows from the legacy file into an already-open destination connection", () =>
+  withTempClient(async (destClient, dir) => {
+    const legacyDbPath = path.join(dir, "legacy.db");
+    const legacyClient = createClient({ url: `file:${legacyDbPath}` });
+    try {
+      await legacyClient.execute(
+        "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL)"
+      );
+      await legacyClient.execute({
+        sql: "INSERT INTO users (id, email) VALUES (?, ?)",
+        args: ["legacy-user", "legacy@example.com"],
+      });
+      await legacyClient.execute(
+        "CREATE TABLE channels (id TEXT PRIMARY KEY, title TEXT NOT NULL)"
+      );
+      await legacyClient.execute({
+        sql: "INSERT INTO channels (id, title) VALUES (?, ?)",
+        args: ["chan-1", "Legacy Channel"],
+      });
+    } finally {
+      legacyClient.close();
+    }
+
+    // Destination starts truly empty (no baseline schema yet) -- copyLegacyDatabaseInto must
+    // recreate each table from the legacy file's own CREATE TABLE statement, not assume the
+    // current baseline schema already exists.
+    await copyLegacyDatabaseInto(destClient, legacyDbPath);
+
+    const users = await destClient.execute("SELECT id, email FROM users");
+    assert.deepEqual(users.rows, [{ id: "legacy-user", email: "legacy@example.com" }]);
+    const channels = await destClient.execute("SELECT id, title FROM channels");
+    assert.deepEqual(channels.rows, [{ id: "chan-1", title: "Legacy Channel" }]);
+
+    // The legacy file itself must be untouched -- copyLegacyDatabaseInto never writes to it.
+    const legacyRecheck = createClient({ url: `file:${legacyDbPath}` });
+    const legacyUsersAfter = await legacyRecheck.execute("SELECT id, email FROM users");
+    assert.deepEqual(legacyUsersAfter.rows, [{ id: "legacy-user", email: "legacy@example.com" }]);
+    legacyRecheck.close();
   }));

@@ -32,6 +32,18 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+/** True only for "the app_operation_locks table doesn't exist yet" -- the one specific,
+ * expected condition (a database that hasn't run that migration yet) this module treats as
+ * "not locked" rather than propagating. Any other failure (contention, I/O, corruption) must
+ * fail closed by propagating, not silently report "no lock held" -- found by independent
+ * review that the original bare `catch { return null }` here failed *open* for every possible
+ * error, defeating the whole point of a safety gate during exactly the transient-contention
+ * window (e.g. SQLITE_BUSY) it exists to protect. */
+function isMissingTableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /no such table/i.test(message);
+}
+
 export async function getOperationLock(client: SqlExecutor): Promise<OperationLock | null> {
   try {
     const result = await execute(client, {
@@ -40,10 +52,9 @@ export async function getOperationLock(client: SqlExecutor): Promise<OperationLo
     });
     if (result.rows.length === 0) return null;
     return rowToLock(result.rows[0]);
-  } catch {
-    // app_operation_locks does not exist yet on a database that hasn't run that migration --
-    // treat as "not locked" rather than throwing; the migration itself does not need this lock.
-    return null;
+  } catch (error) {
+    if (isMissingTableError(error)) return null;
+    throw error;
   }
 }
 

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 import { createClient } from "@libsql/client";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
 import { withOperationLock, OperationLockError } from "@/lib/operation-lock";
@@ -98,6 +99,19 @@ export async function importHandoff(params: {
   workingDir: string;
 }): Promise<ImportHandoffResult> {
   return withOperationLock(params.liveClient, "import", async () => {
+    // A device already in restricted recovery mode must not import again: applySnapshotToDatabase
+    // (below, via the merge step) unconditionally replaces `batch_ledger_rows` wholesale, which
+    // would silently discard this device's own unresolved-execution evidence -- exactly what
+    // UNRESOLVED_EXECUTION_STATUSES's own contract says must never happen (found by independent
+    // review; src/proxy.ts's device-handoff exemption only avoids a lock self-deadlock, it was
+    // never meant to also bypass this check, so it is enforced here instead, directly on the
+    // path that would actually cause the harm). The device must leave recovery mode via Phase
+    // 5's existing reconciliation mechanism (RISK-09 §0.F) before another import can proceed.
+    if (await isDeviceInRecoveryMode(params.liveClient)) {
+      const unresolved = await scanForUnresolvedExecutionState(params.liveClient);
+      throw new RecoveryModeError(unresolved);
+    }
+
     const localLineage = await readLineageState(params.liveClient);
     const { manifest, isDuplicateOfCurrent } = await verifySnapshotForImport({
       snapshotDir: params.snapshotDir,
@@ -128,30 +142,43 @@ export async function importHandoff(params: {
     } finally {
       snapshotDbClient.close();
     }
-    await migrateStagedCopy(workingCopyPath);
 
-    const unresolved = await scanFileForUnresolvedExecutionState(workingCopyPath);
+    try {
+      await migrateStagedCopy(workingCopyPath);
 
-    // applySnapshotToDatabase owns its own transaction (ATTACH cannot happen inside an
-    // already-open one -- see that function's own comment). The two writes below are each a
-    // single, already-atomic statement; a crash between the merge commit and these would at
-    // worst leave the lineage pointer one step stale, which the next export/import attempt
-    // can recover from -- it does not affect the data merge's own correctness.
-    await applySnapshotToDatabase(params.liveClient, workingCopyPath);
-    await writeLineageState(params.liveClient, {
-      lastSnapshotId: manifest.snapshotId,
-      lastGeneration: manifest.generation,
-    });
-    await recordHandoffLog(params.liveClient, {
-      direction: "import",
-      snapshotId: manifest.snapshotId,
-      detail: { unresolvedCount: unresolved.length },
-    });
+      const unresolved = await scanFileForUnresolvedExecutionState(workingCopyPath);
 
-    if (unresolved.length > 0) {
-      return { status: "activated_recovery_mode", manifest, unresolved };
+      // applySnapshotToDatabase owns its own transaction (ATTACH cannot happen inside an
+      // already-open one -- see that function's own comment). The two writes below are each a
+      // single, already-atomic statement; a crash between the merge commit and these would at
+      // worst leave the lineage pointer one step stale, which the next export/import attempt
+      // can recover from -- it does not affect the data merge's own correctness.
+      await applySnapshotToDatabase(params.liveClient, workingCopyPath);
+      await writeLineageState(params.liveClient, {
+        lastSnapshotId: manifest.snapshotId,
+        lastGeneration: manifest.generation,
+      });
+      await recordHandoffLog(params.liveClient, {
+        direction: "import",
+        snapshotId: manifest.snapshotId,
+        detail: { unresolvedCount: unresolved.length },
+      });
+
+      if (unresolved.length > 0) {
+        return { status: "activated_recovery_mode", manifest, unresolved };
+      }
+      return { status: "activated_normal", manifest };
+    } finally {
+      // The working copy is a throwaway, private intermediate -- never the source of truth for
+      // anything after this function returns (the live DB and the published snapshot are).
+      // Found by independent review that an earlier version of this function never deleted it,
+      // leaking one full database-copy file per import indefinitely. Deleting the main file and
+      // both possible WAL-mode sidecars is a best-effort cleanup: a failure here must not mask
+      // the import's own real result (success or a genuine error) above.
+      await rm(workingCopyPath, { force: true }).catch(() => {});
+      await rm(`${workingCopyPath}-wal`, { force: true }).catch(() => {});
+      await rm(`${workingCopyPath}-shm`, { force: true }).catch(() => {});
     }
-    return { status: "activated_normal", manifest };
   });
 }
 

@@ -10,7 +10,8 @@ import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib
 import { createCliAuthService } from "@/lib/cli-auth/service";
 import type { CredentialRef } from "@/lib/video-metadata/contracts";
 import { rawSqlClient } from "@/lib/db";
-import { assertDeviceAvailableForMutation } from "@/lib/device-handoff";
+import { assertDeviceAvailableForMutation, RecoveryModeError } from "@/lib/device-handoff";
+import { OperationLockError } from "@/lib/operation-lock";
 
 loadEnvConfig(process.cwd());
 
@@ -197,6 +198,19 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   "list-users",
 ]);
 
+// OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
+// `/api/auth/**` (NextAuth's own route): decision 6 (docs/decisions/0002-...) keeps this
+// device's own OAuth session independent of the handoff/recovery-mode gate. These DO mutate
+// local state (the `users` row), so they are deliberately not on READ_ONLY_CLI_COMMANDS above --
+// they are exempt from the gate for a different reason. Found by independent review that an
+// earlier version of this file gated these while proxy.ts exempted the equivalent Web path,
+// an undocumented, unintended divergence between interfaces for the identical operation.
+const AUTH_SESSION_EXEMPT_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
+  "login",
+  "logout",
+  "revoke",
+]);
+
 function serializeSuccess(data: unknown) {
   return JSON.stringify({ ok: true, data });
 }
@@ -219,20 +233,16 @@ function serializeError(error: unknown) {
 
   // OperationLockError / RecoveryModeError (src/lib/operation-lock, src/lib/device-handoff)
   // carry the same stable {code, message, details} shape as DomainError without being an
-  // instance of it (they are a different module's own error class, on purpose -- see
-  // AGENTS.md §D, they are not YouTube-write-safety domain errors). Any error exposing a
-  // string `code` is serialized the same structured way rather than falling through to the
-  // generic "internal_error" bucket below.
-  if (
-    error &&
-    typeof error === "object" &&
-    "code" in error &&
-    typeof (error as { code: unknown }).code === "string"
-  ) {
-    const typed = error as { code: string; message: string; details?: unknown };
+  // instance of it (a different module's own error class, on purpose -- AGENTS.md §D, they
+  // are not YouTube-write-safety domain errors). Checked by explicit `instanceof` against
+  // exactly these two known classes -- NOT "any object with a string .code property", which
+  // would also match a raw libsql driver error (e.g. SQLITE_BUSY) or a Node `fs` error (e.g.
+  // ENOENT/EACCES with a real local file path in its message) and echo its internal detail as
+  // if it were a stable, documented error code (found by independent review).
+  if (error instanceof OperationLockError || error instanceof RecoveryModeError) {
     return JSON.stringify({
       ok: false,
-      error: { code: typed.code, message: typed.message, details: typed.details },
+      error: { code: error.code, message: error.message, details: error.details },
     });
   }
 
@@ -278,7 +288,10 @@ export async function runCliCommand(args: {
     // single choke point, mirroring src/proxy.ts's and MCP's, gating every mutating command
     // (everything except the plainly read-only ones below) behind the local operation lock and
     // the device-handoff recovery-mode check -- never bypassable by calling the CLI directly.
-    if (!READ_ONLY_CLI_COMMANDS.has(parsedArgs.command)) {
+    if (
+      !READ_ONLY_CLI_COMMANDS.has(parsedArgs.command) &&
+      !AUTH_SESSION_EXEMPT_CLI_COMMANDS.has(parsedArgs.command)
+    ) {
       await assertDeviceAvailableForMutation(rawSqlClient);
     }
 

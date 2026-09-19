@@ -1,44 +1,28 @@
-import { constants as fsConstants } from "node:fs";
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { readFile, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { BootstrapConfigError, bootstrapConfigSchema, type BootstrapConfig } from "./contracts";
+import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
 
 /**
  * Device-local bootstrap configuration: which Syncthing-shared directory this device uses for
- * snapshot handoff, plus a stable per-device id. Mirrors src/lib/cli-auth/storage.ts's atomic
- * tmp-write-then-rename pattern and Windows/POSIX permission handling (reused shape, not
- * reinvented, per docs/DEVELOPMENT_PLAYBOOK.md §6.2).
+ * snapshot handoff, plus a stable per-device id. Uses the same shared atomic-write
+ * implementation as `src/lib/cli-auth/storage.ts` (`writeJsonFileAtomic`) rather than a
+ * copy-pasted duplicate (found by independent review; AGENTS.md §D).
  */
 export function createBootstrapConfigStore(configPath: string) {
-  const dir = path.dirname(configPath);
-
-  async function ensureDir() {
-    await mkdir(dir, { recursive: true });
-    if (process.platform !== "win32") {
-      try {
-        await chmod(dir, 0o700);
-      } catch {
-        // Best effort on an already-existing directory.
-      }
-    }
-  }
-
   async function write(next: BootstrapConfig): Promise<BootstrapConfig> {
-    await ensureDir();
-    const tmpPath = path.join(dir, `.bootstrap-config.${randomUUID()}.tmp`);
-    await writeFile(tmpPath, JSON.stringify(next, null, 2), {
-      encoding: "utf8",
-      mode: fsConstants.S_IRUSR | fsConstants.S_IWUSR,
-    });
-    if (process.platform !== "win32") {
-      await chmod(tmpPath, 0o600);
+    // Defense in depth: validate against the same schema `read()` enforces before persisting,
+    // rather than trusting every caller (e.g. an API route) to have already done so -- found by
+    // independent review that a caller passing an empty `syncthingRootPath` (schema requires
+    // non-empty) would previously persist it unvalidated and then brick every subsequent
+    // read/write on this file (`BootstrapConfigError`, mapped to a 500 by the API layer).
+    const parsed = bootstrapConfigSchema.safeParse(next);
+    if (!parsed.success) {
+      throw new BootstrapConfigError(`Refusing to persist invalid bootstrap config: ${parsed.error.message}`);
     }
-    await rename(tmpPath, configPath);
-    if (process.platform !== "win32") {
-      await chmod(configPath, 0o600);
-    }
-    return next;
+    const validated = parsed.data;
+    await writeJsonFileAtomic(configPath, validated);
+    return validated;
   }
 
   async function read(): Promise<BootstrapConfig | null> {
