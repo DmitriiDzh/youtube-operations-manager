@@ -56,3 +56,4 @@ A decision made before this policy existed (e.g. the Phase 2 choice to keep addi
 | # | Title | Status |
 |---|---|---|
 | [0001](0001-additive-idempotent-schema-strategy.md) | Keep additive idempotent schema initialization instead of Drizzle Kit migrations | Accepted (retrospective) |
+| [0002](0002-additive-schema-versioning.md) | Layer explicit schema versioning on top of the additive idempotent boot pattern | Accepted |
