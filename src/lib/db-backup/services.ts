@@ -12,6 +12,20 @@ async function pathExists(target: string): Promise<boolean> {
 }
 
 /**
+ * True only for "this specific table doesn't exist yet" (a database that hasn't run the
+ * migration creating it). Any other failure (contention, I/O, corruption) must propagate, not
+ * be silently treated as "nothing there yet" -- a transient error masquerading as a missing
+ * table would fail *open* exactly where a caller relies on this to fail closed. Single shared
+ * implementation (RISK-19/21, docs/TECHNICAL_DEBT.md) -- previously duplicated verbatim in
+ * `src/lib/operation-lock/services.ts` and `src/lib/snapshot/adapters/lineage-store.ts`
+ * (AGENTS.md §D, one guardrail per concern).
+ */
+export function isMissingTableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /no such table/i.test(message);
+}
+
+/**
  * Produces a single-file, internally consistent copy of a live SQLite/libSQL database using
  * `VACUUM INTO` -- this reads a transactionally-consistent snapshot of committed data as of
  * the moment it runs, regardless of WAL/SHM sidecar files, and never touches the live

@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createClient } from "@libsql/client";
-import { copyDatabaseConsistently } from "./services";
+import { copyDatabaseConsistently, isMissingTableError } from "./services";
 import { DatabaseBackupError } from "./contracts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>) {
@@ -63,3 +63,14 @@ test("copyDatabaseConsistently refuses to overwrite an existing destination file
 
     client.close();
   }));
+
+// isMissingTableError: single shared implementation (RISK-19/21, docs/TECHNICAL_DEBT.md),
+// previously duplicated verbatim in operation-lock/services.ts and snapshot/adapters/
+// lineage-store.ts.
+test("isMissingTableError matches a real 'no such table' error", () => {
+  assert.equal(isMissingTableError(new Error("SQLITE_ERROR: no such table: app_operation_locks")), true);
+});
+
+test("isMissingTableError rejects an unrelated error", () => {
+  assert.equal(isMissingTableError(new Error("CLIENT_CLOSED: The client is closed")), false);
+});

@@ -1,4 +1,5 @@
 import { OperationLockError, type OperationLock, type OperationType, type SqlExecutor } from "./contracts";
+import { isMissingTableError } from "@/lib/db-backup";
 
 const LOCK_ID = "singleton";
 
@@ -30,18 +31,6 @@ function isProcessAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM"; // exists, but not ours to signal
   }
-}
-
-/** True only for "the app_operation_locks table doesn't exist yet" -- the one specific,
- * expected condition (a database that hasn't run that migration yet) this module treats as
- * "not locked" rather than propagating. Any other failure (contention, I/O, corruption) must
- * fail closed by propagating, not silently report "no lock held" -- found by independent
- * review that the original bare `catch { return null }` here failed *open* for every possible
- * error, defeating the whole point of a safety gate during exactly the transient-contention
- * window (e.g. SQLITE_BUSY) it exists to protect. */
-function isMissingTableError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /no such table/i.test(message);
 }
 
 export async function getOperationLock(client: SqlExecutor): Promise<OperationLock | null> {
@@ -80,7 +69,13 @@ export async function acquireOperationLock(
       args: [lock.id, lock.operationType, lock.holderPid, lock.acquiredAt],
     });
     return lock;
-  } catch {
+  } catch (error) {
+    // RISK-21 (docs/TECHNICAL_DEBT.md): a missing table is a structural/not-migrated-yet
+    // condition, not lock contention -- propagate the real error rather than disguising it as
+    // an OperationLockError whose `heldBy` would otherwise misreport the calling process itself
+    // (via `lock`, built from `process.pid` above) as the lock's holder.
+    if (isMissingTableError(error)) throw error;
+
     const existing = await getOperationLock(client);
     if (!existing) {
       // Row disappeared between the failed INSERT and this read (released concurrently) --

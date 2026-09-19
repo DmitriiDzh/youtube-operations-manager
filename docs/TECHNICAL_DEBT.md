@@ -406,7 +406,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Fix applied:** `isValidSnapshotId` (`src/app/api/device-handoff/shared.ts`) rejects any `snapshotId` not matching `randomUUID()`'s exact shape before the route ever reaches `path.join`; the import route now calls it. Tests: `src/app/api/device-handoff/shared.test.ts` (traversal string, absolute path, a UUID embedded inside a longer traversal string, non-string, empty string — all rejected; a real UUID accepted).
 - **Status:** FIXED — project-owner-assigned task, 2026-09-19 ("Начни с 1. Отработай найденные риски").
 
-## RISK-19 — `readSchemaVersion` fails open on any read error, not only "table missing" — OPEN, 2026-09-19
+## RISK-19 — `readSchemaVersion` fails open on any read error, not only "table missing" — FIXED, 2026-09-19
 
 - **Affected components:** `src/lib/schema-versioning/services.ts` (`readSchemaVersion`, `assertSupportedSchemaVersion`).
 - **Current behavior:** `readSchemaVersion`'s `catch` returns `null` unconditionally, on any error from the `schema_meta` read — not narrowed to "table doesn't exist" the way sibling modules in the same feature (operation-lock's `isMissingTableError`, snapshot's lineage-store) explicitly do, after an earlier bare-catch pattern was found and fixed there specifically for failing open.
@@ -414,7 +414,8 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Required remediation:** Narrow the catch to the same missing-table check already used by `isMissingTableError` elsewhere in this feature; rethrow anything else.
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
 - **Approval required from:** project owner, to schedule the fix.
-- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, not yet fixed.
+- **Fix applied:** narrowed the catch to a new single shared `isMissingTableError` (moved to `src/lib/db-backup/services.ts` — previously duplicated verbatim in operation-lock and lineage-store; both now import it instead of keeping their own copy, `AGENTS.md` §D). Any other error now propagates. Test: `schema-versioning/services.test.ts` (closes the client mid-read, asserts the resulting `CLIENT_CLOSED` error propagates rather than becoming `null`).
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
 
 ## RISK-20 — Boot-time schema migration never acquires the operation lock — OPEN, 2026-09-19
 
@@ -426,7 +427,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Approval required from:** project owner, to schedule the fix.
 - **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, not yet fixed.
 
-## RISK-21 — Operation-lock acquisition misattributes lock ownership when the lock table is missing — OPEN, 2026-09-19
+## RISK-21 — Operation-lock acquisition misattributes lock ownership when the lock table is missing — FIXED, 2026-09-19
 
 - **Affected components:** `src/lib/operation-lock/services.ts` (`acquireOperationLock`).
 - **Current behavior:** When the lock `INSERT` fails, the catch path calls `getOperationLock`; if that (correctly) returns `null` because the `app_operation_locks` table doesn't exist yet (unmigrated schema, guarded by its own `isMissingTableError`), the code concludes "row disappeared between the failed INSERT and this read" and throws an `OperationLockError` whose `heldBy` is fabricated from the *calling* process's own not-yet-inserted lock object — misreporting the current process as the lock holder.
@@ -434,7 +435,8 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Required remediation:** Distinguish "table missing" from "row genuinely disappeared" before constructing the error, and surface the former as its own diagnostic.
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
 - **Approval required from:** project owner, to schedule the fix.
-- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, not yet fixed.
+- **Fix applied:** `acquireOperationLock`'s catch now checks `isMissingTableError` first and rethrows the real error immediately, before falling through to the "row disappeared" contention-fallback logic. Test: `operation-lock/services.test.ts` (a fresh temp DB with no `app_operation_locks` table at all — asserts the rejection is the raw missing-table error, not an `OperationLockError`).
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
 
 ## RISK-22 — `writeJsonFileAtomic` has no Windows EBUSY/EPERM retry, unlike the sibling snapshot-publish path — OPEN, 2026-09-19
 
@@ -551,17 +553,17 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Approval required from:** project owner, to schedule the refactor (touches all three interface layers, `AGENTS.md` §D "one guardrail" pattern).
 - **Status:** OPEN — found by a second independent review pass; the underlying divergence risk (not any specific instance of it) is new to this log, though its recurrence was already known well enough to be commented on in-code.
 
-## RISK-33 — Minor latent/consistency gaps found alongside the above — OPEN, 2026-09-19
+## RISK-33 — Minor latent/consistency gaps found alongside the above — PARTIALLY FIXED, 2026-09-19
 
 Bundled as one entry — each individually low severity, none currently exploitable, none warranting its own full entry:
 
-- `src/lib/snapshot/services.ts`: the `ai_connections` table's snapshot merge and SQLite's `PRAGMA foreign_keys` are never actually enabled anywhere in this codebase, so a dormant FK-enforcement gap would only matter if foreign keys are ever turned on.
-- `src/lib/device-handoff/services.ts` (~lines 48, 191): raw SQL inserts bypass the shared `src/lib/audit/services.ts` event-log abstraction used elsewhere, so device-handoff's own audit trail is written through a different path than the rest of the application's.
-- `src/lib/db.ts` (~line 676): the bare `try/catch` around `ALTER TABLE batch_ledger_rows ADD COLUMN active_attempt_id` swallows all errors unconditionally, not narrowed to "column already exists" — the same failing-open pattern as RISK-19, in a different function.
+- `src/lib/snapshot/services.ts`: the `ai_connections` table's snapshot merge and SQLite's `PRAGMA foreign_keys` are never actually enabled anywhere in this codebase, so a dormant FK-enforcement gap would only matter if foreign keys are ever turned on. **Still OPEN** — not part of this round's fixes.
+- `src/lib/device-handoff/services.ts` (~lines 48, 191): raw SQL inserts bypass the shared `src/lib/audit/services.ts` event-log abstraction used elsewhere, so device-handoff's own audit trail is written through a different path than the rest of the application's. **Still OPEN** — not part of this round's fixes.
+- `src/lib/db.ts` (~line 676, and its two sibling `ALTER TABLE` migrations for `users`): the bare `try/catch` swallowed all errors unconditionally, not narrowed to "column already exists" — the same failing-open pattern as RISK-19, in a different function. **FIXED** — all three sites now check a local `isDuplicateColumnError` (message-matches `/duplicate column name/i`, empirically confirmed against this codebase's actual `@libsql/client` version) and rethrow anything else. Kept local to `db.ts` rather than added to the shared `isMissingTableError` module — it is a different error class (a `CREATE`/`ALTER` conflict, not a missing table) with exactly one caller site's worth of use, so a shared abstraction would be premature (`AGENTS.md` §D's "avoid parallel implementations" concern doesn't apply to genuinely different error classes). No dedicated test added — `initializeDatabaseSchema` already runs this exact idempotent-migration path on every test-runner boot via `src/lib/db.ts`'s own module-load side effects, so the "column already exists" branch is implicitly exercised by the rest of the suite on every run; a non-duplicate-column failure would now surface as a boot failure across the whole suite instead of being swallowed.
 
 - **Gate(s):** none blocking (latent/consistency only).
-- **Approval required from:** none required to leave open; project owner if any is scheduled.
-- **Status:** OPEN — found by a second independent review pass, not yet independently re-verified beyond the cited file/lines, not yet fixed.
+- **Approval required from:** none required to leave open; project owner if the two still-open items are scheduled.
+- **Status:** PARTIALLY FIXED — the `db.ts` bare-catch item fixed as part of the project-owner-assigned "отработай найденные риски" task, 2026-09-19; the other two bundled items remain OPEN.
 
 ## RISK-34 — The two "recovery-gate" test suites never actually test recovery mode — OPEN, 2026-09-19
 
@@ -597,9 +599,9 @@ Bundled as one entry — each individually low severity, none currently exploita
 | RISK-16 | Restricted recovery mode has no in-app resolution path (needs RISK-04) | DEFERRED, BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-17 | Cross-platform persistence validated on Windows only, not macOS | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-18 | Device-handoff import: unvalidated `snapshotId` path traversal | none (fixed) | FIXED |
-| RISK-19 | `readSchemaVersion` fails open on any read error | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-19 | `readSchemaVersion` fails open on any read error | none (fixed) | FIXED |
 | RISK-20 | Boot-time schema migration never acquires the operation lock | BLOCKS_OPERATIONS_RELEASE | OPEN |
-| RISK-21 | Operation-lock misattributes ownership when the lock table is missing | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-21 | Operation-lock misattributes ownership when the lock table is missing | none (fixed) | FIXED |
 | RISK-22 | `writeJsonFileAtomic` has no Windows EBUSY/EPERM retry | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-23 | `createActiveAuthStorage` parameter meaning changed with no type signal | none blocking yet (latent) | OPEN |
 | RISK-24 | App-data directory no longer locked to 0700 for Web-UI-only installs | none (fixed) | FIXED |
@@ -611,7 +613,7 @@ Bundled as one entry — each individually low severity, none currently exploita
 | RISK-30 | AI Localization `generate` bypasses device-availability gate for real AI calls | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-31 | Discarded `transitionLedgerRowStatus` result can drift ledger vs. reported outcome | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-32 | proxy/CLI/MCP independently classify mutating ops, no shared registry | BLOCKS_OPERATIONS_RELEASE | OPEN |
-| RISK-33 | Minor latent/consistency gaps (dormant FK, audit-path bypass, bare catch) | none blocking | OPEN |
+| RISK-33 | Minor latent/consistency gaps (dormant FK, audit-path bypass, bare catch) | none blocking | PARTIALLY FIXED |
 | RISK-34 | "recovery-gate" test suites never actually test recovery mode | BLOCKS_OPERATIONS_RELEASE | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

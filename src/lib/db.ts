@@ -665,26 +665,35 @@ export async function initializeDatabaseSchema(
     CREATE INDEX IF NOT EXISTS audit_events_batch_id_idx ON audit_events(batch_id);
   `);
 
+  // RISK-33 (docs/TECHNICAL_DEBT.md): the three ALTER TABLE migrations below are idempotent by
+  // design (ADR 0001's additive baseline) -- "column already exists" is the one expected,
+  // legitimate failure. Any other error (disk I/O, corruption, a genuinely malformed statement)
+  // must still propagate; narrowed here rather than swallowed unconditionally.
+  const isDuplicateColumnError = (error: unknown): boolean => {
+    const message = error instanceof Error ? error.message : String(error);
+    return /duplicate column name/i.test(message);
+  };
+
   // Migration: add selected_channel_id if missing (idempotent)
   try {
     await client.execute("ALTER TABLE users ADD COLUMN selected_channel_id TEXT");
-  } catch {
-    // Column already exists
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
   }
 
   // Migration: add oauth_scope if missing (idempotent)
   try {
     await client.execute("ALTER TABLE users ADD COLUMN oauth_scope TEXT");
-  } catch {
-    // Column already exists
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
   }
 
   // Migration: add active_attempt_id if missing (idempotent) -- for a database file that
   // already has batch_ledger_rows from before this column was added to CREATE TABLE.
   try {
     await client.execute("ALTER TABLE batch_ledger_rows ADD COLUMN active_attempt_id TEXT");
-  } catch {
-    // Column already exists
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
   }
 
   // Everything above this point is the pre-existing, unchanged additive baseline (schema

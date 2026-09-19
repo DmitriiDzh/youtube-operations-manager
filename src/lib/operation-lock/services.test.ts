@@ -36,6 +36,34 @@ async function withTempClient(fn: (client: Client) => Promise<void>) {
   }
 }
 
+// RISK-21 (docs/TECHNICAL_DEBT.md): a missing app_operation_locks table (not migrated yet) must
+// propagate as the real structural error, not be disguised as OperationLockError with `heldBy`
+// misreporting the calling process itself as the lock's holder.
+test("acquireOperationLock propagates a missing-table error instead of misattributing lock ownership", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "operation-lock-test-"));
+  const client = createClient({ url: `file:${path.join(dir, "test.db")}` });
+  try {
+    await assert.rejects(
+      () => acquireOperationLock(client, "export"),
+      (error: unknown) => {
+        assert.equal(error instanceof OperationLockError, false);
+        assert.match((error as Error).message, /no such table/i);
+        return true;
+      }
+    );
+  } finally {
+    client.close();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await rm(dir, { recursive: true, force: true });
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+  }
+});
+
 test("acquireOperationLock succeeds when no lock is held, and is readable back", () =>
   withTempClient(async (client) => {
     const lock = await acquireOperationLock(client, "export");

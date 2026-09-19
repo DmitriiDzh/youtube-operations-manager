@@ -42,6 +42,16 @@ test("readSchemaVersion returns null for a brand-new database (no schema_meta ta
     assert.equal(await readSchemaVersion(client), null);
   }));
 
+// RISK-19 (docs/TECHNICAL_DEBT.md): a transient/structural read error must propagate, not be
+// treated identically to "never initialized" -- otherwise assertSupportedSchemaVersion would
+// fail open on exactly the window it exists to guard.
+test("readSchemaVersion propagates a non-missing-table error instead of returning null", () =>
+  withTempClient(async (client) => {
+    await client.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    client.close();
+    await assert.rejects(() => readSchemaVersion(client), /CLIENT_CLOSED/i);
+  }));
+
 test("assertSupportedSchemaVersion never mutates the database when the version is missing or supported", () =>
   withTempClient(async (client) => {
     await assertSupportedSchemaVersion(client, 3);
