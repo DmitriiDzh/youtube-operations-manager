@@ -123,23 +123,74 @@ Keep project documentation current when architecture, features, schema, or contr
 - Keep technical identifiers, file names, API names, code symbols, MCP tool names, protocol names, and standard framework terminology in their original (English) form — do not translate them.
 - Technical documentation (`docs/**`) may be written in English when this improves precision and readability for future coding agents; conversational replies to the user are in Russian regardless.
 
-## J. Git commit message preference
+## J. Git commit message language and format
 
-Git commit messages should preferably be written in Russian, unless an existing repository convention clearly requires English.
+Every commit **must** have a descriptive Russian message (established 2026-09-19, "Git Branching and Release Policy"). English is used only where an existing, already-established repository convention clearly requires it (there is none currently).
 
-## K. Git / release authorization boundaries
+- Use a conventional prefix when it fits the change: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`. Not every commit needs one (e.g. a merge commit follows §K's own format instead), but use one whenever the change is clearly a feature, fix, refactor, test addition, documentation change, or chore.
+- The subject line must describe the actual change, not a generic placeholder — never "updates", "fixes", "changes", or similar content-free text.
+- The body must explain substantive changes and, where useful, verification results (e.g. test counts, what was checked) — not restate the subject line.
+- Merge commit messages must identify the specific feature or release being integrated (e.g. `Интегрировать feature/phase-6-ai-localization в dev`), not a generic "Merge branch '...'".
+- Never claim in a commit message that a test was run if it was not actually run.
 
-Do not automatically:
+## K. Git branching, release, and authorization policy
 
-- merge or rebase from `upstream`;
-- `git push` to `origin` (including `origin/main`);
-- create git tags or releases;
-- deploy a production build;
-- execute a real (non-dry-run) YouTube write.
+Established 2026-09-19 ("Git Branching and Release Policy"). This section is authoritative for how work moves through branches and what each action requires; §L's specification-driven testing rules and §E's validation commands apply throughout, not only at release time.
 
-Every one of these actions requires **explicit authorization** from the project owner for that specific action — a prior approval does not carry forward to a new, unrelated action of the same kind. Committing locally (without pushing) is fine as part of ordinary development once the project owner has approved the specific change; it is not itself a "release" action.
+### K.1 Branch roles
 
-The project owner retains authority over product priorities, significant architectural decisions, security tradeoffs, scope expansion, production operations, releases, and Git pushes when authorization is required. Claude Code (or any coding agent working from this file) should handle ordinary implementation decisions independently within approved requirements and established architecture — do not ask for approval on every minor implementation detail, but do escalate decisions involving substantial architecture, security, compatibility, data-loss risk, or scope changes.
+**`main`** — accepted release states only.
+- No direct feature development or direct feature commits on `main`.
+- The only way content reaches `main` is `dev → main`, via an explicit `git merge --no-ff` (never a fast-forward, so the integration itself remains a visible, identifiable commit).
+- An existing commit on `main` is never silently treated as "already a published release" — a release is a distinct, separately authorized act (tag + publication), not merely a commit's presence on the branch.
+
+**`dev`** — the stable integration branch.
+- No direct feature development on `dev`.
+- A feature is integrated into `dev` only after it has passed its own acceptance criteria and validation (§E, and §L for anything safety-critical).
+- Integration is `feature/* → dev` via explicit `git merge --no-ff` — never squashed by default (a feature branch's real commit history is preserved so its development steps remain inspectable).
+- After every integration, verify the resulting `dev` state (§K.3). A failed or unverified integration is never left in place as if it were stable, and is never pushed.
+
+**`feature/<descriptive-name>`** — one branch per approved development task, created from the tip of `dev` at the time the task starts.
+- Work and commit incrementally on the feature branch; intermediate/WIP commits are fine there (they are not `dev` or `main`).
+- Never commit user secrets, credentials, local databases (`data/*.db`), generated build artifacts (`.next/`, `node_modules/`), or files unrelated to the task at hand — stage explicit paths, never `git add -A`/`git add .` without inspecting the result first.
+- Before integrating into `dev`, merge/rebase in the latest `dev` changes, resolve any conflicts on the feature branch itself (never on `dev`), and re-verify the result.
+- Never rewrite the history of a branch another agent, session, or person may already be building on (no `git rebase`/`git commit --amend`/force-push on a shared branch without explicit authorization).
+
+### K.2 Authorization matrix
+
+| Action | Authorization |
+|---|---|
+| Create a `feature/*` branch for an approved task | Authorized by default |
+| Commit locally on a `feature/*` branch | Authorized by default |
+| Merge a completed, verified feature into local `dev` (`--no-ff`) | Authorized by default |
+| `git push` of `dev` | Only when the specific task's instructions permit it, or the project owner explicitly approves that push |
+| Merge `dev` into `main` | Separate, explicit project-owner approval required every time |
+| `git push` of `main` | Separate, explicit project-owner approval required every time |
+| Create a git tag / GitHub release / publish a distributable build | Separate, explicit project-owner approval required every time |
+| `merge`/`rebase` from the `upstream` remote | Separate, explicit project-owner approval required every time (unchanged from prior policy, §D) |
+| Force push, destructive `reset`/`clean`, or any history rewrite of a shared branch | Never without explicit, action-specific authorization |
+| Real (non-dry-run) YouTube write; real paid AI API call; production deployment | Never inferred from any Git permission above — these each have their own, separate authorization requirement (§K.4, `docs/PROJECT_SPEC.md`) |
+
+A prior approval never carries forward to a new, unrelated action of the same kind (unchanged from prior policy). A more restrictive instruction given for an individual task always takes precedence over this general policy.
+
+### K.3 Verification discipline
+
+- **During feature development:** run focused tests for the affected functionality as needed; do not rerun the entire suite after every micro-edit without a reason to suspect broader breakage.
+- **Before merging a feature into `dev`:** run every acceptance test the feature's own task defined, then `npm test`, `npm run lint`, `npm run build`, and `git diff --check`; re-verify the specific safety/data invariants the change touches (e.g. the Phase 5 live-write barrier, channel-scoping, credential non-exposure); obtain independent review where the task calls for it.
+- **After merging into `dev`:** verify the resulting merge commit itself (the merge can introduce a break even when both sides passed independently) — but do not redundantly re-run a check that already ran against the exact resulting commit (e.g. via CI) with nothing since. Merging is never, by itself, evidence of stability; only an actual passing verification of the merged state is.
+- **Before any release:** verify the actual release candidate and its distributable artifacts specifically — a passing `dev` test suite proves the code paths tested, not cross-platform (e.g. Windows/macOS) packaging or runtime behavior; check platform compatibility and any database-migration requirement explicitly, not by inference from `npm test`.
+- Never state that a test ran, or what it found, unless it was actually executed in this session.
+
+### K.4 Release policy
+
+- Only an accepted `dev` state is integrated into `main`, only via `git merge --no-ff`, only with prior project-owner approval for that specific merge.
+- A version tag is assigned only after separate project-owner approval, never automatically alongside a merge.
+- A release preserves its manifest, compatibility information, and any platform-specific artifacts — a release is not just "the current `main` tip."
+- A user-data migration bundled with a release follows the project's approved upgrade-safety process (schema/data compatibility checked, not assumed).
+- Do not build automatic-update mechanisms or cut a release as an incidental side effect of an unrelated task.
+- None of the above authorizes a real (non-dry-run) YouTube write, a real paid AI API call, or a production deployment — each remains separately gated (§G, `docs/PROJECT_SPEC.md`, and any provider-integration plan under `docs/ai-localization/` or equivalent).
+
+The project owner retains authority over product priorities, significant architectural decisions, security tradeoffs, scope expansion, production operations, releases, and every Git action this section marks as requiring separate authorization. Claude Code (or any coding agent working from this file) handles ordinary implementation decisions — including creating feature branches and integrating verified work into `dev` — independently within approved requirements and this policy; it does not ask for approval on every minor implementation detail, but does escalate decisions involving substantial architecture, security, compatibility, data-loss risk, or scope changes, and always stops at the boundaries in §K.2's authorization matrix.
 
 ## L. Specification-driven and independent testing
 
