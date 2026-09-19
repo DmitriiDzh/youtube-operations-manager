@@ -40,15 +40,25 @@ export async function writeJsonFileAtomic(targetPath: string, data: unknown): Pr
   // same comment).
   const tmpPath = path.join(dir, `.${path.basename(targetPath)}.${randomUUID()}.tmp`);
   const handle = await open(tmpPath, "w", fsConstants.S_IRUSR | fsConstants.S_IWUSR);
+  // A close() failure while the try block is *already* failing (e.g. EIO on the same underlying
+  // fault that made sync() throw) must never replace that real error -- plain try/finally
+  // semantics would otherwise let it silently do exactly that. But when writeFile()/sync() both
+  // genuinely succeeded, a close() failure (a late EIO/ENOSPC flush error, or an unusual
+  // filesystem that surfaces errors only on close) is itself a real fault the caller must learn
+  // about -- swallowing it unconditionally would silently mask that and let this function
+  // proceed to chmod/rename as if the write were safe (independent review, review series cycle
+  // 4 -- cycle 3's own fix for the opposite masking problem overshot into this one).
+  let writeSucceeded = false;
   try {
     await handle.writeFile(JSON.stringify(data, null, 2), "utf8");
     await handle.sync();
+    writeSucceeded = true;
   } finally {
-    // A close() failure (e.g. EIO on the same underlying fault that made sync() fail) must
-    // never replace whatever real error the try block already threw -- plain try/finally
-    // semantics would otherwise let it silently do exactly that (independent review, review
-    // series cycle 3).
-    await handle.close().catch(() => {});
+    if (writeSucceeded) {
+      await handle.close();
+    } else {
+      await handle.close().catch(() => {});
+    }
   }
   if (process.platform !== "win32") {
     await chmod(tmpPath, 0o600);
