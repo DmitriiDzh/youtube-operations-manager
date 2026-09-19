@@ -117,6 +117,12 @@ type ServiceDependencies = {
    * exercises `connectionId` keeps working unchanged (AGENTS.md §D: this domain's
    * own logic is not required to know connections exist unless a caller opts in). */
   resolveConnectionProvider?(connectionId: string): Promise<LocalizationProvider>;
+  /** RISK-30 (docs/TECHNICAL_DEBT.md): `src/proxy.ts` exempts this route from the device-
+   * availability/recovery-mode gate on the rationale "no local writes, never calls YouTube" --
+   * true, but incomplete, since a real connection still makes a genuine outbound call to an
+   * external AI provider. Optional so mock-provider-only test fixtures are unaffected; called
+   * only on the real-connection path (`connectionId` set), never for the mock provider. */
+  assertDeviceAvailable?(): Promise<void>;
   changeSetServices: {
     createChangeSetFromProposals(input: {
       channelId: string;
@@ -235,6 +241,11 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
           if (!deps.resolveConnectionProvider) {
             throw new DomainError({ code: "provider_not_configured", message: "AI Connections are not wired into this service instance" });
           }
+          // RISK-30: about to make a real outbound call to an external AI provider -- enforce
+          // the same device-availability/recovery-mode gate proxy.ts's own exemption for this
+          // route assumed was unnecessary here, since it only actually covers YouTube writes
+          // and local persistence, not this.
+          if (deps.assertDeviceAvailable) await deps.assertDeviceAvailable();
           provider = await deps.resolveConnectionProvider(parsedInput.connectionId);
         } else {
           provider = deps.resolveProvider(parsedInput.providerName ?? deps.defaultProviderName);

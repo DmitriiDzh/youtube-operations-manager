@@ -1,7 +1,8 @@
 import { constants as fsConstants } from "node:fs";
-import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { renameWithRetry } from "@/lib/rename-retry";
 
 /**
  * Shared atomic-write-then-chmod-0600 implementation for small device-local JSON state files
@@ -31,7 +32,9 @@ export async function writeJsonFileAtomic(targetPath: string, data: unknown): Pr
     await chmod(tmpPath, 0o600);
   }
 
-  await rename(tmpPath, targetPath);
+  // RISK-22 (docs/TECHNICAL_DEBT.md): retry on Windows EBUSY/EPERM rather than throwing
+  // unhandled on every login/bootstrap-config save that races a transiently-held handle.
+  await renameWithRetry(tmpPath, targetPath);
 
   if (process.platform !== "win32") {
     await chmod(targetPath, 0o600);

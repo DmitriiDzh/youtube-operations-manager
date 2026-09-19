@@ -111,7 +111,13 @@ function makeFixture(videos: StoredVideoRecord[] = [makeVideo()]) {
     },
   };
 
-  function build(provider: LocalizationProvider) {
+  function build(
+    provider: LocalizationProvider,
+    extraDeps: {
+      resolveConnectionProvider?: (connectionId: string) => Promise<LocalizationProvider>;
+      assertDeviceAvailable?: () => Promise<void>;
+    } = {}
+  ) {
     return createAiLocalizationServices({
       channelStore,
       resolveProvider: () => provider,
@@ -121,6 +127,7 @@ function makeFixture(videos: StoredVideoRecord[] = [makeVideo()]) {
       provenanceStore,
       idGenerator: () => `id-${++idCounter}`,
       logger,
+      ...extraDeps,
     });
   }
 
@@ -491,4 +498,62 @@ test("AC-APPROVAL-02: every persisted change starts pending, never auto-approved
   // changes to "pending" itself) -- assert this module never attempts to set one.
   const change = persistedChangeSets[0].changes[0] as Record<string, unknown>;
   assert.equal("approvalStatus" in change, false);
+});
+
+// RISK-30 (docs/TECHNICAL_DEBT.md): src/proxy.ts exempts this route from the device-
+// availability/recovery-mode gate on the rationale "no local writes, never calls YouTube" --
+// true, but incomplete, since a real connection still makes a genuine outbound call to an
+// external AI provider. The gate must be enforced here, on the real-connection path only.
+test("RISK-30: a real-connection generation checks device availability before resolving the provider", async () => {
+  const { build } = makeFixture();
+  let checked = false;
+  let resolveConnectionProviderCalled = false;
+  const services = build(fixedProvider(() => ({ status: "ok", title: "x", description: "y" })), {
+    assertDeviceAvailable: async () => {
+      checked = true;
+    },
+    resolveConnectionProvider: async () => {
+      resolveConnectionProviderCalled = true;
+      return fixedProvider(() => ({ status: "ok", title: "x", description: "y" }));
+    },
+  });
+
+  await services.generateProposals({ channelId: "UC_TEST", videoIds: ["v1"], targetLanguages: ["es"], connectionId: "conn-1" });
+
+  assert.equal(checked, true);
+  assert.equal(resolveConnectionProviderCalled, true);
+});
+
+test("RISK-30: a real-connection generation fails closed if the device is not available, before ever resolving the provider", async () => {
+  const { build } = makeFixture();
+  let resolveConnectionProviderCalled = false;
+  const services = build(fixedProvider(() => ({ status: "ok", title: "x", description: "y" })), {
+    assertDeviceAvailable: async () => {
+      throw new Error("device_in_recovery_mode");
+    },
+    resolveConnectionProvider: async () => {
+      resolveConnectionProviderCalled = true;
+      return fixedProvider(() => ({ status: "ok", title: "x", description: "y" }));
+    },
+  });
+
+  await assert.rejects(
+    () => services.generateProposals({ channelId: "UC_TEST", videoIds: ["v1"], targetLanguages: ["es"], connectionId: "conn-1" }),
+    /device_in_recovery_mode/
+  );
+  assert.equal(resolveConnectionProviderCalled, false);
+});
+
+test("RISK-30: the mock provider path (no connectionId) never calls the device-availability check", async () => {
+  const { build } = makeFixture();
+  let checked = false;
+  const services = build(fixedProvider(() => ({ status: "ok", title: "x", description: "y" })), {
+    assertDeviceAvailable: async () => {
+      checked = true;
+    },
+  });
+
+  await services.generateProposals({ channelId: "UC_TEST", videoIds: ["v1"], targetLanguages: ["es"] });
+
+  assert.equal(checked, false);
 });

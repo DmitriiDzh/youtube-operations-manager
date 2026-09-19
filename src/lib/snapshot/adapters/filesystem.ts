@@ -1,8 +1,9 @@
-import { mkdir, readFile, readdir, rename, rm, writeFile, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { SnapshotError, type SnapshotManifest } from "../contracts";
 import { parseSnapshotManifest } from "../schemas";
+import { renameWithRetry } from "@/lib/rename-retry";
 
 async function pathExists(target: string): Promise<boolean> {
   try {
@@ -47,23 +48,8 @@ export async function publishSnapshot(
     );
   }
 
-  // A file written moments earlier by a just-closed SQLite connection can briefly still hold
-  // an OS-level lock on Windows even after close() returns (native binding handle release is
-  // not perfectly synchronous) -- retry the rename rather than fail the whole export on an
-  // unrelated, transient EBUSY.
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 10; attempt++) {
-    try {
-      await rename(stagingDir, finalDir);
-      return finalDir;
-    } catch (error) {
-      lastError = error;
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "EBUSY" && code !== "EPERM") throw error;
-      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
-    }
-  }
-  throw lastError;
+  await renameWithRetry(stagingDir, finalDir);
+  return finalDir;
 }
 
 export async function discardStagingDir(stagingDir: string): Promise<void> {

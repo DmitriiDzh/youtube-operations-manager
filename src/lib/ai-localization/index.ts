@@ -5,6 +5,8 @@ import { createAiConnectionCore } from "@/lib/ai-connections";
 import { createEditorialProfileStoreAdapter, createGenerationProvenanceStoreAdapter } from "./adapters/profile-store";
 import { resolveLocalizationProvider } from "./provider-registry";
 import { createAiLocalizationServices } from "./services";
+import { rawSqlClient } from "@/lib/db";
+import { assertDeviceAvailableForMutation } from "@/lib/device-handoff";
 
 export function createAiLocalizationCore() {
   const changeSetCore = createChangeSetCore();
@@ -15,6 +17,7 @@ export function createAiLocalizationCore() {
     resolveProvider: resolveLocalizationProvider,
     defaultProviderName: "mock",
     resolveConnectionProvider: connectionCore.resolveConnectionProvider,
+    assertDeviceAvailable: () => assertDeviceAvailableForMutation(rawSqlClient),
     changeSetServices: { createChangeSetFromProposals: changeSetCore.createChangeSetFromProposals },
     profileStore: createEditorialProfileStoreAdapter(),
     provenanceStore: createGenerationProvenanceStoreAdapter(),
