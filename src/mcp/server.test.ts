@@ -5,6 +5,9 @@ import type { VideoMetadataCore } from "@/lib/video-metadata";
 import type { PlaylistManagementCore } from "@/lib/playlist-management";
 import type { ChangeSetCore } from "@/lib/changesets";
 import type { BatchCore } from "@/lib/batches";
+import type { ChannelSyncCore } from "@/lib/channel-sync";
+import { rawSqlClient } from "@/lib/db";
+import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { createMcpServer, createMcpToolHandlers } from "./server";
 
 function makeCoreStub(): Pick<
@@ -1447,4 +1450,145 @@ test("MCP batch_get fails closed when the batch does not belong to the given cha
   assert.equal(result.isError, true);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
   assert.equal(payload.error.code, "not_found");
+});
+
+// BL-008 (docs/roadmap/BACKLOG.md): channel_sync, channel_list, channel_video_list.
+// channel_sync writes to the local channels/videos tables, so -- unlike the Phase 7
+// slice 1 tools above -- it IS wrapped by the device-availability mutation gate;
+// channel_list/channel_video_list are pure reads and are not.
+
+function makeSyncedChannel(overrides: Record<string, unknown> = {}) {
+  return {
+    channelId: "UC_1",
+    title: "Channel 1",
+    thumbnailUrl: null,
+    uploadsPlaylistId: "UU_1",
+    connectedUserId: "active-user",
+    connectedAt: "2026-09-01T00:00:00.000Z",
+    lastSyncedAt: "2026-09-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function makeChannelSyncCoreStub(): Pick<
+  ChannelSyncCore,
+  "syncChannel" | "listChannels" | "listSyncedVideos"
+> {
+  return {
+    syncChannel: async () => ({
+      channel: makeSyncedChannel(),
+      videoCount: 1,
+      syncedAt: "2026-09-01T00:00:00.000Z",
+    }),
+    listChannels: async () => ({ channels: [makeSyncedChannel()] }),
+    listSyncedVideos: async () => ({ channelId: "UC_1", videos: [] }),
+  };
+}
+
+test("MCP channel_sync forwards the resolved credentialRef and channelId", async () => {
+  const seenArgs: unknown[] = [];
+  const channelSyncCore = makeChannelSyncCoreStub();
+  channelSyncCore.syncChannel = async (input: unknown) => {
+    seenArgs.push(input);
+    return { channel: makeSyncedChannel(), videoCount: 1, syncedAt: "2026-09-01T00:00:00.000Z" };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    { ...makeOperationsCoreStub() },
+    channelSyncCore
+  );
+  const result = await handlers.channelSync({ channelId: "UC_1" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(seenArgs, [{ channelId: "UC_1", credentialRef: { userId: "active-user" } }]);
+});
+
+test("MCP channel_list returns locally synchronized channels", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    makeChannelSyncCoreStub()
+  );
+  const result = await handlers.channelList({});
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.channels.length, 1);
+  assert.equal(payload.channels[0].channelId, "UC_1");
+});
+
+test("MCP channel_video_list returns synced videos for a channel", async () => {
+  const channelSyncCore = makeChannelSyncCoreStub();
+  channelSyncCore.listSyncedVideos = async () => ({
+    channelId: "UC_1",
+    videos: [
+      {
+        videoId: "v1",
+        channelId: "UC_1",
+        title: "Video 1",
+        description: "Desc",
+        publishedAt: "2026-09-01T00:00:00.000Z",
+        privacyStatus: "private",
+        defaultLanguage: null,
+        defaultAudioLanguage: null,
+        thumbnails: {},
+        existingLocalizations: {},
+        existingLocalizationLanguages: [],
+        lastSyncedAt: "2026-09-01T00:00:00.000Z",
+        etag: null,
+      },
+    ],
+  });
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    channelSyncCore
+  );
+  const result = await handlers.channelVideoList({ channelId: "UC_1" });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.videos.length, 1);
+  assert.equal(payload.videos[0].videoId, "v1");
+});
+
+test("MCP channel_video_list rejects a missing channelId", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    makeChannelSyncCoreStub()
+  );
+  const result = await handlers.channelVideoList({});
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP channel_sync is rejected while the operation lock is held; channel_list is not", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      makeChannelSyncCoreStub()
+    );
+
+    const syncResult = await handlers.channelSync({});
+    assert.equal(syncResult.isError, true);
+    const syncBody = JSON.parse(syncResult.content[0]?.text ?? "{}");
+    assert.equal(syncBody.error.code, "operation_lock_held");
+
+    const listResult = await handlers.channelList({});
+    assert.notEqual(listResult.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
 });

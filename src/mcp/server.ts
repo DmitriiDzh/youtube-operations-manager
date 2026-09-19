@@ -23,6 +23,12 @@ import {
 import { createChangeSetCore, type ChangeSetCore } from "@/lib/changesets";
 import { getChangeSetInputSchema, listChangeSetsInputSchema } from "@/lib/changesets/schemas";
 import { createBatchCore, type BatchCore } from "@/lib/batches";
+import { createChannelSyncCore, type ChannelSyncCore } from "@/lib/channel-sync";
+import {
+  listChannelsInputSchema,
+  listSyncedVideosInputSchema,
+  syncChannelInputSchema,
+} from "@/lib/channel-sync/schemas";
 
 loadEnvConfig(process.cwd());
 
@@ -47,6 +53,11 @@ type PlaylistManagementCoreSubset = Pick<
 // fails the build if any such symbol is ever referenced from this file.
 type ChangeSetCoreSubset = Pick<ChangeSetCore, "listChangeSets" | "getChangeSet" | "previewImport">;
 type BatchCoreSubset = Pick<BatchCore, "listBatchesByChannel" | "requireBatchForChannel" | "listLedgerRows">;
+
+// BL-008 (docs/roadmap/BACKLOG.md): the remainder of RISK-04's MCP portion --
+// channel_sync writes to the local channels/videos tables (via a real YouTube API read),
+// so it IS gated by assertMcpDeviceAvailable below, unlike the read-only pair.
+type ChannelSyncCoreSubset = Pick<ChannelSyncCore, "syncChannel" | "listChannels" | "listSyncedVideos">;
 
 type ToolResponse = {
   content: Array<{ type: "text"; text: string }>;
@@ -75,6 +86,9 @@ type McpToolHandlers = {
   localizationImportPreview: (input: unknown) => Promise<ToolResponse>;
   batchList: (input: unknown) => Promise<ToolResponse>;
   batchGet: (input: unknown) => Promise<ToolResponse>;
+  channelSync: (input: unknown) => Promise<ToolResponse>;
+  channelList: (input: unknown) => Promise<ToolResponse>;
+  channelVideoList: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -286,7 +300,8 @@ export function createMcpToolHandlers(
   operationsCore: ChangeSetCoreSubset & BatchCoreSubset = {
     ...createChangeSetCore(),
     ...createBatchCore(),
-  }
+  },
+  channelSyncCore: ChannelSyncCoreSubset = createChannelSyncCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -635,6 +650,57 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    async channelSync(input: unknown): Promise<ToolResponse> {
+      const parsedInput = syncChannelInputSchema.partial({ credentialRef: true }).safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await channelSyncCore.syncChannel({
+          ...parsedInput.data,
+          credentialRef,
+        });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async channelList(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listChannelsInputSchema.partial({ credentialRef: true }).safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await channelSyncCore.listChannels({ credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async channelVideoList(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listSyncedVideosInputSchema.partial({ credentialRef: true }).safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await channelSyncCore.listSyncedVideos({
+          ...parsedInput.data,
+          credentialRef,
+        });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -696,6 +762,12 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     localizationImportPreview: handlers.localizationImportPreview,
     batchList: handlers.batchList,
     batchGet: handlers.batchGet,
+    // channel_sync writes to the local channels/videos tables -- gated, like
+    // writeChannelSelect/authUserSelect above. channel_list/channel_video_list are
+    // pure local reads and stay ungated, like changeset_list/batch_list above.
+    channelSync: async (input) => (await assertMcpDeviceAvailable()) ?? handlers.channelSync(input),
+    channelList: handlers.channelList,
+    channelVideoList: handlers.channelVideoList,
   };
 }
 
@@ -913,6 +985,35 @@ export function createMcpServer(
       inputSchema: batchGetInputSchema,
     },
     (args) => handlers.batchGet(args)
+  );
+
+  server.registerTool(
+    "channel_sync",
+    {
+      description:
+        "Synchronize a channel's videos into the local database (read from YouTube, write to local SQLite only -- never a YouTube write). channelId is OPTIONAL and defaults to the authenticated account's own channel. credentialRef is OPTIONAL and falls back to active local auth context.",
+      inputSchema: syncChannelInputSchema.partial({ credentialRef: true }),
+    },
+    (args) => handlers.channelSync(args)
+  );
+
+  server.registerTool(
+    "channel_list",
+    {
+      description: "List locally synchronized channels. Read-only. credentialRef is OPTIONAL and falls back to active local auth context.",
+      inputSchema: listChannelsInputSchema.partial({ credentialRef: true }),
+    },
+    (args) => handlers.channelList(args)
+  );
+
+  server.registerTool(
+    "channel_video_list",
+    {
+      description:
+        "List a synchronized channel's videos with their existing localization languages. Read-only. credentialRef is OPTIONAL and falls back to active local auth context.",
+      inputSchema: listSyncedVideosInputSchema.partial({ credentialRef: true }),
+    },
+    (args) => handlers.channelVideoList(args)
   );
 
   return server;
