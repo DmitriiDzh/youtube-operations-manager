@@ -61,6 +61,17 @@ data/auth-context.json
 # macOS launcher script's own PID file (scripts/macos/start.sh / stop.sh)
 /.launcher.pid
 
+# published/<version>/ snapshots (docs/decisions/0003-published-release-snapshots.md) are
+# themselves committed, but anything an operator generates *inside* one after copying it out
+# (npm install, npm run build, running the app) must not be — these patterns are unanchored on
+# purpose so they match at any published/*/ depth, not just the repo root.
+published/*/node_modules/
+published/*/.next/
+published/*/.launcher.pid
+published/*/data/*.db
+published/*/data/*.db-wal
+published/*/data/*.db-shm
+
 # vercel
 .vercel
 

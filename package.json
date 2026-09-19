@@ -10,7 +10,8 @@
     "lint": "eslint",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "cli:video-metadata": "node --import tsx src/cli/video-metadata.ts",
-    "mcp:video-metadata": "node --import tsx src/mcp/server.ts"
+    "mcp:video-metadata": "node --import tsx src/mcp/server.ts",
+    "publish:snapshot": "node scripts/publish-snapshot.mjs"
   },
   "dependencies": {
     "@libsql/client": "^0.17.2",
