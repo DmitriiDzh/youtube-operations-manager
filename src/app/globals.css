@@ -1,22 +1,33 @@
 @import "tailwindcss";
 
+/* YouTube Studio-inspired dark palette (this app is dark-only, `dark` class always set in
+ * layout.tsx -- no light-mode variant is needed or provided). Named after what each token is
+ * *for*, not the literal color, so a future palette tweak never requires touching every call
+ * site (AGENTS.md §D-style "one place" reasoning applied to design tokens). */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0f0f0f;
+  --foreground: #f1f1f1;
+  --color-surface: #212121;
+  --color-surface-hover: #2b2b2b;
+  --color-sidebar: #181818;
+  --color-border: #3f3f3f;
+  --color-muted: #aaaaaa;
+  --color-accent: #f00000;
+  --color-accent-hover: #cc0000;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface: var(--color-surface);
+  --color-surface-hover: var(--color-surface-hover);
+  --color-sidebar: var(--color-sidebar);
+  --color-border: var(--color-border);
+  --color-muted: var(--color-muted);
+  --color-accent: var(--color-accent);
+  --color-accent-hover: var(--color-accent-hover);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {

@@ -13,6 +13,17 @@ import { BatchManager } from "@/components/batch-manager";
 import { AiLocalizationPanel } from "@/components/ai-localization-panel";
 import { AiConnectionsManager } from "@/components/ai-connections-manager";
 import { DeviceHandoffPanel } from "@/components/device-handoff-panel";
+import { AppShell, type NavItem } from "@/components/app-shell";
+import {
+  AiLocalizationIcon,
+  BatchesIcon,
+  DeviceIcon,
+  LocalizationsIcon,
+  ManualIcon,
+  RulesIcon,
+  SettingsIcon,
+  SyncIcon,
+} from "@/components/icons";
 
 type ChannelInfo = {
   id: string;
@@ -40,6 +51,17 @@ type Tab =
   | "batches"
   | "settings"
   | "device";
+
+const NAV_ITEMS: NavItem<Tab>[] = [
+  { value: "manual", label: "Manual", icon: ManualIcon },
+  { value: "rules", label: "Rules", icon: RulesIcon },
+  { value: "sync", label: "Sync", icon: SyncIcon },
+  { value: "localizations", label: "Localizations", icon: LocalizationsIcon },
+  { value: "ai-localization", label: "AI Localization", icon: AiLocalizationIcon },
+  { value: "batches", label: "Batches", icon: BatchesIcon },
+  { value: "settings", label: "Settings", icon: SettingsIcon },
+  { value: "device", label: "Device", icon: DeviceIcon },
+];
 
 export default function Dashboard() {
   const { data: session, status } = useSession();
@@ -91,135 +113,15 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-4 py-12">
-      <div className="mb-8 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">YouTube Playlist Manager</h1>
-          <p className="text-sm text-zinc-400">
-            Welcome, {session.user?.name}
-          </p>
-        </div>
-        <button
-          onClick={() => signOut()}
-          className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-400 transition-colors hover:border-zinc-500 hover:text-zinc-200"
-        >
-          Sign Out
-        </button>
-      </div>
-
-      <div className="mb-6 flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-3">
-        <div className="flex items-center gap-3">
-          {channel?.thumbnail && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={channel.thumbnail}
-              alt={channel.title}
-              className="h-10 w-10 rounded-full"
-            />
-          )}
-          <div>
-            <p className="text-xs text-zinc-500">Active YouTube channel</p>
-            <p className="font-medium">
-              {channel?.title ?? "Loading..."}
-              {channel?.videoCount && (
-                <span className="ml-2 text-xs text-zinc-500">
-                  {channel.videoCount} videos
-                </span>
-              )}
-            </p>
-          </div>
-        </div>
-        <button
-          onClick={handleSwitchChannel}
-          className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800"
-        >
-          Switch Channel
-        </button>
-      </div>
-
-      <div className="mb-6 flex gap-1 rounded-lg bg-zinc-900 p-1">
-        <button
-          onClick={() => setTab("manual")}
-          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "manual"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:text-zinc-200"
-          }`}
-        >
-          Manual
-        </button>
-        <button
-          onClick={() => setTab("rules")}
-          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "rules"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:text-zinc-200"
-          }`}
-        >
-          Rules
-        </button>
-        <button
-          onClick={() => setTab("sync")}
-          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "sync"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:text-zinc-200"
-          }`}
-        >
-          Sync
-        </button>
-        <button
-          onClick={() => setTab("localizations")}
-          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "localizations"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:text-zinc-200"
-          }`}
-        >
-          Localizations
-        </button>
-        <button
-          onClick={() => setTab("ai-localization")}
-          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "ai-localization"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:text-zinc-200"
-          }`}
-        >
-          AI Localization
-        </button>
-        <button
-          onClick={() => setTab("batches")}
-          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "batches"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:text-zinc-200"
-          }`}
-        >
-          Batches
-        </button>
-        <button
-          onClick={() => setTab("settings")}
-          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "settings"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:text-zinc-200"
-          }`}
-        >
-          Settings
-        </button>
-        <button
-          onClick={() => setTab("device")}
-          className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "device"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:text-zinc-200"
-          }`}
-        >
-          Device
-        </button>
-      </div>
-
+    <AppShell
+      navItems={NAV_ITEMS}
+      activeTab={tab}
+      onTabChange={setTab}
+      channel={channel}
+      userName={session.user?.name}
+      onSwitchChannel={handleSwitchChannel}
+      onSignOut={() => signOut()}
+    >
       {tab === "manual" && (
         <div>
           <p className="mb-4 text-sm text-zinc-400">
@@ -316,6 +218,6 @@ export default function Dashboard() {
           <DeviceHandoffPanel />
         </div>
       )}
-    </div>
+    </AppShell>
   );
 }
