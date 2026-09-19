@@ -4,6 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { DomainError } from "@/lib/video-metadata/contracts";
+import { getProductionAppPaths } from "@/lib/platform-paths";
 
 export const activeAuthContextSchema = z
   .object({
@@ -21,9 +22,16 @@ export type ActiveAuthStorage = {
   clear(): Promise<void>;
 };
 
-export function createActiveAuthStorage(baseDir = process.cwd()): ActiveAuthStorage {
-  const dataDir = path.join(baseDir, "data");
-  const contextPath = path.join(dataDir, "auth-context.json");
+/**
+ * `contextPath` defaults to the platform-aware app-data location's `auth-context.json`
+ * (docs/decisions/0002-additive-schema-versioning.md's companion task, "Pre-Release
+ * Cross-Platform Persistence" -- replaces the previous `<cwd>/data/auth-context.json`
+ * default). Tests inject an explicit isolated temp path, exactly as before.
+ */
+export function createActiveAuthStorage(
+  contextPath: string = getProductionAppPaths().authContextPath
+): ActiveAuthStorage {
+  const dataDir = path.dirname(contextPath);
 
   async function ensureDataDir() {
     await mkdir(dataDir, { recursive: true });

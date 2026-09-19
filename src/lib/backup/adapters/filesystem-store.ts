@@ -1,8 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { BackupHealth, BackupSnapshot } from "../contracts";
-
-const DEFAULT_BACKUPS_ROOT = path.join(process.cwd(), "data", "backups");
+import { getProductionAppPaths } from "@/lib/platform-paths";
 
 /**
  * Layout: <root>/<channelId>/<batchId>/<videoId>.metadata_before.json -- scoped by
@@ -10,8 +9,13 @@ const DEFAULT_BACKUPS_ROOT = path.join(process.cwd(), "data", "backups");
  * backup path (AC-BACKUP-03). `wx` is the write flag that fails atomically (EEXIST) if
  * the file already exists -- this is what actually enforces "never overwritten" at the
  * filesystem level, not merely a pre-check that could race with a concurrent writer.
+ *
+ * `root` defaults to the platform-aware app-data location's backups directory
+ * (docs/decisions/0002-additive-schema-versioning.md's companion task, "Pre-Release
+ * Cross-Platform Persistence" -- replaces the previous `<cwd>/data/backups` default; tests
+ * inject an explicit isolated temp path, unchanged).
  */
-export function createFilesystemBackupStore(root: string = DEFAULT_BACKUPS_ROOT) {
+export function createFilesystemBackupStore(root: string = getProductionAppPaths().backupsDir) {
   return {
     async healthCheck(): Promise<BackupHealth> {
       try {

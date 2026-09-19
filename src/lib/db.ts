@@ -1,12 +1,11 @@
 import { existsSync, mkdirSync } from "fs";
-import os from "os";
 import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import path from "path";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
-import { resolveAppPaths, resolveLegacyDbPath } from "@/lib/platform-paths";
+import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
 import {
   assertSupportedSchemaVersion,
@@ -14,31 +13,13 @@ import {
   type SchemaMigration,
 } from "@/lib/schema-versioning";
 
-// Node's own built-in test runner sets this on every worker process it spawns (verified
-// empirically: `node --test` -> NODE_TEST_CONTEXT=child-v8, regardless of whether it's
-// invoked via `npm test` or directly). Used ONLY to keep this module's eager, import-time
-// singleton boot (below) from ever touching the operator's real app-data directory or real
-// legacy `data/playlist-manager.db` while running under `npm test` -- per
-// docs/DEVELOPMENT_PLAYBOOK.md §6.11 and this task's own "never touch real user data during
-// development or automated tests" instruction. Every test that needs a real database uses
-// `createIsolatedDb`/`initializeDatabaseSchema` against its own temp file directly; this only
-// guards the singleton `db`/`rawClient` that gets constructed merely by importing this file.
-const isRunningUnderTestRunner = Boolean(process.env.NODE_TEST_CONTEXT);
-
 // Platform-aware app-data location (docs/decisions/0002-additive-schema-versioning.md's
-// companion task, "Pre-Release Cross-Platform Persistence"). Resolved once at module load
-// from injected platform/env/homedir, never read ad hoc elsewhere in this file.
-const appPaths = isRunningUnderTestRunner
-  ? resolveAppPaths({
-      platform: process.platform,
-      env: {},
-      homedir: path.join(os.tmpdir(), "youtube-ops-manager-test-singleton"),
-    })
-  : resolveAppPaths({
-      platform: process.platform,
-      env: process.env,
-      homedir: os.homedir(),
-    });
+// companion task, "Pre-Release Cross-Platform Persistence"). getProductionAppPaths() is the
+// single shared implementation of "resolve the real app-data location, but redirect to an
+// isolated temp directory under Node's own test runner" -- src/lib/cli-auth/storage.ts and
+// src/lib/backup/adapters/filesystem-store.ts use the exact same function for their own
+// defaults, so this test-runner guard exists in one place, not three (AGENTS.md §D).
+const appPaths = getProductionAppPaths();
 
 export { appPaths as appDataPaths };
 
@@ -61,7 +42,7 @@ const rawClient = createClient({
  * legacy database as a side effect of `npm test`.
  */
 async function migrateLegacyDatabaseIfNeeded(): Promise<{ migrated: boolean }> {
-  if (isRunningUnderTestRunner) return { migrated: false };
+  if (isRunningUnderTestRunner()) return { migrated: false };
   if (existsSync(appPaths.dbPath)) return { migrated: false };
 
   const legacyDbPath = resolveLegacyDbPath(process.cwd());
