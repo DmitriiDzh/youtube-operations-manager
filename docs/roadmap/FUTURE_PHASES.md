@@ -18,6 +18,11 @@ Backlog" instruction. **This is a strategic backlog, not an implementation speci
   Nothing in this file authorizes real YouTube writes, paid AI calls, Google OAuth login,
   destructive database operations, deployment, or a release — those each have their own
   separate gates (`AGENTS.md` §G/§K) unaffected by this document's existence.
+- **Tracked backlog items:** `docs/roadmap/BACKLOG.md` holds the discrete, trackable slices
+  derived from the phases below (managed via the `roadmap-backlog` skill,
+  `.claude/skills/roadmap-backlog/SKILL.md`) — this file stays the strategic description, that
+  one tracks status (`proposed`/`assigned`/`in_progress`/`done`/`dropped`) for individual pieces
+  of it.
 
 ---
 
