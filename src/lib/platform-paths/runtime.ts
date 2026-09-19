@@ -32,7 +32,14 @@ export function getProductionAppPaths(): AppPaths {
     ? resolveAppPaths({
         platform: process.platform,
         env: {},
-        homedir: path.join(os.tmpdir(), "youtube-ops-manager-test-singleton"),
+        // Node's test runner isolates each *file* in its own subprocess by default
+        // (test-isolation=process), each with a distinct PID -- folding it into this path
+        // gives every test file its own pristine singleton database for free. Without this,
+        // every test file across an `npm test` run shared one fixed, persistent temp path,
+        // so state written by one file's tests (e.g. an operation-lock row, a batch_ledger_row)
+        // could leak into a completely unrelated file's tests within the same run -- exactly
+        // the kind of cross-test pollution this redirect exists to prevent in the first place.
+        homedir: path.join(os.tmpdir(), `youtube-ops-manager-test-singleton-${process.pid}`),
       })
     : resolveAppPaths({
         platform: process.platform,

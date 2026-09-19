@@ -707,6 +707,15 @@ const client = new Proxy(rawClient, {
   },
 });
 
+/**
+ * The same initialization-guarded client `db` (below) is built on, exposed directly for
+ * modules that need raw SQL access rather than Drizzle's query builder -- src/lib/snapshot/
+ * and src/lib/device-handoff/ (ATTACH/VACUUM/PRAGMA are not expressible through Drizzle),
+ * and src/proxy.ts / CLI / MCP choke points calling `assertDeviceAvailableForMutation`.
+ * Every call still waits for `databaseInitialization` first, exactly like `db` does.
+ */
+export const rawSqlClient: Client = client;
+
 const dbSchema = {
   users,
   rules,

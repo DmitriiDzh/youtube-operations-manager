@@ -9,6 +9,8 @@ import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
 import { createCliAuthService } from "@/lib/cli-auth/service";
 import type { CredentialRef } from "@/lib/video-metadata/contracts";
+import { rawSqlClient } from "@/lib/db";
+import { assertDeviceAvailableForMutation } from "@/lib/device-handoff";
 
 loadEnvConfig(process.cwd());
 
@@ -179,6 +181,22 @@ export function requiredStringFlag(
   });
 }
 
+// Read-only per docs/DEVELOPMENT_PLAYBOOK.md §6.7's three-way classification: returns data or
+// switches which locally active identity/channel is used for future *read* resolution, but
+// mutates no YouTube state and no local record other than "which existing option is active."
+// `select-channel`/`select-user` are intentionally excluded (they persist a local-mutation
+// side effect, matching §6.7's "a local-approval tool is a mutation" rule) -- and are gated,
+// consistent with how the same two write_channel_select/auth_user_select MCP tools are
+// classified as local-state mutations, not reads, in src/mcp/server.ts.
+const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
+  "list",
+  "transcript",
+  "preview",
+  "whoami",
+  "list-channels",
+  "list-users",
+]);
+
 function serializeSuccess(data: unknown) {
   return JSON.stringify({ ok: true, data });
 }
@@ -196,6 +214,25 @@ function serializeError(error: unknown) {
         message: error.message,
         details: error.details,
       },
+    });
+  }
+
+  // OperationLockError / RecoveryModeError (src/lib/operation-lock, src/lib/device-handoff)
+  // carry the same stable {code, message, details} shape as DomainError without being an
+  // instance of it (they are a different module's own error class, on purpose -- see
+  // AGENTS.md §D, they are not YouTube-write-safety domain errors). Any error exposing a
+  // string `code` is serialized the same structured way rather than falling through to the
+  // generic "internal_error" bucket below.
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof (error as { code: unknown }).code === "string"
+  ) {
+    const typed = error as { code: string; message: string; details?: unknown };
+    return JSON.stringify({
+      ok: false,
+      error: { code: typed.code, message: typed.message, details: typed.details },
     });
   }
 
@@ -236,6 +273,14 @@ export async function runCliCommand(args: {
 
   try {
     const parsedArgs = parseArgs(args.argv);
+
+    // Decision 7 (docs/decisions/0002-additive-schema-versioning.md's companion plan): a
+    // single choke point, mirroring src/proxy.ts's and MCP's, gating every mutating command
+    // (everything except the plainly read-only ones below) behind the local operation lock and
+    // the device-handoff recovery-mode check -- never bypassable by calling the CLI directly.
+    if (!READ_ONLY_CLI_COMMANDS.has(parsedArgs.command)) {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+    }
 
     if (parsedArgs.namespace === "auth") {
       if (parsedArgs.command === "login") {

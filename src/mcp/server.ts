@@ -42,6 +42,24 @@ type ToolResponse = {
   isError?: boolean;
 };
 
+type McpToolHandlers = {
+  writeContext: () => Promise<ToolResponse>;
+  writeChannelList: (input: unknown) => Promise<ToolResponse>;
+  writeChannelSelect: (input: unknown) => Promise<ToolResponse>;
+  whoami: () => Promise<ToolResponse>;
+  authUserSelect: (input: unknown) => Promise<ToolResponse>;
+  list: (input: unknown) => Promise<ToolResponse>;
+  transcript: (input: unknown) => Promise<ToolResponse>;
+  preview: (input: unknown) => Promise<ToolResponse>;
+  apply: (input: unknown) => Promise<ToolResponse>;
+  playlistList: (input: unknown) => Promise<ToolResponse>;
+  playlistCreate: (input: unknown) => Promise<ToolResponse>;
+  playlistDelete: (input: unknown) => Promise<ToolResponse>;
+  playlistUpdate: (input: unknown) => Promise<ToolResponse>;
+  playlistAddVideos: (input: unknown) => Promise<ToolResponse>;
+  playlistRemoveVideos: (input: unknown) => Promise<ToolResponse>;
+};
+
 function toolErrorResult(error: unknown) {
   if (error instanceof DomainError) {
     return {
@@ -55,6 +73,31 @@ function toolErrorResult(error: unknown) {
               message: error.message,
               details: error.details,
             },
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  // OperationLockError / RecoveryModeError (src/lib/operation-lock, src/lib/device-handoff)
+  // carry the same stable {code, message, details} shape without being a DomainError instance
+  // (a deliberately separate error class, AGENTS.md §D) -- structured the same way rather than
+  // falling into the generic "internal_error" bucket below.
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof (error as { code: unknown }).code === "string"
+  ) {
+    const typed = error as { code: string; message: string; details?: unknown };
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({
+            ok: false,
+            error: { code: typed.code, message: typed.message, details: typed.details },
           }),
         },
       ],
@@ -202,7 +245,7 @@ export function createMcpToolHandlers(
     });
   }
 
-  return {
+  const handlers: McpToolHandlers = {
     async writeContext(): Promise<ToolResponse> {
       try {
         const result = await auth.whoami();
@@ -460,6 +503,60 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+  };
+
+  return wrapMcpHandlersWithMutationGate(handlers);
+}
+
+/**
+ * Decision 7 (docs/decisions/0002-additive-schema-versioning.md's companion plan): a single
+ * choke point gating every locally-mutating or remote-mutating tool (per
+ * docs/DEVELOPMENT_PLAYBOOK.md §6.7's three-way classification: writeChannelSelect,
+ * authUserSelect, apply, playlistCreate/Update/Delete/AddVideos/RemoveVideos) behind the local
+ * operation lock and the device-handoff recovery-mode check, before the real handler ever
+ * runs. Read-only tools are untouched. Mirrors src/proxy.ts's and the CLI's
+ * `runCliCommand`'s own gate (one implementation logic, three call sites, AGENTS.md §D).
+ */
+async function assertMcpDeviceAvailable(): Promise<ToolResponse | null> {
+  try {
+    const { rawSqlClient } = await import("@/lib/db");
+    const { assertDeviceAvailableForMutation } = await import("@/lib/device-handoff");
+    await assertDeviceAvailableForMutation(rawSqlClient);
+    return null;
+  } catch (error) {
+    return toolErrorResult(error);
+  }
+}
+
+function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHandlers {
+  // TypeScript cannot verify `wrapped[key] = wrap(handlers[key])` preserves each key's own
+  // (varying: zero-arg vs. one-arg) signature through a generic loop -- built explicitly,
+  // one line per key, instead, which keeps every handler's real type intact. The gating
+  // *logic* itself (assertMcpDeviceAvailable, MCP_MUTATING_TOOL_KEYS) still lives in exactly
+  // one place; only this wiring is per-key.
+  return {
+    writeContext: handlers.writeContext,
+    writeChannelList: handlers.writeChannelList,
+    writeChannelSelect: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.writeChannelSelect(input),
+    whoami: handlers.whoami,
+    authUserSelect: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.authUserSelect(input),
+    list: handlers.list,
+    transcript: handlers.transcript,
+    preview: handlers.preview,
+    apply: async (input) => (await assertMcpDeviceAvailable()) ?? handlers.apply(input),
+    playlistList: handlers.playlistList,
+    playlistCreate: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.playlistCreate(input),
+    playlistDelete: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.playlistDelete(input),
+    playlistUpdate: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.playlistUpdate(input),
+    playlistAddVideos: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.playlistAddVideos(input),
+    playlistRemoveVideos: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.playlistRemoveVideos(input),
   };
 }
 
