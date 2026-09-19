@@ -2,6 +2,7 @@ import {
   YOUTUBE_DESCRIPTION_MAX_LENGTH,
   YOUTUBE_TITLE_MAX_LENGTH,
   classifyFieldChange,
+  currentRemoteValueFor,
   isValidLanguageCode,
 } from "@/lib/changesets/diff";
 import type { ChangeSet } from "@/lib/changesets/contracts";
@@ -22,6 +23,8 @@ import {
   type StoredChannelRecord,
   type StoredVideoRecord,
 } from "./contracts";
+import { OperationLockError } from "@/lib/operation-lock";
+import { RecoveryModeError } from "@/lib/device-handoff";
 import {
   createChangeSetFromGenerationInputSchema,
   generateProposalsInputSchema,
@@ -167,6 +170,12 @@ type ServiceDependencies = {
 
 function mapUnknownError(error: unknown, fallbackCode: DomainError["code"]) {
   if (isDomainError(error)) return error;
+  // RISK-30's assertDeviceAvailable (generateProposals) throws OperationLockError/
+  // RecoveryModeError, neither of which extends DomainError (AGENTS.md §D -- a different
+  // module's own error class, on purpose). Rewrapping them here into a generic
+  // "generation_failed" would discard the specific code/details that proxy.ts, mcp/server.ts,
+  // and the CLI all surface via explicit instanceof checks (independent review, second cycle).
+  if (error instanceof OperationLockError || error instanceof RecoveryModeError) return error;
   return new DomainError({
     code: fallbackCode,
     message: error instanceof Error ? error.message : "Unknown error",
@@ -212,11 +221,6 @@ function classifyAndValidateField(
     validationStatus: validationError ? "invalid" : "valid",
     validationError,
   };
-}
-
-function currentRemoteValueFor(video: StoredVideoRecord, language: string, field: "title" | "description"): string {
-  const locale = video.existingLocalizations[language];
-  return locale ? locale[field] : "";
 }
 
 export function createAiLocalizationServices(deps: ServiceDependencies) {

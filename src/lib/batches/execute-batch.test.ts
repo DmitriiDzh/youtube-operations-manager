@@ -624,6 +624,33 @@ test("AC-ISOLATION-03: the error report lists every non-successful item with det
   assert.equal(report[0].status, "FAILED");
 });
 
+// (independent review, second cycle): executeBatch's own mandatory pre-send re-check (distinct
+// from prepareBatchExecution's preparation-time check) is one of (now) four code paths that can
+// produce a CONFLICT ExecutionResult -- this one previously omitted conflictingChangeIds from
+// the returned result even though the identical audit record for the same event always
+// included it, and the other paths (prepareLedgerRow, resolveUnknownLedgerRow) also include it.
+test("a conflict detected by executeBatch's own pre-send re-check reports conflictingChangeIds in the result, not just the audit trail", async () => {
+  const harness = createHarness({
+    freshSequenceByVideoId: {
+      v1: [
+        PRE_SEND_BASELINE, // prepareBatchExecution's preparation-time fetch -- matches baseline
+        { snippet: { title: "T", description: "D", defaultLanguage: "en" }, localizations: { es: { title: "Changed In Studio", description: "" } } }, // executeBatch's own re-check -- diverged
+      ],
+    },
+  });
+  const batch = await createApprovedBatch(
+    harness,
+    { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] },
+    { c1: { language: "es", field: "title", baselineValue: "" } }
+  );
+
+  const executor = scriptedExecutor([]); // must never be reached -- conflict blocks before send
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor });
+
+  assert.equal(summary.results[0].status, "CONFLICT");
+  assert.deepEqual(summary.results[0].conflictingChangeIds, ["c1"]);
+});
+
 test("resolveUnknownLedgerRow rejects a row that is not UNKNOWN", async () => {
   const harness = createHarness();
   const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] });

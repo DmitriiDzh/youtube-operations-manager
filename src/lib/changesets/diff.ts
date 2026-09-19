@@ -3,6 +3,7 @@ import type {
   ChangeConflictStatus,
   ChangeSetStatus,
   ChangeType,
+  StoredVideoRecord,
 } from "./contracts";
 
 // YouTube Data API v3 `videos.update` / localizations constraints (verified against
@@ -19,6 +20,28 @@ const LANGUAGE_CODE_PATTERN = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$/;
 
 export function isValidLanguageCode(value: string): boolean {
   return LANGUAGE_CODE_PATTERN.test(value.trim());
+}
+
+/**
+ * The single canonical read of "what does the locally-synchronized copy of this video
+ * currently say for (language, field)" -- YouTube's `localizations` map never contains an
+ * entry keyed by the video's own `defaultLanguage` (that language's title/description is
+ * `snippet.title`/`description`, i.e. `video.title`/`video.description` on this synced
+ * record); only a non-default language is ever looked up in `existingLocalizations`.
+ * Previously duplicated (and each copy missing this defaultLanguage special-case) across
+ * `changesets/import.ts`, `changesets/services.ts`, and `ai-localization/services.ts` --
+ * a change targeting a video's default language was diffed against an empty string
+ * instead of its real current value in all three (AGENTS.md §D: one implementation).
+ */
+export function currentRemoteValueFor(
+  video: StoredVideoRecord,
+  language: string,
+  field: "title" | "description"
+): string {
+  if (video.defaultLanguage && language === video.defaultLanguage) {
+    return field === "title" ? video.title : video.description;
+  }
+  return video.existingLocalizations[language]?.[field] ?? "";
 }
 
 /**

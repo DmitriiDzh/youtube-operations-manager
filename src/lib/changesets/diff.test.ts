@@ -1,13 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Change } from "./contracts";
+import type { Change, StoredVideoRecord } from "./contracts";
 import {
   classifyFieldChange,
   computeChangeSetStatus,
   computeConflictStatus,
+  currentRemoteValueFor,
   isValidLanguageCode,
   revalidateChangeAgainstCurrentRemote,
 } from "./diff";
+
+function makeVideo(overrides: Partial<StoredVideoRecord> = {}): StoredVideoRecord {
+  return {
+    videoId: "v1",
+    channelId: "UC_TEST",
+    title: "EN Title",
+    description: "EN Description",
+    publishedAt: "2026-01-01T00:00:00.000Z",
+    privacyStatus: "public",
+    defaultLanguage: "en",
+    defaultAudioLanguage: "en",
+    thumbnails: {},
+    existingLocalizations: { es: { title: "Titulo ES", description: "Descripcion ES" } },
+    etag: "etag-v1",
+    lastSyncedAt: new Date("2026-01-02T00:00:00.000Z"),
+    ...overrides,
+  };
+}
 
 function makeChange(overrides: Partial<Change> = {}): Change {
   return {
@@ -132,4 +151,29 @@ test("revalidateChangeAgainstCurrentRemote: does not disturb an already-rejected
   const result = revalidateChangeAgainstCurrentRemote(rejected, "Changed In Studio");
   assert.equal(result.conflictStatus, "conflict");
   assert.equal(result.approvalStatus, "rejected");
+});
+
+// (independent review, second cycle): previously duplicated (and each copy missing this
+// defaultLanguage special-case) across changesets/import.ts, changesets/services.ts, and
+// ai-localization/services.ts -- a change targeting a video's default language was diffed
+// against an empty string instead of its real current value in all three.
+test("currentRemoteValueFor reads snippet title/description for the video's own defaultLanguage, not existingLocalizations", () => {
+  const video = makeVideo();
+  assert.equal(currentRemoteValueFor(video, "en", "title"), "EN Title");
+  assert.equal(currentRemoteValueFor(video, "en", "description"), "EN Description");
+});
+
+test("currentRemoteValueFor reads existingLocalizations for a non-default language", () => {
+  const video = makeVideo();
+  assert.equal(currentRemoteValueFor(video, "es", "title"), "Titulo ES");
+});
+
+test("currentRemoteValueFor returns empty string for a non-default language with no existing localization", () => {
+  const video = makeVideo();
+  assert.equal(currentRemoteValueFor(video, "de", "title"), "");
+});
+
+test("currentRemoteValueFor falls back to existingLocalizations when defaultLanguage is null", () => {
+  const video = makeVideo({ defaultLanguage: null, existingLocalizations: { en: { title: "Not the primary", description: "" } } });
+  assert.equal(currentRemoteValueFor(video, "en", "title"), "Not the primary");
 });

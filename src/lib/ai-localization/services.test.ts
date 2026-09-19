@@ -544,6 +544,30 @@ test("RISK-30: a real-connection generation fails closed if the device is not av
   assert.equal(resolveConnectionProviderCalled, false);
 });
 
+// (independent review, second cycle): the catch wrapping generateProposals previously
+// rewrapped every non-DomainError -- including a real OperationLockError/RecoveryModeError
+// thrown by assertDeviceAvailable -- into a generic "generation_failed" DomainError, discarding
+// the specific code/details proxy.ts/mcp/server.ts/the CLI all rely on via instanceof checks.
+test("RISK-30 (independent review, second cycle): a real OperationLockError/RecoveryModeError from assertDeviceAvailable is never rewrapped into a generic DomainError", async () => {
+  const { build } = makeFixture();
+  const { OperationLockError } = await import("@/lib/operation-lock");
+  const lockError = new OperationLockError({
+    heldBy: { id: "singleton", operationType: "export", holderPid: 999, acquiredAt: new Date().toISOString() },
+    stale: false,
+  });
+  const services = build(fixedProvider(() => ({ status: "ok", title: "x", description: "y" })), {
+    assertDeviceAvailable: async () => {
+      throw lockError;
+    },
+    resolveConnectionProvider: async () => fixedProvider(() => ({ status: "ok", title: "x", description: "y" })),
+  });
+
+  await assert.rejects(
+    () => services.generateProposals({ channelId: "UC_TEST", videoIds: ["v1"], targetLanguages: ["es"], connectionId: "conn-1" }),
+    (error: unknown) => error === lockError
+  );
+});
+
 test("RISK-30: the mock provider path (no connectionId) never calls the device-availability check", async () => {
   const { build } = makeFixture();
   let checked = false;

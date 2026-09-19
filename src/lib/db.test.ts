@@ -186,3 +186,74 @@ test("copyLegacyDatabaseInto: copies every table's schema and rows from the lega
     assert.deepEqual(legacyUsersAfter.rows, [{ id: "legacy-user", email: "legacy@example.com" }]);
     legacyRecheck.close();
   }));
+
+// RISK-25 (docs/TECHNICAL_DEBT.md): a retry (e.g. after a previous boot's crashed migration
+// attempt) must be safe to redo -- not fail on "table already exists" and not duplicate rows
+// via a second INSERT into an already-populated table.
+test("copyLegacyDatabaseInto: is idempotent -- calling it twice against the same destination never duplicates rows or fails", () =>
+  withTempClient(async (destClient, dir) => {
+    const legacyDbPath = path.join(dir, "legacy.db");
+    const legacyClient = createClient({ url: `file:${legacyDbPath}` });
+    try {
+      await legacyClient.execute("CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL)");
+      await legacyClient.execute({
+        sql: "INSERT INTO users (id, email) VALUES (?, ?)",
+        args: ["legacy-user", "legacy@example.com"],
+      });
+    } finally {
+      legacyClient.close();
+    }
+
+    await copyLegacyDatabaseInto(destClient, legacyDbPath);
+    await copyLegacyDatabaseInto(destClient, legacyDbPath);
+
+    const users = await destClient.execute("SELECT id, email FROM users");
+    assert.deepEqual(users.rows, [{ id: "legacy-user", email: "legacy@example.com" }]);
+  }));
+
+// RISK-25: a failure partway through copying multiple tables must roll back completely --
+// never leave the destination with some tables copied and others not (which previously
+// permanently orphaned the rest of the operator's legacy data, since the retry gate saw the
+// resulting file and concluded "already migrated").
+test("copyLegacyDatabaseInto: a failure partway through rolls back every table, not just the one that failed", () =>
+  withTempClient(async (destClient, dir) => {
+    const legacyDbPath = path.join(dir, "legacy.db");
+    const legacyClient = createClient({ url: `file:${legacyDbPath}` });
+    try {
+      await legacyClient.execute("CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL)");
+      await legacyClient.execute({
+        sql: "INSERT INTO users (id, email) VALUES (?, ?)",
+        args: ["legacy-user", "legacy@example.com"],
+      });
+      await legacyClient.execute("CREATE TABLE channels (id TEXT PRIMARY KEY, title TEXT NOT NULL)");
+      await legacyClient.execute({
+        sql: "INSERT INTO channels (id, title) VALUES (?, ?)",
+        args: ["chan-1", "Legacy Channel"],
+      });
+    } finally {
+      legacyClient.close();
+    }
+
+    // A minimal fake wrapping the real client's `execute`, failing only on the INSERT for the
+    // second table (`channels`) -- everything else (including COMMIT/ROLLBACK/DETACH) goes to
+    // the real connection, so this exercises the real transaction boundary, not a mock of it.
+    const flaky = {
+      execute: (query: string | { sql: string; args?: unknown[] }) => {
+        const sql = typeof query === "string" ? query : query.sql;
+        if (sql.includes('INSERT INTO "channels"')) {
+          throw new Error("simulated disk failure partway through the copy");
+        }
+        return destClient.execute(query as never);
+      },
+    } as unknown as Client;
+
+    await assert.rejects(
+      () => copyLegacyDatabaseInto(flaky, legacyDbPath),
+      /simulated disk failure/
+    );
+
+    // Neither table survived -- not even `users`, whose own copy succeeded before `channels`
+    // failed. A partial result here would be exactly the silent data loss RISK-25 describes.
+    assert.equal(await tableExists(destClient, "users"), false);
+    assert.equal(await tableExists(destClient, "channels"), false);
+  }));

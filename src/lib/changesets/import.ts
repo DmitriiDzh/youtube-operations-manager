@@ -6,6 +6,7 @@ import {
   YOUTUBE_TITLE_MAX_LENGTH,
   classifyFieldChange,
   computeConflictStatus,
+  currentRemoteValueFor,
   isValidLanguageCode,
 } from "./diff";
 
@@ -242,7 +243,7 @@ export async function parseAndValidateWorkbook(args: {
       // Blank cell = no proposed change for this field (docs/PROJECT_SPEC.md §8).
       if (spec.proposedRaw.length === 0) continue;
 
-      const currentRemoteValue = syncedVideo.existingLocalizations[language]?.[spec.field] ?? "";
+      const currentRemoteValue = currentRemoteValueFor(syncedVideo, language, spec.field);
       const validationError =
         spec.proposedRaw.length > spec.maxLength
           ? `${spec.field} exceeds ${spec.maxLength} characters (${spec.proposedRaw.length})`

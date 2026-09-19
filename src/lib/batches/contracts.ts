@@ -234,6 +234,12 @@ export type ExecutionResult = {
    * of sync with what the ledger itself says. */
   status: LedgerStatus;
   detail?: string;
+  /** Only present for a CONFLICT outcome -- the specific changes whose approval-time
+   * baseline no longer matches the live remote value (AC-CONFLICT-01/AC-LEDGER-04).
+   * Previously dropped by two of the (at the time three, now four) code paths that can
+   * produce a CONFLICT ExecutionResult, even though the audit record for the identical
+   * event always included it (independent review, second cycle). */
+  conflictingChangeIds?: string[];
   /** True only for a reconciliation-confirmed SUCCESS/CONFLICT or crash-recovered result
    * -- distinguishes "this attempt's own response was observed" from "the outcome was
    * established by a later remote read" (AC-AUDIT-05). Absent for FAILED/UNKNOWN/etc. */

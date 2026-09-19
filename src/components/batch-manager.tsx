@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 type SyncedChannel = {
-  id: string;
+  channelId: string;
   title: string;
 };
 
@@ -92,7 +92,7 @@ export function BatchManager() {
     const res = await fetch("/api/channels");
     const data = await res.json();
     setChannels(data.channels ?? []);
-    if (!channelId && data.channels?.[0]) setChannelId(data.channels[0].id);
+    if (!channelId && data.channels?.[0]) setChannelId(data.channels[0].channelId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -235,7 +235,7 @@ export function BatchManager() {
           className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm"
         >
           {channels.map((c) => (
-            <option key={c.id} value={c.id}>
+            <option key={c.channelId} value={c.channelId}>
               {c.title}
             </option>
           ))}
