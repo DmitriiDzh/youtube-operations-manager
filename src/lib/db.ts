@@ -1,13 +1,80 @@
+import { existsSync, mkdirSync } from "fs";
+import os from "os";
 import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import path from "path";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
+import { resolveAppPaths, resolveLegacyDbPath } from "@/lib/platform-paths";
+import { copyDatabaseConsistently } from "@/lib/db-backup";
+import {
+  assertSupportedSchemaVersion,
+  runSchemaMigrations,
+  type SchemaMigration,
+} from "@/lib/schema-versioning";
+
+// Node's own built-in test runner sets this on every worker process it spawns (verified
+// empirically: `node --test` -> NODE_TEST_CONTEXT=child-v8, regardless of whether it's
+// invoked via `npm test` or directly). Used ONLY to keep this module's eager, import-time
+// singleton boot (below) from ever touching the operator's real app-data directory or real
+// legacy `data/playlist-manager.db` while running under `npm test` -- per
+// docs/DEVELOPMENT_PLAYBOOK.md §6.11 and this task's own "never touch real user data during
+// development or automated tests" instruction. Every test that needs a real database uses
+// `createIsolatedDb`/`initializeDatabaseSchema` against its own temp file directly; this only
+// guards the singleton `db`/`rawClient` that gets constructed merely by importing this file.
+const isRunningUnderTestRunner = Boolean(process.env.NODE_TEST_CONTEXT);
+
+// Platform-aware app-data location (docs/decisions/0002-additive-schema-versioning.md's
+// companion task, "Pre-Release Cross-Platform Persistence"). Resolved once at module load
+// from injected platform/env/homedir, never read ad hoc elsewhere in this file.
+const appPaths = isRunningUnderTestRunner
+  ? resolveAppPaths({
+      platform: process.platform,
+      env: {},
+      homedir: path.join(os.tmpdir(), "youtube-ops-manager-test-singleton"),
+    })
+  : resolveAppPaths({
+      platform: process.platform,
+      env: process.env,
+      homedir: os.homedir(),
+    });
+
+export { appPaths as appDataPaths };
+
+// The local libSQL/SQLite driver does not create intermediate directories itself -- ensure
+// the app-data directory exists before the client ever tries to open a file inside it.
+mkdirSync(appPaths.appDataDir, { recursive: true });
 
 const rawClient = createClient({
-  url: `file:${path.join(process.cwd(), "data", "playlist-manager.db")}`,
+  url: `file:${appPaths.dbPath}`,
 });
+
+/**
+ * One-time, explicit, non-destructive migration from the pre-this-task location
+ * (`<repo>/data/playlist-manager.db`) into the new platform-appropriate app-data location --
+ * only when nothing already exists at the new location (never overwrites populated data,
+ * AC-PATH-06) and only when a legacy database actually exists (AC-PATH-05). The legacy file
+ * itself is never moved, renamed, or deleted -- copyDatabaseConsistently (VACUUM INTO) reads a
+ * transactionally-consistent snapshot without disturbing the source. Never runs under the test
+ * runner (see isRunningUnderTestRunner above) -- it must never even *read* the operator's real
+ * legacy database as a side effect of `npm test`.
+ */
+async function migrateLegacyDatabaseIfNeeded(): Promise<{ migrated: boolean }> {
+  if (isRunningUnderTestRunner) return { migrated: false };
+  if (existsSync(appPaths.dbPath)) return { migrated: false };
+
+  const legacyDbPath = resolveLegacyDbPath(process.cwd());
+  if (!existsSync(legacyDbPath)) return { migrated: false };
+
+  const legacyClient = createClient({ url: `file:${legacyDbPath}` });
+  try {
+    await copyDatabaseConsistently(legacyClient, appPaths.dbPath);
+  } finally {
+    legacyClient.close();
+  }
+  return { migrated: true };
+}
 
 export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
@@ -294,10 +361,53 @@ export const rules = sqliteTable("rules", {
     .$defaultFn(() => new Date()),
 });
 
+// docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
+// is retroactively "schema version 1". A version newer than this is applied via
+// SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
+export const SCHEMA_BASELINE_VERSION = 1;
+
+export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
+  {
+    version: 2,
+    description: "app_operation_locks -- local device-scoped export/import/migration lock",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS app_operation_locks (" +
+          "id TEXT PRIMARY KEY, " +
+          "operation_type TEXT NOT NULL, " +
+          "holder_pid INTEGER NOT NULL, " +
+          "acquired_at TEXT NOT NULL)"
+      );
+    },
+  },
+];
+
+export const SCHEMA_CURRENT_VERSION =
+  SCHEMA_MIGRATIONS.length > 0
+    ? Math.max(...SCHEMA_MIGRATIONS.map((m) => m.version))
+    : SCHEMA_BASELINE_VERSION;
+
 // Exported so schema-initialization tests can point a throwaway libSQL client at an
 // isolated temporary database file (per docs/DEVELOPMENT_PLAYBOOK.md §6.11) instead of
 // touching data/playlist-manager.db. Behavior is identical to the singleton path below.
-export async function initializeDatabaseSchema(client: Client): Promise<void> {
+//
+// Boot order (decision 8, docs/decisions/0002-additive-schema-versioning.md): PRAGMAs (never
+// schema-mutating) -> read-only version check, rejecting a newer-than-supported database
+// before any CREATE/ALTER/INSERT runs -> the existing additive baseline block, unchanged ->
+// any migrations strictly newer than the stamped version, each committing its own version
+// bump only on success.
+export async function initializeDatabaseSchema(
+  client: Client,
+  options?: {
+    /** Called once, only when at least one migration beyond the baseline is about to run --
+     * the singleton boot path below uses this to take a pre-migration backup
+     * (AC-SCHEMA-08). Isolated test clients may omit it; no backup is taken in that case. */
+    beforeMigrations?: (context: {
+      fromVersion: number;
+      pendingMigrations: SchemaMigration[];
+    }) => Promise<void>;
+  }
+): Promise<void> {
   // Without this, a transaction opened on one connection (e.g. beginAttemptIntent's or
   // recordAttemptResult's guarded claim-then-write) makes any concurrent transaction on
   // a DIFFERENT connection to the same file fail immediately with SQLITE_BUSY instead of
@@ -310,6 +420,11 @@ export async function initializeDatabaseSchema(client: Client): Promise<void> {
   // at the file-lock level, which is what makes two separate connections' transactions
   // interleave safely instead of racing for the same exclusive rollback-journal lock.
   await client.execute("PRAGMA journal_mode = WAL");
+
+  // Reject a database reporting a version newer than this build supports *before* any
+  // schema-mutating statement below runs (AC-SCHEMA-04) -- assertSupportedSchemaVersion only
+  // ever performs a read.
+  const foundVersion = await assertSupportedSchemaVersion(client, SCHEMA_CURRENT_VERSION);
 
   await client.executeMultiple(`
     CREATE TABLE IF NOT EXISTS users (
@@ -517,10 +632,41 @@ export async function initializeDatabaseSchema(client: Client): Promise<void> {
   } catch {
     // Column already exists
   }
+
+  // Everything above this point is the pre-existing, unchanged additive baseline (schema
+  // version 1, docs/decisions/0001-additive-idempotent-schema-strategy.md). From here,
+  // schema versioning (docs/decisions/0002-additive-schema-versioning.md) takes over for
+  // anything beyond it.
+  const stampedBeforeMigrations = foundVersion ?? SCHEMA_BASELINE_VERSION;
+  const pendingMigrations = SCHEMA_MIGRATIONS.filter(
+    (migration) => migration.version > stampedBeforeMigrations
+  );
+
+  if (pendingMigrations.length > 0 && options?.beforeMigrations) {
+    await options.beforeMigrations({
+      fromVersion: stampedBeforeMigrations,
+      pendingMigrations,
+    });
+  }
+
+  await runSchemaMigrations(client, {
+    migrations: SCHEMA_MIGRATIONS,
+    currentVersion: foundVersion,
+    baselineVersion: SCHEMA_BASELINE_VERSION,
+  });
 }
 
 async function initializeDatabase() {
-  await initializeDatabaseSchema(rawClient);
+  await migrateLegacyDatabaseIfNeeded();
+  await initializeDatabaseSchema(rawClient, {
+    beforeMigrations: async () => {
+      const destPath = path.join(
+        appPaths.migrationBackupsDir,
+        `pre-migration-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`
+      );
+      await copyDatabaseConsistently(rawClient, destPath);
+    },
+  });
 }
 
 export const databaseInitialization = initializeDatabase().catch((error: unknown) => {
