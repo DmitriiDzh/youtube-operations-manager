@@ -143,6 +143,12 @@ export async function importHandoff(params: {
       snapshotDbClient.close();
     }
 
+    // RISK-27 (docs/TECHNICAL_DEBT.md): this backup exists to protect a live-DB mutation that
+    // is about to happen -- if the import fails before that mutation ever occurs (e.g.
+    // migrateStagedCopy rejects an incompatible schema version), the backup protects nothing
+    // and would otherwise leak one full extra DB-copy file per failed attempt, unbounded, on
+    // every retry against the same incompatible snapshot.
+    let liveDbMutated = false;
     try {
       await migrateStagedCopy(workingCopyPath);
 
@@ -154,6 +160,7 @@ export async function importHandoff(params: {
       // worst leave the lineage pointer one step stale, which the next export/import attempt
       // can recover from -- it does not affect the data merge's own correctness.
       await applySnapshotToDatabase(params.liveClient, workingCopyPath);
+      liveDbMutated = true;
       await writeLineageState(params.liveClient, {
         lastSnapshotId: manifest.snapshotId,
         lastGeneration: manifest.generation,
@@ -178,6 +185,11 @@ export async function importHandoff(params: {
       await rm(workingCopyPath, { force: true }).catch(() => {});
       await rm(`${workingCopyPath}-wal`, { force: true }).catch(() => {});
       await rm(`${workingCopyPath}-shm`, { force: true }).catch(() => {});
+      // RISK-27: the live DB was never actually mutated, so this backup protects nothing --
+      // remove it too, rather than leaking it on every failed/incompatible import attempt.
+      if (!liveDbMutated) {
+        await rm(backupPath, { force: true }).catch(() => {});
+      }
     }
   });
 }

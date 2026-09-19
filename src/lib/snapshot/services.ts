@@ -215,6 +215,21 @@ export async function scanFileForUnresolvedExecutionState(
  * never referenced here at all -- there is structurally no code path in this function that
  * can touch them.
  */
+// RISK-29 (docs/TECHNICAL_DEBT.md): `PRAGMA table_info` reports columns in physical storage
+// order (`cid`) -- the same order `SELECT *` would return them in. Two devices whose table was
+// created differently (fresh from the current baseline `CREATE TABLE`, vs. upgraded via a later
+// `ALTER TABLE ... ADD COLUMN`, which SQLite always appends at the end) can have genuinely
+// different physical column orders for the identical logical schema. Reading this from the
+// *live* table (the merge target) and using it explicitly for both sides of the INSERT below
+// makes the merge robust to that -- it no longer matters what physical order the staged copy's
+// columns happen to be in.
+async function getColumnNames(client: SqlExecutor, table: string): Promise<string[]> {
+  const result = (await client.execute(`PRAGMA table_info("${table}")`)) as {
+    rows: Array<{ name: string }>;
+  };
+  return result.rows.map((row) => row.name);
+}
+
 export async function applySnapshotToDatabase(
   liveClient: SqlExecutor,
   stagedDbPath: string
@@ -230,8 +245,12 @@ export async function applySnapshotToDatabase(
     await liveClient.execute("BEGIN IMMEDIATE");
     try {
       for (const table of SNAPSHOT_REPLACE_ON_IMPORT_TABLES) {
+        const columns = await getColumnNames(liveClient, table);
+        const columnList = columns.map((c) => `"${c}"`).join(", ");
         await liveClient.execute(`DELETE FROM "${table}"`);
-        await liveClient.execute(`INSERT INTO "${table}" SELECT * FROM staged."${table}"`);
+        await liveClient.execute(
+          `INSERT INTO "${table}" (${columnList}) SELECT ${columnList} FROM staged."${table}"`
+        );
       }
 
       const aiConnectionColumns = [

@@ -489,7 +489,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Approval required from:** project owner, as part of the Gate B live-validation planning.
 - **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line; not currently exploitable given RISK-09's barrier.
 
-## RISK-27 — `importHandoff`'s pre-import backup file is never cleaned up on a failed import — OPEN, 2026-09-19
+## RISK-27 — `importHandoff`'s pre-import backup file is never cleaned up on a failed import — FIXED, 2026-09-19
 
 - **Affected components:** `src/lib/device-handoff/services.ts` (`importHandoff`, its `finally` block).
 - **Current behavior:** The pre-import backup of the live DB (`copyDatabaseConsistently`) is taken before `migrateStagedCopy` verifies the staged copy's schema version. The `finally` block only removes `workingCopyPath` and its WAL/SHM sidecars — never the just-created backup file.
@@ -497,7 +497,8 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Required remediation:** Remove the pre-import backup in the `finally` block too when the import did not proceed past the point that would need it, or document that these backups require periodic manual cleanup.
 - **Gate(s):** none blocking (disk hygiene only).
 - **Approval required from:** none required to leave open; project owner if a fix is scheduled.
-- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, not yet fixed.
+- **Fix applied:** a `liveDbMutated` flag, set only right after `applySnapshotToDatabase` actually succeeds; the `finally` block now also deletes `backupPath` when that flag is still `false` (the live DB was never touched, so the backup protects nothing). Tests: extended the existing "refuses a snapshot from a newer, unsupported schema version" test to assert `migrationBackupsDir` is empty afterward, and the existing successful-import test to assert its backup *does* survive (proving the fix is conditional, not "always delete").
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
 
 ---
 
@@ -513,7 +514,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Fix applied:** `executeBatch` now re-runs `assertWriteChannel` itself, against the exact credentials it resolves for the whole call, unconditionally — regardless of whether the batch was `PENDING` (already checked once more inside `prepareBatchExecution`, kept for its own direct callers) or already `RUNNING`. A guardrail failure marks the batch `ABORTED` and logs `identity_guardrail`, identical to `prepareBatchExecution`'s own handling. Test: `execute-batch.test.ts` ("resuming a RUNNING batch still enforces the write-channel guardrail") — `claimBatchExecution` flips a batch straight to `RUNNING` without ever calling the guardrail (simulating a prior process's crash-then-resume), then `executeBatch` is called with a mismatched `expectedChannelId`; asserts the guardrail actually ran, the batch was aborted, and no ledger row was touched. Re-ran `src/lib/batches/write-path-inventory.test.ts` (3/3 pass) to confirm this change does not touch the Phase 5 live-write barrier.
 - **Status:** FIXED — project-owner-assigned task, 2026-09-19; still not currently exploitable given RISK-09's barrier, fixed proactively regardless.
 
-## RISK-29 — Cross-device snapshot merge is positional, not column-name-aware, for tables with an `ALTER TABLE`-added column — OPEN, 2026-09-19
+## RISK-29 — Cross-device snapshot merge is positional, not column-name-aware, for tables with an `ALTER TABLE`-added column — FIXED, 2026-09-19
 
 - **Affected components:** `src/lib/snapshot/services.ts` (`applySnapshotToDatabase`'s `DELETE FROM "t"; INSERT INTO "t" SELECT * FROM staged."t"` for `SNAPSHOT_REPLACE_ON_IMPORT_TABLES`); `src/lib/db.ts` (`batch_ledger_rows`' baseline `CREATE TABLE` declares `active_attempt_id` before `created_at`/`updated_at`, but a pre-existing DB got the same column via a later `ALTER TABLE ... ADD COLUMN`, which SQLite always appends at the physical end of the row).
 - **Current behavior:** The merge is purely positional (`SELECT *`), not by column name.
@@ -522,7 +523,8 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Acceptance criteria:** A test simulating two DBs with the same table but different physical column orders (one via `ALTER TABLE`), asserting the merge preserves values by name.
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
 - **Approval required from:** project owner, to schedule the fix.
-- **Status:** OPEN — found by a second independent review pass, not yet independently re-verified beyond the cited file/line, not yet fixed.
+- **Fix applied:** a new `getColumnNames` helper reads `PRAGMA table_info` from the *live* table (physical storage order) and builds an explicit column list used on both sides of the `INSERT` for every table in `SNAPSHOT_REPLACE_ON_IMPORT_TABLES`, replacing `SELECT *`. Test: `snapshot/services.test.ts` ("merges by column name, not physical position") manually reorders `channels`' physical columns on the source side and asserts values still land correctly on import. Empirically confirmed against the *unfixed* code first: the old positional merge doesn't even silently corrupt data in this exact scenario, it crashes outright with a `NOT NULL constraint failed` — an even more visible failure mode, but proof the test genuinely exercises the bug.
+- **Status:** FIXED — project-owner-assigned task, 2026-09-19.
 
 ## RISK-30 — AI Localization's `generate` route is exempt from the device-availability/recovery-mode gate but can trigger a real, billable outbound AI call — OPEN, 2026-09-19
 
@@ -609,9 +611,9 @@ Bundled as one entry — each individually low severity, none currently exploita
 | RISK-24 | App-data directory no longer locked to 0700 for Web-UI-only installs | none (fixed) | FIXED |
 | RISK-25 | Legacy DB migration is one-shot/unretryable, can silently orphan data | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-26 | `WRITABLE_SNIPPET_FIELDS` completeness vs. live API unverified | BLOCKS_PHASE_5_WRITES | OPEN, not currently exploitable |
-| RISK-27 | `importHandoff` never cleans up pre-import backup on failure | none blocking (disk hygiene) | OPEN |
+| RISK-27 | `importHandoff` never cleans up pre-import backup on failure | none (fixed) | FIXED |
 | RISK-28 | Resuming a RUNNING batch skips the write-channel identity guardrail | none (fixed) | FIXED |
-| RISK-29 | Cross-device snapshot merge is positional, breaks on ALTER-added columns | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-29 | Cross-device snapshot merge is positional, breaks on ALTER-added columns | none (fixed) | FIXED |
 | RISK-30 | AI Localization `generate` bypasses device-availability gate for real AI calls | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-31 | Discarded `transitionLedgerRowStatus` result can drift ledger vs. reported outcome | none (fixed) | FIXED |
 | RISK-32 | proxy/CLI/MCP independently classify mutating ops, no shared registry | BLOCKS_OPERATIONS_RELEASE | OPEN |

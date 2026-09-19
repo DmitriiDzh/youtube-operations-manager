@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createClient, type Client } from "@libsql/client";
@@ -81,6 +81,12 @@ test("importHandoff activates normal mutation capability when the snapshot has n
 
     const channels = await receiving.execute("SELECT id FROM channels");
     assert.deepEqual(channels.rows.map((r) => r.id), ["chan-1"]);
+
+    // RISK-27 (docs/TECHNICAL_DEBT.md): a *successful* import did mutate the live DB, so its
+    // pre-import backup is a genuine recovery point and must survive -- confirms the RISK-27
+    // fix only removes the backup for a failed/never-mutated attempt, not always.
+    const backupFiles = await readdir(path.join(dir, "backups"));
+    assert.equal(backupFiles.length, 1);
 
     source.close();
     receiving.close();
@@ -328,6 +334,12 @@ test("importHandoff refuses a snapshot from a newer, unsupported schema version 
     // Live DB must remain exactly as it was -- the reject happens before any ATTACH/merge.
     const channels = await receiving.execute("SELECT id FROM channels");
     assert.deepEqual(channels.rows.map((r) => r.id), ["existing-chan"]);
+
+    // RISK-27 (docs/TECHNICAL_DEBT.md): the live DB was never mutated (see above), so the
+    // pre-import backup this rejected attempt took protects nothing -- it must not be left
+    // behind, or every retry against this same incompatible snapshot leaks one more.
+    const backupFiles = await readdir(path.join(dir, "backups"));
+    assert.deepEqual(backupFiles, []);
 
     source.close();
     receiving.close();
