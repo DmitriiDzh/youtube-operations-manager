@@ -18,15 +18,22 @@ workflow this file follows.
 
 | ID | Title | Source | Status | Opened | Notes |
 |---|---|---|---|---|---|
-| BL-001 | Phase 7: draft the API/MCP error-shape and versioning contract for Codex-facing endpoints | FUTURE_PHASES.md §3 (Phase 7) | proposed | 2026-09-20 | Smallest first slice of Phase 7's "standardized error shapes and operation results" + "explicit compatibility rules" goals. Not assigned. |
-| BL-002 | Phase 7: design the isolated Codex operations workspace boundary (permissions model, read-only data access, zero dev-repo access) | FUTURE_PHASES.md §3 (Phase 7) | proposed | 2026-09-20 | Design-only slice; no implementation until explicitly assigned. |
-| BL-003 | Phase 8: research YouTube Analytics API scope and design a minimal scheduled-sync + metric-definition model | FUTURE_PHASES.md §4 (Phase 8) | proposed | 2026-09-20 | Precedes any actual analytics collection code. |
-| BL-004 | Phase 9: design the research-watchlist data model (source attribution, freshness/confidence fields, no fixed competitor-count limit) | FUTURE_PHASES.md §5 (Phase 9) | proposed | 2026-09-20 | Design-only; discovery logic itself is a later, separate slice. |
-| BL-005 | Phase 10: design the hypothesis/experiment/decision data model, kept explicitly distinct from the existing Change Set entities | FUTURE_PHASES.md §6 (Phase 10) | proposed | 2026-09-20 | Must keep observed evidence, hypotheses, proposals, approvals, and outcomes as separate categories per the phase's own constraint. |
-| BL-006 | Investigate application-managed concurrent multi-device sync as a Syncthing-handoff replacement/extension | FUTURE_PHASES.md §7 (future directions) | proposed | 2026-09-20 | Explicitly not covered by the current one-active-device-at-a-time handoff (`docs/RELEASE_LAYOUT.md`, Variant A). Research slice only. |
-| BL-007 | Feasibility research for automated media production (audio/video generation, rendering, publishing, livestream management) | FUTURE_PHASES.md §7 (future directions) | proposed | 2026-09-20 | Recorded as a future opportunity only per FUTURE_PHASES.md's own framing — not approved implementation work. |
+| BL-001 | Phase 7: draft the API/MCP error-shape and versioning contract for Codex-facing endpoints | FUTURE_PHASES.md §3 (Phase 7) | assigned | 2026-09-20 | Smallest first slice of Phase 7's "standardized error shapes and operation results" + "explicit compatibility rules" goals. Assigned 2026-09-19 (Telegram, msg 60): "Приступай к разбиению future phases на таски backlog. После чего приступай к их выполнению. Автоматический режим работы." Design-only — produces `docs/roadmap/plans/PHASE_7_PLAN.md`, no Codex-facing code. |
+| BL-002 | Phase 7: design the isolated Codex operations workspace boundary (permissions model, read-only data access, zero dev-repo access) | FUTURE_PHASES.md §3 (Phase 7) | assigned | 2026-09-20 | Same assignment as BL-001 (Telegram msg 60, 2026-09-19). Design-only, part of the same Phase 7 plan document. |
+| BL-003 | Phase 8: research YouTube Analytics API scope and design a minimal scheduled-sync + metric-definition model | FUTURE_PHASES.md §4 (Phase 8) | assigned | 2026-09-20 | Assigned 2026-09-19 (Telegram msg 60). Design/research-only — no live Analytics API call, no OAuth. |
+| BL-004 | Phase 9: design the research-watchlist data model (source attribution, freshness/confidence fields, no fixed competitor-count limit) | FUTURE_PHASES.md §5 (Phase 9) | assigned | 2026-09-20 | Assigned 2026-09-19 (Telegram msg 60). Design-only; discovery logic itself is a later, separate slice requiring its own assignment. |
+| BL-005 | Phase 10: design the hypothesis/experiment/decision data model, kept explicitly distinct from the existing Change Set entities | FUTURE_PHASES.md §6 (Phase 10) | assigned | 2026-09-20 | Assigned 2026-09-19 (Telegram msg 60). Must keep observed evidence, hypotheses, proposals, approvals, and outcomes as separate categories per the phase's own constraint. |
+| BL-006 | Investigate application-managed concurrent multi-device sync as a Syncthing-handoff replacement/extension | FUTURE_PHASES.md §7 (future directions) | assigned | 2026-09-20 | Assigned 2026-09-19 (Telegram msg 60). Explicitly not covered by the current one-active-device-at-a-time handoff (`docs/RELEASE_LAYOUT.md`, Variant A). Research slice only. |
+| BL-007 | Feasibility research for automated media production (audio/video generation, rendering, publishing, livestream management) | FUTURE_PHASES.md §7 (future directions) | assigned | 2026-09-20 | Assigned 2026-09-19 (Telegram msg 60). Recorded as a future opportunity only per FUTURE_PHASES.md's own framing — research only, not approved implementation of any production pipeline. |
 
 Rows were seeded on 2026-09-20 when the `roadmap-backlog` skill was created, as a first pass at
 turning `FUTURE_PHASES.md`'s Phase 7-10 and future-directions sections into trackable slices.
-None are assigned; adding a row here changes nothing about `AGENTS.md` §C's requirement that the
-project owner assign a phase explicitly before implementation begins.
+All seven were assigned the same day per the project owner's explicit Telegram instruction (msg
+60, 2026-09-19: "Приступай к разбиению future phases на таски backlog. После чего приступай к их
+выполнению. Автоматический режим работы.") — each item's own Notes column records this. Every
+item's *current* scope is a design/research artifact (a planning document under
+`docs/roadmap/plans/`), never a live YouTube write, paid AI call, OAuth login, or deployment —
+those remain separately gated by `AGENTS.md` §G/§K regardless of this assignment. Should any of
+these design efforts surface a need for actual feature implementation, that implementation is its
+own new backlog item requiring its own assignment — this one covers the design/research slice
+only, per `AGENTS.md` §C's "smallest safe implementation phase" principle.
