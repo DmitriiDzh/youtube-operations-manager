@@ -141,7 +141,7 @@ Established 2026-09-19 ("Git Branching and Release Policy"). This section is aut
 
 **`main`** — accepted release states only.
 - No direct feature development or direct feature commits on `main`.
-- The only way content reaches `main` is `dev → main`, via an explicit `git merge --no-ff` (never a fast-forward, so the integration itself remains a visible, identifiable commit).
+- The only way content reaches `main` is `dev → main`, via an explicit `git merge --no-ff` (never a fast-forward, so the integration itself remains a visible, identifiable commit) — **with exactly one named exception:** immediately after such a merge, a `published/<version>/` release snapshot may be added as a direct commit on `main`, per `docs/decisions/0003-published-release-snapshots.md`. This exception exists only for that one allowlisted-content action, only as part of an already-approved release (it never substitutes for or bypasses that approval), and for no other content.
 - An existing commit on `main` is never silently treated as "already a published release" — a release is a distinct, separately authorized act (tag + publication), not merely a commit's presence on the branch.
 
 **`dev`** — the stable integration branch.
@@ -184,6 +184,7 @@ A prior approval never carries forward to a new, unrelated action of the same ki
 ### K.4 Release policy
 
 - Only an accepted `dev` state is integrated into `main`, only via `git merge --no-ff`, only with prior project-owner approval for that specific merge.
+- Immediately after that approved merge, `scripts/publish-snapshot.mjs` may be run to add a `published/<version>/` snapshot as the one named direct-commit exception to `main` in §K.1 — never before the merge, never for a version whose folder already exists (immutable once published, `--force` required and itself a separate explicit decision), and never with content outside its allowlist (`docs/decisions/0003-published-release-snapshots.md`).
 - A version tag is assigned only after separate project-owner approval, never automatically alongside a merge.
 - A release preserves its manifest, compatibility information, and any platform-specific artifacts — a release is not just "the current `main` tip."
 - A user-data migration bundled with a release follows the project's approved upgrade-safety process (schema/data compatibility checked, not assumed).
