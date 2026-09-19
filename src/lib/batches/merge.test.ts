@@ -189,3 +189,26 @@ test("conflict detection reads the primary-locale value from snippet.title, not 
   const result = detectPreWriteConflict(changes, fresh);
   assert.equal(result.status, "conflict");
 });
+
+// (independent review, second cycle): if fresh.localizations defensively contains a stale
+// entry keyed by the same code as defaultLanguage, a change targeting the default language
+// must not leave that stale entry in the payload alongside the updated snippet field --
+// buildSafeLocalizationsPayload previously copied it forward verbatim and never touched it.
+test("buildSafeLocalizationsPayload never carries a stale localizations entry for the default language forward", () => {
+  const fresh: FreshVideoContext = {
+    snippet: { title: "Old EN Title", description: "Old EN Description", defaultLanguage: "en" },
+    localizations: {
+      en: { title: "Stale EN Title", description: "Stale EN Description" },
+      es: { title: "Titulo ES", description: "Descripcion ES" },
+    },
+  };
+  const changes: PendingChange[] = [
+    { id: "c1", language: "en", field: "title", baselineValue: "Old EN Title", proposedValue: "New EN Title" },
+  ];
+
+  const result = buildSafeLocalizationsPayload(fresh, changes);
+
+  assert.equal(result.snippet.title, "New EN Title");
+  assert.equal(Object.prototype.hasOwnProperty.call(result.localizations, "en"), false);
+  assert.deepEqual(result.localizations.es, { title: "Titulo ES", description: "Descripcion ES" });
+});

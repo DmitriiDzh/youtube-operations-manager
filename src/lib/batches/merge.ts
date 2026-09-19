@@ -122,8 +122,15 @@ export function buildSafeLocalizationsPayload(
 ): SafeLocalizationsPayload {
   const snippet: Record<string, unknown> = pickWritableSnippetFields(fresh.snippet);
 
+  // The video's default language is represented by `snippet.title`/`description`, never by
+  // a `localizations` entry -- if `fresh.localizations` defensively contains a stale entry
+  // keyed by the same code as `defaultLanguage` anyway, carrying it forward here would leave
+  // it out of sync with whatever this function writes into `snippet` below, producing an
+  // internally-inconsistent single write that post-write verification cannot detect (both
+  // read via the same default-language-aware `readCurrentValue`).
   const localizations: Record<string, FreshVideoLocale> = {};
   for (const [locale, value] of Object.entries(fresh.localizations)) {
+    if (fresh.snippet.defaultLanguage && locale === fresh.snippet.defaultLanguage) continue;
     localizations[locale] = { ...value };
   }
 

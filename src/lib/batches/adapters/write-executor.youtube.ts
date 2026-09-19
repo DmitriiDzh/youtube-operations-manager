@@ -105,6 +105,14 @@ export function classifyYoutubeWriteError(error: unknown): WriteExecutorResult {
     return { outcome: "FAILED", detail, classification: "permanent", systemic: true };
   }
 
+  // Google's documented guidance treats a 403 rate-limit reason the same as a 429 --
+  // transient per-user/per-project throttling, not a permanent authorization/quota
+  // problem. Must be checked before the generic 403 bucket below, or it would be
+  // misclassified as "permanent" and never retried (independent review, second cycle).
+  if (status === 403 && (reasons.includes("rateLimitExceeded") || reasons.includes("userRateLimitExceeded"))) {
+    return { outcome: "FAILED", detail, classification: "transient" };
+  }
+
   // §29's "insufficient permissions"/"wrong channel" bucket, plus every documented
   // videos.update 400 badRequest reason (invalid metadata/language/etc.) and the
   // documented 404 videoNotFound -- all are shape/permission problems a retry cannot

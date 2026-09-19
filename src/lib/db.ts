@@ -1,4 +1,6 @@
 import { chmodSync, existsSync, mkdirSync } from "fs";
+import { readFile } from "fs/promises";
+import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
 import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
@@ -66,15 +68,39 @@ export async function copyLegacyDatabaseInto(
 ): Promise<void> {
   await destClient.execute({ sql: "ATTACH DATABASE ? AS legacy", args: [legacyDbPath] });
   try {
-    const tables = await destClient.execute(
-      "SELECT name, sql FROM legacy.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-    );
-    for (const row of tables.rows) {
-      const createTableSql = row.sql;
-      if (typeof createTableSql !== "string") continue;
-      await destClient.execute(createTableSql);
-      const tableName = String(row.name);
-      await destClient.execute(`INSERT INTO "${tableName}" SELECT * FROM legacy."${tableName}"`);
+    // RISK-25 (docs/TECHNICAL_DEBT.md): the whole copy is one transaction -- a failure
+    // partway (disk full, a corrupt legacy page) leaves the destination exactly as it was
+    // before this call, never a partially-populated mix of some tables copied and others not.
+    // Each table is also made idempotent (safe to redo after a previous crash -- see
+    // migrateLegacyDatabaseIfNeeded's own retry marker below) via CREATE-catching-"already
+    // exists" + DELETE, deliberately NOT `DROP TABLE [IF EXISTS]`: empirically verified against
+    // this exact @libsql/client build that a `DROP TABLE` statement -- even as a no-op "IF
+    // EXISTS" against a table that was never created -- permanently breaks this *connection's*
+    // ability to see any ATTACHed database's schema afterward (`no such table: legacy.<name>`
+    // on every later reference, session-wide, not just inside this transaction; reproduced in
+    // isolation). `CREATE TABLE` alone and `DELETE FROM` do not have this problem.
+    await destClient.execute("BEGIN IMMEDIATE");
+    try {
+      const tables = await destClient.execute(
+        "SELECT name, sql FROM legacy.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+      );
+      for (const row of tables.rows) {
+        const createTableSql = row.sql;
+        if (typeof createTableSql !== "string") continue;
+        const tableName = String(row.name);
+        try {
+          await destClient.execute(createTableSql);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!/already exists/i.test(message)) throw error;
+        }
+        await destClient.execute(`DELETE FROM "${tableName}"`);
+        await destClient.execute(`INSERT INTO "${tableName}" SELECT * FROM legacy."${tableName}"`);
+      }
+      await destClient.execute("COMMIT");
+    } catch (error) {
+      await destClient.execute("ROLLBACK");
+      throw error;
     }
   } finally {
     await destClient.execute("DETACH DATABASE legacy");
@@ -92,14 +118,44 @@ export async function copyLegacyDatabaseInto(
  * deleted. Never runs under the test runner (see `isRunningUnderTestRunner` above) -- it must
  * never even *read* the operator's real legacy database as a side effect of `npm test`.
  */
+// RISK-25 (docs/TECHNICAL_DEBT.md): `dbAlreadyExistedAtModuleLoad` alone cannot distinguish
+// "this destination already has genuine, unrelated pre-existing data" from "this destination
+// is wreckage a previous boot's crashed migration attempt left behind" -- both look identical
+// (a file exists). A persisted marker, written *before* the copy starts and only ever advanced
+// to "completed" *after* it commits, makes that distinction explicit: a boot that finds
+// "in_progress" (not "completed") knows this is its own prior attempt to resume, not someone
+// else's data to protect.
+const legacyMigrationMarkerPath = path.join(appPaths.appDataDir, "legacy-migration-status.json");
+
+type LegacyMigrationMarker = { status: "in_progress" | "completed" };
+
+async function readLegacyMigrationMarker(): Promise<LegacyMigrationMarker | null> {
+  try {
+    const raw = await readFile(legacyMigrationMarkerPath, "utf8");
+    const parsed = JSON.parse(raw) as Partial<LegacyMigrationMarker>;
+    return parsed.status === "in_progress" || parsed.status === "completed" ? { status: parsed.status } : null;
+  } catch {
+    return null;
+  }
+}
+
 async function migrateLegacyDatabaseIfNeeded(): Promise<{ migrated: boolean }> {
   if (isRunningUnderTestRunner()) return { migrated: false };
-  if (dbAlreadyExistedAtModuleLoad) return { migrated: false };
 
   const legacyDbPath = resolveLegacyDbPath(process.cwd());
   if (!existsSync(legacyDbPath)) return { migrated: false };
 
+  const marker = await readLegacyMigrationMarker();
+  if (marker?.status === "completed") return { migrated: false };
+
+  // No marker at all, and the destination already had something before this process ever
+  // started: this predates the marker mechanism, or is genuinely unrelated data -- preserve
+  // the original safety property (never overwrite populated data) rather than guess.
+  if (marker === null && dbAlreadyExistedAtModuleLoad) return { migrated: false };
+
+  await writeJsonFileAtomic(legacyMigrationMarkerPath, { status: "in_progress" });
   await copyLegacyDatabaseInto(rawClient, legacyDbPath);
+  await writeJsonFileAtomic(legacyMigrationMarkerPath, { status: "completed" });
   return { migrated: true };
 }
 

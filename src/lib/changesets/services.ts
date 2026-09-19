@@ -10,7 +10,7 @@ import {
   type StoredChannelRecord,
   type StoredVideoRecord,
 } from "./contracts";
-import { computeChangeSetStatus, revalidateChangeAgainstCurrentRemote } from "./diff";
+import { computeChangeSetStatus, currentRemoteValueFor, revalidateChangeAgainstCurrentRemote } from "./diff";
 import { classifyRowForSummary, parseAndValidateWorkbook, summarizeParsedWorkbook } from "./import";
 import {
   changeActionInputSchema,
@@ -142,8 +142,7 @@ function buildCurrentRemoteLookup(videos: StoredVideoRecord[]) {
   return (videoId: string, language: string, field: "title" | "description"): string | null => {
     const video = byVideoId.get(videoId);
     if (!video) return null;
-    const locale = video.existingLocalizations[language];
-    return locale ? locale[field] : "";
+    return currentRemoteValueFor(video, language, field);
   };
 }
 

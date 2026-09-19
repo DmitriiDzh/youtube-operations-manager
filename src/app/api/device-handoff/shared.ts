@@ -1,7 +1,12 @@
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { rawSqlClient, appDataPaths, SCHEMA_CURRENT_VERSION } from "@/lib/db";
-import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
+import { createBootstrapConfigStore, BootstrapConfigError } from "@/lib/bootstrap-config";
+import { SnapshotError } from "@/lib/snapshot";
+import { SchemaVersionError } from "@/lib/schema-versioning";
+import { OperationLockError } from "@/lib/operation-lock";
+import { RecoveryModeError } from "@/lib/device-handoff";
+import { DatabaseBackupError } from "@/lib/db-backup";
 
 const bootstrapConfigStore = createBootstrapConfigStore(appDataPaths.bootstrapConfigPath);
 
@@ -45,12 +50,31 @@ const ERROR_STATUS: Record<string, number> = {
   backup_destination_exists: 409,
 };
 
+// Explicit instanceof checks against exactly these known error classes -- NOT "any object
+// with a string .code property", which would also match a raw libsql driver error (e.g.
+// SQLITE_BUSY) or a Node fs error (e.g. ENOENT/EACCES, which embeds a real local file path in
+// its message) and echo its internal detail into the HTTP response as if it were one of this
+// module's own stable, documented error codes (the exact anti-pattern comments in
+// mcp/server.ts and cli/video-metadata.ts already call out and avoid -- independent review,
+// second cycle).
+function isKnownDeviceHandoffError(
+  error: unknown
+): error is { code: string; message: string; details?: unknown } {
+  return (
+    error instanceof SnapshotError ||
+    error instanceof SchemaVersionError ||
+    error instanceof RecoveryModeError ||
+    error instanceof OperationLockError ||
+    error instanceof DatabaseBackupError ||
+    error instanceof BootstrapConfigError
+  );
+}
+
 export function deviceHandoffErrorResponse(error: unknown) {
-  if (error && typeof error === "object" && "code" in error) {
-    const typed = error as { code: string; message?: string; details?: unknown };
-    const status = ERROR_STATUS[typed.code] ?? 500;
+  if (isKnownDeviceHandoffError(error)) {
+    const status = ERROR_STATUS[error.code] ?? 500;
     return NextResponse.json(
-      { error: typed.code, message: typed.message ?? "Error", details: typed.details },
+      { error: error.code, message: error.message ?? "Error", details: error.details },
       { status }
     );
   }

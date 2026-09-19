@@ -1333,6 +1333,7 @@ export function createBatchServices(deps: ServiceDependencies) {
             videoId: prepared.videoId,
             status: prepared.status,
             detail: "error" in prepared ? prepared.error : undefined,
+            conflictingChangeIds: "conflictingChangeIds" in prepared ? prepared.conflictingChangeIds : undefined,
           };
           return;
         }
@@ -1361,7 +1362,7 @@ export function createBatchServices(deps: ServiceDependencies) {
         await transitionLedgerStatus(row.id, "CONFLICT");
         await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "CONFLICT", detail: { conflictingChangeIds: safety.conflictingChangeIds } });
         await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
-        results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: "CONFLICT" };
+        results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: "CONFLICT", conflictingChangeIds: safety.conflictingChangeIds };
         return;
       }
 

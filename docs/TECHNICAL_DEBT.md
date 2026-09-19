@@ -471,7 +471,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Fix applied:** `chmodSync(appPaths.appDataDir, 0o700)` added unconditionally right after `mkdirSync` in `src/lib/db.ts`, independent of any CLI-auth code path. Test: `src/lib/db.dir-permissions.test.ts` (POSIX only — Windows has no equivalent permission-bits concept; skipped there, not silently claimed).
 - **Status:** FIXED — project-owner-assigned task, 2026-09-19.
 
-## RISK-25 — Legacy database migration is one-shot and unretryable; a mid-copy failure permanently and silently orphans the operator's original data — OPEN, 2026-09-19
+## RISK-25 — Legacy database migration is one-shot and unretryable; a mid-copy failure permanently and silently orphans the operator's original data — FIXED, 2026-09-20
 
 - **Affected components:** `src/lib/db.ts` (`migrateLegacyDatabaseIfNeeded`, `dbAlreadyExistedAtModuleLoad`).
 - **Current behavior:** `dbAlreadyExistedAtModuleLoad` is computed once, before `createClient()` — which itself creates a stub file at the new app-data path as a side effect. If `copyLegacyDatabaseInto` throws mid-copy (legacy file locked by a still-running old process, a corrupt page, an exotic-filesystem `ATTACH` failure), that boot fails loudly, but the stub file at the new path already exists.
@@ -479,7 +479,8 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Required remediation:** Detect a stub/partial DB at the new path left behind by a failed migration (vs. a genuinely-already-migrated one) and retry, or at minimum surface a persistent, unmissable warning rather than booting silently.
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
 - **Approval required from:** project owner, to schedule the fix — this is high severity given it can cause perceived data loss for a real operator upgrading from a pre-cross-platform-persistence install.
-- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, not yet fixed.
+- **Fix applied:** `copyLegacyDatabaseInto` now runs inside one `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK` transaction (a partial failure now rolls back every table, not just the one that failed) and is idempotent (a retry-safe `CREATE TABLE` that catches "already exists" + `DELETE FROM` before the `INSERT`, deliberately **not** `DROP TABLE [IF EXISTS]` — empirically found, in-session, that a `DROP TABLE` statement permanently breaks this exact `@libsql/client` build's ability to see any `ATTACH`ed database's schema for the rest of that connection's life, session-wide, not just inside the transaction; this was caught before shipping by testing the fix's own regression tests against a standalone repro, not by the review). `migrateLegacyDatabaseIfNeeded`'s retry gate now checks a persisted marker (`legacy-migration-status.json`, `"in_progress"` vs `"completed"`, written via the already-shared `writeJsonFileAtomic`) instead of relying solely on `dbAlreadyExistedAtModuleLoad` — a boot that finds `"in_progress"` (not `"completed"`) knows this is its own prior interrupted attempt to resume, distinguishable from a destination that already had genuine unrelated data before the marker mechanism ever ran (which still correctly refuses to touch it, preserving the original safety property). Tests: `db.test.ts` — idempotent retry (calling `copyLegacyDatabaseInto` twice never duplicates rows or fails) and transactional rollback (a fake client injecting a failure on the second table's `INSERT` — via a thin wrapper delegating every other call to the real connection, not a mock of the transaction logic itself — confirms neither table survives, not even the one that succeeded before the failure).
+- **Status:** FIXED — review series cycle 1, 2026-09-20.
 
 ## RISK-26 — `WRITABLE_SNIPPET_FIELDS` whitelist completeness against the live YouTube API is unverified — OPEN, 2026-09-19
 
@@ -587,6 +588,35 @@ Bundled as one entry — each individually low severity, none currently exploita
 
 ---
 
+## RISK-35 — `classifyYoutubeWriteError` cannot distinguish "genuine network ambiguity" from "a local bug in this same adapter" — OPEN, 2026-09-19 (review series, cycle 1)
+
+- **Affected components:** `src/lib/batches/adapters/write-executor.youtube.ts` (`performYoutubeWrite`/`classifyYoutubeWriteError`, the `status === undefined` branch).
+- **Current behavior:** Any thrown error lacking `response.status` (timeout, connection reset -- but also a plain local `TypeError` from this same file's own code, e.g. `pickWritableSnippetFields` choking on a malformed payload) is classified `UNKNOWN`, deliberately per `DEC-OQ-6` ("we don't know if YouTube received the write").
+- **Actual risk:** `UNKNOWN` ledger rows put the entire device into restricted recovery mode via `assertDeviceAvailableForMutation`. A genuine local bug that never reached the network gets the same device-wide lockdown as a real network-ambiguous write, even though a retry could never have "fixed" the local bug's outcome the way it can for a real ambiguous network condition.
+- **Disposition:** deliberately not fixed this cycle -- distinguishing the two classes of error reliably (without misclassifying a real network failure as "local" and unsafely FAILED-and-retrying it) is a genuine design question, not a mechanical fix, and this exact function's own architecture (`DEC-OQ-6`) was a considered decision. **Not currently exploitable**: RISK-09's live-write barrier means this code path is unreachable in production (confirmed by `write-path-inventory.test.ts`).
+- **Gate(s):** `BLOCKS_PHASE_5_WRITES` (before Gate B).
+- **Approval required from:** project owner, as part of Gate B planning (alongside RISK-26, which this is adjacent to).
+- **Status:** OPEN — needs a deliberate design decision, not a mechanical fix.
+
+## RISK-36 — Minor findings from independent review series, cycle 1 (not fixed, individually low severity) — OPEN, 2026-09-19
+
+Bundled as one entry -- each confirmed, each individually low severity or purely non-functional (performance/duplication), none currently exploitable or blocking:
+
+- `src/lib/db.ts` (~line 28-35): `mkdirSync`/`chmodSync` at module load have no try/catch (unlike the "best effort" pattern `atomic-json-file` uses for the identical chmod) -- would crash every process on boot if the app-data directory exists with different ownership.
+- `src/lib/batches/services.ts`: `executeBatch` never persists `selectedChannelId` via the channel-selection store after a write, unlike `video-metadata/services.ts` and `playlist-management/services.ts` -- currently latent since the real `WriteExecutor` is never wired in (RISK-09's barrier).
+- `src/lib/batches/services.ts` (`executeBatch`, ~line 1386): reports a batch `COMPLETED` even when a row is stuck `UNKNOWN` with its video lock still held -- narrowed on review: `resolveUnknownLedgerRow` is the designed recovery path, so the row isn't permanently stuck, but the `COMPLETED` label is still misleading while an `UNKNOWN` row remains unresolved.
+- `src/app/api/device-handoff/shared.ts` vs `src/app/api/video-metadata/error-status.ts`: two independently-maintained error-code-to-HTTP-status tables with different fallback defaults (500 vs 422) -- not a bug (different domains, different code sets), just a minor inconsistency if anyone ever assumes a shared fallback convention.
+- `src/lib/changesets/services.ts` (`createChangeSetFromProposals`, ~line 307): skips the `parseWithSchema` validation every sibling entry point in this file runs -- a defense-in-depth gap, no live exploit today (its one caller, `ai-localization`, already validates upstream).
+- Sequential (non-concurrent) loops ignoring the batch's own configured `concurrency` limit: `batches/services.ts`'s `prepareBatchExecution` (~line 645) and `ai-localization/services.ts`'s `generateProposals` (~line 305) -- performance only, no correctness impact.
+- `write-executor.youtube.ts` (~line 198): reconstructs the YouTube client on every retry attempt instead of reusing one -- performance only.
+- Copy-pasted fetch/error-handling boilerplate across four React components (`ai-connections-manager.tsx`, `batch-manager.tsx`, `ai-localization-panel.tsx`, `device-handoff-panel.tsx`) -- cleanup/duplication only, no behavioral difference found between the copies.
+
+- **Gate(s):** none blocking.
+- **Approval required from:** none required to leave open; project owner if any is scheduled.
+- **Status:** OPEN — found by review series cycle 1, not fixed this round (out of proportion to their severity relative to this round's other findings).
+
+---
+
 ## Summary table
 
 | ID | Title | Gates | Status |
@@ -615,7 +645,7 @@ Bundled as one entry — each individually low severity, none currently exploita
 | RISK-22 | `writeJsonFileAtomic` has no Windows EBUSY/EPERM retry | none (fixed) | FIXED |
 | RISK-23 | `createActiveAuthStorage` parameter meaning changed with no type signal | none blocking yet (latent) | OPEN |
 | RISK-24 | App-data directory no longer locked to 0700 for Web-UI-only installs | none (fixed) | FIXED |
-| RISK-25 | Legacy DB migration is one-shot/unretryable, can silently orphan data | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-25 | Legacy DB migration is one-shot/unretryable, can silently orphan data | none (fixed) | FIXED |
 | RISK-26 | `WRITABLE_SNIPPET_FIELDS` completeness vs. live API unverified | BLOCKS_PHASE_5_WRITES | OPEN, not currently exploitable |
 | RISK-27 | `importHandoff` never cleans up pre-import backup on failure | none (fixed) | FIXED |
 | RISK-28 | Resuming a RUNNING batch skips the write-channel identity guardrail | none (fixed) | FIXED |
@@ -625,5 +655,7 @@ Bundled as one entry — each individually low severity, none currently exploita
 | RISK-32 | proxy/CLI/MCP independently classify mutating ops, no shared registry | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-33 | Minor latent/consistency gaps (dormant FK, audit-path bypass, bare catch) | none blocking | PARTIALLY FIXED |
 | RISK-34 | "recovery-gate" test suites never actually test recovery mode | none (fixed) | FIXED |
+| RISK-35 | write-executor UNKNOWN-classifies a local bug the same as network ambiguity | BLOCKS_PHASE_5_WRITES | OPEN, needs design decision |
+| RISK-36 | Minor cycle-1 findings (unguarded mkdirSync, latent gaps, perf, duplication) | none blocking | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

@@ -68,6 +68,19 @@ test("classifyYoutubeWriteError: documented 400 badRequest reasons are permanent
   }
 });
 
+// (independent review, second cycle): Google's documented guidance treats a 403 rate-limit
+// reason the same as 429 -- transient, not a permanent authorization/quota problem. Previously
+// fell through into the generic 400/401/403/404 "permanent" bucket, so a legitimate throttling
+// condition killed otherwise-valid writes outright instead of being retried.
+test("classifyYoutubeWriteError: 403 rateLimitExceeded/userRateLimitExceeded is transient, not permanent", () => {
+  for (const reason of ["rateLimitExceeded", "userRateLimitExceeded"]) {
+    const result = classifyYoutubeWriteError(googleApiError(403, reason));
+    assert.equal(result.outcome, "FAILED");
+    assert.equal((result as { classification: string }).classification, "transient");
+    assert.equal((result as { systemic?: boolean }).systemic, undefined);
+  }
+});
+
 test("classifyYoutubeWriteError: 403 forbidden (non-quota) is permanent, not systemic", () => {
   const result = classifyYoutubeWriteError(googleApiError(403, "forbidden"));
   assert.equal(result.outcome, "FAILED");
