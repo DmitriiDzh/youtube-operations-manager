@@ -3,6 +3,7 @@
 import { useSession, signOut, signIn } from "next-auth/react";
 import { redirect } from "next/navigation";
 import { useEffect, useState, useCallback } from "react";
+import type { ComponentType, SVGProps } from "react";
 import { RuleForm } from "@/components/rule-form";
 import { RuleList } from "@/components/rule-list";
 import { RunButton } from "@/components/run-button";
@@ -13,7 +14,7 @@ import { BatchManager } from "@/components/batch-manager";
 import { AiLocalizationPanel } from "@/components/ai-localization-panel";
 import { AiConnectionsManager } from "@/components/ai-connections-manager";
 import { DeviceHandoffPanel } from "@/components/device-handoff-panel";
-import { AppShell, type NavItem } from "@/components/app-shell";
+import { AppShell } from "@/components/app-shell";
 import {
   AiLocalizationIcon,
   BatchesIcon,
@@ -25,7 +26,7 @@ import {
   SyncIcon,
 } from "@/components/icons";
 
-type ChannelInfo = {
+export type ChannelInfo = {
   id: string;
   title: string;
   thumbnail?: string;
@@ -42,17 +43,9 @@ type Rule = {
   enabled: boolean;
 };
 
-type Tab =
-  | "manual"
-  | "rules"
-  | "sync"
-  | "localizations"
-  | "ai-localization"
-  | "batches"
-  | "settings"
-  | "device";
-
-const NAV_ITEMS: NavItem<Tab>[] = [
+// Tab is derived from NAV_ITEMS (not declared independently) so the two can never drift apart --
+// adding a nav entry adds the tab, and vice versa, with no separate list for the compiler to miss.
+const NAV_ITEMS = [
   { value: "manual", label: "Manual", icon: ManualIcon },
   { value: "rules", label: "Rules", icon: RulesIcon },
   { value: "sync", label: "Sync", icon: SyncIcon },
@@ -61,7 +54,13 @@ const NAV_ITEMS: NavItem<Tab>[] = [
   { value: "batches", label: "Batches", icon: BatchesIcon },
   { value: "settings", label: "Settings", icon: SettingsIcon },
   { value: "device", label: "Device", icon: DeviceIcon },
-];
+] as const satisfies {
+  value: string;
+  label: string;
+  icon: ComponentType<SVGProps<SVGSVGElement>>;
+}[];
+
+type Tab = (typeof NAV_ITEMS)[number]["value"];
 
 export default function Dashboard() {
   const { data: session, status } = useSession();

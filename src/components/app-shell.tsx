@@ -5,6 +5,7 @@
 // previous single horizontal pill-tab-bar-as-navigation. Purely a chrome/layout change --
 // every existing tab's own content component is rendered completely unchanged inside it.
 import type { ComponentType, ReactNode, SVGProps } from "react";
+import type { ChannelInfo } from "@/app/dashboard/page";
 
 export type NavItem<T extends string> = {
   value: T;
@@ -13,10 +14,10 @@ export type NavItem<T extends string> = {
 };
 
 export function AppShell<T extends string>(props: {
-  navItems: NavItem<T>[];
+  navItems: readonly NavItem<T>[];
   activeTab: T;
   onTabChange: (tab: T) => void;
-  channel: { title: string; thumbnail?: string; videoCount?: string } | null;
+  channel: Pick<ChannelInfo, "title" | "thumbnail" | "videoCount"> | null;
   userName?: string | null;
   onSwitchChannel: () => void;
   onSignOut: () => void;
@@ -92,7 +93,9 @@ export function AppShell<T extends string>(props: {
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto px-6 py-6">{props.children}</main>
+        <main className="flex-1 overflow-y-auto px-6 py-6">
+          <div className="mx-auto max-w-3xl">{props.children}</div>
+        </main>
       </div>
     </div>
   );

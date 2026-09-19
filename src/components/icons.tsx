@@ -4,7 +4,7 @@
 // capabilities over unnecessary custom infrastructure").
 import type { SVGProps } from "react";
 
-function IconBase(props: SVGProps<SVGSVGElement>) {
+function IconBase({ className, ...props }: SVGProps<SVGSVGElement>) {
   return (
     <svg
       viewBox="0 0 24 24"
@@ -13,7 +13,7 @@ function IconBase(props: SVGProps<SVGSVGElement>) {
       strokeWidth={1.5}
       strokeLinecap="round"
       strokeLinejoin="round"
-      className="h-5 w-5"
+      className={`h-5 w-5 ${className ?? ""}`.trim()}
       {...props}
     />
   );
@@ -87,14 +87,6 @@ export function DeviceIcon(props: SVGProps<SVGSVGElement>) {
     <IconBase {...props}>
       <rect x="3" y="4" width="18" height="12" rx="1.5" />
       <path d="M8 20h8M12 16v4" />
-    </IconBase>
-  );
-}
-
-export function ChevronDownIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <IconBase {...props}>
-      <path d="M6 9l6 6 6-6" />
     </IconBase>
   );
 }
