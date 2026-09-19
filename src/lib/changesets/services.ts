@@ -28,7 +28,7 @@ type ChangeSetStoreDeps = {
   createChangeSetWithChanges(input: {
     id: string;
     channelId: string;
-    source: "xlsx_import";
+    source: ChangeSet["source"];
     status: ChangeSet["status"];
     importedFilename: string | null;
     schemaVersion: string | null;
@@ -235,8 +235,104 @@ async function loadRevalidated(
   return { changeSet, changes: finalChanges };
 }
 
+type ChangeToPersist = {
+  id: string;
+  videoId: string;
+  language: string;
+  field: "title" | "description";
+  baselineValue: string;
+  proposedValue: string;
+  changeType: "add" | "modify" | "unchanged";
+  validationStatus: "valid" | "invalid";
+  validationError: string | null;
+  conflictStatus: "none" | "conflict";
+};
+
+/**
+ * Shared persistence tail for every ChangeSet-creating entrypoint (XLSX import,
+ * AI-generated proposals, and any future source): computes the aggregate status,
+ * persists the ChangeSet + its Changes in one call, and reloads the stored result.
+ * One creation path per AGENTS.md §D -- a new `source` must funnel through this
+ * function rather than duplicating `changeSetStore.createChangeSetWithChanges` calls.
+ */
+async function persistChangeSet(
+  deps: ServiceDependencies,
+  input: {
+    channelId: string;
+    source: ChangeSet["source"];
+    importedFilename: string | null;
+    schemaVersion: string | null;
+    exportedAt: string | null;
+    changesToPersist: ChangeToPersist[];
+  }
+): Promise<ChangeSet> {
+  const status = computeChangeSetStatus(
+    input.changesToPersist.map((c) => ({
+      validationStatus: c.validationStatus,
+      conflictStatus: c.conflictStatus,
+      approvalStatus: "pending" as const,
+    }))
+  );
+
+  const changeSetId = deps.idGenerator();
+  await deps.changeSetStore.createChangeSetWithChanges({
+    id: changeSetId,
+    channelId: input.channelId,
+    source: input.source,
+    status,
+    importedFilename: input.importedFilename,
+    schemaVersion: input.schemaVersion,
+    exportedAt: input.exportedAt,
+    changes: input.changesToPersist,
+  });
+
+  const storedChangeSet = await deps.changeSetStore.getChangeSet(changeSetId);
+  if (!storedChangeSet) {
+    throw new DomainError({ code: "not_found", message: "Change set disappeared after creation" });
+  }
+  const storedChanges = await deps.changeSetStore.listChangesByChangeSet(changeSetId);
+
+  return toChangeSetRecord(storedChangeSet, storedChanges.map(toChangeRecord));
+}
+
 export function createChangeSetServices(deps: ServiceDependencies) {
   return {
+    /**
+     * Generic ChangeSet creation from a set of already-classified/validated field
+     * changes, independent of where they came from. Used directly by AI Localization
+     * (Phase 6) so it never reimplements ChangeSet persistence, approval, or status
+     * computation -- it only produces the same `ChangeToPersist` shape XLSX import
+     * produces and hands it to this one shared path.
+     */
+    async createChangeSetFromProposals(input: {
+      channelId: string;
+      source: ChangeSet["source"];
+      changes: ChangeToPersist[];
+    }): Promise<ChangeSet> {
+      try {
+        const channel = await requireChannel(deps, input.channelId);
+        const changeSet = await persistChangeSet(deps, {
+          channelId: channel.channelId,
+          source: input.source,
+          importedFilename: null,
+          schemaVersion: null,
+          exportedAt: null,
+          changesToPersist: input.changes,
+        });
+
+        deps.logger.info({
+          event: "changesets.create_from_proposals.success",
+          context: { channelId: channel.channelId, changeSetId: changeSet.id, source: input.source, changeCount: input.changes.length },
+        });
+
+        return changeSet;
+      } catch (error) {
+        const mapped = mapUnknownError(error, "validation_failed");
+        deps.logger.error({ event: "changesets.create_from_proposals.error", context: { code: mapped.code } });
+        throw mapped;
+      }
+    },
+
     async previewImport(input: unknown): Promise<{ summary: ImportSummary; errors: ImportRowError[]; totalErrors: number }> {
       const parsedInput = parseWithSchema(importWorkbookInputSchema, input, "import preview input");
 
@@ -292,39 +388,22 @@ export function createChangeSetServices(deps: ServiceDependencies) {
             }))
         );
 
-        const status = computeChangeSetStatus(
-          changesToPersist.map((c) => ({
-            validationStatus: c.validationStatus,
-            conflictStatus: c.conflictStatus,
-            approvalStatus: "pending" as const,
-          }))
-        );
-
-        const changeSetId = deps.idGenerator();
-        await deps.changeSetStore.createChangeSetWithChanges({
-          id: changeSetId,
+        const changeSet = await persistChangeSet(deps, {
           channelId: channel.channelId,
           source: "xlsx_import",
-          status,
           importedFilename: parsedInput.filename,
           schemaVersion: parsed.schemaVersion,
           exportedAt: parsed.exportedAt,
-          changes: changesToPersist,
+          changesToPersist,
         });
 
         deps.logger.info({
           event: "changesets.import.success",
-          context: { channelId: channel.channelId, changeSetId, changeCount: changesToPersist.length },
+          context: { channelId: channel.channelId, changeSetId: changeSet.id, changeCount: changesToPersist.length },
         });
 
-        const storedChangeSet = await deps.changeSetStore.getChangeSet(changeSetId);
-        if (!storedChangeSet) {
-          throw new DomainError({ code: "not_found", message: "Change set disappeared after creation" });
-        }
-        const storedChanges = await deps.changeSetStore.listChangesByChangeSet(changeSetId);
-
         return {
-          changeSet: toChangeSetRecord(storedChangeSet, storedChanges.map(toChangeRecord)),
+          changeSet,
           summary,
           errors: parsed.errors.slice(0, MAX_PREVIEW_ERRORS_RETURNED),
           totalErrors: parsed.errors.length,

@@ -35,7 +35,14 @@ export type DomainErrorCode =
   | "default_language_missing"
   | "backup_item_failed"
   | "backup_infrastructure_unavailable"
-  | "live_writes_disabled";
+  | "live_writes_disabled"
+  | "provider_not_configured"
+  | "generation_invalid_target_language"
+  | "generation_no_proposals"
+  | "encryption_key_not_configured"
+  | "capability_not_supported"
+  | "endpoint_not_allowed"
+  | "connection_disabled";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

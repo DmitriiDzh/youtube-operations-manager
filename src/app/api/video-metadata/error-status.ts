@@ -29,6 +29,13 @@ const DOMAIN_ERROR_STATUS = {
   backup_item_failed: 422,
   backup_infrastructure_unavailable: 503,
   live_writes_disabled: 503,
+  provider_not_configured: 501,
+  generation_invalid_target_language: 422,
+  generation_no_proposals: 422,
+  encryption_key_not_configured: 503,
+  capability_not_supported: 422,
+  endpoint_not_allowed: 422,
+  connection_disabled: 409,
 } as const satisfies Partial<Record<DomainErrorCode, number>>;
 
 export function getVideoMetadataErrorStatus(code: DomainErrorCode) {

@@ -335,6 +335,33 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 
 ---
 
+## RISK-14 — AI Connections endpoint validation does not pin the outbound socket to the validated address (narrow DNS-rebinding TOCTOU)
+
+- **Affected components:** `src/lib/ai-connections/endpoint-security.ts`'s `validateEndpointUrl`; `src/lib/ai-connections/adapters/openai-compatible.ts`'s `callOnce` (calls validation immediately before `fetchImpl`).
+- **Current behavior:** Before every real outbound call, the connection's Base URL hostname is resolved and every resolved address is checked against private/loopback/link-local/reserved/metadata ranges (blocking unless the connection's `localInferenceMode` is explicitly on). The subsequent `fetch()` call, however, performs its own, independent DNS resolution — it is not pinned to the exact address `validateEndpointUrl` just checked.
+- **Actual risk:** An adversarial or misconfigured DNS server could in principle return a public address for the validation lookup and a private/internal address for the immediately-following `fetch()`'s own lookup (classic DNS rebinding), reaching an internal host despite validation passing. This requires the operator to have configured a connection pointing at a hostname under an adversary's DNS control in the first place — not a remotely-triggerable attack against a passive user.
+- **Existing mitigation:** Validation still blocks the overwhelmingly common cases (IP literals, already-known-private hostnames, cloud metadata address) outright; the residual gap requires an actively hostile DNS answer timed to this specific narrow window. Single-operator, locally-trusted deployment model (no untrusted party can configure a connection on the operator's behalf). **Update, 2026-09-19 (independent adversarial security review):** a related but distinct bypass — an already-validated public HTTPS endpoint issuing an HTTP redirect to a private/internal/metadata address, which the underlying `fetch` (undici) would otherwise follow automatically, requiring no DNS timing at all — was found and fixed the same day by adding `redirect: "manual"` to the outbound request (`adapters/openai-compatible.ts`), so a redirect now surfaces as an ordinary non-2xx `providerError` instead of being followed. This closes the *redirect* variant of the bypass; the narrower DNS-rebinding TOCTOU described above (no redirect involved, just a second DNS answer) remains open and is what this entry continues to track. A DNS-lookup timeout (10s, `raceDnsLookupAgainstTimeout`) was also added the same day so a hanging resolver can no longer block the pipeline indefinitely.
+- **Required remediation (if ever needed):** Resolve the hostname once, then issue the HTTP request directly against the validated IP (e.g. via a custom `fetch` dispatcher/agent that pins the connection, with the original hostname preserved only for the `Host`/SNI), so validation and the actual request target are provably the same address.
+- **Acceptance criteria:** A test demonstrating that a DNS answer which changes between the validation lookup and the request lookup cannot reach a blocked address.
+- **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON` (current single-operator local model), `BLOCKS_NETWORK_DEPLOYMENT`.
+- **Approval required from:** project owner, only if/when this application is ever deployed somewhere an untrusted party could influence which connections get configured.
+- **Status:** OPEN (narrowed) — the redirect-based bypass is CLOSED; the pure-DNS-rebinding variant remains an accepted tradeoff for the current deployment model, documented per `docs/acceptance/PHASE_6_AI_CONNECTIONS_ACCEPTANCE.md` AC-CONN-09's own stated limitation, not silently carried forward.
+
+---
+
+## RISK-15 — AI Connections credential encryption key has no rotation/backup procedure
+
+- **Affected components:** `src/lib/ai-connections/crypto.ts` (`AI_CONNECTIONS_ENCRYPTION_KEY`); `ai_connection_credentials` table.
+- **Current behavior:** A single, operator-supplied environment variable is the only key. There is no key-rotation procedure (re-encrypting existing rows under a new key) and no documented backup/recovery guidance — if the key is lost, every stored credential becomes permanently undecryptable (the connections themselves survive; only their credentials are lost, and can be re-entered).
+- **Actual risk:** Operator inconvenience (re-entering API keys after losing the encryption key), not a security exposure — losing the key makes data *more* protected, not less.
+- **Existing mitigation:** This mirrors the existing, already-accepted pattern for other secrets in this repository (`GOOGLE_CLIENT_SECRET` etc. — also single env-var, no rotation tooling). Encryption here is a strict improvement over RISK-07's current plaintext OAuth-token storage, and could later serve as the template for closing RISK-07 the same way, if the project owner chooses.
+- **Required remediation (if ever needed):** A documented key-rotation script (decrypt-all-then-re-encrypt-under-new-key) if this becomes operationally painful.
+- **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON`.
+- **Approval required from:** project owner, only if rotation tooling is ever requested.
+- **Status:** OPEN — low severity, documented rather than silently absent.
+
+---
+
 ## Summary table
 
 | ID | Title | Gates | Status |
@@ -352,5 +379,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 | RISK-11 | Read-only snippet field echo-back | none (resolved by whitelist design) | RESOLVED (both write paths) |
 | RISK-12 | Legacy `applyMetadata`/CLI/MCP `dryRun` default | none (was BLOCKS_OPERATIONS_RELEASE) | CLOSED |
 | RISK-13 | AC-QUOTA-01 wording clarification | none | RESOLVED |
+| RISK-14 | AI Connections endpoint validation TOCTOU (DNS rebinding) | DEFERRED, BLOCKS_NETWORK_DEPLOYMENT | OPEN |
+| RISK-15 | AI Connections encryption key has no rotation/backup procedure | DEFERRED | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
