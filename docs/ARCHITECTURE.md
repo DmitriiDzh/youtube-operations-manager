@@ -406,3 +406,120 @@ Consolidated here so no reader has to infer these from scattered footnotes. Full
 6. **Two critical npm audit findings — update, 2026-09-18: patched** (`next`→16.3.5, `next-auth`→4.24.15; see `docs/TECHNICAL_DEBT.md` RISK-06, which still tracks 20 remaining, non-critical, mostly dev-only/unused-code-path advisories).
 
 None of these are Phase 4.5 defects — they are pre-existing, now-consolidated facts about the current state of the system, gated for resolution per `docs/TECHNICAL_DEBT.md`'s gate classifications and the release-readiness checkpoints (Gates A–D) referenced there.
+
+---
+
+## 13. Pre-Release: Cross-Platform Persistence & Device Handoff (Variant A)
+
+**Not a numbered product phase** — an explicit, separately-assigned pre-release task ("Pre-Release
+— Cross-Platform Persistence & Syncthing Handoff"), distinct from and not authorizing Phase 7.
+Full acceptance contract: `docs/acceptance/PRE_RELEASE_CROSS_PLATFORM_ACCEPTANCE.md`. Architectural
+decision: `docs/decisions/0002-additive-schema-versioning.md`.
+
+### 13.1 Purpose and scope
+
+Makes the application safe to run alternately on Windows and macOS, with Syncthing as an
+external file-transport only (never a database), under a strict single-active-device model
+(Variant A — no simultaneous multi-device editing, no application-managed sync, no automatic
+database merging). Four new leaf/near-leaf modules plus one small domain-adjacent module:
+
+```text
+src/lib/platform-paths/    — pure resolveAppPaths(platform, env, homedir); zero I/O
+src/lib/bootstrap-config/  — device-local bootstrap-config.json (deviceId, syncthingRootPath)
+src/lib/schema-versioning/ — schema_meta + reject-newer-before-mutation + ordered migrations
+src/lib/db-backup/         — copyDatabaseConsistently() over VACUUM INTO (shared utility)
+src/lib/operation-lock/    — app_operation_locks: real SQLite-level device-local exclusivity
+src/lib/snapshot/          — scrub-then-checksum export/import pipeline, explicit table allowlist
+src/lib/device-handoff/    — orchestration: exportHandoff/importHandoff/recovery-mode gate
+```
+
+`src/lib/db.ts` itself changed in three ways: its client now opens at
+`getProductionAppPaths().dbPath` instead of `<cwd>/data/playlist-manager.db`; a one-time,
+non-destructive migration copies a legacy database into the new location on first boot only;
+`initializeDatabaseSchema` gained the version-check-first ordering described in §13.2.
+
+### 13.2 Schema versioning ordering (docs/decisions/0002-*.md)
+
+```text
+initializeDatabaseSchema(client):
+  1. PRAGMA busy_timeout / journal_mode = WAL           (non-schema-mutating)
+  2. assertSupportedSchemaVersion(client, CURRENT)      (read-only; throws before any mutation
+                                                          if the DB reports a newer version)
+  3. existing additive baseline block, unchanged         (schema version 1, retroactively)
+  4. runSchemaMigrations(...)                            (ordered, each stamps schema_meta only
+                                                          on its own success)
+```
+
+A database reporting a version newer than `SCHEMA_CURRENT_VERSION` is rejected before step 3
+ever runs — proven, not merely asserted, by a test that snapshots `sqlite_master` before and
+after a rejected attempt and asserts byte-for-byte identity (`src/lib/db.test.ts`,
+`src/lib/schema-versioning/services.test.ts`).
+
+### 13.3 Snapshot format and the transfer allowlist
+
+A published snapshot is a directory (`<snapshotId>/manifest.json` + `data.db` + implicit
+per-file checksum inside the manifest) written first to a `.staging-<uuid>` directory and only
+made visible under its final name via an atomic rename, after `manifest.json`'s `complete: true`
+is the last thing written. `data.db` is produced by `VACUUM INTO` (a transactionally-consistent
+snapshot, sidestepping the WAL/SHM-file problem entirely) and then scrubbed via an **explicit
+transfer allowlist** (`SNAPSHOT_TRANSFERRED_TABLES`, `src/lib/snapshot/contracts.ts`) — any table
+not on that list is dropped and the file `VACUUM`d again, fail-safe by construction: a future new
+table is excluded by default unless a reviewer deliberately adds it to the allowlist. `users` and
+`ai_connection_credentials` are never on it.
+
+### 13.4 Import: per-table merge, not a whole-file swap
+
+Import never replaces the live database file. It ATTACHes a migrated, verified, private working
+copy of the snapshot's `data.db` to the live connection and, in one transaction: fully replaces
+every "application state" table (`channels`, `videos`, `change_sets`, `changes`, `batches`,
+`batch_ledger_rows`, `batch_attempts`, `audit_events`, `channel_editorial_profiles`,
+`ai_localization_generation_provenance`, `rules`), and upserts `ai_connections` by `id` (`INSERT
+OR REPLACE ... SELECT` — an `INSERT ... SELECT ... ON CONFLICT DO UPDATE` was tried first and
+found unsupported by this `@libsql/client` build's SQLite, verified directly). `users` and
+`ai_connection_credentials` are never referenced by this code path at all — there is no
+"exclude" branch to bypass, because no code path here can reach them structurally. `users.id` was
+confirmed, by reading `src/lib/auth.ts`'s `session()` callback and `src/lib/db.ts`'s
+`upsertUserOAuthOnSignIn`, to be the Google OAuth `sub` claim — a stable, provider-issued
+identity, not a locally-generated artifact — which is why no identifier remapping is ever needed
+for `channels.connectedUserId`/`rules.userId` across devices.
+
+### 13.5 Restricted recovery mode is computed, never cached
+
+If the imported (migrated, merged) data contains any `batch_ledger_rows` row whose status is
+`APPLYING` or `UNKNOWN` (a real YouTube write may have been sent with an uncertain outcome), the
+device activates the import but every subsequent mutating action — local-state or
+YouTube-write — is refused. This is implemented as a **live, uncached recomputation** on every
+check (`isDeviceInRecoveryMode`/`assertDeviceAvailableForMutation`, re-querying
+`batch_ledger_rows` each time), specifically so that no stored flag exists anywhere that an
+operator action could accidentally or deliberately flip. The one operator action available
+(`acknowledgeRecoveryDiagnostics`) writes only to a separate, append-only
+`recovery_acknowledgements` table and never touches `batch_ledger_rows` — proven by a dedicated
+test (`docs/acceptance/PRE_RELEASE_CROSS_PLATFORM_ACCEPTANCE.md` AC-HANDOFF-05) that asserts the
+row is byte-identical before/after and the gate is still engaged immediately after. This task
+builds no new recovery/reconciliation algorithm — the gate only lifts when Phase 5's existing,
+unmodified mechanism (RISK-09 §0.F) resolves the underlying rows to a terminal state, which
+currently has no in-app trigger (`docs/TECHNICAL_DEBT.md` RISK-16, tracked, not fixed here).
+
+### 13.6 One gate, three call sites
+
+`src/lib/device-handoff/services.ts`'s `assertDeviceAvailableForMutation` (operation-lock check,
+then recovery-mode check) is the single implementation; it is called from three independent
+choke points, not reimplemented at each: `src/proxy.ts` (Next.js 16's renamed `middleware.ts` —
+confirmed via `node_modules/next/dist/docs/` to default to the Node.js runtime, which is what
+makes querying the local libSQL database directly from it possible) for every mutating `/api/**`
+request; `src/cli/video-metadata.ts`'s `runCliCommand`, for every CLI command outside an explicit
+read-only allowlist; `src/mcp/server.ts`'s `createMcpToolHandlers`, wrapping every tool classified
+as a local- or remote-mutation per `docs/DEVELOPMENT_PLAYBOOK.md` §6.7. `app_operation_locks`
+itself is a real SQLite-level exclusivity mechanism (the `INSERT` against a fixed row id is what
+actually enforces it, across any connection/process to the same file) — the three choke points
+give the broader "no new work starts" product behavior for the whole export/import window, not
+just the instant of the file copy.
+
+### 13.7 Known limitations
+
+- No macOS runtime validation — path-resolution logic is unit-tested for both platforms via
+  injection; only Windows has actually been run (`docs/TECHNICAL_DEBT.md` RISK-17).
+- No in-app way to leave restricted recovery mode yet — depends on RISK-04's CLI/MCP Batch
+  tooling, which does not exist (RISK-16).
+- No installer/auto-updater; release layout is documented (`docs/RELEASE_LAYOUT.md`) but not
+  automated, per the task's own explicit scope boundary.

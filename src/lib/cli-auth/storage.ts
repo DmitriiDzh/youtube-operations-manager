@@ -1,9 +1,8 @@
-import { constants as fsConstants } from "node:fs";
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { readFile, rm, stat } from "node:fs/promises";
 import { z } from "zod";
 import { DomainError } from "@/lib/video-metadata/contracts";
+import { getProductionAppPaths } from "@/lib/platform-paths";
+import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
 
 export const activeAuthContextSchema = z
   .object({
@@ -21,22 +20,15 @@ export type ActiveAuthStorage = {
   clear(): Promise<void>;
 };
 
-export function createActiveAuthStorage(baseDir = process.cwd()): ActiveAuthStorage {
-  const dataDir = path.join(baseDir, "data");
-  const contextPath = path.join(dataDir, "auth-context.json");
-
-  async function ensureDataDir() {
-    await mkdir(dataDir, { recursive: true });
-
-    if (process.platform !== "win32") {
-      try {
-        await chmod(dataDir, 0o700);
-      } catch {
-        // Best effort on existing directories.
-      }
-    }
-  }
-
+/**
+ * `contextPath` defaults to the platform-aware app-data location's `auth-context.json`
+ * (docs/decisions/0002-additive-schema-versioning.md's companion task, "Pre-Release
+ * Cross-Platform Persistence" -- replaces the previous `<cwd>/data/auth-context.json`
+ * default). Tests inject an explicit isolated temp path, exactly as before.
+ */
+export function createActiveAuthStorage(
+  contextPath: string = getProductionAppPaths().authContextPath
+): ActiveAuthStorage {
   async function assertSafePermissions() {
     if (process.platform === "win32") return;
 
@@ -81,29 +73,13 @@ export function createActiveAuthStorage(baseDir = process.cwd()): ActiveAuthStor
     },
 
     async write(input) {
-      await ensureDataDir();
-
       const nextContext: ActiveAuthContext = {
         activeUserId: input.activeUserId,
         updatedAt: new Date().toISOString(),
         version: 1,
       };
 
-      const tmpPath = path.join(dataDir, `.auth-context.${randomUUID()}.tmp`);
-      await writeFile(tmpPath, JSON.stringify(nextContext, null, 2), {
-        encoding: "utf8",
-        mode: fsConstants.S_IRUSR | fsConstants.S_IWUSR,
-      });
-
-      if (process.platform !== "win32") {
-        await chmod(tmpPath, 0o600);
-      }
-
-      await rename(tmpPath, contextPath);
-
-      if (process.platform !== "win32") {
-        await chmod(contextPath, 0o600);
-      }
+      await writeJsonFileAtomic(contextPath, nextContext);
 
       return nextContext;
     },

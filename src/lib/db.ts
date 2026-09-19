@@ -1,13 +1,100 @@
+import { existsSync, mkdirSync } from "fs";
 import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import path from "path";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
+import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
+import { copyDatabaseConsistently } from "@/lib/db-backup";
+import {
+  assertSupportedSchemaVersion,
+  runSchemaMigrations,
+  type SchemaMigration,
+} from "@/lib/schema-versioning";
+
+// Platform-aware app-data location (docs/decisions/0002-additive-schema-versioning.md's
+// companion task, "Pre-Release Cross-Platform Persistence"). getProductionAppPaths() is the
+// single shared implementation of "resolve the real app-data location, but redirect to an
+// isolated temp directory under Node's own test runner" -- src/lib/cli-auth/storage.ts and
+// src/lib/backup/adapters/filesystem-store.ts use the exact same function for their own
+// defaults, so this test-runner guard exists in one place, not three (AGENTS.md §D).
+const appPaths = getProductionAppPaths();
+
+export { appPaths as appDataPaths };
+
+// The local libSQL/SQLite driver does not create intermediate directories itself -- ensure
+// the app-data directory exists before the client ever tries to open a file inside it.
+mkdirSync(appPaths.appDataDir, { recursive: true });
+
+// Captured *before* `createClient()` below -- verified empirically that `@libsql/client`'s
+// `createClient()` synchronously creates an empty file at the given path as a side effect of
+// construction, before any query runs. An earlier version of this file checked
+// `existsSync(appPaths.dbPath)` *after* calling `createClient()`, which made that check always
+// true and silently skipped every legacy migration forever -- a real, previously-shipped bug,
+// found and fixed via independent review. This flag is the one piece of truth that check
+// needed; everything below is ordered around preserving it correctly.
+const dbAlreadyExistedAtModuleLoad = existsSync(appPaths.dbPath);
 
 const rawClient = createClient({
-  url: `file:${path.join(process.cwd(), "data", "playlist-manager.db")}`,
+  url: `file:${appPaths.dbPath}`,
 });
+
+/**
+ * The testable core: copies every table from `legacyDbPath` into `destClient`'s already-open
+ * database via `ATTACH DATABASE` (mirroring `src/lib/snapshot/services.ts`'s
+ * `applySnapshotToDatabase` pattern) rather than `copyDatabaseConsistently`'s `VACUUM INTO` --
+ * `VACUUM INTO` requires an *absent* destination file, which is never true for `destClient`'s
+ * own already-open file. Recreates each legacy table from its own `sqlite_master.sql` (not the
+ * current baseline's `CREATE TABLE` statements), preserving whatever additive shape the legacy
+ * file actually has, exactly as if it were opened in place -- the normal
+ * `initializeDatabaseSchema` version-check/migration pipeline that runs immediately after this
+ * (see `initializeDatabase` below) then treats the result exactly like any other existing
+ * database. Exported so this real, previously entirely-untested logic has a direct unit test
+ * (`db.test.ts`) independent of the singleton wiring around it.
+ */
+export async function copyLegacyDatabaseInto(
+  destClient: Client,
+  legacyDbPath: string
+): Promise<void> {
+  await destClient.execute({ sql: "ATTACH DATABASE ? AS legacy", args: [legacyDbPath] });
+  try {
+    const tables = await destClient.execute(
+      "SELECT name, sql FROM legacy.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+    );
+    for (const row of tables.rows) {
+      const createTableSql = row.sql;
+      if (typeof createTableSql !== "string") continue;
+      await destClient.execute(createTableSql);
+      const tableName = String(row.name);
+      await destClient.execute(`INSERT INTO "${tableName}" SELECT * FROM legacy."${tableName}"`);
+    }
+  } finally {
+    await destClient.execute("DETACH DATABASE legacy");
+  }
+}
+
+/**
+ * One-time, explicit, non-destructive migration from the pre-this-task location
+ * (`<repo>/data/playlist-manager.db`) into the new platform-appropriate app-data location --
+ * only when nothing already existed at the new location before this module loaded (never
+ * overwrites populated data, AC-PATH-06, using `dbAlreadyExistedAtModuleLoad` above rather than
+ * re-checking `existsSync` here, which would now always see `rawClient`'s own empty stub file --
+ * see that flag's own doc comment for the real bug this guards against) and only when a legacy
+ * database actually exists (AC-PATH-05). The legacy file itself is never moved, renamed, or
+ * deleted. Never runs under the test runner (see `isRunningUnderTestRunner` above) -- it must
+ * never even *read* the operator's real legacy database as a side effect of `npm test`.
+ */
+async function migrateLegacyDatabaseIfNeeded(): Promise<{ migrated: boolean }> {
+  if (isRunningUnderTestRunner()) return { migrated: false };
+  if (dbAlreadyExistedAtModuleLoad) return { migrated: false };
+
+  const legacyDbPath = resolveLegacyDbPath(process.cwd());
+  if (!existsSync(legacyDbPath)) return { migrated: false };
+
+  await copyLegacyDatabaseInto(rawClient, legacyDbPath);
+  return { migrated: true };
+}
 
 export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
@@ -294,10 +381,81 @@ export const rules = sqliteTable("rules", {
     .$defaultFn(() => new Date()),
 });
 
+// docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
+// is retroactively "schema version 1". A version newer than this is applied via
+// SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
+export const SCHEMA_BASELINE_VERSION = 1;
+
+export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
+  {
+    version: 2,
+    description: "app_operation_locks -- local device-scoped export/import/migration lock",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS app_operation_locks (" +
+          "id TEXT PRIMARY KEY, " +
+          "operation_type TEXT NOT NULL, " +
+          "holder_pid INTEGER NOT NULL, " +
+          "acquired_at TEXT NOT NULL)"
+      );
+    },
+  },
+  {
+    version: 3,
+    description:
+      "snapshot_lineage, handoff_log, recovery_acknowledgements -- device-local snapshot/handoff bookkeeping",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS snapshot_lineage (" +
+          "id TEXT PRIMARY KEY, " +
+          "last_snapshot_id TEXT, " +
+          "last_generation INTEGER NOT NULL DEFAULT 0)"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS handoff_log (" +
+          "id TEXT PRIMARY KEY, " +
+          "direction TEXT NOT NULL, " +
+          "snapshot_id TEXT NOT NULL, " +
+          "recorded_at TEXT NOT NULL, " +
+          "detail_json TEXT NOT NULL)"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS recovery_acknowledgements (" +
+          "id TEXT PRIMARY KEY, " +
+          "acknowledged_at TEXT NOT NULL, " +
+          "affected_batches_json TEXT NOT NULL, " +
+          "note TEXT)"
+      );
+    },
+  },
+];
+
+export const SCHEMA_CURRENT_VERSION =
+  SCHEMA_MIGRATIONS.length > 0
+    ? Math.max(...SCHEMA_MIGRATIONS.map((m) => m.version))
+    : SCHEMA_BASELINE_VERSION;
+
 // Exported so schema-initialization tests can point a throwaway libSQL client at an
 // isolated temporary database file (per docs/DEVELOPMENT_PLAYBOOK.md §6.11) instead of
 // touching data/playlist-manager.db. Behavior is identical to the singleton path below.
-export async function initializeDatabaseSchema(client: Client): Promise<void> {
+//
+// Boot order (decision 8, docs/decisions/0002-additive-schema-versioning.md): PRAGMAs (never
+// schema-mutating) -> read-only version check, rejecting a newer-than-supported database
+// before any CREATE/ALTER/INSERT runs -> the existing additive baseline block, unchanged ->
+// any migrations strictly newer than the stamped version, each committing its own version
+// bump only on success.
+export async function initializeDatabaseSchema(
+  client: Client,
+  options?: {
+    /** Called once, only when at least one migration beyond the baseline is about to run --
+     * the singleton boot path below uses this to take a pre-migration backup
+     * (AC-SCHEMA-08). Isolated test clients may omit it; no backup is taken in that case. */
+    beforeMigrations?: (context: {
+      fromVersion: number;
+      pendingMigrations: SchemaMigration[];
+    }) => Promise<void>;
+  }
+): Promise<void> {
   // Without this, a transaction opened on one connection (e.g. beginAttemptIntent's or
   // recordAttemptResult's guarded claim-then-write) makes any concurrent transaction on
   // a DIFFERENT connection to the same file fail immediately with SQLITE_BUSY instead of
@@ -310,6 +468,11 @@ export async function initializeDatabaseSchema(client: Client): Promise<void> {
   // at the file-lock level, which is what makes two separate connections' transactions
   // interleave safely instead of racing for the same exclusive rollback-journal lock.
   await client.execute("PRAGMA journal_mode = WAL");
+
+  // Reject a database reporting a version newer than this build supports *before* any
+  // schema-mutating statement below runs (AC-SCHEMA-04) -- assertSupportedSchemaVersion only
+  // ever performs a read.
+  const foundVersion = await assertSupportedSchemaVersion(client, SCHEMA_CURRENT_VERSION);
 
   await client.executeMultiple(`
     CREATE TABLE IF NOT EXISTS users (
@@ -517,10 +680,41 @@ export async function initializeDatabaseSchema(client: Client): Promise<void> {
   } catch {
     // Column already exists
   }
+
+  // Everything above this point is the pre-existing, unchanged additive baseline (schema
+  // version 1, docs/decisions/0001-additive-idempotent-schema-strategy.md). From here,
+  // schema versioning (docs/decisions/0002-additive-schema-versioning.md) takes over for
+  // anything beyond it.
+  const stampedBeforeMigrations = foundVersion ?? SCHEMA_BASELINE_VERSION;
+  const pendingMigrations = SCHEMA_MIGRATIONS.filter(
+    (migration) => migration.version > stampedBeforeMigrations
+  );
+
+  if (pendingMigrations.length > 0 && options?.beforeMigrations) {
+    await options.beforeMigrations({
+      fromVersion: stampedBeforeMigrations,
+      pendingMigrations,
+    });
+  }
+
+  await runSchemaMigrations(client, {
+    migrations: SCHEMA_MIGRATIONS,
+    currentVersion: foundVersion,
+    baselineVersion: SCHEMA_BASELINE_VERSION,
+  });
 }
 
 async function initializeDatabase() {
-  await initializeDatabaseSchema(rawClient);
+  await migrateLegacyDatabaseIfNeeded();
+  await initializeDatabaseSchema(rawClient, {
+    beforeMigrations: async () => {
+      const destPath = path.join(
+        appPaths.migrationBackupsDir,
+        `pre-migration-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`
+      );
+      await copyDatabaseConsistently(rawClient, destPath);
+    },
+  });
 }
 
 export const databaseInitialization = initializeDatabase().catch((error: unknown) => {
@@ -551,6 +745,15 @@ const client = new Proxy(rawClient, {
     return value.bind(target);
   },
 });
+
+/**
+ * The same initialization-guarded client `db` (below) is built on, exposed directly for
+ * modules that need raw SQL access rather than Drizzle's query builder -- src/lib/snapshot/
+ * and src/lib/device-handoff/ (ATTACH/VACUUM/PRAGMA are not expressible through Drizzle),
+ * and src/proxy.ts / CLI / MCP choke points calling `assertDeviceAvailableForMutation`.
+ * Every call still waits for `databaseInitialization` first, exactly like `db` does.
+ */
+export const rawSqlClient: Client = client;
 
 const dbSchema = {
   users,

@@ -7,14 +7,16 @@ import { createActiveAuthStorage } from "./storage";
 
 test("active auth storage writes atomically and reads context", async () => {
   const baseDir = await mkdtemp(path.join(tmpdir(), "auth-storage-"));
-  const storage = createActiveAuthStorage(baseDir);
+  const contextPath = path.join(baseDir, "auth-context.json");
+  const storage = createActiveAuthStorage(contextPath);
 
   const written = await storage.write({ activeUserId: "user-1" });
   assert.equal(written.activeUserId, "user-1");
 
-  const raw = JSON.parse(
-    await readFile(path.join(baseDir, "data", "auth-context.json"), "utf8")
-  ) as { activeUserId: string; version: number };
+  const raw = JSON.parse(await readFile(contextPath, "utf8")) as {
+    activeUserId: string;
+    version: number;
+  };
   assert.equal(raw.activeUserId, "user-1");
   assert.equal(raw.version, 1);
 
@@ -24,10 +26,10 @@ test("active auth storage writes atomically and reads context", async () => {
 
 test("active auth storage creates secure permissions when platform supports it", async () => {
   const baseDir = await mkdtemp(path.join(tmpdir(), "auth-storage-perms-"));
-  const storage = createActiveAuthStorage(baseDir);
+  const contextFilePath = path.join(baseDir, "auth-context.json");
+  const storage = createActiveAuthStorage(contextFilePath);
 
   await storage.write({ activeUserId: "user-1" });
-  const contextFilePath = path.join(baseDir, "data", "auth-context.json");
   const info = await stat(contextFilePath);
 
   if (process.platform !== "win32") {
@@ -37,7 +39,7 @@ test("active auth storage creates secure permissions when platform supports it",
 
 test("active auth storage clear removes context", async () => {
   const baseDir = await mkdtemp(path.join(tmpdir(), "auth-storage-clear-"));
-  const storage = createActiveAuthStorage(baseDir);
+  const storage = createActiveAuthStorage(path.join(baseDir, "auth-context.json"));
 
   await storage.write({ activeUserId: "user-1" });
   await storage.clear();

@@ -1,0 +1,188 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, rm, readdir } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { createClient, type Client } from "@libsql/client";
+import {
+  copyLegacyDatabaseInto,
+  initializeDatabaseSchema,
+  SCHEMA_BASELINE_VERSION,
+  SCHEMA_CURRENT_VERSION,
+  SCHEMA_MIGRATIONS,
+} from "./db";
+import { readSchemaVersion } from "@/lib/schema-versioning";
+import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
+
+async function withTempClient(fn: (client: Client, dir: string) => Promise<void>) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "db-integration-test-"));
+  const client = createClient({ url: `file:${path.join(dir, "test.db")}` });
+  try {
+    await fn(client, dir);
+  } finally {
+    client.close();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await rm(dir, { recursive: true, force: true });
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+  }
+}
+
+async function tableExists(client: Client, name: string): Promise<boolean> {
+  const result = await client.execute({
+    sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    args: [name],
+  });
+  return result.rows.length > 0;
+}
+
+// AC-SCHEMA-01
+test("initializeDatabaseSchema: a fresh database ends stamped at SCHEMA_CURRENT_VERSION with every table present", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    assert.equal(await readSchemaVersion(client), SCHEMA_CURRENT_VERSION);
+    assert.equal(await tableExists(client, "users"), true);
+    assert.equal(await tableExists(client, "app_operation_locks"), true);
+  }));
+
+// AC-SCHEMA-02
+test("initializeDatabaseSchema: an existing pre-versioning database (baseline tables, no schema_meta) is stamped at the baseline version without altering existing data", () =>
+  withTempClient(async (client) => {
+    // Simulate a pre-this-task database: run only the baseline (no schema_meta yet). We do
+    // this by calling initializeDatabaseSchema once (creates schema_meta as a side effect of
+    // migrations), then manually drop schema_meta to simulate "legacy" and insert a row.
+    await initializeDatabaseSchema(client);
+    await client.execute("DROP TABLE schema_meta");
+    await client.execute({
+      sql: "INSERT INTO users (id, email) VALUES (?, ?)",
+      args: ["legacy-user", "legacy@example.com"],
+    });
+
+    await initializeDatabaseSchema(client);
+
+    const users = await client.execute("SELECT id, email FROM users WHERE id = 'legacy-user'");
+    assert.equal(users.rows.length, 1, "pre-existing row must survive re-initialization untouched");
+    assert.equal(await readSchemaVersion(client), SCHEMA_CURRENT_VERSION);
+  }));
+
+// AC-SCHEMA-04
+test("initializeDatabaseSchema: rejects a database reporting a version newer than SCHEMA_CURRENT_VERSION, before any mutation", () =>
+  withTempClient(async (client) => {
+    await client.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    await client.execute({
+      sql: "INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?)",
+      args: [String(SCHEMA_CURRENT_VERSION + 1000)],
+    });
+
+    const before = await client.execute("SELECT name FROM sqlite_master ORDER BY name");
+    const beforeNames = before.rows.map((r) => r.name);
+
+    await assert.rejects(
+      () => initializeDatabaseSchema(client),
+      (error: unknown) => error instanceof SchemaVersionError
+    );
+
+    const after = await client.execute("SELECT name FROM sqlite_master ORDER BY name");
+    const afterNames = after.rows.map((r) => r.name);
+    assert.deepEqual(afterNames, beforeNames, "rejected database must be byte-for-byte unchanged in shape");
+  }));
+
+// AC-SCHEMA-08
+test("initializeDatabaseSchema: beforeMigrations hook fires with a real pre-migration backup opportunity before pending migrations run", () =>
+  withTempClient(async (client, dir) => {
+    // Force a scenario where at least one migration is pending: stamp the DB at the baseline
+    // version only (simulating "already migrated once, one new migration shipped since").
+    await client.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    await client.execute({
+      sql: "INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?)",
+      args: [String(SCHEMA_BASELINE_VERSION)],
+    });
+    // Baseline tables must exist too (initializeDatabaseSchema's own baseline block is
+    // idempotent and would create them, but the hook fires before that point isn't relevant
+    // here -- we only care that the hook fires exactly when migrations are pending).
+
+    let hookCalled = false;
+    let hookSawPendingMigrations: number[] = [];
+    const backupPath = path.join(dir, "pre-migration-backup.db");
+
+    await initializeDatabaseSchema(client, {
+      beforeMigrations: async ({ fromVersion, pendingMigrations }) => {
+        hookCalled = true;
+        hookSawPendingMigrations = pendingMigrations.map((m) => m.version);
+        assert.equal(fromVersion, SCHEMA_BASELINE_VERSION);
+        // Real backup mechanism, same one db.ts's singleton boot uses.
+        const { copyDatabaseConsistently } = await import("@/lib/db-backup");
+        await copyDatabaseConsistently(client, backupPath);
+      },
+    });
+
+    assert.equal(hookCalled, SCHEMA_MIGRATIONS.some((m) => m.version > SCHEMA_BASELINE_VERSION));
+    if (hookCalled) {
+      assert.deepEqual(
+        hookSawPendingMigrations,
+        SCHEMA_MIGRATIONS.filter((m) => m.version > SCHEMA_BASELINE_VERSION).map((m) => m.version)
+      );
+      const files = await readdir(dir);
+      assert.ok(files.includes("pre-migration-backup.db"), "backup file must exist");
+    }
+  }));
+
+// AC-SCHEMA-03
+test("initializeDatabaseSchema: is idempotent -- re-running against an already-current database is a no-op on the version", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const first = await readSchemaVersion(client);
+    await initializeDatabaseSchema(client);
+    const second = await readSchemaVersion(client);
+    assert.equal(first, second);
+    assert.equal(second, SCHEMA_CURRENT_VERSION);
+  }));
+
+// AC-PATH-05: the previously entirely-untested legacy-migration core, found by independent
+// review to be unreachable in a prior version of this file (a module-load-order bug meant
+// existsSync(appPaths.dbPath) was always true by the time it was checked, silently skipping
+// every legacy migration forever). This test exercises copyLegacyDatabaseInto directly,
+// against real temp files, independent of the singleton/module-load wiring around it.
+test("copyLegacyDatabaseInto: copies every table's schema and rows from the legacy file into an already-open destination connection", () =>
+  withTempClient(async (destClient, dir) => {
+    const legacyDbPath = path.join(dir, "legacy.db");
+    const legacyClient = createClient({ url: `file:${legacyDbPath}` });
+    try {
+      await legacyClient.execute(
+        "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL)"
+      );
+      await legacyClient.execute({
+        sql: "INSERT INTO users (id, email) VALUES (?, ?)",
+        args: ["legacy-user", "legacy@example.com"],
+      });
+      await legacyClient.execute(
+        "CREATE TABLE channels (id TEXT PRIMARY KEY, title TEXT NOT NULL)"
+      );
+      await legacyClient.execute({
+        sql: "INSERT INTO channels (id, title) VALUES (?, ?)",
+        args: ["chan-1", "Legacy Channel"],
+      });
+    } finally {
+      legacyClient.close();
+    }
+
+    // Destination starts truly empty (no baseline schema yet) -- copyLegacyDatabaseInto must
+    // recreate each table from the legacy file's own CREATE TABLE statement, not assume the
+    // current baseline schema already exists.
+    await copyLegacyDatabaseInto(destClient, legacyDbPath);
+
+    const users = await destClient.execute("SELECT id, email FROM users");
+    assert.deepEqual(users.rows, [{ id: "legacy-user", email: "legacy@example.com" }]);
+    const channels = await destClient.execute("SELECT id, title FROM channels");
+    assert.deepEqual(channels.rows, [{ id: "chan-1", title: "Legacy Channel" }]);
+
+    // The legacy file itself must be untouched -- copyLegacyDatabaseInto never writes to it.
+    const legacyRecheck = createClient({ url: `file:${legacyDbPath}` });
+    const legacyUsersAfter = await legacyRecheck.execute("SELECT id, email FROM users");
+    assert.deepEqual(legacyUsersAfter.rows, [{ id: "legacy-user", email: "legacy@example.com" }]);
+    legacyRecheck.close();
+  }));

@@ -4,6 +4,10 @@
 
 This guide gets you from a fresh machine to a working TubeMaster setup for **Web UI + CLI + MCP** channel operations.
 
+Running the app on more than one machine (e.g. alternating between Windows and macOS) via
+Syncthing? See `docs/RELEASE_LAYOUT.md` for the platform-aware app-data location, first-run
+setup, and the device-switching (export/import handoff) procedure.
+
 ## 1) Google Cloud Console setup
 
 TubeMaster uses Google OAuth + YouTube Data API v3. You must configure both.
