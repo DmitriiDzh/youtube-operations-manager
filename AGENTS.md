@@ -163,7 +163,7 @@ Established 2026-09-19 ("Git Branching and Release Policy"). This section is aut
 | Create a `feature/*` branch for an approved task | Authorized by default |
 | Commit locally on a `feature/*` branch | Authorized by default |
 | Merge a completed, verified feature into local `dev` (`--no-ff`) | Authorized by default |
-| `git push` of `dev` | Only when the specific task's instructions permit it, or the project owner explicitly approves that push |
+| `git push` of `dev` | Authorized by default — standing project-owner approval granted 2026-09-19 (see note below) |
 | Merge `dev` into `main` | Separate, explicit project-owner approval required every time |
 | `git push` of `main` | Separate, explicit project-owner approval required every time |
 | Create a git tag / GitHub release / publish a distributable build | Separate, explicit project-owner approval required every time |
@@ -171,7 +171,7 @@ Established 2026-09-19 ("Git Branching and Release Policy"). This section is aut
 | Force push, destructive `reset`/`clean`, or any history rewrite of a shared branch | Never without explicit, action-specific authorization |
 | Real (non-dry-run) YouTube write; real paid AI API call; production deployment | Never inferred from any Git permission above — these each have their own, separate authorization requirement (§K.4, `docs/PROJECT_SPEC.md`) |
 
-A prior approval never carries forward to a new, unrelated action of the same kind (unchanged from prior policy). A more restrictive instruction given for an individual task always takes precedence over this general policy.
+A prior approval never carries forward to a new, unrelated action of the same kind (unchanged from prior policy), **except** `git push` of `dev`, which the project owner has explicitly pre-authorized as a standing, durable approval (2026-09-19) — the general "never carries forward" rule still governs every other action in this matrix, including `main`, tags, and releases, none of which are affected by this one standing exception. A more restrictive instruction given for an individual task always takes precedence over this general policy.
 
 ### K.3 Verification discipline
 
