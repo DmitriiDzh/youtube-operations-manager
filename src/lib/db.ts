@@ -361,6 +361,34 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 3,
+    description:
+      "snapshot_lineage, handoff_log, recovery_acknowledgements -- device-local snapshot/handoff bookkeeping",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS snapshot_lineage (" +
+          "id TEXT PRIMARY KEY, " +
+          "last_snapshot_id TEXT, " +
+          "last_generation INTEGER NOT NULL DEFAULT 0)"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS handoff_log (" +
+          "id TEXT PRIMARY KEY, " +
+          "direction TEXT NOT NULL, " +
+          "snapshot_id TEXT NOT NULL, " +
+          "recorded_at TEXT NOT NULL, " +
+          "detail_json TEXT NOT NULL)"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS recovery_acknowledgements (" +
+          "id TEXT PRIMARY KEY, " +
+          "acknowledged_at TEXT NOT NULL, " +
+          "affected_batches_json TEXT NOT NULL, " +
+          "note TEXT)"
+      );
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
