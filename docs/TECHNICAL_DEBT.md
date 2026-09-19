@@ -497,6 +497,82 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 
 ---
 
+## RISK-28 — Resuming a RUNNING batch skips the write-channel identity guardrail — OPEN, 2026-09-19
+
+- **Affected components:** `src/lib/batches/services.ts` (`executeBatch`; `prepareBatchExecution`, which calls `deps.writeContext.assertWriteChannel`).
+- **Current behavior:** `executeBatch` only calls `prepareBatchExecution` — the only call site of `assertWriteChannel` in this path — when `initialBatch.status === "PENDING"`. Resuming a batch already `RUNNING` (after a crash/restart, or a new process picking it up later) skips straight to `authResolver.resolve` and `processRow`, none of which re-check channel identity.
+- **Actual risk:** If the local OAuth session is reauthenticated to a different YouTube channel while a batch sits `RUNNING`/pending-resume, writes on resume proceed against the wrong channel instead of failing closed — a direct violation of `AGENTS.md` §G's channel-identity requirement. **Not currently exploitable**: RISK-09's live-write barrier means no real write can happen through any path yet.
+- **Required remediation:** Re-run (or otherwise re-check) `assertWriteChannel` on every resume, not only on initial `PENDING → RUNNING` transition.
+- **Acceptance criteria:** A test resuming a `RUNNING` batch under a *different* active auth channel than the batch's `expectedChannelId`, asserting it fails closed.
+- **Gate(s):** `BLOCKS_PHASE_5_WRITES` (before Gate B), `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the fix — the single most safety-relevant of this round's findings, given it is exactly the write-safety property `AGENTS.md` §G names first.
+- **Status:** OPEN — found by a second independent review pass, not yet independently re-verified beyond the cited file/line; not currently exploitable given RISK-09's barrier.
+
+## RISK-29 — Cross-device snapshot merge is positional, not column-name-aware, for tables with an `ALTER TABLE`-added column — OPEN, 2026-09-19
+
+- **Affected components:** `src/lib/snapshot/services.ts` (`applySnapshotToDatabase`'s `DELETE FROM "t"; INSERT INTO "t" SELECT * FROM staged."t"` for `SNAPSHOT_REPLACE_ON_IMPORT_TABLES`); `src/lib/db.ts` (`batch_ledger_rows`' baseline `CREATE TABLE` declares `active_attempt_id` before `created_at`/`updated_at`, but a pre-existing DB got the same column via a later `ALTER TABLE ... ADD COLUMN`, which SQLite always appends at the physical end of the row).
+- **Current behavior:** The merge is purely positional (`SELECT *`), not by column name.
+- **Actual risk:** Two devices whose `batch_ledger_rows` table has a genuinely different physical column order (one built fresh from the current baseline, one upgraded via the `ALTER TABLE` path) exchanging a device-handoff or `published/` release snapshot get their columns positionally swapped on import — e.g. a value meant for `created_at` landing in `active_attempt_id` — silently corrupting the exact ledger table the crash-recovery safety mechanism (`scanForUnresolvedExecutionState`/`RecoveryModeError`) depends on.
+- **Required remediation:** Merge by explicit column name list (`INSERT INTO "t" (col1, col2, ...) SELECT col1, col2, ... FROM staged."t"`), not `SELECT *`, for every table in `SNAPSHOT_REPLACE_ON_IMPORT_TABLES`.
+- **Acceptance criteria:** A test simulating two DBs with the same table but different physical column orders (one via `ALTER TABLE`), asserting the merge preserves values by name.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the fix.
+- **Status:** OPEN — found by a second independent review pass, not yet independently re-verified beyond the cited file/line, not yet fixed.
+
+## RISK-30 — AI Localization's `generate` route is exempt from the device-availability/recovery-mode gate but can trigger a real, billable outbound AI call — OPEN, 2026-09-19
+
+- **Affected components:** `src/proxy.ts` (`EXEMPT_READ_ONLY_PATH_SUFFIXES` includes `/ai-localization/generate`, on the stated rationale of "no local persistence writes, never calls YouTube"); `src/lib/ai-localization/services.ts` (`generateProposals` → `resolveConnectionProvider` → `openai_compatible` adapter's real outbound `POST`).
+- **Current behavior:** `assertDeviceAvailableForMutation` (the operation-lock + recovery-mode check) is invoked only from `proxy.ts`, `mcp/server.ts`, and `cli/video-metadata.ts` — never from `resolveConnectionProvider`/`generateProposals` itself.
+- **Actual risk:** The route's own exemption rationale ("never calls YouTube") is accurate but incomplete — it can still call a real external AI provider. During a device-handoff export/import (lock held) or post-crash recovery-mode window, a client can still trigger real external AI provider calls through this exempted endpoint, defeating the gate's intended "freeze external interactions" guarantee, and doing so during exactly the window when the local DB state is least trustworthy to record the result against.
+- **Required remediation:** Either narrow the exemption to only the mock provider (no `connectionId`), or apply the device-availability gate to this route specifically when a real connection is used.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the fix.
+- **Status:** OPEN — found by a second independent review pass, not yet independently re-verified beyond the cited file/line, not yet fixed.
+
+## RISK-31 — `transitionLedgerRowStatus`'s discarded boolean result can let a batch's reported outcome silently drift from the ledger's actual persisted status — OPEN, 2026-09-19
+
+- **Affected components:** `src/lib/batches/services.ts` (two call sites at the backup-health-check abort path and the systemic-halt branch of `processRow`, both calling the raw `batchStore.transitionLedgerRowStatus` directly instead of the service-layer `transitionLedgerStatus` wrapper used elsewhere, which checks the boolean and throws on failure).
+- **Current behavior:** The raw store method's guarded `UPDATE` (matching on expected `from` status) can be a no-op if another concurrent worker already changed that row's status first — plausible given this file's own concurrency-limited worker pool (`batch.concurrency`, up to 5). Both call sites discard the returned boolean.
+- **Actual risk:** The row's persisted status is left unchanged by the no-op, but the caller still records an `ABORTED_SYSTEMIC` outcome in the returned execution summary — the report drifts out of sync with what the ledger itself says, undermining the durable-audit-trail guarantee RISK-09's design relies on.
+- **Required remediation:** Use the checked `transitionLedgerStatus` wrapper at both sites, or otherwise handle a `false` result explicitly.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the fix.
+- **Status:** OPEN — found by a second independent review pass, not yet independently re-verified beyond the cited file/line, not yet fixed.
+
+## RISK-32 — `proxy.ts`/CLI/MCP each independently classify "mutating" operations, with no shared registry, and have already diverged twice — OPEN, 2026-09-19
+
+- **Affected components:** `src/proxy.ts` (HTTP method + path prefix/suffix sets), `src/cli/video-metadata.ts` (command-name sets), `src/mcp/server.ts` (manually wrapping ~11 named handler properties one at a time) — each maintaining its own independent list of what must be gated by `assertDeviceAvailableForMutation`.
+- **Current behavior:** In-code comments in two of the three files already document that this exact divergence has caused real bugs, found and fixed twice by independent review.
+- **Actual risk:** A future new mutating MCP tool, CLI command, or API route added to only one interface (e.g. an MCP handler left out of the manual wrap list) silently bypasses the device-availability/recovery-mode gate on that interface while the other two correctly enforce it — the same class of bug already found twice, still structurally possible a third time.
+- **Required remediation:** A single shared registry/manifest of mutating operations that all three interfaces consult, rather than three independently-maintained classification lists.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the refactor (touches all three interface layers, `AGENTS.md` §D "one guardrail" pattern).
+- **Status:** OPEN — found by a second independent review pass; the underlying divergence risk (not any specific instance of it) is new to this log, though its recurrence was already known well enough to be commented on in-code.
+
+## RISK-33 — Minor latent/consistency gaps found alongside the above — OPEN, 2026-09-19
+
+Bundled as one entry — each individually low severity, none currently exploitable, none warranting its own full entry:
+
+- `src/lib/snapshot/services.ts`: the `ai_connections` table's snapshot merge and SQLite's `PRAGMA foreign_keys` are never actually enabled anywhere in this codebase, so a dormant FK-enforcement gap would only matter if foreign keys are ever turned on.
+- `src/lib/device-handoff/services.ts` (~lines 48, 191): raw SQL inserts bypass the shared `src/lib/audit/services.ts` event-log abstraction used elsewhere, so device-handoff's own audit trail is written through a different path than the rest of the application's.
+- `src/lib/db.ts` (~line 676): the bare `try/catch` around `ALTER TABLE batch_ledger_rows ADD COLUMN active_attempt_id` swallows all errors unconditionally, not narrowed to "column already exists" — the same failing-open pattern as RISK-19, in a different function.
+
+- **Gate(s):** none blocking (latent/consistency only).
+- **Approval required from:** none required to leave open; project owner if any is scheduled.
+- **Status:** OPEN — found by a second independent review pass, not yet independently re-verified beyond the cited file/lines, not yet fixed.
+
+## RISK-34 — The two "recovery-gate" test suites never actually test recovery mode — OPEN, 2026-09-19
+
+- **Affected components:** `src/cli/video-metadata.recovery-gate.test.ts`, `src/mcp/server.recovery-gate.test.ts`.
+- **Current behavior:** `assertDeviceAvailableForMutation` checks the operation lock first and only falls through to `assertNotInRecoveryMode` when no lock is held. Both test files, despite their name, exclusively acquire/release the lock and assert on `operation_lock_held` — zero references to `RecoveryModeError` or an unresolved `APPLYING`/`UNKNOWN` ledger row in either file.
+- **Actual risk:** A regression that broke recovery-mode enforcement specifically at the CLI/MCP choke points (an early return, a swallowed exception, a wrong import) would pass both suites while the actual production safety property (`AGENTS.md` §G: a device in recovery mode must refuse mutations) silently fails at these two interfaces — false confidence from a misleadingly-named test file.
+- **Required remediation:** Add an actual recovery-mode scenario (an unresolved `APPLYING`/`UNKNOWN` ledger row, no lock held) to both suites, asserting `RecoveryModeError` at the CLI/MCP choke points specifically.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the test addition.
+- **Status:** OPEN — found by a second independent review pass, not yet independently re-verified beyond the cited file/lines, not yet fixed.
+
+---
+
 ## Summary table
 
 | ID | Title | Gates | Status |
@@ -528,5 +604,12 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 | RISK-25 | Legacy DB migration is one-shot/unretryable, can silently orphan data | BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-26 | `WRITABLE_SNIPPET_FIELDS` completeness vs. live API unverified | BLOCKS_PHASE_5_WRITES | OPEN, not currently exploitable |
 | RISK-27 | `importHandoff` never cleans up pre-import backup on failure | none blocking (disk hygiene) | OPEN |
+| RISK-28 | Resuming a RUNNING batch skips the write-channel identity guardrail | BLOCKS_PHASE_5_WRITES, BLOCKS_OPERATIONS_RELEASE | OPEN, not currently exploitable |
+| RISK-29 | Cross-device snapshot merge is positional, breaks on ALTER-added columns | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-30 | AI Localization `generate` bypasses device-availability gate for real AI calls | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-31 | Discarded `transitionLedgerRowStatus` result can drift ledger vs. reported outcome | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-32 | proxy/CLI/MCP independently classify mutating ops, no shared registry | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-33 | Minor latent/consistency gaps (dormant FK, audit-path bypass, bare catch) | none blocking | OPEN |
+| RISK-34 | "recovery-gate" test suites never actually test recovery mode | BLOCKS_OPERATIONS_RELEASE | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
