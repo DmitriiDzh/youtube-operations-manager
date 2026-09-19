@@ -394,6 +394,109 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 
 ---
 
+## RISK-18 — Device-handoff import: unvalidated `snapshotId` path traversal — CONFIRMED, 2026-09-19
+
+- **Affected components:** `src/app/api/device-handoff/import/route.ts` (`POST`, line ~43: `path.join(snapshotsDir, snapshotId)`).
+- **Current behavior:** The route only checks that the client-supplied `snapshotId` is a non-empty string, then joins it directly into a filesystem path with no traversal/format validation. Every real snapshot id is an internally-generated `randomUUID()` (`src/lib/snapshot/services.ts`) — nothing in the chain (`resolveSnapshotsDir`, `verifySnapshotForImport`, `importHandoff`) checks the incoming id's shape.
+- **Actual risk:** An authenticated session (this route requires `getServerSession`) supplying `snapshotId: "../../../../some/other/dir"` resolves outside the intended snapshots directory. If a `manifest.json`+`data.db` pair happens to exist there and passes checksum/lineage checks, `applySnapshotToDatabase` merges that arbitrary directory's data into the live production database. Confirmed directly by reading the route in this session (not only by the reporting review) — this is a real path-traversal defect (CWE-22), not a hypothetical.
+- **Required remediation:** Validate `snapshotId` against the exact shape `randomUUID()` produces (or otherwise resolve it only against a known-good enumeration from `resolveSnapshotsDir`'s own listing) before it ever reaches `path.join`.
+- **Acceptance criteria:** A test asserting a `snapshotId` containing `../`, an absolute path, or any non-UUID shape is rejected before any filesystem access.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`, `BLOCKS_NETWORK_DEPLOYMENT`.
+- **Approval required from:** project owner, to schedule the fix as its own task (out of scope for the task that discovered it).
+- **Status:** OPEN — newly discovered by independent review, confirmed in-session; not yet fixed.
+
+## RISK-19 — `readSchemaVersion` fails open on any read error, not only "table missing" — OPEN, 2026-09-19
+
+- **Affected components:** `src/lib/schema-versioning/services.ts` (`readSchemaVersion`, `assertSupportedSchemaVersion`).
+- **Current behavior:** `readSchemaVersion`'s `catch` returns `null` unconditionally, on any error from the `schema_meta` read — not narrowed to "table doesn't exist" the way sibling modules in the same feature (operation-lock's `isMissingTableError`, snapshot's lineage-store) explicitly do, after an earlier bare-catch pattern was found and fixed there specifically for failing open.
+- **Actual risk:** A transient error (`SQLITE_BUSY`, disk I/O error, a corrupt row) is treated identically to a legitimate legacy/unversioned database, letting `assertSupportedSchemaVersion` — which exists specifically to reject a DB stamped with a newer, unsupported schema version — pass through and let migrations proceed against a DB that may actually be at an unsupported version.
+- **Required remediation:** Narrow the catch to the same missing-table check already used by `isMissingTableError` elsewhere in this feature; rethrow anything else.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the fix.
+- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, not yet fixed.
+
+## RISK-20 — Boot-time schema migration never acquires the operation lock — OPEN, 2026-09-19
+
+- **Affected components:** `src/lib/operation-lock/contracts.ts` (`OperationType` includes `"migration"`); `src/lib/db.ts` (`initializeDatabase`/`initializeDatabaseSchema`/`runSchemaMigrations`).
+- **Current behavior:** The operation lock's own doc comment describes covering "export/import/migration," and export/import correctly call `withOperationLock`. Boot-time schema migration never references the operation-lock module at all (confirmed by grep).
+- **Actual risk:** A CLI process and the web app (or two app instances) starting concurrently against the same on-disk DB file, or a device-handoff export/import racing against an app instance still running its boot-time migration, has no lock-based serialization protecting that window.
+- **Required remediation:** Acquire the operation lock (type `"migration"`) around `runSchemaMigrations`, consistent with export/import's existing pattern.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the fix.
+- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, not yet fixed.
+
+## RISK-21 — Operation-lock acquisition misattributes lock ownership when the lock table is missing — OPEN, 2026-09-19
+
+- **Affected components:** `src/lib/operation-lock/services.ts` (`acquireOperationLock`).
+- **Current behavior:** When the lock `INSERT` fails, the catch path calls `getOperationLock`; if that (correctly) returns `null` because the `app_operation_locks` table doesn't exist yet (unmigrated schema, guarded by its own `isMissingTableError`), the code concludes "row disappeared between the failed INSERT and this read" and throws an `OperationLockError` whose `heldBy` is fabricated from the *calling* process's own not-yet-inserted lock object — misreporting the current process as the lock holder.
+- **Actual risk:** A genuine "table missing / not migrated" condition is masked as ordinary lock contention, making it much harder to diagnose from the CLI/MCP/API error surface. Reported as independently flagged by two separate finder passes within the same review.
+- **Required remediation:** Distinguish "table missing" from "row genuinely disappeared" before constructing the error, and surface the former as its own diagnostic.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the fix.
+- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, not yet fixed.
+
+## RISK-22 — `writeJsonFileAtomic` has no Windows EBUSY/EPERM retry, unlike the sibling snapshot-publish path — OPEN, 2026-09-19
+
+- **Affected components:** `src/lib/atomic-json-file/services.ts` (`writeJsonFileAtomic`); consumers `src/lib/cli-auth/storage.ts` (auth-context.json) and bootstrap-config's save path.
+- **Current behavior:** This module's own doc comment cites the Windows EBUSY/EPERM retry-with-backoff fix already applied in `src/lib/snapshot/adapters/filesystem.ts`'s `publishSnapshot` as the pattern it consolidates, but `writeJsonFileAtomic`'s own `rename(tmpPath, targetPath)` has no such retry.
+- **Actual risk:** On Windows — the primary platform for the just-shipped first local test build (`docs/FIRST_LOCAL_TEST_BUILD.md`) — a transiently-held file handle (antivirus, indexer, a just-closed handle) can make a bare `rename()` fail even with nothing genuinely holding a competing lock, throwing unhandled on every login (`auth-context.json`) or bootstrap-config save.
+- **Required remediation:** Apply the same retry-with-backoff already used by `filesystem.ts`'s `publishSnapshot`, in the one shared `writeJsonFileAtomic` implementation rather than a second copy.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE` — directly relevant to Windows reliability given the current Windows-first test build priority.
+- **Approval required from:** project owner, to schedule the fix.
+- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, not yet fixed.
+
+## RISK-23 — `createActiveAuthStorage`'s single string parameter silently changed meaning (breaking change with no type signal) — OPEN, 2026-09-19
+
+- **Affected components:** `src/lib/cli-auth/storage.ts` (`createActiveAuthStorage`).
+- **Current behavior:** On `main`, the parameter is a base directory (`createActiveAuthStorage(baseDir = process.cwd())`, internally joined with `data/auth-context.json`). On this branch, the same parameter position now means "the full context file path" (`createActiveAuthStorage(contextPath = getProductionAppPaths().authContextPath)`), with no type-level signal that the meaning changed.
+- **Actual risk:** A caller written against the old convention that still passes a directory would get a file written literally named after that directory, and reads would silently return `null`, making "no active user" indistinguishable from "context file genuinely absent." Currently only two in-repo call sites exist and both use the default, so this is latent rather than actively triggered.
+- **Required remediation:** Rename the parameter/add a type distinguishing "directory" from "full path," or provide a migration note for any external caller.
+- **Gate(s):** none blocking yet (latent).
+- **Approval required from:** none required to leave open; project owner if a rename is scheduled.
+- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, latent (no known active trigger).
+
+## RISK-24 — App-data directory no longer locked to `0700` on every boot for Web-UI-only installs — OPEN, 2026-09-19
+
+- **Affected components:** `src/lib/db.ts` (unconditional `mkdirSync(appPaths.appDataDir, { recursive: true })` at module load).
+- **Current behavior:** On `main`, `ensureDataDir` (`cli-auth/storage.ts`) did `mkdir` + `chmod(dataDir, 0o700)` on the directory holding the DB file. On this branch, that `chmod` only happens as a side effect of `writeJsonFileAtomic` (used for `auth-context.json`/`bootstrap-config.json`), reached only via CLI-auth flows — confirmed via grep that no file under `src/app/` (the Web/NextAuth login path) references cli-auth at all.
+- **Actual risk:** `db.ts`'s unguarded `mkdirSync` now runs first on every boot, including pure-Web-UI-only installs. RISK-07's accepted plaintext-OAuth-token-storage tradeoff assumed directory-level (`0700`) protection; a Web-UI-only operator's app-data directory (holding that same plaintext-token DB) never gets locked down for the life of the installation.
+- **Required remediation:** Apply the same `chmod(appDataDir, 0o700)` unconditionally in `db.ts`'s own directory-creation path, not only as an incidental side effect of an unrelated CLI-only write helper.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`, `BLOCKS_NETWORK_DEPLOYMENT` — directly weakens RISK-07's stated mitigation.
+- **Approval required from:** project owner, to schedule the fix.
+- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, not yet fixed.
+
+## RISK-25 — Legacy database migration is one-shot and unretryable; a mid-copy failure permanently and silently orphans the operator's original data — OPEN, 2026-09-19
+
+- **Affected components:** `src/lib/db.ts` (`migrateLegacyDatabaseIfNeeded`, `dbAlreadyExistedAtModuleLoad`).
+- **Current behavior:** `dbAlreadyExistedAtModuleLoad` is computed once, before `createClient()` — which itself creates a stub file at the new app-data path as a side effect. If `copyLegacyDatabaseInto` throws mid-copy (legacy file locked by a still-running old process, a corrupt page, an exotic-filesystem `ATTACH` failure), that boot fails loudly, but the stub file at the new path already exists.
+- **Actual risk:** On the *next* boot, `dbAlreadyExistedAtModuleLoad` is true, so the migration returns `{ migrated: false }` immediately and silently — the app boots normally with an empty/partial DB, and the operator's original data is permanently orphaned in the legacy file with no further error or hint. This directly contradicts `AGENTS.md` §F/§3's "never silently initialize an empty database in place of an existing database."
+- **Required remediation:** Detect a stub/partial DB at the new path left behind by a failed migration (vs. a genuinely-already-migrated one) and retry, or at minimum surface a persistent, unmissable warning rather than booting silently.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`.
+- **Approval required from:** project owner, to schedule the fix — this is high severity given it can cause perceived data loss for a real operator upgrading from a pre-cross-platform-persistence install.
+- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, not yet fixed.
+
+## RISK-26 — `WRITABLE_SNIPPET_FIELDS` whitelist completeness against the live YouTube API is unverified — OPEN, 2026-09-19
+
+- **Affected components:** `src/lib/youtube.ts` (`WRITABLE_SNIPPET_FIELDS`, `removeReadOnlySnippetFields` — see RISK-11, which this risk is the inverse of).
+- **Current behavior:** RISK-11 closed by moving from a blacklist (delete only `.localized`) to an explicit whitelist of 6 fields. This is safe only if that list is a complete, currently-accurate enumeration of every snippet field YouTube's `videos.update` actually treats as writable — the new test suite only asserts the 6 listed fields survive, not that the list is exhaustive against the live API.
+- **Actual risk:** Per this file's own documented semantics, a `videos.update` PUT overwrites all mutable snippet properties — omitting a writable field deletes it, it does not preserve it. Any snippet field YouTube currently allows writing that is missing from the whitelist would be silently cleared on every real `videos.update` call — exactly the kind of silent metadata loss `AGENTS.md` §G's write-safety rules exist to prevent. **Not currently reachable**: RISK-09's live-write barrier means no real `videos.update` call can happen yet.
+- **Required remediation:** Cross-check `WRITABLE_SNIPPET_FIELDS` against `developers.google.com/youtube/v3/docs/videos`'s current per-property mutability table before Gate B (live writes) is ever passed; add this as an explicit Gate B pre-check.
+- **Gate(s):** `BLOCKS_PHASE_5_WRITES` (specifically before Gate B, not before continued mocked development).
+- **Approval required from:** project owner, as part of the Gate B live-validation planning.
+- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line; not currently exploitable given RISK-09's barrier.
+
+## RISK-27 — `importHandoff`'s pre-import backup file is never cleaned up on a failed import — OPEN, 2026-09-19
+
+- **Affected components:** `src/lib/device-handoff/services.ts` (`importHandoff`, its `finally` block).
+- **Current behavior:** The pre-import backup of the live DB (`copyDatabaseConsistently`) is taken before `migrateStagedCopy` verifies the staged copy's schema version. The `finally` block only removes `workingCopyPath` and its WAL/SHM sidecars — never the just-created backup file.
+- **Actual risk:** Importing a snapshot from a newer, incompatible build throws `SchemaVersionError` after the backup is already written to `migrationBackupsDir`. Every retry of an incompatible import leaks one full extra DB-copy file with no bound — a disk-usage/cleanup gap, not a data-loss risk (the backup itself is harmless, just never removed).
+- **Required remediation:** Remove the pre-import backup in the `finally` block too when the import did not proceed past the point that would need it, or document that these backups require periodic manual cleanup.
+- **Gate(s):** none blocking (disk hygiene only).
+- **Approval required from:** none required to leave open; project owner if a fix is scheduled.
+- **Status:** OPEN — newly discovered by independent review, not yet independently re-verified beyond the cited file/line, not yet fixed.
+
+---
+
 ## Summary table
 
 | ID | Title | Gates | Status |
@@ -415,5 +518,15 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 | RISK-15 | AI Connections encryption key has no rotation/backup procedure | DEFERRED | OPEN |
 | RISK-16 | Restricted recovery mode has no in-app resolution path (needs RISK-04) | DEFERRED, BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-17 | Cross-platform persistence validated on Windows only, not macOS | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-18 | Device-handoff import: unvalidated `snapshotId` path traversal | BLOCKS_OPERATIONS_RELEASE, BLOCKS_NETWORK_DEPLOYMENT | OPEN, CONFIRMED |
+| RISK-19 | `readSchemaVersion` fails open on any read error | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-20 | Boot-time schema migration never acquires the operation lock | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-21 | Operation-lock misattributes ownership when the lock table is missing | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-22 | `writeJsonFileAtomic` has no Windows EBUSY/EPERM retry | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-23 | `createActiveAuthStorage` parameter meaning changed with no type signal | none blocking yet (latent) | OPEN |
+| RISK-24 | App-data directory no longer locked to 0700 for Web-UI-only installs | BLOCKS_OPERATIONS_RELEASE, BLOCKS_NETWORK_DEPLOYMENT | OPEN |
+| RISK-25 | Legacy DB migration is one-shot/unretryable, can silently orphan data | BLOCKS_OPERATIONS_RELEASE | OPEN |
+| RISK-26 | `WRITABLE_SNIPPET_FIELDS` completeness vs. live API unverified | BLOCKS_PHASE_5_WRITES | OPEN, not currently exploitable |
+| RISK-27 | `importHandoff` never cleans up pre-import backup on failure | none blocking (disk hygiene) | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

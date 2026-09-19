@@ -122,6 +122,7 @@ Keep project documentation current when architecture, features, schema, or contr
 - Communicate with the user in Russian by default.
 - Keep technical identifiers, file names, API names, code symbols, MCP tool names, protocol names, and standard framework terminology in their original (English) form — do not translate them.
 - Technical documentation (`docs/**`) may be written in English when this improves precision and readability for future coding agents; conversational replies to the user are in Russian regardless.
+- **Standing rule (established 2026-09-19):** notify the project owner over Telegram whenever a feature is integrated into `dev` (§K.1's `feature/* → dev` merge), and whenever a build is actually produced/run (e.g. a production build/runtime smoke test, or a `published/<version>/` snapshot, `docs/decisions/0003-published-release-snapshots.md`). This is a proactive notification — send it once the merge/build itself is done, not only when asked; it does not require or imply that a merge into `main`, a push, or a release was also performed (those remain separately gated, §K.2/§K.4).
 
 ## J. Git commit message language and format
 
