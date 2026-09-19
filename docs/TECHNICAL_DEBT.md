@@ -615,6 +615,19 @@ Bundled as one entry -- each confirmed, each individually low severity or purely
 - **Approval required from:** none required to leave open; project owner if any is scheduled.
 - **Status:** OPEN — found by review series cycle 1, not fixed this round (out of proportion to their severity relative to this round's other findings).
 
+## RISK-37 — Minor findings from independent review series, cycle 2 (not fixed) — OPEN, 2026-09-20
+
+Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressions cycle 1 introduced (both fixed the same day -- see the `ai-localization/generate` route's now-explicit `OperationLockError`/`RecoveryModeError` handling, and `finalizeConflict`'s now-populated `conflictingChangeIds`, folded into RISK-30's and the CONFLICT-drift fix's own history rather than given new numbers). The remaining findings, bundled here, were deliberately left unfixed:
+
+- `src/lib/db.ts`'s `readLegacyMigrationMarker` hand-rolls a "safe JSON read, null on missing/malformed" pattern that already exists independently in `bootstrap-config/services.ts` and `snapshot/adapters/filesystem.ts` (AGENTS.md §D: one implementation per pattern) -- a third copy that could drift from a future fix to either of the other two. Not consolidated this round to avoid touching more of this write-safety-adjacent file than the actual RISK-25 fix required.
+- Four `{status: "CONFLICT", conflictingChangeIds}` construction sites in `src/lib/batches/services.ts` (lines ~500, ~555, ~955, ~1365, ~873) are assembled ad hoc instead of through one shared helper -- exactly why the 4th site was able to silently omit the field in cycle 1's own fix, and structurally possible again for a future 5th site. Two of the four return a different type (`PreparedRowOutcome` vs `ExecutionResult`), so a single unifying helper isn't a trivial extraction; deliberately not attempted this round in this specific write-safety-critical file.
+- `src/lib/ai-localization/services.ts`'s `mapUnknownError` now passes through `OperationLockError`/`RecoveryModeError` (RISK-30's fix); `src/lib/video-metadata/services.ts` keeps an independently-maintained same-purpose function without this, with no comment documenting that the two need to stay in sync for this specific reason. Video-metadata's own write paths do not currently call `assertDeviceAvailable` at all, so this is not currently a live gap -- only a documentation gap that could let a future change reintroduce the exact bug cycle 2 just found.
+- `src/lib/db.ts`'s `copyLegacyDatabaseInto` runs one `DELETE FROM` per table even on a first-time (non-retry) migration, where the table was just freshly created and is guaranteed empty -- a harmless no-op statement on the common path, avoidable but not worth branching the idempotency logic to skip it.
+
+- **Gate(s):** none blocking.
+- **Approval required from:** none required to leave open; project owner if any is scheduled.
+- **Status:** OPEN — found by review series cycle 2, not fixed this round.
+
 ---
 
 ## Summary table
@@ -657,5 +670,6 @@ Bundled as one entry -- each confirmed, each individually low severity or purely
 | RISK-34 | "recovery-gate" test suites never actually test recovery mode | none (fixed) | FIXED |
 | RISK-35 | write-executor UNKNOWN-classifies a local bug the same as network ambiguity | BLOCKS_PHASE_5_WRITES | OPEN, needs design decision |
 | RISK-36 | Minor cycle-1 findings (unguarded mkdirSync, latent gaps, perf, duplication) | none blocking | OPEN |
+| RISK-37 | Minor cycle-2 findings (marker-read duplication, CONFLICT-helper consolidation, mapUnknownError divergence, wasted DELETE) | none blocking | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

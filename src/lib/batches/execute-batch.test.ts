@@ -624,6 +624,29 @@ test("AC-ISOLATION-03: the error report lists every non-successful item with det
   assert.equal(report[0].status, "FAILED");
 });
 
+// (independent review, review series cycle 2): the reconciliation-detected CONFLICT path
+// (finalizeConflict, called when the very first reconciliation read neither matches the
+// requested nor the baseline value) is a fourth CONFLICT-producing code path, missed by
+// cycle 1's fix to the other three -- it returned no conflictingChangeIds at all.
+test("AC-TIMEOUT-01 (diverged variant): a first reconciliation read that matches neither requested nor baseline is CONFLICT, with conflictingChangeIds populated", async () => {
+  const harness = createHarness({
+    freshSequenceByVideoId: {
+      v1: [
+        PRE_SEND_BASELINE, // prepareBatchExecution's preparation-time fetch
+        PRE_SEND_BASELINE, // executeBatch's mandatory immediately-before-send re-check
+        { snippet: { title: "T", description: "D", defaultLanguage: "en" }, localizations: { es: { title: "Changed In Studio", description: "" } } }, // §0.F Step 1: neither requested ("New Value") nor baseline ("")
+      ],
+    },
+  });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+  const executor = scriptedExecutor([{ outcome: "UNKNOWN", detail: "timeout" }]);
+
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor });
+
+  assert.equal(summary.results[0].status, "CONFLICT");
+  assert.deepEqual(summary.results[0].conflictingChangeIds, ["c1"]);
+});
+
 // (independent review, second cycle): executeBatch's own mandatory pre-send re-check (distinct
 // from prepareBatchExecution's preparation-time check) is one of (now) four code paths that can
 // produce a CONFLICT ExecutionResult -- this one previously omitted conflictingChangeIds from
