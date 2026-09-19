@@ -147,8 +147,20 @@ When `--dryRun` is present, TubeMaster returns the proposed metadata without cal
 
 ## 6) Where local state is stored
 
-- `data/playlist-manager.db` → local SQLite database for users, tokens, rule data, and selected channel. The filename is legacy; TubeMaster now covers broader channel operations.
-- `data/auth-context.json` → active local auth user for CLI/MCP fallback
+Since the Cross-Platform Persistence work (`docs/RELEASE_LAYOUT.md`), local state lives in a
+platform-aware app-data directory outside this repository, not in `data/`:
+
+| Platform | Location |
+|---|---|
+| Windows | `%APPDATA%\YouTubeOperationsManager\` |
+| macOS | `~/Library/Application Support/YouTubeOperationsManager/` |
+
+Inside it: `playlist-manager.db` (SQLite database — users, tokens, rules, channels, Change Sets,
+Batches, AI Connections/Localization, editorial profiles), `bootstrap-config.json` (device-local
+config), `auth-context.json` (active local auth user for CLI/MCP fallback), `backups/` and
+`snapshots/`. See `docs/RELEASE_LAYOUT.md` §2 for full detail, including the one-time,
+non-destructive migration from the legacy `<repo>/data/playlist-manager.db` location if one
+exists there.
 
 ---
 
