@@ -869,17 +869,20 @@ export function createBatchServices(deps: ServiceDependencies) {
     // (independent review, review series cycle 2): the reconciliation-detected CONFLICT path
     // is one of (now) four code paths that can produce a CONFLICT ExecutionResult -- the other
     // three all include conflictingChangeIds, and this one previously didn't. `freshRead` is
-    // whichever read (`read1`/`read2`, below) actually classified as "diverged"; when no read
-    // was ever received at all (`null`, itself classified as "diverged"), every pending change
-    // for this row is conservatively reported as conflicting, since there is no fresh value to
-    // narrow the list down from.
+    // whichever read (`read1`/`read2`, below) actually classified as "diverged" by
+    // classifyFreshStateAgainstAttempt; its own "diverged" already means "at least one change's
+    // current value differs from its baseline" -- exactly detectPreWriteConflict's own conflict
+    // condition on that same (pendingChanges, freshRead) pair -- so calling it here can only
+    // ever confirm the same changes are conflicting, never return "none" (independent review,
+    // review series cycle 3 -- simplified from an earlier version with an unreachable "none"
+    // fallback branch, which read as a live safety net for a scenario that cannot occur). When
+    // no read was ever received at all (`freshRead` is `null`, itself classified as "diverged"),
+    // every pending change for this row is conservatively reported as conflicting, since there
+    // is no fresh value to narrow the list down from -- this remains the only real fallback.
     const finalizeConflict = async (freshRead: FreshVideoContext | null): Promise<ExecutionResult> => {
-      const conflictingChangeIds = freshRead
-        ? (() => {
-            const result = detectPreWriteConflict(pendingChanges, freshRead);
-            return result.status === "conflict" ? result.conflictingChangeIds : pendingChanges.map((c) => c.id);
-          })()
-        : pendingChanges.map((c) => c.id);
+      const conflictResult = freshRead ? detectPreWriteConflict(pendingChanges, freshRead) : null;
+      const conflictingChangeIds =
+        conflictResult?.status === "conflict" ? conflictResult.conflictingChangeIds : pendingChanges.map((c) => c.id);
       await transitionLedgerStatus(row.id, "CONFLICT");
       await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "CONFLICT", detail: { detectedVia: "reconciliation", conflictingChangeIds } });
       await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
@@ -895,11 +898,12 @@ export function createBatchServices(deps: ServiceDependencies) {
     };
 
     const read1 = await deps.youtubeApi.fetchFreshVideoContext({ credentials, videoId: row.videoId });
-    const classification1 = read1 ? classifyFreshStateAgainstAttempt(pendingChanges, toFreshVideoContext(read1)) : "diverged";
+    const freshContext1 = read1 ? toFreshVideoContext(read1) : null;
+    const classification1 = freshContext1 ? classifyFreshStateAgainstAttempt(pendingChanges, freshContext1) : "diverged";
     await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "RECONCILIATION", detail: { step: 1, classification: classification1 } });
 
     if (classification1 === "matches_requested") return finalizeSuccess();
-    if (classification1 === "diverged") return finalizeConflict(read1 ? toFreshVideoContext(read1) : null);
+    if (classification1 === "diverged") return finalizeConflict(freshContext1);
 
     // matches_baseline -- inconclusive by itself (§0.F Step 1), proceed to Step 2.
     await deps.clock.wait(retryConfig.baseDelayMs);
