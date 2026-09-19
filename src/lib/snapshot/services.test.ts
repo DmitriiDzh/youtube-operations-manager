@@ -382,7 +382,7 @@ test("scanForUnresolvedExecutionState finds APPLYING/UNKNOWN rows but not PENDIN
       });
     }
 
-    const found = await scanForUnresolvedExecutionState(path.join(dir, "source.db"));
+    const found = await scanForUnresolvedExecutionState(client);
     const ids = found.map((r) => r.ledgerRowId).sort();
     assert.deepEqual(ids, ["row-applying", "row-unknown"]);
     client.close();

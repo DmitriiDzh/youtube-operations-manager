@@ -153,29 +153,54 @@ export async function migrateStagedCopy(stagedDbPath: string): Promise<void> {
   const client = createClient({ url: `file:${stagedDbPath}` });
   try {
     await initializeDatabaseSchema(client);
+    // initializeDatabaseSchema leaves the connection in WAL mode (its own PRAGMA). A later
+    // ATTACH of this same file from a *different* connection (applySnapshotToDatabase, still
+    // inside the live DB's transaction) was observed to fail with "database staged is locked"
+    // on Windows -- a WAL-mode file's -wal/-shm sidecars are not reliably released the instant
+    // this client closes. Switching back to a single-file journal mode forces a full
+    // checkpoint and removes those sidecars before anything else ever opens this file again.
+    await client.execute("PRAGMA journal_mode = DELETE");
   } finally {
     client.close();
   }
 }
 
-/** Read-only: batch_ledger_rows in the staged (already-migrated) copy whose execution status
- * is genuinely uncertain (decision 3 -- never mutated, never resolved, by this module). */
+export type UnresolvedExecutionRow = {
+  batchId: string;
+  ledgerRowId: string;
+  videoId: string;
+  status: string;
+};
+
+/** Read-only: batch_ledger_rows whose execution status is genuinely uncertain (decision 3 --
+ * never mutated, never resolved, by this module). Takes an already-open connection so callers
+ * checking the *live* database (the device-handoff recovery-mode gate, src/proxy.ts, CLI/MCP
+ * choke points) don't open a redundant extra connection to it; a staged/standalone copy is
+ * checked by passing a client opened against that file instead. */
 export async function scanForUnresolvedExecutionState(
-  stagedDbPath: string
-): Promise<Array<{ batchId: string; ledgerRowId: string; videoId: string; status: string }>> {
-  const client = createClient({ url: `file:${stagedDbPath}` });
+  client: SqlExecutor
+): Promise<UnresolvedExecutionRow[]> {
+  const placeholders = UNRESOLVED_EXECUTION_STATUSES.map(() => "?").join(", ");
+  const result = (await client.execute({
+    sql: `SELECT id, batch_id, video_id, status FROM batch_ledger_rows WHERE status IN (${placeholders})`,
+    args: [...UNRESOLVED_EXECUTION_STATUSES],
+  })) as { rows: Array<Record<string, unknown>> };
+  return result.rows.map((row) => ({
+    batchId: String(row.batch_id),
+    ledgerRowId: String(row.id),
+    videoId: String(row.video_id),
+    status: String(row.status),
+  }));
+}
+
+/** Convenience wrapper for a standalone database file (staged copies) -- opens and closes its
+ * own connection around scanForUnresolvedExecutionState. */
+export async function scanFileForUnresolvedExecutionState(
+  dbPath: string
+): Promise<UnresolvedExecutionRow[]> {
+  const client = createClient({ url: `file:${dbPath}` });
   try {
-    const placeholders = UNRESOLVED_EXECUTION_STATUSES.map(() => "?").join(", ");
-    const result = await client.execute({
-      sql: `SELECT id, batch_id, video_id, status FROM batch_ledger_rows WHERE status IN (${placeholders})`,
-      args: [...UNRESOLVED_EXECUTION_STATUSES],
-    });
-    return result.rows.map((row) => ({
-      batchId: String(row.batch_id),
-      ledgerRowId: String(row.id),
-      videoId: String(row.video_id),
-      status: String(row.status),
-    }));
+    return await scanForUnresolvedExecutionState(client);
   } finally {
     client.close();
   }
@@ -194,40 +219,54 @@ export async function applySnapshotToDatabase(
   liveClient: SqlExecutor,
   stagedDbPath: string
 ): Promise<void> {
+  // ATTACH must happen *before* any transaction is opened on this connection -- attaching a
+  // new database file after `BEGIN` was found to fail with "database staged is locked"
+  // (verified directly against this exact @libsql/client build, reproduced in isolation).
+  // Attaching first, then BEGIN/COMMIT around the writes, then DETACH after COMMIT, does not
+  // have that problem -- so this function owns its own transaction boundary; a caller must not
+  // wrap another BEGIN around a call to this function.
   await liveClient.execute({ sql: "ATTACH DATABASE ? AS staged", args: [stagedDbPath] });
   try {
-    for (const table of SNAPSHOT_REPLACE_ON_IMPORT_TABLES) {
-      await liveClient.execute(`DELETE FROM "${table}"`);
-      await liveClient.execute(`INSERT INTO "${table}" SELECT * FROM staged."${table}"`);
-    }
+    await liveClient.execute("BEGIN IMMEDIATE");
+    try {
+      for (const table of SNAPSHOT_REPLACE_ON_IMPORT_TABLES) {
+        await liveClient.execute(`DELETE FROM "${table}"`);
+        await liveClient.execute(`INSERT INTO "${table}" SELECT * FROM staged."${table}"`);
+      }
 
-    const aiConnectionColumns = [
-      "id",
-      "display_name",
-      "adapter_type",
-      "base_url",
-      "model_id",
-      "local_inference_mode",
-      "enabled",
-      "status",
-      "status_message",
-      "status_checked_at",
-      "capabilities_json",
-      "assigned_tasks_json",
-      "pricing_json",
-      "created_at",
-      "updated_at",
-    ];
-    // `INSERT ... SELECT ... ON CONFLICT DO UPDATE` is not accepted by this SQLite build
-    // (verified directly: "near DO: syntax error" for the SELECT form, while the same clause
-    // works fine for an INSERT ... VALUES). `INSERT OR REPLACE ... SELECT` is semantically
-    // equivalent to the intended upsert here because every column is always included in the
-    // SELECT (a full-row replace on a primary-key conflict, keeping the same `id`) -- it is
-    // not "replace the row with defaults", it is "replace the row with exactly these values".
-    await liveClient.execute(
-      `INSERT OR REPLACE INTO ai_connections (${aiConnectionColumns.join(", ")}) ` +
-        `SELECT ${aiConnectionColumns.join(", ")} FROM staged.ai_connections`
-    );
+      const aiConnectionColumns = [
+        "id",
+        "display_name",
+        "adapter_type",
+        "base_url",
+        "model_id",
+        "local_inference_mode",
+        "enabled",
+        "status",
+        "status_message",
+        "status_checked_at",
+        "capabilities_json",
+        "assigned_tasks_json",
+        "pricing_json",
+        "created_at",
+        "updated_at",
+      ];
+      // `INSERT ... SELECT ... ON CONFLICT DO UPDATE` is not accepted by this SQLite build
+      // (verified directly: "near DO: syntax error" for the SELECT form, while the same
+      // clause works fine for an INSERT ... VALUES). `INSERT OR REPLACE ... SELECT` is
+      // semantically equivalent to the intended upsert here because every column is always
+      // included in the SELECT (a full-row replace on a primary-key conflict, keeping the
+      // same `id`) -- it is not "replace the row with defaults", it is "replace the row with
+      // exactly these values".
+      await liveClient.execute(
+        `INSERT OR REPLACE INTO ai_connections (${aiConnectionColumns.join(", ")}) ` +
+          `SELECT ${aiConnectionColumns.join(", ")} FROM staged.ai_connections`
+      );
+      await liveClient.execute("COMMIT");
+    } catch (error) {
+      await liveClient.execute("ROLLBACK");
+      throw error;
+    }
   } finally {
     await liveClient.execute("DETACH DATABASE staged");
   }

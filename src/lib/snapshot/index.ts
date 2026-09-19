@@ -13,10 +13,12 @@ export {
   migrateStagedCopy,
   readLineageState,
   scanForUnresolvedExecutionState,
+  scanFileForUnresolvedExecutionState,
   UNRESOLVED_EXECUTION_STATUSES,
   verifySnapshotForImport,
   writeLineageState,
   type LineageState,
+  type UnresolvedExecutionRow,
 } from "./services";
 export {
   createStagingDir,
