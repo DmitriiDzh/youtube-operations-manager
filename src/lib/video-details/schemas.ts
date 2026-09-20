@@ -58,6 +58,14 @@ const videoDetailsPatchSchema = z
     }
   );
 
+export const getSnapshotInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    expectedChannelId: z.string().min(1),
+    videoId: z.string().min(1),
+  })
+  .strict();
+
 export const previewFieldsUpdateInputSchema = z
   .object({
     credentialRef: credentialRefSchema,
@@ -67,9 +75,17 @@ export const previewFieldsUpdateInputSchema = z
   })
   .strict();
 
-export const applyFieldsUpdateInputSchema = previewFieldsUpdateInputSchema;
+export const applyFieldsUpdateInputSchema = previewFieldsUpdateInputSchema.extend({
+  // Optional, but strongly recommended for any UI caller: the `etag` the operator's diff was
+  // actually shown against. If the video changed on YouTube between preview and this call, the
+  // freshly-fetched `before.etag` will differ -- reject rather than silently apply a patch the
+  // operator never actually saw a correct diff for (AGENTS.md §G's "approval" requirement means
+  // approving *this* diff, not whatever the video happens to look like now).
+  expectedEtag: z.string().min(1).optional(),
+});
 
 export type VideoDetailsPatchInput = z.infer<typeof videoDetailsPatchSchema>;
+export type GetSnapshotInput = z.infer<typeof getSnapshotInputSchema>;
 export type PreviewFieldsUpdateInput = z.infer<typeof previewFieldsUpdateInputSchema>;
 export type ApplyFieldsUpdateInput = z.infer<typeof applyFieldsUpdateInputSchema>;
 

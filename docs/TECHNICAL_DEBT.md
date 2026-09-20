@@ -651,17 +651,17 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 ---
 
-## RISK-40 — `src/lib/video-details/` is the first Web-UI-reachable path to a real, non-dry-run YouTube write, with three known, deliberately-scoped gaps — OPEN, 2026-09-20
+## RISK-40 — `src/lib/video-details/` is the first Web-UI-reachable path to a real, non-dry-run YouTube write, with two remaining, deliberately-scoped gaps — OPEN, 2026-09-20
 
-- **Affected components:** `src/lib/video-details/*`, `src/app/api/channels/[channelId]/videos/[videoId]/details/{preview,apply}/route.ts`.
+- **Affected components:** `src/lib/video-details/*`, `src/app/api/channels/[channelId]/videos/[videoId]/details/{,preview,apply}/route.ts`, `src/components/{content-manager,video-details-panel}.tsx`.
 - **Context:** Owner-authorized (Telegram, 2026-09-20) Studio-parity "Details" edit module, built to AGENTS.md §G's minimum safety model (identity check, validation, backup, diff, approval, dry-run, audit, verification) — see `docs/SYSTEM_MAP.md` §2.9d and `docs/ROADMAP_STATUS.md` for the full design record. This entry tracks what is genuinely still open, not a restatement of what's implemented.
-- **Gap 1 — no Web UI yet.** The module and its two API routes exist and are live-verified (preview only), but no dashboard screen calls them — a video cannot actually be opened/edited from the Content tab today. Deliberately scoped this way per the owner's own framing ("модуль, который мы свободно сможем использовать позже"). **Required remediation:** build the Content-tab detail/edit screen (diff view + explicit "Save to YouTube" confirmation) as its own, separately-assigned follow-up task.
+- **Gap 1 — no Web UI — CLOSED, 2026-09-20 (BL-031).** Content tab rows now expand into `video-details-panel.tsx`: basic fields visible by default, the rest behind "Show more," a "Preview changes" dry-run diff, and a "Save to YouTube" button gated on an exact-patch match against the last preview (edit anything afterward and it re-disables until re-previewed) plus an `expectedEtag` sent with `apply` so a video that changed on YouTube mid-session fails closed (`video_details_conflict`) rather than silently applying a stale diff. Live-verified in the browser (preview + the enable/disable gating around it); the owner has not yet clicked "Save to YouTube" themselves.
 - **Gap 2 — no CLI/MCP parity.** Same class of gap as RISK-04 for Change Sets/Batches — the module's service layer is interface-agnostic by construction, but no CLI namespace or MCP tool calls it yet.
 - **Gap 3 — `paidProductPlacementDetails.hasPaidProductPlacement` is not implemented.** Per live research against the official YouTube Data API v3 reference (2026-09-20), this field's write-support is genuinely ambiguous in Google's own documentation (present in the schema, absent from the explicit "settable properties" list both `videos.insert` and `videos.update` publish for every other writable field). Do not add it to `VideoDetailsPatch` without first testing empirically against a real video whether YouTube actually accepts it — assuming it works from the schema's existence alone would be exactly the kind of untested claim AGENTS.md §L warns against.
 - **Not a gap, noted for the next reader:** batch-mode ("запись батчем", per the owner's own requirement) was addressed by designing `applyFieldsUpdate` as a pure, composable per-video function (no UI-specific or Batch-ledger state) — a future caller can already invoke it once per video in a loop. What's NOT built is wiring it into `src/lib/batches/`'s own ledger/audit/recovery machinery for a multi-video "Details" batch with resume/crash-recovery guarantees equivalent to the localization Batch pipeline — that is real, additional scope, not implied by the current module.
 - **Gate(s):** none blocking Gate B/C directly (this module's own write barrier is real, not disabled — unlike the legacy Batches `WriteExecutor`, `applyFieldsUpdate` performs an actual `videos.update` when called with a valid patch; there is no server-side "always dry-run" override here). The project owner should treat "apply" as live from the moment any UI or automation calls it.
-- **Approval required from:** project owner, per-gap as listed above (UI build, CLI/MCP parity, and the `paidProductPlacementDetails` empirical test are each their own, separately assignable slice).
-- **Status:** OPEN — module is code-complete and live-verified (preview only) for its current field set; the three gaps above are the honest remainder.
+- **Approval required from:** project owner, per-gap as listed above (CLI/MCP parity and the `paidProductPlacementDetails` empirical test are each their own, separately assignable slice).
+- **Status:** OPEN — the module, its API, and its Content-tab UI are all in place and live-verified (Gap 1 closed); CLI/MCP parity and `paidProductPlacementDetails` remain the honest remainder.
 
 ---
 
@@ -708,6 +708,6 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-37 | Minor cycle-2 findings (marker-read duplication, CONFLICT-helper consolidation, mapUnknownError divergence, wasted DELETE) | none blocking | OPEN |
 | RISK-38 | Duplicated OperationLockError/RecoveryModeError -> HTTP-status mapping (5 sites) | none blocking | OPEN |
 | RISK-39 | `syncChannel`'s explicit-channelId path has no OAuth-ownership check (write side) | none blocking | OPEN |
-| RISK-40 | `video-details` module: no Web UI yet, no CLI/MCP parity, `paidProductPlacementDetails` unimplemented (API ambiguous) | none blocking | OPEN |
+| RISK-40 | `video-details` module + Content-tab UI done; no CLI/MCP parity, `paidProductPlacementDetails` unimplemented (API ambiguous) | none blocking | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
