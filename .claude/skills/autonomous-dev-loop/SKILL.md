@@ -5,11 +5,10 @@ description: Runs this project's autonomous, cyclical development loop -- finds 
 
 # Autonomous development loop
 
-Draft status: this file was written per the project owner's instruction (Telegram, 2026-09-21,
-right after authorizing `docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md`'s E1-E4b slice) but has
-**not yet been confirmed by them as ready to actually govern a real autonomous run.** Whoever reads
-this: if the owner has not explicitly said this skill is approved to run, treat it as a draft to
-review, not as standing authorization to start looping. Remove this paragraph once they confirm it.
+**Confirmed 2026-09-21 (Telegram):** the project owner reviewed this draft and approved it --
+"Подтверждаю, можешь приступать к работе используя этот скилл" -- and named Phase 6 as the
+current phase for section 2's step 0. This skill is live from this point on, scoped exactly as
+sections 1-5 state.
 
 ## 0. What this is, and the one rule that outranks the rest of this file
 
