@@ -2,11 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-type SyncedChannel = {
-  channelId: string;
-  title: string;
-};
-
 type OverviewRow = {
   videoId: string;
   title: string;
@@ -95,7 +90,6 @@ function toEditable(target: GeneratedTarget): EditableTarget {
 }
 
 export function AiLocalizationPanel() {
-  const [channels, setChannels] = useState<SyncedChannel[]>([]);
   const [channelId, setChannelId] = useState("");
   const [videos, setVideos] = useState<OverviewRow[]>([]);
   const [selectedVideoIds, setSelectedVideoIds] = useState<Set<string>>(new Set());
@@ -128,7 +122,8 @@ export function AiLocalizationPanel() {
   const fetchChannels = useCallback(async () => {
     const res = await fetch("/api/channels");
     const data = await res.json();
-    setChannels(data.channels ?? []);
+    // Only one channel is ever active (docs/decisions/0004-active-channel-read-scoping.md) --
+    // resolve it implicitly instead of keeping the full list around for a dropdown.
     if (!channelId && data.channels?.[0]) setChannelId(data.channels[0].channelId);
   }, [channelId]);
 
@@ -335,17 +330,6 @@ export function AiLocalizationPanel() {
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <select
-          value={channelId}
-          onChange={(e) => setChannelId(e.target.value)}
-          className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200"
-        >
-          {channels.map((c) => (
-            <option key={c.channelId} value={c.channelId}>
-              {c.title}
-            </option>
-          ))}
-        </select>
         <input
           value={targetLanguages}
           onChange={(e) => setTargetLanguages(e.target.value)}
