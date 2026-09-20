@@ -91,7 +91,7 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 - **Точки входа:** `core.syncChannel({ credentialRef, channelId? })`, `core.listChannels(...)` — через `createChannelSyncCore()`.
 - **Зависимости:** credential resolution (`resolveGoogleCredentials`), YouTube API layer (`getChannelForSync`), persistence (`upsertChannel`, `markChannelSynced`, `listStoredChannels`, `getStoredChannel`).
 - **Read/Write:** **только чтение** YouTube (`channels.list`); запись — только в локальную БД.
-- **Важные ограничения безопасности:** read-only scope (`YOUTUBE_READ_SCOPE`); guardrail write-context не применяется (не нужен для read-операции).
+- **Важные ограничения безопасности:** read-only scope (`YOUTUBE_READ_SCOPE`); guardrail write-context не применяется (не нужен для read-операции). **С 2026-09-20:** `listChannels`/`listSyncedVideos` фильтруют результат по активному каналу вызывающего (`src/lib/channel-access`, `docs/decisions/0004-active-channel-read-scoping.md`) — закрывает RISK-02. `syncChannel` без явного `channelId` ("sync my own channel") — единственное место, где активный канал автоматически проставляется; с явным `channelId` синк по-прежнему не проверяет принадлежность аккаунту (RISK-39, отдельный открытый пункт).
 
 ### 2.7 Video synchronization (Phase 2) — **IMPLEMENTED**
 
@@ -268,7 +268,7 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 
 - **Approval ≠ применено к YouTube.** `Change.approvalStatus === "approved"` — это только локальная запись в SQLite (`docs/ARCHITECTURE.md` §6.9). Ни один код-путь в `src/lib/changesets/` не вызывает `googleapis`.
 - **Conflict detection в Phase 4 сверяется с последним синхронизированным SQLite-снимком, а не с живым состоянием YouTube.** Свежая проверка remote-состояния непосредственно перед записью обязательна для Phase 5 (`docs/TECHNICAL_DEBT.md` RISK-03).
-- **Приложение работает по модели single-operator.** Нет per-user ownership-границы по каналам (`docs/TECHNICAL_DEBT.md` RISK-02) — это осознанное допущение для локального инструмента, а не завершённая multi-tenant модель.
+- **Приложение работает по модели single-operator.** Полноценной per-user/multi-tenant модели (ролей, разделения данных между людьми) по-прежнему нет — это осознанное допущение для локального инструмента. Но с 2026-09-20 каждое канало-зависимое чтение (Web/MCP/CLI) фильтруется по активному каналу вызывающего (`docs/decisions/0004-active-channel-read-scoping.md`), что закрывает конкретную утечку "любая сессия видит все локально известные каналы" — `docs/TECHNICAL_DEBT.md` RISK-02 теперь FIXED; RISK-39 (явный `channelId` в syncChannel без проверки владения) остаётся отдельным открытым пунктом.
 - **CLI-интерфейсов для Change Set/Batch/channel-sync не существует; MCP покрывает весь read/propose/create слой** (`changeset_list`/`changeset_get`/`localization_import_preview`/`changeset_create_from_import`/`batch_list`/`batch_get`/`channel_sync`/`channel_list`/`channel_video_list`, см. §2.13; `docs/TECHNICAL_DEBT.md` RISK-04, PARTIALLY RESOLVED) — approve/reject/execute для Change Set/Batch по-прежнему доступны только через Web UI/API (создание Change Set из XLSX через MCP уже есть).
 - **Живая browser/OAuth-проверка не выполнена независимо** (`docs/TECHNICAL_DEBT.md` RISK-05) — автоматические тесты и один сквозной прогон на реальной БД/реальном экспорте существуют, но реального клика в браузере с настоящей Google-сессией не было.
 

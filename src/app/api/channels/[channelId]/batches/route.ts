@@ -4,9 +4,11 @@ import { authOptions } from "@/lib/auth";
 import { createBatchCore } from "@/lib/batches";
 import { DomainError } from "@/lib/batches/contracts";
 import { createBatchInputSchema, parseWithSchema } from "@/lib/batches/schemas";
+import { createChannelAccessCore } from "@/lib/channel-access";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
 const core = createBatchCore();
+const channelAccess = createChannelAccessCore();
 
 // Phase 5 Web UI/API (DEC-OQ-5: Web UI/API only, no CLI/MCP write tools). This route
 // covers only "select approved changes -> create a Batch -> inspect it" (AGENTS.md §G's
@@ -26,6 +28,7 @@ export async function GET(
 
   try {
     const { channelId } = await params;
+    await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
     const batches = await core.listBatchesByChannel(channelId);
     return NextResponse.json({ batches });
   } catch (error) {
@@ -54,6 +57,7 @@ export async function POST(
 
   try {
     const { channelId } = await params;
+    await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
 
     let body: Record<string, unknown>;
     try {

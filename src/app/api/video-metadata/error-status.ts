@@ -15,6 +15,7 @@ const DOMAIN_ERROR_STATUS = {
   WRITE_CHANNEL_REQUIRED: 422,
   WRITE_CHANNEL_UNRESOLVED: 422,
   WRITE_CHANNEL_MISMATCH: 409,
+  CHANNEL_NOT_ACTIVE: 403,
   change_not_approvable: 409,
   batch_invalid_selection: 400,
   batch_not_found: 404,

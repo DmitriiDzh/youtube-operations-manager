@@ -11,6 +11,7 @@ import type { ChangeSet } from "@/lib/changesets/contracts";
 import type { BatchCore } from "@/lib/batches";
 import type { Batch } from "@/lib/batches/contracts";
 import type { ChannelSyncCore } from "@/lib/channel-sync";
+import type { ChannelAccessCore } from "@/lib/channel-access";
 import { runCliCommand, getCredentialRef } from "./video-metadata";
 
 function makeCoreStub(): Pick<
@@ -1844,6 +1845,21 @@ function makeOperationsCoreStub(): Pick<
   };
 }
 
+// Permissive by default -- these existing tests exercise pre-existing behaviors unrelated to
+// the active-channel read-scoping check itself (RISK-02, docs/decisions/0004). A dedicated
+// CHANNEL_NOT_ACTIVE test below uses a restrictive stub instead.
+function makeChannelAccessCoreStub(): Pick<
+  ChannelAccessCore,
+  "assertActiveChannel" | "getActiveChannelId" | "filterToActiveChannel" | "activateChannel"
+> {
+  return {
+    assertActiveChannel: async (args: { channelId: string }) => args.channelId,
+    getActiveChannelId: async () => "UC_1",
+    filterToActiveChannel: (items) => [...items],
+    activateChannel: async () => undefined,
+  };
+}
+
 function makeChannelSyncCoreStub(): Pick<
   ChannelSyncCore,
   "syncChannel" | "listChannels" | "listSyncedVideos"
@@ -1878,6 +1894,7 @@ test("CLI changeset list forwards channelId and returns structured JSON", async 
     core: makeCoreStub(),
     auth: makeAuthStub(),
     operationsCore,
+    channelAccessCore: makeChannelAccessCoreStub(),
     writeStdout: (line) => stdout.push(line),
   });
 
@@ -1901,6 +1918,7 @@ test("CLI changeset get forwards optional filters", async () => {
     core: makeCoreStub(),
     auth: makeAuthStub(),
     operationsCore,
+    channelAccessCore: makeChannelAccessCoreStub(),
     writeStdout: (line) => stdout.push(line),
   });
 
@@ -1945,6 +1963,7 @@ test("CLI changeset preview and changeset import read --file from disk and forwa
       core: makeCoreStub(),
       auth: makeAuthStub(),
       operationsCore,
+      channelAccessCore: makeChannelAccessCoreStub(),
       writeStdout: (line) => previewStdout.push(line),
     });
 
@@ -1959,6 +1978,7 @@ test("CLI changeset preview and changeset import read --file from disk and forwa
       core: makeCoreStub(),
       auth: makeAuthStub(),
       operationsCore,
+      channelAccessCore: makeChannelAccessCoreStub(),
       writeStdout: (line) => importStdout.push(line),
     });
 
@@ -1976,6 +1996,7 @@ test("CLI changeset import fails cleanly when --file does not exist", async () =
     core: makeCoreStub(),
     auth: makeAuthStub(),
     operationsCore: makeOperationsCoreStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
     writeStderr: (line) => stderr.push(line),
   });
 
@@ -1999,11 +2020,41 @@ test("CLI batch list and batch get use requireBatchForChannel, not a bare batchI
     core: makeCoreStub(),
     auth: makeAuthStub(),
     operationsCore,
+    channelAccessCore: makeChannelAccessCoreStub(),
     writeStdout: (line) => stdout.push(line),
   });
 
   assert.equal(exitCode, 0);
   assert.deepEqual(seenArgs, [["UC_1", "batch-1"]]);
+});
+
+// Owner's requirement (2026-09-20, docs/decisions/0004): a channelId that is not this
+// session's active channel must be rejected, for the CLI just like Web/MCP.
+test("CLI changeset list rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["changeset", "list", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    operationsCore: makeOperationsCoreStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "The requested channel is not this session's currently active channel.",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
 });
 
 test("CLI channel sync forwards resolved credentialRef and optional channelId", async () => {

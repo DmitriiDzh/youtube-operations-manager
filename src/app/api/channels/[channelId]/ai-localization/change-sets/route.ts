@@ -3,9 +3,11 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createAiLocalizationCore } from "@/lib/ai-localization";
 import { DomainError } from "@/lib/ai-localization/contracts";
+import { createChannelAccessCore } from "@/lib/channel-access";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
 const core = createAiLocalizationCore();
+const channelAccess = createChannelAccessCore();
 
 // Phase 6, Slice 1: "inspect and edit proposals" -> "create Change Set" step. Persists
 // a ChangeSet (source "ai_localization") via the EXISTING, UNMODIFIED changesets
@@ -23,6 +25,7 @@ export async function POST(
 
   try {
     const { channelId } = await params;
+    await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
 
     let body: Record<string, unknown>;
     try {

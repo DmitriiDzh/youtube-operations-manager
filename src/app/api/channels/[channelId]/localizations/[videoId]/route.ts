@@ -3,9 +3,11 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { DomainError } from "@/lib/localization/contracts";
 import { createLocalizationCore } from "@/lib/localization";
+import { createChannelAccessCore } from "@/lib/channel-access";
 import { getVideoMetadataErrorStatus } from "../../../../video-metadata/error-status";
 
 const core = createLocalizationCore();
+const channelAccess = createChannelAccessCore();
 
 export async function GET(
   _request: Request,
@@ -18,6 +20,7 @@ export async function GET(
 
   try {
     const { channelId, videoId } = await params;
+    await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
     const result = await core.getVideoLocalizationDetail({
       credentialRef: { userId: session.user.id },
       channelId,

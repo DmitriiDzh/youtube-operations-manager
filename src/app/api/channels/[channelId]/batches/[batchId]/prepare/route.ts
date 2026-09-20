@@ -3,9 +3,11 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createBatchCore } from "@/lib/batches";
 import { DomainError } from "@/lib/batches/contracts";
+import { createChannelAccessCore } from "@/lib/channel-access";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
 const core = createBatchCore();
+const channelAccess = createChannelAccessCore();
 
 /**
  * Runs the batch's dry-run preview pipeline (identity check, fresh per-video fetch,
@@ -26,6 +28,7 @@ export async function POST(
 
   try {
     const { channelId, batchId } = await params;
+    await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
     await core.requireBatchForChannel(channelId, batchId);
 
     const result = await core.prepareBatchExecution({

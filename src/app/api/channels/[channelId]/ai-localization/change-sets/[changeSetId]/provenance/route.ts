@@ -3,9 +3,11 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createAiLocalizationCore } from "@/lib/ai-localization";
 import { DomainError } from "@/lib/ai-localization/contracts";
+import { createChannelAccessCore } from "@/lib/channel-access";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
 const core = createAiLocalizationCore();
+const channelAccess = createChannelAccessCore();
 
 // Phase 6, Channel Editorial Profiles: read-only lookup of which profile version /
 // effective context produced a given Change Set's proposals -- frozen at generation
@@ -23,6 +25,7 @@ export async function GET(
 
   try {
     const { channelId, changeSetId } = await params;
+    await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
     const provenance = await core.getGenerationProvenance({ channelId, changeSetId });
     return NextResponse.json({ provenance });
   } catch (error) {

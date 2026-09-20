@@ -17,6 +17,7 @@ import { OperationLockError } from "@/lib/operation-lock";
 import { createChangeSetCore, type ChangeSetCore } from "@/lib/changesets";
 import { createBatchCore, type BatchCore } from "@/lib/batches";
 import { createChannelSyncCore, type ChannelSyncCore } from "@/lib/channel-sync";
+import { createChannelAccessCore, type ChannelAccessCore } from "@/lib/channel-access";
 
 // CLI parity for the read/propose/create MCP tools (docs/roadmap/plans/PHASE_7_PLAN.md,
 // docs/TECHNICAL_DEBT.md RISK-04) -- same core factories, same "smallest safe slice" as
@@ -345,6 +346,7 @@ export async function runCliCommand(args: {
   auth?: CliAuthAdapter;
   operationsCore?: ChangesetCliCoreSubset & BatchCliCoreSubset;
   channelSyncCore?: ChannelSyncCliCoreSubset;
+  channelAccessCore?: ChannelAccessCore;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
 }): Promise<number> {
@@ -355,6 +357,7 @@ export async function runCliCommand(args: {
   const auth = args.auth ?? createCliAuthService();
   const operationsCore = args.operationsCore ?? { ...createChangeSetCore(), ...createBatchCore() };
   const channelSyncCore = args.channelSyncCore ?? createChannelSyncCore();
+  const channelAccessCore = args.channelAccessCore ?? createChannelAccessCore();
   const writeStdout =
     args.writeStdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const writeStderr =
@@ -433,9 +436,18 @@ export async function runCliCommand(args: {
     }
 
     // changeset/batch operate on the local database only -- no YouTube credential needed,
-    // so these two namespaces are dispatched before credentialRef resolution below.
+    // so these two namespaces are dispatched before credentialRef resolution below. They
+    // still resolve the local active-user identity (never a YouTube call) purely to check
+    // it against the requested channelId -- see channelAccessCore.assertActiveChannel.
     if (parsedArgs.namespace === "changeset") {
       const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
+      const changesetCredentialRef = await auth.resolveEffectiveCredentialRef({
+        explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+      });
+      await channelAccessCore.assertActiveChannel({
+        userId: "userId" in changesetCredentialRef ? changesetCredentialRef.userId : null,
+        channelId,
+      });
 
       if (parsedArgs.command === "list") {
         const result = await operationsCore.listChangeSets({ channelId });
@@ -476,6 +488,13 @@ export async function runCliCommand(args: {
 
     if (parsedArgs.namespace === "batch") {
       const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
+      const batchCredentialRef = await auth.resolveEffectiveCredentialRef({
+        explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+      });
+      await channelAccessCore.assertActiveChannel({
+        userId: "userId" in batchCredentialRef ? batchCredentialRef.userId : null,
+        channelId,
+      });
 
       if (parsedArgs.command === "list") {
         const result = await operationsCore.listBatchesByChannel(channelId);

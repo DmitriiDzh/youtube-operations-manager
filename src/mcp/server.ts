@@ -24,6 +24,7 @@ import { createChangeSetCore, type ChangeSetCore } from "@/lib/changesets";
 import { getChangeSetInputSchema, listChangeSetsInputSchema } from "@/lib/changesets/schemas";
 import { createBatchCore, type BatchCore } from "@/lib/batches";
 import { createChannelSyncCore, type ChannelSyncCore } from "@/lib/channel-sync";
+import { createChannelAccessCore, type ChannelAccessCore } from "@/lib/channel-access";
 import {
   listChannelsInputSchema,
   listSyncedVideosInputSchema,
@@ -305,12 +306,17 @@ export function createMcpToolHandlers(
     ...createChangeSetCore(),
     ...createBatchCore(),
   },
-  channelSyncCore: ChannelSyncCoreSubset = createChannelSyncCore()
+  channelSyncCore: ChannelSyncCoreSubset = createChannelSyncCore(),
+  channelAccessCore: ChannelAccessCore = createChannelAccessCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
       explicit: explicitCredentialRef as CredentialRef | undefined,
     });
+  }
+
+  function getCredentialUserId(credentialRef: CredentialRef): string | null {
+    return "userId" in credentialRef ? credentialRef.userId : null;
   }
 
   const handlers: McpToolHandlers = {
@@ -579,6 +585,11 @@ export function createMcpToolHandlers(
       }
 
       try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
         const changeSets = await operationsCore.listChangeSets(parsedInput.data);
         return toolSuccessResult({ changeSets });
       } catch (error) {
@@ -593,6 +604,11 @@ export function createMcpToolHandlers(
       }
 
       try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
         const result = await operationsCore.getChangeSet(parsedInput.data);
         return toolSuccessResult(result as unknown as Record<string, unknown>);
       } catch (error) {
@@ -607,6 +623,11 @@ export function createMcpToolHandlers(
       }
 
       try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
         const buffer = Buffer.from(parsedInput.data.fileBase64, "base64");
         const result = await operationsCore.previewImport({
           channelId: parsedInput.data.channelId,
@@ -630,6 +651,11 @@ export function createMcpToolHandlers(
       }
 
       try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
         const buffer = Buffer.from(parsedInput.data.fileBase64, "base64");
         const result = await operationsCore.createChangeSetFromImport({
           channelId: parsedInput.data.channelId,
@@ -649,6 +675,11 @@ export function createMcpToolHandlers(
       }
 
       try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
         const batches = await operationsCore.listBatchesByChannel(parsedInput.data.channelId);
         return toolSuccessResult({ batches });
       } catch (error) {
@@ -663,6 +694,11 @@ export function createMcpToolHandlers(
       }
 
       try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
         // AGENTS.md §F: requireBatchForChannel verifies this batch actually belongs to
         // the named channel before returning anything -- same guardrail the Web UI's
         // own API route already applies for this exact read, reused rather than

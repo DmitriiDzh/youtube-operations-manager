@@ -212,6 +212,12 @@ test("changeset import and channel sync are rejected while the operation lock is
       listChannels: async () => ({ channels: [] }),
       listSyncedVideos: async () => ({ channelId: "UC_1", videos: [] }),
     };
+    const channelAccessCore = {
+      assertActiveChannel: async (args: { channelId: string }) => args.channelId,
+      getActiveChannelId: async () => "UC_1",
+      filterToActiveChannel: <T>(items: T[]) => [...items],
+      activateChannel: async () => undefined,
+    };
 
     const importStderr: string[] = [];
     const importExit = await runCliCommand({
@@ -219,6 +225,7 @@ test("changeset import and channel sync are rejected while the operation lock is
       auth: fakeAuth,
       operationsCore: operationsCore as never,
       channelSyncCore: channelSyncCore as never,
+      channelAccessCore: channelAccessCore as never,
       writeStdout: () => {},
       writeStderr: (line) => importStderr.push(line),
     });
@@ -231,6 +238,7 @@ test("changeset import and channel sync are rejected while the operation lock is
       auth: fakeAuth,
       operationsCore: operationsCore as never,
       channelSyncCore: channelSyncCore as never,
+      channelAccessCore: channelAccessCore as never,
       writeStdout: () => {},
       writeStderr: (line) => syncStderr.push(line),
     });
@@ -243,6 +251,7 @@ test("changeset import and channel sync are rejected while the operation lock is
       auth: fakeAuth,
       operationsCore: operationsCore as never,
       channelSyncCore: channelSyncCore as never,
+      channelAccessCore: channelAccessCore as never,
       writeStdout: (line) => listStdout.push(line),
       writeStderr: () => {},
     });
@@ -254,6 +263,7 @@ test("changeset import and channel sync are rejected while the operation lock is
       auth: fakeAuth,
       operationsCore: operationsCore as never,
       channelSyncCore: channelSyncCore as never,
+      channelAccessCore: channelAccessCore as never,
       writeStdout: (line) => channelListStdout.push(line),
       writeStderr: () => {},
     });
