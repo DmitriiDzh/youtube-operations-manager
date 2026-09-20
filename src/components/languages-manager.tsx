@@ -61,7 +61,7 @@ type ImportRowError = {
 type ChangeSetSummary = {
   id: string;
   status: "in_review" | "approved" | "partially_approved" | "rejected";
-  source: "xlsx_import" | "ai_localization";
+  source: "xlsx_import" | "ai_localization" | "deletion";
   importedFilename: string | null;
   totalChanges: number;
   pendingCount: number;
@@ -808,7 +808,13 @@ export function LanguagesManager() {
                     }`}
                   >
                     <span>
-                      {cs.importedFilename ?? (cs.source === "ai_localization" ? "AI Generated" : "XLSX Import")} ·{" "}
+                      {cs.importedFilename ??
+                        (cs.source === "ai_localization"
+                          ? "AI Generated"
+                          : cs.source === "deletion"
+                            ? "Deletion"
+                            : "XLSX Import")}{" "}
+                      ·{" "}
                       {cs.totalChanges} changes · {new Date(cs.createdAt).toLocaleString()}
                     </span>
                     <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-300">

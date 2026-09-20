@@ -1,5 +1,5 @@
 import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
-import type { ChangeType, ChangeValidationStatus, StoredChannelRecord, StoredVideoRecord } from "@/lib/changesets/contracts";
+import type { ChangeValidationStatus, StoredChannelRecord, StoredVideoRecord } from "@/lib/changesets/contracts";
 
 export type { DomainErrorCode, DomainErrorShape, StoredChannelRecord, StoredVideoRecord };
 export { DomainError, isDomainError };
@@ -98,7 +98,10 @@ export type GeneratedFieldOutcome = {
   field: "title" | "description";
   baselineValue: string;
   proposedValue: string;
-  changeType: ChangeType;
+  // Narrower than the full `ChangeType` union on purpose: AI localization only ever
+  // diffs a generated/edited proposal against the current remote value (never proposes
+  // deletion -- see the "never a deletion" note where this is consumed).
+  changeType: "add" | "modify" | "unchanged";
   validationStatus: ChangeValidationStatus;
   validationError: string | null;
 };

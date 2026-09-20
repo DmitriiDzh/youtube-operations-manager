@@ -63,8 +63,17 @@ export const changeSetBulkActionInputSchema = z
   })
   .strict();
 
+export const proposeLocalizationDeletionInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    videoId: z.string().min(1),
+    language: z.string().min(1),
+  })
+  .strict();
+
 export type ImportWorkbookInput = z.infer<typeof importWorkbookInputSchema>;
 export type ListChangeSetsInput = z.infer<typeof listChangeSetsInputSchema>;
 export type GetChangeSetInput = z.infer<typeof getChangeSetInputSchema>;
 export type ChangeActionInput = z.infer<typeof changeActionInputSchema>;
 export type ChangeSetBulkActionInput = z.infer<typeof changeSetBulkActionInputSchema>;
+export type ProposeLocalizationDeletionInput = z.infer<typeof proposeLocalizationDeletionInputSchema>;

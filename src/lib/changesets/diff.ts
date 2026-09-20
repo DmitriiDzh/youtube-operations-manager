@@ -2,7 +2,6 @@ import type {
   Change,
   ChangeConflictStatus,
   ChangeSetStatus,
-  ChangeType,
   StoredVideoRecord,
 } from "./contracts";
 
@@ -47,8 +46,14 @@ export function currentRemoteValueFor(
 /**
  * Classifies a proposed field value relative to the *current* synchronized remote
  * value (never the export-time baseline -- that is only used for conflict detection).
+ * Deliberately returns the narrower "add"|"modify"|"unchanged" (not the full `ChangeType`
+ * union, which also has "delete") -- deletion is a distinct, explicit user action
+ * (`proposeLocalizationDeletion`), never something a value diff classifies into.
  */
-export function classifyFieldChange(currentRemoteValue: string, proposedValue: string): ChangeType {
+export function classifyFieldChange(
+  currentRemoteValue: string,
+  proposedValue: string
+): "add" | "modify" | "unchanged" {
   if (currentRemoteValue === proposedValue) return "unchanged";
   if (currentRemoteValue.trim().length === 0) return "add";
   return "modify";

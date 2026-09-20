@@ -1313,7 +1313,7 @@ export async function getStoredVideo(channelId: string, videoId: string): Promis
 }
 
 export type ChangeField = "title" | "description";
-export type ChangeType = "add" | "modify" | "unchanged";
+export type ChangeType = "add" | "modify" | "unchanged" | "delete";
 export type ChangeValidationStatus = "valid" | "invalid";
 export type ChangeConflictStatus = "none" | "conflict";
 export type ChangeApprovalStatus = "pending" | "approved" | "rejected";

@@ -282,3 +282,83 @@ test("rejectChange then reject-all: rejecting is always allowed, including for i
   });
   assert.equal(result.change.approvalStatus, "rejected");
 });
+
+// ---------------------------------------------------------------------------
+// proposeLocalizationDeletion (docs/PROJECT_SPEC.md §16, 2026-09-20 update).
+// Acceptance fixed before implementation (advisor-reviewed scope): a deletion
+// proposal is a two-Change (title+description), source:"deletion" Change Set that
+// goes through the ordinary review/approval/conflict pipeline -- it is NOT an
+// immediate delete. The one case that must be refused even before a Change Set is
+// created is deleting the video's own defaultLanguage, since that language's
+// title/description live on snippet, not in a removable localizations entry.
+// ---------------------------------------------------------------------------
+
+test("proposeLocalizationDeletion: creates a two-Change, source:\"deletion\" Change Set from the existing localization", async () => {
+  const { services, setVideos } = createFixture();
+  setVideos([
+    makeVideo({
+      defaultLanguage: "en",
+      existingLocalizations: { es: { title: "Titulo ES", description: "Descripcion ES" } },
+    }),
+  ]);
+
+  const changeSet = await services.proposeLocalizationDeletion({ channelId: "UC_TEST", videoId: "v1", language: "es" });
+
+  assert.equal(changeSet.source, "deletion");
+  assert.equal(changeSet.totalChanges, 2);
+
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: changeSet.id });
+  const byField = new Map(detail.changes.map((c) => [c.field, c]));
+
+  assert.equal(byField.get("title")!.changeType, "delete");
+  assert.equal(byField.get("title")!.baselineValue, "Titulo ES");
+  assert.equal(byField.get("title")!.proposedValue, "");
+  assert.equal(byField.get("description")!.changeType, "delete");
+  assert.equal(byField.get("description")!.baselineValue, "Descripcion ES");
+  assert.equal(byField.get("description")!.proposedValue, "");
+});
+
+test("proposeLocalizationDeletion: refuses to delete the video's own defaultLanguage", async () => {
+  const { services, setVideos } = createFixture();
+  setVideos([makeVideo({ defaultLanguage: "en", existingLocalizations: {} })]);
+
+  await assert.rejects(
+    () => services.proposeLocalizationDeletion({ channelId: "UC_TEST", videoId: "v1", language: "en" }),
+    (error: unknown) => error instanceof DomainError && error.code === "deletion_targets_default_language"
+  );
+});
+
+test("proposeLocalizationDeletion: refuses when the video has no existing localization for the requested language", async () => {
+  const { services, setVideos } = createFixture();
+  setVideos([makeVideo({ defaultLanguage: "en", existingLocalizations: {} })]);
+
+  await assert.rejects(
+    () => services.proposeLocalizationDeletion({ channelId: "UC_TEST", videoId: "v1", language: "es" }),
+    (error: unknown) => error instanceof DomainError && error.code === "not_found"
+  );
+});
+
+test("proposeLocalizationDeletion + re-sync: a third-party edit made after proposing deletion is detected as a conflict, not silently applied", async () => {
+  const { services, setVideos } = createFixture();
+  setVideos([
+    makeVideo({
+      defaultLanguage: "en",
+      existingLocalizations: { es: { title: "Titulo ES", description: "Descripcion ES" } },
+    }),
+  ]);
+
+  const changeSet = await services.proposeLocalizationDeletion({ channelId: "UC_TEST", videoId: "v1", language: "es" });
+
+  // Someone edits the Spanish title directly in YouTube Studio, then the channel re-syncs.
+  setVideos([
+    makeVideo({
+      defaultLanguage: "en",
+      existingLocalizations: { es: { title: "Changed In Studio", description: "Descripcion ES" } },
+    }),
+  ]);
+
+  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: changeSet.id });
+  const titleChange = after.changes.find((c) => c.field === "title")!;
+  assert.equal(titleChange.conflictStatus, "conflict", "a deletion baseline that no longer matches the live remote value must be flagged, never silently applied");
+  assert.equal(after.changeSet.status, "in_review");
+});
