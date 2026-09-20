@@ -19,24 +19,6 @@ function IconBase({ className, ...props }: SVGProps<SVGSVGElement>) {
   );
 }
 
-export function ManualIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <IconBase {...props}>
-      <path d="M9 11.5V5a1.5 1.5 0 0 1 3 0v5.5M12 10.5V4a1.5 1.5 0 0 1 3 0v6.5M15 10.5V6a1.5 1.5 0 0 1 3 0v7c0 3.31-2.69 6-6 6h-1c-1.9 0-3.6-.83-4.75-2.15L4 14" />
-      <path d="M6 11.5c-1.1 0-2 .9-2 2v.5" />
-    </IconBase>
-  );
-}
-
-export function RulesIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <IconBase {...props}>
-      <path d="M4 6h16M4 12h10M4 18h6" />
-      <path d="M18 15l3 3-3 3" />
-    </IconBase>
-  );
-}
-
 // Matches real YouTube Studio's "Content" sidebar glyph (a stacked video-library icon) rather
 // than the refresh-arrows glyph this tab used under its former name "Sync" --
 // docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slice S2, "maximally close to real Studio" per the

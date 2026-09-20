@@ -2,7 +2,7 @@
 
 <- [Back to README](../README.md)
 
-Use this as the operational reference after setup: TubeMaster covers channel workflows across metadata, transcripts, playlists, rules, and automation surfaces.
+Use this as the operational reference after setup: covers channel workflows across metadata, transcripts, playlists, and automation surfaces. (The auto-playlisting "Rules" engine and the "Manual" playlist-management UI tab were removed 2026-09-20, per the project owner's decision -- see `docs/ROADMAP_STATUS.md`. The underlying playlist API routes/MCP/CLI tools listed below remain, used by MCP/CLI independent of any Web UI tab.)
 
 ## Web UI (`http://localhost:3000`)
 
@@ -14,14 +14,6 @@ Use this as the operational reference after setup: TubeMaster covers channel wor
 
 ### Dashboard tabs
 
-- **Manual**
-  - Browse your videos (`/api/youtube/videos`) or paste IDs/URLs in batch mode.
-  - Add/remove videos from playlists (`/api/youtube/add-to-playlist`, `/api/youtube/remove-from-playlist`).
-  - Create playlist from UI (`/api/youtube/create-playlist`).
-- **Rules**
-  - Create rule (field + match type + target playlist).
-  - List/delete rules.
-  - Run matching engine (`/api/run`) over recent videos.
 - **Sync** (read-only, Phase 2)
   - Trigger full-channel synchronization (`/api/channels/sync`), enumerating the uploads playlist and
     batch-fetching video metadata (up to 50 IDs per request).
@@ -249,8 +241,6 @@ An approved `Change` is never sent to YouTube by any of these routes — Phase 5
 - `POST /api/youtube/add-to-playlist`
 - `POST /api/youtube/remove-from-playlist`
 - `GET /api/youtube/channel-info`
-- `GET|POST|DELETE /api/rules`
-- `POST /api/run`
 
 -> Next: [docs/troubleshooting.md](./troubleshooting.md)
 

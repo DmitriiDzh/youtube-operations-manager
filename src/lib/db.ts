@@ -433,23 +433,6 @@ export const auditEvents = sqliteTable("audit_events", {
     .$defaultFn(() => new Date()),
 });
 
-export const rules = sqliteTable("rules", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id),
-  name: text("name").notNull(),
-  matchField: text("match_field").notNull(),
-  matchType: text("match_type").notNull(),
-  matchValue: text("match_value").notNull(),
-  playlistId: text("playlist_id").notNull(),
-  playlistTitle: text("playlist_title").notNull(),
-  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
-  createdAt: integer("created_at", { mode: "timestamp" })
-    .notNull()
-    .$defaultFn(() => new Date()),
-});
-
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -568,6 +551,15 @@ export async function initializeDatabaseSchema(
   // ever performs a read.
   const foundVersion = await assertSupportedSchemaVersion(client, SCHEMA_CURRENT_VERSION);
 
+  // The `rules` table (auto-playlisting engine, upstream TubeMaster baseline) is retired as of
+  // 2026-09-20 -- its Drizzle definition, UI, and API routes are removed, per the project
+  // owner's explicit instruction ("давай удалим их, т.к. пока не вижу им применения"). This
+  // CREATE TABLE statement is deliberately left in place rather than replaced with a DROP TABLE
+  // migration: per docs/decisions/0001-additive-idempotent-schema-strategy.md, a subtractive
+  // schema change needs its own new ADR before this project's migration strategy changes, and
+  // there is no operational need to force one for a table nothing reads or writes anymore -- an
+  // existing local database's `rules` rows (if any) are simply left untouched and orphaned, and
+  // a fresh install gets a harmless, permanently-empty table. Revisit only if that ADR is written.
   await client.executeMultiple(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -872,7 +864,6 @@ export const rawSqlClient: Client = client;
 
 const dbSchema = {
   users,
-  rules,
   channels,
   videos,
   changeSets,

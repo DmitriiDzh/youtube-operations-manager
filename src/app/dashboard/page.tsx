@@ -4,10 +4,6 @@ import { useSession, signOut, signIn } from "next-auth/react";
 import { redirect } from "next/navigation";
 import { useEffect, useState, useCallback } from "react";
 import type { ComponentType, SVGProps } from "react";
-import { RuleForm } from "@/components/rule-form";
-import { RuleList } from "@/components/rule-list";
-import { RunButton } from "@/components/run-button";
-import { ManualMode } from "@/components/manual-mode";
 import { ContentManager } from "@/components/content-manager";
 import { LanguagesManager } from "@/components/languages-manager";
 import { BatchManager } from "@/components/batch-manager";
@@ -23,8 +19,6 @@ import {
   DeviceIcon,
   HomeIcon,
   LocalizationsIcon,
-  ManualIcon,
-  RulesIcon,
   SettingsIcon,
 } from "@/components/icons";
 
@@ -35,21 +29,9 @@ export type ChannelInfo = {
   videoCount?: string;
 };
 
-type Rule = {
-  id: number;
-  name: string;
-  matchField: string;
-  matchType: string;
-  matchValue: string;
-  playlistTitle: string;
-  enabled: boolean;
-};
-
 // Tab is derived from NAV_ITEMS (not declared independently) so the two can never drift apart --
 // adding a nav entry adds the tab, and vice versa, with no separate list for the compiler to miss.
 const NAV_ITEMS = [
-  { value: "manual", label: "Manual", icon: ManualIcon },
-  { value: "rules", label: "Rules", icon: RulesIcon },
   { value: "home", label: "Home", icon: HomeIcon },
   { value: "content", label: "Content", icon: ContentIcon },
   { value: "analytics", label: "Analytics", icon: AnalyticsIcon },
@@ -67,15 +49,8 @@ type Tab = (typeof NAV_ITEMS)[number]["value"];
 
 export default function Dashboard() {
   const { data: session, status } = useSession();
-  const [rules, setRules] = useState<Rule[]>([]);
-  const [tab, setTab] = useState<Tab>("manual");
+  const [tab, setTab] = useState<Tab>("home");
   const [channel, setChannel] = useState<ChannelInfo | null>(null);
-
-  const fetchRules = useCallback(async () => {
-    const res = await fetch("/api/rules");
-    const data = await res.json();
-    setRules(data);
-  }, []);
 
   const fetchChannel = useCallback(async () => {
     const res = await fetch("/api/youtube/channel-info");
@@ -86,23 +61,10 @@ export default function Dashboard() {
   useEffect(() => {
     if (session) {
       queueMicrotask(() => {
-        void fetchRules();
         void fetchChannel();
       });
     }
-  }, [session, fetchRules, fetchChannel]);
-
-  // Unlike every other tab (rendered conditionally, so they refetch on their own mount whenever
-  // switched to), `rules` lives in this parent component and would otherwise only ever be
-  // fetched once, at session mount -- refetch on every switch into "rules" too, matching the
-  // auto-refresh behavior docs/roadmap/plans/TAB_REFRESH_AND_CHANNEL_UI_PLAN.md §2 requires.
-  useEffect(() => {
-    if (session && tab === "rules") {
-      queueMicrotask(() => {
-        void fetchRules();
-      });
-    }
-  }, [session, tab, fetchRules]);
+  }, [session, fetchChannel]);
 
   async function handleSwitchChannel() {
     // Found via operator testing feedback: signing out first (the old behavior) cleared the
@@ -126,11 +88,6 @@ export default function Dashboard() {
     redirect("/");
   }
 
-  async function handleDelete(id: number) {
-    await fetch(`/api/rules?id=${id}`, { method: "DELETE" });
-    fetchRules();
-  }
-
   return (
     <AppShell
       navItems={NAV_ITEMS}
@@ -141,34 +98,6 @@ export default function Dashboard() {
       onSwitchChannel={handleSwitchChannel}
       onSignOut={() => signOut()}
     >
-      {tab === "manual" && (
-        <div>
-          <p className="mb-4 text-sm text-zinc-400">
-            Select videos and add them to a playlist directly.
-          </p>
-          <ManualMode />
-        </div>
-      )}
-
-      {tab === "rules" && (
-        <div className="space-y-8">
-          <RuleForm onCreated={fetchRules} />
-
-          <div>
-            <h2 className="mb-4 text-lg font-semibold">Your Rules</h2>
-            <RuleList rules={rules} onDelete={handleDelete} />
-          </div>
-
-          <div>
-            <h2 className="mb-4 text-lg font-semibold">Execute</h2>
-            <p className="mb-3 text-sm text-zinc-400">
-              Run your rules against your recent videos.
-            </p>
-            <RunButton />
-          </div>
-        </div>
-      )}
-
       {tab === "home" && (
         <div className="space-y-6">
           <p className="text-sm text-zinc-400">
