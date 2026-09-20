@@ -153,21 +153,25 @@ function parseVideoIdsFlag(flags: Record<string, string | boolean>) {
 }
 
 export function getCredentialRef(flags: Record<string, string | boolean>): CredentialRef | null {
-  const userId = flags.userId;
-  const accessToken = flags.accessToken;
-
-  if (typeof userId === "string" && userId.length > 0) {
+  // Found by independent review (cycle 3): this function feeds resolveEffectiveCredentialRef,
+  // the shared path for nearly every non-auth command -- a valueless --userId here used to
+  // fall through to `null` exactly like a truly OMITTED --userId, silently resolving to
+  // whatever user is currently active locally instead of erroring on the operator's typo.
+  // optionalStringFlag distinguishes "absent" (null return, fallback is correct) from
+  // "present but not a real string" (throws), which the earlier plain typeof check couldn't.
+  const userId = optionalStringFlag(flags, "userId");
+  if (userId !== undefined) {
     return { userId };
   }
 
-  if (typeof accessToken === "string" && accessToken.length > 0) {
+  const accessToken = optionalStringFlag(flags, "accessToken");
+  if (accessToken !== undefined) {
+    const tokenExpiryFlag = optionalStringFlag(flags, "tokenExpiry");
     return {
       accessToken,
-      refreshToken:
-        typeof flags.refreshToken === "string" ? flags.refreshToken : undefined,
-      scope: typeof flags.scope === "string" ? flags.scope : undefined,
-      tokenExpiry:
-        typeof flags.tokenExpiry === "string" ? Number(flags.tokenExpiry) : undefined,
+      refreshToken: optionalStringFlag(flags, "refreshToken"),
+      scope: optionalStringFlag(flags, "scope"),
+      tokenExpiry: tokenExpiryFlag === undefined ? undefined : Number(tokenExpiryFlag),
     };
   }
 
@@ -397,8 +401,7 @@ export async function runCliCommand(args: {
 
       if (parsedArgs.command === "select-channel") {
         const credentialRef = getCredentialRef(parsedArgs.flags) ?? undefined;
-        const channelId =
-          typeof parsedArgs.flags.channelId === "string" ? parsedArgs.flags.channelId : "";
+        const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
         const result = await auth.selectWriteChannel({ channelId, credentialRef });
         writeStdout(serializeSuccess(result));
         return 0;

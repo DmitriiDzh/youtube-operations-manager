@@ -460,6 +460,49 @@ test("CLI metadata commands fallback to active auth context when --userId is omi
   assert.equal(envelope.ok, true);
 });
 
+// Found by independent review (cycle 3): getCredentialRef feeds resolveEffectiveCredentialRef,
+// the shared path for nearly every non-auth command -- a valueless --userId used to be
+// indistinguishable from a truly OMITTED --userId, silently falling back to the active local
+// user instead of erroring on the operator's typo. Unlike an omitted --userId (the test
+// above), a PRESENT-but-valueless one must fail closed, not fall back.
+test("CLI rejects a --userId flag with no value instead of silently falling back to the active user", async () => {
+  const stderr: string[] = [];
+  const core = makeCoreStub();
+  let called = false;
+  core.listVideos = async () => {
+    called = true;
+    return { videos: [] };
+  };
+
+  const exitCode = await runCliCommand({
+    argv: ["list", "--userId", "--maxResults", "5"],
+    core,
+    auth: makeAuthStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(called, false);
+  assert.match(JSON.parse(stderr[0] ?? "{}").error.message, /userId/);
+});
+
+test("CLI auth select-channel requires --channelId (missing entirely, not just a valueless flag)", async () => {
+  const stderr: string[] = [];
+  let called = false;
+  const auth = { ...makeAuthStub(), selectWriteChannel: async () => { called = true; return {}; } };
+
+  const exitCode = await runCliCommand({
+    argv: ["auth", "select-channel"],
+    core: makeCoreStub(),
+    auth,
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(called, false);
+  assert.match(JSON.parse(stderr[0] ?? "{}").error.message, /Missing required --channelId/);
+});
+
 test("CLI returns validation error and non-zero exit for missing required flags", async () => {
   const stdout: string[] = [];
   const stderr: string[] = [];
