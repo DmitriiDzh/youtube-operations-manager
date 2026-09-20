@@ -219,14 +219,15 @@ multi-step confirmation flow and a 30-day (default) recovery window. This revisi
 original §7.2 in full.
 
 **This reverses a standing, documented project decision and must be treated as such, not as an
-implementation detail.** `docs/PROJECT_SPEC.md` §8 states a preference to "prefer deferring
-deletion if that produces a safer and simpler design," and `docs/ARCHITECTURE.md` §6.14/§296
-records, in the present tense, that "deletion remains fully deferred... Phase 4 has no explicit
-'propose deletion of a localization' affordance at all, per §8's stated preference." Per AGENTS.md
-§A ("identify and report the discrepancy... do not silently rewrite requirements"), this needs an
-explicit owner decision on whether `docs/PROJECT_SPEC.md` itself should be updated to record this
-reversal, or whether this ships as a documented, deliberate exception to an otherwise-still-valid
-general preference. **See Open Question 1 below — not assumed either way.**
+implementation detail.** `docs/PROJECT_SPEC.md` §16 ("XLSX Import") states "Deletion must be an
+explicit operation" with no deletion feature ever having been built under that language, and
+`docs/ARCHITECTURE.md` §6.14/§296 recorded, in the present tense, that "deletion remains fully
+deferred" (that file previously mis-cited the source section as "§8" — corrected to §16 while
+resolving this). Per AGENTS.md §A ("identify and report the discrepancy... do not silently rewrite
+requirements"), this needed an explicit owner decision on whether `docs/PROJECT_SPEC.md` itself
+should be updated to record this reversal. **Resolved — see Open Question 1 in §7.7: the owner
+chose to update the spec, and `docs/PROJECT_SPEC.md` §16 now carries the permanent constraint that
+came with that decision (multi-step confirmation, a recovery window before any deletion is final).**
 
 **Where the write would live — this is the fact that shapes the whole design.** A real
 `videos.update` call that removes a key from the `localizations` map is fundamentally a
@@ -333,7 +334,7 @@ Ordered by risk/dependency, not necessarily by priority — the owner may reorde
 | **E3** | 7.5 (bulk "add missing translation" per language) | No | None |
 | **E4** | §4.2/§4.3 from the original proposal (contextual bulk bar + inline per-video generate) | No | Low (same as original plan) |
 | **E4b** | 7.4 (empty "Recommended languages" placeholder, resolved) | No | None |
-| **E5** | 7.2 (tracked-language add/remove **+ real deletion with multi-step confirm and 30-day-visible restore**) | Yes — additive `channels` column + endpoints + a new small live-write path (identity/backup/audit/verify) for `localizations`, sibling to `video-details` | **High — a new live-write capability, a documented reversal of `PROJECT_SPEC.md` §8's deferred-deletion stance, and a second write path outside the Gate-B-barriered Batches pipeline. Blocked on Open Questions 1-3 below, not yet assignable.** |
+| **E5** | 7.2 (tracked-language add/remove **+ real deletion with multi-step confirm and 30-day-visible restore**) | Yes — additive `channels` column + endpoints + a new small live-write path (identity/backup/audit/verify) for `localizations`, sibling to `video-details` | **High — a new live-write capability, an already-approved reversal of `PROJECT_SPEC.md` §16's prior deferred-deletion stance, and a second write path outside the Gate-B-barriered Batches pipeline. Blocked only on Open Question 2 (§7.7) now — 1 and 3 are resolved.** |
 | **E6** | *(retired — folded into E4b, resolved as a placeholder)* | — | — |
 
 E1-E4b have no open product questions and could be assigned together as one slice if the owner
@@ -342,23 +343,32 @@ original draft once the owner's actual intent (real deletion, not just hiding a 
 clear — it now needs three concrete decisions before any code is written, not just a "confirm my
 assumption" check.
 
-### 7.7 Open questions for the owner (this addendum, revised)
+### 7.7 Open questions for the owner (this addendum, revised) — status after the 2026-09-20 follow-up
 
-1. **Spec reversal:** `docs/PROJECT_SPEC.md` §8 currently prefers deferring deletion entirely, and
-   `docs/ARCHITECTURE.md` records that preference as still in effect. Building real localization
-   deletion reverses that. Should `docs/PROJECT_SPEC.md` be updated to record this reversal as
-   part of E5, or does the existing preference stay on the books with this treated as one
-   documented, deliberate exception to it?
-2. **A second live write path:** deletion cannot go through `src/lib/batches/` today (its write
-   barrier is unconditionally disabled pending Gate B) without being non-functional. Shipping a
-   working delete button means building a second, standalone live-write path for localizations,
-   architecturally parallel to (but separate from) both Batches and `video-details`. Confirm this
-   is acceptable before E5 is designed in detail.
-3. **Restore mechanics:** confirm that "restore within 30 days" means literally re-writing the
-   backed-up content back to YouTube (its own full write, with its own identity/audit/verification
-   steps — not a free local undo), and that the 30-day figure governs only what the UI *offers* as
-   restorable, never an actual deletion/purge of the backup itself (backups already never expire
-   in this codebase, and this plan proposes not to change that).
+1. **Spec reversal — RESOLVED.** Owner: "обновляем сам PROJECT_SPEC. но добавляем что никакое
+   удаление не может быть перманентным и сразу... несколько этапов подтверждения... кэш N дней."
+   `docs/PROJECT_SPEC.md` §16 updated the same day with this permanent, application-wide
+   constraint (not just for this one feature) — see the doc itself. (Correction made while doing
+   this: `docs/ARCHITECTURE.md`/`docs/SYSTEM_MAP.md`/`docs/DEVELOPMENT_PLAYBOOK.md` had all
+   mis-cited this guidance as "PROJECT_SPEC.md §8" — §8 is "Channel and Account Model," unrelated;
+   the real section is §16, "XLSX Import." Fixed in all three files.)
+2. **A second live write path — still open.** The owner asked for a plain-language explanation of
+   the Gate B blocker rather than answering yet; see the explanation given directly (not repeated
+   here) and re-ask this once it's confirmed understood. In short: `src/lib/batches/`'s write
+   executor has a hardcoded check that unconditionally refuses every real write, regardless of
+   input, until a separate, much larger "Gate B" live-validation task (a real test channel, real
+   OAuth, testing the actual write flow end-to-end) is completed and that specific code-level
+   barrier is deliberately removed as its own, separately-authorized change. Nothing about this
+   feature can change that; routing deletion through Batches today means the delete button would
+   always fail with `live_writes_disabled`. Still needs an explicit yes/no on building the
+   second, standalone write path instead.
+3. **Restore mechanics — RESOLVED**, matching what this plan already proposed: `docs/PROJECT_SPEC.md`
+   §16's new text confirms restore is a full write through the same safety model, and that the
+   retention window governs what the UI offers as restorable, not the backup file's own lifetime.
+4. **Backup retention/purge — deferred, tracked as `docs/TECHNICAL_DEBT.md` RISK-41** per the
+   owner's explicit instruction ("удалять нужно, но пока можешь записать в технический долг,
+   вернёмся к этому потом"). Not a blocker for E5's initial design — the *current* "backups never
+   expire" behavior stays correct and unchanged for now; only a future purge mechanism is deferred.
 
-**Not blocked, asked previously and still open:** whether to start E1-E4b now while E5 is being
-decided.
+**Not blocked, asked previously and still open:** whether to start E1-E4b now while E5's remaining
+question (#2 above) is being decided.

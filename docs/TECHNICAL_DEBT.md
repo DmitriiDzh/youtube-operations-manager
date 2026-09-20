@@ -665,6 +665,19 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 ---
 
+## RISK-41 — `src/lib/backup/`'s snapshot files will need an eventual retention/purge mechanism, not yet designed — OPEN, 2026-09-20 (pre-emptively recorded, no code exists yet)
+
+- **Affected components:** `src/lib/backup/adapters/filesystem-store.ts` (today), and whatever real localization-deletion feature is eventually built under `docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md` §7.2/E5 (not yet implemented).
+- **Context:** unusual entry — recorded ahead of any code existing, per the project owner's explicit instruction (Telegram, 2026-09-20) while discussing E5's deletion-recovery design: "Удаление бэкапов — удалять нужно, но пока можешь записать в технический долг, вернёмся к этому потом." Every other entry in this register describes a risk in code that already exists; this one is a planned, accepted future gap, written down now specifically so it is not silently forgotten once E5 ships.
+- **Current behavior (as of today, unrelated to E5):** `src/lib/backup/`'s filesystem store never deletes a snapshot file once written (`wx`-flag write, immutable by design, per its own doc comment) — this is intentional and correct for Batches' existing use (an audit/recovery record that should outlive the operation it describes) and remains correct for `video-details`' use of the same module.
+- **The gap this entry tracks:** once E5 (real, explicit localization deletion with a 30-day-visible restore window, `docs/PROJECT_SPEC.md` §16) is actually built, its own pre-delete backup snapshots will accumulate indefinitely under the current "never delete a backup" behavior — harmless at first, but a real, unbounded local-disk-growth concern over the lifetime of an actively-used channel with recurring deletions. The owner has confirmed the *eventual* correct behavior is to actually purge old backups on some schedule, distinct from `docs/PROJECT_SPEC.md` §16's UI-facing "30 days to restore" window (per that section's own text, the retention window governs what the operator is *offered* as restorable, and does not by itself require deleting the underlying file — the purge mechanism is a separate, later decision about disk hygiene, not about restore-ability).
+- **Required remediation (not designed yet, deliberately):** a policy for when a backup file becomes eligible for real deletion (e.g. N days past the restore window, only for deletion-kind snapshots specifically, never for `video_fields`/other operational backups whose retention purpose is different), and a mechanism to run it (a manual admin action vs. some background job — this app has no background job runner today, so introducing one is itself a design question, not a given).
+- **Gate(s):** none blocking — this is unbuilt, forward-looking scope, not a live risk in shipped code.
+- **Approval required from:** project owner, when E5 is actually assigned and this becomes a real design question rather than a placeholder.
+- **Status:** OPEN — explicitly deferred by the owner's own instruction; revisit once E5 (or any deletion feature reusing `src/lib/backup/`) is actually being implemented, not before.
+
+---
+
 ## Summary table
 
 | ID | Title | Gates | Status |
@@ -709,5 +722,6 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-38 | Duplicated OperationLockError/RecoveryModeError -> HTTP-status mapping (5 sites) | none blocking | OPEN |
 | RISK-39 | `syncChannel`'s explicit-channelId path has no OAuth-ownership check (write side) | none blocking | OPEN |
 | RISK-40 | `video-details` module + Content-tab UI done; no CLI/MCP parity, `paidProductPlacementDetails` unimplemented (API ambiguous) | none blocking | OPEN |
+| RISK-41 | `src/lib/backup/` needs an eventual retention/purge policy once a real deletion feature (E5) uses it -- pre-emptively recorded, no code yet | none blocking | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
