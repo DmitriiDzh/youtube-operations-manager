@@ -93,9 +93,13 @@ export function AppShell<T extends string>(props: {
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto px-6 py-6">
-          <div className="mx-auto max-w-3xl">{props.children}</div>
-        </main>
+        {/* No max-width cap here (removed 2026-09-20, matching real Studio's own content
+            region, which fills available width rather than centering a fixed narrow column) --
+            a table-heavy tab (Content/Languages/Batches) needs the full width to be usable on a
+            wide viewport. A tab whose content is narrow by nature (forms/cards: Home, Settings,
+            Device) applies its own max-width locally instead, so this shell stays width-agnostic
+            for every tab rather than picking one width that's wrong for half of them. */}
+        <main className="flex-1 overflow-y-auto px-6 py-6">{props.children}</main>
       </div>
     </div>
   );
