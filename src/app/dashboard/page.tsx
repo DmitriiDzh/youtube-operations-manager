@@ -90,7 +90,12 @@ export default function Dashboard() {
   }, [session, fetchRules, fetchChannel]);
 
   async function handleSwitchChannel() {
-    await signOut({ redirect: false });
+    // Found via operator testing feedback: signing out first (the old behavior) cleared the
+    // session before signIn's redirect could take over, so the user briefly saw this app's own
+    // login screen instead of going straight to Google. The Google provider's own
+    // authorization params (src/lib/auth.ts) already carry `prompt: "select_account consent"`,
+    // which forces Google to show its account/channel chooser on every signIn call regardless
+    // of whether an existing session exists here -- no signOut is needed to get that prompt.
     await signIn("google");
   }
 
