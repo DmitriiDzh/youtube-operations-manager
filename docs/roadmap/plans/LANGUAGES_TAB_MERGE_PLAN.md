@@ -62,18 +62,16 @@ Inside it, modeled on Studio's own sub-tab shape but carrying our actual data:
   (count, from `existingLocalizationLanguages`, already computed today) / Last modified. Row
   click opens the per-video view. This directly replaces `localization-manager.tsx`'s current
   overview table — same data, Studio's column shape.
-- **Sub-tabs above the table**, modeled on Все/Черновики/Опубликованные but re-mapped to
-  concepts that actually exist in this app (see open question 1 in §4 — the literal Studio
-  labels don't have a clean equivalent here yet):
+- **Sub-tabs above the table** — resolved 2026-09-20 (owner, Telegram msg 131): "Все / В
+  процессе / Одобрено", re-mapped from Studio's literal "Все/Черновики/Опубликованные" to
+  concepts that actually exist in this app:
   - "Все" (All) — every synced video, as today.
   - "В процессе" (in place of "Черновики"/Drafts) — videos with at least one Change Set not yet
     fully approved/rejected (`change_sets.status` = `in_review` or containing `pending`
     changes) — this is genuinely "work in flight," unlike Studio's "draft not yet published."
   - "Одобрено" (in place of "Опубликованные"/Published) — **never** literally "published to
     YouTube" (Phase 5 live writes remain barrier-disabled, `docs/TECHNICAL_DEBT.md` RISK-09) —
-    this must read as "approved locally," and the UI must not imply a real YouTube write
-    happened. This labeling distinction is safety-relevant (`AGENTS.md` §G) and needs explicit
-    owner sign-off before shipping this wording, not just a translation choice.
+    this reads as "approved locally," never implying a real YouTube write happened.
 - **Per-video detail view** (replaces both `localization-manager.tsx`'s detail panel and
   `ai-localization-panel.tsx`'s per-video slice of its multi-select form): existing-locale grid
   (as today), with **AI generation as the primary, default path** — resolved 2026-09-20 (owner,
@@ -121,17 +119,18 @@ around.
 
 ## 4. Open questions
 
-1. **Sub-tab semantics** (§2): are "Все/В процессе/Одобрено" (or Studio's literal "Все/
-   Черновики/Опубликованные") the right three buckets, and is "Одобрено" (never "Опубликовано")
-   the right way to avoid implying a real YouTube write happened? This is the one place a wrong
-   choice could mislead an operator about write state — needs explicit sign-off, not an
-   assumption. **Still open.**
+1. ~~Sub-tab semantics: are "Все/В процессе/Одобрено" the right three buckets, and is "Одобрено"
+   (never "Опубликовано") the right way to avoid implying a real YouTube write happened?~~
+   **Resolved 2026-09-20** (owner, Telegram msg 131, "принимается" in response to this exact
+   proposal): use "Все/В процессе/Одобрено" — never "Опубликовано" — for the reason stated above.
 2. ~~Where does channel-wide (multi-video) AI generation live once "Generate with AI" also exists
    as a per-video action?~~ **Resolved 2026-09-20** (see §2): keep both, per-video generation is
    the primary path.
 3. **Editorial profile placement**: a settings icon/drawer within Languages, or its own small
    sub-tab inside Languages (mirroring Studio's own settings-within-a-section pattern elsewhere
-   in its product, e.g. Content's own per-video settings panel)? **Still open.**
+   in its product, e.g. Content's own per-video settings panel)? **Still open** — not part of the
+   2026-09-20 "принимается" response, which was specifically about sub-tab naming and the Sync
+   refresh policy (`TAB_REFRESH_AND_CHANNEL_UI_PLAN.md` §4), not this question.
 4. ~~Migration of the "AI Localization" nav item: remove outright, or keep temporarily as a
    redirect/deprecation notice?~~ **Resolved 2026-09-20** (owner, Telegram msg 128): **remove
    outright, immediately** — no transition period, no deprecation notice.
