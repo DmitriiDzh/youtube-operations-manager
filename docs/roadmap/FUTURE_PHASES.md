@@ -249,6 +249,14 @@ plan once it's prepared. Present it for approval and stop. Do not invent capabil
 unfinished work is complete, and do not modify an existing phase's acceptance contract without a
 demonstrated defect and the authorization that requires.
 
+**Scoped exception, 2026-09-21:** the project owner granted `.claude/skills/autonomous-dev-loop/`
+a narrower-but-deeper exception to this section's "plan only, never implement automatically" rule
+— see that skill's §3 for the exact wording and the two conditions that must both hold (no task
+findable/creatable for the current phase, and a just-completed independent-review cycle found zero
+issues) before it may start implementing, not just planning, the next phase. This exception applies
+only inside that skill's own autonomous loop; every other context — interactive sessions, any other
+skill — still follows this section exactly as written above.
+
 ## 10. Git and permissions
 
 Governed entirely by `AGENTS.md`'s existing git policy (§K) — nothing in this document changes
