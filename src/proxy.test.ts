@@ -17,7 +17,7 @@ function readRequest(pathname: string) {
 test("proxy rejects a mutating /api/** request while the operation lock is held", async () => {
   await acquireOperationLock(rawSqlClient, "export");
   try {
-    const response = await proxy(mutatingRequest("/api/rules"));
+    const response = await proxy(mutatingRequest("/api/channels/sync"));
     assert.equal(response.status, 409);
     const body = await response.json();
     assert.equal(body.error, "operation_lock_held");
@@ -29,7 +29,7 @@ test("proxy rejects a mutating /api/** request while the operation lock is held"
 test("proxy allows a GET request through even while the operation lock is held", async () => {
   await acquireOperationLock(rawSqlClient, "export");
   try {
-    const response = await proxy(readRequest("/api/rules"));
+    const response = await proxy(readRequest("/api/channels"));
     // NextResponse.next() has no meaningful status of its own to assert beyond "not blocked" --
     // it is not a 409/423 rejection.
     assert.notEqual(response.status, 409);
@@ -51,7 +51,7 @@ test("proxy never gates the device-handoff routes themselves (they manage the lo
 });
 
 test("proxy allows a mutating request through when the device is available", async () => {
-  const response = await proxy(mutatingRequest("/api/rules"));
+  const response = await proxy(mutatingRequest("/api/channels/sync"));
   assert.notEqual(response.status, 409);
   assert.notEqual(response.status, 423);
 });
