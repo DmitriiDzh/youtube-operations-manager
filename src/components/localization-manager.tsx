@@ -63,6 +63,7 @@ type ImportRowError = {
 type ChangeSetSummary = {
   id: string;
   status: "in_review" | "approved" | "partially_approved" | "rejected";
+  source: "xlsx_import" | "ai_localization";
   importedFilename: string | null;
   totalChanges: number;
   pendingCount: number;
@@ -101,6 +102,11 @@ export function LocalizationManager() {
     const data = await res.json();
     if (res.ok && Array.isArray(data.channels)) {
       setChannels(data.channels);
+      // Only one channel is ever active (docs/decisions/0004-active-channel-read-scoping.md) --
+      // there is nothing for the operator to pick, so resolve it implicitly instead of showing
+      // a dropdown with at most one real option.
+      const active = (data.channels as SyncedChannel[])[0];
+      if (active) setChannelId(active.channelId);
     }
   }, []);
 
@@ -293,21 +299,9 @@ export function LocalizationManager() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-        <label className="text-xs font-medium text-zinc-400">Channel</label>
-        <select
-          value={channelId}
-          onChange={(e) => setChannelId(e.target.value)}
-          className="min-w-48 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm"
-        >
-          <option value="">
-            {channels.length > 0 ? "Select a synchronized channel..." : "No channels synchronized yet"}
-          </option>
-          {channels.map((c) => (
-            <option key={c.channelId} value={c.channelId}>
-              {c.title}
-            </option>
-          ))}
-        </select>
+        {!channelId && channels.length === 0 && (
+          <p className="text-sm text-zinc-400">No channel synchronized yet.</p>
+        )}
 
         {overview && (
           <>
@@ -412,8 +406,8 @@ export function LocalizationManager() {
                   }`}
                 >
                   <span>
-                    {cs.importedFilename ?? "XLSX import"} · {cs.totalChanges} changes ·{" "}
-                    {new Date(cs.createdAt).toLocaleString()}
+                    {cs.importedFilename ?? (cs.source === "ai_localization" ? "AI Generated" : "XLSX Import")} ·{" "}
+                    {cs.totalChanges} changes · {new Date(cs.createdAt).toLocaleString()}
                   </span>
                   <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-300">{cs.status}</span>
                 </button>

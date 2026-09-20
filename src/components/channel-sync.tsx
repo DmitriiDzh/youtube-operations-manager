@@ -27,6 +27,13 @@ type SyncedVideo = {
   etag: string | null;
 };
 
+// A tab switch already re-mounts this component (dashboard/page.tsx's conditional tab
+// rendering), so this only needs to decide, once per mount, whether the already-local data is
+// fresh enough to skip a real YouTube API call -- auto-resyncing on every single mount would
+// spend real, finite quota on every tab click (docs/roadmap/plans/TAB_REFRESH_AND_CHANNEL_UI_PLAN.md
+// §4, owner-approved policy). "Sync now" remains available for an explicit forced refresh.
+const AUTO_RESYNC_STALENESS_MS = 20 * 60 * 1000;
+
 export function ChannelSync() {
   const [channels, setChannels] = useState<SyncedChannel[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState<string>("");
@@ -36,21 +43,6 @@ export function ChannelSync() {
   const [loadingChannels, setLoadingChannels] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null);
-
-  const fetchChannels = useCallback(async () => {
-    setLoadingChannels(true);
-    try {
-      const res = await fetch("/api/channels");
-      const data = await res.json();
-      if (res.ok && Array.isArray(data.channels)) {
-        setChannels(data.channels);
-        return data.channels as SyncedChannel[];
-      }
-      return [];
-    } finally {
-      setLoadingChannels(false);
-    }
-  }, []);
 
   const fetchVideos = useCallback(async (channelId: string) => {
     if (!channelId) {
@@ -74,17 +66,7 @@ export function ChannelSync() {
     }
   }, []);
 
-  useEffect(() => {
-    fetchChannels();
-  }, [fetchChannels]);
-
-  useEffect(() => {
-    if (selectedChannelId) {
-      fetchVideos(selectedChannelId);
-    }
-  }, [selectedChannelId, fetchVideos]);
-
-  async function handleSync() {
+  const handleSync = useCallback(async (channelId?: string) => {
     setSyncing(true);
     setError(null);
     setLastSyncSummary(null);
@@ -92,7 +74,7 @@ export function ChannelSync() {
       const res = await fetch("/api/channels/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(selectedChannelId ? { channelId: selectedChannelId } : {}),
+        body: JSON.stringify(channelId ? { channelId } : {}),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -102,7 +84,7 @@ export function ChannelSync() {
       setLastSyncSummary(
         `Synced "${data.channel.title}" — ${data.videoCount} video${data.videoCount === 1 ? "" : "s"}`
       );
-      await fetchChannels();
+      setChannels([data.channel]);
       setSelectedChannelId(data.channel.channelId);
       await fetchVideos(data.channel.channelId);
     } catch (e) {
@@ -110,44 +92,67 @@ export function ChannelSync() {
     } finally {
       setSyncing(false);
     }
-  }
+  }, [fetchVideos]);
+
+  // Only one channel is ever active (docs/decisions/0004-active-channel-read-scoping.md), so
+  // there is nothing for the operator to pick -- resolve it implicitly and, per the staleness
+  // policy above, either show the cached local list instantly or resync in the background.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoadingChannels(true);
+      try {
+        const res = await fetch("/api/channels");
+        const data = await res.json();
+        if (cancelled || !res.ok || !Array.isArray(data.channels)) return;
+        const activeChannels = data.channels as SyncedChannel[];
+        setChannels(activeChannels);
+        const active = activeChannels[0];
+        if (!active) return;
+        setSelectedChannelId(active.channelId);
+
+        const lastSyncedMs = active.lastSyncedAt ? new Date(active.lastSyncedAt).getTime() : 0;
+        const isStale = Date.now() - lastSyncedMs > AUTO_RESYNC_STALENESS_MS;
+        if (isStale) {
+          await handleSync(active.channelId);
+        } else {
+          await fetchVideos(active.channelId);
+        }
+      } finally {
+        if (!cancelled) setLoadingChannels(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Intentionally mount-only: a tab switch already remounts this component (see the comment
+    // above AUTO_RESYNC_STALENESS_MS), so re-running this on every fetchVideos/handleSync
+    // identity change would defeat the whole "decide once per mount" point of this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="space-y-4">
       <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
         <div className="flex flex-wrap items-center gap-3">
-          <label className="text-xs font-medium text-zinc-400">Channel</label>
-          <select
-            value={selectedChannelId}
-            onChange={(e) => setSelectedChannelId(e.target.value)}
-            disabled={loadingChannels}
-            className="min-w-48 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm disabled:opacity-50"
-          >
-            <option value="">
-              {loadingChannels
-                ? "Loading channels..."
-                : channels.length > 0
-                  ? "Select a synchronized channel..."
-                  : "No channels synchronized yet"}
-            </option>
-            {channels.map((c) => (
-              <option key={c.channelId} value={c.channelId}>
-                {c.title}
-              </option>
-            ))}
-          </select>
+          {loadingChannels ? (
+            <p className="text-sm text-zinc-400">Loading...</p>
+          ) : !selectedChannelId ? (
+            <p className="text-sm text-zinc-400">
+              No channel synchronized yet — sign in and this app will pick up your active channel
+              automatically.
+            </p>
+          ) : null}
 
-          <button
-            onClick={handleSync}
-            disabled={syncing}
-            className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
-          >
-            {syncing
-              ? "Syncing..."
-              : selectedChannelId
-                ? "Re-sync this channel"
-                : "Sync my channel"}
-          </button>
+          {selectedChannelId && (
+            <button
+              onClick={() => handleSync(selectedChannelId)}
+              disabled={syncing}
+              className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+            >
+              {syncing ? "Syncing..." : "Sync now"}
+            </button>
+          )}
         </div>
 
         {selectedChannelId && (

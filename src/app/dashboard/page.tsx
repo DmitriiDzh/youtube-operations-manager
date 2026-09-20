@@ -90,6 +90,18 @@ export default function Dashboard() {
     }
   }, [session, fetchRules, fetchChannel]);
 
+  // Unlike every other tab (rendered conditionally, so they refetch on their own mount whenever
+  // switched to), `rules` lives in this parent component and would otherwise only ever be
+  // fetched once, at session mount -- refetch on every switch into "rules" too, matching the
+  // auto-refresh behavior docs/roadmap/plans/TAB_REFRESH_AND_CHANNEL_UI_PLAN.md §2 requires.
+  useEffect(() => {
+    if (session && tab === "rules") {
+      queueMicrotask(() => {
+        void fetchRules();
+      });
+    }
+  }, [session, tab, fetchRules]);
+
   async function handleSwitchChannel() {
     // Found via operator testing feedback: signing out first (the old behavior) cleared the
     // session before signIn's redirect could take over, so the user briefly saw this app's own
