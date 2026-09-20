@@ -121,6 +121,17 @@ OAuth scope `commentThreads.list` needs and whether it's already covered by the 
 channel that doesn't already show subscriber counts publicly-listed, or whether Studio computes
 this from data no third-party API exposes. Do not promise this card before that research exists.
 
+**S4 also gains an Editorial Profile panel — resolved 2026-09-20** (owner, Telegram msg 135, in
+response to being told what the editorial profile actually is: *"Звучит как что-то
+фундаментальное. И то что редко меняется. Давай вынесем это пока в закладку Home, как доп меню.
+Которое можно открыть, поправить описание и сохранить, закрыть."*). A collapsible panel/sub-menu
+on the Home tab (open → edit the profile's fields → save → close), reusing the existing profile
+editor already built inside `ai-localization-panel.tsx` today — a relocation, not a redesign.
+**Independent of S1 and of the comments/subscribers research above** — this piece has no
+dependency on video statistics or new API integrations, and can be built on its own regardless of
+the rest of S4's status. This is also `docs/roadmap/plans/LANGUAGES_TAB_MERGE_PLAN.md`'s former
+open question 3 (editorial profile placement) — retired there, settled here instead.
+
 **Slice S5 — Home tab, "Аналитика по каналу" summary card.** Blocked on Phase 8's Analytics API
 foundation (§2.4/§3) existing first — no independent scope of its own beyond "once Phase 8's
 adapter exists, add one more small consumer of it."

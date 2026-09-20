@@ -97,9 +97,16 @@ Inside it, modeled on Studio's own sub-tab shape but carrying our actual data:
     "Generate with AI" as the primary path, and the existing channel-wide bulk-generate form
     (today's multi-video checklist) reachable from the landing view for generating many videos'
     worth of proposals in one pass. Neither replaces the other.
-- **Editorial profile** — relocated into a settings/gear affordance within Languages (same
-  pattern as its current placement inside AI Localization — this is a relocation, not a redesign
-  of that editor itself).
+- **Editorial profile** — **resolved 2026-09-20** (owner, Telegram msg 135): **not** relocated
+  into Languages. The owner's framing: *"Звучит как что-то фундаментальное. И то что редко
+  меняется. Давай вынесем это пока в закладку Home, как доп меню."* Moves instead to the future
+  Studio-parity **Home** tab (`docs/roadmap/plans/STUDIO_PARITY_PLAN.md` Slice S4), as a
+  collapsible panel/sub-menu (open → edit the profile fields → save → close) — same editor
+  component that already exists inside `ai-localization-panel.tsx` today, just relocated to a
+  different tab, not redesigned. This decouples the editorial-profile relocation from the rest of
+  the Languages merge entirely — see `STUDIO_PARITY_PLAN.md`'s updated Slice S4 for detail. §4
+  item 3 (editorial profile placement) is retired as a Languages-plan question — it's now a
+  Home-tab question with a single settled answer, not an open one.
 - **Change Set list** — becomes the "В процессе"/"Одобрено" sub-tab views above, using the
   now-displayed `source` field (fixing the mislabeling bug from §1) to show "AI Generated" vs.
   "XLSX Import" per row.
@@ -126,11 +133,10 @@ around.
 2. ~~Where does channel-wide (multi-video) AI generation live once "Generate with AI" also exists
    as a per-video action?~~ **Resolved 2026-09-20** (see §2): keep both, per-video generation is
    the primary path.
-3. **Editorial profile placement**: a settings icon/drawer within Languages, or its own small
-   sub-tab inside Languages (mirroring Studio's own settings-within-a-section pattern elsewhere
-   in its product, e.g. Content's own per-video settings panel)? **Still open** — not part of the
-   2026-09-20 "принимается" response, which was specifically about sub-tab naming and the Sync
-   refresh policy (`TAB_REFRESH_AND_CHANNEL_UI_PLAN.md` §4), not this question.
+3. ~~Editorial profile placement: a settings icon/drawer within Languages, or its own small
+   sub-tab?~~ **Resolved 2026-09-20** (owner, Telegram msg 135) — **moves to the Home tab
+   instead**, not Languages at all. See §2's updated bullet and
+   `docs/roadmap/plans/STUDIO_PARITY_PLAN.md`'s Slice S4.
 4. ~~Migration of the "AI Localization" nav item: remove outright, or keep temporarily as a
    redirect/deprecation notice?~~ **Resolved 2026-09-20** (owner, Telegram msg 128): **remove
    outright, immediately** — no transition period, no deprecation notice.
@@ -149,13 +155,19 @@ around.
 - **L2:** restyle the landing view into the Studio-shaped table (Video/Languages/Last modified),
   still showing all videos in one list (no sub-tab filtering yet) — purely visual/column-shape
   change over existing data.
-- **L3:** add the "В процессе"/"Одобрено" (or whatever §4.1 resolves to) sub-tab filtering on
-  top of L2's table.
+- **L3:** add the "Все/В процессе/Одобрено" sub-tab filtering on top of L2's table.
 - **L4:** merge the per-video detail view: existing-locale grid + AI generation as the primary
   action (with inline edit of its proposal, per §2's resolution) + "Import from XLSX" as a
   secondary, channel-level bulk action. Remove the standalone "AI Localization" nav item as part
-  of this same slice (§4.4 — resolved, immediate removal, no transition period).
-- **L5:** relocate the editorial-profile editor per §4.3's resolution (still open).
+  of this same slice (§4.4 — resolved, immediate removal, no transition period). **Removing the
+  editorial-profile editor from this component happens as part of this same slice** (it moves
+  to the Home tab, `STUDIO_PARITY_PLAN.md` Slice S4 — a separate, independently-assignable piece
+  of work, not an L-slice of this plan).
+
+All four numbered open questions in §4 are now resolved (2026-09-20). L1-L4 have no remaining
+open design questions blocking them; the one remaining implementation-time judgment call (exact
+visual prominence of "Import from XLSX" vs. "Generate with AI" on the landing view, §2) does not
+block assignment.
 
 L1 has no open questions blocking it and could be assigned independently of the rest — and now
 also directly answers the owner's separate channel-dropdown-removal request (§4.5). L2 has no
