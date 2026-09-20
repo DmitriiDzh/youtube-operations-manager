@@ -243,7 +243,8 @@ export function ContentManager() {
             </span>
           </div>
 
-          <table className="w-full table-fixed text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[720px] table-fixed text-sm">
             <colgroup>
               <col />
               <col className="w-24" />
@@ -309,6 +310,7 @@ export function ContentManager() {
               ))}
             </tbody>
           </table>
+          </div>
 
           {!loadingVideos && filteredVideos.length === 0 && (
             <p className="px-4 py-6 text-center text-sm text-zinc-500">
