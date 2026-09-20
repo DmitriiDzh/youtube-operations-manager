@@ -67,6 +67,7 @@ export function createChangeSetStoreAdapter() {
         approvalStatus: change.approvalStatus,
         validationStatus: change.validationStatus,
         conflictStatus: change.conflictStatus,
+        changeType: change.changeType,
       };
     },
   };

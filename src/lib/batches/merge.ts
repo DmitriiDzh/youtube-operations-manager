@@ -30,6 +30,13 @@ export type PendingChange = {
   field: "title" | "description";
   baselineValue: string;
   proposedValue: string;
+  /**
+   * Optional so every pre-existing caller/test that never deals in deletions keeps
+   * compiling unchanged -- absent is treated identically to "add"/"modify"/"unchanged"
+   * (i.e. an ordinary field write). Only `"delete"` changes buildSafeLocalizationsPayload's
+   * behavior below (docs/PROJECT_SPEC.md §16, 2026-09-20 deletion-policy update).
+   */
+  changeType?: "add" | "modify" | "unchanged" | "delete";
 };
 
 /**
@@ -134,7 +141,33 @@ export function buildSafeLocalizationsPayload(
     localizations[locale] = { ...value };
   }
 
+  // Delete-type changes are applied AFTER every other change below, not inline here --
+  // this makes removal win regardless of processing order if a "delete" and a "modify"
+  // for the same locale both land in one approved batch (a modify writing into
+  // `localizations[change.language]` first must not "resurrect" a locale a delete in
+  // the same set is meant to remove entirely). See docs/PROJECT_SPEC.md §16's
+  // 2026-09-20 update: a queued deletion always takes priority over a queued edit of
+  // the same target within the same approved set.
+  const languagesToDelete = new Set<string>();
+
   for (const change of changes) {
+    if (change.changeType === "delete") {
+      // Defense-in-depth: src/lib/changesets/services.ts's proposeLocalizationDeletion
+      // already refuses to create this change at propose time (it is the primary
+      // guard). Reaching here means that guard was bypassed somehow -- the video's
+      // defaultLanguage title/description live on `snippet`, never in `localizations`,
+      // so silently proceeding would blank the video's real title/description instead
+      // of removing a localization. Fail closed rather than merge a payload that could
+      // destroy real data.
+      if (fresh.snippet.defaultLanguage && change.language === fresh.snippet.defaultLanguage) {
+        throw new Error(
+          `Refusing to merge a "delete" change for language "${change.language}": it is this video's own defaultLanguage, so deleting it would blank the real snippet title/description instead of removing a localization.`
+        );
+      }
+      languagesToDelete.add(change.language);
+      continue;
+    }
+
     if (fresh.snippet.defaultLanguage && change.language === fresh.snippet.defaultLanguage) {
       snippet[change.field] = change.proposedValue;
       continue;
@@ -142,6 +175,10 @@ export function buildSafeLocalizationsPayload(
 
     const existingLocale = localizations[change.language] ?? { title: "", description: "" };
     localizations[change.language] = { ...existingLocale, [change.field]: change.proposedValue };
+  }
+
+  for (const language of languagesToDelete) {
+    delete localizations[language];
   }
 
   return { snippet, localizations };

@@ -301,6 +301,12 @@ export type PendingChangeRecord = {
   approvalStatus: "pending" | "approved" | "rejected";
   validationStatus: "valid" | "invalid";
   conflictStatus: "none" | "conflict";
+  /**
+   * Optional for the same reason as `PendingChange.changeType` in `merge.ts` -- added
+   * 2026-09-21 for the deletion feature (docs/PROJECT_SPEC.md §16), absent/undefined
+   * behaves exactly like "add"/"modify"/"unchanged" everywhere it is read.
+   */
+  changeType?: "add" | "modify" | "unchanged" | "delete";
 };
 
 export type PreparedRowOutcome =

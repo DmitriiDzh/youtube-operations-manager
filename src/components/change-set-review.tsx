@@ -20,7 +20,7 @@ type ChangeSet = {
   id: string;
   channelId: string;
   status: "in_review" | "approved" | "partially_approved" | "rejected";
-  source: "xlsx_import" | "ai_localization";
+  source: "xlsx_import" | "ai_localization" | "deletion";
   importedFilename: string | null;
   totalChanges: number;
   pendingCount: number;
@@ -152,7 +152,13 @@ export function ChangeSetReview({
           <h3 className="text-sm font-semibold">Change Set Review</h3>
           {changeSet && (
             <p className="text-xs text-zinc-500">
-              {changeSet.importedFilename ?? (changeSet.source === "ai_localization" ? "AI Generated" : "XLSX import")} ·{" "}
+              {changeSet.importedFilename ??
+                (changeSet.source === "ai_localization"
+                  ? "AI Generated"
+                  : changeSet.source === "deletion"
+                    ? "Deletion"
+                    : "XLSX import")}{" "}
+              ·{" "}
               {changeSet.totalChanges} changes · status:{" "}
               <span className="font-medium text-zinc-300">{changeSet.status}</span>
             </p>

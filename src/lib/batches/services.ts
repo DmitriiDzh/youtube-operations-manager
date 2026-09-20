@@ -448,6 +448,7 @@ export function createBatchServices(deps: ServiceDependencies) {
       field: change.field,
       baselineValue: change.baselineValue,
       proposedValue: change.proposedValue,
+      changeType: change.changeType,
     }));
   }
 
@@ -521,7 +522,16 @@ export function createBatchServices(deps: ServiceDependencies) {
       }
     }
 
-    const merged = buildSafeLocalizationsPayload(fresh, pendingChanges);
+    let merged: ReturnType<typeof buildSafeLocalizationsPayload>;
+    try {
+      merged = buildSafeLocalizationsPayload(fresh, pendingChanges);
+    } catch (error) {
+      // Only the defense-in-depth defaultLanguage-deletion guard inside
+      // buildSafeLocalizationsPayload throws (see merge.ts) -- fail closed the same way
+      // every other step of this pipeline does, rather than letting it propagate as an
+      // unhandled rejection.
+      return { outcome: "FAILED", error: error instanceof Error ? error.message : String(error) };
+    }
     // videoId is attached here, once, at the single point PreparedPayload is constructed
     // -- see contracts.ts's PreparedPayload doc comment for why it lives on the payload
     // itself rather than as a second argument threaded separately into attemptWrite.

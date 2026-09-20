@@ -3,6 +3,7 @@ import {
   isDomainError,
   type Change,
   type ChangeSet,
+  type ChangeType,
   type ImportRowError,
   type ImportSummary,
   type StoredChangeRecord,
@@ -19,6 +20,7 @@ import {
   importWorkbookInputSchema,
   listChangeSetsInputSchema,
   parseWithSchema,
+  proposeLocalizationDeletionInputSchema,
 } from "./schemas";
 
 const MAX_PREVIEW_ERRORS_RETURNED = 200;
@@ -40,7 +42,7 @@ type ChangeSetStoreDeps = {
       field: "title" | "description";
       baselineValue: string;
       proposedValue: string;
-      changeType: "add" | "modify" | "unchanged";
+      changeType: ChangeType;
       validationStatus: "valid" | "invalid";
       validationError: string | null;
       conflictStatus: "none" | "conflict";
@@ -241,7 +243,7 @@ type ChangeToPersist = {
   field: "title" | "description";
   baselineValue: string;
   proposedValue: string;
-  changeType: "add" | "modify" | "unchanged";
+  changeType: ChangeType;
   validationStatus: "valid" | "invalid";
   validationError: string | null;
   conflictStatus: "none" | "conflict";
@@ -328,6 +330,91 @@ export function createChangeSetServices(deps: ServiceDependencies) {
       } catch (error) {
         const mapped = mapUnknownError(error, "validation_failed");
         deps.logger.error({ event: "changesets.create_from_proposals.error", context: { code: mapped.code } });
+        throw mapped;
+      }
+    },
+
+    /**
+     * Proposes removing one language's localization from one video entirely (both its
+     * title and description), as a two-Change, source:"deletion" Change Set that goes
+     * through the exact same review/approval/conflict pipeline as any other change --
+     * per docs/PROJECT_SPEC.md §16's 2026-09-20 update, nothing this app deletes is ever
+     * immediate or bypasses multi-step confirmation, and this proposal step is the first
+     * of those steps (approval is the second; the batches/ write pipeline's own gates,
+     * currently held closed by Gate B, are the last).
+     *
+     * REFUSES (deletion_targets_default_language) when `language` is the video's own
+     * `defaultLanguage`: that language's title/description live on `snippet`, not in the
+     * `localizations` map, and `buildSafeLocalizationsPayload` would otherwise route a
+     * "delete" change for it into overwriting the video's real title/description with an
+     * empty string instead of removing a localization. This check exists here (propose
+     * time) as the primary defense; `buildSafeLocalizationsPayload` also refuses the same
+     * case as defense-in-depth in case a delete-type change ever reaches it some other way.
+     */
+    async proposeLocalizationDeletion(input: unknown): Promise<ChangeSet> {
+      const parsedInput = parseWithSchema(proposeLocalizationDeletionInputSchema, input, "localization deletion input");
+
+      try {
+        const channel = await requireChannel(deps, parsedInput.channelId);
+        const videos = await deps.channelStore.listVideosByChannel(channel.channelId);
+        const video = videos.find((v) => v.videoId === parsedInput.videoId);
+        if (!video) {
+          throw new DomainError({
+            code: "not_found",
+            message: "Video not found for this channel",
+            details: { channelId: channel.channelId, videoId: parsedInput.videoId },
+          });
+        }
+
+        if (video.defaultLanguage && parsedInput.language === video.defaultLanguage) {
+          throw new DomainError({
+            code: "deletion_targets_default_language",
+            message:
+              "Cannot delete this language: it is the video's own defaultLanguage, whose title/description are the video's real snippet, not a removable localization.",
+            details: { videoId: video.videoId, language: parsedInput.language },
+          });
+        }
+
+        const existingLocale = video.existingLocalizations[parsedInput.language];
+        if (!existingLocale) {
+          throw new DomainError({
+            code: "not_found",
+            message: "This video has no existing localization for the requested language",
+            details: { videoId: video.videoId, language: parsedInput.language },
+          });
+        }
+
+        const changesToPersist: ChangeToPersist[] = (["title", "description"] as const).map((field) => ({
+          id: deps.idGenerator(),
+          videoId: video.videoId,
+          language: parsedInput.language,
+          field,
+          baselineValue: currentRemoteValueFor(video, parsedInput.language, field),
+          proposedValue: "",
+          changeType: "delete",
+          validationStatus: "valid",
+          validationError: null,
+          conflictStatus: "none",
+        }));
+
+        const changeSet = await persistChangeSet(deps, {
+          channelId: channel.channelId,
+          source: "deletion",
+          importedFilename: null,
+          schemaVersion: null,
+          exportedAt: null,
+          changesToPersist,
+        });
+
+        deps.logger.info({
+          event: "changesets.propose_localization_deletion.success",
+          context: { channelId: channel.channelId, videoId: video.videoId, language: parsedInput.language, changeSetId: changeSet.id },
+        });
+
+        return changeSet;
+      } catch (error) {
+        const mapped = mapUnknownError(error, "validation_failed");
+        deps.logger.error({ event: "changesets.propose_localization_deletion.error", context: { code: mapped.code } });
         throw mapped;
       }
     },

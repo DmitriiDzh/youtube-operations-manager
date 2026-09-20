@@ -47,7 +47,8 @@ export type DomainErrorCode =
   | "no_fields_to_update"
   | "publish_at_requires_private"
   | "publish_at_already_published"
-  | "video_details_conflict";
+  | "video_details_conflict"
+  | "deletion_targets_default_language";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

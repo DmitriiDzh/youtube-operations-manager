@@ -4,12 +4,16 @@ export type { DomainErrorCode, DomainErrorShape };
 export { DomainError, isDomainError };
 
 export type ChangeField = "title" | "description";
-export type ChangeType = "add" | "modify" | "unchanged";
+// "delete" (added 2026-09-21, docs/PROJECT_SPEC.md §16's 2026-09-20 deletion-policy
+// update) represents a proposal to remove a language's localization entirely -- see
+// src/lib/batches/merge.ts's buildSafeLocalizationsPayload for how it is merged
+// (delete-wins, applied after all other changes) and its defaultLanguage guard.
+export type ChangeType = "add" | "modify" | "unchanged" | "delete";
 export type ChangeValidationStatus = "valid" | "invalid";
 export type ChangeConflictStatus = "none" | "conflict";
 export type ChangeApprovalStatus = "pending" | "approved" | "rejected";
 export type ChangeSetStatus = "in_review" | "approved" | "partially_approved" | "rejected";
-export type ChangeSetSource = "xlsx_import" | "ai_localization";
+export type ChangeSetSource = "xlsx_import" | "ai_localization" | "deletion";
 
 // video-level metadata as currently mirrored by channel-sync (Phase 2). This is the
 // only "remote" view Phase 4 has available -- see docs/ARCHITECTURE.md Phase 4 section

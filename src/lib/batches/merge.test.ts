@@ -194,6 +194,111 @@ test("conflict detection reads the primary-locale value from snippet.title, not 
 // entry keyed by the same code as defaultLanguage, a change targeting the default language
 // must not leave that stale entry in the payload alongside the updated snippet field --
 // buildSafeLocalizationsPayload previously copied it forward verbatim and never touched it.
+// ---------------------------------------------------------------------------
+// Deletion feature (docs/PROJECT_SPEC.md §16, 2026-09-20 update). Acceptance fixed
+// before implementation, per the advisor-reviewed scope for this slice:
+//   - a delete-only change removes the target locale entirely, others survive
+//     byte-for-byte;
+//   - a delete for a locale that is ALSO modified in the same approved set wins,
+//     regardless of which order the two changes appear in the input array (delete
+//     is a terminal outcome, not just "the last write wins");
+//   - a delete targeting the video's own defaultLanguage is refused even at merge
+//     time (defense-in-depth; the primary refusal is at propose time in
+//     src/lib/changesets/services.ts's proposeLocalizationDeletion) -- this must
+//     fail closed (throw), never silently blank snippet.title/description;
+//   - conflict detection (baseline vs fresh) is unaffected by changeType -- an
+//     empty baseline that still matches an empty current value is "none", not a
+//     false-positive conflict.
+// ---------------------------------------------------------------------------
+
+test("a delete-only change removes the target locale entirely; other locales survive byte-for-byte", () => {
+  const fresh: FreshVideoContext = {
+    snippet: { title: "Main", description: "Main Desc", defaultLanguage: "en" },
+    localizations: {
+      es: { title: "Titulo ES", description: "Descripcion ES" },
+      de: { title: "Titel DE", description: "Beschreibung DE" },
+    },
+  };
+  const changes: PendingChange[] = [
+    { id: "c1", language: "es", field: "title", baselineValue: "Titulo ES", proposedValue: "", changeType: "delete" },
+    { id: "c2", language: "es", field: "description", baselineValue: "Descripcion ES", proposedValue: "", changeType: "delete" },
+  ];
+
+  const result = buildSafeLocalizationsPayload(fresh, changes);
+
+  assert.equal(Object.prototype.hasOwnProperty.call(result.localizations, "es"), false);
+  assert.deepEqual(result.localizations.de, { title: "Titel DE", description: "Beschreibung DE" });
+});
+
+test("delete wins over a same-locale modify in the same approved set, regardless of array order (delete first)", () => {
+  const fresh: FreshVideoContext = {
+    snippet: { title: "Main", description: "Main Desc", defaultLanguage: "en" },
+    localizations: { es: { title: "Titulo ES", description: "Descripcion ES" } },
+  };
+  const changes: PendingChange[] = [
+    { id: "c1", language: "es", field: "title", baselineValue: "Titulo ES", proposedValue: "", changeType: "delete" },
+    { id: "c2", language: "es", field: "description", baselineValue: "Descripcion ES", proposedValue: "", changeType: "delete" },
+    { id: "c3", language: "es", field: "title", baselineValue: "Titulo ES", proposedValue: "Sneaky Modify", changeType: "modify" },
+  ];
+
+  const result = buildSafeLocalizationsPayload(fresh, changes);
+
+  assert.equal(Object.prototype.hasOwnProperty.call(result.localizations, "es"), false);
+});
+
+test("delete wins over a same-locale modify in the same approved set, regardless of array order (modify first)", () => {
+  const fresh: FreshVideoContext = {
+    snippet: { title: "Main", description: "Main Desc", defaultLanguage: "en" },
+    localizations: { es: { title: "Titulo ES", description: "Descripcion ES" } },
+  };
+  const changes: PendingChange[] = [
+    { id: "c3", language: "es", field: "title", baselineValue: "Titulo ES", proposedValue: "Sneaky Modify", changeType: "modify" },
+    { id: "c1", language: "es", field: "title", baselineValue: "Titulo ES", proposedValue: "", changeType: "delete" },
+    { id: "c2", language: "es", field: "description", baselineValue: "Descripcion ES", proposedValue: "", changeType: "delete" },
+  ];
+
+  const result = buildSafeLocalizationsPayload(fresh, changes);
+
+  assert.equal(Object.prototype.hasOwnProperty.call(result.localizations, "es"), false);
+});
+
+test("buildSafeLocalizationsPayload refuses (throws) a delete change targeting the video's own defaultLanguage, defense-in-depth", () => {
+  const fresh: FreshVideoContext = {
+    snippet: { title: "Main", description: "Main Desc", defaultLanguage: "en" },
+    localizations: {},
+  };
+  const changes: PendingChange[] = [
+    { id: "c1", language: "en", field: "title", baselineValue: "Main", proposedValue: "", changeType: "delete" },
+  ];
+
+  assert.throws(() => buildSafeLocalizationsPayload(fresh, changes));
+});
+
+test("a PendingChange with no changeType behaves exactly like an ordinary field write (backward compatibility)", () => {
+  const fresh: FreshVideoContext = {
+    snippet: { title: "Main", description: "Main Desc", defaultLanguage: "en" },
+    localizations: { es: { title: "Old", description: "Old Desc" } },
+  };
+  const changes: PendingChange[] = [{ id: "c1", language: "es", field: "title", baselineValue: "Old", proposedValue: "New" }];
+
+  const result = buildSafeLocalizationsPayload(fresh, changes);
+
+  assert.deepEqual(result.localizations.es, { title: "New", description: "Old Desc" });
+});
+
+test("empty-string-baseline edge case: a language never localized (empty baseline) that is still absent from the fresh fetch is not a false-positive conflict", () => {
+  const fresh: FreshVideoContext = {
+    snippet: { title: "x", description: "x", defaultLanguage: "en" },
+    localizations: {},
+  };
+  const changes: PendingChange[] = [
+    { id: "c1", language: "pt-BR", field: "title", baselineValue: "", proposedValue: "Titulo PT", changeType: "add" },
+  ];
+
+  const result = detectPreWriteConflict(changes, fresh);
+  assert.equal(result.status, "none");
+});
+
 test("buildSafeLocalizationsPayload never carries a stale localizations entry for the default language forward", () => {
   const fresh: FreshVideoContext = {
     snippet: { title: "Old EN Title", description: "Old EN Description", defaultLanguage: "en" },
