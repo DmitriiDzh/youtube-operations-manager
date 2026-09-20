@@ -8,7 +8,7 @@ import { RuleForm } from "@/components/rule-form";
 import { RuleList } from "@/components/rule-list";
 import { RunButton } from "@/components/run-button";
 import { ManualMode } from "@/components/manual-mode";
-import { ChannelSync } from "@/components/channel-sync";
+import { ContentManager } from "@/components/content-manager";
 import { LocalizationManager } from "@/components/localization-manager";
 import { BatchManager } from "@/components/batch-manager";
 import { AiLocalizationPanel } from "@/components/ai-localization-panel";
@@ -19,12 +19,12 @@ import { AppShell } from "@/components/app-shell";
 import {
   AiLocalizationIcon,
   BatchesIcon,
+  ContentIcon,
   DeviceIcon,
   LocalizationsIcon,
   ManualIcon,
   RulesIcon,
   SettingsIcon,
-  SyncIcon,
 } from "@/components/icons";
 
 export type ChannelInfo = {
@@ -49,7 +49,7 @@ type Rule = {
 const NAV_ITEMS = [
   { value: "manual", label: "Manual", icon: ManualIcon },
   { value: "rules", label: "Rules", icon: RulesIcon },
-  { value: "sync", label: "Sync", icon: SyncIcon },
+  { value: "content", label: "Content", icon: ContentIcon },
   { value: "localizations", label: "Localizations", icon: LocalizationsIcon },
   { value: "ai-localization", label: "AI Localization", icon: AiLocalizationIcon },
   { value: "batches", label: "Batches", icon: BatchesIcon },
@@ -167,13 +167,13 @@ export default function Dashboard() {
         </div>
       )}
 
-      {tab === "sync" && (
+      {tab === "content" && (
         <div>
           <p className="mb-4 text-sm text-zinc-400">
-            Synchronize a channel&rsquo;s videos locally and review existing localization
-            languages. Read-only: no metadata is written to YouTube.
+            Your synchronized videos, Studio-style. Read-only: no metadata is written to
+            YouTube from this tab.
           </p>
-          <ChannelSync />
+          <ContentManager />
         </div>
       )}
 

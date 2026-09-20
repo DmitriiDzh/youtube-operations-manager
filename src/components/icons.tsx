@@ -37,11 +37,16 @@ export function RulesIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-export function SyncIcon(props: SVGProps<SVGSVGElement>) {
+// Matches real YouTube Studio's "Content" sidebar glyph (a stacked video-library icon) rather
+// than the refresh-arrows glyph this tab used under its former name "Sync" --
+// docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slice S2, "maximally close to real Studio" per the
+// owner's explicit visual-fidelity decision.
+export function ContentIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <IconBase {...props}>
-      <path d="M4 12a8 8 0 0 1 14.5-4.5M20 12a8 8 0 0 1-14.5 4.5" />
-      <path d="M18 3v4.5h-4.5M6 21v-4.5h4.5" />
+      <rect x="3" y="5" width="18" height="4" rx="1" />
+      <rect x="3" y="11" width="18" height="4" rx="1" />
+      <rect x="3" y="17" width="10" height="4" rx="1" />
     </IconBase>
   );
 }
