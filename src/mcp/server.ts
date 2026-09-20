@@ -800,12 +800,38 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
   };
 }
 
+// Phase 7 "operation-specific permissions and read-only access to application data"
+// (docs/roadmap/FUTURE_PHASES.md §3, docs/roadmap/plans/PHASE_7_PLAN.md). Restricted mode
+// registers only read-only and propose/create-class tools -- every tool that can reach a
+// real YouTube write (`apply`, `playlist_create`/`update`/`delete`/`add_videos`/
+// `remove_videos`) or switch local write/auth identity (`write_channel_select`,
+// `auth_user_select`) is never registered at all in this mode, not merely gated at call
+// time. This is what a Codex operations workspace would actually run with -- read/inspect
+// data and draft Change Sets, never reassign identity or touch YouTube.
+const MCP_RESTRICTED_MODE_EXCLUDED_TOOLS = new Set([
+  "write_channel_select",
+  "auth_user_select",
+  "apply",
+  "playlist_create",
+  "playlist_update",
+  "playlist_delete",
+  "playlist_add_videos",
+  "playlist_remove_videos",
+]);
+
+function isMcpRestrictedModeEnabled(): boolean {
+  return process.env.MCP_RESTRICTED_MODE === "true" || process.env.MCP_RESTRICTED_MODE === "1";
+}
+
 export function createMcpServer(
   core: VideoMetadataCoreSubset & PlaylistManagementCoreSubset = {
     ...createVideoMetadataCore(),
     ...createPlaylistManagementCore(),
-  }
+  },
+  options: { restrictedMode?: boolean } = {}
 ) {
+  const restrictedMode = options.restrictedMode ?? isMcpRestrictedModeEnabled();
+
   const server = new McpServer({
     name: "youtube-video-metadata",
     version: "0.1.0",
@@ -813,7 +839,24 @@ export function createMcpServer(
 
   const handlers = createMcpToolHandlers(core);
 
-  server.registerTool(
+  // `server.registerTool`'s real type is generic per call (each call site's own Zod schema
+  // determines its handler's argument type); a thin conditional wrapper around it can't
+  // preserve that per-call inference without also duplicating the SDK's own overloads, so
+  // `config`/`handler` are intentionally untyped here -- every call site below still passes
+  // a correctly-matched, individually-typed (schema, handler) pair, exactly as before this
+  // wrapper existed. This function only decides whether to forward that pair at all.
+  function registerTool(
+    name: string,
+    config: { description: string; inputSchema: z.ZodTypeAny },
+    handler: (args: never) => Promise<ToolResponse> | ToolResponse | ReturnType<typeof handlers.whoami>
+  ) {
+    if (restrictedMode && MCP_RESTRICTED_MODE_EXCLUDED_TOOLS.has(name)) {
+      return;
+    }
+    server.registerTool(name, config as never, handler as never);
+  }
+
+  registerTool(
     "write_context",
     {
       description:
@@ -823,7 +866,7 @@ export function createMcpServer(
     () => handlers.writeContext()
   );
 
-  server.registerTool(
+  registerTool(
     "write_channel_list",
     {
       description:
@@ -833,7 +876,7 @@ export function createMcpServer(
     (args) => handlers.writeChannelList(args)
   );
 
-  server.registerTool(
+  registerTool(
     "write_channel_select",
     {
       description:
@@ -843,7 +886,7 @@ export function createMcpServer(
     (args) => handlers.writeChannelSelect(args)
   );
 
-  server.registerTool(
+  registerTool(
     "whoami",
     {
       description:
@@ -853,7 +896,7 @@ export function createMcpServer(
     () => handlers.whoami()
   );
 
-  server.registerTool(
+  registerTool(
     "auth_user_select",
     {
       description:
@@ -863,7 +906,7 @@ export function createMcpServer(
     (args) => handlers.authUserSelect(args)
   );
 
-  server.registerTool(
+  registerTool(
     "list",
     {
       description:
@@ -873,7 +916,7 @@ export function createMcpServer(
     (args) => handlers.list(args)
   );
 
-  server.registerTool(
+  registerTool(
     "transcript",
     {
       description:
@@ -883,7 +926,7 @@ export function createMcpServer(
     (args) => handlers.transcript(args)
   );
 
-  server.registerTool(
+  registerTool(
     "preview",
     {
       description:
@@ -893,7 +936,7 @@ export function createMcpServer(
     (args) => handlers.preview(args)
   );
 
-  server.registerTool(
+  registerTool(
     "apply",
     {
       // RISK-12 fix (2026-09-18, breaking behavioral change): dryRun now defaults to
@@ -906,7 +949,7 @@ export function createMcpServer(
     (args) => handlers.apply(args)
   );
 
-  server.registerTool(
+  registerTool(
     "playlist_list",
     {
       description:
@@ -916,7 +959,7 @@ export function createMcpServer(
     (args) => handlers.playlistList(args)
   );
 
-  server.registerTool(
+  registerTool(
     "playlist_create",
     {
       description:
@@ -926,7 +969,7 @@ export function createMcpServer(
     (args) => handlers.playlistCreate(args)
   );
 
-  server.registerTool(
+  registerTool(
     "playlist_add_videos",
     {
       description:
@@ -936,7 +979,7 @@ export function createMcpServer(
     (args) => handlers.playlistAddVideos(args)
   );
 
-  server.registerTool(
+  registerTool(
     "playlist_delete",
     {
       description:
@@ -946,7 +989,7 @@ export function createMcpServer(
     (args) => handlers.playlistDelete(args)
   );
 
-  server.registerTool(
+  registerTool(
     "playlist_update",
     {
       description:
@@ -956,7 +999,7 @@ export function createMcpServer(
     (args) => handlers.playlistUpdate(args)
   );
 
-  server.registerTool(
+  registerTool(
     "playlist_remove_videos",
     {
       description:
@@ -966,7 +1009,7 @@ export function createMcpServer(
     (args) => handlers.playlistRemoveVideos(args)
   );
 
-  server.registerTool(
+  registerTool(
     "changeset_list",
     {
       description:
@@ -976,7 +1019,7 @@ export function createMcpServer(
     (args) => handlers.changesetList(args)
   );
 
-  server.registerTool(
+  registerTool(
     "changeset_get",
     {
       description:
@@ -986,7 +1029,7 @@ export function createMcpServer(
     (args) => handlers.changesetGet(args)
   );
 
-  server.registerTool(
+  registerTool(
     "localization_import_preview",
     {
       description:
@@ -996,7 +1039,7 @@ export function createMcpServer(
     (args) => handlers.localizationImportPreview(args)
   );
 
-  server.registerTool(
+  registerTool(
     "changeset_create_from_import",
     {
       description:
@@ -1006,7 +1049,7 @@ export function createMcpServer(
     (args) => handlers.changesetCreateFromImport(args)
   );
 
-  server.registerTool(
+  registerTool(
     "batch_list",
     {
       description:
@@ -1016,7 +1059,7 @@ export function createMcpServer(
     (args) => handlers.batchList(args)
   );
 
-  server.registerTool(
+  registerTool(
     "batch_get",
     {
       description:
@@ -1026,7 +1069,7 @@ export function createMcpServer(
     (args) => handlers.batchGet(args)
   );
 
-  server.registerTool(
+  registerTool(
     "channel_sync",
     {
       description:
@@ -1036,7 +1079,7 @@ export function createMcpServer(
     (args) => handlers.channelSync(args)
   );
 
-  server.registerTool(
+  registerTool(
     "channel_list",
     {
       description: "List locally synchronized channels. Read-only. credentialRef is OPTIONAL and falls back to active local auth context.",
@@ -1045,7 +1088,7 @@ export function createMcpServer(
     (args) => handlers.channelList(args)
   );
 
-  server.registerTool(
+  registerTool(
     "channel_video_list",
     {
       description:
