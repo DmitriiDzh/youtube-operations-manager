@@ -49,21 +49,12 @@ header, consistent with how e.g. Batches already behaves. This is now a pure imp
 detail with no open design question — every component just needs to stop maintaining its own
 `channelId` state and instead read the one active channel already known app-wide.
 
-## 4. Open question requiring an owner decision
+## 4. Sync tab's live-resync policy — resolved 2026-09-20 (owner, Telegram msg 131)
 
-**Sync tab's live-resync policy** (§2, item 2). Three reasonable options, none obviously correct
-without a decision:
-   - **(a) Fully automatic, every tab switch** — matches the request most literally, but spends
-     YouTube API quota on every navigation into this tab, with no user control over frequency.
-   - **(b) Automatic, but staleness-gated** — auto-resync only if the locally-stored data is
-     older than some threshold (e.g. 15-30 minutes), otherwise just show the cached local list
-     instantly; a manual "Sync now" affordance remains for an explicit forced refresh. Balances
-     freshness against quota cost.
-   - **(c) Manual only, unchanged from today** — keep the explicit "Sync my channel" button as
-     the only trigger, and interpret the owner's "auto-refresh" request as applying only to
-     already-local data (§1), not to live YouTube calls.
-   Recommend **(b)** as the best balance, but this is genuinely the owner's call, not a technical
-   default — needs sign-off before being built either way.
+**Option (b), staleness-gated:** auto-resync only if the locally-stored data is older than a
+threshold (~15-30 minutes), otherwise show the cached local list instantly; a manual "Sync now"
+affordance remains for an explicit forced refresh. Exact threshold (15 vs. 30 minutes, or
+configurable) is an implementation-time detail, not a further open question.
 
 ## 5. Proposed slices, once assigned
 
@@ -71,6 +62,6 @@ without a decision:
   Localizations/AI-Localization(→Languages) all switch to the single implicit active channel.
 - **T2 (no open questions):** fix the Rules tab's refresh gap (§2, item 1) — fetch on its own tab
   activation like every other tab already does.
-- **T3 (blocked on §4):** implement whichever Sync live-resync policy the owner picks.
+- **T3 (no open questions):** implement the staleness-gated Sync policy per §4.
 
 T1 and T2 are small, independent, and immediately assignable. T3 needs §4 resolved first.
