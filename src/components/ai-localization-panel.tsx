@@ -37,17 +37,6 @@ type EditorialContext = {
   descriptionConstraints?: string;
 };
 
-type EditorialProfile = {
-  channelId: string;
-  version: number;
-  targetAudience: string | null;
-  toneNotes: string | null;
-  terminologyNotes: string | null;
-  titleConstraints: string | null;
-  descriptionConstraints: string | null;
-  updatedAt: string;
-};
-
 type GenerationProvenance = {
   profileVersion: number | null;
   effectiveContext: EditorialContext | null;
@@ -102,11 +91,6 @@ export function AiLocalizationPanel() {
   const [createdChangeSetId, setCreatedChangeSetId] = useState<string | null>(null);
   const [generationContext, setGenerationContext] = useState<GenerationProvenance | null>(null);
 
-  const [profile, setProfile] = useState<EditorialProfile | null>(null);
-  const [profileDraft, setProfileDraft] = useState<EditorialContext>({});
-  const [profileOpen, setProfileOpen] = useState(false);
-  const [savingProfile, setSavingProfile] = useState(false);
-
   const [connections, setConnections] = useState<Array<{ id: string; displayName: string; enabled: boolean; adapterType: string }>>([]);
   const [connectionId, setConnectionId] = useState<string>(""); // "" = default mock provider
 
@@ -140,55 +124,6 @@ export function AiLocalizationPanel() {
       setVideos(data.videos ?? []);
     })();
   }, [channelId]);
-
-  const fetchProfile = useCallback(async () => {
-    if (!channelId) return;
-    const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/ai-localization/profile`);
-    if (!res.ok) return;
-    const data = await res.json();
-    setProfile(data.profile);
-    setProfileDraft(
-      data.profile
-        ? {
-            targetAudience: data.profile.targetAudience ?? undefined,
-            toneNotes: data.profile.toneNotes ?? undefined,
-            terminologyNotes: data.profile.terminologyNotes ?? undefined,
-            titleConstraints: data.profile.titleConstraints ?? undefined,
-            descriptionConstraints: data.profile.descriptionConstraints ?? undefined,
-          }
-        : {}
-    );
-  }, [channelId]);
-
-  useEffect(() => {
-    void fetchProfile();
-  }, [fetchProfile]);
-
-  async function handleSaveProfile() {
-    setError(null);
-    setSavingProfile(true);
-    try {
-      // WYSIWYG: every field currently shown is sent, with an emptied textarea sent
-      // as an explicit `null` (clear that field) rather than omitted (leave
-      // unchanged) -- omission only ever happens for a field this form never loaded.
-      const payload = Object.fromEntries(
-        Object.entries(profileDraft).map(([key, value]) => [key, value === "" ? null : value])
-      );
-      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/ai-localization/profile`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.message ?? "Failed to save editorial profile");
-        return;
-      }
-      setProfile(data.profile);
-    } finally {
-      setSavingProfile(false);
-    }
-  }
 
   function toggleVideo(videoId: string) {
     setSelectedVideoIds((prev) => {
@@ -283,52 +218,6 @@ export function AiLocalizationPanel() {
 
   return (
     <div className="space-y-6">
-      <div className="rounded-lg border border-zinc-800">
-        <button
-          onClick={() => setProfileOpen((v) => !v)}
-          className="flex w-full items-center justify-between px-4 py-2 text-sm font-medium text-zinc-200"
-        >
-          <span>
-            Channel editorial profile {profile ? `(v${profile.version})` : "(none saved)"}
-          </span>
-          <span className="text-xs text-zinc-500">{profileOpen ? "Hide" : "Edit"}</span>
-        </button>
-        {profileOpen && (
-          <div className="space-y-3 border-t border-zinc-800 p-4">
-            <p className="text-xs text-zinc-500">
-              Optional, per-channel guidance passed into generation for this channel only. Never
-              required; a channel with no saved profile generates normally.
-            </p>
-            {(
-              [
-                ["targetAudience", "Target audience"],
-                ["toneNotes", "Tone & style guidance"],
-                ["terminologyNotes", "Preferred terminology"],
-                ["titleConstraints", "Title constraints"],
-                ["descriptionConstraints", "Description constraints"],
-              ] as const
-            ).map(([field, label]) => (
-              <label key={field} className="block">
-                <span className="text-xs text-zinc-400">{label}</span>
-                <textarea
-                  value={profileDraft[field] ?? ""}
-                  onChange={(e) => setProfileDraft((prev) => ({ ...prev, [field]: e.target.value }))}
-                  className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
-                  rows={2}
-                />
-              </label>
-            ))}
-            <button
-              onClick={handleSaveProfile}
-              disabled={savingProfile}
-              className="rounded-md bg-zinc-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-zinc-600 disabled:opacity-50"
-            >
-              {savingProfile ? "Saving..." : "Save profile"}
-            </button>
-          </div>
-        )}
-      </div>
-
       <div className="flex flex-wrap items-center gap-3">
         <input
           value={targetLanguages}

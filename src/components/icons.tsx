@@ -51,6 +51,26 @@ export function ContentIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+// Matches real Studio's "Home" sidebar glyph -- docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slice
+// S4/S6-stub.
+export function HomeIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <IconBase {...props}>
+      <path d="M4 11.5 12 4l8 7.5" />
+      <path d="M6 10v9h12v-9" />
+    </IconBase>
+  );
+}
+
+// Matches real Studio's "Analytics" sidebar glyph (a bar chart) -- Slice S6-stub.
+export function AnalyticsIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <IconBase {...props}>
+      <path d="M4 20V10M10 20V4M16 20v-7M20 20H4" />
+    </IconBase>
+  );
+}
+
 export function LocalizationsIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <IconBase {...props}>

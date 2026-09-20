@@ -14,13 +14,16 @@ import { BatchManager } from "@/components/batch-manager";
 import { AiLocalizationPanel } from "@/components/ai-localization-panel";
 import { AiConnectionsManager } from "@/components/ai-connections-manager";
 import { AppVersionInfo } from "@/components/app-version-info";
+import { EditorialProfilePanel } from "@/components/editorial-profile-panel";
 import { DeviceHandoffPanel } from "@/components/device-handoff-panel";
 import { AppShell } from "@/components/app-shell";
 import {
   AiLocalizationIcon,
+  AnalyticsIcon,
   BatchesIcon,
   ContentIcon,
   DeviceIcon,
+  HomeIcon,
   LocalizationsIcon,
   ManualIcon,
   RulesIcon,
@@ -49,7 +52,9 @@ type Rule = {
 const NAV_ITEMS = [
   { value: "manual", label: "Manual", icon: ManualIcon },
   { value: "rules", label: "Rules", icon: RulesIcon },
+  { value: "home", label: "Home", icon: HomeIcon },
   { value: "content", label: "Content", icon: ContentIcon },
+  { value: "analytics", label: "Analytics", icon: AnalyticsIcon },
   { value: "localizations", label: "Localizations", icon: LocalizationsIcon },
   { value: "ai-localization", label: "AI Localization", icon: AiLocalizationIcon },
   { value: "batches", label: "Batches", icon: BatchesIcon },
@@ -167,6 +172,17 @@ export default function Dashboard() {
         </div>
       )}
 
+      {tab === "home" && (
+        <div className="space-y-6">
+          <p className="text-sm text-zinc-400">
+            Channel dashboard (docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slice S4). Recent-video
+            and comment/subscriber cards are planned for a later pass — this tab starts with the
+            editorial profile, since it applies everywhere AI localization happens.
+          </p>
+          <EditorialProfilePanel />
+        </div>
+      )}
+
       {tab === "content" && (
         <div>
           <p className="mb-4 text-sm text-zinc-400">
@@ -174,6 +190,17 @@ export default function Dashboard() {
             YouTube from this tab.
           </p>
           <ContentManager />
+        </div>
+      )}
+
+      {tab === "analytics" && (
+        <div>
+          <p className="text-sm text-zinc-400">
+            Coming soon — real analytics data requires the YouTube Analytics API and a new
+            OAuth scope, gated on its own separate decision
+            (docs/roadmap/plans/PHASE_8_PLAN.md, docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slice
+            S6).
+          </p>
         </div>
       )}
 
@@ -194,7 +221,7 @@ export default function Dashboard() {
             Generate localization proposals with a deterministic mock AI provider, review
             and edit them, and turn them into a Change Set for the same approval workflow
             as an XLSX import. No real AI provider is called and no metadata is written to
-            YouTube from this tab.
+            YouTube from this tab. (The channel editorial profile moved to the Home tab.)
           </p>
           <AiLocalizationPanel />
         </div>
