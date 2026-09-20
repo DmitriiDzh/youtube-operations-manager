@@ -76,16 +76,29 @@ Inside it, modeled on Studio's own sub-tab shape but carrying our actual data:
     owner sign-off before shipping this wording, not just a translation choice.
 - **Per-video detail view** (replaces both `localization-manager.tsx`'s detail panel and
   `ai-localization-panel.tsx`'s per-video slice of its multi-select form): existing-locale grid
-  (as today), plus two explicit entry points to add/change a language:
-  - **"Import from XLSX"** — today's existing bulk flow, kept as a channel-level action
-    (reachable from the landing view, not only per-video, since XLSX import is inherently
-    multi-video) — not literally per-video, just still reachable from within Languages.
-  - **"Generate with AI"** — opens today's `ai-localization-panel.tsx` generation form, scoped
-    to the one video already selected (target-language input retained; the video multi-select
-    becomes unnecessary in the per-video context, though the channel-wide bulk-generate form
-    could remain reachable from the landing view too, mirroring XLSX import's placement — open
-    question, see §4.2).
-  - Both funnel into the same `<ChangeSetReview>` — unchanged.
+  (as today), with **AI generation as the primary, default path** — resolved 2026-09-20 (owner,
+  Telegram msg 128): *"Мы сразу подразумеваем что наш инструмент/manager использует локализацию
+  с помощью агента. Ручная правка возможна, но это только для того чтобы проверить что сделал
+  агент и возможно подправить местами."* Concretely:
+  - **"Generate with AI"** is the primary action surfaced per video (today's generation form,
+    scoped to the one video already selected) — this is the expected, default way a video gets
+    localized, not one of two equally-weighted options.
+  - Manual editing of a language's title/description is still available, but framed as
+    **reviewing and correcting the agent's output**, not as an independent authoring path — i.e.
+    it lives inside the same per-video view as an edit affordance on the AI-generated proposal
+    (exactly what `ai-localization-panel.tsx`'s existing editable proposal grid already does,
+    `toEditable`/`updateTarget`), not as a separate "manual add a language" flow.
+  - **"Import from XLSX"** is kept as a secondary, channel-level bulk action (reachable from the
+    landing view, not the per-video view) for bulk operations — a bulk correction/review tool
+    over already-generated content, not the primary way new languages get added. Whether to
+    demote it further (e.g. behind an "Advanced" affordance) or keep it at parity visibility with
+    "Generate with AI" on the landing view is left to implementation-time judgment, since the
+    owner's direction is clear on *priority*, not on exact visual demotion.
+  - Both still funnel into the same `<ChangeSetReview>` — unchanged.
+  - §4.2's bulk-vs-per-video AI generation question is **resolved**: keep both — per-video
+    "Generate with AI" as the primary path, and the existing channel-wide bulk-generate form
+    (today's multi-video checklist) reachable from the landing view for generating many videos'
+    worth of proposals in one pass. Neither replaces the other.
 - **Editorial profile** — relocated into a settings/gear affordance within Languages (same
   pattern as its current placement inside AI Localization — this is a relocation, not a redesign
   of that editor itself).
@@ -106,25 +119,27 @@ Change Set review as the approval gate) — this matches the owner's own framing
 at-a-time editor, since that would regress the bulk XLSX/AI workflow this app is actually built
 around.
 
-## 4. Open questions requiring an owner decision before this can be assigned
+## 4. Open questions
 
 1. **Sub-tab semantics** (§2): are "Все/В процессе/Одобрено" (or Studio's literal "Все/
    Черновики/Опубликованные") the right three buckets, and is "Одобрено" (never "Опубликовано")
    the right way to avoid implying a real YouTube write happened? This is the one place a wrong
    choice could mislead an operator about write state — needs explicit sign-off, not an
-   assumption.
-2. **Where does channel-wide (multi-video) AI generation live once "Generate with AI" also
-   exists as a per-video action?** Keep both (bulk form reachable from the landing view, single-
-   video shortcut from the detail view), or drop the bulk form and make generation always
-   per-video (simpler UI, loses the "generate for 10 videos in one pass" convenience the current
-   AI Localization tab offers)?
+   assumption. **Still open.**
+2. ~~Where does channel-wide (multi-video) AI generation live once "Generate with AI" also exists
+   as a per-video action?~~ **Resolved 2026-09-20** (see §2): keep both, per-video generation is
+   the primary path.
 3. **Editorial profile placement**: a settings icon/drawer within Languages, or its own small
    sub-tab inside Languages (mirroring Studio's own settings-within-a-section pattern elsewhere
-   in its product, e.g. Content's own per-video settings panel)?
-4. **Migration of the "AI Localization" nav item**: remove it outright once Languages absorbs
-   it (recommended — avoids two ways to reach the same generation form), or keep it temporarily
-   as a redirect/deprecation notice for one release? Recommend outright removal — this app has no
-   external users depending on a stable nav structure yet.
+   in its product, e.g. Content's own per-video settings panel)? **Still open.**
+4. ~~Migration of the "AI Localization" nav item: remove outright, or keep temporarily as a
+   redirect/deprecation notice?~~ **Resolved 2026-09-20** (owner, Telegram msg 128): **remove
+   outright, immediately** — no transition period, no deprecation notice.
+5. **New, resolved-but-needs-a-slice: channel `<select>` removal.** Owner (msg 128): *"Возможно
+   нам вообще не нужен дропдаун с выбором каналов, т.к. канал уже изначально выбран."* Confirms
+   L1 below (already proposed independently in this plan before this message) — drop both
+   components' own channel selectors, use the single active channel like every other tab. No
+   longer an open question, just an implementation detail of L1.
 
 ## 5. Proposed slices, once assigned
 
@@ -137,11 +152,14 @@ around.
   change over existing data.
 - **L3:** add the "В процессе"/"Одобрено" (or whatever §4.1 resolves to) sub-tab filtering on
   top of L2's table.
-- **L4:** merge the per-video detail view: existing-locale grid + "Import from XLSX"/"Generate
-  with AI" entry points, wiring "Generate with AI" to a per-video-scoped version of the existing
-  generation form.
-- **L5:** relocate the editorial-profile editor per §4.3's resolution; remove the standalone "AI
-  Localization" nav item per §4.4's resolution.
+- **L4:** merge the per-video detail view: existing-locale grid + AI generation as the primary
+  action (with inline edit of its proposal, per §2's resolution) + "Import from XLSX" as a
+  secondary, channel-level bulk action. Remove the standalone "AI Localization" nav item as part
+  of this same slice (§4.4 — resolved, immediate removal, no transition period).
+- **L5:** relocate the editorial-profile editor per §4.3's resolution (still open).
 
-L1 has no open questions blocking it and could be assigned independently of the rest. L2-L5 each
-depend on §4's answers.
+L1 has no open questions blocking it and could be assigned independently of the rest — and now
+also directly answers the owner's separate channel-dropdown-removal request (§4.5). L2 has no
+open questions either (pure column-shape restyle). L3 depends on §4.1 (sub-tab semantics). L4 is
+now mostly resolved (AI-as-primary, immediate nav removal) and could be assigned once L1/L2 land.
+L5 depends on §4.3 (editorial profile placement).

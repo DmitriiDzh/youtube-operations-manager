@@ -177,7 +177,36 @@ implemented during Phases 7-10 unless separately approved:
   vertical slice. See `docs/roadmap/plans/STUDIO_PARITY_PLAN.md` for the researched breakdown
   (real Studio UI structure, per-tab dependency table, proposed slices, open questions) — that
   plan is the actual detail; this bullet only records that the idea exists and where its
-  Analytics-tab portion reuses Phase 8 rather than duplicating it.
+  Analytics-tab portion reuses Phase 8 rather than duplicating it. Owner follow-up (2026-09-20,
+  Telegram) resolved several of its open questions and requested two further, separately-planned
+  pieces of the same idea, recorded as their own bullets below.
+- **Fold "AI Localization" into a Studio-styled "Languages" tab, AI-generation as the primary
+  workflow** (recorded 2026-09-20, owner follow-up to the Studio-parity item above). The
+  "AI Localization" nav tab is removed outright; localization is expected to happen via AI
+  generation by default, with manual editing framed as reviewing/correcting the agent's output,
+  not as an independent authoring path. See `docs/roadmap/plans/LANGUAGES_TAB_MERGE_PLAN.md` for
+  the full design (existing Change Set review is already fully shared across both sources, so
+  this is smaller than it sounds) and its remaining open questions (sub-tab semantics, editorial
+  profile placement).
+- **Auto-refresh tab data on tab switch; remove now-redundant channel-selection dropdowns**
+  (recorded 2026-09-20, owner request via Telegram). Most tabs already refresh their local data
+  on every switch for free (React mount/unmount from this app's existing conditional-rendering
+  tab pattern); the real gaps are the Rules tab (state owned by the parent, not the tab) and the
+  Sync tab's live YouTube re-sync (which costs real API quota and needs an explicit trigger
+  policy, not blind automation on every click). See
+  `docs/roadmap/plans/TAB_REFRESH_AND_CHANNEL_UI_PLAN.md`.
+- **Automatic device-handoff export/import + an update-available notification** (recorded
+  2026-09-20, owner request via Telegram). Auto-export on graceful app shutdown (no such hook
+  exists today — this is new infrastructure, not a config flag), a safe-case auto-import at
+  startup (never overriding the existing divergent-lineage-requires-a-human safety check), and a
+  notification affordance when a newer snapshot appears in the shared Syncthing folder while the
+  app is already running. **Explicitly does not make concurrent multi-device editing safe** —
+  that remains the separate, harder, already-tracked problem above (multi-device
+  application-managed synchronization). See
+  `docs/roadmap/plans/DEVICE_HANDOFF_AUTO_SYNC_PLAN.md` for the full design and the real cost
+  constraints found by reading the actual export/import code (export is expensive — an app-wide
+  lock plus a full-database `VACUUM` — so "export on every single change" is deliberately not
+  the literal design; see that plan §2).
 
 ## 8. How to use this roadmap in future sessions
 
