@@ -69,8 +69,10 @@ Additionally:
 
 ### GATE D — Before network or multi-user deployment
 
-- Per-user authorization implemented (closes RISK-02).
-- Channel ownership isolation implemented (closes RISK-02).
+- Per-user authorization implemented (closes RISK-02) — **done, 2026-09-20**, see RISK-02 below;
+  scoped to active-channel, not a full multi-operator authorization model (Gate D's other items
+  below remain unaddressed).
+- Channel ownership isolation implemented (closes RISK-02) — **done, 2026-09-20**.
 - Upload size enforcement hardened to actual bytes received, not just declared headers (closes RISK-01).
 - CSRF protections applied where applicable (none of the current POST routes have them — matches the rest of the app today, but must be addressed before network exposure).
 - Secure credential storage (closes RISK-07).
@@ -119,17 +121,16 @@ Not every issue in this register must be fixed immediately. It must, however, al
 
 ---
 
-## RISK-02 — No per-user channel ownership boundary
+## RISK-02 — No per-user channel ownership boundary — FIXED, 2026-09-20
 
-- **Affected components:** `src/lib/channel-sync/services.ts` (`listChannels`), `src/lib/localization/services.ts`, `src/lib/changesets/services.ts` — every read/write path that takes a `channelId`.
-- **Current behavior:** Any authenticated NextAuth session can list, sync, export, import, and approve/reject change sets for **any** locally synchronized channel, regardless of which Google account originally connected it. `channels.connectedUserId` is recorded for traceability only, explicitly documented as "not an ownership boundary" (`docs/ARCHITECTURE.md` §7.1). This predates Phase 4 — `channel-sync`'s `listChannels()` already has no per-user filter.
-- **Actual risk:** If more than one person is ever authenticated against the same running instance, one operator could read/modify another operator's channel data. Not exploitable today under the documented single-operator model.
-- **Existing mitigation:** The whole application is designed and documented as a **single local operator** tool (`docs/PROJECT_SPEC.md` §37); a `changeSetId` is still scoped to its `channelId` to prevent cross-channel access via a forged path parameter, which is a different (already-covered) concern from per-user ownership.
-- **Required remediation:** Before any multi-operator or hosted deployment: add a `connectedUserId`-based (or role-based) authorization check to every channel-scoped read/write path, decide whether channels can be shared between operators by design or are strictly 1:1, and add tests proving a session cannot access another user's channel.
-- **Acceptance criteria:** An authenticated session for user A receives `403`/`404` (not channel data) when requesting a channel/change-set connected to user B, with a test covering at least `GET /api/channels`, `GET /api/channels/[channelId]/change-sets`, and one write action.
-- **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON` (current single-operator model), `BLOCKS_NETWORK_DEPLOYMENT`.
-- **Approval required from:** project owner (product decision: is multi-operator ever in scope?).
-- **Status:** OPEN. **Cross-reference (Pre-Release Cross-Platform Persistence task):** `users.id` was confirmed by inspection to be the Google OAuth `sub` claim (a stable, provider-issued identity — `src/lib/auth.ts`'s `session()` callback, `src/lib/db.ts`'s `upsertUserOAuthOnSignIn`), not a locally-generated artifact. This means a device-handoff snapshot importing `channels.connectedUserId`/`rules.userId` values never creates a *new* instance of this risk — the exposure (any authenticated session sees any locally synced channel) is exactly the same, pre-existing, already-accepted one described above, whether the channel was synced locally or arrived via an imported snapshot. Not resolved by that task; only confirmed not worsened.
+- **Affected components:** `src/lib/channel-sync/services.ts` (`listChannels`), `src/lib/localization/services.ts`, `src/lib/changesets/services.ts`, `src/lib/batches/services.ts`, `src/lib/ai-localization/services.ts` — every read path that takes a `channelId`, across Web API, MCP, and CLI.
+- **Original behavior:** Any authenticated NextAuth session (or MCP/CLI local user) could list, sync, export, import, and approve/reject change sets for **any** locally synchronized channel, regardless of which Google account originally connected it. `channels.connectedUserId` was recorded for traceability only, explicitly documented as "not an ownership boundary" (`docs/ARCHITECTURE.md` §7.1).
+- **Trigger:** the project owner tested against multiple different YouTube channels over time; the Sync tab's channel picker (a documented, spec'd feature) surfaced every one of them, not just the currently signed-in one. The owner made an explicit product decision (2026-09-20, Telegram): filter **any** information a session can see to its currently active channel — resolving this risk's open "is multi-operator ever in scope?" question with "no — scope every read to the active channel instead."
+- **Fix applied:** `docs/decisions/0004-active-channel-read-scoping.md` records the full design. Summary: `users.selectedChannelId` (previously used only by the write-safety guardrail) is now the single active-channel source of truth for reads too, via a new `src/lib/channel-access` service (`assertActiveChannel`, `filterToActiveChannel`). It is kept fresh for free from `GET /api/youtube/channel-info` and `channel-sync`'s implicit ("sync my own channel") path — never from an explicit-`channelId` sync, which is an unauthenticated-scope lookup (see RISK-37 below). The check is applied at every channel-scoped read entry point across Web API routes, MCP tools, and CLI commands: channel/video listing, change-set list/get/approve/reject/approve-all/reject-all, batch list/get/audit/errors/prepare, editorial profile, AI-localization generate/provenance, localization overview/detail/export/import/import-preview. No live YouTube API call was added to any read path (`selectedChannelId` is a local lookup), preserving each domain's "zero live YouTube calls" invariant.
+- **Acceptance criteria met:** regression tests cover both the positive case (active channel's own data is returned) and the negative/boundary cases (a `channelId` that is not the active one is rejected with `CHANNEL_NOT_ACTIVE`; no active channel resolved yet yields an empty list rather than everything) across all three interfaces — `src/lib/channel-access/service.test.ts`, `src/lib/channel-sync/services.test.ts`, `src/mcp/server.test.ts`, `src/cli/video-metadata.test.ts`, `src/cli/video-metadata.recovery-gate.test.ts`.
+- **Gate(s):** was `DEFERRED_WITH_DOCUMENTED_REASON`/`BLOCKS_NETWORK_DEPLOYMENT` — no longer blocking for the read-visibility concern this entry covered. Gate D's other items (upload-size hardening, CSRF, credential storage) are unaffected and remain separately tracked.
+- **Approval:** project owner, 2026-09-20 (Telegram) — see ADR 0004.
+- **Status:** FIXED. **Cross-reference (Pre-Release Cross-Platform Persistence task):** `users.id` was confirmed by inspection to be the Google OAuth `sub` claim (a stable, provider-issued identity — `src/lib/auth.ts`'s `session()` callback, `src/lib/db.ts`'s `upsertUserOAuthOnSignIn`), not a locally-generated artifact — unaffected by this fix, still relevant to how `activateChannel` keys on `userId`.
 
 ---
 
@@ -637,6 +638,17 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Approval required from:** none required to leave open; project owner if a shared cross-transport mapping (e.g. a single `{code, status}` lookup table each transport's own formatter consults) is ever scheduled.
 - **Status:** OPEN — found by review series cycle 3, not fixed this round.
 
+## RISK-39 — `syncChannel`'s explicit-`channelId` path has no ownership check (write side) — OPEN, 2026-09-20
+
+- **Affected components:** `src/lib/youtube.ts` (`getChannelForSync`), `src/lib/channel-sync/adapters/youtube-api.ts`, `src/lib/channel-sync/services.ts` (`syncChannel`), `src/app/api/channels/sync/route.ts`, `src/components/channel-sync.tsx` ("Re-sync this channel" picker action).
+- **Current behavior:** When `syncChannel` is called with an explicit `channelId` (the Sync tab's "re-sync a previously-known channel" action, or a direct API/MCP/CLI call), `getChannelForSync` performs a public, unauthenticated-scope `youtube.channels.list({ id: [channelId] })` lookup — **not** cross-checked against the caller's OAuth-authenticated ("mine") channel at all. The result is upserted into the local `channels`/`videos` tables regardless of whether it has anything to do with the calling session's actual Google account.
+- **Actual risk:** A caller can cause the local database to sync (fetch + persist) metadata for **any** public YouTube channel ID, not just their own, consuming their own YouTube API quota to do so. Found alongside the RISK-02 fix (2026-09-20) — discovered, not introduced, by that work: RISK-02's read-scoping fix (`docs/decisions/0004-active-channel-read-scoping.md`) means the result of such a sync is no longer *visible* afterward (it never becomes the active channel), which narrows the practical impact to "wasted quota + a harmless local row," but the write itself is still unauthenticated-scope.
+- **Existing mitigation:** RISK-02's fix means a foreign channel's data, once synced this way, is never shown back to the caller (it's not their active channel) — the local database gains a row, but nothing in the UI/API/MCP/CLI surfaces it as "yours." No write to YouTube itself is possible via this path (`channel-sync` never writes to YouTube, `docs/ARCHITECTURE.md` §4.3).
+- **Required remediation:** Decide whether an explicit-`channelId` sync should be restricted to channel IDs already known to be reachable by the caller's OAuth token (e.g. requiring it to match `channels.list({mine:true})`'s result, which would make the explicit-`channelId` parameter redundant for this use case), or removed entirely in favor of always resolving "mine" — the parameter's original purpose is unclear and may predate the current single-active-channel model.
+- **Gate(s):** none blocking (impact narrowed by RISK-02's fix to local-storage/quota waste, no data exposure).
+- **Approval required from:** project owner (product decision: is re-syncing an explicitly-named, non-active channel ever a legitimate use case?).
+- **Status:** OPEN — flagged for a future decision, not fixed as part of the RISK-02 change (different concern: write-path input validation, not read-side visibility).
+
 ---
 
 ## Summary table
@@ -644,7 +656,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | ID | Title | Gates | Status |
 |---|---|---|---|
 | RISK-01 | XLSX upload size enforcement is best-effort | DEFERRED, BLOCKS_NETWORK_DEPLOYMENT | OPEN |
-| RISK-02 | No per-user channel ownership | DEFERRED, BLOCKS_NETWORK_DEPLOYMENT | OPEN |
+| RISK-02 | No per-user channel ownership → every read now scoped to the active channel | none (fixed) | FIXED, 2026-09-20 |
 | RISK-03 | Conflict detection bounded by last sync | BLOCKS_PHASE_5_WRITES, BLOCKS_OPERATIONS_RELEASE | OPEN |
 | RISK-04 | No CLI/MCP Change Set interfaces | BLOCKS_OPERATIONS_RELEASE | PARTIALLY RESOLVED (full read/propose/create surface on both MCP and CLI shipped 2026-09-20; only a future apply-class tool remains OPEN) |
 | RISK-05 | No real browser/OAuth verification | BLOCKS_OPERATIONS_RELEASE, BLOCKS_PHASE_5_WRITES | OPEN |
@@ -681,5 +693,6 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-36 | Minor cycle-1 findings (unguarded mkdirSync, latent gaps, perf, duplication) | none blocking | OPEN |
 | RISK-37 | Minor cycle-2 findings (marker-read duplication, CONFLICT-helper consolidation, mapUnknownError divergence, wasted DELETE) | none blocking | OPEN |
 | RISK-38 | Duplicated OperationLockError/RecoveryModeError -> HTTP-status mapping (5 sites) | none blocking | OPEN |
+| RISK-39 | `syncChannel`'s explicit-channelId path has no OAuth-ownership check (write side) | none blocking | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

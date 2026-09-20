@@ -1,4 +1,5 @@
 import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
+import { createChannelAccessCore } from "@/lib/channel-access";
 import { createChannelSyncStoreAdapter } from "./adapters/store";
 import { createChannelSyncYoutubeApiAdapter } from "./adapters/youtube-api";
 import { createDefaultLogger } from "./adapters/logger";
@@ -16,6 +17,7 @@ export function createChannelSyncCore() {
     youtubeApi: createChannelSyncYoutubeApiAdapter(),
     channelStore: createChannelSyncStoreAdapter(),
     logger: createDefaultLogger(),
+    channelAccess: createChannelAccessCore(),
   });
 }
 

@@ -1,4 +1,5 @@
 import { YOUTUBE_READ_SCOPE } from "@/lib/auth";
+import type { ChannelAccessService } from "@/lib/channel-access";
 import {
   DomainError,
   isDomainError,
@@ -100,6 +101,7 @@ type ServiceDependencies = {
     info(payload: { event: string; context?: Record<string, unknown> }): void;
     error(payload: { event: string; context?: Record<string, unknown> }): void;
   };
+  channelAccess: ChannelAccessService;
 };
 
 function mapUnknownError(error: unknown, fallbackCode: DomainError["code"]) {
@@ -176,6 +178,18 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
 
         const connectedUserId = getCredentialUserId(parsedInput.credentialRef);
 
+        // Only an *implicit* resolution (no explicit channelId -- i.e. "sync my channel",
+        // channels.list({mine:true}) under the hood) is trustworthy evidence of which channel
+        // this session's live OAuth token actually grants. An explicit channelId is a public,
+        // unauthenticated-scope lookup (see getChannelForSync) and must never make some other
+        // channel "active" just because it happened to be re-synced.
+        if (!parsedInput.channelId && connectedUserId) {
+          await deps.channelAccess.activateChannel({
+            userId: connectedUserId,
+            channelId: channel.channelId,
+          });
+        }
+
         await deps.channelStore.upsertChannel({
           channelId: channel.channelId,
           title: channel.title,
@@ -248,13 +262,16 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
     },
 
     async listChannels(input: unknown) {
-      parseWithSchema(listChannelsInputSchema, input, "list channels input");
+      const parsedInput = parseWithSchema(listChannelsInputSchema, input, "list channels input");
 
       try {
+        const userId = getCredentialUserId(parsedInput.credentialRef);
+        const activeChannelId = await deps.channelAccess.getActiveChannelId(userId);
         const records = await deps.channelStore.listChannels();
+        const visible = records.filter((record) => record.channelId === activeChannelId);
         return parseWithSchema(
           listChannelsOutputSchema,
-          { channels: records.map(mapStoredChannel) },
+          { channels: visible.map(mapStoredChannel) },
           "list channels output"
         );
       } catch (error) {
@@ -270,6 +287,12 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
       );
 
       try {
+        const userId = getCredentialUserId(parsedInput.credentialRef);
+        await deps.channelAccess.assertActiveChannel({
+          userId,
+          channelId: parsedInput.channelId,
+        });
+
         const records = await deps.channelStore.listVideosByChannel(parsedInput.channelId);
         return parseWithSchema(
           listSyncedVideosOutputSchema,

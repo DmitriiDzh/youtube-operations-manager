@@ -3,9 +3,11 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createAiLocalizationCore } from "@/lib/ai-localization";
 import { DomainError } from "@/lib/ai-localization/contracts";
+import { createChannelAccessCore } from "@/lib/channel-access";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
 const core = createAiLocalizationCore();
+const channelAccess = createChannelAccessCore();
 
 // Phase 6, Channel Editorial Profiles: view/edit a channel's persistent editorial
 // profile. Never writes to YouTube, never persists a Change/ChangeSet (AC-PROFILE-10),
@@ -22,6 +24,7 @@ export async function GET(
 
   try {
     const { channelId } = await params;
+    await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
     const profile = await core.getEditorialProfile({ channelId });
     return NextResponse.json({ profile });
   } catch (error) {
@@ -50,6 +53,7 @@ export async function PUT(
 
   try {
     const { channelId } = await params;
+    await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
 
     let body: Record<string, unknown>;
     try {

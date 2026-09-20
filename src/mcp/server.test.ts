@@ -6,6 +6,7 @@ import type { PlaylistManagementCore } from "@/lib/playlist-management";
 import type { ChangeSetCore } from "@/lib/changesets";
 import type { BatchCore } from "@/lib/batches";
 import type { ChannelSyncCore } from "@/lib/channel-sync";
+import type { ChannelAccessCore } from "@/lib/channel-access";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { createMcpServer, createMcpToolHandlers } from "./server";
@@ -1421,8 +1422,30 @@ function makeOperationsCoreStub(): Pick<
   };
 }
 
+// Permissive by default -- these existing tests exercise pre-existing behaviors
+// (validation, DomainError propagation, requireBatchForChannel ownership) unrelated to the
+// active-channel read-scoping check itself (RISK-02, docs/decisions/0004). Dedicated
+// CHANNEL_NOT_ACTIVE tests below use a restrictive stub instead.
+function makeChannelAccessCoreStub(): Pick<
+  ChannelAccessCore,
+  "assertActiveChannel" | "getActiveChannelId" | "filterToActiveChannel" | "activateChannel"
+> {
+  return {
+    assertActiveChannel: async (args: { channelId: string }) => args.channelId,
+    getActiveChannelId: async () => "UC_1",
+    filterToActiveChannel: (items) => [...items],
+    activateChannel: async () => undefined,
+  };
+}
+
 test("MCP changeset_list returns change sets for a channel", async () => {
-  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), makeOperationsCoreStub());
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub()
+  );
   const result = await handlers.changesetList({ channelId: "UC_1" });
 
   assert.equal(result.isError, undefined);
@@ -1449,7 +1472,13 @@ test("MCP changeset_list rejects a missing channelId before calling the core", a
 });
 
 test("MCP changeset_get returns a change set with its changes", async () => {
-  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), makeOperationsCoreStub());
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub()
+  );
   const result = await handlers.changesetGet({ channelId: "UC_1", changeSetId: "cs-1" });
 
   assert.equal(result.isError, undefined);
@@ -1468,7 +1497,13 @@ test("MCP changeset_get propagates a not_found DomainError unchanged", async () 
     });
   };
 
-  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), operationsCore);
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    operationsCore,
+    undefined,
+    makeChannelAccessCoreStub()
+  );
   const result = await handlers.changesetGet({ channelId: "UC_1", changeSetId: "missing" });
 
   assert.equal(result.isError, true);
@@ -1492,7 +1527,13 @@ test("MCP localization_import_preview decodes base64 and forwards the exact byte
     };
   };
 
-  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), operationsCore);
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    operationsCore,
+    undefined,
+    makeChannelAccessCoreStub()
+  );
   const result = await handlers.localizationImportPreview({
     channelId: "UC_1",
     filename: "export.xlsx",
@@ -1517,7 +1558,13 @@ test("MCP localization_import_preview rejects input missing fileBase64", async (
 });
 
 test("MCP batch_list returns batches for a channel", async () => {
-  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), makeOperationsCoreStub());
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub()
+  );
   const result = await handlers.batchList({ channelId: "UC_1" });
 
   assert.equal(result.isError, undefined);
@@ -1534,7 +1581,13 @@ test("MCP batch_get verifies channel ownership via requireBatchForChannel, not a
     return makeBatch();
   };
 
-  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), operationsCore);
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    operationsCore,
+    undefined,
+    makeChannelAccessCoreStub()
+  );
   const result = await handlers.batchGet({ channelId: "UC_1", batchId: "batch-1" });
 
   assert.equal(result.isError, undefined);
@@ -1554,12 +1607,68 @@ test("MCP batch_get fails closed when the batch does not belong to the given cha
     });
   };
 
-  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), operationsCore);
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    operationsCore,
+    undefined,
+    makeChannelAccessCoreStub()
+  );
   const result = await handlers.batchGet({ channelId: "UC_OTHER", batchId: "batch-1" });
 
   assert.equal(result.isError, true);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
   assert.equal(payload.error.code, "not_found");
+});
+
+// Owner's requirement (2026-09-20, docs/decisions/0004): every channel-scoped read must be
+// rejected when the requested channelId is not this session's active channel.
+function makeInactiveChannelAccessCoreStub(): Pick<
+  ChannelAccessCore,
+  "assertActiveChannel" | "getActiveChannelId" | "filterToActiveChannel" | "activateChannel"
+> {
+  return {
+    assertActiveChannel: async (args: { channelId: string }) => {
+      throw new DomainError({
+        code: "CHANNEL_NOT_ACTIVE",
+        message: "The requested channel is not this session's currently active channel.",
+        details: { channelId: args.channelId, activeChannelId: null },
+      });
+    },
+    getActiveChannelId: async () => null,
+    filterToActiveChannel: () => [],
+    activateChannel: async () => undefined,
+  };
+}
+
+test("MCP changeset_list rejects a channelId that is not the caller's active channel", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeInactiveChannelAccessCoreStub()
+  );
+  const result = await handlers.changesetList({ channelId: "UC_1" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP batch_get rejects a channelId that is not the caller's active channel", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeInactiveChannelAccessCoreStub()
+  );
+  const result = await handlers.batchGet({ channelId: "UC_1", batchId: "batch-1" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
 });
 
 // BL-008 (docs/roadmap/BACKLOG.md): channel_sync, channel_list, channel_video_list.
@@ -1725,7 +1834,13 @@ test("MCP changeset_create_from_import decodes base64 and persists via createCha
     };
   };
 
-  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), operationsCore);
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    operationsCore,
+    undefined,
+    makeChannelAccessCoreStub()
+  );
   const result = await handlers.changesetCreateFromImport({
     channelId: "UC_1",
     filename: "export.xlsx",
@@ -1741,7 +1856,13 @@ test("MCP changeset_create_from_import decodes base64 and persists via createCha
 test("MCP changeset_create_from_import is rejected while the operation lock is held; changeset_list is not", async () => {
   await acquireOperationLock(rawSqlClient, "import");
   try {
-    const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), makeOperationsCoreStub());
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub()
+    );
 
     const createResult = await handlers.changesetCreateFromImport({
       channelId: "UC_1",

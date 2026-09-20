@@ -3,9 +3,11 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { DomainError } from "@/lib/changesets/contracts";
 import { createChangeSetCore } from "@/lib/changesets";
+import { createChannelAccessCore } from "@/lib/channel-access";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
 const core = createChangeSetCore();
+const channelAccess = createChannelAccessCore();
 
 export async function POST(
   _request: Request,
@@ -18,6 +20,7 @@ export async function POST(
 
   try {
     const { channelId, changeSetId } = await params;
+    await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
     const result = await core.approveAllValid({ channelId, changeSetId });
     return NextResponse.json(result);
   } catch (error) {

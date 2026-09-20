@@ -22,6 +22,7 @@ export type DomainErrorCode =
   | "WRITE_CHANNEL_REQUIRED"
   | "WRITE_CHANNEL_MISMATCH"
   | "WRITE_CHANNEL_UNRESOLVED"
+  | "CHANNEL_NOT_ACTIVE"
   | "change_not_approvable"
   | "batch_invalid_selection"
   | "batch_not_found"

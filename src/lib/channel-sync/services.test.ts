@@ -1,7 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createChannelAccessService } from "@/lib/channel-access";
 import { DomainError } from "./contracts";
 import { createChannelSyncServices, type StoredChannelRecord, type StoredVideoRecord } from "./services";
+
+function createFakeChannelAccess() {
+  const selections = new Map<string, string>();
+  const service = createChannelAccessService({
+    async getSelectedChannelId(userId: string) {
+      return selections.get(userId) ?? null;
+    },
+    async setSelectedChannelId(userId: string, channelId: string) {
+      selections.set(userId, channelId);
+    },
+  });
+  return { ...service, selections };
+}
 
 function createFakeStore() {
   const channels = new Map<string, StoredChannelRecord>();
@@ -75,6 +89,7 @@ function createServicesFixture(
   }> = {}
 ) {
   const store = createFakeStore();
+  const channelAccess = createFakeChannelAccess();
   const videoMetadataCalls: string[][] = overrides.videoMetadataCalls ?? [];
   const videoIds = overrides.videoIds ?? Array.from({ length: 120 }, (_, i) => `v${i + 1}`);
 
@@ -114,9 +129,10 @@ function createServicesFixture(
     },
     channelStore: store,
     logger: { info: () => undefined, error: () => undefined },
+    channelAccess,
   });
 
-  return { services, store, videoMetadataCalls };
+  return { services, store, channelAccess, videoMetadataCalls };
 }
 
 test("syncChannel persists channel and videos and returns a stable summary", async () => {
@@ -156,11 +172,14 @@ test("syncChannel delegates all enumerated video ids to the batch adapter in one
 test("syncChannel exposes existing localization languages per video", async () => {
   const { services } = createServicesFixture({ videoIds: ["v1"] });
 
-  await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  // No explicit channelId -- this is the "sync my own channel" path, which is what actually
+  // makes the resulting channel the caller's active channel (see the CHANNEL_NOT_ACTIVE tests
+  // below), so listSyncedVideos for it is allowed afterward.
+  const synced = await services.syncChannel({ credentialRef: { userId: "user-1" } });
 
   const listed = await services.listSyncedVideos({
     credentialRef: { userId: "user-1" },
-    channelId: "UC_TEST",
+    channelId: synced.channel.channelId,
   });
 
   assert.equal(listed.videos.length, 1);
@@ -199,6 +218,7 @@ test("syncChannel fails with not_found when the channel cannot be resolved", asy
     },
     channelStore: createFakeStore(),
     logger: { info: () => undefined, error: () => undefined },
+    channelAccess: createFakeChannelAccess(),
   });
 
   await assert.rejects(
@@ -229,15 +249,43 @@ test("syncChannel rejects invalid input before calling the YouTube adapter", asy
 test("listChannels returns persisted channels", async () => {
   const { services } = createServicesFixture({ videoIds: [] });
 
-  await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  // Implicit ("my own channel") sync -- makes the resolved channel the caller's active channel.
+  const synced = await services.syncChannel({ credentialRef: { userId: "user-1" } });
   const result = await services.listChannels({ credentialRef: { userId: "user-1" } });
 
   assert.equal(result.channels.length, 1);
-  assert.equal(result.channels[0]?.channelId, "UC_TEST");
+  assert.equal(result.channels[0]?.channelId, synced.channel.channelId);
 });
 
-test("listSyncedVideos returns an empty list for a channel that has never been synced", async () => {
+// Owner's requirement (2026-09-20): "любую информацию... исключительно по каналу что сейчас
+// активен" -- reproduces the exact real-world report that prompted it (a device that had
+// synced multiple different channels over time showed all of them in the Sync picker).
+test("listChannels: a second, differently-synced channel does not leak into another user's list (RISK-02)", async () => {
   const { services } = createServicesFixture({ videoIds: [] });
+
+  // Explicit channelId -- e.g. an earlier test session's channel, re-synced from the picker.
+  await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_OTHER" });
+  await services.syncChannel({ credentialRef: { userId: "user-2" } }); // user-2's own channel
+
+  const result = await services.listChannels({ credentialRef: { userId: "user-2" } });
+
+  assert.equal(result.channels.length, 1);
+  assert.notEqual(result.channels[0]?.channelId, "UC_OTHER");
+});
+
+test("listChannels returns nothing for a session whose active channel was never resolved", async () => {
+  const { services } = createServicesFixture({ videoIds: [] });
+
+  await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" }); // explicit -- not activated
+
+  const result = await services.listChannels({ credentialRef: { userId: "user-1" } });
+
+  assert.deepEqual(result.channels, []);
+});
+
+test("listSyncedVideos returns an empty list for the active channel that has never been synced (zero video rows)", async () => {
+  const { services, channelAccess } = createServicesFixture({ videoIds: [] });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_NEVER_SYNCED" });
 
   const result = await services.listSyncedVideos({
     credentialRef: { userId: "user-1" },
@@ -246,4 +294,45 @@ test("listSyncedVideos returns an empty list for a channel that has never been s
 
   assert.deepEqual(result.videos, []);
   assert.equal(result.channelId, "UC_NEVER_SYNCED");
+});
+
+test("listSyncedVideos rejects a channelId that is not the caller's active channel (CHANNEL_NOT_ACTIVE)", async () => {
+  const { services } = createServicesFixture({ videoIds: ["v1"] });
+  await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" }); // explicit -- not activated
+
+  await assert.rejects(
+    () =>
+      services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" }),
+    (error: unknown) => {
+      assert.ok(error instanceof DomainError);
+      assert.equal(error.code, "CHANNEL_NOT_ACTIVE");
+      return true;
+    }
+  );
+});
+
+test("listSyncedVideos rejects any request with no resolvable caller identity", async () => {
+  const { services } = createServicesFixture({ videoIds: ["v1"] });
+
+  await assert.rejects(
+    () =>
+      services.listSyncedVideos({
+        credentialRef: { accessToken: "tok" },
+        channelId: "UC_TEST",
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof DomainError);
+      assert.equal(error.code, "CHANNEL_NOT_ACTIVE");
+      return true;
+    }
+  );
+});
+
+test("syncChannel with an explicit channelId never changes the caller's active channel", async () => {
+  const { services, channelAccess } = createServicesFixture({ videoIds: [] });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_MINE_ALREADY" });
+
+  await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_SOMEONE_ELSE" });
+
+  assert.equal(await channelAccess.getActiveChannelId("user-1"), "UC_MINE_ALREADY");
 });

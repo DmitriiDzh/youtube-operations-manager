@@ -3,9 +3,11 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createBatchCore } from "@/lib/batches";
 import { DomainError } from "@/lib/batches/contracts";
+import { createChannelAccessCore } from "@/lib/channel-access";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
 const core = createBatchCore();
+const channelAccess = createChannelAccessCore();
 
 export async function GET(
   _request: Request,
@@ -18,6 +20,7 @@ export async function GET(
 
   try {
     const { channelId, batchId } = await params;
+    await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
     // AGENTS.md §F / docs/DEVELOPMENT_PLAYBOOK.md §6.6: channel-context validation is
     // not automatic -- requireBatchForChannel verifies this batch actually belongs to
     // the channel named in the URL before returning anything about it.
