@@ -1,9 +1,13 @@
 # Languages tab — UX redesign plan (one table, AI-first, inline)
 
-Status: **Proposal — not yet approved, no code written.** Produced per the project owner's
-Telegram request, 2026-09-20: "Давай подробнее разберём функционал Languages и редактирование с
-помощью ИИ. Сейчас там 2 таблицы, нужно преобразовать в одну и сделать эту функцию максимально
-user friendly. Сделай анализ и подготовь предложение по редизайну."
+Status: **E1-E4b IMPLEMENTED (2026-09-21, `feature/languages-ux-e1-e4b`); E5 still not assigned
+(blocked on Open Question 2, §7.7).** Produced per the project owner's Telegram request,
+2026-09-20: "Давай подробнее разберём функционал Languages и редактирование с помощью ИИ. Сейчас
+там 2 таблицы, нужно преобразовать в одну и сделать эту функцию максимально user friendly. Сделай
+анализ и подготовь предложение по редизайну." Assigned 2026-09-21 ("Да, начинай" -- explicit
+answer to §7.7's last open item, "whether to start E1-E4b now"). See §7.6's table for per-slice
+implementation notes and `docs/ROADMAP_STATUS.md`/`docs/roadmap/BACKLOG.md` (BL-037) for the
+verified implementation record.
 
 This plan does not authorize implementation. It documents the current state, the concrete
 problems found, and a proposed redesign, for the owner to accept, redirect, or reject before any
@@ -207,6 +211,12 @@ beyond horizontal scroll unless the owner wants one (e.g. a "show only tracked l
 least one missing video" filter) — flagging, not solving, since it depends on how many languages
 real usage ends up tracking.
 
+**Implemented 2026-09-21:** the real "Tropico Jazz" channel currently has 3 tracked languages
+(en, en-US, es) — well under the flagged 6-8 threshold, so the horizontal-scroll mechanism carries
+the current real width fine and the tradeoff above remains theoretical, not yet observed. Live
+browser-verified: per-language ✓/— columns render correctly and are independently sortable
+(missing-first by default, per column).
+
 ### 7.2 Requirement 2 — add/remove tracked language columns (revised, 2026-09-20 follow-up)
 
 **Owner's answer (Telegram, 2026-09-20):** "оценивать как основное применение это 'какие переводы
@@ -327,15 +337,15 @@ kind of risk).
 
 Ordered by risk/dependency, not necessarily by priority — the owner may reorder:
 
-| Slice | Covers | New backend? | Risk level |
-|---|---|---|---|
-| **E1** | 7.3 (sortable columns) | No | None |
-| **E2** | 7.1 (per-language ✓/— columns) | No | Low (table-width UX tradeoff only) |
-| **E3** | 7.5 (bulk "add missing translation" per language) | No | None |
-| **E4** | §4.2/§4.3 from the original proposal (contextual bulk bar + inline per-video generate) | No | Low (same as original plan) |
-| **E4b** | 7.4 (empty "Recommended languages" placeholder, resolved) | No | None |
-| **E5** | 7.2 (tracked-language add/remove **+ real deletion with multi-step confirm and 30-day-visible restore**) | Yes — additive `channels` column + endpoints + a new small live-write path (identity/backup/audit/verify) for `localizations`, sibling to `video-details` | **High — a new live-write capability, an already-approved reversal of `PROJECT_SPEC.md` §16's prior deferred-deletion stance, and a second write path outside the Gate-B-barriered Batches pipeline. Blocked only on Open Question 2 (§7.7) now — 1 and 3 are resolved.** |
-| **E6** | *(retired — folded into E4b, resolved as a placeholder)* | — | — |
+| Slice | Covers | New backend? | Risk level | Status |
+|---|---|---|---|---|
+| **E1** | 7.3 (sortable columns) | No | None | **IMPLEMENTED 2026-09-21.** Client-side `sort`/`compareRows`, one column click toggles direction; default `publishedAt` desc unchanged. A "Published" column was added to the table (not literally requested, only the default *ordering* was) so the default sort has a visible, clickable header — a deliberate small addition, not scope creep. |
+| **E2** | 7.1 (per-language ✓/— columns) | No | Low (table-width UX tradeoff only) | **IMPLEMENTED 2026-09-21.** One `<th>`/`<td>` per `overview.languages` entry, ✓/&mdash;; sortable (missing-first by default, §7.6 note above). |
+| **E3** | 7.5 (bulk "add missing translation" per language) | No | None | **IMPLEMENTED 2026-09-21.** A small `+N` button under each language header selects every video missing it (channel-wide) and opens the bulk-generate popover pre-filled with that language. |
+| **E4** | §4.2/§4.3 from the original proposal (contextual bulk bar + inline per-video generate) | No | Low (same as original plan) | **IMPLEMENTED 2026-09-21.** The old always-open top-of-tab "Generate with AI" checklist is gone. A contextual bar appears above the table only when ≥1 row is checked (one shared `selectedIds` set now also drives XLSX export, per §4.5); its popover and each row's own inline mini-form share one `renderGenerationPanel()` implementation, gated by a `generateScope` value (`{kind:"bulk"}` vs `{kind:"row", videoId}`) so there is one generate/review/create-change-set code path, not two. Live-verified end-to-end for both scopes (see `docs/ROADMAP_STATUS.md`). **Known narrow-viewport limitation:** the bulk popover is `position: absolute; right-4` with a fixed width — on a narrow window it can render partially off-screen to the left; not exercised as a problem at normal desktop widths, flagged rather than fixed in this pass. |
+| **E4b** | 7.4 (empty "Recommended languages" placeholder, resolved) | No | None | **IMPLEMENTED 2026-09-21.** Static dashed-border card above the table, no data/API wiring. |
+| **E5** | 7.2 (tracked-language add/remove **+ real deletion with multi-step confirm and 30-day-visible restore**) | Yes — additive `channels` column + endpoints + a new small live-write path (identity/backup/audit/verify) for `localizations`, sibling to `video-details` | **High — a new live-write capability, an already-approved reversal of `PROJECT_SPEC.md` §16's prior deferred-deletion stance, and a second write path outside the Gate-B-barriered Batches pipeline. Blocked only on Open Question 2 (§7.7) now — 1 and 3 are resolved.** | **Still not assigned.** The backend deletion slice built 2026-09-21 (`BL-036`) deliberately routes through the existing Batches pipeline instead of answering Question 2 (see that row in `docs/ROADMAP_STATUS.md`) — it does not authorize or unblock E5's own UI. No "remove language" affordance was added to the new per-language column headers in this pass, specifically because it would visually invite an action E5 has not been authorized to perform yet. |
+| **E6** | *(retired — folded into E4b, resolved as a placeholder)* | — | — | — |
 
 E1-E4b have no open product questions and could be assigned together as one slice if the owner
 wants to move fast on the parts that are purely engineering. E5 grew significantly from the
