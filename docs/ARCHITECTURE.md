@@ -521,5 +521,9 @@ just the instant of the file copy.
   injection; only Windows has actually been run (`docs/TECHNICAL_DEBT.md` RISK-17).
 - No in-app way to leave restricted recovery mode yet — depends on RISK-04's CLI/MCP Batch
   tooling, which does not exist (RISK-16).
-- No installer/auto-updater; release layout is documented (`docs/RELEASE_LAYOUT.md`) but not
-  automated, per the task's own explicit scope boundary.
+- No installer/auto-updater for a standalone `published/<version>/` release copy (no `.git`);
+  release layout is documented (`docs/RELEASE_LAYOUT.md`) but not automated there, per that
+  task's own explicit scope boundary. `scripts/{macos,windows}/start.{sh,bat}` do self-update
+  (`git pull --ff-only` + rebuild) when run directly from a git checkout of this repository
+  against its own `origin` — a narrower, different case that doesn't touch the standalone
+  release form (`docs/FIRST_LOCAL_TEST_BUILD.md` §3/§4).
