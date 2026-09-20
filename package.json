@@ -4,7 +4,9 @@
   "license": "MIT",
   "private": true,
   "scripts": {
+    "predev": "node scripts/write-build-info.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/write-build-info.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
