@@ -207,32 +207,81 @@ beyond horizontal scroll unless the owner wants one (e.g. a "show only tracked l
 least one missing video" filter) — flagging, not solving, since it depends on how many languages
 real usage ends up tracking.
 
-### 7.2 Requirement 2 — add/remove tracked language columns
+### 7.2 Requirement 2 — add/remove tracked language columns (revised, 2026-09-20 follow-up)
 
-**What it is:** today, "which languages exist for this channel" (`Overview.languages`) is *purely
-derived* — `src/lib/localization/services.ts`'s `collectChannelLanguages` is just the union of
-whatever locales already exist on any video. There is no way to add a language column before any
-video has that translation (e.g. to prepare an empty "de" column ready to fill in), and no
-persisted "these are the languages we track for this channel" concept at all.
+**Owner's answer (Telegram, 2026-09-20):** "оценивать как основное применение это 'какие переводы
+уже реально существуют' + какие надо добавить. С точки зрения удаления, да можно удалять и с
+канала тоже, но это должно требовать несколько этапов подтверждения... + кэш в течение N дней (по
+умолчанию 30, чтобы можно было удалённое вернуть)." This is a materially different, much larger
+requirement than the original §7.2 draft assumed (display-only). It is a **real deletion
+capability** — removing a localization from YouTube itself, not just hiding a column — with a
+multi-step confirmation flow and a 30-day (default) recovery window. This revision replaces the
+original §7.2 in full.
 
-**Implementation:** needs one small, genuinely new, additive backend piece — a
-`target_languages_json` (or similar) nullable column on the existing `channels` table
-(`SCHEMA_MIGRATIONS` version 6, following the exact `isDuplicateColumnError`-guarded pattern
-`docs/DEVELOPMENT_PLAYBOOK.md` §6.3 already documents), plus two small endpoints (or one PUT) to
-add/remove a tracked language. `Overview.languages` becomes `(tracked languages) ∪ (languages that
-already have at least one real translation)` — a language already translated can never silently
-disappear from view even if it's removed from the tracked list, which leads directly into the
-one real safety question this requirement raises:
+**This reverses a standing, documented project decision and must be treated as such, not as an
+implementation detail.** `docs/PROJECT_SPEC.md` §8 states a preference to "prefer deferring
+deletion if that produces a safer and simpler design," and `docs/ARCHITECTURE.md` §6.14/§296
+records, in the present tense, that "deletion remains fully deferred... Phase 4 has no explicit
+'propose deletion of a localization' affordance at all, per §8's stated preference." Per AGENTS.md
+§A ("identify and report the discrepancy... do not silently rewrite requirements"), this needs an
+explicit owner decision on whether `docs/PROJECT_SPEC.md` itself should be updated to record this
+reversal, or whether this ships as a documented, deliberate exception to an otherwise-still-valid
+general preference. **See Open Question 1 below — not assumed either way.**
 
-**Risk — "remove a language column" must never be able to delete real translation data.**
-AGENTS.md §F: *"Never allow blank spreadsheet cells to imply deletion unless explicitly designed
-and confirmed."* The same principle applies here: removing a language from the tracked/displayed
-list must be a pure **display preference** — it must never delete, or offer to delete, any
-video's actual `existingLocalizations[language]` data, whether local or (eventually, post-Gate-B)
-on YouTube. This needs to be stated as an explicit, permanent design invariant before
-implementation, not discovered as an edge case afterward. **Recorded as the one real risk in this
-requirement; needs the owner's explicit confirmation of this reading before building it** (see
-Open Questions below — this is not assumed, it is asked).
+**Where the write would live — this is the fact that shapes the whole design.** A real
+`videos.update` call that removes a key from the `localizations` map is fundamentally a
+**localization** write (it touches exactly the domain `src/lib/localization/`/`src/lib/changesets/`
+own, never `src/lib/video-details/`, which is structurally forbidden from touching `localizations`
+at all, by design, per AGENTS.md §F). The existing safety-critical write pipeline for localizations
+is `src/lib/batches/` — but `src/lib/batches/`'s `WriteExecutor` is **unconditionally barrier-
+disabled** (`assertLiveWritesAuthorized()` always throws, Gate B not yet cleared, per
+`docs/TECHNICAL_DEBT.md`). **Routing deletion through Batches would make the feature
+non-functional today** — the button would exist but could never actually delete anything until
+Gate B's full live-validation track is separately completed, which is large, unrelated, unstarted
+scope. The only way to ship a *working* delete button today is a **second, standalone live-write
+path outside the Batches/Gate-B pipeline** — architecturally a sibling to `src/lib/video-details/`
+(reusing the exact same pattern: `write-context.assertWriteChannel` for identity,
+`src/lib/backup/` for a pre-write snapshot, its own small audit trail, verification after write),
+but for `localizations` instead of `snippet`/`status`. **This needs to be named explicitly, not
+discovered later: approving this feature means accepting that a second live write path exists
+outside the one pipeline this project has spent most of Phase 5 building safety guarantees for.**
+Not a reason to refuse it — a reason the owner should approve it knowingly. **See Open Question 2.**
+
+**Restore is a write, not an undo.** YouTube has no trash/undo for localizations. "Restoring"
+within the 30-day window means re-running the exact same kind of write in reverse — reading the
+pre-delete backup snapshot and sending it back via `videos.update`. It needs the identical safety
+treatment as the delete itself (identity check, its own audit event, post-write verification) —
+it is not a cheap local toggle. **See Open Question 3.**
+
+**The 30-day window governs what the UI offers as restorable, not a data-purge schedule.**
+`src/lib/backup/`'s snapshot files are already immutable and never deleted by any existing code
+path. The correct design is: keep the backup exactly as-is (no new purge job, no new destructive
+infrastructure), and have the UI simply stop *surfacing* a "Restore" action once the deletion is
+more than 30 days old — the underlying backup file remains, exactly like every other operation's
+backup already does, in case it's ever needed later regardless. **See Open Question 3.**
+
+**Backup snapshot kind:** this needs its own variant in the `BackupSnapshot` discriminated union
+introduced for `video-details` (`docs/decisions` reasoning in `docs/SYSTEM_MAP.md` §2.9d) — e.g.
+`{kind: "localization_deletion", language, before: LocaleMetadata}` — distinct from the existing
+`"localization"` kind (which represents a Batches change-set's pre-write baseline for a *set of
+changes*, a different shape). Restore reads from this new kind specifically.
+
+**Multi-step confirmation (owner's "несколько этапов подтверждения"):** proposed concretely —
+(1) click "Remove" on a language column/cell → (2) a confirmation dialog showing exactly what will
+be removed (the language code, its current title/description) → (3) a final explicit confirm
+button, styled as destructive (red), separate from the dialog's own dismiss/cancel action. No
+"type to confirm" text field proposed unless the owner wants one — the dialog's explicit
+before-content display plus a separate final click already matches the spirit of "multiple steps"
+without adding friction disproportionate to a recoverable (30-day) action.
+
+**Tracked-languages persistence (unchanged from the original draft):** still needs one small,
+additive backend piece — a `target_languages_json` nullable column on `channels`
+(`SCHEMA_MIGRATIONS` version 6, `isDuplicateColumnError`-guarded per
+`docs/DEVELOPMENT_PLAYBOOK.md` §6.3) plus endpoints to add/remove a *tracked* (not yet necessarily
+translated) language. `Overview.languages` remains `(tracked languages) ∪ (languages with at
+least one real translation)`, so nothing already translated can vanish from view just because it's
+no longer "tracked" — tracking and deletion are two separate actions (untracking hides a column
+without touching data; deleting is the new, explicit, multi-step, real write described above).
 
 ### 7.3 Requirement 4 — sortable columns, default by publish date
 
@@ -247,41 +296,17 @@ already present in the data the tab already fetches.
 
 **Risk:** none identified — this is a self-contained, low-risk frontend change.
 
-### 7.4 Requirement 5 — AI-recommended languages for the channel
+### 7.4 Requirement 5 — AI-recommended languages for the channel (resolved, 2026-09-20 follow-up)
 
-**This is the one requirement that needs a real product decision before implementation, not just
-an engineering task.** Two distinct things could be meant by "recommended languages," and they are
-**not equally honest to build**:
-
-- **(a) Content-based suggestion:** an LLM looks at the channel's existing titles/descriptions/
-  genre and suggests languages commonly associated with that kind of content (e.g. "lo-fi/ambient
-  music channels often do well in es/pt/de/ja"). This is buildable today, reusing the existing
-  `ai-connections` infrastructure (connection resolution, credential handling, endpoint-security,
-  mock-by-default with the same real-cost warning banner the tab already shows for generation).
-- **(b) Audience-based recommendation** ("languages your actual viewers are searching in/watching
-  from") would require the **YouTube Analytics API** — geography/traffic-source reports — which
-  this project has explicitly **not** integrated yet; it is Phase 8 scope
-  (`docs/roadmap/plans/PHASE_8_PLAN.md`), gated on its own separate OAuth-scope decision the owner
-  has not made. **This app cannot honestly build (b) right now.**
-
-**Risk — misrepresenting (a) as (b).** If a "Recommended languages" button ships without being
-extremely clear that it's a content-based heuristic guess, not real audience data, an operator
-could reasonably assume YouTube Analytics is already wired in and make real decisions (which
-languages to invest translation effort in) based on a much weaker signal than they think they're
-getting. **This needs explicit, visible copy in the UI (e.g. "Based on your channel's content —
-not your actual audience data, which requires a separate YouTube Analytics connection") every time
-it's shown, not just a one-time disclaimer.** This is a product-honesty risk, not a technical one,
-and it's the reason this requirement is flagged as needing owner sign-off specifically on scope
-(a)-only vs. waiting for Phase 8, rather than being folded into the "low-risk" bucket with 7.1/7.3.
-
-**Implementation (if (a) is approved):** a new, small provider capability — recommending languages
-is a different shape of call (channel context in, a list of language codes out) than
-`LocalizationProvider`'s existing "generate title/description for one (video, language)" interface,
-so it needs its own small interface and mock implementation, wired through the same connection
-resolution `ai-connections` already provides (reuse the transport/security/cost-control layer,
-add one new task-shaped interface on top — not a parallel AI stack). The "Apply" button then just
-calls requirement 2's add-tracked-language endpoint once per recommended language — no new
-mutation semantics needed there.
+**Owner's answer (Telegram, 2026-09-20):** "Пока можно просто пустое поле под рекомендации,
+функционал подключим позже когда сделаем интеграцию аналитики. После / как часть фазы 8."
+Resolved — this confirms the original write-up's own conclusion (a real, honest recommendation
+needs the not-yet-integrated YouTube Analytics API) and picks the simplest safe option: **ship an
+empty, clearly-labeled placeholder now** (e.g. "Recommended languages — coming with Analytics
+integration, Phase 8"), matching the same pattern the Analytics tab itself already uses for its
+own "coming soon" stub. No AI call, no new provider interface, no product-honesty risk to manage
+(there is nothing yet to mislabel). **This item moves into the low-risk E1-E4 lane** — it is now
+pure static UI, not blocked on anything.
 
 ### 7.5 Requirement 6 — bulk "add translation to videos missing this language"
 
@@ -297,7 +322,7 @@ endpoint, no new provider capability.
 from today's behavior — selecting more videos just means a larger existing API call, not a new
 kind of risk).
 
-### 7.6 Revised phased plan
+### 7.6 Revised phased plan (updated, 2026-09-20 follow-up)
 
 Ordered by risk/dependency, not necessarily by priority — the owner may reorder:
 
@@ -307,24 +332,33 @@ Ordered by risk/dependency, not necessarily by priority — the owner may reorde
 | **E2** | 7.1 (per-language ✓/— columns) | No | Low (table-width UX tradeoff only) |
 | **E3** | 7.5 (bulk "add missing translation" per language) | No | None |
 | **E4** | §4.2/§4.3 from the original proposal (contextual bulk bar + inline per-video generate) | No | Low (same as original plan) |
-| **E5** | 7.2 (add/remove tracked language columns) | Yes — one additive column + 1-2 endpoints | Medium — **blocked on the owner confirming the "display-only, never deletes data" reading in §7.2 before any code is written** |
-| **E6** | 7.4 (AI-recommended languages) | Yes — new small provider interface + endpoint | Medium-high — **blocked on the owner choosing scope (a) (content-based only) vs. waiting for Phase 8, and approving the required UI disclaimer copy** |
+| **E4b** | 7.4 (empty "Recommended languages" placeholder, resolved) | No | None |
+| **E5** | 7.2 (tracked-language add/remove **+ real deletion with multi-step confirm and 30-day-visible restore**) | Yes — additive `channels` column + endpoints + a new small live-write path (identity/backup/audit/verify) for `localizations`, sibling to `video-details` | **High — a new live-write capability, a documented reversal of `PROJECT_SPEC.md` §8's deferred-deletion stance, and a second write path outside the Gate-B-barriered Batches pipeline. Blocked on Open Questions 1-3 below, not yet assignable.** |
+| **E6** | *(retired — folded into E4b, resolved as a placeholder)* | — | — |
 
-E1-E4 have no open product questions and could be assigned together as one slice if the owner
-wants to move fast on the parts that are purely engineering. E5 and E6 each have one real,
-named decision to make first (data-deletion semantics; analytics-honesty framing) — recorded here
-specifically so neither is discovered as a surprise mid-implementation.
+E1-E4b have no open product questions and could be assigned together as one slice if the owner
+wants to move fast on the parts that are purely engineering. E5 grew significantly from the
+original draft once the owner's actual intent (real deletion, not just hiding a column) became
+clear — it now needs three concrete decisions before any code is written, not just a "confirm my
+assumption" check.
 
-### 7.7 Open questions for the owner (this addendum)
+### 7.7 Open questions for the owner (this addendum, revised)
 
-1. **§7.2 confirmation:** removing a language from the tracked/displayed columns is a display
-   preference only and must never delete, or prompt to delete, any existing translation data
-   (local or on YouTube) — confirm this reading before E5 is assigned.
-2. **§7.4 scope:** build the content-based ("a") language recommendation now, with mandatory
-   disclaimer copy distinguishing it from real audience data — or hold this requirement entirely
-   until Phase 8 (YouTube Analytics) makes an audience-based version possible? No middle ground is
-   proposed here since a mislabeled heuristic is the actual risk, not the heuristic itself.
-3. **Sequencing:** assign E1-E4 as one batch now, and revisit E5/E6 once 1-2 are answered? Or
-   assign everything except the two blocked slices, and park E5/E6 until answered?
+1. **Spec reversal:** `docs/PROJECT_SPEC.md` §8 currently prefers deferring deletion entirely, and
+   `docs/ARCHITECTURE.md` records that preference as still in effect. Building real localization
+   deletion reverses that. Should `docs/PROJECT_SPEC.md` be updated to record this reversal as
+   part of E5, or does the existing preference stay on the books with this treated as one
+   documented, deliberate exception to it?
+2. **A second live write path:** deletion cannot go through `src/lib/batches/` today (its write
+   barrier is unconditionally disabled pending Gate B) without being non-functional. Shipping a
+   working delete button means building a second, standalone live-write path for localizations,
+   architecturally parallel to (but separate from) both Batches and `video-details`. Confirm this
+   is acceptable before E5 is designed in detail.
+3. **Restore mechanics:** confirm that "restore within 30 days" means literally re-writing the
+   backed-up content back to YouTube (its own full write, with its own identity/audit/verification
+   steps — not a free local undo), and that the 30-day figure governs only what the UI *offers* as
+   restorable, never an actual deletion/purge of the backup itself (backups already never expire
+   in this codebase, and this plan proposes not to change that).
 
-No slice in this addendum is assigned yet.
+**Not blocked, asked previously and still open:** whether to start E1-E4b now while E5 is being
+decided.
