@@ -56,16 +56,19 @@ index.ts       — a createXCore() factory wiring the real adapters into service
 
 ## 6.3 Adding database entities
 
-Current schema and initialization strategy: `src/lib/db.ts`, a single Drizzle `sqliteTable` per entity plus a boot-time `initializeDatabase()` that runs `CREATE TABLE IF NOT EXISTS` for every table (idempotent — safe to run against both an empty database file and an existing one) and try/catch `ALTER TABLE ADD COLUMN` for any additive column added to an existing table.
+Current schema and initialization strategy: `src/lib/db.ts`, a single Drizzle `sqliteTable` per entity plus a boot-time `initializeDatabaseSchema()`. It runs, in order: the frozen "schema version 1" baseline block (`CREATE TABLE IF NOT EXISTS` for every original table, plus 3 legacy idempotent `ALTER TABLE ADD COLUMN` calls predating the versioning system below — **never edit this block for a new change**, it is retroactively schema version 1, `docs/decisions/0002-additive-schema-versioning.md`), then any `SCHEMA_MIGRATIONS` entry whose `version` is greater than what `schema_meta` has stamped.
 
-**This is a deliberate, documented decision, not an oversight** — see `docs/decisions/0001-additive-idempotent-schema-strategy.md`. Follow it:
+**A brand-new table or column is added as a new `SCHEMA_MIGRATIONS` entry, not by editing the baseline block.** Follow this:
 
 1. Add a new `sqliteTable(...)` definition in `db.ts` for a new entity, or a new nullable/defaulted column on an existing table.
-2. Add the matching `CREATE TABLE IF NOT EXISTS`/`ALTER TABLE ADD COLUMN` to `initializeDatabase()`'s SQL block.
-3. Add the table to the `schema: { ... }` object passed to `drizzle(client, { schema: {...} })`.
-4. Write plain, flat, function-per-operation persistence functions (not a repository class) — e.g. `createChangeSetWithChanges`, `listStoredChangesByChangeSet`, `updateStoredChange`. Look at the `changes`/`change_sets` functions at the bottom of `db.ts` for the current, most complete example, including the transactional pattern (`db.transaction(async (tx) => { ... })`) used when multiple rows must be written atomically.
-5. Wrap those functions in your module's `adapters/store.ts` (do not import `db.ts` from `services.ts` directly).
-6. **Test schema initialization against both an empty database and the existing one** before considering the change done — see §6.11 for how.
+2. Add a new entry to the `SCHEMA_MIGRATIONS` array (`src/lib/db.ts`) with `version: SCHEMA_MIGRATIONS`'s current max `+ 1`, a `description`, and an `apply(client)` that runs the matching `CREATE TABLE IF NOT EXISTS`/`ALTER TABLE ADD COLUMN`.
+3. **`ALTER TABLE ADD COLUMN` inside a migration's `apply` must still be wrapped in the shared `isDuplicateColumnError` try/catch** (`src/lib/db.ts`, same helper the legacy baseline ALTER TABLEs use) — **even though each migration is only supposed to run once per stamped version.** A migration can genuinely be re-applied: `initializeDatabaseSchema` treats any database with no `schema_meta` row as an unstamped pre-versioning database and re-runs every migration from scratch (see the "pre-versioning database" test in `db.test.ts`) — if that database had already gained this column through some other path (e.g. a prior successful run before `schema_meta` was dropped/lost), a bare `ALTER TABLE ADD COLUMN` throws "duplicate column name" and the whole boot fails. Found and fixed the hard way while adding `videos.view_count`/`comment_count`/`like_count` (Studio-parity Slice S1, 2026-09-20) — the fix was hoisting the previously-baseline-local `isDuplicateColumnError` to module scope so both the legacy block and every future migration share the one implementation (`AGENTS.md` §D).
+4. Add the table to the `schema: { ... }` object passed to `drizzle(client, { schema: {...} })`.
+5. Write plain, flat, function-per-operation persistence functions (not a repository class) — e.g. `createChangeSetWithChanges`, `listStoredChangesByChangeSet`, `updateStoredChange`. Look at the `changes`/`change_sets` functions at the bottom of `db.ts` for the current, most complete example, including the transactional pattern (`db.transaction(async (tx) => { ... })`) used when multiple rows must be written atomically.
+6. Wrap those functions in your module's `adapters/store.ts` (do not import `db.ts` from `services.ts` directly).
+7. **Test schema initialization against both an empty database and the existing one** before considering the change done, including the pre-versioning-database re-apply path (§6.11) — this is exactly the scenario that caught the bug in point 3 above.
+
+This whole additive, no-destructive-migration approach is itself the deliberate, documented decision from `docs/decisions/0001-additive-idempotent-schema-strategy.md`, layered with explicit version tracking per `docs/decisions/0002-additive-schema-versioning.md` — not an oversight.
 
 **When formal migrations become necessary:** the moment a schema change is **not purely additive** — a column type change, a `NOT NULL` backfill on existing rows, a data transformation, or a multi-step ordering requirement. At that point, stop and write a new ADR (`docs/decisions/`) proposing Drizzle Kit migrations (already an installed devDependency, unused) **before** making the change — do not silently switch strategy. See `docs/TECHNICAL_DEBT.md` RISK-08.
 

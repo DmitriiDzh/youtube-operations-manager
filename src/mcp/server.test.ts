@@ -1758,6 +1758,9 @@ test("MCP channel_video_list returns synced videos for a channel", async () => {
         existingLocalizationLanguages: [],
         lastSyncedAt: "2026-09-01T00:00:00.000Z",
         etag: null,
+        viewCount: null,
+        commentCount: null,
+        likeCount: null,
       },
     ],
   });

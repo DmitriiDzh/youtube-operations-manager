@@ -44,6 +44,9 @@ const syncedVideoSchema = z
     existingLocalizationLanguages: z.array(z.string()),
     lastSyncedAt: z.string(),
     etag: z.string().nullable(),
+    viewCount: z.number().int().nullable(),
+    commentCount: z.number().int().nullable(),
+    likeCount: z.number().int().nullable(),
   })
   .strict();
 

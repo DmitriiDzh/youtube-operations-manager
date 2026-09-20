@@ -95,7 +95,7 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 
 ### 2.7 Video synchronization (Phase 2) — **IMPLEMENTED**
 
-- **Ответственность:** перечисление всех видео канала через uploads playlist и батч-получение полных метаданных (`title`, `description`, `publishedAt`, `privacyStatus`, `defaultLanguage`, `defaultAudioLanguage`, `thumbnails`, `existingLocalizations`, `etag`) без one-request-per-video.
+- **Ответственность:** перечисление всех видео канала через uploads playlist и батч-получение полных метаданных (`title`, `description`, `publishedAt`, `privacyStatus`, `defaultLanguage`, `defaultAudioLanguage`, `thumbnails`, `existingLocalizations`, `etag`) без one-request-per-video. **С 2026-09-20** (`docs/roadmap/plans/STUDIO_PARITY_PLAN.md` Slice S1): также `viewCount`/`commentCount`/`likeCount` из `statistics`-части `videos.list` — `NULL`, если YouTube не вернул значение (комментарии/лайки скрыты), никогда не подменяется на `0`. Аддитивная миграция схемы (`schema_meta` версия 4, `src/lib/db.ts`'s `SCHEMA_MIGRATIONS`).
 - **Файлы:** та же директория `src/lib/channel-sync/` (единый модуль с channel sync); низкоуровневая логика — `src/lib/youtube.ts` (`listUploadsPlaylistVideoIds`, `getVideosMetadataContextBatch`).
 - **Точки входа:** `core.syncChannel(...)` (та же функция, что и для канала — один вызов синхронизирует и канал, и все его видео), `core.listSyncedVideos({ credentialRef, channelId })`.
 - **Зависимости:** channel synchronization (нужен `uploadsPlaylistId`), YouTube API layer, persistence (`upsertVideos`, `listStoredVideosByChannel`).

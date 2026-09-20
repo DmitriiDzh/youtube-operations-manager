@@ -66,6 +66,9 @@ function createFakeStore() {
         thumbnails: Record<string, { url: string; width: number | null; height: number | null }>;
         existingLocalizations: Record<string, { title: string; description: string }>;
         etag: string | null;
+        viewCount: number | null;
+        commentCount: number | null;
+        likeCount: number | null;
       }>,
       syncedAt: Date
     ) {
@@ -124,6 +127,9 @@ function createServicesFixture(
           thumbnails: { default: { url: `https://example.com/${videoId}.jpg`, width: 120, height: 90 } },
           existingLocalizations: { es: { title: `ES ${videoId}`, description: `ES desc ${videoId}` } },
           etag: `etag-${videoId}`,
+          viewCount: 100,
+          commentCount: 10,
+          likeCount: 20,
         }));
       },
     },

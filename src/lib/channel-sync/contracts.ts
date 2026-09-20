@@ -45,6 +45,9 @@ export type SyncedVideo = {
   existingLocalizationLanguages: string[];
   lastSyncedAt: string;
   etag: string | null;
+  viewCount: number | null;
+  commentCount: number | null;
+  likeCount: number | null;
 };
 
 export type ChannelForSync = {
@@ -65,6 +68,11 @@ export type VideoSyncMetadata = {
   thumbnails: Record<string, ThumbnailInfo>;
   existingLocalizations: Record<string, LocaleMetadata>;
   etag: string | null;
+  // Nullable: the `statistics` part can be absent from a YouTube API response (e.g. comments
+  // disabled omits commentCount) -- never defaulted to 0, which would assert a false fact.
+  viewCount: number | null;
+  commentCount: number | null;
+  likeCount: number | null;
 };
 
 export type SyncChannelResult = {
