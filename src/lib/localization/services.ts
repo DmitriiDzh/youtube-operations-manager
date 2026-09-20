@@ -53,6 +53,7 @@ function computeOverviewRow(video: StoredVideoRecord, languages: string[]): Loca
     presentLanguages,
     missingLanguages,
     status: missingLanguages.length === 0 && languages.length > 0 ? "complete" : "missing",
+    lastSyncedAt: video.lastSyncedAt.toISOString(),
   };
 }
 

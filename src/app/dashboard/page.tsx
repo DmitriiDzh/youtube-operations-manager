@@ -9,16 +9,14 @@ import { RuleList } from "@/components/rule-list";
 import { RunButton } from "@/components/run-button";
 import { ManualMode } from "@/components/manual-mode";
 import { ContentManager } from "@/components/content-manager";
-import { LocalizationManager } from "@/components/localization-manager";
+import { LanguagesManager } from "@/components/languages-manager";
 import { BatchManager } from "@/components/batch-manager";
-import { AiLocalizationPanel } from "@/components/ai-localization-panel";
 import { AiConnectionsManager } from "@/components/ai-connections-manager";
 import { AppVersionInfo } from "@/components/app-version-info";
 import { EditorialProfilePanel } from "@/components/editorial-profile-panel";
 import { DeviceHandoffPanel } from "@/components/device-handoff-panel";
 import { AppShell } from "@/components/app-shell";
 import {
-  AiLocalizationIcon,
   AnalyticsIcon,
   BatchesIcon,
   ContentIcon,
@@ -55,8 +53,7 @@ const NAV_ITEMS = [
   { value: "home", label: "Home", icon: HomeIcon },
   { value: "content", label: "Content", icon: ContentIcon },
   { value: "analytics", label: "Analytics", icon: AnalyticsIcon },
-  { value: "localizations", label: "Localizations", icon: LocalizationsIcon },
-  { value: "ai-localization", label: "AI Localization", icon: AiLocalizationIcon },
+  { value: "languages", label: "Languages", icon: LocalizationsIcon },
   { value: "batches", label: "Batches", icon: BatchesIcon },
   { value: "settings", label: "Settings", icon: SettingsIcon },
   { value: "device", label: "Device", icon: DeviceIcon },
@@ -204,26 +201,16 @@ export default function Dashboard() {
         </div>
       )}
 
-      {tab === "localizations" && (
+      {tab === "languages" && (
         <div>
           <p className="mb-4 text-sm text-zinc-400">
-            Review existing localizations per video, export to XLSX, and import edited
-            workbooks to build local change sets for review and approval. No metadata is
-            written to YouTube anywhere in this tab &mdash; approval is a local decision only.
+            Generating with AI is the primary way to add a language &mdash; review and edit
+            the agent&rsquo;s proposals before creating a Change Set. Importing an edited XLSX
+            workbook remains available as a secondary, bulk action. No metadata is written to
+            YouTube anywhere in this tab &mdash; approval here is a local decision only, and
+            &ldquo;Одобрено&rdquo; never means a real YouTube write happened.
           </p>
-          <LocalizationManager />
-        </div>
-      )}
-
-      {tab === "ai-localization" && (
-        <div>
-          <p className="mb-4 text-sm text-zinc-400">
-            Generate localization proposals with a deterministic mock AI provider, review
-            and edit them, and turn them into a Change Set for the same approval workflow
-            as an XLSX import. No real AI provider is called and no metadata is written to
-            YouTube from this tab. (The channel editorial profile moved to the Home tab.)
-          </p>
-          <AiLocalizationPanel />
+          <LanguagesManager />
         </div>
       )}
 

@@ -610,7 +610,7 @@ Bundled as one entry -- each confirmed, each individually low severity or purely
 - `src/lib/changesets/services.ts` (`createChangeSetFromProposals`, ~line 307): skips the `parseWithSchema` validation every sibling entry point in this file runs -- a defense-in-depth gap, no live exploit today (its one caller, `ai-localization`, already validates upstream).
 - Sequential (non-concurrent) loops ignoring the batch's own configured `concurrency` limit: `batches/services.ts`'s `prepareBatchExecution` (~line 645) and `ai-localization/services.ts`'s `generateProposals` (~line 305) -- performance only, no correctness impact.
 - `write-executor.youtube.ts` (~line 198): reconstructs the YouTube client on every retry attempt instead of reusing one -- performance only.
-- Copy-pasted fetch/error-handling boilerplate across four React components (`ai-connections-manager.tsx`, `batch-manager.tsx`, `ai-localization-panel.tsx`, `device-handoff-panel.tsx`) -- cleanup/duplication only, no behavioral difference found between the copies.
+- Copy-pasted fetch/error-handling boilerplate across four React components (`ai-connections-manager.tsx`, `batch-manager.tsx`, `device-handoff-panel.tsx`, and -- since `ai-localization-panel.tsx` was absorbed into `languages-manager.tsx` on 2026-09-20, `docs/roadmap/plans/LANGUAGES_TAB_MERGE_PLAN.md` -- that file's "Generate with AI" section) -- cleanup/duplication only, no behavioral difference found between the copies.
 
 - **Gate(s):** none blocking.
 - **Approval required from:** none required to leave open; project owner if any is scheduled.
