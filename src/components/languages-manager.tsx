@@ -151,26 +151,71 @@ function toEditable(target: GeneratedTarget): EditableTarget {
   };
 }
 
+// --- Sorting (E1, docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md §7.3) ---
+
+/** "title" | "publishedAt" | "lastSyncedAt" | `lang:${code}` -- a plain string rather than a
+ * union-with-object so it can double as a React key and a stable useMemo dependency. */
+type SortKey = string;
+type SortDirection = "asc" | "desc";
+type SortState = { key: SortKey; direction: SortDirection };
+
+const DEFAULT_SORT: SortState = { key: "publishedAt", direction: "desc" };
+const LANG_SORT_PREFIX = "lang:";
+
+function compareRows(a: OverviewRow, b: OverviewRow, key: SortKey): number {
+  if (key === "title") return a.title.localeCompare(b.title);
+  if (key === "publishedAt") return a.publishedAt.localeCompare(b.publishedAt);
+  if (key === "lastSyncedAt") return a.lastSyncedAt.localeCompare(b.lastSyncedAt);
+  if (key.startsWith(LANG_SORT_PREFIX)) {
+    const lang = key.slice(LANG_SORT_PREFIX.length);
+    const aPresent = a.presentLanguages.includes(lang) ? 1 : 0;
+    const bPresent = b.presentLanguages.includes(lang) ? 1 : 0;
+    return aPresent - bPresent;
+  }
+  return 0;
+}
+
+/** Sort direction an operator would expect the FIRST time they click a given column -- newest
+ * publish/sync date first (matches the pre-existing default order), title A-Z, and for a
+ * language column, missing-first (the whole point of sorting by a language is usually "show me
+ * who still needs this translation"). A second click on the same column flips it either way. */
+function defaultDirectionFor(key: SortKey): SortDirection {
+  if (key === "title") return "asc";
+  if (key.startsWith(LANG_SORT_PREFIX)) return "asc";
+  return "desc";
+}
+
+function sortIndicator(key: SortKey, sort: SortState): string {
+  if (sort.key !== key) return "";
+  return sort.direction === "asc" ? " ▲" : " ▼";
+}
+
+// --- AI generation targeting scope (E4, §4.2/§4.3) ---
+
+/** Which surface last triggered a generation session -- the bulk popover (driven by the table's
+ * own row checkboxes) or one specific row's own inline mini-form. Both funnel into the exact same
+ * generate/review/create-change-set state and API calls below; only where the resulting review
+ * panel renders differs. */
+type GenerateScope = { kind: "bulk" } | { kind: "row"; videoId: string };
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 /**
- * The "Languages" tab (docs/roadmap/plans/LANGUAGES_TAB_MERGE_PLAN.md) -- formerly two separate
- * tabs, "Localizations" and "AI Localization". AI generation is now the primary path to add a
- * language (owner, Telegram msg 128: "локализация с помощью агента... ручная правка... только
- * для того чтобы проверить что сделал агент"); manual XLSX import remains available as a
- * secondary, channel-level bulk action. Sub-tabs ("Все/В процессе/Одобрено") mirror Studio's own
- * Languages page but are mapped onto this app's real unit of work -- a Change Set's approval
- * status, not a per-video "draft/published" state Studio's literal UI assumes and this app's
- * batch/approval workflow doesn't have. "Одобрено" never means "Опубликовано" -- Phase 5 live
- * YouTube writes remain barrier-disabled (docs/TECHNICAL_DEBT.md RISK-09).
+ * The "Languages" tab. One table drives everything (docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md,
+ * slices E1-E4b, assigned 2026-09-21): sortable columns (E1), a real per-language present/missing
+ * grid instead of a bare count (E2, undoing an earlier restyle per that plan's §7.1), a per-language
+ * bulk "add missing translation" shortcut (E3), a contextual bulk-action bar plus inline per-video
+ * generate/review replacing the old always-open top-of-page checklist (E4), and a static
+ * "Recommended languages" placeholder pending the Phase 8 Analytics integration (E4b). One shared
+ * selection set now drives both AI generation and XLSX export (previously two independent sets).
  *
- * Deliberate restyle from the former "Localizations" table (L2): the per-language ✓/— grid is
- * replaced with a single language count column, matching Studio's own Languages list (which
- * shows a count, not a full grid, in the main table) -- the full per-language breakdown is still
- * available in the expanded per-video detail row, so no information is lost, only demoted to a
- * drill-down.
+ * Sub-tabs ("Все/В процессе/Одобрено") mirror Studio's own Languages page but are mapped onto this
+ * app's real unit of work -- a Change Set's approval status, not a per-video "draft/published"
+ * state Studio's literal UI assumes and this app's batch/approval workflow doesn't have.
+ * "Одобрено" never means "Опубликовано" -- Phase 5 live YouTube writes remain barrier-disabled
+ * (docs/TECHNICAL_DEBT.md RISK-09).
  */
 export function LanguagesManager() {
   const [channelId, setChannelId] = useState("");
@@ -181,15 +226,18 @@ export function LanguagesManager() {
   const [expandedVideoId, setExpandedVideoId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
 
   const [changeSets, setChangeSets] = useState<ChangeSetSummary[]>([]);
   const [subTab, setSubTab] = useState<SubTab>("all");
   const [openChangeSetId, setOpenChangeSetId] = useState<string | null>(null);
 
+  // --- One shared row-selection set (E4/§4.5) -- drives both AI generation and XLSX export. ---
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
   // --- AI generation (primary path) ---
-  const generateSectionRef = useRef<HTMLDivElement | null>(null);
-  const [generateOpen, setGenerateOpen] = useState(true);
-  const [selectedVideoIds, setSelectedVideoIds] = useState<Set<string>>(new Set());
+  const [generateScope, setGenerateScope] = useState<GenerateScope | null>(null);
+  const [bulkPopoverOpen, setBulkPopoverOpen] = useState(false);
   const [targetLanguages, setTargetLanguages] = useState("es");
   const [generating, setGenerating] = useState(false);
   const [targets, setTargets] = useState<EditableTarget[]>([]);
@@ -208,7 +256,6 @@ export function LanguagesManager() {
   const [previewSummary, setPreviewSummary] = useState<ImportSummary | null>(null);
   const [previewErrors, setPreviewErrors] = useState<ImportRowError[]>([]);
   const [previewTotalErrors, setPreviewTotalErrors] = useState(0);
-  const [exportSelectedIds, setExportSelectedIds] = useState<Set<string>>(new Set());
   const [exporting, setExporting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [creatingChangeSet, setCreatingChangeSet] = useState(false);
@@ -278,12 +325,26 @@ export function LanguagesManager() {
     }
   }, [channelId, fetchOverview, fetchChangeSets]);
 
+  function closeGeneratePanel() {
+    setGenerateScope(null);
+    setBulkPopoverOpen(false);
+    setTargets([]);
+    setRowErrors([]);
+    setCreatedChangeSetId(null);
+    setGenerationContext(null);
+  }
+
   async function toggleExpand(videoId: string) {
     if (expandedVideoId === videoId) {
       setExpandedVideoId(null);
       setDetail(null);
+      if (generateScope?.kind === "row" && generateScope.videoId === videoId) closeGeneratePanel();
       return;
     }
+
+    // Switching to a different row -- a row-scoped generate panel belongs to the row that was
+    // expanded when it was opened, never a different one.
+    if (generateScope?.kind === "row") closeGeneratePanel();
 
     setExpandedVideoId(videoId);
     setLoadingDetail(true);
@@ -299,13 +360,17 @@ export function LanguagesManager() {
     }
   }
 
-  function toggleExportSelected(videoId: string) {
-    setExportSelectedIds((prev) => {
+  function toggleSelected(videoId: string) {
+    setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(videoId)) next.delete(videoId);
       else next.add(videoId);
       return next;
     });
+  }
+
+  function handleSort(key: SortKey) {
+    setSort((prev) => (prev.key === key ? { key, direction: prev.direction === "asc" ? "desc" : "asc" } : { key, direction: defaultDirectionFor(key) }));
   }
 
   async function handleExport(scope: "all" | "filtered" | "selected") {
@@ -314,10 +379,10 @@ export function LanguagesManager() {
     setError(null);
     try {
       const params = new URLSearchParams();
-      if (scope === "selected" && exportSelectedIds.size > 0) {
-        params.set("videoIds", [...exportSelectedIds].join(","));
+      if (scope === "selected" && selectedIds.size > 0) {
+        params.set("videoIds", [...selectedIds].join(","));
       } else if (scope === "filtered") {
-        params.set("videoIds", filteredVideos.map((v) => v.videoId).join(","));
+        params.set("videoIds", sortedFilteredVideos.map((v) => v.videoId).join(","));
       }
 
       const url = `/api/channels/${encodeURIComponent(channelId)}/localizations/export${
@@ -346,29 +411,40 @@ export function LanguagesManager() {
     }
   }
 
-  function generateForVideo(videoId: string) {
-    setSelectedVideoIds(new Set([videoId]));
-    setGenerateOpen(true);
-    generateSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  function startBulkGenerate() {
+    setGenerateScope({ kind: "bulk" });
+    setBulkPopoverOpen(true);
   }
 
-  function toggleVideoForGeneration(videoId: string) {
-    setSelectedVideoIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(videoId)) next.delete(videoId);
-      else next.add(videoId);
-      return next;
-    });
+  /** E3 (§7.5): "add this language to every video missing it" -- replaces the selection with
+   * exactly the videos missing `lang` (channel-wide, not just the current search) and opens the
+   * same bulk-generate popover pre-filled with that language. */
+  function startBulkGenerateForLanguage(lang: string) {
+    const missingIds = (overview?.videos ?? []).filter((v) => v.missingLanguages.includes(lang)).map((v) => v.videoId);
+    setSelectedIds(new Set(missingIds));
+    setTargetLanguages(lang);
+    setGenerateScope({ kind: "bulk" });
+    setBulkPopoverOpen(true);
+  }
+
+  function startRowGenerate(videoId: string) {
+    setTargets([]);
+    setRowErrors([]);
+    setCreatedChangeSetId(null);
+    setGenerationContext(null);
+    setGenerateScope({ kind: "row", videoId });
   }
 
   async function handleGenerate() {
+    if (!generateScope) return;
     setError(null);
     setCreatedChangeSetId(null);
     const languages = targetLanguages
       .split(",")
       .map((l) => l.trim())
       .filter(Boolean);
-    if (selectedVideoIds.size === 0 || languages.length === 0) {
+    const videoIds = generateScope.kind === "bulk" ? [...selectedIds] : [generateScope.videoId];
+    if (videoIds.length === 0 || languages.length === 0) {
       setError("Select at least one video and one target language");
       return;
     }
@@ -379,7 +455,7 @@ export function LanguagesManager() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          videoIds: [...selectedVideoIds],
+          videoIds,
           targetLanguages: languages,
           ...(connectionId ? { connectionId } : {}),
         }),
@@ -509,10 +585,152 @@ export function LanguagesManager() {
     return overview.videos.filter((v) => v.title.toLowerCase().includes(query));
   }, [overview, search]);
 
+  const sortedFilteredVideos = useMemo(() => {
+    const copy = [...filteredVideos];
+    copy.sort((a, b) => {
+      const cmp = compareRows(a, b, sort.key);
+      return sort.direction === "asc" ? cmp : -cmp;
+    });
+    return copy;
+  }, [filteredVideos, sort]);
+
+  const missingCountByLanguage = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const lang of overview?.languages ?? []) {
+      counts.set(lang, (overview?.videos ?? []).filter((v) => v.missingLanguages.includes(lang)).length);
+    }
+    return counts;
+  }, [overview]);
+
   const filteredChangeSets = useMemo(
     () => changeSets.filter((cs) => matchesSubTab(cs, subTab)),
     [changeSets, subTab]
   );
+
+  const languages = overview?.languages ?? [];
+  const tableMinWidth = Math.max(600, 420 + languages.length * 56);
+
+  /** Shared generate/review/create-change-set panel, rendered either inside the bulk popover or
+   * inside one row's expanded detail depending on `generateScope` (E4, §4.2/§4.3) -- one
+   * implementation, not two copies that could drift. */
+  function renderGenerationPanel() {
+    return (
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            value={targetLanguages}
+            onChange={(e) => setTargetLanguages(e.target.value)}
+            placeholder="Target language(s), comma-separated (e.g. es, de, pt-BR)"
+            className="min-w-[220px] flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200"
+          />
+          <select
+            value={connectionId}
+            onChange={(e) => setConnectionId(e.target.value)}
+            className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200"
+            title="Configure connections in the Settings tab"
+          >
+            <option value="">Mock provider (default, no network)</option>
+            {connections.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.displayName}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={handleGenerate}
+            disabled={generating}
+            className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+          >
+            {generating ? "Generating..." : "Generate proposals"}
+          </button>
+          <button onClick={closeGeneratePanel} className="text-xs text-zinc-500 hover:text-zinc-300">
+            Close
+          </button>
+        </div>
+        {connectionId && (
+          <p className="text-xs text-amber-400">
+            A real connection is selected &mdash; generating will make a real request to its
+            configured endpoint and may incur cost.
+          </p>
+        )}
+
+        {rowErrors.length > 0 && (
+          <div className="rounded-md border border-amber-800 bg-amber-950/30 p-3 text-xs text-amber-300">
+            {rowErrors.map((e, i) => (
+              <p key={i}>
+                {e.videoId ?? "?"} / {e.language ?? "?"}: {e.message}
+              </p>
+            ))}
+          </div>
+        )}
+
+        {targets.length > 0 && (
+          <div className="max-h-[50vh] space-y-4 overflow-y-auto">
+            <h3 className="text-sm font-semibold text-zinc-200">Review &amp; edit proposals</h3>
+            {targets.map((t, i) => (
+              <div key={`${t.videoId}-${t.language}`} className="rounded-lg border border-zinc-800 p-4">
+                <p className="mb-2 text-xs text-zinc-500">
+                  {t.videoId} &rarr; {t.language}
+                </p>
+                {t.providerError ? (
+                  <p className="text-sm text-red-400">Provider error: {t.providerError}</p>
+                ) : (
+                  <div className="space-y-3">
+                    <label className="block">
+                      <span className="flex items-center gap-2 text-xs text-zinc-400">
+                        <input
+                          type="checkbox"
+                          checked={t.includeTitle}
+                          onChange={(e) => updateTarget(i, { includeTitle: e.target.checked })}
+                        />
+                        Title
+                      </span>
+                      <textarea
+                        value={t.editedTitle}
+                        onChange={(e) => updateTarget(i, { editedTitle: e.target.value })}
+                        className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
+                        rows={2}
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="flex items-center gap-2 text-xs text-zinc-400">
+                        <input
+                          type="checkbox"
+                          checked={t.includeDescription}
+                          onChange={(e) => updateTarget(i, { includeDescription: e.target.checked })}
+                        />
+                        Description
+                      </span>
+                      <textarea
+                        value={t.editedDescription}
+                        onChange={(e) => updateTarget(i, { editedDescription: e.target.value })}
+                        className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
+                        rows={3}
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
+            ))}
+
+            <button
+              onClick={handleCreateChangeSetFromAi}
+              disabled={creating}
+              className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+            >
+              {creating ? "Creating..." : "Create Change Set from reviewed proposals"}
+            </button>
+          </div>
+        )}
+
+        {createdChangeSetId && (
+          <p className="rounded-md border border-emerald-800 bg-emerald-950/30 p-3 text-sm text-emerald-300">
+            Change Set <code>{createdChangeSetId}</code> created &mdash; see it in the queue below.
+          </p>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -523,152 +741,274 @@ export function LanguagesManager() {
       )}
 
       {channelId && (
-        <div ref={generateSectionRef} className="rounded-xl border border-indigo-900/60 bg-zinc-900">
-          <button
-            onClick={() => setGenerateOpen((v) => !v)}
-            className="flex w-full items-center justify-between px-4 py-3 text-sm font-semibold text-zinc-100"
-          >
-            <span>Generate with AI</span>
-            <span className="text-xs font-normal text-zinc-500">{generateOpen ? "Hide" : "Show"}</span>
-          </button>
-          {generateOpen && (
-            <div className="space-y-4 border-t border-zinc-800 p-4">
-              <p className="text-xs text-zinc-500">
-                The primary way to add a language to a video. Review and edit the agent&rsquo;s
-                output below before creating a Change Set &mdash; nothing is written to YouTube
-                from this tab.
-              </p>
-              <div className="flex flex-wrap items-center gap-3">
-                <input
-                  value={targetLanguages}
-                  onChange={(e) => setTargetLanguages(e.target.value)}
-                  placeholder="Target languages, comma-separated (e.g. es, de, pt-BR)"
-                  className="min-w-[280px] rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200"
-                />
-                <select
-                  value={connectionId}
-                  onChange={(e) => setConnectionId(e.target.value)}
-                  className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200"
-                  title="Configure connections in the Settings tab"
-                >
-                  <option value="">Mock provider (default, no network)</option>
-                  {connections.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.displayName}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  onClick={handleGenerate}
-                  disabled={generating}
-                  className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
-                >
-                  {generating ? "Generating..." : "Generate proposals"}
+        <div className="rounded-xl border border-dashed border-zinc-800 bg-zinc-900/50 px-4 py-3 text-xs text-zinc-500">
+          <span className="font-medium text-zinc-400">Recommended languages</span> &mdash; coming with
+          Analytics integration (Phase 8). Once real audience data is available, this card will
+          suggest languages for this channel with a one-click apply.
+        </div>
+      )}
+
+      {overview && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by title..."
+              className="min-w-48 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm placeholder:text-zinc-600"
+            />
+            <span className="text-sm text-zinc-400">
+              {loadingOverview ? "Loading..." : `${sortedFilteredVideos.length} of ${overview.totalVideos} videos`}
+            </span>
+          </div>
+
+          {selectedIds.size > 0 && (
+            <div className="relative flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-950/60 px-4 py-2 text-sm">
+              <div className="flex items-center gap-3">
+                <span className="font-medium text-zinc-200">{selectedIds.size} selected</span>
+                <button onClick={() => setSelectedIds(new Set())} className="text-xs text-zinc-500 hover:text-zinc-300">
+                  Clear
                 </button>
               </div>
-              {connectionId && (
-                <p className="text-xs text-amber-400">
-                  A real connection is selected &mdash; generating will make a real request to
-                  its configured endpoint and may incur cost.
-                </p>
-              )}
-
-              <div className="max-h-48 overflow-y-auto rounded-lg border border-zinc-800">
-                {(overview?.videos ?? []).map((v) => (
-                  <label
-                    key={v.videoId}
-                    className="flex items-center gap-3 border-b border-zinc-800 px-3 py-2 text-sm text-zinc-300 last:border-b-0 hover:bg-zinc-950"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedVideoIds.has(v.videoId)}
-                      onChange={() => toggleVideoForGeneration(v.videoId)}
-                    />
-                    <span className="flex-1 truncate">{v.title}</span>
-                    <span className="text-xs text-zinc-500">{v.defaultLanguage ?? "?"}</span>
-                  </label>
-                ))}
-                {(overview?.videos.length ?? 0) === 0 && (
-                  <p className="p-3 text-sm text-zinc-500">No synchronized videos for this channel.</p>
-                )}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={startBulkGenerate}
+                  className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
+                >
+                  Generate with AI &#9662;
+                </button>
+                <button
+                  onClick={() => handleExport("selected")}
+                  disabled={exporting}
+                  className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
+                >
+                  Export to XLSX
+                </button>
               </div>
 
-              {rowErrors.length > 0 && (
-                <div className="rounded-md border border-amber-800 bg-amber-950/30 p-3 text-xs text-amber-300">
-                  {rowErrors.map((e, i) => (
-                    <p key={i}>
-                      {e.videoId ?? "?"} / {e.language ?? "?"}: {e.message}
-                    </p>
-                  ))}
+              {bulkPopoverOpen && generateScope?.kind === "bulk" && (
+                <div className="absolute right-4 top-full z-10 mt-2 w-[420px] rounded-lg border border-zinc-700 bg-zinc-900 p-4 shadow-xl">
+                  {renderGenerationPanel()}
                 </div>
-              )}
-
-              {targets.length > 0 && (
-                <div className="space-y-4">
-                  <h3 className="text-sm font-semibold text-zinc-200">Review &amp; edit proposals</h3>
-                  {targets.map((t, i) => (
-                    <div key={`${t.videoId}-${t.language}`} className="rounded-lg border border-zinc-800 p-4">
-                      <p className="mb-2 text-xs text-zinc-500">
-                        {t.videoId} &rarr; {t.language}
-                      </p>
-                      {t.providerError ? (
-                        <p className="text-sm text-red-400">Provider error: {t.providerError}</p>
-                      ) : (
-                        <div className="space-y-3">
-                          <label className="block">
-                            <span className="flex items-center gap-2 text-xs text-zinc-400">
-                              <input
-                                type="checkbox"
-                                checked={t.includeTitle}
-                                onChange={(e) => updateTarget(i, { includeTitle: e.target.checked })}
-                              />
-                              Title
-                            </span>
-                            <textarea
-                              value={t.editedTitle}
-                              onChange={(e) => updateTarget(i, { editedTitle: e.target.value })}
-                              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
-                              rows={2}
-                            />
-                          </label>
-                          <label className="block">
-                            <span className="flex items-center gap-2 text-xs text-zinc-400">
-                              <input
-                                type="checkbox"
-                                checked={t.includeDescription}
-                                onChange={(e) => updateTarget(i, { includeDescription: e.target.checked })}
-                              />
-                              Description
-                            </span>
-                            <textarea
-                              value={t.editedDescription}
-                              onChange={(e) => updateTarget(i, { editedDescription: e.target.value })}
-                              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
-                              rows={3}
-                            />
-                          </label>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-
-                  <button
-                    onClick={handleCreateChangeSetFromAi}
-                    disabled={creating}
-                    className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
-                  >
-                    {creating ? "Creating..." : "Create Change Set from reviewed proposals"}
-                  </button>
-                </div>
-              )}
-
-              {createdChangeSetId && (
-                <p className="rounded-md border border-emerald-800 bg-emerald-950/30 p-3 text-sm text-emerald-300">
-                  Change Set <code>{createdChangeSetId}</code> created &mdash; see it below.
-                </p>
               )}
             </div>
           )}
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm" style={{ minWidth: tableMinWidth }}>
+              <thead>
+                <tr className="border-b border-zinc-800 text-xs uppercase text-zinc-500">
+                  <th className="w-8 px-4 py-2 font-medium" />
+                  <th className="px-4 py-2 font-medium">
+                    <button onClick={() => handleSort("title")} className="hover:text-zinc-300">
+                      Video{sortIndicator("title", sort)}
+                    </button>
+                  </th>
+                  <th className="w-24 px-4 py-2 font-medium">
+                    <button onClick={() => handleSort("publishedAt")} className="hover:text-zinc-300">
+                      Published{sortIndicator("publishedAt", sort)}
+                    </button>
+                  </th>
+                  {languages.map((lang) => (
+                    <th key={lang} className="w-14 px-2 py-2 text-center font-medium">
+                      <button onClick={() => handleSort(`${LANG_SORT_PREFIX}${lang}`)} className="block w-full hover:text-zinc-300">
+                        {lang}
+                        {sortIndicator(`${LANG_SORT_PREFIX}${lang}`, sort)}
+                      </button>
+                      {(missingCountByLanguage.get(lang) ?? 0) > 0 && (
+                        <button
+                          onClick={() => startBulkGenerateForLanguage(lang)}
+                          className="mt-0.5 block w-full text-center text-[10px] font-normal normal-case text-indigo-400 hover:text-indigo-300"
+                          title={`Add "${lang}" translation to ${missingCountByLanguage.get(lang)} video(s) missing it`}
+                        >
+                          +{missingCountByLanguage.get(lang)}
+                        </button>
+                      )}
+                    </th>
+                  ))}
+                  <th className="w-32 px-4 py-2 font-medium">
+                    <button onClick={() => handleSort("lastSyncedAt")} className="hover:text-zinc-300">
+                      Last modified{sortIndicator("lastSyncedAt", sort)}
+                    </button>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedFilteredVideos.map((video) => (
+                  <Fragment key={video.videoId}>
+                    <tr
+                      className="cursor-pointer border-b border-zinc-800/50 transition-colors hover:bg-zinc-800/50"
+                      onClick={() => toggleExpand(video.videoId)}
+                    >
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(video.videoId)}
+                          onChange={() => toggleSelected(video.videoId)}
+                          aria-label={`Select ${video.title}`}
+                        />
+                      </td>
+                      <td className="min-w-0 px-4 py-3">
+                        <div className="flex min-w-0 items-center gap-3">
+                          {video.thumbnailUrl && (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={video.thumbnailUrl}
+                              alt={video.title}
+                              className="h-9 w-14 shrink-0 rounded object-cover"
+                            />
+                          )}
+                          <span className="truncate font-medium">{video.title}</span>
+                        </div>
+                      </td>
+                      <td className="truncate px-4 py-3 text-zinc-400">
+                        {new Date(video.publishedAt).toLocaleDateString()}
+                      </td>
+                      {languages.map((lang) => (
+                        <td key={lang} className="px-2 py-3 text-center">
+                          {video.presentLanguages.includes(lang) ? (
+                            <span className="text-emerald-400" title={`${lang}: translated`}>
+                              &#10003;
+                            </span>
+                          ) : (
+                            <span className="text-zinc-700" title={`${lang}: missing`}>
+                              &mdash;
+                            </span>
+                          )}
+                        </td>
+                      ))}
+                      <td className="truncate px-4 py-3 text-zinc-400">
+                        {new Date(video.lastSyncedAt).toLocaleDateString()}
+                      </td>
+                    </tr>
+                    {expandedVideoId === video.videoId && (
+                      <tr className="border-b border-zinc-800/50 bg-zinc-950/50">
+                        <td colSpan={4 + languages.length} className="px-4 py-4">
+                          {loadingDetail ? (
+                            <p className="text-sm text-zinc-500">Loading detail...</p>
+                          ) : detail ? (
+                            <div className="space-y-3">
+                              <div>
+                                <p className="text-xs font-medium text-zinc-500">
+                                  Original / default language: {detail.defaultLanguage ?? "unset"}
+                                </p>
+                                <p className="text-sm font-medium">{detail.originalTitle}</p>
+                                <p className="mt-1 whitespace-pre-wrap text-xs text-zinc-400">
+                                  {detail.originalDescription}
+                                </p>
+                              </div>
+                              {detail.locales.length === 0 ? (
+                                <p className="text-xs text-zinc-500">No existing localizations.</p>
+                              ) : (
+                                <div className="space-y-2 border-t border-zinc-800 pt-3">
+                                  {detail.locales.map((locale) => (
+                                    <div key={locale.language}>
+                                      <p className="text-xs font-medium text-zinc-500">{locale.language}</p>
+                                      <p className="text-sm">{locale.remoteTitle}</p>
+                                      <p className="mt-0.5 whitespace-pre-wrap text-xs text-zinc-400">
+                                        {locale.remoteDescription}
+                                      </p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="text-sm text-red-400">Failed to load detail.</p>
+                          )}
+
+                          <div className="mt-4 border-t border-zinc-800 pt-4">
+                            {generateScope?.kind === "row" && generateScope.videoId === video.videoId ? (
+                              renderGenerationPanel()
+                            ) : (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  startRowGenerate(video.videoId);
+                                }}
+                                className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
+                              >
+                                Generate with AI for this video
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {!loadingOverview && sortedFilteredVideos.length === 0 && (
+            <p className="px-4 py-6 text-center text-sm text-zinc-500">No videos match the current search.</p>
+          )}
+        </div>
+      )}
+
+      {channelId && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
+            <div className="flex gap-1 rounded-lg bg-zinc-950 p-1">
+              {SUB_TABS.map((t) => (
+                <button
+                  key={t.value}
+                  onClick={() => setSubTab(t.value)}
+                  className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                    subTab === t.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <span className="text-xs text-zinc-500">Awaiting review across all videos &middot; {filteredChangeSets.length} change set(s)</span>
+          </div>
+          <div className="p-4">
+            {filteredChangeSets.length === 0 ? (
+              <p className="text-sm text-zinc-500">No change sets in this view yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {filteredChangeSets.map((cs) => (
+                  <button
+                    key={cs.id}
+                    onClick={() => setOpenChangeSetId(cs.id === openChangeSetId ? null : cs.id)}
+                    className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
+                      openChangeSetId === cs.id
+                        ? "border-zinc-500 bg-zinc-800"
+                        : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"
+                    }`}
+                  >
+                    <span>
+                      {cs.importedFilename ??
+                        (cs.source === "ai_localization"
+                          ? "AI Generated"
+                          : cs.source === "deletion"
+                            ? "Deletion"
+                            : "XLSX Import")}{" "}
+                      &middot;{" "}
+                      {cs.totalChanges} changes &middot; {new Date(cs.createdAt).toLocaleString()}
+                    </span>
+                    <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-300">
+                      {cs.status}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {openChangeSetId && (
+              <div className="mt-3">
+                <ChangeSetReview
+                  channelId={channelId}
+                  changeSetId={openChangeSetId}
+                  onClose={() => setOpenChangeSetId(null)}
+                  onStatusChange={() => fetchChangeSets(channelId)}
+                />
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -692,17 +1032,17 @@ export function LanguagesManager() {
               <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 pb-3">
                 <button
                   onClick={() => handleExport("selected")}
-                  disabled={exporting || exportSelectedIds.size === 0}
+                  disabled={exporting || selectedIds.size === 0}
                   className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
                 >
-                  Export selected ({exportSelectedIds.size})
+                  Export selected ({selectedIds.size})
                 </button>
                 <button
                   onClick={() => handleExport("filtered")}
-                  disabled={exporting || filteredVideos.length === 0}
+                  disabled={exporting || sortedFilteredVideos.length === 0}
                   className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
                 >
-                  Export filtered ({filteredVideos.length})
+                  Export filtered ({sortedFilteredVideos.length})
                 </button>
                 <button
                   onClick={() => handleExport("all")}
@@ -711,7 +1051,7 @@ export function LanguagesManager() {
                 >
                   {exporting ? "Exporting..." : `Export all (${overview?.totalVideos ?? 0})`}
                 </button>
-                <span className="text-xs text-zinc-500">Select rows to export in the table below.</span>
+                <span className="text-xs text-zinc-500">Select rows in the table above to export.</span>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <input
@@ -770,195 +1110,6 @@ export function LanguagesManager() {
                 </div>
               )}
             </div>
-          )}
-        </div>
-      )}
-
-      {channelId && (
-        <div className="rounded-xl border border-zinc-800 bg-zinc-900">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
-            <div className="flex gap-1 rounded-lg bg-zinc-950 p-1">
-              {SUB_TABS.map((t) => (
-                <button
-                  key={t.value}
-                  onClick={() => setSubTab(t.value)}
-                  className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-                    subTab === t.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-            <span className="text-xs text-zinc-500">{filteredChangeSets.length} change set(s)</span>
-          </div>
-          <div className="p-4">
-            {filteredChangeSets.length === 0 ? (
-              <p className="text-sm text-zinc-500">No change sets in this view yet.</p>
-            ) : (
-              <div className="space-y-2">
-                {filteredChangeSets.map((cs) => (
-                  <button
-                    key={cs.id}
-                    onClick={() => setOpenChangeSetId(cs.id === openChangeSetId ? null : cs.id)}
-                    className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
-                      openChangeSetId === cs.id
-                        ? "border-zinc-500 bg-zinc-800"
-                        : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"
-                    }`}
-                  >
-                    <span>
-                      {cs.importedFilename ??
-                        (cs.source === "ai_localization"
-                          ? "AI Generated"
-                          : cs.source === "deletion"
-                            ? "Deletion"
-                            : "XLSX Import")}{" "}
-                      ·{" "}
-                      {cs.totalChanges} changes · {new Date(cs.createdAt).toLocaleString()}
-                    </span>
-                    <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-300">
-                      {cs.status}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-            {openChangeSetId && (
-              <div className="mt-3">
-                <ChangeSetReview
-                  channelId={channelId}
-                  changeSetId={openChangeSetId}
-                  onClose={() => setOpenChangeSetId(null)}
-                  onStatusChange={() => fetchChangeSets(channelId)}
-                />
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {overview && (
-        <div className="rounded-xl border border-zinc-800 bg-zinc-900">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by title..."
-              className="min-w-48 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm placeholder:text-zinc-600"
-            />
-            <span className="text-sm text-zinc-400">
-              {loadingOverview ? "Loading..." : `${filteredVideos.length} of ${overview.totalVideos} videos`}
-            </span>
-          </div>
-
-          <div className="overflow-x-auto">
-          <table className="w-full min-w-[600px] table-fixed text-left text-sm">
-            <colgroup>
-              <col className="w-8" />
-              <col />
-              <col className="w-24" />
-              <col className="w-32" />
-            </colgroup>
-            <thead>
-              <tr className="border-b border-zinc-800 text-xs uppercase text-zinc-500">
-                <th className="px-4 py-2 font-medium" />
-                <th className="px-4 py-2 font-medium">Video</th>
-                <th className="px-4 py-2 font-medium">Languages</th>
-                <th className="px-4 py-2 font-medium">Last modified</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredVideos.map((video) => (
-                <Fragment key={video.videoId}>
-                  <tr
-                    className="cursor-pointer border-b border-zinc-800/50 transition-colors hover:bg-zinc-800/50"
-                    onClick={() => toggleExpand(video.videoId)}
-                  >
-                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        checked={exportSelectedIds.has(video.videoId)}
-                        onChange={() => toggleExportSelected(video.videoId)}
-                        aria-label={`Select ${video.title} for export`}
-                      />
-                    </td>
-                    <td className="min-w-0 px-4 py-3">
-                      <div className="flex min-w-0 items-center gap-3">
-                        {video.thumbnailUrl && (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={video.thumbnailUrl}
-                            alt={video.title}
-                            className="h-9 w-14 shrink-0 rounded object-cover"
-                          />
-                        )}
-                        <span className="truncate font-medium">{video.title}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-zinc-400">{video.presentLanguages.length}</td>
-                    <td className="truncate px-4 py-3 text-zinc-400">
-                      {new Date(video.lastSyncedAt).toLocaleDateString()}
-                    </td>
-                  </tr>
-                  {expandedVideoId === video.videoId && (
-                    <tr className="border-b border-zinc-800/50 bg-zinc-950/50">
-                      <td colSpan={4} className="px-4 py-4">
-                        <div className="mb-3 flex flex-wrap gap-2">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              generateForVideo(video.videoId);
-                            }}
-                            className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
-                          >
-                            Generate with AI for this video
-                          </button>
-                        </div>
-                        {loadingDetail ? (
-                          <p className="text-sm text-zinc-500">Loading detail...</p>
-                        ) : detail ? (
-                          <div className="space-y-3">
-                            <div>
-                              <p className="text-xs font-medium text-zinc-500">
-                                Original / default language: {detail.defaultLanguage ?? "unset"}
-                              </p>
-                              <p className="text-sm font-medium">{detail.originalTitle}</p>
-                              <p className="mt-1 whitespace-pre-wrap text-xs text-zinc-400">
-                                {detail.originalDescription}
-                              </p>
-                            </div>
-                            {detail.locales.length === 0 ? (
-                              <p className="text-xs text-zinc-500">No existing localizations.</p>
-                            ) : (
-                              <div className="space-y-2 border-t border-zinc-800 pt-3">
-                                {detail.locales.map((locale) => (
-                                  <div key={locale.language}>
-                                    <p className="text-xs font-medium text-zinc-500">{locale.language}</p>
-                                    <p className="text-sm">{locale.remoteTitle}</p>
-                                    <p className="mt-0.5 whitespace-pre-wrap text-xs text-zinc-400">
-                                      {locale.remoteDescription}
-                                    </p>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <p className="text-sm text-red-400">Failed to load detail.</p>
-                        )}
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
-              ))}
-            </tbody>
-          </table>
-          </div>
-
-          {!loadingOverview && filteredVideos.length === 0 && (
-            <p className="px-4 py-6 text-center text-sm text-zinc-500">No videos match the current search.</p>
           )}
         </div>
       )}
