@@ -447,6 +447,102 @@ export async function applyVideoMetadataUpdate(args: {
   });
 }
 
+/**
+ * `src/lib/video-details/` (Studio-parity "Details" edit, 2026-09-20) -- writable `status` and
+ * `recordingDetails` fields, confirmed against the OFFICIAL "You can set values for these
+ * properties" list on the `videos.update`/`videos.insert` reference pages (not merely present in
+ * the resource -- `madeForKids`, all of `contentDetails.*`, and `defaultAudioLanguage` are
+ * readable but NOT in that settable list, and are deliberately excluded here). See the research
+ * summary in this module's `docs/roadmap/plans/` entry for full sourcing.
+ */
+export const WRITABLE_STATUS_FIELDS = [
+  "privacyStatus",
+  "publishAt",
+  "license",
+  "embeddable",
+  "publicStatsViewable",
+  "selfDeclaredMadeForKids",
+  "containsSyntheticMedia",
+] as const;
+
+export function pickWritableStatusFields(status: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const field of WRITABLE_STATUS_FIELDS) {
+    if (field in status) result[field] = status[field];
+  }
+  return result;
+}
+
+/** Only `recordingDate` is settable -- `location`/`locationDescription` are deprecated
+ * (2017/2018) and rejected by the live API today; never forwarded even if present. */
+export function pickWritableRecordingDetailsFields(
+  recordingDetails: Record<string, unknown>
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if ("recordingDate" in recordingDetails) result.recordingDate = recordingDetails.recordingDate;
+  return result;
+}
+
+export type VideoDetailsContext = {
+  etag: string | null;
+  snippet: youtube_v3.Schema$VideoSnippet;
+  status: youtube_v3.Schema$VideoStatus;
+  recordingDate: string | null;
+};
+
+/** Fetches exactly the three parts `src/lib/video-details/` can write -- never `localizations`,
+ * so this module structurally cannot read (or, via a merge bug, write) a locale it has no
+ * business touching (AGENTS.md §F). */
+export async function getVideoDetailsContext(
+  youtube: youtube_v3.Youtube,
+  videoId: string
+): Promise<VideoDetailsContext | null> {
+  const res = await youtube.videos.list({
+    part: ["snippet", "status", "recordingDetails"],
+    id: [videoId],
+  });
+
+  const item = res.data.items?.[0];
+  if (!item?.snippet || !item.status) return null;
+
+  return {
+    etag: item.etag ?? null,
+    snippet: item.snippet,
+    status: item.status,
+    recordingDate: item.recordingDetails?.recordingDate ?? null,
+  };
+}
+
+/**
+ * Sends only the parts the caller actually touched (`parts` keys present) -- a patch that only
+ * changes `snippet.title` never sends a `status` part at all, so it cannot accidentally reset a
+ * `status` field to some stale merged value from a race with another writer. Every part sent is
+ * still the FULL merged object for that part (the YouTube API replaces a part wholesale, it does
+ * not support a true field-level PATCH) -- the "don't touch untouched fields" guarantee comes
+ * from the caller (`src/lib/video-details/services.ts`) always merging onto a freshly-fetched
+ * current value before calling this, never from omitting fields within a sent part.
+ */
+export async function applyVideoDetailsUpdate(args: {
+  youtube: youtube_v3.Youtube;
+  videoId: string;
+  parts: {
+    snippet?: youtube_v3.Schema$VideoSnippet;
+    status?: youtube_v3.Schema$VideoStatus;
+    recordingDetails?: { recordingDate?: string | null };
+  };
+}): Promise<void> {
+  const part = Object.keys(args.parts) as Array<keyof typeof args.parts>;
+  if (part.length === 0) return;
+
+  await args.youtube.videos.update({
+    part,
+    requestBody: {
+      id: args.videoId,
+      ...args.parts,
+    },
+  });
+}
+
 type PlaylistPrivacyStatus = "private" | "public" | "unlisted";
 
 type PlaylistMetadata = {

@@ -68,12 +68,26 @@ test("proxy never gates genuinely read-only POST preview/generate routes, even w
       "/api/video-metadata/transcript",
       "/api/channels/chan-1/localizations/import/preview",
       "/api/channels/chan-1/ai-localization/generate",
+      "/api/channels/chan-1/videos/v1/details/preview",
     ];
     for (const p of readOnlyPaths) {
       const response = await proxy(mutatingRequest(p));
       assert.notEqual(response.status, 409, `${p} must not be gated by the operation lock`);
       assert.notEqual(response.status, 423, `${p} must not be gated by recovery mode`);
     }
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// video-details/details/apply is a REAL, non-dry-run YouTube write (2026-09-20) -- unlike its
+// own preview sibling above, it must NOT be exempt, so it stays behind the ordinary
+// operation-lock gate exactly like every other real mutation.
+test("proxy gates the video-details apply route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/channels/chan-1/videos/v1/details/apply"));
+    assert.equal(response.status, 409);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }

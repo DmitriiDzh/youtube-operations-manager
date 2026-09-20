@@ -37,6 +37,9 @@ const DOMAIN_ERROR_STATUS = {
   capability_not_supported: 422,
   endpoint_not_allowed: 422,
   connection_disabled: 409,
+  no_fields_to_update: 400,
+  publish_at_requires_private: 400,
+  publish_at_already_published: 409,
 } as const satisfies Partial<Record<DomainErrorCode, number>>;
 
 export function getVideoMetadataErrorStatus(code: DomainErrorCode) {
