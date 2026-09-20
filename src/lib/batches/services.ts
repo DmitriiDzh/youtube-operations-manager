@@ -140,9 +140,13 @@ type BackupDeps = {
   checkInfrastructureHealth(): Promise<{ healthy: boolean; error?: string }>;
   captureBackup(args: {
     channelId: string;
-    batchId: string;
+    operationId: string;
     videoId: string;
-    snapshot: { defaultLanguage: string | null; existingLocalizations: Record<string, { title: string; description: string }> };
+    snapshot: {
+      kind: "localization";
+      defaultLanguage: string | null;
+      existingLocalizations: Record<string, { title: string; description: string }>;
+    };
   }): Promise<{ path: string; capturedAt: string }>;
 };
 
@@ -504,9 +508,13 @@ export function createBatchServices(deps: ServiceDependencies) {
       try {
         await deps.backup.captureBackup({
           channelId: batch.channelId,
-          batchId: batch.id,
+          operationId: batch.id,
           videoId: row.videoId,
-          snapshot: { defaultLanguage: fresh.snippet.defaultLanguage, existingLocalizations: fresh.localizations },
+          snapshot: {
+            kind: "localization",
+            defaultLanguage: fresh.snippet.defaultLanguage,
+            existingLocalizations: fresh.localizations,
+          },
         });
       } catch (error) {
         return { outcome: "FAILED", error: error instanceof DomainError ? error.message : String(error) };

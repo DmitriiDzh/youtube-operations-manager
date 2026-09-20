@@ -43,7 +43,10 @@ export type DomainErrorCode =
   | "encryption_key_not_configured"
   | "capability_not_supported"
   | "endpoint_not_allowed"
-  | "connection_disabled";
+  | "connection_disabled"
+  | "no_fields_to_update"
+  | "publish_at_requires_private"
+  | "publish_at_already_published";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

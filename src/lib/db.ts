@@ -433,6 +433,31 @@ export const auditEvents = sqliteTable("audit_events", {
     .$defaultFn(() => new Date()),
 });
 
+/**
+ * `src/lib/video-details/`'s OWN audit trail (SCHEMA_MIGRATIONS version 5, 2026-09-20) --
+ * deliberately a SECOND, separate table from `audit_events` above, not a reuse of it. Reason:
+ * `audit_events.batch_id`/`ledger_row_id` are NOT NULL foreign keys into `batches`/
+ * `batch_ledger_rows` -- a single-video Studio-parity "Details" edit is not a Batch and has
+ * neither id, so satisfying those FKs would mean fabricating fake Batch/ledger rows for
+ * something that isn't one (and polluting the Batches tab), or loosening two NOT NULL FK
+ * constraints on Phase 5's tested audit trail, which is exactly the "first non-additive schema
+ * change" docs/decisions/0001-additive-idempotent-schema-strategy.md says needs its own new ADR
+ * before happening at all. This table has no foreign keys on purpose (an append-only audit log
+ * should outlive the row it describes, and every new FK edge is one more thing
+ * applySnapshotToDatabase/scrubDatabaseCopy have to keep surviving under RISK-33's
+ * foreign_keys=ON default) -- `channelId`/`videoId` are plain TEXT.
+ */
+export const videoEditAuditEvents = sqliteTable("video_edit_audit_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  channelId: text("channel_id").notNull(),
+  videoId: text("video_id").notNull(),
+  eventType: text("event_type").notNull(), // see VideoEditAuditEventType in video-details/contracts.ts
+  detailJson: text("detail_json").notNull(),
+  occurredAt: integer("occurred_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -503,6 +528,25 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           if (!isDuplicateColumnError(error)) throw error;
         }
       }
+    },
+  },
+  {
+    version: 5,
+    description:
+      "video_edit_audit_events -- src/lib/video-details/'s own audit trail, separate from audit_events (see the comment above the table definition for why); no foreign keys",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS video_edit_audit_events (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "channel_id TEXT NOT NULL, " +
+          "video_id TEXT NOT NULL, " +
+          "event_type TEXT NOT NULL, " +
+          "detail_json TEXT NOT NULL, " +
+          "occurred_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS video_edit_audit_events_video_id_idx ON video_edit_audit_events(video_id)"
+      );
     },
   },
 ];
@@ -877,6 +921,7 @@ const dbSchema = {
   batchAttempts,
   videoExecutionLocks,
   auditEvents,
+  videoEditAuditEvents,
 };
 
 export const db = drizzle(client, { schema: dbSchema });
@@ -1250,6 +1295,21 @@ export async function listStoredVideosByChannel(channelId: string): Promise<Stor
     .orderBy(videos.publishedAt);
 
   return rows.map(mapStoredVideo).reverse();
+}
+
+/** `src/lib/video-details/` (2026-09-20) needs a single stored video's current cached fields to
+ * merge a live-write's freshly-verified values onto before re-upserting -- `upsertVideos` always
+ * replaces every column of the row it's given, so a caller wanting to update only some columns
+ * must first read the rest. `null` when the video was never synced locally at all. */
+export async function getStoredVideo(channelId: string, videoId: string): Promise<StoredVideo | null> {
+  const rows = await db
+    .select()
+    .from(videos)
+    .where(and(eq(videos.channelId, channelId), eq(videos.id, videoId)))
+    .limit(1);
+
+  const row = rows[0];
+  return row ? mapStoredVideo(row) : null;
 }
 
 export type ChangeField = "title" | "description";
@@ -2261,4 +2321,60 @@ export async function listAuditEventsByBatch(
     .orderBy(auditEvents.id);
 
   return rows.map(mapStoredAuditEvent);
+}
+
+// video_edit_audit_events -- src/lib/video-details/'s own trail, see the table comment above
+// (near videoEditAuditEvents' definition) for why this is a second, separate table.
+export type VideoEditAuditEventType = "DRY_RUN" | "BACKUP" | "RESULT" | "VERIFICATION";
+
+export type StoredVideoEditAuditEvent = {
+  id: number;
+  channelId: string;
+  videoId: string;
+  eventType: VideoEditAuditEventType;
+  detail: unknown;
+  occurredAt: Date;
+};
+
+function mapStoredVideoEditAuditEvent(
+  row: typeof videoEditAuditEvents.$inferSelect
+): StoredVideoEditAuditEvent {
+  return {
+    id: row.id,
+    channelId: row.channelId,
+    videoId: row.videoId,
+    eventType: row.eventType as VideoEditAuditEventType,
+    detail: JSON.parse(row.detailJson) as unknown,
+    occurredAt: row.occurredAt,
+  };
+}
+
+export async function insertVideoEditAuditEvent(
+  input: {
+    channelId: string;
+    videoId: string;
+    eventType: VideoEditAuditEventType;
+    detail: unknown;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(videoEditAuditEvents).values({
+    channelId: input.channelId,
+    videoId: input.videoId,
+    eventType: input.eventType,
+    detailJson: JSON.stringify(input.detail),
+  });
+}
+
+export async function listVideoEditAuditEventsByVideo(
+  videoId: string,
+  database: AppDb = db
+): Promise<StoredVideoEditAuditEvent[]> {
+  const rows = await database
+    .select()
+    .from(videoEditAuditEvents)
+    .where(eq(videoEditAuditEvents.videoId, videoId))
+    .orderBy(videoEditAuditEvents.id);
+
+  return rows.map(mapStoredVideoEditAuditEvent);
 }

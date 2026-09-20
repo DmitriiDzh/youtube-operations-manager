@@ -32,7 +32,11 @@ const EXEMPT_READ_ONLY_PATHS = new Set([
   "/api/video-metadata/preview",
   "/api/video-metadata/transcript",
 ]);
-const EXEMPT_READ_ONLY_PATH_SUFFIXES = ["/localizations/import/preview", "/ai-localization/generate"];
+const EXEMPT_READ_ONLY_PATH_SUFFIXES = [
+  "/localizations/import/preview",
+  "/ai-localization/generate",
+  "/details/preview",
+];
 
 function isExemptReadOnlyPath(pathname: string): boolean {
   if (EXEMPT_READ_ONLY_PATHS.has(pathname)) return true;
