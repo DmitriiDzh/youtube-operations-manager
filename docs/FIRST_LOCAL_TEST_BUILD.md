@@ -1,8 +1,11 @@
 # First Local Test Build — operator guide
 
 Operator-facing instructions for running the **first user-facing local test build** on Windows
-or macOS. This is a local test build, not a public release: no installer, no auto-updater, and
-no GitHub release exist or are in scope (`AGENTS.md` §K, §H task boundaries).
+or macOS. This is a local test build, not a public release: no installer and no GitHub release
+exist or are in scope (`AGENTS.md` §K, §H task boundaries). `start.sh`/`start.bat` do include a
+narrow self-update step (§3/§4), but only for the case of running directly from a git checkout of
+this repository against its own `origin` — a standalone `published/<version>/` copy (no `.git`)
+still has no installer or auto-updater, per `docs/RELEASE_LAYOUT.md` §1.
 
 Technical setup content only, per `AGENTS.md` §B — this file never contains channel-specific
 editorial guidance, YouTube SEO strategy, or operations-agent instructions.
@@ -44,18 +47,29 @@ This script (double-clickable from Explorer, or run from a terminal):
 
 1. Checks Node.js is installed.
 2. Checks `.env.local` exists (fails with a clear message and stops if not — see §2).
-3. Runs `npm install` if `node_modules` is missing (first run only).
-4. Runs `npm run build` if no build output exists yet.
-5. Starts the production server in its own window titled **"YouTube Operations Manager"** and
+3. **If this folder is a git checkout of the repository** (i.e. running directly from `dev`,
+   not from a standalone `published/<version>/` copy): checks for a clean working tree, then
+   `git pull --ff-only` on whatever branch is checked out. If that brings in new commits, runs
+   `npm install`/`npm run build` automatically before starting — no manual `update.bat` step
+   needed for this case. Uncommitted local changes, a diverged history, or no network make it
+   skip this step and continue with the current version rather than force anything. A standalone
+   `published/<version>/` copy has no `.git` and is left entirely untouched by this step (see
+   `docs/RELEASE_LAYOUT.md` §1, `AGENTS.md` §K.4 — no installer/auto-updater exists for that
+   distribution form).
+4. Runs `npm install` if `node_modules` is still missing (first run only).
+5. Runs `npm run build` if no build output exists yet.
+6. Starts the production server in its own window titled **"YouTube Operations Manager"** and
    opens `http://localhost:3000` in your default browser.
 
 **To stop safely:** run `scripts\windows\stop.bat`, or just close the
 "YouTube Operations Manager" window.
 
-**To update** after replacing these program files with a newer version: run
-`scripts\windows\update.bat` first (stops any running instance, reinstalls dependencies, rebuilds),
-then `start.bat` as usual. Your database and settings are never in this folder — see §6 — so
-replacing the program files themselves never touches your data.
+**To update a standalone `published/<version>/` copy** after replacing these program files with a
+newer version by hand: run `scripts\windows\update.bat` first (stops any running instance,
+reinstalls dependencies, rebuilds), then `start.bat` as usual. Your database and settings are
+never in this folder — see §6 — so replacing the program files themselves never touches your
+data. (A git checkout running directly from `dev` no longer needs this manual step — see §3.3
+above; `update.bat` still works there too, if you ever want to force a rebuild by hand.)
 
 > **Status of this procedure:** the launcher script has been written and reasoned about against
 > the documented Next.js 16 CLI behavior (`node_modules/next/dist/docs/.../cli/next.md`), but has
@@ -71,13 +85,18 @@ From the project root:
 ./scripts/macos/start.sh
 ```
 
-Same behavior as the Windows script: checks Node.js and `.env.local`, installs dependencies and
+Same behavior as the Windows script: checks Node.js and `.env.local`, auto-updates via
+`git pull --ff-only` and rebuilds when run from a git checkout with new commits available (see
+§3 step 3 for the exact conditions and what makes it skip instead), installs dependencies and
 builds only if needed, starts the server, opens your default browser, and prints where its data
 lives.
 
 **To stop safely:** run `./scripts/macos/stop.sh` (or Ctrl+C the running `start.sh`).
 
-**To update:** run `./scripts/macos/update.sh`, then `./scripts/macos/start.sh`.
+**To update a standalone `published/<version>/` copy:** run `./scripts/macos/update.sh`, then
+`./scripts/macos/start.sh`. A git checkout running directly from `dev` no longer needs this
+manual step (see §3 step 3); `update.sh` still works there too, if you ever want to force a
+rebuild by hand.
 
 > **Status of this procedure:** unlike the Windows launcher, this one **was actually executed** on
 > real macOS hardware during this task's implementation — `start.sh` (server came up, returned
@@ -85,7 +104,11 @@ lives.
 > location), `stop.sh` (process actually stopped, port freed), and `update.sh` (rebuild completed,
 > restarted cleanly) all ran for real, not just against `npm run build`. This is real (if partial —
 > see §7) progress against `docs/TECHNICAL_DEBT.md` RISK-17, which tracked macOS as entirely
-> unvalidated.
+> unvalidated. **The git-checkout auto-update step (§4, added later) is a separate addition**:
+> its shell logic (clean/dirty tree, fast-forward, diverged-history, offline cases) was verified
+> against isolated throwaway git repositories, not against `start.sh`'s actual first-run flow on
+> real Windows/macOS hardware — that remains open, same as the rest of this document's Windows
+> status above.
 
 ## 5. First run, either platform
 

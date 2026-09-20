@@ -20,6 +20,54 @@ if not exist ".env.local" (
   exit /b 1
 )
 
+REM Auto-update: only when this is an actual git checkout of the repository (this device's own
+REM origin, which the operator already controls -- never a standalone published\<version>\
+REM release copy, which has no .git and is intentionally left untouched here, see
+REM docs\RELEASE_LAYOUT.md section 1's "no installer or auto-updater" scope note and AGENTS.md section K.4).
+if not exist ".git" goto :skip_update
+where git >nul 2>nul
+if errorlevel 1 goto :skip_update
+
+set "IS_DIRTY="
+for /f "delims=" %%i in ('git status --porcelain 2^>nul') do (
+  set "IS_DIRTY=1"
+  goto :dirty_check_done
+)
+:dirty_check_done
+if defined IS_DIRTY (
+  echo [WARN] Uncommitted local changes detected in this git checkout ^-^- skipping auto-update
+  echo so your work isn't touched. Commit or stash your changes, then re-run start.bat to pick
+  echo up the latest version automatically.
+  goto :skip_update
+)
+
+for /f "delims=" %%b in ('git rev-parse --abbrev-ref HEAD 2^>nul') do set "CURRENT_BRANCH=%%b"
+if "%CURRENT_BRANCH%"=="" goto :skip_update
+if "%CURRENT_BRANCH%"=="HEAD" goto :skip_update
+git remote get-url origin >nul 2>nul
+if errorlevel 1 goto :skip_update
+
+echo Checking for updates on '%CURRENT_BRANCH%'...
+for /f "delims=" %%r in ('git rev-parse HEAD') do set "BEFORE_REV=%%r"
+call git pull --ff-only origin %CURRENT_BRANCH%
+if errorlevel 1 (
+  echo [WARN] Could not fast-forward to the latest '%CURRENT_BRANCH%' ^(offline, or local
+  echo history has diverged^) ^-^- continuing with the current version.
+  goto :skip_update
+)
+for /f "delims=" %%r in ('git rev-parse HEAD') do set "AFTER_REV=%%r"
+if "%BEFORE_REV%"=="%AFTER_REV%" (
+  echo Already up to date.
+  goto :skip_update
+)
+echo Update found ^-^- installing dependencies and rebuilding before starting...
+call npm install
+if errorlevel 1 goto :fail
+call npm run build
+if errorlevel 1 goto :fail
+
+:skip_update
+
 if not exist "node_modules" (
   echo Installing dependencies ^(first run only, this can take a few minutes^)...
   call npm install
@@ -27,7 +75,7 @@ if not exist "node_modules" (
 )
 
 if not exist ".next" (
-  echo No build found - building the application ^(first run, or after running update.bat^)...
+  echo No build found - building the application ^(first run, or after a manual update.bat^)...
   call npm run build
   if errorlevel 1 goto :fail
 )
