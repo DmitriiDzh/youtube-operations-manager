@@ -847,7 +847,8 @@ export function LanguagesManager() {
             </span>
           </div>
 
-          <table className="w-full table-fixed text-left text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[600px] table-fixed text-left text-sm">
             <colgroup>
               <col className="w-8" />
               <col />
@@ -948,6 +949,7 @@ export function LanguagesManager() {
               ))}
             </tbody>
           </table>
+          </div>
 
           {!loadingOverview && filteredVideos.length === 0 && (
             <p className="px-4 py-6 text-center text-sm text-zinc-500">No videos match the current search.</p>

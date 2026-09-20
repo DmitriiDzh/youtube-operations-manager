@@ -326,7 +326,8 @@ export function BatchManager() {
             </button>
           </div>
 
-          <table className="w-full text-xs">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[480px] text-xs">
             <thead className="text-zinc-500">
               <tr>
                 <th className="p-1 text-left">Video</th>
@@ -346,6 +347,7 @@ export function BatchManager() {
               ))}
             </tbody>
           </table>
+          </div>
 
           <div>
             <h4 className="mb-1 text-xs font-semibold text-zinc-400">Error report</h4>
