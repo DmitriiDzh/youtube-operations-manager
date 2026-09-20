@@ -12,6 +12,7 @@ const localizationOverviewRowSchema = z
     presentLanguages: z.array(z.string()),
     missingLanguages: z.array(z.string()),
     status: z.enum(["complete", "missing"]),
+    lastSyncedAt: z.string(),
   })
   .strict();
 

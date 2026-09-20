@@ -80,15 +80,6 @@ export function LocalizationsIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-export function AiLocalizationIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <IconBase {...props}>
-      <path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3Z" />
-      <path d="M5 17l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7L5 17ZM19 15l.6 1.8 1.8.6-1.8.6-.6 1.8-.6-1.8-1.8-.6 1.8-.6.6-1.8Z" />
-    </IconBase>
-  );
-}
-
 export function BatchesIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <IconBase {...props}>

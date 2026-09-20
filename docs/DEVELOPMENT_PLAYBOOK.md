@@ -164,13 +164,13 @@ Entry point: `src/cli/video-metadata.ts`. Current namespaces: `metadata`, `auth`
 
 ## 6.9 Adding Web UI features
 
-Reference: `src/components/{channel-sync,localization-manager,change-set-review}.tsx`, wired into `src/app/dashboard/page.tsx`.
+Reference: `src/components/{content-manager,languages-manager,change-set-review}.tsx`, wired into `src/app/dashboard/page.tsx`.
 
 1. **Read the local Next.js documentation before writing any code** — this project pins a Next.js version with breaking changes from training-data assumptions (`node_modules/next/dist/docs/`). This requirement is preserved verbatim from `AGENTS.md`'s Next.js agent-warning block — do not skip it.
 2. **Server/client boundary:** dashboard tab components are `"use client"` components that call API routes via `fetch` — there is currently no use of Server Components/Server Actions for data fetching in this app; stay consistent with that unless there is a documented reason to introduce them.
 3. **API integration:** call the route handlers from §6.6, never a domain-module core directly from a client component (that core runs server-side only).
 4. **Loading/error states:** every existing tab tracks its own `loading`/`error` state via `useState`, shows a dedicated error banner, and disables action buttons while a request is in flight — follow that pattern rather than a global loading indicator.
-5. **Large tables:** paginate or filter rather than rendering everything at once — see `change-set-review.tsx`'s `pageSize=100` request parameter and status/language/video filters, and `localization-manager.tsx`'s client-side search/status filtering over the (already-bounded) overview table.
+5. **Large tables:** paginate or filter rather than rendering everything at once — see `change-set-review.tsx`'s `pageSize=100` request parameter and status/language/video filters, and `languages-manager.tsx`'s client-side search filtering over the (already-bounded) overview table.
 6. **Long-running operations:** disable the triggering button and show a busy label (`"Parsing..."`, `"Creating..."`) rather than blocking the whole page; do not freeze the UI until an operation completes.
 7. **Avoiding unnecessary requests:** fetch on mount / on relevant state change (`useEffect` with explicit dependencies via `useCallback`-wrapped fetchers), not on every render; re-fetch only the data that actually changed (e.g. approving one change re-fetches that change set's detail, not the entire channel list).
 

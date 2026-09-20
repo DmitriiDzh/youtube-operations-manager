@@ -20,6 +20,7 @@ type ChangeSet = {
   id: string;
   channelId: string;
   status: "in_review" | "approved" | "partially_approved" | "rejected";
+  source: "xlsx_import" | "ai_localization";
   importedFilename: string | null;
   totalChanges: number;
   pendingCount: number;
@@ -45,7 +46,20 @@ function changeTypeBadge(type: Change["changeType"]) {
   return <span className={`rounded px-1.5 py-0.5 text-[10px] uppercase ${styles[type]}`}>{type}</span>;
 }
 
-export function ChangeSetReview({ channelId, changeSetId, onClose }: { channelId: string; changeSetId: string; onClose: () => void }) {
+export function ChangeSetReview({
+  channelId,
+  changeSetId,
+  onClose,
+  onStatusChange,
+}: {
+  channelId: string;
+  changeSetId: string;
+  onClose: () => void;
+  /** Called after an approve/reject action actually changes this change set's status, so a
+   * parent showing a stale summary (e.g. status-based sub-tab filtering) can refresh it. Not
+   * called on the initial load. */
+  onStatusChange?: () => void;
+}) {
   const [changeSet, setChangeSet] = useState<ChangeSet | null>(null);
   const [changes, setChanges] = useState<Change[]>([]);
   const [loading, setLoading] = useState(false);
@@ -101,6 +115,7 @@ export function ChangeSetReview({ channelId, changeSetId, onClose }: { channelId
         return;
       }
       await load();
+      onStatusChange?.();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -122,6 +137,7 @@ export function ChangeSetReview({ channelId, changeSetId, onClose }: { channelId
         return;
       }
       await load();
+      onStatusChange?.();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -136,7 +152,8 @@ export function ChangeSetReview({ channelId, changeSetId, onClose }: { channelId
           <h3 className="text-sm font-semibold">Change Set Review</h3>
           {changeSet && (
             <p className="text-xs text-zinc-500">
-              {changeSet.importedFilename ?? "XLSX import"} · {changeSet.totalChanges} changes · status:{" "}
+              {changeSet.importedFilename ?? (changeSet.source === "ai_localization" ? "AI Generated" : "XLSX import")} ·{" "}
+              {changeSet.totalChanges} changes · status:{" "}
               <span className="font-medium text-zinc-300">{changeSet.status}</span>
             </p>
           )}

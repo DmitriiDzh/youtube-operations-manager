@@ -19,6 +19,7 @@ export type LocalizationOverviewRow = {
   presentLanguages: string[];
   missingLanguages: string[];
   status: LocalizationVideoStatus;
+  lastSyncedAt: string;
 };
 
 export type LocalizationOverview = {
