@@ -319,7 +319,7 @@ Every safety-critical test suite touching YouTube metadata (existing or future w
 
 - Existing unrelated localizations remain unchanged (a write targeting one locale must not touch any other locale's stored title/description).
 - Wrong-channel writes are impossible (`write-context.assertWriteChannel` must fail closed before any write call is reachable).
-- Blank spreadsheet cells never cause deletion (`docs/PROJECT_SPEC.md` §8 - a blank cell means "no proposed change," never "clear this field").
+- Blank spreadsheet cells never cause deletion (`docs/PROJECT_SPEC.md` §16 - a blank cell means "no proposed change," never "clear this field"). §16 also now permits an explicit, real deletion capability, but only under a permanent constraint: multi-step confirmation and a local recovery window before any deletion is final (added 2026-09-20 -- see `docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md` §7.2 for the first feature built under this rule).
 - Approval applies only to the exact approved payload (`Change.approvedValue` must be invalidated, not silently reused, if the underlying proposal or remote state changes after approval - `docs/ARCHITECTURE.md` §6.9/§6.7).
 - Conflicting changes cannot be silently applied (a `conflictStatus: "conflict"` change must be blocked from approval/application until the conflict is resolved).
 - Dry-run produces no remote mutations (a `dryRun: true` code path must be provably free of any YouTube write call - not just "didn't call it this time," but structurally incapable of reaching one).

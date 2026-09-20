@@ -748,6 +748,25 @@ blank cell = NO CHANGE
 
 Deletion must be an explicit operation.
 
+**Updated 2026-09-20 (explicit project-owner decision, reversing this section's original
+no-deletion-feature-at-all default once any deletion feature is actually built):** this
+application may build a real, explicit deletion capability (e.g. removing a video's localization
+from YouTube), but only under a permanent, application-wide constraint that applies to **every**
+deletion feature this application ever builds, not only the one that prompted this update:
+
+- No deletion may ever be permanent or immediate, no matter how many confirmation steps precede
+  it. A deletion action always requires **multiple, explicit confirmation steps** before it
+  executes.
+- Even after confirmation and execution, the deleted value must remain **locally recoverable for
+  a configurable retention window** (default 30 days) so the operator can restore it without harm.
+- "Restore" means re-applying the previously-deleted value as a new write, through the exact same
+  safety model as any other write (identity check, dry-run capability, audit, verification) — it
+  is never a bare, unaudited local undo.
+- The retention window governs what the operator is *offered* as restorable; it does not by
+  itself require deleting the underlying local backup once the window closes (see
+  `docs/TECHNICAL_DEBT.md` for the current status of backup retention/cleanup, tracked
+  separately as its own decision).
+
 ---
 
 # 17. Change Set Model
