@@ -44,6 +44,9 @@ export type StoredVideoRecord = {
   thumbnails: Record<string, ThumbnailInfo>;
   existingLocalizations: Record<string, LocaleMetadata>;
   etag: string | null;
+  viewCount: number | null;
+  commentCount: number | null;
+  likeCount: number | null;
   lastSyncedAt: Date;
 };
 
@@ -92,6 +95,9 @@ type ServiceDependencies = {
         thumbnails: Record<string, ThumbnailInfo>;
         existingLocalizations: Record<string, LocaleMetadata>;
         etag: string | null;
+        viewCount: number | null;
+        commentCount: number | null;
+        likeCount: number | null;
       }>,
       syncedAt: Date
     ): Promise<void>;
@@ -140,6 +146,9 @@ function mapStoredVideo(record: StoredVideoRecord): SyncedVideo {
     existingLocalizationLanguages: Object.keys(record.existingLocalizations).sort(),
     lastSyncedAt: record.lastSyncedAt.toISOString(),
     etag: record.etag,
+    viewCount: record.viewCount,
+    commentCount: record.commentCount,
+    likeCount: record.likeCount,
   };
 }
 
@@ -223,6 +232,9 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
             thumbnails: video.thumbnails,
             existingLocalizations: video.existingLocalizations,
             etag: video.etag,
+            viewCount: video.viewCount,
+            commentCount: video.commentCount,
+            likeCount: video.likeCount,
           })),
           syncedAt
         );

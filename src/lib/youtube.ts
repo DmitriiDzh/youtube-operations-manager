@@ -203,7 +203,16 @@ export type VideoSyncMetadata = {
   thumbnails: Record<string, ThumbnailInfo>;
   existingLocalizations: Record<string, LocaleMetadata>;
   etag: string | null;
+  viewCount: number | null;
+  commentCount: number | null;
+  likeCount: number | null;
 };
+
+function parseStatCount(value: string | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 function toThumbnailMap(
   thumbnails: youtube_v3.Schema$ThumbnailDetails | null | undefined
@@ -230,7 +239,7 @@ export async function getVideosMetadataContextBatch(
     if (batch.length === 0) continue;
 
     const res = await youtube.videos.list({
-      part: ["snippet", "status", "localizations"],
+      part: ["snippet", "status", "localizations", "statistics"],
       id: batch,
       maxResults: YOUTUBE_VIDEOS_LIST_BATCH_SIZE,
     });
@@ -249,6 +258,12 @@ export async function getVideosMetadataContextBatch(
         thumbnails: toThumbnailMap(item.snippet.thumbnails),
         existingLocalizations: toLocaleMetadataMap(item.localizations),
         etag: item.etag ?? null,
+        // The API returns these as decimal strings and omits a field entirely when it isn't
+        // available (e.g. comments/likes disabled/hidden) -- never defaulted to 0, which would
+        // assert a false "zero views" fact (docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slice S1).
+        viewCount: parseStatCount(item.statistics?.viewCount),
+        commentCount: parseStatCount(item.statistics?.commentCount),
+        likeCount: parseStatCount(item.statistics?.likeCount),
       });
     }
   }

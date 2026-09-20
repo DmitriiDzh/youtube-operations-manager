@@ -70,6 +70,52 @@ test("getVideosMetadataContextBatch chunks requests into groups of at most 50 vi
   });
 });
 
+// docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slice S1: view/comment/like counts, requested via the
+// videos.list `statistics` part. The real API returns these as decimal strings and omits a field
+// entirely when unavailable (e.g. comments disabled) -- never a false "0" fact.
+test("getVideosMetadataContextBatch parses statistics as numbers and requests the statistics part", async () => {
+  let requestedParts: string[] | undefined;
+
+  const youtube = fakeYoutubeClient({
+    videosList: (async (args: { part?: string[] }) => {
+      requestedParts = args.part;
+      return {
+        data: {
+          items: [
+            {
+              id: "v1",
+              etag: "etag-v1",
+              snippet: { title: "T", description: "D", publishedAt: "2026-01-01T00:00:00.000Z" },
+              status: { privacyStatus: "public" },
+              statistics: { viewCount: "12345", commentCount: "42", likeCount: "99" },
+            },
+            {
+              id: "v2",
+              etag: "etag-v2",
+              snippet: { title: "T2", description: "D2", publishedAt: "2026-01-01T00:00:00.000Z" },
+              status: { privacyStatus: "public" },
+              // Comments/likes disabled or hidden -- statistics present but fields absent.
+              statistics: { viewCount: "7" },
+            },
+          ],
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["videos"]["list"],
+  });
+
+  const results = await getVideosMetadataContextBatch(youtube, ["v1", "v2"]);
+
+  assert.ok(requestedParts?.includes("statistics"));
+  assert.deepEqual(
+    { viewCount: results[0]?.viewCount, commentCount: results[0]?.commentCount, likeCount: results[0]?.likeCount },
+    { viewCount: 12345, commentCount: 42, likeCount: 99 }
+  );
+  assert.deepEqual(
+    { viewCount: results[1]?.viewCount, commentCount: results[1]?.commentCount, likeCount: results[1]?.likeCount },
+    { viewCount: 7, commentCount: null, likeCount: null }
+  );
+});
+
 test("AC-QUOTA-01: the exact approved 75-video fixture issues 2 videos.list calls (chunks of 50 and 25), never 75", async () => {
   const requestedBatches: string[][] = [];
   const videoIds = Array.from({ length: 75 }, (_, i) => `v${i + 1}`);

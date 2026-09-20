@@ -197,6 +197,12 @@ export const videos = sqliteTable("videos", {
   thumbnailsJson: text("thumbnails_json").notNull(),
   localizationsJson: text("localizations_json").notNull(),
   etag: text("etag"),
+  // Additive, schema version 4 (docs/decisions/0002-additive-schema-versioning.md) -- nullable
+  // because a row synced before this column existed has no value until its next re-sync, never
+  // backfilled with a fake 0 (RISK-02/RISK-33's "never silently create a fact that isn't true").
+  viewCount: integer("view_count"),
+  commentCount: integer("comment_count"),
+  likeCount: integer("like_count"),
   lastSyncedAt: integer("last_synced_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),
@@ -449,6 +455,17 @@ export const rules = sqliteTable("rules", {
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
 export const SCHEMA_BASELINE_VERSION = 1;
 
+// RISK-33 (docs/TECHNICAL_DEBT.md): shared by the legacy baseline's own idempotent ALTER TABLEs
+// and by any SCHEMA_MIGRATIONS entry that adds a column -- a migration can be re-applied against
+// a database that was previously initialized without a `schema_meta` stamp (see
+// initializeDatabaseSchema's pre-versioning-database handling below), so `ALTER TABLE ADD COLUMN`
+// must tolerate "already exists" as its one expected, legitimate failure. Any other error (disk
+// I/O, corruption, a genuinely malformed statement) still propagates.
+function isDuplicateColumnError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /duplicate column name/i.test(message);
+}
+
 export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 2,
@@ -489,6 +506,20 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "affected_batches_json TEXT NOT NULL, " +
           "note TEXT)"
       );
+    },
+  },
+  {
+    version: 4,
+    description:
+      "videos.view_count/comment_count/like_count -- Studio-parity Content tab (docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slice S1)",
+    apply: async (client) => {
+      for (const column of ["view_count", "comment_count", "like_count"]) {
+        try {
+          await client.execute(`ALTER TABLE videos ADD COLUMN ${column} INTEGER`);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
     },
   },
 ];
@@ -721,15 +752,6 @@ export async function initializeDatabaseSchema(
     CREATE INDEX IF NOT EXISTS audit_events_ledger_row_id_idx ON audit_events(ledger_row_id);
     CREATE INDEX IF NOT EXISTS audit_events_batch_id_idx ON audit_events(batch_id);
   `);
-
-  // RISK-33 (docs/TECHNICAL_DEBT.md): the three ALTER TABLE migrations below are idempotent by
-  // design (ADR 0001's additive baseline) -- "column already exists" is the one expected,
-  // legitimate failure. Any other error (disk I/O, corruption, a genuinely malformed statement)
-  // must still propagate; narrowed here rather than swallowed unconditionally.
-  const isDuplicateColumnError = (error: unknown): boolean => {
-    const message = error instanceof Error ? error.message : String(error);
-    return /duplicate column name/i.test(message);
-  };
 
   // Migration: add selected_channel_id if missing (idempotent)
   try {
@@ -1102,6 +1124,9 @@ export type StoredVideo = {
   thumbnails: Record<string, ThumbnailInfo>;
   existingLocalizations: Record<string, LocaleMetadataRecord>;
   etag: string | null;
+  viewCount: number | null;
+  commentCount: number | null;
+  likeCount: number | null;
   lastSyncedAt: Date;
 };
 
@@ -1133,6 +1158,9 @@ function mapStoredVideo(row: typeof videos.$inferSelect): StoredVideo {
       LocaleMetadataRecord
     >,
     etag: row.etag,
+    viewCount: row.viewCount,
+    commentCount: row.commentCount,
+    likeCount: row.likeCount,
     lastSyncedAt: row.lastSyncedAt,
   };
 }
@@ -1191,6 +1219,9 @@ export async function upsertVideos(
     thumbnails: Record<string, ThumbnailInfo>;
     existingLocalizations: Record<string, LocaleMetadataRecord>;
     etag: string | null;
+    viewCount?: number | null;
+    commentCount?: number | null;
+    likeCount?: number | null;
   }>,
   syncedAt: Date
 ): Promise<void> {
@@ -1207,6 +1238,9 @@ export async function upsertVideos(
       thumbnailsJson: JSON.stringify(entry.thumbnails),
       localizationsJson: JSON.stringify(entry.existingLocalizations),
       etag: entry.etag,
+      viewCount: entry.viewCount ?? null,
+      commentCount: entry.commentCount ?? null,
+      likeCount: entry.likeCount ?? null,
       lastSyncedAt: syncedAt,
     };
 
