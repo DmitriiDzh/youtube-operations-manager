@@ -46,6 +46,13 @@ async function seedChannel(client: Client, channelId: string) {
   });
 }
 
+async function seedVideo(client: Client, videoId: string, channelId: string) {
+  await client.execute({
+    sql: "INSERT INTO videos (id, channel_id, title, description, published_at, privacy_status, thumbnails_json, localizations_json) VALUES (?, ?, ?, ?, ?, ?, '{}', '{}')",
+    args: [videoId, channelId, "Video " + videoId, "desc", "2024-01-01T00:00:00Z", "public"],
+  });
+}
+
 async function seedUser(client: Client, userId: string, accessToken: string) {
   await client.execute({
     sql: "INSERT INTO users (id, email, access_token, refresh_token) VALUES (?, ?, ?, ?)",
@@ -356,6 +363,100 @@ test("applySnapshotToDatabase: replaces application-state tables and upserts ai_
     });
     assert.equal(cred.rows.length, 1);
     assert.equal(cred.rows[0].ciphertext, "local-ciphertext");
+
+    source.close();
+    receiving.close();
+  }));
+
+// RISK-33 (docs/TECHNICAL_DEBT.md): reproduces the real-world crash reported by a user importing
+// into a device that had already synced its own channel/video data. `@libsql/client` defaults
+// `PRAGMA foreign_keys=ON` for every connection (unlike stock better-sqlite3, which the rest of
+// this codebase implicitly assumed FK enforcement matched) -- so `DELETE FROM "channels"` fails
+// immediately with SQLITE_CONSTRAINT the moment the receiving device still has a local video row
+// referencing an existing channel that hasn't been deleted yet. Every device that has ever
+// synced at least one channel with videos hits this on its very next import.
+test("applySnapshotToDatabase: succeeds when the receiving device already has local rows whose foreign keys point at tables being replaced (RISK-33)", () =>
+  withTempDir(async (dir) => {
+    const source = await makeClient(dir, "source.db");
+    await seedChannel(source, "chan-new");
+    await seedVideo(source, "video-new", "chan-new");
+
+    const manifest = await exportSnapshot({
+      client: source,
+      snapshotsDir: path.join(dir, "snapshots"),
+      deviceId: "device-a",
+      schemaVersion: 3,
+    });
+    const snapshotDir = path.join(dir, "snapshots", manifest.snapshotId);
+
+    // Receiving device: already has its own previously-synced channel and video, exactly like a
+    // real returning device performing a routine (not first-ever) import.
+    const receiving = await makeClient(dir, "receiving.db");
+    await seedChannel(receiving, "chan-old");
+    await seedVideo(receiving, "video-old", "chan-old");
+
+    const workingCopyPath = path.join(dir, "working-copy.db");
+    await copyDatabaseConsistently(
+      createClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
+      workingCopyPath
+    );
+    await migrateStagedCopy(workingCopyPath);
+
+    await applySnapshotToDatabase(receiving, workingCopyPath);
+
+    const channels = await receiving.execute("SELECT id FROM channels");
+    assert.deepEqual(channels.rows.map((r) => r.id), ["chan-new"]);
+    const videos = await receiving.execute("SELECT id, channel_id FROM videos");
+    assert.deepEqual(videos.rows.map((r) => r.id), ["video-new"]);
+
+    // FK enforcement must be restored afterward -- this is a shared connection, and a later,
+    // unrelated write must not silently run with foreign keys disabled.
+    const pragmaAfter = await receiving.execute("PRAGMA foreign_keys");
+    assert.equal(pragmaAfter.rows[0].foreign_keys, 1);
+
+    source.close();
+    receiving.close();
+  }));
+
+// RISK-33 (docs/TECHNICAL_DEBT.md): `users` is deliberately never transferred in a snapshot (it
+// is device-local OAuth identity, contracts.ts), but `rules.user_id` is a NOT NULL FK to
+// `users.id`. A `rules` row exported from one account must still import cleanly on a device that
+// has never signed in with that exact account -- the row travels for continuity even though its
+// owning user only re-establishes itself locally via a later sign-in.
+test("applySnapshotToDatabase: imports a rules row whose user_id has no matching local user (RISK-33)", () =>
+  withTempDir(async (dir) => {
+    const source = await makeClient(dir, "source.db");
+    await seedUser(source, "user-on-source-only", "source-token");
+    await source.execute({
+      sql: "INSERT INTO rules (user_id, name, match_field, match_type, match_value, playlist_id, playlist_title) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      args: ["user-on-source-only", "Rule A", "title", "contains", "x", "pl-1", "Playlist 1"],
+    });
+
+    const manifest = await exportSnapshot({
+      client: source,
+      snapshotsDir: path.join(dir, "snapshots"),
+      deviceId: "device-a",
+      schemaVersion: 3,
+    });
+    const snapshotDir = path.join(dir, "snapshots", manifest.snapshotId);
+
+    const receiving = await makeClient(dir, "receiving.db");
+    await seedUser(receiving, "receiving-user", "receiving-token");
+
+    const workingCopyPath = path.join(dir, "working-copy.db");
+    await copyDatabaseConsistently(
+      createClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
+      workingCopyPath
+    );
+    await migrateStagedCopy(workingCopyPath);
+
+    await applySnapshotToDatabase(receiving, workingCopyPath);
+
+    const rules = await receiving.execute("SELECT user_id, name FROM rules");
+    assert.deepEqual(
+      rules.rows.map((r) => r.user_id),
+      ["user-on-source-only"]
+    );
 
     source.close();
     receiving.close();
