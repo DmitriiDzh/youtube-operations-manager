@@ -116,6 +116,11 @@ Key MCP tools:
     base64-encoded — MCP's JSON transport has no native binary field) → the same
     `{ summary, errors, totalErrors }` shape the Web UI's
     `POST .../localizations/import/preview` route returns; **persists nothing**
+  - `changeset_create_from_import` — same `{ channelId, filename, fileBase64 }` input, but
+    **persists** a new Change Set (mirrors `POST .../localizations/import`) → `{ changeSet,
+    summary, errors, totalErrors }`. Never writes to YouTube, but does mutate the local
+    database, so — unlike the preview tool above — it IS gated by the same
+    device-availability check as `channel_sync`/`apply`.
   - `batch_list` — `{ channelId }` → `{ batches: Batch[] }`
   - `batch_get` — `{ channelId, batchId }` → `{ batch, ledgerRows }`; verifies the batch belongs
     to `channelId` via `requireBatchForChannel` before returning anything (`AGENTS.md` §F)

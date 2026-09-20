@@ -51,7 +51,10 @@ type PlaylistManagementCoreSubset = Pick<
 // Change Sets and Batches, closing part of RISK-04. Deliberately excludes every
 // apply-class/write-capable method on either core -- `src/lib/batches/write-path-inventory.test.ts`
 // fails the build if any such symbol is ever referenced from this file.
-type ChangeSetCoreSubset = Pick<ChangeSetCore, "listChangeSets" | "getChangeSet" | "previewImport">;
+type ChangeSetCoreSubset = Pick<
+  ChangeSetCore,
+  "listChangeSets" | "getChangeSet" | "previewImport" | "createChangeSetFromImport"
+>;
 type BatchCoreSubset = Pick<BatchCore, "listBatchesByChannel" | "requireBatchForChannel" | "listLedgerRows">;
 
 // BL-008 (docs/roadmap/BACKLOG.md): the remainder of RISK-04's MCP portion --
@@ -84,6 +87,7 @@ type McpToolHandlers = {
   changesetList: (input: unknown) => Promise<ToolResponse>;
   changesetGet: (input: unknown) => Promise<ToolResponse>;
   localizationImportPreview: (input: unknown) => Promise<ToolResponse>;
+  changesetCreateFromImport: (input: unknown) => Promise<ToolResponse>;
   batchList: (input: unknown) => Promise<ToolResponse>;
   batchGet: (input: unknown) => Promise<ToolResponse>;
   channelSync: (input: unknown) => Promise<ToolResponse>;
@@ -615,6 +619,29 @@ export function createMcpToolHandlers(
       }
     },
 
+    // Mutating (persists a new Change Set + Change rows) -- unlike localizationImportPreview
+    // above, wrapped by the device-availability gate below, same treatment as channelSync.
+    // Never reaches YouTube: createChangeSetFromImport is the exact same local-persistence
+    // path the Web UI's POST .../localizations/import route already uses.
+    async changesetCreateFromImport(input: unknown): Promise<ToolResponse> {
+      const parsedInput = localizationImportPreviewInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const buffer = Buffer.from(parsedInput.data.fileBase64, "base64");
+        const result = await operationsCore.createChangeSetFromImport({
+          channelId: parsedInput.data.channelId,
+          filename: parsedInput.data.filename,
+          buffer,
+        });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
     async batchList(input: unknown): Promise<ToolResponse> {
       const parsedInput = batchListInputSchema.safeParse(input);
       if (!parsedInput.success) {
@@ -760,6 +787,8 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     changesetList: handlers.changesetList,
     changesetGet: handlers.changesetGet,
     localizationImportPreview: handlers.localizationImportPreview,
+    changesetCreateFromImport: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.changesetCreateFromImport(input),
     batchList: handlers.batchList,
     batchGet: handlers.batchGet,
     // channel_sync writes to the local channels/videos tables -- gated, like
@@ -965,6 +994,16 @@ export function createMcpServer(
       inputSchema: localizationImportPreviewInputSchema,
     },
     (args) => handlers.localizationImportPreview(args)
+  );
+
+  server.registerTool(
+    "changeset_create_from_import",
+    {
+      description:
+        "Parse an XLSX localization workbook (base64-encoded) and persist a new Change Set from it -- the same local-only persistence the Web UI's POST .../localizations/import route performs. Never writes to YouTube; mutating locally, so it is gated exactly like channel_sync.",
+      inputSchema: localizationImportPreviewInputSchema,
+    },
+    (args) => handlers.changesetCreateFromImport(args)
   );
 
   server.registerTool(

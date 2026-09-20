@@ -1283,7 +1283,7 @@ function makeLedgerRow(overrides: Partial<import("@/lib/batches/contracts").Ledg
 
 function makeOperationsCoreStub(): Pick<
   ChangeSetCore,
-  "listChangeSets" | "getChangeSet" | "previewImport"
+  "listChangeSets" | "getChangeSet" | "previewImport" | "createChangeSetFromImport"
 > &
   Pick<BatchCore, "listBatchesByChannel" | "requireBatchForChannel" | "listLedgerRows"> {
   return {
@@ -1292,6 +1292,19 @@ function makeOperationsCoreStub(): Pick<
       changeSet: makeChangeSet(),
       changes: [makeChange()],
       pagination: { page: 1, pageSize: 50, total: 1 },
+    }),
+    createChangeSetFromImport: async () => ({
+      changeSet: makeChangeSet(),
+      summary: {
+        videosFound: 1,
+        localizationRows: 1,
+        validChanges: 1,
+        unchangedValues: 0,
+        invalidRows: 0,
+        conflicts: 0,
+      },
+      errors: [],
+      totalErrors: 0,
     }),
     previewImport: async () => ({
       summary: {
@@ -1587,6 +1600,62 @@ test("MCP channel_sync is rejected while the operation lock is held; channel_lis
     assert.equal(syncBody.error.code, "operation_lock_held");
 
     const listResult = await handlers.channelList({});
+    assert.notEqual(listResult.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// Correction to an earlier (wrong) answer given to the project owner: creating a Change
+// Set from an import is local-only persistence, the same risk tier as
+// localization_import_preview, NOT blocked by Gate B (which only concerns real YouTube
+// writes). It DOES mutate local state, though, so it is gated like channel_sync --
+// unlike localization_import_preview, which is not.
+
+test("MCP changeset_create_from_import decodes base64 and persists via createChangeSetFromImport", async () => {
+  const original = "title,description\nHello,World\n";
+  const fileBase64 = Buffer.from(original, "utf8").toString("base64");
+
+  const captured: { buffer?: Buffer } = {};
+  const operationsCore = makeOperationsCoreStub();
+  operationsCore.createChangeSetFromImport = async (input: unknown) => {
+    captured.buffer = (input as { buffer: Buffer }).buffer;
+    return {
+      changeSet: makeChangeSet(),
+      summary: { videosFound: 1, localizationRows: 1, validChanges: 1, unchangedValues: 0, invalidRows: 0, conflicts: 0 },
+      errors: [],
+      totalErrors: 0,
+    };
+  };
+
+  const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), operationsCore);
+  const result = await handlers.changesetCreateFromImport({
+    channelId: "UC_1",
+    filename: "export.xlsx",
+    fileBase64,
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(captured.buffer?.toString("utf8"), original);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.changeSet.id, "cs-1");
+});
+
+test("MCP changeset_create_from_import is rejected while the operation lock is held; changeset_list is not", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub(), makeOperationsCoreStub());
+
+    const createResult = await handlers.changesetCreateFromImport({
+      channelId: "UC_1",
+      filename: "export.xlsx",
+      fileBase64: Buffer.from("x").toString("base64"),
+    });
+    assert.equal(createResult.isError, true);
+    const createBody = JSON.parse(createResult.content[0]?.text ?? "{}");
+    assert.equal(createBody.error.code, "operation_lock_held");
+
+    const listResult = await handlers.changesetList({ channelId: "UC_1" });
     assert.notEqual(listResult.isError, true);
   } finally {
     await releaseOperationLock(rawSqlClient);
