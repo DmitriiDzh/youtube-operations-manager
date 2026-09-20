@@ -1719,7 +1719,7 @@ test("CLI changeset list forwards channelId and returns structured JSON", async 
   assert.equal(exitCode, 0);
   assert.deepEqual(captured, { channelId: "UC_1" });
   const envelope = JSON.parse(stdout[0] ?? "{}");
-  assert.equal(envelope.data[0].id, "cs-1");
+  assert.equal(envelope.data.changeSets[0].id, "cs-1");
 });
 
 test("CLI changeset get forwards optional filters", async () => {
@@ -1872,6 +1872,35 @@ test("CLI channel sync forwards resolved credentialRef and optional channelId", 
 
   assert.equal(exitCode, 0);
   assert.deepEqual(captured, { credentialRef: { userId: "u1" }, channelId: "UC_1" });
+});
+
+// Found by independent review: a valueless --channelId (e.g. a typo like
+// `--channelId --userId u1`, where parseArgs reads the next token as its own flag rather
+// than a value) used to be silently coerced to "channelId omitted" instead of raising an
+// error -- syncing whatever channel resolves as default instead of failing closed on the
+// operator's mistake.
+test("CLI channel sync rejects a --channelId flag with no value instead of silently treating it as omitted", async () => {
+  const channelSyncCore = makeChannelSyncCoreStub();
+  let called = false;
+  channelSyncCore.syncChannel = async () => {
+    called = true;
+    return { channel: null as never, videoCount: 0, syncedAt: "" };
+  };
+
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["channel", "sync", "--channelId", "--userId", "u1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelSyncCore,
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(called, false);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /channelId/);
 });
 
 test("CLI channel video-list requires channelId", async () => {
