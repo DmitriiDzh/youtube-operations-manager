@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DomainError } from "@/lib/video-metadata/contracts";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import type { PlaylistManagementCore } from "@/lib/playlist-management";
+import type { ChangeSetCore } from "@/lib/changesets";
+import type { ChangeSet } from "@/lib/changesets/contracts";
+import type { BatchCore } from "@/lib/batches";
+import type { Batch } from "@/lib/batches/contracts";
+import type { ChannelSyncCore } from "@/lib/channel-sync";
 import { runCliCommand } from "./video-metadata";
 
 function makeCoreStub(): Pick<
@@ -1600,4 +1608,284 @@ test("CLI playlist fails with typed auth error when no credential source is avai
   assert.equal(envelope.ok, false);
   assert.equal(envelope.error.code, "AUTH_USER_NOT_FOUND");
   assert.match(envelope.error.message, /Active auth user does not exist/);
+});
+
+// CLI parity for the read/propose/create MCP tools (docs/roadmap/plans/PHASE_7_PLAN.md,
+// docs/TECHNICAL_DEBT.md RISK-04) -- same core factories via new optional
+// operationsCore/channelSyncCore params, mirroring src/mcp/server.ts's design exactly.
+
+function makeChangeSetRecord(): ChangeSet {
+  return {
+    id: "cs-1",
+    channelId: "UC_1",
+    source: "xlsx_import",
+    status: "in_review",
+    importedFilename: "export.xlsx",
+    schemaVersion: "1",
+    exportedAt: "2026-09-01T00:00:00.000Z",
+    hasInvalid: false,
+    hasConflicts: false,
+    totalChanges: 1,
+    pendingCount: 1,
+    approvedCount: 0,
+    rejectedCount: 0,
+    conflictCount: 0,
+    invalidCount: 0,
+    createdAt: "2026-09-01T00:00:00.000Z",
+    updatedAt: "2026-09-01T00:00:00.000Z",
+  };
+}
+
+function makeBatchRecord(): Batch {
+  return {
+    id: "batch-1",
+    channelId: "UC_1",
+    status: "PENDING",
+    concurrency: 1,
+    dryRun: true,
+    runId: null,
+    createdAt: "2026-09-01T00:00:00.000Z",
+    startedAt: null,
+    completedAt: null,
+  };
+}
+
+function makeOperationsCoreStub(): Pick<
+  ChangeSetCore,
+  "listChangeSets" | "getChangeSet" | "previewImport" | "createChangeSetFromImport"
+> &
+  Pick<BatchCore, "listBatchesByChannel" | "requireBatchForChannel" | "listLedgerRows"> {
+  return {
+    listChangeSets: async () => [makeChangeSetRecord()],
+    getChangeSet: async () => ({
+      changeSet: makeChangeSetRecord(),
+      changes: [],
+      pagination: { page: 1, pageSize: 50, total: 0 },
+    }),
+    previewImport: async () => ({
+      summary: { videosFound: 1, localizationRows: 1, validChanges: 1, unchangedValues: 0, invalidRows: 0, conflicts: 0 },
+      errors: [],
+      totalErrors: 0,
+    }),
+    createChangeSetFromImport: async () => ({
+      changeSet: makeChangeSetRecord(),
+      summary: { videosFound: 1, localizationRows: 1, validChanges: 1, unchangedValues: 0, invalidRows: 0, conflicts: 0 },
+      errors: [],
+      totalErrors: 0,
+    }),
+    listBatchesByChannel: async () => [],
+    requireBatchForChannel: async () => makeBatchRecord(),
+    listLedgerRows: async () => [],
+  };
+}
+
+function makeChannelSyncCoreStub(): Pick<
+  ChannelSyncCore,
+  "syncChannel" | "listChannels" | "listSyncedVideos"
+> {
+  const channel = {
+    channelId: "UC_1",
+    title: "Channel 1",
+    thumbnailUrl: null,
+    uploadsPlaylistId: "UU_1",
+    connectedUserId: "u1",
+    connectedAt: "2026-09-01T00:00:00.000Z",
+    lastSyncedAt: "2026-09-01T00:00:00.000Z",
+  };
+  return {
+    syncChannel: async () => ({ channel, videoCount: 1, syncedAt: "2026-09-01T00:00:00.000Z" }),
+    listChannels: async () => ({ channels: [channel] }),
+    listSyncedVideos: async () => ({ channelId: "UC_1", videos: [] }),
+  };
+}
+
+test("CLI changeset list forwards channelId and returns structured JSON", async () => {
+  const stdout: string[] = [];
+  const operationsCore = makeOperationsCoreStub();
+  let captured: unknown;
+  operationsCore.listChangeSets = async (input: unknown) => {
+    captured = input;
+    return [makeChangeSetRecord()];
+  };
+
+  const exitCode = await runCliCommand({
+    argv: ["changeset", "list", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    operationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1" });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data[0].id, "cs-1");
+});
+
+test("CLI changeset get forwards optional filters", async () => {
+  const stdout: string[] = [];
+  const operationsCore = makeOperationsCoreStub();
+  let captured: unknown;
+  operationsCore.getChangeSet = async (input: unknown) => {
+    captured = input;
+    return { changeSet: makeChangeSetRecord(), changes: [], pagination: { page: 1, pageSize: 50, total: 0 } };
+  };
+
+  const exitCode = await runCliCommand({
+    argv: ["changeset", "get", "--channelId", "UC_1", "--changeSetId", "cs-1", "--language", "es"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    operationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    changeSetId: "cs-1",
+    status: undefined,
+    language: "es",
+    videoId: undefined,
+  });
+});
+
+test("CLI changeset preview and changeset import read --file from disk and forward its bytes; preview never persists", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "cli-changeset-test-"));
+  const filePath = join(dir, "export.xlsx");
+  const content = "title,description\nHello,World\n";
+  await writeFile(filePath, content, "utf8");
+
+  try {
+    const operationsCore = makeOperationsCoreStub();
+    const capturedPreview: { buffer?: Buffer; filename?: string } = {};
+    operationsCore.previewImport = async (input: unknown) => {
+      const typed = input as { buffer: Buffer; filename: string };
+      capturedPreview.buffer = typed.buffer;
+      capturedPreview.filename = typed.filename;
+      return {
+        summary: { videosFound: 0, localizationRows: 0, validChanges: 0, unchangedValues: 0, invalidRows: 0, conflicts: 0 },
+        errors: [],
+        totalErrors: 0,
+      };
+    };
+    let createCalled = false;
+    operationsCore.createChangeSetFromImport = async () => {
+      createCalled = true;
+      return { changeSet: makeChangeSetRecord(), summary: { videosFound: 0, localizationRows: 0, validChanges: 0, unchangedValues: 0, invalidRows: 0, conflicts: 0 }, errors: [], totalErrors: 0 };
+    };
+
+    const previewStdout: string[] = [];
+    const previewExit = await runCliCommand({
+      argv: ["changeset", "preview", "--channelId", "UC_1", "--file", filePath],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      operationsCore,
+      writeStdout: (line) => previewStdout.push(line),
+    });
+
+    assert.equal(previewExit, 0);
+    assert.equal(capturedPreview.buffer?.toString("utf8"), content);
+    assert.equal(capturedPreview.filename, "export.xlsx");
+    assert.equal(createCalled, false);
+
+    const importStdout: string[] = [];
+    const importExit = await runCliCommand({
+      argv: ["changeset", "import", "--channelId", "UC_1", "--file", filePath],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      operationsCore,
+      writeStdout: (line) => importStdout.push(line),
+    });
+
+    assert.equal(importExit, 0);
+    assert.equal(createCalled, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI changeset import fails cleanly when --file does not exist", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["changeset", "import", "--channelId", "UC_1", "--file", "/no/such/file.xlsx"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    operationsCore: makeOperationsCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /--file/);
+});
+
+test("CLI batch list and batch get use requireBatchForChannel, not a bare batchId lookup", async () => {
+  const operationsCore = makeOperationsCoreStub();
+  const seenArgs: unknown[] = [];
+  operationsCore.requireBatchForChannel = async (channelId: string, batchId: string) => {
+    seenArgs.push([channelId, batchId]);
+    return makeBatchRecord();
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["batch", "get", "--channelId", "UC_1", "--batchId", "batch-1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    operationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(seenArgs, [["UC_1", "batch-1"]]);
+});
+
+test("CLI channel sync forwards resolved credentialRef and optional channelId", async () => {
+  const channelSyncCore = makeChannelSyncCoreStub();
+  let captured: unknown;
+  channelSyncCore.syncChannel = async (input: unknown) => {
+    captured = input;
+    return {
+      channel: {
+        channelId: "UC_1",
+        title: "Channel 1",
+        thumbnailUrl: null,
+        uploadsPlaylistId: "UU_1",
+        connectedUserId: "u1",
+        connectedAt: "2026-09-01T00:00:00.000Z",
+        lastSyncedAt: "2026-09-01T00:00:00.000Z",
+      },
+      videoCount: 1,
+      syncedAt: "2026-09-01T00:00:00.000Z",
+    };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["channel", "sync", "--channelId", "UC_1", "--userId", "u1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelSyncCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { credentialRef: { userId: "u1" }, channelId: "UC_1" });
+});
+
+test("CLI channel video-list requires channelId", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["channel", "video-list"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelSyncCore: makeChannelSyncCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /channelId/);
 });
