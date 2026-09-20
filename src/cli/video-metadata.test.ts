@@ -412,6 +412,30 @@ test("CLI list forwards explicit channelId when provided", async () => {
   });
 });
 
+// Found by independent review (cycle 2): a valueless --channelId used to fall through the
+// old inline coercion to "omitted", silently listing videos for the default/active channel
+// instead of erroring on the operator's malformed flag.
+test("CLI list rejects a --channelId flag with no value instead of silently listing the default channel", async () => {
+  const stderr: string[] = [];
+  const core = makeCoreStub();
+  let called = false;
+  core.listVideos = async () => {
+    called = true;
+    return { videos: [] };
+  };
+
+  const exitCode = await runCliCommand({
+    argv: ["list", "--channelId", "--maxResults", "5"],
+    core,
+    auth: makeAuthStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(called, false);
+  assert.match(JSON.parse(stderr[0] ?? "{}").error.message, /channelId/);
+});
+
 test("CLI metadata commands fallback to active auth context when --userId is omitted", async () => {
   let capturedInput: unknown;
   const core = makeCoreStub();
@@ -738,6 +762,27 @@ test("CLI auth supports whoami/list-users/logout/revoke with stable envelopes", 
     const envelope = JSON.parse(line);
     assert.equal(envelope.ok, true);
   }
+});
+
+// Found by independent review (cycle 2): `revoke.userId` used to fall through the old
+// inline coercion, so a valueless --userId (e.g. a typo dropping its value) was silently
+// treated as "omitted" -- auth.revoke() then falls back to the currently active user and
+// revokes THEIR token instead of failing closed on the malformed flag.
+test("CLI auth revoke rejects a --userId flag with no value instead of silently revoking the active user", async () => {
+  const stderr: string[] = [];
+  let called = false;
+  const auth = { ...makeAuthStub(), revoke: async () => { called = true; return {}; } };
+
+  const exitCode = await runCliCommand({
+    argv: ["auth", "revoke", "--userId", "--foo"],
+    core: makeCoreStub(),
+    auth,
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(called, false);
+  assert.match(JSON.parse(stderr[0] ?? "{}").error.message, /userId/);
 });
 
 test("CLI auth list-channels returns minimal-safe known channel list", async () => {
@@ -1583,6 +1628,41 @@ test("CLI playlist update fails with actionable validation error for empty patch
   assert.equal(envelope.ok, false);
   assert.equal(envelope.error.code, "validation_failed");
   assert.match(envelope.error.message, /At least one mutable field is required/);
+});
+
+// Found by independent review (cycle 2): a valueless --title used to fall through the old
+// inline coercion to undefined, which then fell through the "at least one mutable field"
+// check because --description was also present -- silently sending a real playlist-update
+// write with the title left unchanged instead of erroring on the operator's malformed flag.
+test("CLI playlist update rejects a --title flag with no value instead of silently dropping the title change", async () => {
+  const stderr: string[] = [];
+  const core = makeCoreStub();
+  let called = false;
+  core.updatePlaylist = async () => {
+    called = true;
+    return { playlist: { id: "p1", title: "x", description: "x", privacyStatus: "private" as const } };
+  };
+
+  const exitCode = await runCliCommand({
+    argv: [
+      "playlist",
+      "update",
+      "--title",
+      "--playlistId",
+      "p1",
+      "--expectedChannelId",
+      "UC_ACTIVE",
+      "--description",
+      "new description",
+    ],
+    core,
+    auth: makeAuthStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(called, false);
+  assert.match(JSON.parse(stderr[0] ?? "{}").error.message, /title/);
 });
 
 test("CLI playlist fails with typed auth error when no credential source is available", async () => {

@@ -95,12 +95,9 @@ npm run cli:video-metadata -- channel video-list --channelId <UC...> [--userId <
 `channel sync` reads from YouTube and writes only to the local `channels`/`videos` tables --
 never a YouTube write, but still a local mutation, so it goes through the same
 device-availability gate (`assertDeviceAvailableForMutation` -- the operation lock and
-recovery-mode check, never a channel-identity check) as `apply`/`playlist create`. Corrected by
-independent review: an earlier version of this line said "identity/operation-lock gate", which
-overstated what this specific gate actually verifies -- `AGENTS.md` §G's identity-check
-requirement is satisfied elsewhere (`write-context.assertWriteChannel`, used by the write-capable
-tools that actually touch YouTube), not by this gate. `channel list`/`channel video-list` are
-read-only.
+recovery-mode check only, not a channel-identity check; that requirement is satisfied
+elsewhere, by `write-context.assertWriteChannel`, for the tools that actually touch YouTube) as
+`apply`/`playlist create`. `channel list`/`channel video-list` are read-only.
 
 ### Change Set / Batch commands (CLI parity for the MCP `changeset_*`/`batch_*` tools, Phase 7)
 

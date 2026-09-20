@@ -208,27 +208,12 @@ async function readWorkbookFileFlag(
   return { filename: basename(filePath), buffer };
 }
 
-export function requiredStringFlag(
-  flags: Record<string, string | boolean>,
-  key: string
-): string {
-  const value = flags[key];
-  if (typeof value === "string" && value.length > 0) return value;
-
-  throw new DomainError({
-    code: "validation_failed",
-    message: `Missing required --${key}`,
-  });
-}
-
-// Found by independent review: an optional flag read inline as
-// `typeof flags[key] === "string" ? flags[key] : undefined` silently treats a present-but-
-// valueless flag (parseArgs sets it to boolean `true` when no value token follows, e.g. a typo
-// like `--channelId --userId u1`) as "omitted" rather than as a malformed value -- exactly the
-// class of silent-coercion bug requiredStringFlag already guards against for required flags.
-// This is the symmetric optional counterpart: absent is fine (returns undefined), present is
-// held to the same fail-closed standard as required flags.
-export function optionalStringFlag(
+// Shared core for requiredStringFlag/optionalStringFlag below: a flag that IS present must
+// carry a real string value -- a present-but-valueless flag (parseArgs sets it to boolean
+// `true` when no value token follows, e.g. a typo like `--channelId --userId u1`) is always a
+// malformed input, never silently equivalent to "omitted". Whether *absence itself* is an
+// error is the one thing that differs between the two exported functions below.
+function readStringFlag(
   flags: Record<string, string | boolean>,
   key: string
 ): string | undefined {
@@ -240,6 +225,26 @@ export function optionalStringFlag(
     code: "validation_failed",
     message: `--${key} requires a value`,
   });
+}
+
+export function requiredStringFlag(
+  flags: Record<string, string | boolean>,
+  key: string
+): string {
+  const value = readStringFlag(flags, key);
+  if (value !== undefined) return value;
+
+  throw new DomainError({
+    code: "validation_failed",
+    message: `Missing required --${key}`,
+  });
+}
+
+export function optionalStringFlag(
+  flags: Record<string, string | boolean>,
+  key: string
+): string | undefined {
+  return readStringFlag(flags, key);
 }
 
 // Read-only per docs/DEVELOPMENT_PLAYBOOK.md §6.7's three-way classification: returns data or
@@ -419,9 +424,7 @@ export async function runCliCommand(args: {
         return 0;
       }
 
-      const revokeUserId =
-        typeof parsedArgs.flags.userId === "string" ? parsedArgs.flags.userId : undefined;
-      const result = await auth.revoke({ userId: revokeUserId });
+      const result = await auth.revoke({ userId: optionalStringFlag(parsedArgs.flags, "userId") });
       writeStdout(serializeSuccess(result));
       return 0;
     }
@@ -528,29 +531,17 @@ export async function runCliCommand(args: {
           credentialRef,
           title: requiredStringFlag(parsedArgs.flags, "title"),
           expectedChannelId: requiredStringFlag(parsedArgs.flags, "expectedChannelId"),
-          description:
-            typeof parsedArgs.flags.description === "string"
-              ? parsedArgs.flags.description
-              : undefined,
-          privacyStatus:
-            typeof parsedArgs.flags.privacyStatus === "string"
-              ? parsedArgs.flags.privacyStatus
-              : undefined,
+          description: optionalStringFlag(parsedArgs.flags, "description"),
+          privacyStatus: optionalStringFlag(parsedArgs.flags, "privacyStatus"),
         });
         writeStdout(serializeSuccess(result));
         return 0;
       }
 
       if (parsedArgs.command === "update") {
-        const title = typeof parsedArgs.flags.title === "string" ? parsedArgs.flags.title : undefined;
-        const description =
-          typeof parsedArgs.flags.description === "string"
-            ? parsedArgs.flags.description
-            : undefined;
-        const privacyStatus =
-          typeof parsedArgs.flags.privacyStatus === "string"
-            ? parsedArgs.flags.privacyStatus
-            : undefined;
+        const title = optionalStringFlag(parsedArgs.flags, "title");
+        const description = optionalStringFlag(parsedArgs.flags, "description");
+        const privacyStatus = optionalStringFlag(parsedArgs.flags, "privacyStatus");
 
         if (title === undefined && description === undefined && privacyStatus === undefined) {
           throw new DomainError({
@@ -601,12 +592,9 @@ export async function runCliCommand(args: {
     }
 
     if (parsedArgs.command === "list") {
-      const maxResults =
-        typeof parsedArgs.flags.maxResults === "string"
-          ? Number(parsedArgs.flags.maxResults)
-          : undefined;
-      const channelId =
-        typeof parsedArgs.flags.channelId === "string" ? parsedArgs.flags.channelId : undefined;
+      const maxResultsFlag = optionalStringFlag(parsedArgs.flags, "maxResults");
+      const maxResults = maxResultsFlag === undefined ? undefined : Number(maxResultsFlag);
+      const channelId = optionalStringFlag(parsedArgs.flags, "channelId");
 
       const result = await core.listVideos({
         credentialRef,
