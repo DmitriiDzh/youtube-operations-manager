@@ -11,6 +11,7 @@ import {
 } from "./contracts";
 import {
   applyFieldsUpdateInputSchema,
+  getSnapshotInputSchema,
   parseWithSchema,
   previewFieldsUpdateInputSchema,
 } from "./schemas";
@@ -89,6 +90,21 @@ function computeDiff(before: VideoDetailsSnapshot, patch: VideoDetailsPatch): Vi
 
 export function createVideoDetailsServices(deps: ServiceDependencies) {
   return {
+    /** Pure read, no patch involved -- what a "Details" panel loads on open. No audit event: an
+     * audit trail records what happened TO the video, and a view changes nothing. */
+    async getSnapshot(input: unknown): Promise<VideoDetailsSnapshot> {
+      const parsedInput = parseWithSchema(getSnapshotInputSchema, input, "get snapshot input");
+      try {
+        const credentials = await deps.authResolver.resolve({
+          credentialRef: parsedInput.credentialRef,
+          requiredScopes: [YOUTUBE_READ_SCOPE],
+        });
+        return await deps.youtubeApi.getSnapshot({ credentials, videoId: parsedInput.videoId });
+      } catch (error) {
+        throw mapUnknownError(error, "not_found");
+      }
+    },
+
     /** Read-only: fetches the current snapshot and computes the diff a patch would produce,
      * without ever calling `videos.update`. Only needs read scope -- no write-channel identity
      * risk exists here, since nothing is written (mirrors `video-metadata`'s own preview). */
@@ -157,6 +173,18 @@ export function createVideoDetailsServices(deps: ServiceDependencies) {
         }
 
         const before = await deps.youtubeApi.getSnapshot({ credentials, videoId: parsedInput.videoId });
+
+        // Conflict detection: if the caller tells us which etag its diff was shown against
+        // (any UI built on top of previewFieldsUpdate should), and the video changed on YouTube
+        // since then, fail closed rather than silently apply a patch the operator never actually
+        // saw a correct diff for (AGENTS.md §G's "approval" means approving THIS diff).
+        if (parsedInput.expectedEtag && before.etag !== parsedInput.expectedEtag) {
+          throw new DomainError({
+            code: "video_details_conflict",
+            message: "The video changed on YouTube since this patch's diff was shown -- re-preview before saving",
+            details: { videoId: parsedInput.videoId, expectedEtag: parsedInput.expectedEtag, actualEtag: before.etag },
+          });
+        }
 
         const backupRecord = await deps.backup.captureBackup({
           channelId: guardrail.expectedChannelId,

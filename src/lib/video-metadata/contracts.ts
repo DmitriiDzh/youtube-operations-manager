@@ -46,7 +46,8 @@ export type DomainErrorCode =
   | "connection_disabled"
   | "no_fields_to_update"
   | "publish_at_requires_private"
-  | "publish_at_already_published";
+  | "publish_at_already_published"
+  | "video_details_conflict";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

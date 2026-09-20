@@ -19,6 +19,13 @@
 //   `after` snapshot -- never called at all if the write itself failed.
 // AC-SVC-07: shouldPersistSelection triggers channelSelectionStore.setSelectedChannelId; when
 //   false, it is never called.
+// AC-SVC-08: getSnapshot is a pure read -- no writeContext/backup/write calls, no audit event.
+// AC-SVC-09: applyFieldsUpdate rejects with video_details_conflict when the caller's
+//   expectedEtag doesn't match the freshly-fetched video's actual etag, before any backup or
+//   write -- protects the "operator approved THIS diff" guarantee across a slow UI session.
+// AC-SVC-09b: applyFieldsUpdate with no expectedEtag provided at all still succeeds (etag
+//   checking is opt-in for callers that supply it, e.g. a future UI -- not required retroactively
+//   of every existing caller).
 // ---------------------------------------------------------------------------
 
 import assert from "node:assert/strict";
@@ -321,4 +328,75 @@ test("captureBackup snapshot is kind: video_fields and mirrors the before snapsh
     },
     recordingDate: null,
   });
+});
+
+test("AC-SVC-08: getSnapshot is a pure read -- no identity/backup/write calls, no audit event", async () => {
+  const { deps, calls } = makeDeps();
+  const services = createVideoDetailsServices(deps);
+
+  const snapshot = await services.getSnapshot({
+    credentialRef: { userId: "user-1" },
+    expectedChannelId: "UC_ACTIVE",
+    videoId: "v1",
+  });
+
+  assert.equal(snapshot.title, "Original Title");
+  assert.equal(calls.getSnapshot, 1);
+  assert.equal(calls.assertWriteChannel, 0);
+  assert.equal(calls.backupHealth, 0);
+  assert.equal(calls.captureBackup, 0);
+  assert.equal(calls.applyPatch, 0);
+  assert.deepEqual(calls.auditEvents, []);
+});
+
+test("AC-SVC-09: a mismatched expectedEtag rejects before any backup or write", async () => {
+  const { deps, calls } = makeDeps({
+    youtubeApi: {
+      getSnapshot: async () => makeSnapshot({ etag: "server-etag-now" }),
+      applyPatch: async ({ patch }) => ({
+        before: makeSnapshot({ etag: "server-etag-now" }),
+        after: { ...makeSnapshot({ etag: "server-etag-now" }), ...patch },
+      }),
+    },
+  });
+  const services = createVideoDetailsServices(deps);
+
+  await assert.rejects(
+    () =>
+      services.applyFieldsUpdate({
+        ...baseInput({ title: "New Title" }),
+        expectedEtag: "stale-etag-from-preview",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "video_details_conflict"
+  );
+
+  assert.equal(calls.captureBackup, 0);
+  assert.equal(calls.applyPatch, 0);
+});
+
+test("AC-SVC-09b: applyFieldsUpdate succeeds normally when no expectedEtag is provided", async () => {
+  const { deps } = makeDeps();
+  const services = createVideoDetailsServices(deps);
+
+  const result = await services.applyFieldsUpdate(baseInput({ title: "New Title" }));
+  assert.equal(result.verified, true);
+});
+
+test("AC-SVC-09: a matching expectedEtag succeeds normally", async () => {
+  const { deps } = makeDeps({
+    youtubeApi: {
+      getSnapshot: async () => makeSnapshot({ etag: "matching-etag" }),
+      applyPatch: async ({ patch }) => ({
+        before: makeSnapshot({ etag: "matching-etag" }),
+        after: { ...makeSnapshot({ etag: "matching-etag" }), ...patch },
+      }),
+    },
+  });
+  const services = createVideoDetailsServices(deps);
+
+  const result = await services.applyFieldsUpdate({
+    ...baseInput({ title: "New Title" }),
+    expectedEtag: "matching-etag",
+  });
+  assert.equal(result.verified, true);
 });

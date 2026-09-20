@@ -40,6 +40,7 @@ const DOMAIN_ERROR_STATUS = {
   no_fields_to_update: 400,
   publish_at_requires_private: 400,
   publish_at_already_published: 409,
+  video_details_conflict: 409,
 } as const satisfies Partial<Record<DomainErrorCode, number>>;
 
 export function getVideoMetadataErrorStatus(code: DomainErrorCode) {

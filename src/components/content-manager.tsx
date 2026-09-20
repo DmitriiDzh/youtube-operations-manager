@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { VideoDetailsPanel } from "./video-details-panel";
 
 type SyncedChannel = {
   channelId: string;
@@ -62,6 +63,7 @@ export function ContentManager() {
   const [search, setSearch] = useState("");
   const [privacyFilter, setPrivacyFilter] = useState<PrivacyFilter>("all");
   const [page, setPage] = useState(1);
+  const [expandedVideoId, setExpandedVideoId] = useState<string | null>(null);
 
   const fetchVideos = useCallback(async (channelId: string) => {
     if (!channelId) {
@@ -263,50 +265,64 @@ export function ContentManager() {
             </thead>
             <tbody>
               {pageVideos.map((video) => (
-                <tr key={video.videoId} className="border-b border-zinc-800/50 last:border-b-0">
-                  <td className="min-w-0 px-4 py-3">
-                    <div className="flex min-w-0 items-start gap-3">
-                      {video.thumbnails.default?.url && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={video.thumbnails.default.url}
-                          alt={video.title}
-                          className="h-12 w-16 shrink-0 rounded object-cover"
-                        />
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate font-medium">{video.title}</p>
-                        <p className="truncate text-xs text-zinc-500">{video.description || "—"}</p>
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {video.existingLocalizationLanguages.length === 0 ? (
-                            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-500">
-                              No localizations
-                            </span>
-                          ) : (
-                            video.existingLocalizationLanguages.map((lang) => (
-                              <span
-                                key={lang}
-                                className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300"
-                              >
-                                {lang}
+                <Fragment key={video.videoId}>
+                  <tr
+                    className="cursor-pointer border-b border-zinc-800/50 transition-colors last:border-b-0 hover:bg-zinc-800/50"
+                    onClick={() =>
+                      setExpandedVideoId((prev) => (prev === video.videoId ? null : video.videoId))
+                    }
+                  >
+                    <td className="min-w-0 px-4 py-3">
+                      <div className="flex min-w-0 items-start gap-3">
+                        {video.thumbnails.default?.url && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={video.thumbnails.default.url}
+                            alt={video.title}
+                            className="h-12 w-16 shrink-0 rounded object-cover"
+                          />
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-medium">{video.title}</p>
+                          <p className="truncate text-xs text-zinc-500">{video.description || "—"}</p>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {video.existingLocalizationLanguages.length === 0 ? (
+                              <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-500">
+                                No localizations
                               </span>
-                            ))
-                          )}
+                            ) : (
+                              video.existingLocalizationLanguages.map((lang) => (
+                                <span
+                                  key={lang}
+                                  className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300"
+                                >
+                                  {lang}
+                                </span>
+                              ))
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </td>
-                  <td className="truncate px-4 py-3 text-zinc-400">{video.privacyStatus}</td>
-                  <td className="truncate px-4 py-3 text-zinc-400">
-                    {video.publishedAt ? new Date(video.publishedAt).toLocaleDateString() : "—"}
-                  </td>
-                  <td className="truncate px-4 py-3 text-right text-zinc-400">
-                    {formatCount(video.viewCount)}
-                  </td>
-                  <td className="truncate px-4 py-3 text-right text-zinc-400">
-                    {formatCount(video.commentCount)}
-                  </td>
-                </tr>
+                    </td>
+                    <td className="truncate px-4 py-3 text-zinc-400">{video.privacyStatus}</td>
+                    <td className="truncate px-4 py-3 text-zinc-400">
+                      {video.publishedAt ? new Date(video.publishedAt).toLocaleDateString() : "—"}
+                    </td>
+                    <td className="truncate px-4 py-3 text-right text-zinc-400">
+                      {formatCount(video.viewCount)}
+                    </td>
+                    <td className="truncate px-4 py-3 text-right text-zinc-400">
+                      {formatCount(video.commentCount)}
+                    </td>
+                  </tr>
+                  {expandedVideoId === video.videoId && (
+                    <tr className="border-b border-zinc-800/50 bg-zinc-950/50">
+                      <td colSpan={5} className="px-4 py-4">
+                        <VideoDetailsPanel channelId={video.channelId} videoId={video.videoId} />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>
