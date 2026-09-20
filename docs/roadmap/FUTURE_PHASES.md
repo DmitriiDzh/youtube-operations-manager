@@ -163,6 +163,21 @@ implemented during Phases 7-10 unless separately approved:
 - Automated media production: audio generation and quality control, video generation and
   rendering, automated publishing workflows, livestream management.
 - Scalable remote execution infrastructure.
+- **YouTube Studio UI parity — Home, Content, Analytics, Languages tabs** (recorded 2026-09-20,
+  owner request via Telegram, after manually testing this app against real YouTube Studio).
+  Objective: give this app's own UI the same information and layout shape as Studio's four
+  namesake sections, built on top of existing capabilities where possible rather than inventing
+  new ones. Content and Languages need only this app's existing YouTube Data API v3 access plus
+  one additive schema change (video view/comment/like counts, never synced today); Home is a mix
+  (its video/comment/subscriber cards need Data API v3 plus, for comments/subscribers
+  specifically, a feasibility check that has not been done yet; its analytics-summary card needs
+  the same dependency as Analytics below); the Analytics tab itself is this same "YouTube
+  Analytics API integration" already scoped at the strategic level by Phase 8 above, just
+  requested here as a concrete, full-parity UI target rather than Phase 8's own smaller first
+  vertical slice. See `docs/roadmap/plans/STUDIO_PARITY_PLAN.md` for the researched breakdown
+  (real Studio UI structure, per-tab dependency table, proposed slices, open questions) — that
+  plan is the actual detail; this bullet only records that the idea exists and where its
+  Analytics-tab portion reuses Phase 8 rather than duplicating it.
 
 ## 8. How to use this roadmap in future sessions
 
