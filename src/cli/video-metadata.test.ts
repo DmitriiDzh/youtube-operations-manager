@@ -11,7 +11,7 @@ import type { ChangeSet } from "@/lib/changesets/contracts";
 import type { BatchCore } from "@/lib/batches";
 import type { Batch } from "@/lib/batches/contracts";
 import type { ChannelSyncCore } from "@/lib/channel-sync";
-import { runCliCommand } from "./video-metadata";
+import { runCliCommand, getCredentialRef } from "./video-metadata";
 
 function makeCoreStub(): Pick<
   VideoMetadataCore & PlaylistManagementCore,
@@ -484,6 +484,48 @@ test("CLI rejects a --userId flag with no value instead of silently falling back
   assert.equal(exitCode, 1);
   assert.equal(called, false);
   assert.match(JSON.parse(stderr[0] ?? "{}").error.message, /userId/);
+});
+
+// Found by independent review (cycle 4): the accessToken/refreshToken/scope/tokenExpiry
+// branch of getCredentialRef had zero test coverage of any kind (not even a positive-path
+// test), unlike the sibling userId branch -- a regression here (e.g. re-inlining a bare
+// typeof check) would pass CI silently. These four tests close that gap directly against
+// getCredentialRef, which is simpler and more precise than routing through a full CLI command.
+test("getCredentialRef builds a full accessToken-based CredentialRef from string flags", () => {
+  const result = getCredentialRef({
+    accessToken: "tok123",
+    refreshToken: "refresh123",
+    scope: "scope123",
+    tokenExpiry: "1700000000",
+  });
+
+  assert.deepEqual(result, {
+    accessToken: "tok123",
+    refreshToken: "refresh123",
+    scope: "scope123",
+    tokenExpiry: 1700000000,
+  });
+});
+
+test("getCredentialRef rejects a valueless --accessToken instead of falling through to null", () => {
+  assert.throws(() => getCredentialRef({ accessToken: true }), /accessToken requires a value/);
+});
+
+test("getCredentialRef rejects a valueless --tokenExpiry even when --accessToken is valid", () => {
+  assert.throws(
+    () => getCredentialRef({ accessToken: "tok123", tokenExpiry: true }),
+    /tokenExpiry requires a value/
+  );
+});
+
+test("getCredentialRef fails closed on a valueless --userId even when a valid --accessToken is also present", () => {
+  // Pins the fail-closed ordering itself: --userId is checked first and, if malformed, must
+  // throw rather than silently falling back to the also-present --accessToken -- the opposite
+  // of the old behavior (silently ignore the broken --userId, authenticate via the token).
+  assert.throws(
+    () => getCredentialRef({ userId: true, accessToken: "tok123" }),
+    /userId requires a value/
+  );
 });
 
 test("CLI auth select-channel requires --channelId (missing entirely, not just a valueless flag)", async () => {
