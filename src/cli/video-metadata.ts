@@ -221,6 +221,27 @@ export function requiredStringFlag(
   });
 }
 
+// Found by independent review: an optional flag read inline as
+// `typeof flags[key] === "string" ? flags[key] : undefined` silently treats a present-but-
+// valueless flag (parseArgs sets it to boolean `true` when no value token follows, e.g. a typo
+// like `--channelId --userId u1`) as "omitted" rather than as a malformed value -- exactly the
+// class of silent-coercion bug requiredStringFlag already guards against for required flags.
+// This is the symmetric optional counterpart: absent is fine (returns undefined), present is
+// held to the same fail-closed standard as required flags.
+export function optionalStringFlag(
+  flags: Record<string, string | boolean>,
+  key: string
+): string | undefined {
+  const value = flags[key];
+  if (value === undefined) return undefined;
+  if (typeof value === "string" && value.length > 0) return value;
+
+  throw new DomainError({
+    code: "validation_failed",
+    message: `--${key} requires a value`,
+  });
+}
+
 // Read-only per docs/DEVELOPMENT_PLAYBOOK.md §6.7's three-way classification: returns data or
 // switches which locally active identity/channel is used for future *read* resolution, but
 // mutates no YouTube state and no local record other than "which existing option is active."
@@ -412,7 +433,11 @@ export async function runCliCommand(args: {
 
       if (parsedArgs.command === "list") {
         const result = await operationsCore.listChangeSets({ channelId });
-        writeStdout(serializeSuccess(result));
+        // Wrapped as { changeSets: ... } to match the MCP changeset_list tool's shape
+        // (src/mcp/server.ts) and this CLI's own "batch list" sibling below -- found by
+        // independent review to have been left as the bare array, an undocumented
+        // divergence from the MCP shape docs/interfaces.md itself claims is mirrored.
+        writeStdout(serializeSuccess({ changeSets: result }));
         return 0;
       }
 
@@ -420,9 +445,9 @@ export async function runCliCommand(args: {
         const result = await operationsCore.getChangeSet({
           channelId,
           changeSetId: requiredStringFlag(parsedArgs.flags, "changeSetId"),
-          status: typeof parsedArgs.flags.status === "string" ? parsedArgs.flags.status : undefined,
-          language: typeof parsedArgs.flags.language === "string" ? parsedArgs.flags.language : undefined,
-          videoId: typeof parsedArgs.flags.videoId === "string" ? parsedArgs.flags.videoId : undefined,
+          status: optionalStringFlag(parsedArgs.flags, "status"),
+          language: optionalStringFlag(parsedArgs.flags, "language"),
+          videoId: optionalStringFlag(parsedArgs.flags, "videoId"),
         });
         writeStdout(serializeSuccess(result));
         return 0;
@@ -468,8 +493,7 @@ export async function runCliCommand(args: {
 
     if (parsedArgs.namespace === "channel") {
       if (parsedArgs.command === "sync") {
-        const channelId =
-          typeof parsedArgs.flags.channelId === "string" ? parsedArgs.flags.channelId : undefined;
+        const channelId = optionalStringFlag(parsedArgs.flags, "channelId");
         const result = await channelSyncCore.syncChannel({
           credentialRef,
           ...(channelId ? { channelId } : {}),
