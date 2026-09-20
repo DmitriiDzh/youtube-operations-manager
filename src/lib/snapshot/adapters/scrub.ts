@@ -21,18 +21,29 @@ type ExecuteResult = { rows: Array<Record<string, unknown>> };
 export async function scrubDatabaseCopy(client: SqlExecutor, dbPath: string): Promise<void> {
   await client.execute({ sql: "ATTACH DATABASE ? AS scrub_target", args: [dbPath] });
   try {
-    const tables = (await client.execute(
-      "SELECT name FROM scrub_target.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-    )) as ExecuteResult;
+    // RISK-33 (docs/TECHNICAL_DEBT.md): with FK enforcement on (this @libsql/client build
+    // defaults `foreign_keys=ON`), `DROP TABLE` performs an implicit delete of every row first,
+    // which fails here as soon as a device has at least one `rules` row -- `rules.user_id`
+    // still references the `users` table being dropped. Disabling enforcement for this
+    // same-connection scrub is safe: `scrub_target` is a throwaway copy about to be published
+    // (or discarded on error) and is never queried again after this function returns.
+    await client.execute("PRAGMA foreign_keys = OFF");
+    try {
+      const tables = (await client.execute(
+        "SELECT name FROM scrub_target.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+      )) as ExecuteResult;
 
-    for (const row of tables.rows) {
-      const name = String(row.name);
-      if (!ALLOWLIST.has(name)) {
-        await client.execute(`DROP TABLE IF EXISTS scrub_target."${name}"`);
+      for (const row of tables.rows) {
+        const name = String(row.name);
+        if (!ALLOWLIST.has(name)) {
+          await client.execute(`DROP TABLE IF EXISTS scrub_target."${name}"`);
+        }
       }
-    }
 
-    await client.execute("VACUUM scrub_target");
+      await client.execute("VACUUM scrub_target");
+    } finally {
+      await client.execute("PRAGMA foreign_keys = ON");
+    }
   } finally {
     await client.execute("DETACH DATABASE scrub_target");
   }

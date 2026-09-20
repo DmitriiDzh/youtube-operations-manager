@@ -242,49 +242,63 @@ export async function applySnapshotToDatabase(
   // wrap another BEGIN around a call to this function.
   await liveClient.execute({ sql: "ATTACH DATABASE ? AS staged", args: [stagedDbPath] });
   try {
-    await liveClient.execute("BEGIN IMMEDIATE");
+    // RISK-33 (docs/TECHNICAL_DEBT.md): `PRAGMA foreign_keys` is a no-op once a transaction is
+    // open, so it must be toggled here, before BEGIN -- verified directly against this
+    // @libsql/client build, which (unlike stock better-sqlite3) defaults foreign_keys=ON for
+    // every new connection. Without this, `DELETE FROM "channels"` below fails immediately with
+    // SQLITE_CONSTRAINT the moment the receiving device already has any videos/change_sets/
+    // batches/etc. referencing an existing channel row -- i.e. on essentially every real-world
+    // import into a device that has previously synced data, reproduced directly in isolation.
+    // Restored to ON in the `finally` below so this shared connection never runs any later,
+    // unrelated statement with FK enforcement silently disabled.
+    await liveClient.execute("PRAGMA foreign_keys = OFF");
     try {
-      for (const table of SNAPSHOT_REPLACE_ON_IMPORT_TABLES) {
-        const columns = await getColumnNames(liveClient, table);
-        const columnList = columns.map((c) => `"${c}"`).join(", ");
-        await liveClient.execute(`DELETE FROM "${table}"`);
-        await liveClient.execute(
-          `INSERT INTO "${table}" (${columnList}) SELECT ${columnList} FROM staged."${table}"`
-        );
-      }
+      await liveClient.execute("BEGIN IMMEDIATE");
+      try {
+        for (const table of SNAPSHOT_REPLACE_ON_IMPORT_TABLES) {
+          const columns = await getColumnNames(liveClient, table);
+          const columnList = columns.map((c) => `"${c}"`).join(", ");
+          await liveClient.execute(`DELETE FROM "${table}"`);
+          await liveClient.execute(
+            `INSERT INTO "${table}" (${columnList}) SELECT ${columnList} FROM staged."${table}"`
+          );
+        }
 
-      const aiConnectionColumns = [
-        "id",
-        "display_name",
-        "adapter_type",
-        "base_url",
-        "model_id",
-        "local_inference_mode",
-        "enabled",
-        "status",
-        "status_message",
-        "status_checked_at",
-        "capabilities_json",
-        "assigned_tasks_json",
-        "pricing_json",
-        "created_at",
-        "updated_at",
-      ];
-      // `INSERT ... SELECT ... ON CONFLICT DO UPDATE` is not accepted by this SQLite build
-      // (verified directly: "near DO: syntax error" for the SELECT form, while the same
-      // clause works fine for an INSERT ... VALUES). `INSERT OR REPLACE ... SELECT` is
-      // semantically equivalent to the intended upsert here because every column is always
-      // included in the SELECT (a full-row replace on a primary-key conflict, keeping the
-      // same `id`) -- it is not "replace the row with defaults", it is "replace the row with
-      // exactly these values".
-      await liveClient.execute(
-        `INSERT OR REPLACE INTO ai_connections (${aiConnectionColumns.join(", ")}) ` +
-          `SELECT ${aiConnectionColumns.join(", ")} FROM staged.ai_connections`
-      );
-      await liveClient.execute("COMMIT");
-    } catch (error) {
-      await liveClient.execute("ROLLBACK");
-      throw error;
+        const aiConnectionColumns = [
+          "id",
+          "display_name",
+          "adapter_type",
+          "base_url",
+          "model_id",
+          "local_inference_mode",
+          "enabled",
+          "status",
+          "status_message",
+          "status_checked_at",
+          "capabilities_json",
+          "assigned_tasks_json",
+          "pricing_json",
+          "created_at",
+          "updated_at",
+        ];
+        // `INSERT ... SELECT ... ON CONFLICT DO UPDATE` is not accepted by this SQLite build
+        // (verified directly: "near DO: syntax error" for the SELECT form, while the same
+        // clause works fine for an INSERT ... VALUES). `INSERT OR REPLACE ... SELECT` is
+        // semantically equivalent to the intended upsert here because every column is always
+        // included in the SELECT (a full-row replace on a primary-key conflict, keeping the
+        // same `id`) -- it is not "replace the row with defaults", it is "replace the row with
+        // exactly these values".
+        await liveClient.execute(
+          `INSERT OR REPLACE INTO ai_connections (${aiConnectionColumns.join(", ")}) ` +
+            `SELECT ${aiConnectionColumns.join(", ")} FROM staged.ai_connections`
+        );
+        await liveClient.execute("COMMIT");
+      } catch (error) {
+        await liveClient.execute("ROLLBACK");
+        throw error;
+      }
+    } finally {
+      await liveClient.execute("PRAGMA foreign_keys = ON");
     }
   } finally {
     await liveClient.execute("DETACH DATABASE staged");
