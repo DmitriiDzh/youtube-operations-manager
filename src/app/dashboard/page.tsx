@@ -99,7 +99,7 @@ export default function Dashboard() {
       onSignOut={() => signOut()}
     >
       {tab === "home" && (
-        <div className="space-y-6">
+        <div className="max-w-3xl space-y-6">
           <p className="text-sm text-zinc-400">
             Channel dashboard (docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slice S4). Recent-video
             and comment/subscriber cards are planned for a later pass — this tab starts with the
@@ -120,7 +120,7 @@ export default function Dashboard() {
       )}
 
       {tab === "analytics" && (
-        <div>
+        <div className="max-w-3xl">
           <p className="text-sm text-zinc-400">
             Coming soon — real analytics data requires the YouTube Analytics API and a new
             OAuth scope, gated on its own separate decision
@@ -155,7 +155,7 @@ export default function Dashboard() {
       )}
 
       {tab === "settings" && (
-        <div>
+        <div className="max-w-3xl">
           <AppVersionInfo />
           <p className="mb-4 text-sm text-zinc-400">
             Configure AI provider connections for AI Localization. No specific vendor is
@@ -169,7 +169,7 @@ export default function Dashboard() {
       )}
 
       {tab === "device" && (
-        <div>
+        <div className="max-w-3xl">
           <p className="mb-4 text-sm text-zinc-400">
             One active device at a time. Export a handoff snapshot when finishing work here,
             import one to continue on this device. Syncthing only carries the snapshot files
