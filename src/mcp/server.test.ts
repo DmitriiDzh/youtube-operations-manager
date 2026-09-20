@@ -318,6 +318,103 @@ test("MCP server registers auth_user_select tool", () => {
   assert.equal(Boolean(tools?.auth_user_select), true);
 });
 
+// Phase 7 "operation-specific permissions and read-only access to application data"
+// (docs/roadmap/FUTURE_PHASES.md §3): restricted mode must OMIT registration of every
+// YouTube-write-capable or identity-switching tool, and must still register every
+// read/propose/create tool, including the ones added in this same task.
+
+function registeredToolNames(server: ReturnType<typeof createMcpServer>): string[] {
+  const tools = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools;
+  return Object.keys(tools ?? {});
+}
+
+test("MCP server (default mode) registers every mutating tool", () => {
+  const names = registeredToolNames(createMcpServer(makeCoreStub()));
+
+  for (const mutating of [
+    "apply",
+    "playlist_create",
+    "playlist_update",
+    "playlist_delete",
+    "playlist_add_videos",
+    "playlist_remove_videos",
+    "write_channel_select",
+    "auth_user_select",
+    "channel_sync",
+    "changeset_create_from_import",
+  ]) {
+    assert.equal(names.includes(mutating), true, `expected ${mutating} to be registered`);
+  }
+});
+
+test("MCP server (restrictedMode: true) omits every YouTube-write/identity tool but keeps read/propose/create tools", () => {
+  const names = registeredToolNames(createMcpServer(makeCoreStub(), { restrictedMode: true }));
+
+  for (const excluded of [
+    "apply",
+    "playlist_create",
+    "playlist_update",
+    "playlist_delete",
+    "playlist_add_videos",
+    "playlist_remove_videos",
+    "write_channel_select",
+    "auth_user_select",
+  ]) {
+    assert.equal(names.includes(excluded), false, `expected ${excluded} to be omitted in restricted mode`);
+  }
+
+  for (const kept of [
+    "write_context",
+    "whoami",
+    "list",
+    "transcript",
+    "preview",
+    "playlist_list",
+    "changeset_list",
+    "changeset_get",
+    "localization_import_preview",
+    "changeset_create_from_import",
+    "batch_list",
+    "batch_get",
+    "channel_sync",
+    "channel_list",
+    "channel_video_list",
+  ]) {
+    assert.equal(names.includes(kept), true, `expected ${kept} to still be registered in restricted mode`);
+  }
+});
+
+test("MCP server honors MCP_RESTRICTED_MODE=true from the environment when no explicit option is passed", () => {
+  const previous = process.env.MCP_RESTRICTED_MODE;
+  process.env.MCP_RESTRICTED_MODE = "true";
+  try {
+    const names = registeredToolNames(createMcpServer(makeCoreStub()));
+    assert.equal(names.includes("apply"), false);
+    assert.equal(names.includes("changeset_list"), true);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.MCP_RESTRICTED_MODE;
+    } else {
+      process.env.MCP_RESTRICTED_MODE = previous;
+    }
+  }
+});
+
+test("an explicit restrictedMode option overrides the environment variable", () => {
+  const previous = process.env.MCP_RESTRICTED_MODE;
+  process.env.MCP_RESTRICTED_MODE = "true";
+  try {
+    const names = registeredToolNames(createMcpServer(makeCoreStub(), { restrictedMode: false }));
+    assert.equal(names.includes("apply"), true);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.MCP_RESTRICTED_MODE;
+    } else {
+      process.env.MCP_RESTRICTED_MODE = previous;
+    }
+  }
+});
+
 test("MCP write_context returns active write-channel contract", async () => {
   const handlers = createMcpToolHandlers(makeCoreStub(), makeAuthStub());
   const result = await handlers.writeContext();
