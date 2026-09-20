@@ -13,6 +13,7 @@ import { LocalizationManager } from "@/components/localization-manager";
 import { BatchManager } from "@/components/batch-manager";
 import { AiLocalizationPanel } from "@/components/ai-localization-panel";
 import { AiConnectionsManager } from "@/components/ai-connections-manager";
+import { AppVersionInfo } from "@/components/app-version-info";
 import { DeviceHandoffPanel } from "@/components/device-handoff-panel";
 import { AppShell } from "@/components/app-shell";
 import {
@@ -200,6 +201,7 @@ export default function Dashboard() {
 
       {tab === "settings" && (
         <div>
+          <AppVersionInfo />
           <p className="mb-4 text-sm text-zinc-400">
             Configure AI provider connections for AI Localization. No specific vendor is
             built into this app &mdash; every connection is a Base URL, model id, and

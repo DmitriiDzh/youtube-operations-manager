@@ -61,6 +61,10 @@ data/auth-context.json
 # macOS launcher script's own PID file (scripts/macos/start.sh / stop.sh)
 /.launcher.pid
 
+# generated at build time by scripts/write-build-info.mjs (npm's prebuild/predev hook) -- a
+# build artifact regenerated on every build/dev start, never a source file to commit.
+/public/build-info.json
+
 # published/<version>/ snapshots (docs/decisions/0003-published-release-snapshots.md) are
 # themselves committed, but anything an operator generates *inside* one after copying it out
 # (npm install, npm run build, running the app) must not be — these patterns are unanchored on
