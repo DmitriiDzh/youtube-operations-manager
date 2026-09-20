@@ -84,6 +84,40 @@ npm run cli:video-metadata -- playlist add --playlistId <PLAYLIST_ID> --videoIds
 npm run cli:video-metadata -- playlist remove --playlistId <PLAYLIST_ID> --videoIds <VIDEO1,VIDEO2,...> [--userId <USER_ID>]
 ```
 
+### Channel-sync commands (CLI parity for the MCP `channel_*` tools, Phase 7)
+
+```bash
+npm run cli:video-metadata -- channel sync [--channelId <UC...>] [--userId <USER_ID>]
+npm run cli:video-metadata -- channel list [--userId <USER_ID>]
+npm run cli:video-metadata -- channel video-list --channelId <UC...> [--userId <USER_ID>]
+```
+
+`channel sync` reads from YouTube and writes only to the local `channels`/`videos` tables --
+never a YouTube write, but still a local mutation, so it goes through the same
+identity/operation-lock gate as `apply`/`playlist create`. `channel list`/`channel video-list`
+are read-only.
+
+### Change Set / Batch commands (CLI parity for the MCP `changeset_*`/`batch_*` tools, Phase 7)
+
+```bash
+npm run cli:video-metadata -- changeset list --channelId <UC...>
+npm run cli:video-metadata -- changeset get --channelId <UC...> --changeSetId <ID> [--status pending|approved|rejected|conflict|invalid|all] [--language <LANG>] [--videoId <VIDEO_ID>]
+npm run cli:video-metadata -- changeset preview --channelId <UC...> --file <path/to/workbook.xlsx>
+npm run cli:video-metadata -- changeset import --channelId <UC...> --file <path/to/workbook.xlsx>
+npm run cli:video-metadata -- batch list --channelId <UC...>
+npm run cli:video-metadata -- batch get --channelId <UC...> --batchId <ID>
+```
+
+`--file` is read from the local filesystem (unlike the MCP tools' `fileBase64`, which exists
+only because MCP's JSON transport has no binary field -- the CLI has direct filesystem access,
+so no base64 round-trip). `changeset preview` never persists anything; `changeset import`
+persists a new Change Set and is gated like `channel sync` above -- neither ever writes to
+YouTube. `changeset list`/`changeset get`/`batch list`/`batch get` are read-only. `batch get`
+verifies the batch belongs to `--channelId` before returning anything (`AGENTS.md` §F).
+
+None of these commands have an apply-class equivalent (approve/execute a Change Set or Batch) --
+that remains Web-UI-only, same as the equivalent MCP tools.
+
 ---
 
 ## MCP server (`npm run mcp:video-metadata`)

@@ -177,3 +177,88 @@ test("a mutating CLI command is rejected while this device is in recovery mode (
     await rawSqlClient.execute({ sql: "DELETE FROM channels WHERE id = ?", args: [channelId] });
   }
 });
+
+// CLI parity (docs/roadmap/plans/PHASE_7_PLAN.md): "changeset import" and "channel sync" both
+// mutate local state (persist a Change Set; write channels/videos) and must go through the
+// exact same choke point as every other mutating CLI command -- "changeset list"/"channel
+// list" must not, confirming READ_ONLY_CLI_COMMANDS was extended correctly for the new
+// namespaces rather than accidentally gating everything or nothing.
+test("changeset import and channel sync are rejected while the operation lock is held; changeset list and channel list are not", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const fakeAuth = {
+      login: async () => ({}),
+      loginDevice: async () => ({}),
+      whoami: async () => ({}),
+      listKnownWriteChannels: async () => ({}),
+      selectWriteChannel: async () => ({}),
+      listUsers: async () => ({}),
+      selectUser: async () => ({}),
+      logout: async () => ({}),
+      revoke: async () => ({}),
+      resolveEffectiveCredentialRef: async () => ({ userId: "u1" }),
+    };
+    const operationsCore = {
+      listChangeSets: async () => [],
+      getChangeSet: async () => ({ changeSet: {}, changes: [], pagination: { page: 1, pageSize: 50, total: 0 } }),
+      previewImport: async () => ({ summary: {}, errors: [], totalErrors: 0 }),
+      createChangeSetFromImport: async () => ({ changeSet: {}, summary: {}, errors: [], totalErrors: 0 }),
+      listBatchesByChannel: async () => [],
+      requireBatchForChannel: async () => ({}),
+      listLedgerRows: async () => [],
+    };
+    const channelSyncCore = {
+      syncChannel: async () => ({}),
+      listChannels: async () => ({ channels: [] }),
+      listSyncedVideos: async () => ({ channelId: "UC_1", videos: [] }),
+    };
+
+    const importStderr: string[] = [];
+    const importExit = await runCliCommand({
+      argv: ["changeset", "import", "--channelId", "UC_1", "--file", import.meta.url],
+      auth: fakeAuth,
+      operationsCore: operationsCore as never,
+      channelSyncCore: channelSyncCore as never,
+      writeStdout: () => {},
+      writeStderr: (line) => importStderr.push(line),
+    });
+    assert.equal(importExit, 1);
+    assert.equal(JSON.parse(importStderr[0]).error.code, "operation_lock_held");
+
+    const syncStderr: string[] = [];
+    const syncExit = await runCliCommand({
+      argv: ["channel", "sync", "--channelId", "UC_1"],
+      auth: fakeAuth,
+      operationsCore: operationsCore as never,
+      channelSyncCore: channelSyncCore as never,
+      writeStdout: () => {},
+      writeStderr: (line) => syncStderr.push(line),
+    });
+    assert.equal(syncExit, 1);
+    assert.equal(JSON.parse(syncStderr[0]).error.code, "operation_lock_held");
+
+    const listStdout: string[] = [];
+    const changesetListExit = await runCliCommand({
+      argv: ["changeset", "list", "--channelId", "UC_1"],
+      auth: fakeAuth,
+      operationsCore: operationsCore as never,
+      channelSyncCore: channelSyncCore as never,
+      writeStdout: (line) => listStdout.push(line),
+      writeStderr: () => {},
+    });
+    assert.equal(changesetListExit, 0);
+
+    const channelListStdout: string[] = [];
+    const channelListExit = await runCliCommand({
+      argv: ["channel", "list"],
+      auth: fakeAuth,
+      operationsCore: operationsCore as never,
+      channelSyncCore: channelSyncCore as never,
+      writeStdout: (line) => channelListStdout.push(line),
+      writeStderr: () => {},
+    });
+    assert.equal(channelListExit, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});

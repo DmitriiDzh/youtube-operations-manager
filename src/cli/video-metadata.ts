@@ -2,6 +2,8 @@
 
 import { loadEnvConfig } from "@next/env";
 import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import type { DeviceAuthorizationStart } from "@/lib/auth";
 import { createVideoMetadataCore } from "@/lib/video-metadata";
 import { DomainError } from "@/lib/video-metadata/contracts";
@@ -12,6 +14,19 @@ import type { CredentialRef } from "@/lib/video-metadata/contracts";
 import { rawSqlClient } from "@/lib/db";
 import { assertDeviceAvailableForMutation, RecoveryModeError } from "@/lib/device-handoff";
 import { OperationLockError } from "@/lib/operation-lock";
+import { createChangeSetCore, type ChangeSetCore } from "@/lib/changesets";
+import { createBatchCore, type BatchCore } from "@/lib/batches";
+import { createChannelSyncCore, type ChannelSyncCore } from "@/lib/channel-sync";
+
+// CLI parity for the read/propose/create MCP tools (docs/roadmap/plans/PHASE_7_PLAN.md,
+// docs/TECHNICAL_DEBT.md RISK-04) -- same core factories, same "smallest safe slice" as
+// src/mcp/server.ts, never a parallel implementation (AGENTS.md §D).
+type ChangesetCliCoreSubset = Pick<
+  ChangeSetCore,
+  "listChangeSets" | "getChangeSet" | "previewImport" | "createChangeSetFromImport"
+>;
+type BatchCliCoreSubset = Pick<BatchCore, "listBatchesByChannel" | "requireBatchForChannel" | "listLedgerRows">;
+type ChannelSyncCliCoreSubset = Pick<ChannelSyncCore, "syncChannel" | "listChannels" | "listSyncedVideos">;
 
 loadEnvConfig(process.cwd());
 
@@ -29,7 +44,7 @@ type CliAuthAdapter = {
 };
 
 export type ParsedArgs = {
-  namespace: "metadata" | "auth" | "playlist";
+  namespace: "metadata" | "auth" | "playlist" | "changeset" | "batch" | "channel";
   command:
     | "list"
     | "transcript"
@@ -47,38 +62,46 @@ export type ParsedArgs = {
     | "list-users"
     | "select-user"
     | "logout"
-    | "revoke";
+    | "revoke"
+    | "get"
+    | "import"
+    | "sync"
+    | "video-list";
   flags: Record<string, string | boolean>;
 };
 
+const EXPLICIT_NAMESPACES = ["auth", "playlist", "changeset", "batch", "channel"] as const;
+type ExplicitNamespace = (typeof EXPLICIT_NAMESPACES)[number];
+
 export function parseArgs(argv: string[]): ParsedArgs {
   const [namespaceRaw, maybeCommandRaw, ...remaining] = argv;
-  const isAuthNamespace = namespaceRaw === "auth";
-  const isPlaylistNamespace = namespaceRaw === "playlist";
-  const commandRaw =
-    isAuthNamespace || isPlaylistNamespace ? maybeCommandRaw : namespaceRaw;
-  const flagTokens =
-    isAuthNamespace || isPlaylistNamespace
-      ? remaining
-      : [maybeCommandRaw, ...remaining].filter(Boolean);
+  const explicitNamespace = EXPLICIT_NAMESPACES.find((n) => n === namespaceRaw) as
+    | ExplicitNamespace
+    | undefined;
+  const hasExplicitNamespace = explicitNamespace !== undefined;
+  const commandRaw = hasExplicitNamespace ? maybeCommandRaw : namespaceRaw;
+  const flagTokens = hasExplicitNamespace
+    ? remaining
+    : [maybeCommandRaw, ...remaining].filter(Boolean);
 
+  const validCommandsByNamespace: Record<ExplicitNamespace, string[]> = {
+    auth: ["login", "whoami", "list-channels", "select-channel", "list-users", "select-user", "logout", "revoke"],
+    playlist: ["list", "create", "update", "delete", "add", "remove"],
+    changeset: ["list", "get", "preview", "import"],
+    batch: ["list", "get"],
+    channel: ["sync", "list", "video-list"],
+  };
   const validMetadataCommands = ["list", "transcript", "preview", "apply"];
-  const validAuthCommands = ["login", "whoami", "list-channels", "select-channel", "list-users", "select-user", "logout", "revoke"];
-  const validPlaylistCommands = ["list", "create", "update", "delete", "add", "remove"];
-  const validCommands = isAuthNamespace
-    ? validAuthCommands
-    : isPlaylistNamespace
-      ? validPlaylistCommands
-      : validMetadataCommands;
+  const validCommands = hasExplicitNamespace
+    ? validCommandsByNamespace[explicitNamespace]
+    : validMetadataCommands;
 
   if (!commandRaw || !validCommands.includes(commandRaw)) {
     throw new DomainError({
       code: "validation_failed",
-      message: isAuthNamespace
-        ? "Auth command must be one of: login, whoami, list-channels, select-channel, list-users, select-user, logout, revoke"
-        : isPlaylistNamespace
-          ? "Playlist command must be one of: list, create, update, delete, add, remove"
-          : "Command must be one of: list, transcript, preview, apply",
+      message: hasExplicitNamespace
+        ? `${explicitNamespace} command must be one of: ${validCommands.join(", ")}`
+        : "Command must be one of: list, transcript, preview, apply",
     });
   }
 
@@ -106,7 +129,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   }
 
   return {
-    namespace: isAuthNamespace ? "auth" : isPlaylistNamespace ? "playlist" : "metadata",
+    namespace: explicitNamespace ?? "metadata",
     command: commandRaw as ParsedArgs["command"],
     flags,
   };
@@ -169,6 +192,22 @@ export function resolveDryRunFlag(flags: Record<string, string | boolean>): bool
   return true;
 }
 
+async function readWorkbookFileFlag(
+  flags: Record<string, string | boolean>
+): Promise<{ filename: string; buffer: Buffer }> {
+  const filePath = requiredStringFlag(flags, "file");
+  let buffer: Buffer;
+  try {
+    buffer = await readFile(filePath);
+  } catch (error) {
+    throw new DomainError({
+      code: "validation_failed",
+      message: `Could not read --file ${filePath}: ${error instanceof Error ? error.message : "unknown error"}`,
+    });
+  }
+  return { filename: basename(filePath), buffer };
+}
+
 export function requiredStringFlag(
   flags: Record<string, string | boolean>,
   key: string
@@ -196,6 +235,12 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   "whoami",
   "list-channels",
   "list-users",
+  // changeset get / batch get (read a single record); channel video-list (read synced
+  // videos). "sync" and "import" are deliberately NOT here -- both mutate local state
+  // (channels/videos, or changesets/changes respectively) and stay gated by the default
+  // (anything not explicitly listed here or in AUTH_SESSION_EXEMPT_CLI_COMMANDS is gated).
+  "get",
+  "video-list",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -268,6 +313,8 @@ export async function runCliCommand(args: {
     | "removeVideosFromPlaylist"
   >;
   auth?: CliAuthAdapter;
+  operationsCore?: ChangesetCliCoreSubset & BatchCliCoreSubset;
+  channelSyncCore?: ChannelSyncCliCoreSubset;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
 }): Promise<number> {
@@ -276,6 +323,8 @@ export async function runCliCommand(args: {
     ...createPlaylistManagementCore(),
   };
   const auth = args.auth ?? createCliAuthService();
+  const operationsCore = args.operationsCore ?? { ...createChangeSetCore(), ...createBatchCore() };
+  const channelSyncCore = args.channelSyncCore ?? createChannelSyncCore();
   const writeStdout =
     args.writeStdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const writeStderr =
@@ -356,10 +405,92 @@ export async function runCliCommand(args: {
       return 0;
     }
 
+    // changeset/batch operate on the local database only -- no YouTube credential needed,
+    // so these two namespaces are dispatched before credentialRef resolution below.
+    if (parsedArgs.namespace === "changeset") {
+      const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
+
+      if (parsedArgs.command === "list") {
+        const result = await operationsCore.listChangeSets({ channelId });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "get") {
+        const result = await operationsCore.getChangeSet({
+          channelId,
+          changeSetId: requiredStringFlag(parsedArgs.flags, "changeSetId"),
+          status: typeof parsedArgs.flags.status === "string" ? parsedArgs.flags.status : undefined,
+          language: typeof parsedArgs.flags.language === "string" ? parsedArgs.flags.language : undefined,
+          videoId: typeof parsedArgs.flags.videoId === "string" ? parsedArgs.flags.videoId : undefined,
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      const { filename, buffer } = await readWorkbookFileFlag(parsedArgs.flags);
+
+      if (parsedArgs.command === "preview") {
+        const result = await operationsCore.previewImport({ channelId, filename, buffer });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // "import" -- persists a new Change Set. Never writes to YouTube; gated above like
+      // playlist_create/apply (mutates the local database).
+      const result = await operationsCore.createChangeSetFromImport({ channelId, filename, buffer });
+      writeStdout(serializeSuccess(result));
+      return 0;
+    }
+
+    if (parsedArgs.namespace === "batch") {
+      const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
+
+      if (parsedArgs.command === "list") {
+        const result = await operationsCore.listBatchesByChannel(channelId);
+        writeStdout(serializeSuccess({ batches: result }));
+        return 0;
+      }
+
+      // "get" -- requireBatchForChannel verifies this batch actually belongs to channelId
+      // before returning anything (AGENTS.md §F), not a bare getBatch(batchId).
+      const batchId = requiredStringFlag(parsedArgs.flags, "batchId");
+      const batch = await operationsCore.requireBatchForChannel(channelId, batchId);
+      const ledgerRows = await operationsCore.listLedgerRows(batchId);
+      writeStdout(serializeSuccess({ batch, ledgerRows }));
+      return 0;
+    }
+
     const explicitCredentialRef = getCredentialRef(parsedArgs.flags);
     const credentialRef = await auth.resolveEffectiveCredentialRef({
       explicit: explicitCredentialRef ?? undefined,
     });
+
+    if (parsedArgs.namespace === "channel") {
+      if (parsedArgs.command === "sync") {
+        const channelId =
+          typeof parsedArgs.flags.channelId === "string" ? parsedArgs.flags.channelId : undefined;
+        const result = await channelSyncCore.syncChannel({
+          credentialRef,
+          ...(channelId ? { channelId } : {}),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "list") {
+        const result = await channelSyncCore.listChannels({ credentialRef });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      const result = await channelSyncCore.listSyncedVideos({
+        credentialRef,
+        channelId: requiredStringFlag(parsedArgs.flags, "channelId"),
+      });
+      writeStdout(serializeSuccess(result));
+      return 0;
+    }
 
     if (parsedArgs.namespace === "playlist") {
       if (parsedArgs.command === "list") {

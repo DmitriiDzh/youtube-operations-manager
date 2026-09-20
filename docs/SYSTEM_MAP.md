@@ -187,17 +187,16 @@ YouTube API Client (src/lib/youtube.ts, googleapis)         Database (src/lib/db
 - **Read/Write:** зависит от роута; все новые роуты Phase 2–5 не пишут в YouTube (export/import/approve/batches — либо чтение, либо только локальная запись в БД; batches-роуты структурно не могут достичь `videos.update`).
 - **Важные ограничения безопасности:** без валидной сессии — `401` до вызова доменной логики; каждый change-set/batch роут проверяет, что вложенный ресурс принадлежит указанному `channelId` (`not_found`/`batch_not_found` иначе), чтобы нельзя было прочитать/изменить чужой ресурс через чужой канал.
 
-### 2.12 CLI — **IMPLEMENTED** (metadata/auth/playlist); sync/localization/changesets commands are **PLANNED** (see `docs/TECHNICAL_DEBT.md` RISK-04)
+### 2.12 CLI — **IMPLEMENTED** (metadata/auth/playlist/changeset/batch/channel); только apply-класс (approve/execute) для Change Sets/Batches остаётся **PLANNED** (см. `docs/TECHNICAL_DEBT.md` RISK-04, PARTIALLY RESOLVED)
 
-- **Ответственность:** локальный терминальный интерфейс для metadata/auth/playlist операций.
-- **Файлы:** `src/cli/video-metadata.ts` (namespaces: `metadata`, `auth`, `playlist`).
+- **Ответственность:** локальный терминальный интерфейс для metadata/auth/playlist/changeset/batch/channel операций.
+- **Файлы:** `src/cli/video-metadata.ts` (namespaces: `metadata` (без явного префикса), `auth`, `playlist`, `changeset`, `batch`, `channel`).
 - **Точки входа:** `npm run cli:video-metadata -- <namespace> <command>`.
-- **Зависимости:** `createVideoMetadataCore()`, `createPlaylistManagementCore()`, `createCliAuthService()`.
-- **Read/Write:** оба (например, `apply`, `playlist create/update/delete`).
-- **Важные ограничения безопасности:** JSON-конверты на stdout (`{ ok: true|false, ... }`), ненулевой exit code при ошибке.
-- **Ограничение (Phase 2–4): команд синхронизации каналов/видео, локализаций и change sets в CLI нет.**
+- **Зависимости:** `createVideoMetadataCore()`, `createPlaylistManagementCore()`, `createCliAuthService()`, `createChangeSetCore()`, `createBatchCore()`, `createChannelSyncCore()` — те же фабрики, что MCP и Web UI, без параллельной реализации (AGENTS.md §D).
+- **Read/Write:** `apply`, `playlist create/update/delete/add/remove`, `channel sync`, `changeset import` — write (`channel sync`/`changeset import` пишут только в локальную БД, никогда в YouTube, но всё равно гейтятся); `changeset list/get/preview`, `batch list/get`, `channel list/video-list` — read/propose-only, не гейтятся.
+- **Важные ограничения безопасности:** JSON-конверты на stdout (`{ ok: true|false, ... }`), ненулевой exit code при ошибке; `READ_ONLY_CLI_COMMANDS`/`AUTH_SESSION_EXEMPT_CLI_COMMANDS` — единственные два явных списка исключений из гейта, всё остальное гейтится по умолчанию (fail-safe: забыть добавить команду в whitelist делает её излишне гейтированной, а не негейтированной); `--file` читается напрямую с диска (в отличие от MCP, где нет бинарного поля и нужен base64); `batch get` проверяет принадлежность батча каналу через `requireBatchForChannel` (AGENTS.md §F).
 
-### 2.13 MCP — **IMPLEMENTED** (metadata/auth/playlist tools; read/propose/create Change Set tools; read-only Batch tools; channel-sync tools); только apply-класс (approve/execute) для Change Sets/Batches остаётся **PLANNED** (см. `docs/TECHNICAL_DEBT.md` RISK-04, PARTIALLY RESOLVED — CLI-паритет тоже ещё не сделан)
+### 2.13 MCP — **IMPLEMENTED** (metadata/auth/playlist tools; read/propose/create Change Set tools; read-only Batch tools; channel-sync tools); только apply-класс (approve/execute) для Change Sets/Batches остаётся **PLANNED** (см. `docs/TECHNICAL_DEBT.md` RISK-04, PARTIALLY RESOLVED)
 
 - **Ответственность:** stdio MCP-сервер для AI-агентов.
 - **Файлы:** `src/mcp/server.ts` (`createMcpServer`, `createMcpToolHandlers`).
