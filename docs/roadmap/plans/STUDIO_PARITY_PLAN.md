@@ -103,15 +103,13 @@ over title); pagination. Depends on S1 for the Views/Comments columns; everythin
 already-synced data. This is the most direct, lowest-risk win — closest to "just restyle
 `channel-sync`'s existing video list."
 
-**Slice S3 — Languages tab (Studio-parity table + per-video editor).** A dedicated "Languages"
-nav tab: table of Video / language-count / last-modified, and a per-video language editor.
-**Open design question (needs owner decision before assignment):** this app already has a
-"Localizations" tab covering materially the same data (per-video existing/imported localizations,
-XLSX-based import/approve workflow). Does "Languages" (a) replace/restyle the existing
-Localizations tab's video-list view to match Studio's table+columns while keeping the existing
-XLSX-based edit workflow untouched, or (b) become a second, separate tab alongside Localizations?
-Per `AGENTS.md` §D, (a) is strongly preferred — avoid two tabs presenting the same underlying
-per-video-language data through two different UIs. Recommend restyling, not duplicating.
+**Slice S3 — Languages tab (Studio-parity table + per-video editor).** **Resolved 2026-09-20**
+(see §5, item 1): restyle the existing "Localizations" tab (renamed "Languages") rather than
+duplicate it, using Studio's menu/table shape as the base — **and fold "AI Localization" into it
+as well**, no longer a separate top-level tab. Full design in
+`docs/roadmap/plans/LANGUAGES_TAB_MERGE_PLAN.md`, itself its own planning artifact per the
+owner's explicit request; that document's open questions (§4 there) need resolving before this
+slice can actually be assigned.
 
 **Slice S4 — Home tab, Data-API-v3 portion only.** "Последнее видео"/"Опубликованные видео"
 cards (depends on S1 for view/comment/like numbers) — straightforward, reuses S1's data.
@@ -127,7 +125,13 @@ this from data no third-party API exposes. Do not promise this card before that 
 foundation (§2.4/§3) existing first — no independent scope of its own beyond "once Phase 8's
 adapter exists, add one more small consumer of it."
 
-**Slice S6 — Analytics tab, Studio parity (Phase 8, extended to full UI).** This is
+**Slice S6-stub — Analytics tab, placeholder only.** **Resolved 2026-09-20** (see §5, item 3):
+build only a placeholder Analytics nav tab (correct sidebar position/icon per Studio, a short
+"coming soon" message) for now — no real data, no OAuth re-consent, no adapter code. Revisit at
+Phase 8's own stage (S6a below). Small, no open questions, immediately assignable independent of
+everything else in this plan.
+
+**Slice S6 — Analytics tab, Studio parity (Phase 8, extended to full UI, later).** This is
 `docs/roadmap/plans/PHASE_8_PLAN.md`'s existing "smallest useful vertical slice" (views-only,
 manual trigger, no chrome) as its own first step, then grown in further sub-slices toward what
 §2.4 describes:
@@ -147,29 +151,37 @@ manual trigger, no chrome) as its own first step, then grown in further sub-slic
   assigned, would be planning ahead of the evidence `FUTURE_PHASES.md` §4's own constraint warns
   against ("distinguish observed facts from interpretations/hypotheses explicitly").
 
-## 5. Open questions requiring an owner decision before any slice is assigned
+## 5. Open questions — resolved 2026-09-20 (project owner, Telegram msg 125)
 
-1. **Languages vs. Localizations** (S3): restyle the existing tab, or run two tabs side by side?
-   Recommendation: restyle (avoid `AGENTS.md` §D's "parallel implementation" concern).
-2. **Visual fidelity target:** a pixel-accurate clone of Studio's current layout, or "the same
-   information and IA, in this app's own already-established dark theme/design language" (the
-   app already went through a YouTube-Studio-*inspired* redesign, per today's earlier Windows/
-   Mac UI discussion)? A literal pixel clone risks looking like an impersonation of YouTube's own
-   product; "same information, our own consistent visual system" is the safer and more
-   maintainable target. Recommend the latter unless the owner explicitly wants a closer clone.
-3. **OAuth re-consent for Analytics** (S5/S6): adding `yt-analytics.readonly` changes what a
-   signed-in user is agreeing to — needs explicit sign-off before any Analytics-related code
-   requests it, exactly as `PHASE_8_PLAN.md` already flags.
-4. **Comments/subscribers feeds** (part of S4): needs a short, separate research pass (scope,
-   feasibility, quota cost) before being promised as buildable — see S4 above.
+1. **Languages vs. Localizations** (S3): **resolved — restyle the existing tab.** Use Studio's
+   menu/IA as the base, layer this app's own additional functionality on top. **Additionally:**
+   the "AI Localization" tab is folded into Languages too, no longer a separate top-level tab.
+   The owner explicitly called this its own planning task — see
+   `docs/roadmap/plans/LANGUAGES_TAB_MERGE_PLAN.md` for the full design (video table shape,
+   sub-tab semantics, per-video entry points for XLSX-import vs. AI-generate, open sub-questions
+   still needing sign-off before this specific merge can be assigned).
+2. **Visual fidelity target:** **resolved — maximally close to real Studio**, not "same
+   information in our own design language." Every slice's UI work should match Studio's actual
+   layout/columns/spacing/component shapes as closely as practical, not just its information
+   architecture.
+3. **OAuth re-consent for Analytics** (S5/S6): **resolved for now — build a placeholder/stub
+   Analytics tab** (matching Studio's sidebar position, no real data) **and revisit at Phase 8's
+   own stage** rather than requesting the new scope now. No re-consent flow is needed for a stub.
+4. **Comments/subscribers feeds** (part of S4): still open — needs a short, separate research
+   pass (scope, feasibility, quota cost) before being promised as buildable.
 
 ## 6. Recommended first assignment, if the owner wants to start now
 
-**S1 + S2 (sync video statistics, then the Content tab)** is the smallest, lowest-risk, most
+**S1 + S2 (sync video statistics, then the Content tab)** remains the smallest, lowest-risk, most
 immediately visible slice: no new OAuth scope, no new external API surface, reuses the existing
 `channel-sync` module and its established test patterns, and directly answers the "Content"
-portion of the request. S3 (Languages restyle) is a close second, same risk profile. S4's
-non-comments/non-subscribers half could follow immediately after S1. Everything analytics-related
-(S5, S6) should wait for a separate, explicit decision given its materially larger scope (new
-OAuth consent, new API surface, new quota model) — recommend treating S6a as its own assignment
-exactly as `PHASE_8_PLAN.md` already scoped it, independent of this Studio-parity request.
+portion of the request. **S6-stub (Analytics placeholder tab)** is equally low-risk and could be
+bundled alongside S1/S2 in the same pass, purely to get the sidebar's nav order/shape settled
+early. S3 (Languages+AI Localization merge) needs `LANGUAGES_TAB_MERGE_PLAN.md`'s own open
+questions resolved first — its L1 (drop the now-redundant per-tab channel selectors, fix the
+Change Set source-label bug) has no open questions and could be assigned independently of the
+rest of that merge. S4's non-comments/non-subscribers half could follow immediately after S1.
+Everything analytics-beyond-the-stub (S5, S6 proper) should wait for a separate, explicit
+decision given its materially larger scope (new OAuth consent, new API surface, new quota model)
+— recommend treating S6a as its own assignment exactly as `PHASE_8_PLAN.md` already scoped it,
+independent of this Studio-parity request.
