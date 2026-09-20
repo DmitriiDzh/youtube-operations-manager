@@ -236,8 +236,11 @@ export function LanguagesManager() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // --- AI generation (primary path) ---
+  // Popover visibility for the bulk path is deliberately NOT its own boolean -- it is derived
+  // from `generateScope?.kind === "bulk"` below (independent-review finding, 2026-09-21: a
+  // separate `bulkPopoverOpen` boolean had already desynced from `generateScope` at one call site
+  // and was one edit away from doing so again at every other one).
   const [generateScope, setGenerateScope] = useState<GenerateScope | null>(null);
-  const [bulkPopoverOpen, setBulkPopoverOpen] = useState(false);
   const [targetLanguages, setTargetLanguages] = useState("es");
   const [generating, setGenerating] = useState(false);
   const [targets, setTargets] = useState<EditableTarget[]>([]);
@@ -325,20 +328,32 @@ export function LanguagesManager() {
     }
   }, [channelId, fetchOverview, fetchChangeSets]);
 
-  function closeGeneratePanel() {
-    setGenerateScope(null);
-    setBulkPopoverOpen(false);
+  /** Clears whatever the previous generation session produced -- shared by every path that starts
+   * or ends one (independent-review finding, 2026-09-21: startBulkGenerate/
+   * startBulkGenerateForLanguage previously skipped this, so switching from an open row-scoped
+   * session straight into a bulk one could silently carry the earlier video's proposals into a
+   * Change Set for a completely different target). */
+  function resetGenerationSession() {
     setTargets([]);
     setRowErrors([]);
     setCreatedChangeSetId(null);
     setGenerationContext(null);
   }
 
+  function closeGeneratePanel() {
+    setGenerateScope(null);
+    resetGenerationSession();
+  }
+
+  function isRowGeneratePanelOpen(videoId: string): boolean {
+    return generateScope?.kind === "row" && generateScope.videoId === videoId;
+  }
+
   async function toggleExpand(videoId: string) {
     if (expandedVideoId === videoId) {
       setExpandedVideoId(null);
       setDetail(null);
-      if (generateScope?.kind === "row" && generateScope.videoId === videoId) closeGeneratePanel();
+      if (isRowGeneratePanelOpen(videoId)) closeGeneratePanel();
       return;
     }
 
@@ -412,26 +427,24 @@ export function LanguagesManager() {
   }
 
   function startBulkGenerate() {
+    resetGenerationSession();
     setGenerateScope({ kind: "bulk" });
-    setBulkPopoverOpen(true);
   }
 
   /** E3 (§7.5): "add this language to every video missing it" -- replaces the selection with
    * exactly the videos missing `lang` (channel-wide, not just the current search) and opens the
-   * same bulk-generate popover pre-filled with that language. */
+   * same bulk-generate popover pre-filled with that language. Per the plan this deliberately
+   * replaces whatever selection existed before, in one click -- not a bug, the specified behavior. */
   function startBulkGenerateForLanguage(lang: string) {
     const missingIds = (overview?.videos ?? []).filter((v) => v.missingLanguages.includes(lang)).map((v) => v.videoId);
+    resetGenerationSession();
     setSelectedIds(new Set(missingIds));
     setTargetLanguages(lang);
     setGenerateScope({ kind: "bulk" });
-    setBulkPopoverOpen(true);
   }
 
   function startRowGenerate(videoId: string) {
-    setTargets([]);
-    setRowErrors([]);
-    setCreatedChangeSetId(null);
-    setGenerationContext(null);
+    resetGenerationSession();
     setGenerateScope({ kind: "row", videoId });
   }
 
@@ -616,6 +629,10 @@ export function LanguagesManager() {
   function renderGenerationPanel() {
     return (
       <div className="space-y-3">
+        <p className="text-xs text-zinc-500">
+          Review and edit the agent&rsquo;s output below before creating a Change Set &mdash;
+          nothing is written to YouTube from this panel.
+        </p>
         <div className="flex flex-wrap items-center gap-2">
           <input
             value={targetLanguages}
@@ -767,7 +784,17 @@ export function LanguagesManager() {
             <div className="relative flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-950/60 px-4 py-2 text-sm">
               <div className="flex items-center gap-3">
                 <span className="font-medium text-zinc-200">{selectedIds.size} selected</span>
-                <button onClick={() => setSelectedIds(new Set())} className="text-xs text-zinc-500 hover:text-zinc-300">
+                <button
+                  onClick={() => {
+                    setSelectedIds(new Set());
+                    // Independent-review finding, 2026-09-21: this used to only clear the
+                    // selection, so the whole bar (and any open popover inside it) visually
+                    // vanished while generateScope/targets stayed set -- reselecting anything
+                    // reopened the popover with the stale, pre-Clear proposals still in it.
+                    if (generateScope?.kind === "bulk") closeGeneratePanel();
+                  }}
+                  className="text-xs text-zinc-500 hover:text-zinc-300"
+                >
                   Clear
                 </button>
               </div>
@@ -787,7 +814,7 @@ export function LanguagesManager() {
                 </button>
               </div>
 
-              {bulkPopoverOpen && generateScope?.kind === "bulk" && (
+              {generateScope?.kind === "bulk" && (
                 <div className="absolute right-4 top-full z-10 mt-2 w-[420px] rounded-lg border border-zinc-700 bg-zinc-900 p-4 shadow-xl">
                   {renderGenerationPanel()}
                 </div>
@@ -919,7 +946,7 @@ export function LanguagesManager() {
                           )}
 
                           <div className="mt-4 border-t border-zinc-800 pt-4">
-                            {generateScope?.kind === "row" && generateScope.videoId === video.videoId ? (
+                            {isRowGeneratePanelOpen(video.videoId) ? (
                               renderGenerationPanel()
                             ) : (
                               <button
