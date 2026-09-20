@@ -164,3 +164,167 @@ removing the last of the three previously-separate selection sets.
 
 No slice above is assigned. Awaiting the owner's direction on which parts (all, some, or a
 different combination) to proceed with, per `AGENTS.md` §C.
+
+---
+
+## 7. Addendum, 2026-09-20 (follow-up) — six concrete requirements
+
+The owner reviewed §1-6 above and specified six concrete features over Telegram, quoted here
+verbatim (translated) for traceability:
+
+1. The table needs **per-language columns**.
+2. Tooling to **add/remove which languages are shown** as columns (a display/tracking concept,
+   not a translation action).
+3. Each language column must show **whether that video is translated into it yet or not**.
+4. The table must be **sortable by clicking column headers**, defaulting to publish-date order.
+5. A **recommended-languages** feature (AI) for the channel, with an apply/add button that turns
+   the recommendation into tracked language columns.
+6. A button to **bulk-add a translation** to every video that doesn't have it yet, for a given
+   language.
+
+This section supersedes one specific piece of §4/§6's original recommendation — the "compact
+count instead of a grid" call in §6 Q1 — and analyzes the rest as new scope. Superseding a
+recommendation this same plan made a few hours earlier is fine (nothing was implemented from it
+yet); flagged explicitly so it doesn't read as inconsistency.
+
+### 7.1 Requirement 1 + 3 — per-language ✓/— columns
+
+**What it is:** this is exactly what the *original* pre-redesign "Localizations" table did before
+this session's earlier restyle collapsed it to a language *count* (`docs/SYSTEM_MAP.md` §2.8/§2.9d
+history) — the redesign undoes that one specific simplification, keeping everything else from §1-6
+(one table, inline generation, etc.).
+
+**Implementation:** no new backend needed for the ✓/— data itself — `OverviewRow` already carries
+`presentLanguages`/`missingLanguages` per video; today's UI just doesn't render them as columns.
+Rendering them as `<col>`s is a pure frontend change to `languages-manager.tsx`'s table markup.
+
+**Risk — table width.** A channel with many tracked languages (say 10+) turns this into a genuinely
+wide table. This session's existing horizontal-scroll pattern (`docs/DEVELOPMENT_PLAYBOOK.md` §6.9
+rule 6, already applied to this exact table) handles the *mechanical* overflow safely, but it's
+worth flagging as a real usability tradeoff, not just a solved problem: past roughly 6-8 language
+columns, an operator will be scrolling sideways a lot to compare two videos. No mitigation proposed
+beyond horizontal scroll unless the owner wants one (e.g. a "show only tracked languages with at
+least one missing video" filter) — flagging, not solving, since it depends on how many languages
+real usage ends up tracking.
+
+### 7.2 Requirement 2 — add/remove tracked language columns
+
+**What it is:** today, "which languages exist for this channel" (`Overview.languages`) is *purely
+derived* — `src/lib/localization/services.ts`'s `collectChannelLanguages` is just the union of
+whatever locales already exist on any video. There is no way to add a language column before any
+video has that translation (e.g. to prepare an empty "de" column ready to fill in), and no
+persisted "these are the languages we track for this channel" concept at all.
+
+**Implementation:** needs one small, genuinely new, additive backend piece — a
+`target_languages_json` (or similar) nullable column on the existing `channels` table
+(`SCHEMA_MIGRATIONS` version 6, following the exact `isDuplicateColumnError`-guarded pattern
+`docs/DEVELOPMENT_PLAYBOOK.md` §6.3 already documents), plus two small endpoints (or one PUT) to
+add/remove a tracked language. `Overview.languages` becomes `(tracked languages) ∪ (languages that
+already have at least one real translation)` — a language already translated can never silently
+disappear from view even if it's removed from the tracked list, which leads directly into the
+one real safety question this requirement raises:
+
+**Risk — "remove a language column" must never be able to delete real translation data.**
+AGENTS.md §F: *"Never allow blank spreadsheet cells to imply deletion unless explicitly designed
+and confirmed."* The same principle applies here: removing a language from the tracked/displayed
+list must be a pure **display preference** — it must never delete, or offer to delete, any
+video's actual `existingLocalizations[language]` data, whether local or (eventually, post-Gate-B)
+on YouTube. This needs to be stated as an explicit, permanent design invariant before
+implementation, not discovered as an edge case afterward. **Recorded as the one real risk in this
+requirement; needs the owner's explicit confirmation of this reading before building it** (see
+Open Questions below — this is not assumed, it is asked).
+
+### 7.3 Requirement 4 — sortable columns, default by publish date
+
+**What it is:** click a column header to sort by it; unsorted default is publish date.
+
+**Implementation:** the default is already correct today — `listStoredVideosByChannel` orders by
+`publishedAt` (newest first) and the overview endpoint doesn't re-sort. Adding a client-side
+`sortKey`/`sortDirection` state to `languages-manager.tsx`, applied via `useMemo` alongside the
+existing search filter, needs no backend change at all — every field to sort by (title, per-video
+`presentLanguages.length`, `lastSyncedAt`, and now each language's own present/missing flag) is
+already present in the data the tab already fetches.
+
+**Risk:** none identified — this is a self-contained, low-risk frontend change.
+
+### 7.4 Requirement 5 — AI-recommended languages for the channel
+
+**This is the one requirement that needs a real product decision before implementation, not just
+an engineering task.** Two distinct things could be meant by "recommended languages," and they are
+**not equally honest to build**:
+
+- **(a) Content-based suggestion:** an LLM looks at the channel's existing titles/descriptions/
+  genre and suggests languages commonly associated with that kind of content (e.g. "lo-fi/ambient
+  music channels often do well in es/pt/de/ja"). This is buildable today, reusing the existing
+  `ai-connections` infrastructure (connection resolution, credential handling, endpoint-security,
+  mock-by-default with the same real-cost warning banner the tab already shows for generation).
+- **(b) Audience-based recommendation** ("languages your actual viewers are searching in/watching
+  from") would require the **YouTube Analytics API** — geography/traffic-source reports — which
+  this project has explicitly **not** integrated yet; it is Phase 8 scope
+  (`docs/roadmap/plans/PHASE_8_PLAN.md`), gated on its own separate OAuth-scope decision the owner
+  has not made. **This app cannot honestly build (b) right now.**
+
+**Risk — misrepresenting (a) as (b).** If a "Recommended languages" button ships without being
+extremely clear that it's a content-based heuristic guess, not real audience data, an operator
+could reasonably assume YouTube Analytics is already wired in and make real decisions (which
+languages to invest translation effort in) based on a much weaker signal than they think they're
+getting. **This needs explicit, visible copy in the UI (e.g. "Based on your channel's content —
+not your actual audience data, which requires a separate YouTube Analytics connection") every time
+it's shown, not just a one-time disclaimer.** This is a product-honesty risk, not a technical one,
+and it's the reason this requirement is flagged as needing owner sign-off specifically on scope
+(a)-only vs. waiting for Phase 8, rather than being folded into the "low-risk" bucket with 7.1/7.3.
+
+**Implementation (if (a) is approved):** a new, small provider capability — recommending languages
+is a different shape of call (channel context in, a list of language codes out) than
+`LocalizationProvider`'s existing "generate title/description for one (video, language)" interface,
+so it needs its own small interface and mock implementation, wired through the same connection
+resolution `ai-connections` already provides (reuse the transport/security/cost-control layer,
+add one new task-shaped interface on top — not a parallel AI stack). The "Apply" button then just
+calls requirement 2's add-tracked-language endpoint once per recommended language — no new
+mutation semantics needed there.
+
+### 7.5 Requirement 6 — bulk "add translation to videos missing this language"
+
+**What it is:** for a given language column, one click selects every video currently missing that
+language and routes them into the existing bulk-generate flow (§4.2's contextual action bar).
+
+**Implementation:** this is the lowest-risk of the six — it is a UI convenience wired entirely on
+top of data and flows that already exist (`OverviewRow.missingLanguages`, the existing
+`selectedVideoIds` set, the existing `POST .../ai-localization/generate` call). No new backend
+endpoint, no new provider capability.
+
+**Risk:** none beyond the already-existing bulk-generation cost/quota considerations (unchanged
+from today's behavior — selecting more videos just means a larger existing API call, not a new
+kind of risk).
+
+### 7.6 Revised phased plan
+
+Ordered by risk/dependency, not necessarily by priority — the owner may reorder:
+
+| Slice | Covers | New backend? | Risk level |
+|---|---|---|---|
+| **E1** | 7.3 (sortable columns) | No | None |
+| **E2** | 7.1 (per-language ✓/— columns) | No | Low (table-width UX tradeoff only) |
+| **E3** | 7.5 (bulk "add missing translation" per language) | No | None |
+| **E4** | §4.2/§4.3 from the original proposal (contextual bulk bar + inline per-video generate) | No | Low (same as original plan) |
+| **E5** | 7.2 (add/remove tracked language columns) | Yes — one additive column + 1-2 endpoints | Medium — **blocked on the owner confirming the "display-only, never deletes data" reading in §7.2 before any code is written** |
+| **E6** | 7.4 (AI-recommended languages) | Yes — new small provider interface + endpoint | Medium-high — **blocked on the owner choosing scope (a) (content-based only) vs. waiting for Phase 8, and approving the required UI disclaimer copy** |
+
+E1-E4 have no open product questions and could be assigned together as one slice if the owner
+wants to move fast on the parts that are purely engineering. E5 and E6 each have one real,
+named decision to make first (data-deletion semantics; analytics-honesty framing) — recorded here
+specifically so neither is discovered as a surprise mid-implementation.
+
+### 7.7 Open questions for the owner (this addendum)
+
+1. **§7.2 confirmation:** removing a language from the tracked/displayed columns is a display
+   preference only and must never delete, or prompt to delete, any existing translation data
+   (local or on YouTube) — confirm this reading before E5 is assigned.
+2. **§7.4 scope:** build the content-based ("a") language recommendation now, with mandatory
+   disclaimer copy distinguishing it from real audience data — or hold this requirement entirely
+   until Phase 8 (YouTube Analytics) makes an audience-based version possible? No middle ground is
+   proposed here since a mislabeled heuristic is the actual risk, not the heuristic itself.
+3. **Sequencing:** assign E1-E4 as one batch now, and revisit E5/E6 once 1-2 are answered? Or
+   assign everything except the two blocked slices, and park E5/E6 until answered?
+
+No slice in this addendum is assigned yet.
