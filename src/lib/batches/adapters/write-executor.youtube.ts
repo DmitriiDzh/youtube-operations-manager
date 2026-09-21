@@ -1,7 +1,6 @@
 import type { youtube_v3 } from "googleapis";
-import { getLiveWritesEnabled } from "@/lib/db";
-import { applyVideoMetadataUpdate } from "@/lib/youtube";
-import { DomainError, type PreparedPayload, type WriteExecutor, type WriteExecutorResult } from "../contracts";
+import { applyVideoMetadataUpdate, assertLiveWritesAuthorized } from "@/lib/youtube-write-gateway";
+import type { PreparedPayload, WriteExecutor, WriteExecutorResult } from "../contracts";
 import { pickWritableSnippetFields } from "../merge";
 
 // ---------------------------------------------------------------------------
@@ -173,28 +172,22 @@ export async function performYoutubeWrite(
  * doc-comment required before it could ever become conditional; see that instruction and
  * `docs/TECHNICAL_DEBT.md` RISK-09 for the authorization trail).
  *
- * Re-reads the persisted setting itself, at call time -- never passed in as a parameter, never
- * captured once at construction -- so a stale value cached anywhere else can't defeat this
- * specific check. This is deliberately the SECOND of two independent layers: Layer 1 is
- * `src/lib/batches/adapters/write-executor.ts`'s `createLiveWriteExecutorIfEnabled`, which
- * constructs no `WriteExecutor` at all unless the same setting is already on -- so with the
- * toggle off, there is still no code path to `videos.update`, exactly as before this change.
- * `dryRun` never reaches this function at all (dry-run batches terminate at
+ * `assertLiveWritesAuthorized` itself now lives in `src/lib/youtube-write-gateway/` (owner
+ * instruction, 2026-09-21 -- "все изменения идут только через этот шлюз", the single-funnel
+ * refactor): it re-reads the persisted setting at call time -- never passed in as a parameter,
+ * never captured once at construction -- so a stale value cached anywhere else can't defeat
+ * this specific check. Calling it here is deliberately the SECOND of two independent layers:
+ * Layer 1 is `src/lib/batches/adapters/write-executor.ts`'s `createLiveWriteExecutorIfEnabled`,
+ * which constructs no `WriteExecutor` at all unless the same setting is already on -- so with
+ * the toggle off, there is still no code path to `videos.update`, exactly as before this
+ * change. `dryRun` never reaches this function at all (dry-run batches terminate at
  * DRY_RUN_COMPLETE in `prepareLedgerRow`, long before `executeBatch`/`executeWithRetry` would
  * ever call `attemptWrite`), so this barrier is independent of and additional to that
- * mechanism, not a substitute for it.
- */
-async function assertLiveWritesAuthorized(): Promise<void> {
-  if (await getLiveWritesEnabled()) return;
-
-  throw new DomainError({
-    code: "live_writes_disabled",
-    message:
-      "Real YouTube videos.update execution is disabled -- the Settings tab's \"live writes\" toggle is off (defaults off every session, docs/TECHNICAL_DEBT.md RISK-09/Gate B).",
-  });
-}
-
-/**
+ * mechanism, not a substitute for it. Every other write path (single-item `apply`,
+ * `playlist_*`) now calls the exact same gateway function itself, immediately before its own
+ * gateway write call -- one policy, enforced from one shared implementation, regardless of
+ * which surface (Web UI, MCP, CLI, Batches) initiated the write.
+ *
  * Production factory for the real `WriteExecutor`. Not constructed anywhere in
  * `src/lib/batches/index.ts` or any API route (Layer 1 of the barrier -- an inventory/
  * grep check, AC-SCOPE-01's verification method, confirms no production code path

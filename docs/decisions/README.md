@@ -10,7 +10,7 @@ Write an ADR **before** (or, for a retrospectively reconstructed one, immediatel
 - changing the database migration strategy (e.g. moving off the current idempotent `CREATE TABLE IF NOT EXISTS` pattern to Drizzle Kit migrations — see `docs/ARCHITECTURE.md` §7.2 for the threshold condition);
 - replacing the database engine;
 - breaking an existing API or MCP tool contract (not just adding a new one);
-- replacing a major subsystem (e.g. the YouTube client layer in `src/lib/youtube.ts`, the `write-context` guardrail);
+- replacing a major subsystem (e.g. the YouTube client layer in `src/lib/youtube.ts`, the YouTube write gateway in `src/lib/youtube-write-gateway/`, the `write-context` guardrail);
 - changing the YouTube write-safety architecture (`docs/PROJECT_SPEC.md` §21, §61–65);
 - a significant framework migration (Next.js major version, moving off Drizzle/libSQL, etc.).
 
@@ -58,3 +58,5 @@ A decision made before this policy existed (e.g. the Phase 2 choice to keep addi
 | [0001](0001-additive-idempotent-schema-strategy.md) | Keep additive idempotent schema initialization instead of Drizzle Kit migrations | Accepted (retrospective) |
 | [0002](0002-additive-schema-versioning.md) | Layer explicit schema versioning on top of the additive idempotent boot pattern | Accepted |
 | [0003](0003-published-release-snapshots.md) | In-repo `published/<version>/` release snapshots, committed directly on `main` | Accepted |
+| [0004](0004-active-channel-read-scoping.md) | Every channel-scoped read is filtered to the session's active channel | Accepted |
+| [0005](0005-youtube-write-gateway.md) | A single gateway module is the only path any code may use to write to YouTube | Accepted |

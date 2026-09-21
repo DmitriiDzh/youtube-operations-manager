@@ -1,14 +1,15 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
 import {
-  applyVideoMetadataUpdate,
   createYoutubeClient,
   getMyChannelId,
   getVideoById,
   getVideoMetadataContext,
   listVideosByChannel,
 } from "@/lib/youtube";
+import { applyVideoMetadataUpdate, assertLiveWritesAuthorized } from "@/lib/youtube-write-gateway";
 import {
   DomainError,
+  isDomainError,
   type MetadataSyncProposal,
   type ResolvedCredentials,
   type VideoMetadataContext,
@@ -78,7 +79,6 @@ export function createYoutubeApiAdapter() {
       credentials: ResolvedCredentials;
       proposal: MetadataSyncProposal;
     }) {
-      const youtube = createAuthorizedClient(args.credentials);
       const targetLocalization = args.proposal.update.localizations[args.proposal.targetLanguage];
 
       if (!targetLocalization) {
@@ -91,12 +91,16 @@ export function createYoutubeApiAdapter() {
         });
       }
 
+      await assertLiveWritesAuthorized();
+      const youtube = createAuthorizedClient(args.credentials);
+
       try {
         await applyVideoMetadataUpdate({
           youtube,
           update: args.proposal.update,
         });
       } catch (error) {
+        if (isDomainError(error)) throw error;
         throw new DomainError({
           code: "update_failed",
           message: "Failed to update YouTube metadata",

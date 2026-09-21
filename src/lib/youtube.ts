@@ -328,40 +328,6 @@ function toLocaleMetadataMap(
   return normalized;
 }
 
-/**
- * RISK-11 (closed 2026-09-18 for src/lib/batches/, extended here to every write path):
- * the exhaustive, documentation-verified list of `snippet` sub-properties the YouTube
- * Data API v3 actually treats as mutable/writable via `videos.update`
- * (developers.google.com/youtube/v3/docs/videos, checked field-by-field 2026-09-18).
- * Everything NOT in this list is read-only (`publishedAt`, `channelId`, `channelTitle`,
- * `thumbnails`, `liveBroadcastContent`) or a separate read-only echo of the
- * `localizations` object (`localized`). This is the single canonical source for every
- * write path in this repository -- `src/lib/batches/merge.ts` re-exports it rather than
- * keeping its own copy, and `src/lib/video-metadata/services.ts` imports it directly --
- * so a future addition to YouTube's writable-field set is a one-line change here, never
- * three independently-drifting copies.
- */
-export const WRITABLE_SNIPPET_FIELDS = [
-  "title",
-  "description",
-  "tags",
-  "categoryId",
-  "defaultLanguage",
-  "defaultAudioLanguage",
-] as const;
-
-export function pickWritableSnippetFields(snippet: Record<string, unknown>): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const field of WRITABLE_SNIPPET_FIELDS) {
-    if (field in snippet) result[field] = snippet[field];
-  }
-  return result;
-}
-
-function removeReadOnlySnippetFields(snippet: youtube_v3.Schema$VideoSnippet) {
-  return pickWritableSnippetFields(snippet as Record<string, unknown>) as youtube_v3.Schema$VideoSnippet;
-}
-
 export async function getVideoMetadataContext(
   youtube: youtube_v3.Youtube,
   videoId: string
@@ -379,108 +345,6 @@ export async function getVideoMetadataContext(
     snippet,
     localizations: toLocaleMetadataMap(item.localizations),
   };
-}
-
-export async function updateVideoMetadataSafe(args: {
-  youtube: youtube_v3.Youtube;
-  videoId: string;
-  targetLanguage: string;
-  title: string;
-  description: string;
-}) {
-  const currentContext = await getVideoMetadataContext(args.youtube, args.videoId);
-  if (!currentContext) {
-    throw new Error(`Metadata context not found for video ${args.videoId}`);
-  }
-
-  const currentSnippet = currentContext.snippet;
-  const currentLocalizations = currentContext.localizations;
-
-  const mergedSnippet = removeReadOnlySnippetFields({
-    ...currentSnippet,
-    title: args.title,
-    description: args.description,
-    defaultLanguage: args.targetLanguage,
-  });
-
-  const mergedLocalizations = {
-    ...currentLocalizations,
-    [args.targetLanguage]: {
-      ...currentLocalizations[args.targetLanguage],
-      title: args.title,
-      description: args.description,
-    },
-  };
-
-  await args.youtube.videos.update({
-    part: ["snippet", "localizations"],
-    requestBody: {
-      id: args.videoId,
-      snippet: mergedSnippet,
-      localizations: mergedLocalizations,
-    },
-  });
-
-  return {
-    before: currentSnippet,
-    proposed: mergedSnippet,
-    localizationsBefore: currentLocalizations,
-    localizationsProposed: mergedLocalizations,
-  };
-}
-
-export async function applyVideoMetadataUpdate(args: {
-  youtube: youtube_v3.Youtube;
-  update: {
-    videoId: string;
-    snippet: Record<string, unknown>;
-    localizations: Record<string, LocaleMetadata>;
-  };
-}) {
-  await args.youtube.videos.update({
-    part: ["snippet", "localizations"],
-    requestBody: {
-      id: args.update.videoId,
-      snippet: args.update.snippet as youtube_v3.Schema$VideoSnippet,
-      localizations: args.update.localizations,
-    },
-  });
-}
-
-/**
- * `src/lib/video-details/` (Studio-parity "Details" edit, 2026-09-20) -- writable `status` and
- * `recordingDetails` fields, confirmed against the OFFICIAL "You can set values for these
- * properties" list on the `videos.update`/`videos.insert` reference pages (not merely present in
- * the resource -- `madeForKids`, all of `contentDetails.*`, and `defaultAudioLanguage` are
- * readable but NOT in that settable list, and are deliberately excluded here). See the research
- * summary in this module's `docs/roadmap/plans/` entry for full sourcing.
- */
-export const WRITABLE_STATUS_FIELDS = [
-  "privacyStatus",
-  "publishAt",
-  "license",
-  "embeddable",
-  "publicStatsViewable",
-  "selfDeclaredMadeForKids",
-  "containsSyntheticMedia",
-] as const;
-
-export function pickWritableStatusFields(status: Record<string, unknown>): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const field of WRITABLE_STATUS_FIELDS) {
-    if (field in status) result[field] = status[field];
-  }
-  return result;
-}
-
-/** Only `recordingDate` is settable -- `location`/`locationDescription` are deprecated
- * (2017/2018) and rejected by the live API today; never forwarded even if present. */
-export function pickWritableRecordingDetailsFields(
-  recordingDetails: Record<string, unknown>
-): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  if ("recordingDate" in recordingDetails) result.recordingDate = recordingDetails.recordingDate;
-  return result;
 }
 
 export type VideoDetailsContext = {
@@ -513,39 +377,9 @@ export async function getVideoDetailsContext(
   };
 }
 
-/**
- * Sends only the parts the caller actually touched (`parts` keys present) -- a patch that only
- * changes `snippet.title` never sends a `status` part at all, so it cannot accidentally reset a
- * `status` field to some stale merged value from a race with another writer. Every part sent is
- * still the FULL merged object for that part (the YouTube API replaces a part wholesale, it does
- * not support a true field-level PATCH) -- the "don't touch untouched fields" guarantee comes
- * from the caller (`src/lib/video-details/services.ts`) always merging onto a freshly-fetched
- * current value before calling this, never from omitting fields within a sent part.
- */
-export async function applyVideoDetailsUpdate(args: {
-  youtube: youtube_v3.Youtube;
-  videoId: string;
-  parts: {
-    snippet?: youtube_v3.Schema$VideoSnippet;
-    status?: youtube_v3.Schema$VideoStatus;
-    recordingDetails?: { recordingDate?: string | null };
-  };
-}): Promise<void> {
-  const part = Object.keys(args.parts) as Array<keyof typeof args.parts>;
-  if (part.length === 0) return;
+export type PlaylistPrivacyStatus = "private" | "public" | "unlisted";
 
-  await args.youtube.videos.update({
-    part,
-    requestBody: {
-      id: args.videoId,
-      ...args.parts,
-    },
-  });
-}
-
-type PlaylistPrivacyStatus = "private" | "public" | "unlisted";
-
-type PlaylistMetadata = {
+export type PlaylistMetadata = {
   id: string;
   title: string;
   description: string;
@@ -556,7 +390,9 @@ type PlaylistMetadataWithChannel = PlaylistMetadata & {
   channelId: string;
 };
 
-function normalizePlaylistPrivacyStatus(value: string | null | undefined): PlaylistPrivacyStatus {
+/** Reused by `src/lib/youtube-write-gateway/` so the read side (this file) and the write
+ * side (the gateway) never carry two independently-drifting copies of the same mapping. */
+export function normalizePlaylistPrivacyStatus(value: string | null | undefined): PlaylistPrivacyStatus {
   if (value === "public" || value === "unlisted") {
     return value;
   }
@@ -564,7 +400,7 @@ function normalizePlaylistPrivacyStatus(value: string | null | undefined): Playl
   return "private";
 }
 
-function mapPlaylistMetadata(
+export function mapPlaylistMetadata(
   playlist: youtube_v3.Schema$Playlist,
   fallback?: {
     title?: string;
@@ -611,27 +447,6 @@ export async function listPlaylistsForAuthenticated(youtube: youtube_v3.Youtube)
   return playlists;
 }
 
-export async function createPlaylistForAuthenticated(
-  youtube: youtube_v3.Youtube,
-  title: string,
-  privacyStatus: PlaylistPrivacyStatus = "private",
-  description = ""
-) {
-  const res = await youtube.playlists.insert({
-    part: ["snippet", "status"],
-    requestBody: {
-      snippet: { title, description },
-      status: { privacyStatus },
-    },
-  });
-
-  if (!res.data.id) {
-    throw new Error("YouTube create playlist response did not include playlist id");
-  }
-
-  return mapPlaylistMetadata(res.data, { title, description, privacyStatus })!;
-}
-
 export async function getPlaylistForUpdate(
   youtube: youtube_v3.Youtube,
   playlistId: string
@@ -654,53 +469,6 @@ export async function getPlaylistForUpdate(
     ...mapped,
     channelId,
   };
-}
-
-export async function updatePlaylistForAuthenticated(args: {
-  youtube: youtube_v3.Youtube;
-  playlistId: string;
-  title: string;
-  description: string;
-  privacyStatus: PlaylistPrivacyStatus;
-}) {
-  const response = await args.youtube.playlists.update({
-    part: ["snippet", "status"],
-    requestBody: {
-      id: args.playlistId,
-      snippet: {
-        title: args.title,
-        description: args.description,
-      },
-      status: {
-        privacyStatus: args.privacyStatus,
-      },
-    },
-  });
-
-  return mapPlaylistMetadata(response.data, {
-    title: args.title,
-    description: args.description,
-    privacyStatus: args.privacyStatus,
-  })!;
-}
-
-export async function addVideoToPlaylistForAuthenticated(
-  youtube: youtube_v3.Youtube,
-  videoId: string,
-  playlistId: string
-) {
-  await youtube.playlistItems.insert({
-    part: ["snippet"],
-    requestBody: {
-      snippet: {
-        playlistId,
-        resourceId: {
-          kind: "youtube#video",
-          videoId,
-        },
-      },
-    },
-  });
 }
 
 export async function listPlaylistItemIdsByVideo(
@@ -731,74 +499,6 @@ export async function listPlaylistItemIdsByVideo(
   } while (pageToken);
 
   return idsByVideo;
-}
-
-export async function deletePlaylistItemById(
-  youtube: youtube_v3.Youtube,
-  playlistItemId: string
-) {
-  await youtube.playlistItems.delete({ id: playlistItemId });
-}
-
-export async function getUserPlaylists(userId: string) {
-  const youtube = await getAuthenticatedYoutube(userId);
-  return listPlaylistsForAuthenticated(youtube);
-}
-
-export async function getRecentVideos(userId: string) {
-  const youtube = await getAuthenticatedYoutube(userId);
-  const channelId = await getMyChannelId(youtube);
-  if (!channelId) return [];
-
-  return listVideosByChannel({ youtube, channelId });
-}
-
-export async function createPlaylist(
-  userId: string,
-  title: string,
-  privacyStatus: "private" | "public" | "unlisted" = "private"
-) {
-  const youtube = await getAuthenticatedYoutube(userId);
-  return createPlaylistForAuthenticated(youtube, title, privacyStatus);
-}
-
-export async function addVideoToPlaylist(
-  userId: string,
-  videoId: string,
-  playlistId: string
-) {
-  const youtube = await getAuthenticatedYoutube(userId);
-  await addVideoToPlaylistForAuthenticated(youtube, videoId, playlistId);
-}
-
-export async function removeVideosFromPlaylist(
-  userId: string,
-  videoIds: string[],
-  playlistId: string
-) {
-  const youtube = await getAuthenticatedYoutube(userId);
-  const idsByVideo = await listPlaylistItemIdsByVideo(youtube, playlistId);
-  const toDelete: string[] = [];
-
-  for (const videoId of videoIds) {
-    const ids = idsByVideo.get(videoId);
-    const candidate = ids?.shift();
-    if (candidate) {
-      toDelete.push(candidate);
-    }
-  }
-
-  let removed = 0;
-  for (const id of toDelete) {
-    try {
-      await deletePlaylistItemById(youtube, id);
-      removed++;
-    } catch {
-      // Skip failures
-    }
-  }
-
-  return removed;
 }
 
 export type SupportedLanguage = { code: string; name: string };

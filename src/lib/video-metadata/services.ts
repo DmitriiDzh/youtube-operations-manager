@@ -1,5 +1,5 @@
 import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
-import { pickWritableSnippetFields } from "@/lib/youtube";
+import { pickWritableSnippetFields } from "@/lib/youtube-write-gateway";
 import {
   DomainError,
   isDomainError,

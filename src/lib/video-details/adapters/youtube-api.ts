@@ -1,12 +1,12 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
+import { createYoutubeClient, getVideoDetailsContext } from "@/lib/youtube";
 import {
   applyVideoDetailsUpdate,
-  createYoutubeClient,
-  getVideoDetailsContext,
+  assertLiveWritesAuthorized,
   pickWritableRecordingDetailsFields,
   pickWritableSnippetFields,
   pickWritableStatusFields,
-} from "@/lib/youtube";
+} from "@/lib/youtube-write-gateway";
 import { DomainError, type ResolvedCredentials } from "@/lib/video-metadata/contracts";
 import type { VideoDetailsPatch, VideoDetailsSnapshot } from "../contracts";
 
@@ -77,6 +77,8 @@ export function createVideoDetailsYoutubeApiAdapter() {
       videoId: string;
       patch: VideoDetailsPatch;
     }): Promise<{ before: VideoDetailsSnapshot; after: VideoDetailsSnapshot }> {
+      await assertLiveWritesAuthorized();
+
       const youtube = createAuthorizedClient(args.credentials);
       const context = await getVideoDetailsContext(youtube, args.videoId);
       if (!context) {
