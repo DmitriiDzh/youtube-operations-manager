@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -46,6 +46,20 @@ test("two different channelIds are stored as two distinct files, never overwriti
     const b = await store.loadDocumentBytes("UC_channel_b");
     assert.deepEqual(Array.from(a!), [1]);
     assert.deepEqual(Array.from(b!), [2]);
+  });
+});
+
+test("saveDocumentBytes writes atomically: no leftover .tmp file after a save, and a second save leaves only the final file behind", async () => {
+  await withTempDir(async (dir) => {
+    const store = createFilesystemChangeDraftsStore(dir);
+    await store.saveDocumentBytes("UC_atomic", new Uint8Array([1, 2, 3]));
+    await store.saveDocumentBytes("UC_atomic", new Uint8Array([4, 5, 6]));
+
+    const entries = await readdir(dir);
+    assert.deepEqual(entries, ["UC_atomic.automerge"], "no .tmp file should survive a successful save");
+
+    const loaded = await store.loadDocumentBytes("UC_atomic");
+    assert.deepEqual(Array.from(loaded!), [4, 5, 6], "the final file must hold the latest bytes, not a stale or partial write");
   });
 });
 

@@ -447,3 +447,219 @@ test("a throwing projection does not fail createChangeSet/addChange/mergeIncomin
   const doc = await core.getDocument({ channelId: CHANNEL });
   assert.equal(doc.changes["c-1"].proposedValue, "Original");
 });
+
+test("addChange accepts explicit validationStatus/validationError/conflictStatus instead of always defaulting -- an importer's real per-row results must not be discarded", async () => {
+  const core = createChangeDraftsCore(makeDeps());
+  await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "xlsx_import" });
+
+  const change = await core.addChange({
+    channelId: CHANNEL,
+    changeId: "c-1",
+    changeSetId: "cs-1",
+    videoId: "v1",
+    language: "es",
+    field: "title",
+    baselineValue: "Original",
+    proposedValue: "",
+    changeType: "modify",
+    validationStatus: "invalid",
+    validationError: "proposed value cannot be empty",
+    conflictStatus: "conflict",
+  });
+
+  assert.equal(change.validationStatus, "invalid");
+  assert.equal(change.validationError, "proposed value cannot be empty");
+  assert.equal(change.conflictStatus, "conflict");
+});
+
+test("setChangeSetStatus updates the change set's status field", async () => {
+  const core = createChangeDraftsCore(makeDeps());
+  await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "ai_localization" });
+
+  const updated = await core.setChangeSetStatus({ channelId: CHANNEL, changeSetId: "cs-1", status: "approved" });
+  assert.equal(updated.status, "approved");
+
+  const doc = await core.getDocument({ channelId: CHANNEL });
+  assert.equal(doc.changeSets["cs-1"].status, "approved");
+});
+
+test("setChangeSetStatus rejects an unknown changeSetId", async () => {
+  const core = createChangeDraftsCore(makeDeps());
+  await assert.rejects(
+    () => core.setChangeSetStatus({ channelId: CHANNEL, changeSetId: "does-not-exist", status: "approved" }),
+    (error: unknown) => error instanceof DomainError && error.code === "not_found"
+  );
+});
+
+test("patchChange updates only the fields provided, leaving the rest untouched", async () => {
+  const core = createChangeDraftsCore(makeDeps());
+  await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "ai_localization" });
+  await core.addChange({
+    channelId: CHANNEL,
+    changeId: "c-1",
+    changeSetId: "cs-1",
+    videoId: "v1",
+    language: "es",
+    field: "title",
+    baselineValue: "Original",
+    proposedValue: "Nuevo",
+    changeType: "modify",
+  });
+
+  const patched = await core.patchChange({ channelId: CHANNEL, changeId: "c-1", patch: { conflictStatus: "conflict" } });
+  assert.equal(patched.conflictStatus, "conflict");
+  assert.equal(patched.approvalStatus, "pending", "untouched field must survive the patch");
+  assert.equal(patched.proposedValue, "Nuevo", "untouched field must survive the patch");
+
+  const approved = await core.patchChange({
+    channelId: CHANNEL,
+    changeId: "c-1",
+    patch: { approvalStatus: "approved", approvedValue: "Nuevo" },
+  });
+  assert.equal(approved.approvalStatus, "approved");
+  assert.equal(approved.approvedValue, "Nuevo");
+  assert.equal(approved.conflictStatus, "conflict", "the earlier patch's field must still survive");
+});
+
+test("patchChange rejects an unknown changeId", async () => {
+  const core = createChangeDraftsCore(makeDeps());
+  await assert.rejects(
+    () => core.patchChange({ channelId: CHANNEL, changeId: "does-not-exist", patch: { conflictStatus: "conflict" } }),
+    (error: unknown) => error instanceof DomainError && error.code === "not_found"
+  );
+});
+
+test("createChangeSetWithChanges creates a change set and all of its changes in one call, honoring an explicit initialStatus", async () => {
+  const core = createChangeDraftsCore(makeDeps());
+  const changeSet = await core.createChangeSetWithChanges({
+    channelId: CHANNEL,
+    changeSetId: "cs-batch-1",
+    source: "xlsx_import",
+    initialStatus: "approved",
+    changes: [
+      {
+        changeId: "c-batch-1",
+        videoId: "v1",
+        language: "es",
+        field: "title",
+        baselineValue: "Original",
+        proposedValue: "Nuevo",
+        changeType: "modify",
+      },
+      {
+        changeId: "c-batch-2",
+        videoId: "v1",
+        language: "es",
+        field: "description",
+        baselineValue: "Desc",
+        proposedValue: "Nueva desc",
+        changeType: "modify",
+        validationStatus: "invalid",
+        validationError: "too long",
+        conflictStatus: "conflict",
+      },
+    ],
+  });
+
+  assert.equal(changeSet.status, "approved");
+
+  const doc = await core.getDocument({ channelId: CHANNEL });
+  assert.equal(doc.changes["c-batch-1"].proposedValue, "Nuevo");
+  assert.equal(doc.changes["c-batch-2"].validationStatus, "invalid");
+  assert.equal(doc.changes["c-batch-2"].conflictStatus, "conflict");
+  assert.equal(doc.changeSets["cs-batch-1"].status, "approved");
+});
+
+test("createChangeSetWithChanges is all-or-nothing: a duplicate changeId inside the batch leaves NOTHING persisted, not a partially-created change set", async () => {
+  const core = createChangeDraftsCore(makeDeps());
+  await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-existing", source: "ai_localization" });
+  await core.addChange({
+    channelId: CHANNEL,
+    changeId: "c-already-exists",
+    changeSetId: "cs-existing",
+    videoId: "v1",
+    language: "es",
+    field: "title",
+    baselineValue: "Original",
+    proposedValue: "Existing",
+    changeType: "modify",
+  });
+
+  await assert.rejects(
+    () =>
+      core.createChangeSetWithChanges({
+        channelId: CHANNEL,
+        changeSetId: "cs-batch-2",
+        source: "xlsx_import",
+        changes: [
+          { changeId: "c-new", videoId: "v1", language: "es", field: "title", baselineValue: "A", proposedValue: "B", changeType: "modify" },
+          {
+            changeId: "c-already-exists",
+            videoId: "v1",
+            language: "es",
+            field: "description",
+            baselineValue: "A",
+            proposedValue: "B",
+            changeType: "modify",
+          },
+        ],
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+
+  const doc = await core.getDocument({ channelId: CHANNEL });
+  assert.equal(doc.changeSets["cs-batch-2"], undefined, "the change set itself must not have been created");
+  assert.equal(doc.changes["c-new"], undefined, "no change from the rejected batch must have been persisted, not even the non-conflicting one");
+});
+
+test("bulkPatchChanges patches multiple changes in one call", async () => {
+  const core = createChangeDraftsCore(makeDeps());
+  await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-bulk", source: "xlsx_import" });
+  await core.addChange({
+    channelId: CHANNEL, changeId: "c-bulk-1", changeSetId: "cs-bulk", videoId: "v1", language: "es",
+    field: "title", baselineValue: "A", proposedValue: "B", changeType: "modify",
+  });
+  await core.addChange({
+    channelId: CHANNEL, changeId: "c-bulk-2", changeSetId: "cs-bulk", videoId: "v1", language: "es",
+    field: "description", baselineValue: "C", proposedValue: "D", changeType: "modify",
+  });
+
+  const patched = await core.bulkPatchChanges({
+    channelId: CHANNEL,
+    updates: [
+      { changeId: "c-bulk-1", patch: { approvalStatus: "approved", approvedValue: "B" } },
+      { changeId: "c-bulk-2", patch: { approvalStatus: "rejected", approvedValue: null } },
+    ],
+  });
+
+  assert.equal(patched.find((c) => c.id === "c-bulk-1")?.approvalStatus, "approved");
+  assert.equal(patched.find((c) => c.id === "c-bulk-2")?.approvalStatus, "rejected");
+
+  const doc = await core.getDocument({ channelId: CHANNEL });
+  assert.equal(doc.changes["c-bulk-1"].approvalStatus, "approved");
+  assert.equal(doc.changes["c-bulk-2"].approvalStatus, "rejected");
+});
+
+test("bulkPatchChanges is all-or-nothing: one unknown changeId in the batch leaves every change in the batch untouched", async () => {
+  const core = createChangeDraftsCore(makeDeps());
+  await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-bulk-2", source: "xlsx_import" });
+  await core.addChange({
+    channelId: CHANNEL, changeId: "c-bulk-3", changeSetId: "cs-bulk-2", videoId: "v1", language: "es",
+    field: "title", baselineValue: "A", proposedValue: "B", changeType: "modify",
+  });
+
+  await assert.rejects(
+    () =>
+      core.bulkPatchChanges({
+        channelId: CHANNEL,
+        updates: [
+          { changeId: "c-bulk-3", patch: { approvalStatus: "approved", approvedValue: "B" } },
+          { changeId: "does-not-exist", patch: { approvalStatus: "approved", approvedValue: "B" } },
+        ],
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "not_found"
+  );
+
+  const doc = await core.getDocument({ channelId: CHANNEL });
+  assert.equal(doc.changes["c-bulk-3"].approvalStatus, "pending", "the valid change in the rejected batch must not have been patched either");
+});

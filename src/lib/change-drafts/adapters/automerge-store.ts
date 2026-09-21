@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -41,7 +42,17 @@ export function createFilesystemChangeDraftsStore(baseDir: string): ChangeDrafts
 
     async saveDocumentBytes(channelId: string, bytes: Uint8Array): Promise<void> {
       await mkdir(baseDir, { recursive: true });
-      await writeFile(documentPath(baseDir, channelId), bytes);
+      // This document is now the source of truth for a channel's drafts (AGENTS.md §K.3
+      // data-preservation), so a crash mid-write must never leave the real file truncated --
+      // `Automerge.load()` on a truncated file throws, which would mean total loss of every draft
+      // for the channel with no way to reconstruct it from the (possibly-stale) SQL projection.
+      // Writing to a sibling temp file and `rename`-ing over the real path avoids this: `rename`
+      // is atomic within the same directory on both POSIX and Windows, so the real file is either
+      // the old complete bytes or the new complete bytes, never a partial write.
+      const finalPath = documentPath(baseDir, channelId);
+      const tmpPath = `${finalPath}.${randomUUID()}.tmp`;
+      await writeFile(tmpPath, bytes);
+      await rename(tmpPath, finalPath);
     },
   };
 }

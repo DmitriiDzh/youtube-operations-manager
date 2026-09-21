@@ -9,11 +9,15 @@ import {
 } from "./contracts";
 import {
   addChangeInputSchema,
+  bulkPatchChangesInputSchema,
   channelIdInputSchema,
   createChangeSetInputSchema,
+  createChangeSetWithChangesInputSchema,
   mergeIncomingInputSchema,
   parseWithSchema,
+  patchChangeInputSchema,
   setApprovalStatusInputSchema,
+  setChangeSetStatusInputSchema,
   updateProposedValueInputSchema,
 } from "./schemas";
 import type { ChangeDraftsStoreAdapter } from "./adapters/automerge-store";
@@ -211,9 +215,9 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
         baselineValue: parsed.baselineValue,
         proposedValue: parsed.proposedValue,
         changeType: parsed.changeType,
-        validationStatus: "valid",
-        validationError: null,
-        conflictStatus: "none",
+        validationStatus: parsed.validationStatus ?? "valid",
+        validationError: parsed.validationError ?? null,
+        conflictStatus: parsed.conflictStatus ?? "none",
         approvalStatus: "pending",
         approvedValue: null,
         createdAt: now,
@@ -257,6 +261,152 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
           draft.changes[parsed.changeId].approvedValue = parsed.approvedValue;
         }
         draft.changes[parsed.changeId].updatedAt = new Date().toISOString();
+      });
+      await saveDocument(parsed.channelId, next);
+      return next.changes[parsed.changeId];
+    },
+
+    /**
+     * A change set plus all of its changes, created as a SINGLE `Automerge.change` + a single
+     * `saveDocument` call -- never as separate `createChangeSet`/`addChange`/`setChangeSetStatus`
+     * calls. This preserves the all-or-nothing guarantee the OLD direct-SQL adapter had via one
+     * `db.transaction(...)` (AGENTS.md §K.3): if this were split into N+2 sequential saves and
+     * save #17 of 200 threw, the Automerge document (source of truth) would durably keep a
+     * partially-populated change set with no rollback. One in-memory Automerge mutation followed
+     * by one save avoids that -- either the whole batch lands, or (on a validation error thrown
+     * before the `Automerge.change` call) nothing does.
+     */
+    async createChangeSetWithChanges(input: unknown): Promise<DraftChangeSet> {
+      const parsed = parseWithSchema(createChangeSetWithChangesInputSchema, input, "createChangeSetWithChanges input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+
+      if (doc.changeSets[parsed.changeSetId]) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "A change set with this id already exists",
+          details: { changeSetId: parsed.changeSetId },
+        });
+      }
+      for (const change of parsed.changes) {
+        if (doc.changes[change.changeId]) {
+          throw new DomainError({
+            code: "validation_failed",
+            message: "A change with this id already exists",
+            details: { changeId: change.changeId },
+          });
+        }
+      }
+
+      const now = new Date().toISOString();
+      const changeSet: DraftChangeSet = {
+        id: parsed.changeSetId,
+        channelId: parsed.channelId,
+        source: parsed.source,
+        status: parsed.initialStatus ?? "in_review",
+        importedFilename: parsed.importedFilename ?? null,
+        schemaVersion: parsed.schemaVersion ?? null,
+        exportedAt: parsed.exportedAt ?? null,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const next = Automerge.change(
+        doc,
+        `create change set ${parsed.changeSetId} with ${parsed.changes.length} changes`,
+        (draft) => {
+          draft.changeSets[parsed.changeSetId] = changeSet;
+          for (const change of parsed.changes) {
+            draft.changes[change.changeId] = {
+              id: change.changeId,
+              changeSetId: parsed.changeSetId,
+              videoId: change.videoId,
+              language: change.language,
+              field: change.field,
+              baselineValue: change.baselineValue,
+              proposedValue: change.proposedValue,
+              changeType: change.changeType,
+              validationStatus: change.validationStatus ?? "valid",
+              validationError: change.validationError ?? null,
+              conflictStatus: change.conflictStatus ?? "none",
+              approvalStatus: "pending",
+              approvedValue: null,
+              createdAt: now,
+              updatedAt: now,
+            };
+          }
+        }
+      );
+      await saveDocument(parsed.channelId, next);
+      return next.changeSets[parsed.changeSetId];
+    },
+
+    /**
+     * Patches multiple changes (approve-all/reject-all/revalidation's dirty-write) in ONE
+     * `Automerge.change` + one `saveDocument` call, for the same all-or-nothing reason as
+     * `createChangeSetWithChanges` above -- the old direct-SQL adapter's `bulkUpdateStoredChanges`
+     * wrapped every update in one `db.transaction`. Every caller in
+     * `src/lib/changesets/services.ts` only ever passes changes belonging to a single change
+     * set/channel in one call.
+     */
+    async bulkPatchChanges(input: unknown): Promise<DraftChange[]> {
+      const parsed = parseWithSchema(bulkPatchChangesInputSchema, input, "bulkPatchChanges input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+
+      for (const update of parsed.updates) {
+        if (!doc.changes[update.changeId]) {
+          throw new DomainError({ code: "not_found", message: "Change not found", details: { changeId: update.changeId } });
+        }
+      }
+
+      const now = new Date().toISOString();
+      const next = Automerge.change(doc, `bulk patch ${parsed.updates.length} changes`, (draft) => {
+        for (const update of parsed.updates) {
+          const change = draft.changes[update.changeId];
+          if (update.patch.conflictStatus !== undefined) change.conflictStatus = update.patch.conflictStatus;
+          if (update.patch.approvalStatus !== undefined) change.approvalStatus = update.patch.approvalStatus;
+          if (update.patch.approvedValue !== undefined) change.approvedValue = update.patch.approvedValue;
+          change.updatedAt = now;
+        }
+      });
+      await saveDocument(parsed.channelId, next);
+      return parsed.updates.map((u) => next.changes[u.changeId]);
+    },
+
+    async setChangeSetStatus(input: unknown): Promise<DraftChangeSet> {
+      const parsed = parseWithSchema(setChangeSetStatusInputSchema, input, "setChangeSetStatus input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      if (!doc.changeSets[parsed.changeSetId]) {
+        throw new DomainError({ code: "not_found", message: "Change set not found", details: { changeSetId: parsed.changeSetId } });
+      }
+
+      const next = Automerge.change(doc, `set status for change set ${parsed.changeSetId}`, (draft) => {
+        draft.changeSets[parsed.changeSetId].status = parsed.status;
+        draft.changeSets[parsed.changeSetId].updatedAt = new Date().toISOString();
+      });
+      await saveDocument(parsed.channelId, next);
+      return next.changeSets[parsed.changeSetId];
+    },
+
+    /**
+     * A more general sibling of `setApprovalStatus`, covering every field
+     * `src/lib/changesets/`'s own `updateChange`/`bulkUpdateChanges` contract needs to patch
+     * (`conflictStatus` included -- e.g. after a fresh remote check finds a video changed since
+     * approval) -- `setApprovalStatus` stays as the narrower, already-tested convenience for the
+     * common approve/reject case.
+     */
+    async patchChange(input: unknown): Promise<DraftChange> {
+      const parsed = parseWithSchema(patchChangeInputSchema, input, "patchChange input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      if (!doc.changes[parsed.changeId]) {
+        throw new DomainError({ code: "not_found", message: "Change not found", details: { changeId: parsed.changeId } });
+      }
+
+      const next = Automerge.change(doc, `patch change ${parsed.changeId}`, (draft) => {
+        const change = draft.changes[parsed.changeId];
+        if (parsed.patch.conflictStatus !== undefined) change.conflictStatus = parsed.patch.conflictStatus;
+        if (parsed.patch.approvalStatus !== undefined) change.approvalStatus = parsed.patch.approvalStatus;
+        if (parsed.patch.approvedValue !== undefined) change.approvedValue = parsed.patch.approvedValue;
+        change.updatedAt = new Date().toISOString();
       });
       await saveDocument(parsed.channelId, next);
       return next.changes[parsed.changeId];

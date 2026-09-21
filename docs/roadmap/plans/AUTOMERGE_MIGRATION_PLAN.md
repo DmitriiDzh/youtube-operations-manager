@@ -109,20 +109,63 @@ explicitly chose the faster, single-step path ("мы пока только ст�
 
 - **CD1 — Spike** (§3). **DONE, 2026-09-21.** Throwaway, no production wiring -- confirmed
   Automerge's real conflict behavior matches this plan's assumptions.
-- **CD2 — Automerge-backed service + SQL read-projection, direct cutover. IN PROGRESS, two-thirds
-  done 2026-09-21 (`src/lib/change-drafts/`).** What exists: the document model, all mutation
-  operations (create/add/update/approve), `mergeIncoming` with correct new-conflict detection,
-  `listConflicts`, `exportBytes`/`migrateFromSql` -- proven to actually run inside the real
-  Next.js server runtime (`serverExternalPackages` fix for Automerge's WASM binary). **The SQL
-  read-projection now also exists** (`adapters/sql-projection.ts`, `db.ts`'s new
-  `upsertStoredChangeSet`/`upsertStoredChange`): every mutation, including a remote `mergeIncoming`
-  bringing in change sets/changes this device never had, re-projects the *entire* current document
-  into the existing `change_sets`/`changes` SQL tables (AC-CRDT-04, verified against real SQLite).
-  **What does not exist yet, and is the rest of this slice:** the actual cutover -- no existing
-  UI/API/MCP/CLI reader or writer has been re-pointed at this module; `changesets/` is entirely
-  untouched, so nothing today actually creates data through `change-drafts/` in practice. Do not
-  read "CD2 done" from this note; the projection exists and is proven correct, but nothing writes
-  through it yet outside this module's own tests.
+- **CD2 — Automerge-backed service + SQL read-projection, direct cutover. DONE, 2026-09-21**
+  (`src/lib/change-drafts/`, `src/lib/changesets/adapters/change-drafts-store.ts`). What exists:
+  the document model, all mutation operations (create/add/update/approve), `mergeIncoming` with
+  correct new-conflict detection, `listConflicts`, `exportBytes`/`migrateFromSql` -- proven to
+  actually run inside the real Next.js server runtime (`serverExternalPackages` fix for
+  Automerge's WASM binary). The SQL read-projection (`adapters/sql-projection.ts`, `db.ts`'s
+  `upsertStoredChangeSet`/`upsertStoredChange`) re-projects the *entire* current document into the
+  existing `change_sets`/`changes` SQL tables after every mutation (AC-CRDT-04, verified against
+  real SQLite), with the projection call isolated (a projection failure is logged, never allowed
+  to fail the calling write). **The cutover itself is done**: `src/lib/changesets/index.ts` now
+  wires `createAutomergeBackedChangeSetStoreAdapter()` (`./adapters/change-drafts-store.ts`)
+  instead of the old direct-SQL store adapter. This is the one place that changed --
+  `src/lib/changesets/services.ts` and every one of its callers (API routes, MCP tools, CLI
+  commands, AI-localization's `createChangeSetFromProposals`, XLSX import) are unmodified, since
+  they only ever depended on the adapter's interface, never its implementation; reads still go
+  straight to SQL (re-projected after every successful write -- see the atomicity/projection notes
+  below for what happens when a projection fails), only the four write methods
+  (`createChangeSetWithChanges`/`updateChangeSetStatus`/`updateChange`/`bulkUpdateChanges`) now
+  route through `change-drafts/`, resolving `channelId` via a cheap SQL lookup where the old
+  interface didn't pass one. **Atomicity note (found during review, fixed before merge):** the old
+  direct-SQL adapter wrapped `createChangeSetWithChanges` and `bulkUpdateChanges` each in one
+  `db.transaction(...)` -- an all-or-nothing guarantee. The Automerge-backed adapter preserves it
+  by batching each into a single `Automerge.change` + a single `saveDocument` call
+  (`change-drafts/services.ts`'s own `createChangeSetWithChanges`/`bulkPatchChanges`), never as N
+  separate per-change saves; a batch of 300 changes (create + approve-all) completes in well under
+  half a second against real SQLite. Verified by `src/lib/changesets/index.test.ts` (the first
+  test to exercise `createChangeSetCore()`'s real production wiring end-to-end, not a fake store)
+  and by a live browser/API check against the real Tropico Jazz channel (create → approve → reject-all
+  through the actual `/api/channels/.../change-sets` routes, confirming both the SQL projection
+  and the underlying `.automerge` file on disk). **CD7 confirmed, no separate change needed:** an
+  independent audit of every MCP tool (`src/mcp/server.ts`'s `changeset_list`/`changeset_get`/
+  `changeset_create_from_import`) and CLI command (`src/cli/video-metadata.ts`'s `changeset
+  list|get|import`) found both call exclusively through `createChangeSetCore()`'s public
+  interface, never `@/lib/db` or the old adapter directly, so they benefit from the cutover
+  automatically. Approve/reject and AI-localization change-set creation aren't exposed on
+  MCP/CLI at all today (API-route only), so there was nothing else to check there. One unrelated,
+  pre-existing item flagged by that audit: `src/lib/batches/adapters/store.ts`'s own,
+  independent `createChangeSetStoreAdapter()` (used by `createBatchCore()` for batch-execution's
+  own payload re-validation) reads a `Change` row directly via `getStoredChangeById` from
+  `@/lib/db`, bypassing `createChangeSetCore()` entirely -- this is a separate, narrower code path
+  unaffected by this cutover (it only reads, and only for batch re-validation), not a gap in CD2
+  itself; worth a follow-up look given `src/lib/batches/` is still Gate-B-blocked either way.
+  **Known, accepted edge case from projection isolation:** if `projectToSql` throws on the very
+  first write of a brand-new change set (inside `persistChangeSet`'s create call), the caller sees
+  "Change set disappeared after creation" (its own post-write SQL read finds nothing) even though
+  the Automerge document now holds a real, complete change set. A caller retry mints a new
+  `changeSetId`, so the original stays orphaned in the document until some later save
+  re-projects the whole document and it surfaces on its own. This is a direct, deliberate
+  consequence of never letting a projection failure fail the write it followed (see
+  `saveDocument`'s own doc comment) -- also a durability improvement over the old design, since no
+  data is lost, only temporarily invisible to SQL readers -- not something CD2 needs to fix.
+  Filesystem durability of the Automerge document itself (the actual source of truth) was also
+  reviewed: `adapters/automerge-store.ts`'s `saveDocumentBytes` writes to a sibling temp file and
+  atomically `rename`s it into place, so a crash mid-write can never leave a truncated, unloadable
+  `.automerge` file on disk.
+  CD5/CD6 (background sync, Merge-tab UI) are not
+  started.
 - **CD4 — One-time data migration. DONE, 2026-09-21** (`migrateFromSql`, `adapters/sql-source.ts`).
   Converts every existing local `change_sets`/`changes` row for a channel into its initial
   Automerge document, refusing to run a second time against a channel that already has one
