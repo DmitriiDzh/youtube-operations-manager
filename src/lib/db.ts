@@ -484,12 +484,26 @@ export const appSettings = sqliteTable("app_settings", {
  * metric purely additive -- no migration needed, consistent with
  * `docs/decisions/0002-additive-schema-versioning.md`.
  *
- * **No foreign key on `videoId`/`channelId`**, deliberately following the `video_edit_audit_events`
- * precedent above (see that table's own comment): this database defaults to `foreign_keys=ON`
- * (RISK-33), and `applySnapshotToDatabase`/`scrubDatabaseCopy` (`src/lib/snapshot/`) already have
- * to reason about table restore/scrub ordering under that pragma -- an FK edge here would add a
- * new ordering constraint to both for a table that, like the audit trail, should be free to
- * outlive the specific `videos`/`channels` row it was collected against.
+ * **`videoId` has a foreign key on `videos.id`**, matching `PHASE_8_PLAN.md` §5's own DDL
+ * exactly. An earlier draft of this table omitted it, citing the `video_edit_audit_events` no-FK
+ * precedent above and claiming an FK here would add a new table-ordering constraint to
+ * `applySnapshotToDatabase`/`scrubDatabaseCopy` (`src/lib/snapshot/`) under RISK-33's
+ * `foreign_keys=ON` default -- an independent review caught that this claim doesn't survive
+ * reading those two functions: both already wrap their *entire* drop/replace sequence in
+ * `PRAGMA foreign_keys = OFF` ... `ON` regardless of any relationship, so an FK here adds no new
+ * ordering constraint to either. Unlike `video_edit_audit_events` (an audit trail that must
+ * genuinely outlive the row it describes), this table has no such requirement, so there is no
+ * remaining reason to deviate from the plan's own explicit schema. `channelId` stays a plain,
+ * non-FK column -- a denormalized convenience for cheap per-channel filtering, never an
+ * identity/authorization boundary (`write-context.assertWriteChannel` remains that).
+ *
+ * **Deliberately NOT added to `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`)
+ * in this slice -- collected metrics stay device-local and do not travel with a device
+ * handoff/snapshot import. Accepted limitation, parallel in kind to RISK-33's own `rules.user_id`
+ * orphan case: a snapshot-import replace of `videos` can leave a local `video_metrics_daily` row
+ * referencing a `videoId` no longer present in the receiving device's `videos` table after import
+ * (FK enforcement is disabled for that whole operation, so this never crashes, it just leaves a
+ * stale row). See `docs/ARCHITECTURE.md` §14.4.
  *
  * Composite primary key `(videoId, metricDate, metricName)` mirrors the plan's own DDL exactly:
  * one row per video/day/metric, so re-collecting an already-collected date is a natural upsert,
@@ -499,7 +513,9 @@ export const videoMetricsDaily = sqliteTable(
   "video_metrics_daily",
   {
     channelId: text("channel_id").notNull(),
-    videoId: text("video_id").notNull(),
+    videoId: text("video_id")
+      .notNull()
+      .references(() => videos.id),
     metricDate: text("metric_date").notNull(), // ISO date (YYYY-MM-DD), the Analytics API's own reporting-day granularity
     metricName: text("metric_name").notNull(), // e.g. "views" -- never a bag of untyped columns
     metricValue: integer("metric_value").notNull(),
@@ -629,12 +645,12 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 8,
     description:
-      "video_metrics_daily -- Phase 8 historical metrics time-series (docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 2); no foreign keys, see the table's own comment above for why",
+      "video_metrics_daily -- Phase 8 historical metrics time-series (docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 2); video_id has a foreign key on videos(id), see the table's own comment above for why",
     apply: async (client) => {
       await client.execute(
         "CREATE TABLE IF NOT EXISTS video_metrics_daily (" +
           "channel_id TEXT NOT NULL, " +
-          "video_id TEXT NOT NULL, " +
+          "video_id TEXT NOT NULL REFERENCES videos(id), " +
           "metric_date TEXT NOT NULL, " +
           "metric_name TEXT NOT NULL, " +
           "metric_value INTEGER NOT NULL, " +

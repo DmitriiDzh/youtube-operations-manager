@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createClient, type Client } from "@libsql/client";
 import {
+  channels,
   copyLegacyDatabaseInto,
   createIsolatedDb,
   initializeDatabaseSchema,
@@ -12,7 +13,9 @@ import {
   SCHEMA_BASELINE_VERSION,
   SCHEMA_CURRENT_VERSION,
   SCHEMA_MIGRATIONS,
+  type AppDb,
   upsertVideoMetric,
+  videos,
 } from "./db";
 import { readSchemaVersion } from "@/lib/schema-versioning";
 import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
@@ -43,6 +46,28 @@ async function tableExists(client: Client, name: string): Promise<boolean> {
   return result.rows.length > 0;
 }
 
+// video_metrics_daily.videoId has a real FK on videos.id (Phase 8, PHASE_8_PLAN.md §5) -- a
+// channel + video row must exist first, or the insert fails closed with a constraint error.
+async function seedChannelAndVideo(database: AppDb, channelId: string, videoId: string): Promise<void> {
+  await database.insert(channels).values({
+    id: channelId,
+    title: "Test Channel",
+    thumbnailUrl: null,
+    uploadsPlaylistId: "UU_TEST",
+    connectedUserId: null,
+  });
+  await database.insert(videos).values({
+    id: videoId,
+    channelId,
+    title: "Test Video",
+    description: "",
+    publishedAt: "2026-01-01T00:00:00Z",
+    privacyStatus: "public",
+    thumbnailsJson: "{}",
+    localizationsJson: "{}",
+  });
+}
+
 // AC-SCHEMA-01
 test("initializeDatabaseSchema: a fresh database ends stamped at SCHEMA_CURRENT_VERSION with every table present", () =>
   withTempClient(async (client) => {
@@ -58,6 +83,7 @@ test("video_metrics_daily: upserting the same (videoId, metricDate, metricName) 
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
+    await seedChannelAndVideo(isolatedDb, "UC_TEST", "vid1");
 
     await upsertVideoMetric(
       { channelId: "UC_TEST", videoId: "vid1", metricDate: "2026-09-20", metricName: "views", metricValue: 100 },
@@ -77,6 +103,7 @@ test("video_metrics_daily: distinct metric names for the same video/date coexist
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
+    await seedChannelAndVideo(isolatedDb, "UC_TEST", "vid1");
 
     await upsertVideoMetric(
       { channelId: "UC_TEST", videoId: "vid1", metricDate: "2026-09-20", metricName: "views", metricValue: 100 },
@@ -92,6 +119,19 @@ test("video_metrics_daily: distinct metric names for the same video/date coexist
     assert.deepEqual(
       rows.map((r) => [r.metricName, r.metricValue]).sort(),
       [["views", 100], ["watchTimeMinutes", 42]].sort()
+    );
+  }));
+
+test("video_metrics_daily: a videoId with no matching videos row is rejected by its foreign key", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await assert.rejects(() =>
+      upsertVideoMetric(
+        { channelId: "UC_TEST", videoId: "nonexistent", metricDate: "2026-09-20", metricName: "views", metricValue: 100 },
+        isolatedDb
+      )
     );
   }));
 

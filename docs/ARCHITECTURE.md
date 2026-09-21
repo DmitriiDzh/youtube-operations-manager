@@ -571,12 +571,20 @@ No `videos`/`channels` schema change — this is a purely additive new table alo
 "current snapshot" `videos` table, storing a time-series `videos` was never meant to hold.
 `channelId` is stored directly on the row (per `docs/PROJECT_SPEC.md` §33's canonical
 `channelId`/`videoId`/`date` linkage) rather than requiring a join through `videos` to scope a
-query to a channel. **Deliberately no foreign key** on `videoId`/`channelId`, following the
-`video_edit_audit_events` precedent (§13 area of this file predates it; see that table's own
-comment in `src/lib/db.ts`) — this database defaults to `foreign_keys=ON` (`docs/TECHNICAL_DEBT.md`
-RISK-33), and an FK here would add a new ordering constraint to `applySnapshotToDatabase`/
-`scrubDatabaseCopy` (`src/lib/snapshot/`) for a table that, like the audit trail, should be free to
-outlive the specific `videos`/`channels` row it was collected against.
+query to a channel, and stays a plain, non-FK column (denormalized convenience only, never an
+identity/authorization boundary — `write-context.assertWriteChannel` remains that).
+
+**`videoId` has a foreign key on `videos.id`**, matching `PHASE_8_PLAN.md` §5's own DDL exactly.
+An earlier draft of this section claimed "deliberately no foreign key," following the
+`video_edit_audit_events` precedent (§13; this database defaults to `foreign_keys=ON`,
+`docs/TECHNICAL_DEBT.md` RISK-33) and reasoning that an FK here would add a new table-ordering
+constraint to `applySnapshotToDatabase`/`scrubDatabaseCopy` (`src/lib/snapshot/`). An independent
+review caught that this doesn't survive reading those two functions: both already wrap their
+*entire* drop/replace sequence in `PRAGMA foreign_keys = OFF` ... `ON` regardless of any
+relationship, so an FK here adds no new ordering constraint to either. Unlike
+`video_edit_audit_events` (an audit trail that must genuinely outlive the row it describes), this
+table has no such requirement, so there was no remaining reason to deviate from the plan's own
+explicit schema — corrected in `src/lib/db.ts` and here.
 
 ### 14.3 Persistence access (`src/lib/db.ts`, additive)
 
@@ -606,3 +614,17 @@ metrics (e.g. "average view duration," "CTR where available"). Storing one of th
 current column type is not solved here and would need its own explicit type decision — a
 non-additive change to this table under `docs/decisions/0001-additive-idempotent-schema-strategy.md`
 — before slice 3 picks a metric other than `views`.
+
+`video_metrics_daily` is **deliberately not added to `SNAPSHOT_TRANSFERRED_TABLES`**
+(`src/lib/snapshot/contracts.ts`) in this slice — collected metrics stay device-local and do not
+travel with a device handoff/snapshot import. Accepted limitation, parallel in kind to RISK-33's
+own `rules.user_id` orphan case: a snapshot-import replace of `videos` (`SNAPSHOT_REPLACE_ON_IMPORT_TABLES`
+already includes `videos`) can leave a local `video_metrics_daily` row referencing a `videoId` no
+longer present in the receiving device's `videos` table after import — this never crashes (FK
+enforcement is disabled for that entire operation, same as every other table it processes), it
+just leaves a stale row. `docs/PROJECT_SPEC.md` §33 frames this data as the future basis for real
+recommendations, so unlike `video_edit_audit_events` (a local audit trail with no such framing),
+losing collected history silently on every handoff is worth flagging explicitly rather than
+letting it repeat as an unstated gap — revisit whether this table should join
+`SNAPSHOT_TRANSFERRED_TABLES` once real collection (slice 3+) makes the data worth carrying
+across devices.
