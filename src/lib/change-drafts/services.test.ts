@@ -4,6 +4,7 @@ import * as Automerge from "@automerge/automerge";
 import { DomainError, type ChannelDraftDocument, type DraftChange, type DraftChangeSet } from "./contracts";
 import { createChangeDraftsCore, type ServiceDependencies } from "./services";
 import type { ChangeDraftsStoreAdapter } from "./adapters/automerge-store";
+import type { DiscardedDocumentBackupStore } from "./adapters/discarded-backup-store";
 import type { SqlProjectionAdapter } from "./adapters/sql-projection";
 import type { SqlSourceAdapter } from "./adapters/sql-source";
 
@@ -51,11 +52,38 @@ function fakeProjection(): SqlProjectionAdapter & {
     async upsertChange(change) {
       projectedChanges.set(change.id, change);
     },
+    async deleteChangeSet(changeSetId) {
+      projectedChangeSets.delete(changeSetId);
+    },
+    async deleteChange(changeId) {
+      projectedChanges.delete(changeId);
+    },
+  };
+}
+
+/** In-memory backup store -- `backedUp` lets RISK-46 tests assert a backup was actually captured
+ * (and with what bytes) without touching a real filesystem. */
+function fakeDiscardedBackupStore(): DiscardedDocumentBackupStore & {
+  backedUp: Array<{ channelId: string; bytes: Uint8Array }>;
+} {
+  const backedUp: Array<{ channelId: string; bytes: Uint8Array }> = [];
+  return {
+    backedUp,
+    async backup(channelId, bytes) {
+      backedUp.push({ channelId, bytes });
+      return { path: `/fake/backup/${channelId}-${backedUp.length}.automerge`, capturedAt: new Date().toISOString() };
+    },
   };
 }
 
 function makeDeps(overrides: Partial<ServiceDependencies> = {}): ServiceDependencies {
-  return { store: fakeStore(), sqlSource: fakeSqlSource(), projection: fakeProjection(), ...overrides };
+  return {
+    store: fakeStore(),
+    sqlSource: fakeSqlSource(),
+    projection: fakeProjection(),
+    discardedBackupStore: fakeDiscardedBackupStore(),
+    ...overrides,
+  };
 }
 
 const CHANNEL = "UC_test";
@@ -349,6 +377,84 @@ test("mergeIncoming still merges correctly when the incoming document is a REAL 
   assert.equal(doc.changes["c-1"].approvalStatus, "approved");
 });
 
+// RISK-46 (docs/TECHNICAL_DEBT.md): the explicit "discard my local copy, adopt this peer's
+// version instead" resolution for a channel whose document genuinely diverged -- exactly the
+// scenario mergeIncoming's own lineage guard refuses to merge automatically.
+test("discardLocalAndAdoptPeer backs up the local document, then replaces it entirely with the peer's -- works even for genuinely divergent (unrelated) documents", async () => {
+  const backupStore = fakeDiscardedBackupStore();
+  const local = createChangeDraftsCore(makeDeps({ store: fakeStore(), discardedBackupStore: backupStore }));
+  await local.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-local", source: "ai_localization" });
+  const localBytesBeforeDiscard = await local.exportBytes({ channelId: CHANNEL });
+
+  // An unrelated peer document -- independently bootstrapped, no shared history with local.
+  const peer = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
+  await peer.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-peer", source: "ai_localization" });
+  const peerBytes = await peer.exportBytes({ channelId: CHANNEL });
+
+  // Confirm this really is the divergent-lineage case mergeIncoming refuses.
+  await assert.rejects(
+    () => local.mergeIncoming({ channelId: CHANNEL, incomingBytes: peerBytes }),
+    (error: unknown) => error instanceof DomainError && error.code === "divergent_document_lineage"
+  );
+
+  const result = await local.discardLocalAndAdoptPeer({ channelId: CHANNEL, incomingBytes: peerBytes });
+  assert.ok(result.backupPath, "the discarded local document must have been backed up");
+  assert.equal(backupStore.backedUp.length, 1);
+  assert.deepEqual(Array.from(backupStore.backedUp[0]!.bytes), Array.from(localBytesBeforeDiscard));
+  assert.equal(backupStore.backedUp[0]!.channelId, CHANNEL);
+
+  const doc = await local.getDocument({ channelId: CHANNEL });
+  assert.ok(doc.changeSets["cs-peer"], "the peer's change set must now be present");
+  assert.equal(doc.changeSets["cs-local"], undefined, "the discarded local change set must be gone");
+});
+
+test("discardLocalAndAdoptPeer with no existing local document adopts directly and reports no backup (nothing existed to lose)", async () => {
+  const backupStore = fakeDiscardedBackupStore();
+  const core = createChangeDraftsCore(makeDeps({ store: fakeStore(), discardedBackupStore: backupStore }));
+
+  const peer = createChangeDraftsCore(makeDeps());
+  await peer.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-peer", source: "ai_localization" });
+  const peerBytes = await peer.exportBytes({ channelId: CHANNEL });
+
+  const result = await core.discardLocalAndAdoptPeer({ channelId: CHANNEL, incomingBytes: peerBytes });
+  assert.equal(result.backupPath, null);
+  assert.equal(backupStore.backedUp.length, 0);
+
+  const doc = await core.getDocument({ channelId: CHANNEL });
+  assert.ok(doc.changeSets["cs-peer"]);
+});
+
+// Regression test: found live (a real browser session, not assumed) -- without this cleanup, a
+// change set/change that existed ONLY in the discarded document remained forever visible via SQL
+// (`listChangeSets`/`getChangeSet`, unchanged reads) yet threw `not_found` the instant anything
+// tried to act on it, since the real Automerge document no longer has it.
+test("discardLocalAndAdoptPeer removes SQL projection rows for change sets/changes that existed ONLY in the discarded document, keeps rows shared with the adopted one", async () => {
+  const projection = fakeProjection();
+  const local = createChangeDraftsCore(makeDeps({ store: fakeStore(), projection }));
+  await local.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-local-only", source: "ai_localization" });
+  await local.addChange({
+    channelId: CHANNEL, changeId: "c-local-only", changeSetId: "cs-local-only", videoId: "v1",
+    language: "es", field: "title", baselineValue: "A", proposedValue: "B", changeType: "modify",
+  });
+  assert.ok(projection.projectedChangeSets.has("cs-local-only"));
+  assert.ok(projection.projectedChanges.has("c-local-only"));
+
+  const peer = createChangeDraftsCore(makeDeps());
+  await peer.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-peer-only", source: "ai_localization" });
+  await peer.addChange({
+    channelId: CHANNEL, changeId: "c-peer-only", changeSetId: "cs-peer-only", videoId: "v1",
+    language: "es", field: "title", baselineValue: "A", proposedValue: "C", changeType: "modify",
+  });
+  const peerBytes = await peer.exportBytes({ channelId: CHANNEL });
+
+  await local.discardLocalAndAdoptPeer({ channelId: CHANNEL, incomingBytes: peerBytes });
+
+  assert.equal(projection.projectedChangeSets.has("cs-local-only"), false, "the discarded change set's SQL row must be removed");
+  assert.equal(projection.projectedChanges.has("c-local-only"), false, "the discarded change's SQL row must be removed");
+  assert.ok(projection.projectedChangeSets.has("cs-peer-only"), "the adopted change set must still be projected");
+  assert.ok(projection.projectedChanges.has("c-peer-only"), "the adopted change must still be projected");
+});
+
 test("getDocument/exportBytes/listConflicts reject a channel that was never saved, rather than silently returning an empty document", async () => {
   const core = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
 
@@ -577,6 +683,12 @@ test("a throwing projection does not fail createChangeSet/addChange/mergeIncomin
       throw new Error("simulated DB failure");
     },
     async upsertChange() {
+      throw new Error("simulated DB failure");
+    },
+    async deleteChangeSet() {
+      throw new Error("simulated DB failure");
+    },
+    async deleteChange() {
       throw new Error("simulated DB failure");
     },
   };

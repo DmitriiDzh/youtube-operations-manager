@@ -13,6 +13,7 @@ import {
   channelIdInputSchema,
   createChangeSetInputSchema,
   createChangeSetWithChangesInputSchema,
+  discardLocalAndAdoptPeerInputSchema,
   mergeIncomingInputSchema,
   parseWithSchema,
   patchChangeInputSchema,
@@ -22,6 +23,7 @@ import {
   updateProposedValueInputSchema,
 } from "./schemas";
 import type { ChangeDraftsStoreAdapter } from "./adapters/automerge-store";
+import type { DiscardedDocumentBackupStore } from "./adapters/discarded-backup-store";
 import { createDefaultLogger, type ChangeDraftsLogger } from "./adapters/logger";
 import type { SqlProjectionAdapter } from "./adapters/sql-projection";
 import type { SqlSourceAdapter } from "./adapters/sql-source";
@@ -30,6 +32,9 @@ export type ServiceDependencies = {
   store: ChangeDraftsStoreAdapter;
   sqlSource: SqlSourceAdapter;
   projection: SqlProjectionAdapter;
+  /** RISK-46 (docs/TECHNICAL_DEBT.md): captures the local document being discarded before
+   * `discardLocalAndAdoptPeer` overwrites it, so the discard is never silently unrecoverable. */
+  discardedBackupStore: DiscardedDocumentBackupStore;
   logger?: ChangeDraftsLogger;
 };
 
@@ -522,6 +527,76 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
 
       await saveDocument(parsed.channelId, merged);
       return { newConflicts };
+    },
+
+    /**
+     * RISK-46 (docs/TECHNICAL_DEBT.md): the explicit, human-triggered "discard my local copy,
+     * adopt this peer's version instead" resolution for a channel whose document diverged from a
+     * peer's (no shared history, `divergent_document_lineage` above) -- never automatic, exactly
+     * as that risk's remediation requires. Unlike `mergeIncoming`, this is NOT a merge: the local
+     * document is unconditionally replaced by the incoming one. The local document being
+     * discarded is backed up first (`deps.discardedBackupStore`, immutable, never overwritten) so
+     * this destructive action is never silently unrecoverable, per `docs/PROJECT_SPEC.md` §16's
+     * "no deletion is permanent and immediate" principle applied here. If there is no local
+     * document at all yet, there is nothing to back up or discard -- this degenerates to a plain
+     * adopt, though in practice a divergent-lineage error can only ever have been raised when a
+     * local document already existed.
+     */
+    async discardLocalAndAdoptPeer(input: unknown): Promise<{ backupPath: string | null }> {
+      const parsed = parseWithSchema(discardLocalAndAdoptPeerInputSchema, input, "discardLocalAndAdoptPeer input");
+
+      const existingBytes = await deps.store.loadDocumentBytes(parsed.channelId);
+      let backupPath: string | null = null;
+      let discardedDoc: Automerge.Doc<ChannelDraftDocument> | null = null;
+      if (existingBytes) {
+        const backup = await deps.discardedBackupStore.backup(parsed.channelId, existingBytes);
+        backupPath = backup.path;
+        discardedDoc = Automerge.load<ChannelDraftDocument>(existingBytes);
+      }
+
+      // Deliberately `saveDocument` BEFORE deleting the orphaned rows below, not after (considered
+      // and rejected the reverse ordering during review): the Automerge document -- not SQL -- is
+      // this module's source of truth (`saveDocument`'s own doc comment). Deleting the stale rows
+      // FIRST would create a window where a crash leaves SQL already missing rows for the
+      // discarded document while the actual on-disk `.automerge` file (not yet overwritten) still
+      // IS that discarded document -- SQL would then disagree with the real source of truth, not
+      // just lag behind it. Saving first means the worst a crash between these two steps can do is
+      // leave the exact same class of stale-but-harmless phantom row this fix addresses (logged,
+      // never thrown, self-evident the next time anyone looks) -- SQL never disagrees with what
+      // the document actually is, only with what it used to be.
+      const adopted = Automerge.load<ChannelDraftDocument>(parsed.incomingBytes);
+      await saveDocument(parsed.channelId, adopted);
+
+      // `saveDocument`'s own projection only ever upserts the ADOPTED document's current rows --
+      // it never removes a row for a change set/change that existed ONLY in the just-discarded
+      // document. Found live (not assumed): without this, a change set from the discarded
+      // document remained forever visible via `listChangeSets`/`getChangeSet` yet threw
+      // `not_found` the instant anything (approve/reject) tried to act on it, since the Automerge
+      // document -- the actual source of truth -- no longer has it. Deletes are scoped to exactly
+      // the ids that disappeared, isolated in their own try/catch so a transient DB error here
+      // never fails the discard itself (the document write, the part that matters most, already
+      // succeeded) -- same reasoning as `saveDocument`'s own projection isolation above.
+      if (discardedDoc) {
+        try {
+          for (const changeSetId of Object.keys(discardedDoc.changeSets)) {
+            if (!(changeSetId in adopted.changeSets)) {
+              await deps.projection.deleteChangeSet(changeSetId);
+            }
+          }
+          for (const changeId of Object.keys(discardedDoc.changes)) {
+            if (!(changeId in adopted.changes)) {
+              await deps.projection.deleteChange(changeId);
+            }
+          }
+        } catch (error) {
+          (deps.logger ?? createDefaultLogger()).error({
+            event: "change_drafts.discard_projection_cleanup_failed",
+            context: { channelId: parsed.channelId, cause: error instanceof Error ? error.message : String(error) },
+          });
+        }
+      }
+
+      return { backupPath };
     },
 
     async listConflicts(input: unknown): Promise<FieldConflict[]> {

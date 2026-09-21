@@ -79,6 +79,10 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
   // invocations would otherwise read `resolveBusy` from the same stale render's closure. A ref
   // mutates synchronously, so the second invocation sees the lock immediately.
   const resolveInFlight = useRef(false);
+  const [pendingAdoptPeer, setPendingAdoptPeer] = useState<{ channelId: string; peerDeviceId: string } | null>(null);
+  const [adoptBusy, setAdoptBusy] = useState(false);
+  const [lastAdoptResult, setLastAdoptResult] = useState<string | null>(null);
+  const adoptInFlight = useRef(false);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -183,6 +187,42 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
     } finally {
       resolveInFlight.current = false;
       setResolveBusy(false);
+    }
+  }
+
+  async function handleAdoptPeer() {
+    if (!pendingAdoptPeer || adoptInFlight.current) return;
+    adoptInFlight.current = true;
+    setAdoptBusy(true);
+    setError(null);
+    try {
+      const result = await fetchJson<{ backupPath: string | null }>(
+        `/api/channels/${pendingAdoptPeer.channelId}/change-drafts/adopt-peer`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ peerDeviceId: pendingAdoptPeer.peerDeviceId }),
+        }
+      );
+      setLastAdoptResult(
+        result.backupPath
+          ? `Adopted device ${pendingAdoptPeer.peerDeviceId.slice(0, 8)}'s version. Your previous local copy was backed up to ${result.backupPath}.`
+          : `Adopted device ${pendingAdoptPeer.peerDeviceId.slice(0, 8)}'s version (there was no local copy to back up).`
+      );
+      // The just-resolved entry is now stale -- remove it immediately rather than leaving a
+      // misleading "could not be merged" warning on screen until the next sync cycle re-runs
+      // (found during live verification: the warning box otherwise persisted right after a
+      // successful, real adopt).
+      setSyncPeersSkipped((prev) =>
+        prev.filter((p) => !(p.channelId === pendingAdoptPeer.channelId && p.deviceId === pendingAdoptPeer.peerDeviceId))
+      );
+      setPendingAdoptPeer(null);
+      await refreshConflicts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to adopt peer's version");
+    } finally {
+      adoptInFlight.current = false;
+      setAdoptBusy(false);
     }
   }
 
@@ -380,20 +420,46 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
             <p className="mb-1 font-semibold">
               {syncPeersSkipped.length} peer device file(s) could not be merged this cycle
             </p>
-            <ul className="list-disc space-y-1 pl-5 text-xs">
+            <ul className="space-y-2 text-xs">
               {syncPeersSkipped.map((p, i) => (
-                <li key={`${p.channelId}.${p.deviceId}.${i}`}>
+                <li key={`${p.channelId}.${p.deviceId}.${i}`} className="list-disc pl-5">
                   {p.channelId}, device {p.deviceId.slice(0, 8)}: {p.reason}
+                  {p.reason === "divergent_document_lineage" &&
+                    (p.channelId === channelId ? (
+                      <div className="mt-1">
+                        <button
+                          onClick={() => setPendingAdoptPeer({ channelId: p.channelId, peerDeviceId: p.deviceId })}
+                          className="rounded-md border border-orange-600 px-2 py-1 text-xs font-medium text-orange-200 hover:bg-orange-900/40"
+                        >
+                          Discard my local copy, adopt this device&rsquo;s version
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="mt-1 italic text-orange-300">Switch to this channel to resolve it here.</p>
+                    ))}
                 </li>
               ))}
             </ul>
             <p className="mt-2 text-xs text-orange-300">
-              This is not a field-level conflict to choose between &mdash; it means this device
-              and that one can&rsquo;t currently combine their history at all (e.g. a corrupted
-              file, or a genuinely divergent setup). It will keep being skipped every cycle until
-              resolved outside this screen.
+              A field-level conflict (below) is not the same as this &mdash; this means this
+              device and that one share no common history at all and can never be automatically
+              combined (e.g. a corrupted file, or two devices that started this channel&rsquo;s
+              drafts independently). Only &ldquo;divergent history&rdquo; entries can be resolved
+              here, by explicitly discarding one side; any other reason (e.g. a corrupted file)
+              will keep being retried automatically on its own.
             </p>
           </div>
+        )}
+        {lastAdoptResult && <p className="mt-3 text-sm text-zinc-400">{lastAdoptResult}</p>}
+        {pendingAdoptPeer && (
+          <ConfirmDialog
+            title="Discard local copy and adopt peer's version?"
+            description={`This permanently replaces this device's local drafts for this channel with device ${pendingAdoptPeer.peerDeviceId.slice(0, 8)}'s version. Your current local copy is backed up to a file first (never deleted outright), but this action itself cannot be undone through this screen.`}
+            confirmLabel={adoptBusy ? "Adopting..." : "Discard and adopt"}
+            confirmVariant="danger"
+            onCancel={() => setPendingAdoptPeer(null)}
+            onConfirm={handleAdoptPeer}
+          />
         )}
 
         {conflicts.length > 0 ? (

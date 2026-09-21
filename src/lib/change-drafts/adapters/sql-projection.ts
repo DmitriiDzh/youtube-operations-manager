@@ -1,4 +1,4 @@
-import { upsertStoredChange, upsertStoredChangeSet } from "@/lib/db";
+import { deleteStoredChange, deleteStoredChangeSet, upsertStoredChange, upsertStoredChangeSet } from "@/lib/db";
 import type { DraftChange, DraftChangeSet } from "../contracts";
 
 /**
@@ -7,10 +7,17 @@ import type { DraftChange, DraftChangeSet } from "../contracts";
  * upsert functions -- never a second SQLite connection (AGENTS.md §D). This is what lets the
  * existing Web UI/API/MCP/CLI query surface keep working unchanged against SQL once this module
  * becomes the source of truth: nothing on the read side needs to know Automerge exists.
+ *
+ * `deleteChangeSet`/`deleteChange` exist ONLY for RISK-46's `discardLocalAndAdoptPeer` (the one
+ * operation that can genuinely remove a row from the document's own key set, by replacing the
+ * whole document) -- never called from the normal create/add/update/merge write paths, which
+ * only ever grow the projection.
  */
 export type SqlProjectionAdapter = {
   upsertChangeSet(changeSet: DraftChangeSet): Promise<void>;
   upsertChange(change: DraftChange): Promise<void>;
+  deleteChangeSet(changeSetId: string): Promise<void>;
+  deleteChange(changeId: string): Promise<void>;
 };
 
 export function createSqlProjectionAdapter(): SqlProjectionAdapter {
@@ -47,6 +54,14 @@ export function createSqlProjectionAdapter(): SqlProjectionAdapter {
         createdAt: new Date(change.createdAt),
         updatedAt: new Date(change.updatedAt),
       });
+    },
+
+    async deleteChangeSet(changeSetId: string): Promise<void> {
+      await deleteStoredChangeSet(changeSetId);
+    },
+
+    async deleteChange(changeId: string): Promise<void> {
+      await deleteStoredChange(changeId);
     },
   };
 }
