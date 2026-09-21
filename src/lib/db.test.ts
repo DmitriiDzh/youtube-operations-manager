@@ -127,11 +127,18 @@ test("video_metrics_daily: a videoId with no matching videos row is rejected by 
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
 
-    await assert.rejects(() =>
-      upsertVideoMetric(
-        { channelId: "UC_TEST", videoId: "nonexistent", metricDate: "2026-09-20", metricName: "views", metricValue: 100 },
-        isolatedDb
-      )
+    await assert.rejects(
+      () =>
+        upsertVideoMetric(
+          { channelId: "UC_TEST", videoId: "nonexistent", metricDate: "2026-09-20", metricName: "views", metricValue: 100 },
+          isolatedDb
+        ),
+      // drizzle wraps the raw libsql error as `.cause` -- the FK failure text lives there,
+      // not on the outer "Failed query: insert into ..." message (verified against the actual
+      // rejection shape, not assumed).
+      (error: unknown) =>
+        error instanceof Error && /FOREIGN KEY constraint failed/.test(String(error.cause) + error.message),
+      "must fail specifically on the videoId foreign key, not some unrelated error"
     );
   }));
 

@@ -14,7 +14,10 @@ export type { SqlExecutor };
  *     see docs/decisions/0002-additive-schema-versioning.md's companion plan, decision 6);
  *   - `ai_connection_credentials` (device-local encrypted secrets, key is per-device);
  *   - `video_execution_locks` / `app_operation_locks` (runtime-only, meaningless off-device);
- *   - `handoff_log` / `recovery_acknowledgements` (this device's own operational bookkeeping).
+ *   - `handoff_log` / `recovery_acknowledgements` (this device's own operational bookkeeping);
+ *   - `video_metrics_daily` (Phase 8, `docs/roadmap/plans/PHASE_8_PLAN.md` §6 slice 2) -- an
+ *     accepted, documented limitation (`docs/ARCHITECTURE.md` §14.4), not an oversight:
+ *     collected metrics stay device-local and do not travel with a snapshot/handoff.
  *
  * `schema_meta` IS included -- the receiving device needs to know what schema version the
  * snapshot's data.db is actually at in order to safely apply migrations to the staged copy

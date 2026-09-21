@@ -2683,6 +2683,14 @@ function mapStoredVideoMetric(row: typeof videoMetricsDaily.$inferSelect): Store
 // design, since nothing in docs/roadmap/plans/PHASE_8_PLAN.md needs one; if a future slice needs
 // first-seen tracking, that is an additive column, not a change to this function. See
 // docs/roadmap/plans/PHASE_8_PLAN.md §7's explicit acceptance criterion for the idempotency itself.
+//
+// `channelId` is trusted as given, NOT cross-checked against `videoId`'s actual `videos.channelId`
+// -- this function has no channel-scoping enforcement of its own (AGENTS.md §F: "a route or
+// service taking a channelId must itself verify the requested resource belongs to that channel").
+// Harmless today (only tests call this, with hardcoded consistent values); slice 3's Analytics
+// adapter must derive channelId from the video's own FK-verified row, never accept it as a second,
+// independent caller-supplied parameter, or a channel-scoped metrics view could show/hide the
+// wrong video's data.
 export async function upsertVideoMetric(
   input: {
     channelId: string;
