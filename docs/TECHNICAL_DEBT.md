@@ -691,6 +691,19 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 ---
 
+## RISK-43 — Abandoning an AI-generation session does not cancel the underlying provider request — OPEN, 2026-09-21 (independent review, round 3)
+
+- **Affected components:** `src/components/languages-manager.tsx`'s `handleGenerate`; `POST /api/channels/[channelId]/ai-localization/generate`; `src/lib/ai-localization/services.ts`; `src/lib/ai-connections/adapters/openai-compatible.ts` (which already has its own, unrelated `AbortController` usage for its own outbound timeout, per that file's line ~93 -- not reused here).
+- **Current behavior:** closing the generate panel, switching between row- and bulk-scoped generation, or the selection emptying all invalidate the in-flight request's result client-side (`generationRequestIdRef` in `languages-manager.tsx`) -- a stale response is correctly never applied to the review UI. The underlying `fetch` to this app's own `/ai-localization/generate` route is never aborted, and that route's own call into `resolveLocalizationProvider`/the connection adapter has no cancellation signal threaded through it either. **This round's real regression -- where abandoning a session could re-enable "Generate proposals" and let a second real request fire concurrently with the first -- is fixed** (`generating` is now cleared only by the specific request that set it, never by session-switching); what remains open is narrower: a *single*, already-started real request that the operator has abandoned still runs to completion server-side and is still billed/consumes quota, with no UI indication that it happened in the background.
+- **Actual risk:** wasted cost/quota on an abandoned real (non-mock) connection's request -- not a duplicate-billing or data-integrity risk (that class is now closed), and bounded to at most the one request the operator actually clicked "Generate proposals" for.
+- **Existing mitigation:** the mock provider (the default, zero-network path) is entirely unaffected; a real connection's own per-call cost cap and bounded timeout (`docs/acceptance/PHASE_6_AI_CONNECTIONS_ACCEPTANCE.md`) already bound the worst case of one abandoned request, they just don't cancel it early.
+- **Required remediation (if ever undertaken):** thread an `AbortController`/`AbortSignal` from `languages-manager.tsx`'s fetch through the API route (listening to the incoming `NextRequest`'s own abort) and into whichever `LocalizationProvider`/connection-adapter call is in flight, so an abandoned session's request is actually cancelled server-side, not just ignored client-side.
+- **Gate(s):** none blocking -- cost/quota-hygiene improvement, not a correctness or safety defect.
+- **Approval required from:** project owner, only if real-provider cost from abandoned sessions becomes an actual operational concern (the mock provider, this feature's only wired-up path today, has zero cost regardless).
+- **Status:** OPEN — documented rather than silently left as an unstated limitation; not fixed in this round to avoid a cross-module (UI + API route + provider adapter) change in what should stay a scoped bug-fix cycle.
+
+---
+
 ## Summary table
 
 | ID | Title | Gates | Status |
@@ -737,5 +750,6 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-40 | `video-details` module + Content-tab UI done; no CLI/MCP parity, `paidProductPlacementDetails` unimplemented (API ambiguous) | none blocking | OPEN |
 | RISK-41 | `src/lib/backup/` needs an eventual retention/purge policy once a real deletion feature (E5) uses it -- pre-emptively recorded, no code yet | none blocking | OPEN |
 | RISK-42 | No unit/component test coverage for any `src/components/**` React component (project-wide convention, not one file) | none blocking today | OPEN |
+| RISK-43 | Abandoning an AI-generation session doesn't cancel the underlying (possibly real, billed) provider request | none blocking | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
