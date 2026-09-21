@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DomainError } from "@/lib/playlist-management/contracts";
 import { createAddToPlaylistPostHandler } from "./route";
 
 function makeRequest(body: unknown) {
@@ -50,4 +51,26 @@ test("add-to-playlist route rejects missing params", async () => {
 
   assert.equal(response.status, 400);
   assert.deepEqual(payload, { error: "Missing videoIds or playlistId" });
+});
+
+// Regression test: see the matching test in ../create-playlist/route.test.ts for why this
+// exists -- a DomainError from the core previously propagated uncaught as a bare 500.
+test("add-to-playlist route surfaces a DomainError as a structured JSON error, not a bare 500", async () => {
+  const handler = createAddToPlaylistPostHandler({
+    getSession: async () => ({ user: { id: "user-1" } }),
+    core: {
+      addVideosToPlaylist: async () => {
+        throw new DomainError({ code: "live_writes_disabled", message: "Real YouTube write execution is disabled" });
+      },
+    },
+  });
+
+  const response = await handler(makeRequest({ playlistId: "p1", videoIds: ["v1"] }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(payload, {
+    error: "live_writes_disabled",
+    message: "Real YouTube write execution is disabled",
+  });
 });
