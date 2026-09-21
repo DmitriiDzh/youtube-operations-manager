@@ -230,11 +230,11 @@ export function LanguagesManager() {
   const [newTrackedLanguage, setNewTrackedLanguage] = useState("");
   const [trackedLanguageBusy, setTrackedLanguageBusy] = useState(false);
   const [trackedLanguageNotice, setTrackedLanguageNotice] = useState<string | null>(null);
-  // Suggestion source for "which languages can actually be added" (owner request, 2026-09-21) --
-  // YouTube's own real, official `i18nLanguages.list` set, not a hand-picked list of our own. This
-  // is a suggestion, not a hard allowlist: a typed code that isn't in this list is still
-  // committable via Enter/Add (server-side isValidLanguageCode is the real gate), since that list
-  // is narrower than every code `videos.update` actually accepts (e.g. regional variants).
+  // Hard allowlist for "which languages can be added" (owner instruction, 2026-09-21: "Пользователь
+  // не может добавить язык, которого не будет в этом списке") -- YouTube's own real, official
+  // `i18nLanguages.list` set (hardcoded, `src/lib/youtube-supported-languages.ts`, not fetched
+  // live). Only an exact match against this list can be submitted via Enter/Add; the server
+  // enforces the identical list independently (`addTrackedLanguage`), this state is UX only.
   const [supportedLanguages, setSupportedLanguages] = useState<{ code: string; name: string }[]>([]);
   const [languageDropdownOpen, setLanguageDropdownOpen] = useState(false);
   const [expandedVideoId, setExpandedVideoId] = useState<string | null>(null);
@@ -532,6 +532,16 @@ export function LanguagesManager() {
       )
       .slice(0, 50);
   }, [supportedLanguages, overview?.languages, newTrackedLanguage]);
+
+  // Hard gate (owner instruction, 2026-09-21: "Пользователь не может добавить язык, которого не
+  // будет в этом списке") -- Enter/Add only submit an exact (case-insensitive) match against
+  // SUPPORTED_YOUTUBE_LANGUAGES, never arbitrary typed text; the server enforces the same list
+  // independently (localization/services.ts's addTrackedLanguage), this is UX, not the real gate.
+  const exactLanguageMatch = useMemo(() => {
+    const query = newTrackedLanguage.trim().toLowerCase();
+    if (!query) return null;
+    return supportedLanguages.find((lang) => lang.code.toLowerCase() === query) ?? null;
+  }, [supportedLanguages, newTrackedLanguage]);
 
   useEffect(() => {
     if (channelId) {
@@ -1193,18 +1203,23 @@ export function LanguagesManager() {
                 onFocus={() => setLanguageDropdownOpen(true)}
                 onBlur={() => setLanguageDropdownOpen(false)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") {
+                  if (e.key === "Enter" && exactLanguageMatch) {
                     setLanguageDropdownOpen(false);
-                    handleAddTrackedLanguage();
+                    handleAddTrackedLanguage(exactLanguageMatch.code);
                   }
                   if (e.key === "Escape") setLanguageDropdownOpen(false);
                 }}
-                placeholder="Add language column (code or name)"
+                placeholder="Add language column (search by code or name)"
                 className="w-56 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm placeholder:text-zinc-600"
               />
               <button
-                onClick={() => handleAddTrackedLanguage()}
-                disabled={trackedLanguageBusy || !newTrackedLanguage.trim()}
+                onClick={() => exactLanguageMatch && handleAddTrackedLanguage(exactLanguageMatch.code)}
+                disabled={trackedLanguageBusy || !exactLanguageMatch}
+                title={
+                  newTrackedLanguage.trim() && !exactLanguageMatch
+                    ? "Pick a language from YouTube's supported list below"
+                    : undefined
+                }
                 className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
               >
                 Add

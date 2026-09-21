@@ -17,9 +17,10 @@ import {
   videoLocalizationDetailInputSchema,
   videoLocalizationDetailOutputSchema,
 } from "./schemas";
-// Reused, not duplicated (AGENTS.md §D) -- the same loose BCP-47-ish validator every other
-// language-code-accepting entrypoint in this app already uses (XLSX import, AI localization).
-import { isValidLanguageCode } from "@/lib/changesets/diff";
+// Hard allowlist for this one entry point only (owner instruction, 2026-09-21) -- every other
+// language-code-accepting entrypoint in this app (XLSX import, AI localization) still uses the
+// looser `isValidLanguageCode` BCP-47-ish regex from `@/lib/changesets/diff`, unchanged.
+import { isSupportedYoutubeLanguageCode } from "@/lib/youtube-supported-languages";
 
 type ServiceDependencies = {
   channelStore: {
@@ -139,10 +140,16 @@ export function createLocalizationServices(deps: ServiceDependencies) {
       const parsedInput = parseWithSchema(manageTrackedLanguageInputSchema, input, "add tracked language input");
       try {
         const channel = await requireChannel(deps, parsedInput.channelId);
-        if (!isValidLanguageCode(parsedInput.language)) {
+        // Hard allowlist (owner instruction, 2026-09-21: "Пользователь не может добавить язык,
+        // которого не будет в этом списке") -- replaces the older, looser isValidLanguageCode
+        // regex check for this one entry point. A language already real on the channel (like
+        // this channel's own "en-US", absent from this list -- see the file's own doc comment)
+        // still shows up via the trackedLanguages ∪ real-data union regardless of this gate; only
+        // a brand-new, not-yet-used code typed here is affected.
+        if (!isSupportedYoutubeLanguageCode(parsedInput.language)) {
           throw new DomainError({
             code: "validation_failed",
-            message: `Invalid language code: "${parsedInput.language}"`,
+            message: `"${parsedInput.language}" is not in YouTube's supported language list`,
             details: { language: parsedInput.language },
           });
         }
