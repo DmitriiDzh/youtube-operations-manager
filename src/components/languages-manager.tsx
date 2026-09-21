@@ -383,25 +383,24 @@ export function LanguagesManager() {
   // for it to be scoped to (round-2 independent-review finding, 2026-09-21: this must fire
   // regardless of which code path emptied the selection -- "Clear" or unchecking the last row).
   //
-  // Also permanently drops a deselected video's already-generated proposal from `targets` itself
-  // (round-6 independent-review finding, 2026-09-21), not just from the filtered `visibleTargets`
-  // view: round 5 relied on display-time filtering alone and stopped pruning `targets`, which
-  // meant deselecting a video during an open session hid its proposal but reselecting the SAME
-  // video later silently resurrected the old, never-regenerated content -- confusing at best, a
-  // stale-approval risk at worst. This effect and `visibleTargets` serve two different purposes
-  // that only look redundant: this one enforces "a deselected video's proposal doesn't survive to
-  // be resurrected" (a session-hygiene rule, reactive to selection changes only); `visibleTargets`
-  // is the render-time guarantee that covers the narrower async gap this effect cannot reach on
-  // its own -- a `handleGenerate` response arriving for videos already deselected, before this
-  // effect gets a chance to run again (round-5's original finding, still valid, still needed).
+  // Deliberately does NOT also prune `targets`/`rowErrors` for a video that's merely deselected
+  // (not emptied entirely) -- round 6 tried that, on the reasoning that reselecting the same video
+  // later should not silently resurrect its old proposal. Reverted the same day: pruning on every
+  // deselection cannot tell an accidental double-click (uncheck, recheck) from a deliberate
+  // "remove this video, I've moved on" action -- both are the identical uncheck event -- so it
+  // destroyed operator edits (and, for a real connection, already-billed generation work) on a
+  // misclick, and a later, unrelated selection change could silently make the round-5 "results
+  // discarded" notice disappear by pruning the very entries that notice was about. Resurrection
+  // itself is not a safety issue: a resurfaced proposal is still just a local, editable draft that
+  // goes through the full review -> approve -> Gate-B-blocked-write pipeline before anything real
+  // happens, the same as a freshly-generated one -- the approval workflow gates correctness here,
+  // not this checkbox. `visibleTargets`/`visibleRowErrors` (derived below) are sufficient on their
+  // own: they hide a deselected video's proposal from the *current* view without destroying it,
+  // and reselecting simply un-hides it, exactly like toggling any other filter.
   useEffect(() => {
-    if (generateScope?.kind !== "bulk") return;
-    if (selectedIds.size === 0) {
+    if (generateScope?.kind === "bulk" && selectedIds.size === 0) {
       closeGeneratePanel();
-      return;
     }
-    setTargets((prev) => prev.filter((t) => selectedIds.has(t.videoId)));
-    setRowErrors((prev) => prev.filter((e) => e.videoId === null || selectedIds.has(e.videoId)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIds, generateScope]);
 
@@ -559,13 +558,13 @@ export function LanguagesManager() {
         return;
       }
       if (requestId !== generationRequestIdRef.current) return;
-      // Applied unconditionally here (no selection-filtering at apply time) -- the selection-sync
-      // `useEffect` above prunes a deselected video's proposal out of `targets` reactively, and
-      // `visibleTargets`/`visibleRowErrors` below additionally derive what's actually rendered
-      // from the live selection, covering the narrower async gap between this response landing
-      // and that effect's next run (round-5 independent-review finding, 2026-09-21: a response
-      // for videos already deselected before it arrives must never flash into the review UI, even
-      // for the one render before the effect catches up).
+      // Applied unconditionally (no selection-filtering at apply time, and `targets` itself is
+      // never pruned by anything else either -- see the selection-sync effect above) --
+      // `visibleTargets`/`visibleRowErrors` below are the single place that derives what's
+      // actually rendered from the live selection, so a response for videos already deselected
+      // before it arrives is hidden from view without needing this function to know or care what
+      // the selection looked like by the time it resolved (round-5 independent-review finding,
+      // 2026-09-21).
       setTargets(data.results.map(toEditable));
       setRowErrors(data.errors);
       setGenerationContext(data.generationContext);
@@ -580,19 +579,30 @@ export function LanguagesManager() {
     }
   }
 
+  // Shared by both memos below so "what counts as still targeted" is defined exactly once
+  // (round-7 independent-review finding, 2026-09-21: the same predicate was previously restated
+  // verbatim at each call site, risking silent drift between them).
+  const isBulkScope = generateScope?.kind === "bulk";
+  const stillTargeted = (videoId: string) => !isBulkScope || selectedIds.has(videoId);
+
   /** What the review panel actually shows -- always a subset of `targets` consistent with the
    * live selection for a bulk session (row sessions have exactly one video, nothing to filter).
    * Deriving this instead of imperatively pruning `targets` itself makes "never show a proposal
    * for a video that isn't targeted anymore" true by construction (round-5 independent-review
    * finding, 2026-09-21 -- see the comment in handleGenerate for why the previous apply-time +
-   * effect-time double-filtering approach kept reopening variants of this same bug). */
+   * effect-time double-filtering approach kept reopening variants of this same bug; see the
+   * selection-sync effect above for why round 6's attempt to *also* prune `targets` itself was
+   * reverted the same day). Deselecting a video hides its proposal here; reselecting it un-hides
+   * the same proposal rather than requiring a fresh, possibly-billed regenerate -- intentional,
+   * not a bug, since the approval workflow downstream is what actually gates anything real. */
   const visibleTargets = useMemo(
-    () => (generateScope?.kind === "bulk" ? targets.filter((t) => selectedIds.has(t.videoId)) : targets),
+    () => targets.filter((t) => stillTargeted(t.videoId)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [targets, selectedIds, generateScope]
   );
   const visibleRowErrors = useMemo(
-    () =>
-      generateScope?.kind === "bulk" ? rowErrors.filter((e) => e.videoId === null || selectedIds.has(e.videoId)) : rowErrors,
+    () => rowErrors.filter((e) => e.videoId === null || stillTargeted(e.videoId)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [rowErrors, selectedIds, generateScope]
   );
   /** True when a bulk request actually returned proposals but every one of them was for a video
