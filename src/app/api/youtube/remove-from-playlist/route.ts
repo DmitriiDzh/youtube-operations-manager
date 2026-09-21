@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { createPlaylistManagementCore } from "@/lib/playlist-management";
+import { DomainError } from "@/lib/playlist-management/contracts";
+import { getVideoMetadataErrorStatus } from "../../video-metadata/error-status";
 
 type RemoveFromPlaylistRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
@@ -28,13 +30,26 @@ export function createRemoveFromPlaylistPostHandler(
       );
     }
 
-    const result = await deps.core.removeVideosFromPlaylist({
-      credentialRef: { userId: session.user.id },
-      videoIds,
-      playlistId,
-    });
+    try {
+      const result = await deps.core.removeVideosFromPlaylist({
+        credentialRef: { userId: session.user.id },
+        videoIds,
+        playlistId,
+      });
 
-    return NextResponse.json({ removed: result.removed });
+      return NextResponse.json({ removed: result.removed });
+    } catch (error) {
+      if (error instanceof DomainError) {
+        return NextResponse.json(
+          { error: error.code, message: error.message, details: error.details },
+          { status: getVideoMetadataErrorStatus(error.code) }
+        );
+      }
+      return NextResponse.json(
+        { error: "internal_error", message: error instanceof Error ? error.message : "Unknown error" },
+        { status: 500 }
+      );
+    }
   };
 }
 

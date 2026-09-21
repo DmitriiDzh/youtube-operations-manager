@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { createPlaylistManagementCore } from "@/lib/playlist-management";
+import { DomainError } from "@/lib/playlist-management/contracts";
+import { getVideoMetadataErrorStatus } from "../../video-metadata/error-status";
 
 type CreatePlaylistRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
@@ -25,14 +27,27 @@ export function createCreatePlaylistPostHandler(
       return NextResponse.json({ error: "Title is required" }, { status: 400 });
     }
 
-    const result = await deps.core.createPlaylist({
-      credentialRef: { userId: session.user.id },
-      title: title.trim(),
-      description,
-      privacyStatus,
-    });
+    try {
+      const result = await deps.core.createPlaylist({
+        credentialRef: { userId: session.user.id },
+        title: title.trim(),
+        description,
+        privacyStatus,
+      });
 
-    return NextResponse.json(result.playlist, { status: 201 });
+      return NextResponse.json(result.playlist, { status: 201 });
+    } catch (error) {
+      if (error instanceof DomainError) {
+        return NextResponse.json(
+          { error: error.code, message: error.message, details: error.details },
+          { status: getVideoMetadataErrorStatus(error.code) }
+        );
+      }
+      return NextResponse.json(
+        { error: "internal_error", message: error instanceof Error ? error.message : "Unknown error" },
+        { status: 500 }
+      );
+    }
   };
 }
 
