@@ -170,3 +170,23 @@ export const mergeIncomingInputSchema = z
     incomingBytes: z.instanceof(Uint8Array),
   })
   .strict();
+
+// The only fields realistic for two devices to actually conflict on in practice: an operator
+// editing an AI-generated proposal, or racing an approve/reject decision. `baselineValue`/
+// `changeType`/`validationStatus`/`validationError`/the identity fields are set once at
+// creation and never re-edited by this module's own API, so a conflict on one of them would
+// indicate something unexpected -- deliberately not resolvable through this narrower surface.
+const resolvableConflictFieldSchema = z.enum(["proposedValue", "approvalStatus", "approvedValue", "conflictStatus"]);
+
+// Deliberately takes `winningActorId`, never a raw `value` -- the server re-derives the actual
+// value from Automerge's own recorded conflict (`Automerge.getConflicts`) rather than trusting a
+// client-supplied string, so this can never write a value that wasn't already one of the
+// genuinely-conflicting options a device produced through the normal validated write paths.
+export const resolveConflictInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    changeId: z.string().min(1),
+    field: resolvableConflictFieldSchema,
+    winningActorId: z.string().min(1),
+  })
+  .strict();

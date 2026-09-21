@@ -16,6 +16,7 @@ import {
   mergeIncomingInputSchema,
   parseWithSchema,
   patchChangeInputSchema,
+  resolveConflictInputSchema,
   setApprovalStatusInputSchema,
   setChangeSetStatusInputSchema,
   updateProposedValueInputSchema,
@@ -527,6 +528,61 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       const { channelId } = parseWithSchema(channelIdInputSchema, input, "listConflicts input");
       const doc = await loadDocumentOrThrow(channelId);
       return scanForConflicts(doc);
+    },
+
+    /**
+     * Resolves a genuine, currently-recorded conflict on one field of one change (CD6, human
+     * decision) by writing a fresh value on top of the merged history -- proven empirically (this
+     * module's own probe scripts, not assumed from Automerge's docs) that a single subsequent
+     * `Automerge.change` write causally succeeding both conflicting predecessors clears
+     * `Automerge.getConflicts` for that property entirely, both in-memory and across the
+     * save/load boundary.
+     *
+     * Deliberately takes `winningActorId`, never a raw value from the caller: the actual value to
+     * write is re-derived here from Automerge's own recorded conflict, so this can never write a
+     * value that wasn't already one of the values a device produced through this module's own
+     * validated write paths (`updateProposedValue`/`setApprovalStatus`/`patchChange`). Restricted
+     * to `proposedValue`/`approvalStatus`/`approvedValue`/`conflictStatus` -- the only fields
+     * realistic for two devices to actually conflict on in practice (`schemas.ts`'s own comment).
+     */
+    async resolveConflict(input: unknown): Promise<DraftChange> {
+      const parsed = parseWithSchema(resolveConflictInputSchema, input, "resolveConflict input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+      const change = doc.changes[parsed.changeId];
+      if (!change) {
+        throw new DomainError({ code: "not_found", message: "Change not found", details: { changeId: parsed.changeId } });
+      }
+
+      const conflicts = Automerge.getConflicts(change, parsed.field);
+      if (!conflicts || !(parsed.winningActorId in conflicts)) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "No such conflicting value to resolve -- it may have already been resolved",
+          details: { changeId: parsed.changeId, field: parsed.field, winningActorId: parsed.winningActorId },
+        });
+      }
+      const winningValue = conflicts[parsed.winningActorId];
+
+      const next = Automerge.change(doc, `resolve conflict on ${parsed.changeId}.${parsed.field}`, (draft) => {
+        const target = draft.changes[parsed.changeId];
+        switch (parsed.field) {
+          case "proposedValue":
+            target.proposedValue = winningValue as string;
+            break;
+          case "approvalStatus":
+            target.approvalStatus = winningValue as DraftChange["approvalStatus"];
+            break;
+          case "approvedValue":
+            target.approvedValue = winningValue as string | null;
+            break;
+          case "conflictStatus":
+            target.conflictStatus = winningValue as DraftChange["conflictStatus"];
+            break;
+        }
+        target.updatedAt = new Date().toISOString();
+      });
+      await saveDocument(parsed.channelId, next);
+      return next.changes[parsed.changeId];
     },
 
     /** The exact bytes another device's `mergeIncoming` expects -- see that function's own doc comment. */
