@@ -109,15 +109,20 @@ explicitly chose the faster, single-step path ("мы пока только ст�
 
 - **CD1 — Spike** (§3). **DONE, 2026-09-21.** Throwaway, no production wiring -- confirmed
   Automerge's real conflict behavior matches this plan's assumptions.
-- **CD2 — Automerge-backed service + SQL read-projection, direct cutover. IN PROGRESS, first
-  third done 2026-09-21 (`src/lib/change-drafts/`).** What exists: the document model, all
-  mutation operations (create/add/update/approve), `mergeIncoming` with correct new-conflict
-  detection, `listConflicts`, `exportBytes`/`migrateFromSql` -- proven to actually run inside the
-  real Next.js server runtime (`serverExternalPackages` fix for Automerge's WASM binary). **What
-  does not exist yet, and is the rest of this slice:** the SQL read-projection itself (nothing
-  regenerates `change_sets`/`changes` rows from the Automerge document), and the actual cutover
-  (no existing UI/API/MCP/CLI reader has been re-pointed at this module -- `changesets/` is
-  entirely untouched so far). Do not read "CD2 done" from this note; only its foundation is.
+- **CD2 — Automerge-backed service + SQL read-projection, direct cutover. IN PROGRESS, two-thirds
+  done 2026-09-21 (`src/lib/change-drafts/`).** What exists: the document model, all mutation
+  operations (create/add/update/approve), `mergeIncoming` with correct new-conflict detection,
+  `listConflicts`, `exportBytes`/`migrateFromSql` -- proven to actually run inside the real
+  Next.js server runtime (`serverExternalPackages` fix for Automerge's WASM binary). **The SQL
+  read-projection now also exists** (`adapters/sql-projection.ts`, `db.ts`'s new
+  `upsertStoredChangeSet`/`upsertStoredChange`): every mutation, including a remote `mergeIncoming`
+  bringing in change sets/changes this device never had, re-projects the *entire* current document
+  into the existing `change_sets`/`changes` SQL tables (AC-CRDT-04, verified against real SQLite).
+  **What does not exist yet, and is the rest of this slice:** the actual cutover -- no existing
+  UI/API/MCP/CLI reader or writer has been re-pointed at this module; `changesets/` is entirely
+  untouched, so nothing today actually creates data through `change-drafts/` in practice. Do not
+  read "CD2 done" from this note; the projection exists and is proven correct, but nothing writes
+  through it yet outside this module's own tests.
 - **CD4 — One-time data migration. DONE, 2026-09-21** (`migrateFromSql`, `adapters/sql-source.ts`).
   Converts every existing local `change_sets`/`changes` row for a channel into its initial
   Automerge document, refusing to run a second time against a channel that already has one
@@ -142,7 +147,14 @@ explicitly chose the faster, single-step path ("мы пока только ст�
   the draft layer is small (the CD1 spike measured ~500 bytes for a single-field edit's history),
   so a frequent background sync loop is proportionate here in a way it explicitly was not for a
   full database snapshot. The exact polling/push interval is still an implementation-time tuning
-  decision, not a blocker to building the mechanism itself.
+  decision, not a blocker to building the mechanism itself. **Constraint found empirically while
+  building CD2/CD4 (`src/lib/change-drafts/services.ts`'s `mergeIncoming` doc comment):** two
+  Automerge documents must share a real history to merge correctly -- two devices that each
+  independently bootstrap the same channel's document from scratch (e.g. both ran `migrateFromSql`
+  locally before ever syncing once) are not safely mergeable, and Automerge does not error when
+  this happens, it can silently produce an incomplete result. CD5 must guarantee every device's
+  first participation in a channel comes from importing a real exported document (or being the
+  one device that ran the migration), never two independent from-scratch bootstraps.
 - **CD6 — Rename the "Devices" tab and make it the conflict-resolution surface (revised
   2026-09-21, owner instruction).** The tab currently called "Device" (`device-handoff-panel.tsx`)
   is renamed — **"Merge"** is this plan's working name (the owner suggested "Merge" or "Data

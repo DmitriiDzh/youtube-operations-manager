@@ -1637,6 +1637,82 @@ export async function bulkUpdateStoredChanges(
   });
 }
 
+/**
+ * Full-row upsert (`src/lib/change-drafts/`'s SQL read-projection, AUTOMERGE_MIGRATION_PLAN.md
+ * §6 CD2): unlike `updateStoredChangeSetStatus`/`updateStoredChange` above (which assume the row
+ * already exists from `createChangeSetWithChanges` and only ever patch a narrow column subset),
+ * this writes every column and creates the row if it doesn't exist yet -- the Automerge document
+ * is the source of truth once this projection is wired in, so a change set/change that originated
+ * there (not from an XLSX import) may never have had a SQL row at all.
+ */
+export async function upsertStoredChangeSet(record: StoredChangeSet): Promise<void> {
+  await db
+    .insert(changeSets)
+    .values({
+      id: record.id,
+      channelId: record.channelId,
+      source: record.source,
+      status: record.status,
+      importedFilename: record.importedFilename,
+      schemaVersion: record.schemaVersion,
+      exportedAt: record.exportedAt,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    })
+    .onConflictDoUpdate({
+      target: changeSets.id,
+      set: {
+        channelId: record.channelId,
+        source: record.source,
+        status: record.status,
+        importedFilename: record.importedFilename,
+        schemaVersion: record.schemaVersion,
+        exportedAt: record.exportedAt,
+        updatedAt: record.updatedAt,
+      },
+    });
+}
+
+export async function upsertStoredChange(record: StoredChange): Promise<void> {
+  await db
+    .insert(changes)
+    .values({
+      id: record.id,
+      changeSetId: record.changeSetId,
+      videoId: record.videoId,
+      language: record.language,
+      field: record.field,
+      baselineValue: record.baselineValue,
+      proposedValue: record.proposedValue,
+      changeType: record.changeType,
+      validationStatus: record.validationStatus,
+      validationError: record.validationError,
+      conflictStatus: record.conflictStatus,
+      approvalStatus: record.approvalStatus,
+      approvedValue: record.approvedValue,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    })
+    .onConflictDoUpdate({
+      target: changes.id,
+      set: {
+        changeSetId: record.changeSetId,
+        videoId: record.videoId,
+        language: record.language,
+        field: record.field,
+        baselineValue: record.baselineValue,
+        proposedValue: record.proposedValue,
+        changeType: record.changeType,
+        validationStatus: record.validationStatus,
+        validationError: record.validationError,
+        conflictStatus: record.conflictStatus,
+        approvalStatus: record.approvalStatus,
+        approvedValue: record.approvedValue,
+        updatedAt: record.updatedAt,
+      },
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Phase 6 -- Channel Editorial Profiles + generation provenance persistence.
 // ---------------------------------------------------------------------------
