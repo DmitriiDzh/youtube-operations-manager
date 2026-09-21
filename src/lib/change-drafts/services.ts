@@ -63,6 +63,23 @@ function emptyDocument(channelId: string): Automerge.Doc<ChannelDraftDocument> {
 }
 
 /**
+ * The hash of a document's very first ("genesis") change -- deterministic for every document
+ * that shares real history with another (a real `Automerge.load` of previously-`Automerge.save`d
+ * bytes, or a document produced by `Automerge.merge`/`Automerge.change` starting from one of
+ * those), and different for every independently-created document (`Automerge.from()` draws a
+ * fresh random actor id and starts an unrelated history each time it runs). Used by
+ * `mergeIncoming` to refuse a merge between two documents with no common ancestor, rather than
+ * silently corrupt one side -- see that function's own doc comment for the empirical failure this
+ * guards against. Verified empirically (this module's own probe scripts, not from Automerge's
+ * docs): two real forks of the same document always share this hash even after both diverge;
+ * two independently-created documents never do.
+ */
+function genesisChangeHash(doc: Automerge.Doc<ChannelDraftDocument>): string {
+  const changes = Automerge.getAllChanges(doc);
+  return Automerge.decodeChange(changes[0]).hash;
+}
+
+/**
  * Scans every `DraftChange` in `doc` for a field Automerge recorded more than one concurrent
  * write for (AC-CRDT-02) -- a deterministic "current" value is always readable via normal
  * property access, but `Automerge.getConflicts` is the only way to discover that a concurrent
@@ -468,6 +485,31 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       // never attempt a merge at all in this case. `actorsBefore` is still computed from the
       // (empty) local state above, so every conflict already present in the adopted document is
       // correctly reported as "new" to this device, exactly as it should be for a first import.
+      //
+      // A second, related failure mode found while designing CD5's multi-peer sync loop: even
+      // when `existingBytes` IS present, `localDoc` and `incomingDoc` can still share no real
+      // history -- e.g. this device already adopted peer B's document (no local doc existed
+      // before that), and is now processing peer C's file, where B and C independently
+      // bootstrapped the same channel without ever syncing with each other first
+      // (AUTOMERGE_MIGRATION_PLAN.md §6 CD5's own documented operational constraint). Measured
+      // empirically: this is not a probabilistic coin flip like the empty-local case above -- it
+      // is a DETERMINISTIC 100/100 silent loss of one whole side's content. A shared genesis
+      // change hash (`genesisChangeHash`) reliably distinguishes "these two documents have real
+      // common history" from "these two are unrelated" (verified: a real fork always keeps its
+      // origin's genesis hash even after diverging; an independently-created document never
+      // matches). Fail closed here rather than silently corrupt local state -- mirrors this
+      // codebase's own established handling of the identical class of problem in
+      // `src/lib/snapshot/` ("divergent lineage... блокируется явно, никогда не разрешается по
+      // createdAt").
+      if (existingBytes && genesisChangeHash(localDoc) !== genesisChangeHash(incomingDoc)) {
+        throw new DomainError({
+          code: "divergent_document_lineage",
+          message:
+            "The incoming document shares no common history with the local document for this channel -- refusing to merge rather than silently discard one side's data",
+          details: { channelId: parsed.channelId },
+        });
+      }
+
       const merged = existingBytes ? Automerge.merge(localDoc, incomingDoc) : incomingDoc;
 
       const conflictsAfter = scanForConflicts(merged);

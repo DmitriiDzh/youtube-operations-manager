@@ -239,6 +239,51 @@ test("mergeIncoming into a device with NO local document for this channel adopts
   }
 });
 
+test("mergeIncoming REFUSES to merge two documents with no shared history, instead of silently discarding one side -- deterministic, not probabilistic", async () => {
+  // Regression test for a second real bug found alongside the onboarding fix above: even when
+  // the local device already has a real document (e.g. it just adopted peer B's bytes), merging
+  // in a peer C whose document was independently bootstrapped (never synced with B) is NOT safe
+  // -- measured empirically as a deterministic 100/100 silent loss of one whole side's content,
+  // not a coin flip. `mergeIncoming` must fail closed (divergent_document_lineage) rather than
+  // silently corrupt local state.
+  const peerB = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
+  await peerB.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-b", source: "ai_localization" });
+  const bBytes = await peerB.exportBytes({ channelId: CHANNEL });
+
+  const peerC = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
+  await peerC.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-c", source: "ai_localization" });
+  const cBytes = await peerC.exportBytes({ channelId: CHANNEL });
+
+  // Local device: starts empty, adopts B first (the fix above), then encounters unrelated C.
+  const local = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
+  await local.mergeIncoming({ channelId: CHANNEL, incomingBytes: bBytes });
+
+  await assert.rejects(
+    () => local.mergeIncoming({ channelId: CHANNEL, incomingBytes: cBytes }),
+    (error: unknown) => error instanceof DomainError && error.code === "divergent_document_lineage"
+  );
+
+  // Critically: the rejected merge must not have partially mutated local state -- B's data must
+  // still be intact and untouched.
+  const doc = await local.getDocument({ channelId: CHANNEL });
+  assert.ok(doc.changeSets["cs-b"], "B's data must survive a rejected merge attempt");
+  assert.equal(doc.changeSets["cs-c"], undefined, "C's data must never have been partially applied");
+});
+
+test("mergeIncoming still merges correctly when the incoming document is a REAL fork of the local one, even after both diverge (positive control for the lineage check)", async () => {
+  const { deviceA, deviceB } = await seedTwoDeviceDrafts();
+  await deviceA.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "From A" });
+  await deviceB.setApprovalStatus({ channelId: CHANNEL, changeId: "c-1", approvalStatus: "approved" });
+
+  const bBytes = await deviceB.exportBytes({ channelId: CHANNEL });
+  const result = await deviceA.mergeIncoming({ channelId: CHANNEL, incomingBytes: bBytes });
+  assert.deepEqual(result.newConflicts, []);
+
+  const doc = await deviceA.getDocument({ channelId: CHANNEL });
+  assert.equal(doc.changes["c-1"].proposedValue, "From A");
+  assert.equal(doc.changes["c-1"].approvalStatus, "approved");
+});
+
 test("getDocument/exportBytes/listConflicts reject a channel that was never saved, rather than silently returning an empty document", async () => {
   const core = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
 
