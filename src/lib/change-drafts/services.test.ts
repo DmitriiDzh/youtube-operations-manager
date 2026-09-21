@@ -196,6 +196,49 @@ test("mergeIncoming only reports NEWLY-introduced conflicts, not ones that alrea
   assert.equal(listed.length, 1);
 });
 
+test("mergeIncoming into a device with NO local document for this channel adopts the peer's full content -- never attempts an unsafe merge of two independently-rooted documents", async () => {
+  // Regression test for a real bug found while designing CD5 (device onboarding): a device
+  // seeing a channel's drafts for the first time has no local document, so `mergeIncoming`
+  // previously merged the peer's bytes into a freshly, independently-created empty document
+  // (`Automerge.from()` inside `emptyDocument()`) -- two documents with no shared history do not
+  // reliably combine via `Automerge.merge()`. Measured empirically: 55/100 trials silently
+  // discarded the ENTIRE peer document (a coin flip tied to random actor-id tie-breaking, not a
+  // rare edge case). Repeat this scenario enough times that the old, buggy implementation would
+  // almost certainly have failed at least once (P(at least one failure in 20 trials at a true
+  // ~50% per-trial rate) > 0.999999), so this test would have reliably caught the regression.
+  const deviceA = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
+  await deviceA.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-onboard", source: "ai_localization" });
+  await deviceA.addChange({
+    channelId: CHANNEL,
+    changeId: "c-onboard-1",
+    changeSetId: "cs-onboard",
+    videoId: "v1",
+    language: "es",
+    field: "title",
+    baselineValue: "Original",
+    proposedValue: "Propuesta de A",
+    changeType: "modify",
+  });
+  const aBytes = await deviceA.exportBytes({ channelId: CHANNEL });
+
+  for (let i = 0; i < 20; i++) {
+    // A brand-new device/store each iteration -- genuinely no local document for this channel.
+    const freshDevice = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
+    const result = await freshDevice.mergeIncoming({ channelId: CHANNEL, incomingBytes: aBytes });
+
+    const adopted = await freshDevice.getDocument({ channelId: CHANNEL });
+    assert.ok(adopted.changeSets["cs-onboard"], `iteration ${i}: the peer's change set must survive onboarding`);
+    assert.equal(
+      adopted.changes["c-onboard-1"]?.proposedValue,
+      "Propuesta de A",
+      `iteration ${i}: the peer's change must survive onboarding`
+    );
+    // Nothing local existed before, so nothing in the adopted document can be a "known" conflict
+    // yet -- but the adopted document itself has no conflicts here either (single-source data).
+    assert.deepEqual(result.newConflicts, [], `iteration ${i}: a clean peer document introduces no conflicts`);
+  }
+});
+
 test("getDocument/exportBytes/listConflicts reject a channel that was never saved, rather than silently returning an empty document", async () => {
   const core = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
 
