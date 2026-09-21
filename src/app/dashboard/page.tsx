@@ -39,12 +39,27 @@ const NAV_ITEMS = [
   { value: "languages", label: "Languages", icon: LocalizationsIcon },
   { value: "batches", label: "Batches", icon: BatchesIcon },
   { value: "settings", label: "Settings", icon: SettingsIcon },
-  { value: "device", label: "Device", icon: DeviceIcon },
+  // Renamed from "Device" (2026-09-21, AUTOMERGE_MIGRATION_PLAN.md §6 CD6, owner instruction):
+  // this tab is now also where every detected draft-sync conflict is tracked and presented for a
+  // human decision, not only device handoff export/import.
+  { value: "merge", label: "Merge", icon: DeviceIcon },
 ] as const satisfies {
   value: string;
   label: string;
   icon: ComponentType<SVGProps<SVGSVGElement>>;
 }[];
+
+// Polling intervals for CD5's background sync (AUTOMERGE_MIGRATION_PLAN.md §6, AC-CRDT-07/08).
+// Deliberately two different endpoints/intervals, not one (advisor review): the conflict-count
+// badge needs to feel current (AC-CRDT-08, "accurate at all times a value is displayed") without
+// paying for a real write cycle on every poll, while the actual push/merge sync cycle
+// (POST .../sync, a real write to this device's local files) runs less often -- both independent
+// of which tab is open, so a conflict introduced by another device is detected even if the
+// operator never opens the Merge tab (AC-CRDT-07). The server-side single-flight guard
+// (change-drafts-sync/services.ts) makes running the write cycle safe even with multiple tabs
+// open, but polling it as rarely as correctness allows is still the cheaper default.
+const CONFLICT_SUMMARY_POLL_MS = 20_000;
+const SYNC_CYCLE_POLL_MS = 60_000;
 
 type Tab = (typeof NAV_ITEMS)[number]["value"];
 
@@ -52,6 +67,7 @@ export default function Dashboard() {
   const { data: session, status } = useSession();
   const [tab, setTab] = useState<Tab>("home");
   const [channel, setChannel] = useState<ChannelInfo | null>(null);
+  const [conflictCount, setConflictCount] = useState(0);
 
   const fetchChannel = useCallback(async () => {
     const res = await fetch("/api/youtube/channel-info");
@@ -66,6 +82,59 @@ export default function Dashboard() {
       });
     }
   }, [session, fetchChannel]);
+
+  const refreshConflictSummary = useCallback(async () => {
+    try {
+      const res = await fetch("/api/change-drafts/conflicts-summary");
+      if (!res.ok) return;
+      const data = (await res.json()) as { totalConflicts: number };
+      setConflictCount(data.totalConflicts);
+    } catch {
+      // Non-fatal -- the badge just stays at its last known value until the next poll succeeds.
+    }
+  }, []);
+
+  // Depend on the stable user id, not the `session` object itself (advisor review): NextAuth
+  // refetches the session on window focus by default, handing back a new object identity each
+  // time even when nothing meaningful changed -- depending on `session` directly would tear down
+  // and recreate both intervals (firing an immediate extra sync cycle) every time the operator
+  // merely switches back to this browser tab, silently defeating the 60s pacing chosen below.
+  const userId = session?.user?.id;
+
+  // Cheap, read-only conflict-count poll -- runs regardless of which tab is active, so the
+  // sidebar badge (AC-CRDT-08) stays current even while the operator is on an unrelated tab.
+  useEffect(() => {
+    if (!userId) return;
+    void refreshConflictSummary();
+    const id = setInterval(() => void refreshConflictSummary(), CONFLICT_SUMMARY_POLL_MS);
+    return () => clearInterval(id);
+  }, [userId, refreshConflictSummary]);
+
+  // The actual background push+merge sync cycle (a real write to this device's local files) --
+  // runs on its own, longer interval, independent of the Merge tab (AC-CRDT-07: a conflict
+  // introduced by this background loop must be detected without requiring the operator to open
+  // that tab). Safe against overlapping browser tabs/polls via the server-side single-flight
+  // guard (change-drafts-sync/services.ts), not by anything client-side.
+  useEffect(() => {
+    if (!userId) return;
+    async function runSyncCycle() {
+      try {
+        await fetch("/api/change-drafts/sync", { method: "POST" });
+      } catch {
+        // Non-fatal -- the next scheduled cycle (or an explicit "Sync now" in the Merge tab)
+        // will simply try again.
+      } finally {
+        void refreshConflictSummary();
+      }
+    }
+    void runSyncCycle();
+    const id = setInterval(() => void runSyncCycle(), SYNC_CYCLE_POLL_MS);
+    return () => clearInterval(id);
+  }, [userId, refreshConflictSummary]);
+
+  const navItemsWithBadges = NAV_ITEMS.map((item) =>
+    item.value === "merge" ? { ...item, badge: conflictCount } : item
+  );
 
   async function handleSwitchChannel() {
     // Found via operator testing feedback: signing out first (the old behavior) cleared the
@@ -91,7 +160,7 @@ export default function Dashboard() {
 
   return (
     <AppShell
-      navItems={NAV_ITEMS}
+      navItems={navItemsWithBadges}
       activeTab={tab}
       onTabChange={setTab}
       channel={channel}
@@ -172,15 +241,18 @@ export default function Dashboard() {
         </div>
       )}
 
-      {tab === "device" && (
+      {tab === "merge" && (
         <div className="max-w-3xl">
           <p className="mb-4 text-sm text-zinc-400">
-            One active device at a time. Export a handoff snapshot when finishing work here,
-            import one to continue on this device. Syncthing only carries the snapshot files
-            &mdash; it is never treated as a database, and no OAuth token or AI connection
-            credential ever leaves this device.
+            Whole-database handoff (export/import) below is still one active device at a time.
+            Change drafts (Change Sets/AI proposals) are different: they now sync continuously in
+            the background between devices sharing the same Syncthing folder, and any conflicting
+            concurrent edit is listed here for you to review &mdash; nothing is ever silently
+            resolved by picking one side. Syncthing only ever carries files &mdash; it is never
+            treated as a database, and no OAuth token or AI connection credential ever leaves
+            this device.
           </p>
-          <DeviceHandoffPanel />
+          <DeviceHandoffPanel channelId={channel?.id ?? null} />
         </div>
       )}
     </AppShell>

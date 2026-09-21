@@ -198,18 +198,40 @@ explicitly chose the faster, single-step path ("мы пока только ст�
   this happens, it can silently produce an incomplete result. CD5 must guarantee every device's
   first participation in a channel comes from importing a real exported document (or being the
   one device that ran the migration), never two independent from-scratch bootstraps.
-- **CD6 — Rename the "Devices" tab and make it the conflict-resolution surface (revised
-  2026-09-21, owner instruction).** The tab currently called "Device" (`device-handoff-panel.tsx`)
-  is renamed — **"Merge"** is this plan's working name (the owner suggested "Merge" or "Data
-  Transfer"; either is a cheap, reversible cosmetic choice, not worth blocking on). This screen
-  becomes where every detected conflict (from CD5's continuous merge loop, not only from a
-  manual action) is tracked and presented for a human decision — reusing this codebase's existing
-  diff/review UI patterns (`change-set-review.tsx`) rather than inventing a new visual language.
-  The existing top-right header icon area (`app-shell.tsx`, already home to the active-channel/
-  switch-channel/sign-out controls, and the planned "newer snapshot available" bell from
-  `DEVICE_HANDOFF_AUTO_SYNC_PLAN.md` §3.3) gains a second, distinct signal: a badge/indicator for
-  "N conflicts awaiting your decision," separate from that plan's "an update is available" bell,
-  since they mean different things and both may need to be true at once.
+- **CD6 — Rename the "Devices" tab and make it the conflict-resolution surface. FIRST SLICE
+  DONE, 2026-09-21** (visibility + trigger; the actual "resolve a conflict" action is not).
+  The tab is renamed **"Merge"** (`src/app/dashboard/page.tsx`'s `NAV_ITEMS`). Three new API
+  routes: `POST /api/change-drafts/sync` (device-wide, triggers `runSyncCycle()`), `GET
+  /api/change-drafts/conflicts-summary` (device-wide, cheap read-only aggregate count), `GET
+  /api/channels/[channelId]/change-drafts/conflicts` (per-channel detail, channel-scoped per
+  `docs/DEVELOPMENT_PLAYBOOK.md` §6.6(b)). `device-handoff-panel.tsx` gained a "Change drafts
+  sync" section: a "Sync now" button and a list of the active channel's current `FieldConflict`s,
+  each rendered as an N-column diff over `valuesByActor` (generalizing `change-set-review.tsx`'s
+  2-column pattern). The header badge (AC-CRDT-08) deliberately does NOT live in a new top-right
+  header icon area as this section originally proposed -- `app-shell.tsx` has no such area for
+  anything else yet, and building one for a single consumer was judged disproportionate; instead
+  `AppShell`'s `NavItem` type gained an optional `badge?: number`, rendered directly on the
+  "Merge" sidebar entry, visible regardless of which tab is active. Polling (`page.tsx`, active
+  regardless of tab) is deliberately two independent intervals, not one, per advisor review: the
+  cheap conflict-count summary polls every 20s, while the real push+merge sync cycle (a genuine
+  write to local files, protected by `change-drafts-sync/services.ts`'s single-flight guard) polls
+  every 60s -- satisfies AC-CRDT-07 (background sync without opening the Merge tab) without
+  hitting a write-classed endpoint as often as a UI-freshness poll would otherwise demand.
+  **Explicitly NOT built in this slice:** the actual conflict-resolution action (choosing which
+  competing value wins) -- the UI only detects, syncs, and displays conflicts today; picking a
+  winner would reuse `change-drafts/services.ts`'s existing `updateProposedValue`/`patchChange`
+  (a fresh write on a conflicted field naturally resolves it, no new service method needed), but
+  wiring that into this screen is its own follow-up sub-slice, not silently missing.
+  **Live-verified** against the real Tropico Jazz channel (`claude-in-chrome`): "Sync now" really
+  exported and wrote a `.automerge` file to the actual configured Syncthing folder on an external
+  drive, confirmed as a valid, loadable Automerge document; the sidebar badge correctly showed a
+  stubbed nonzero count and correctly returned to empty after reload; zero console errors. A real
+  live CRDT conflict was not demonstrated through the UI (safely engineering a genuine concurrent
+  edit against the production document without risking real data was judged not worth attempting
+  in this pass) -- the conflict-detection mechanism itself already has thorough unit coverage
+  (`change-drafts/services.test.ts`'s AC-CRDT-02 and neighbors); only the UI's own rendering of
+  that data was left unverified live, and it is a direct, low-risk `.map()` over an
+  already-correct API response.
 - **CD7 — CLI/MCP/API surface migration.** Every existing reader/writer of `change_sets`/`changes`
   is re-pointed at the new service layer instead of the SQL tables directly.
 

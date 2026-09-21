@@ -10,6 +10,7 @@ function fakeLogger() {
 
 function fakeTransport(overrides: Partial<ChangeDraftsSyncTransportAdapter> = {}): ChangeDraftsSyncTransportAdapter {
   return {
+    async checkRootAvailable() {},
     async writeDeviceFile() {},
     async listPeerFiles() {
       return [];
@@ -78,7 +79,7 @@ test("a channel with no local document yet (exportBytes throws not_found) is ski
   assert.equal(result.channels[0].pushed, false);
 });
 
-test("a non-not_found error from exportBytes propagates -- only the specific 'no document yet' case is swallowed", async () => {
+test("a non-not_found error from exportBytes is isolated to its channel via pushError, never thrown (advisor review: a real push failure must not abort the whole cycle)", async () => {
   const core = createChangeDraftsSyncCore(
     makeDeps({
       changeDrafts: fakeChangeDrafts({
@@ -89,7 +90,9 @@ test("a non-not_found error from exportBytes propagates -- only the specific 'no
     })
   );
 
-  await assert.rejects(() => core.runSyncCycle(), /disk full/);
+  const result = await core.runSyncCycle();
+  assert.equal(result.channels[0].pushed, false);
+  assert.match(result.channels[0].pushError ?? "", /disk full/);
 });
 
 test("every peer file found is merged in, and their new conflicts are aggregated", async () => {
@@ -144,6 +147,76 @@ test("one peer's merge failure is isolated -- it is reported in peersSkipped, bu
   assert.equal(result.channels[0].peersSkipped.length, 1);
   assert.equal(result.channels[0].peersSkipped[0].deviceId, "device-bad");
   assert.equal(result.channels[0].peersSkipped[0].reason, "divergent_document_lineage");
+});
+
+test("a push failure (e.g. sync folder unavailable) is isolated to its channel -- reported via pushError, never thrown, and pull/merge still proceeds", async () => {
+  const core = createChangeDraftsSyncCore(
+    makeDeps({
+      listChannelIds: async () => ["UC_1", "UC_2"],
+      transport: fakeTransport({
+        async writeDeviceFile(root, channelId) {
+          if (channelId === "UC_1") throw new Error("ENOENT: sync folder is not available");
+        },
+        async listPeerFiles() {
+          return [{ deviceId: "device-b", bytes: new Uint8Array([1]) }];
+        },
+      }),
+    })
+  );
+
+  const result = await core.runSyncCycle();
+  const channel1 = result.channels.find((c) => c.channelId === "UC_1")!;
+  const channel2 = result.channels.find((c) => c.channelId === "UC_2")!;
+
+  assert.equal(channel1.pushed, false);
+  assert.match(channel1.pushError ?? "", /sync folder is not available/);
+  // The pull/merge side is unaffected by the push failure on the SAME channel.
+  assert.deepEqual(channel1.peersMerged, ["device-b"]);
+
+  // A push failure on one channel must never abort syncing a DIFFERENT channel.
+  assert.equal(channel2.pushed, true);
+  assert.equal(channel2.pushError, null);
+});
+
+test("a successful push (or a legitimate 'nothing to push yet') reports pushError as null", async () => {
+  const core = createChangeDraftsSyncCore(makeDeps());
+  const result = await core.runSyncCycle();
+  assert.equal(result.channels[0].pushError, null);
+});
+
+test("when the configured Syncthing root is unavailable, every channel this cycle reports pushError and no push/pull is attempted at all -- checked once, not per channel", async () => {
+  let exportCalls = 0;
+  let listPeerFilesCalls = 0;
+  const core = createChangeDraftsSyncCore(
+    makeDeps({
+      bootstrapConfig: { async ensureExists() { return { deviceId: "device-a", syncthingRootPath: "/not/mounted" }; } },
+      listChannelIds: async () => ["UC_1", "UC_2"],
+      transport: fakeTransport({
+        async checkRootAvailable() {
+          throw new Error("Configured sync folder is not available (does not exist): /not/mounted");
+        },
+        async listPeerFiles() {
+          listPeerFilesCalls++;
+          return [];
+        },
+      }),
+      changeDrafts: fakeChangeDrafts({
+        async exportBytes() {
+          exportCalls++;
+          return new Uint8Array([1]);
+        },
+      }),
+    })
+  );
+
+  const result = await core.runSyncCycle();
+  assert.equal(exportCalls, 0, "no push should even be attempted when the root itself is unavailable");
+  assert.equal(listPeerFilesCalls, 0, "no pull should even be attempted when the root itself is unavailable");
+  for (const channel of result.channels) {
+    assert.equal(channel.pushed, false);
+    assert.match(channel.pushError ?? "", /not available/);
+    assert.deepEqual(channel.peersMerged, []);
+  }
 });
 
 test("uses the local fallback directory when no Syncthing root is configured", async () => {

@@ -11,6 +11,9 @@ export type NavItem<T extends string> = {
   value: T;
   label: string;
   icon: ComponentType<SVGProps<SVGSVGElement>>;
+  /** A small count badge next to the label (e.g. unresolved CRDT conflicts awaiting a decision,
+   * AUTOMERGE_MIGRATION_PLAN.md §6 CD6, AC-CRDT-08) -- omitted or 0 renders no badge at all. */
+  badge?: number;
 };
 
 export function AppShell<T extends string>(props: {
@@ -49,6 +52,11 @@ export function AppShell<T extends string>(props: {
               >
                 <Icon className={active ? "h-5 w-5 text-accent" : "h-5 w-5"} />
                 {item.label}
+                {!!item.badge && (
+                  <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1.5 text-[11px] font-semibold text-white">
+                    {item.badge}
+                  </span>
+                )}
               </button>
             );
           })}
