@@ -535,7 +535,11 @@ just the instant of the file copy.
   tooling, which does not exist (RISK-16).
 - No installer/auto-updater for a standalone `published/<version>/` release copy (no `.git`);
   release layout is documented (`docs/RELEASE_LAYOUT.md`) but not automated there, per that
-  task's own explicit scope boundary. `scripts/{macos,windows}/start.{sh,bat}` do self-update
-  (`git pull --ff-only` + rebuild) when run directly from a git checkout of this repository
-  against its own `origin` — a narrower, different case that doesn't touch the standalone
-  release form (`docs/FIRST_LOCAL_TEST_BUILD.md` §3/§4).
+  task's own explicit scope boundary. `scripts/{macos,windows}/start.{sh,bat}` never touch git,
+  the network, or the working tree at all (an earlier version did run `git pull --ff-only`
+  itself; removed 2026-09-21 at the project owner's explicit request — keeping a git checkout
+  current is the operator's own responsibility now). They do detect a stale `.next` build when
+  run from a git checkout, by comparing the checked-out commit against a marker file recording
+  which commit was last built, and rebuild automatically — this is what makes the operator's own
+  `git pull` actually take effect on the next launch, rather than silently continuing to serve a
+  build from before that pull (`docs/FIRST_LOCAL_TEST_BUILD.md` §3/§4).

@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 cd /d "%~dp0..\.."
 
 echo === YouTube Operations Manager - Windows launcher ===
@@ -20,64 +20,49 @@ if not exist ".env.local" (
   exit /b 1
 )
 
-REM Auto-update: only when this is an actual git checkout of the repository (this device's own
-REM origin, which the operator already controls -- never a standalone published\<version>\
-REM release copy, which has no .git and is intentionally left untouched here, see
-REM docs\RELEASE_LAYOUT.md section 1's "no installer or auto-updater" scope note and AGENTS.md section K.4).
-if not exist ".git" goto :skip_update
-where git >nul 2>nul
-if errorlevel 1 goto :skip_update
-
-set "IS_DIRTY="
-for /f "delims=" %%i in ('git status --porcelain 2^>nul') do (
-  set "IS_DIRTY=1"
-  goto :dirty_check_done
-)
-:dirty_check_done
-if defined IS_DIRTY (
-  echo [WARN] Uncommitted local changes detected in this git checkout ^-^- skipping auto-update
-  echo so your work isn't touched. Commit or stash your changes, then re-run start.bat to pick
-  echo up the latest version automatically.
-  goto :skip_update
-)
-
-for /f "delims=" %%b in ('git rev-parse --abbrev-ref HEAD 2^>nul') do set "CURRENT_BRANCH=%%b"
-if "%CURRENT_BRANCH%"=="" goto :skip_update
-if "%CURRENT_BRANCH%"=="HEAD" goto :skip_update
-git remote get-url origin >nul 2>nul
-if errorlevel 1 goto :skip_update
-
-echo Checking for updates on '%CURRENT_BRANCH%'...
-for /f "delims=" %%r in ('git rev-parse HEAD') do set "BEFORE_REV=%%r"
-call git pull --ff-only origin %CURRENT_BRANCH%
-if errorlevel 1 (
-  echo [WARN] Could not fast-forward to the latest '%CURRENT_BRANCH%' ^(offline, or local
-  echo history has diverged^) ^-^- continuing with the current version.
-  goto :skip_update
-)
-for /f "delims=" %%r in ('git rev-parse HEAD') do set "AFTER_REV=%%r"
-if "%BEFORE_REV%"=="%AFTER_REV%" (
-  echo Already up to date.
-  goto :skip_update
-)
-echo Update found ^-^- installing dependencies and rebuilding before starting...
-call npm install
-if errorlevel 1 goto :fail
-call npm run build
-if errorlevel 1 goto :fail
-
-:skip_update
-
 if not exist "node_modules" (
   echo Installing dependencies ^(first run only, this can take a few minutes^)...
   call npm install
   if errorlevel 1 goto :fail
 )
 
-if not exist ".next" (
-  echo No build found - building the application ^(first run, or after a manual update.bat^)...
+REM Rebuild-staleness check. This script no longer touches the network, the remote, or the
+REM working tree in any way (it previously ran `git pull --ff-only` itself before this check --
+REM removed 2026-09-21 at the project owner's explicit request: "за актуальностью гита я буду
+REM следить сам" -- keeping git entirely up to the operator, not this script).
+REM
+REM In an actual git checkout of the repository, compare the currently checked-out commit
+REM against a marker file recording which commit `.next` was actually built from, so a build the
+REM operator did on an earlier commit (e.g. before their own `git pull`) is detected and
+REM rebuilt automatically -- rather than relying on ".next merely exists" as the only signal,
+REM which cannot tell a stale build apart from a current one. A standalone published\<version>\
+REM release copy has no `.git` and no commit to compare against -- `update.bat` remains its one,
+REM explicit, human-triggered rebuild step (docs\RELEASE_LAYOUT.md §1, AGENTS.md §K.4).
+set "BUILD_MARKER=.next-build-commit.txt"
+set "CURRENT_REV="
+if exist ".git" (
+  where git >nul 2>nul
+  if not errorlevel 1 (
+    for /f "delims=" %%r in ('git rev-parse HEAD 2^>nul') do set "CURRENT_REV=%%r"
+  )
+)
+
+set "NEED_BUILD="
+if not exist ".next" set "NEED_BUILD=1"
+
+if defined CURRENT_REV (
+  set "BUILT_REV="
+  if exist "%BUILD_MARKER%" set /p BUILT_REV=<"%BUILD_MARKER%"
+  if not "%CURRENT_REV%"=="!BUILT_REV!" set "NEED_BUILD=1"
+)
+
+if defined NEED_BUILD (
+  echo Building the application ^(no build found, or the checked-out commit changed since the last build^)...
   call npm run build
   if errorlevel 1 goto :fail
+  if defined CURRENT_REV (
+    > "%BUILD_MARKER%" echo !CURRENT_REV!
+  )
 )
 
 echo Starting YouTube Operations Manager on http://localhost:3000 ...

@@ -2,10 +2,13 @@
 
 Operator-facing instructions for running the **first user-facing local test build** on Windows
 or macOS. This is a local test build, not a public release: no installer and no GitHub release
-exist or are in scope (`AGENTS.md` §K, §H task boundaries). `start.sh`/`start.bat` do include a
-narrow self-update step (§3/§4), but only for the case of running directly from a git checkout of
-this repository against its own `origin` — a standalone `published/<version>/` copy (no `.git`)
-still has no installer or auto-updater, per `docs/RELEASE_LAYOUT.md` §1.
+exist or are in scope (`AGENTS.md` §K, §H task boundaries). `start.sh`/`start.bat` never touch
+git, the network, or the remote — the operator is solely responsible for keeping their git
+checkout current (project owner instruction, 2026-09-21; an earlier version of these scripts did
+run `git pull --ff-only` itself, removed at the owner's explicit request: "за актуальностью гита
+я буду следить сам"). They do, however, detect a **stale build** automatically (§3/§4) — see
+below — and a standalone `published/<version>/` copy (no `.git`) still has no installer or
+auto-updater at all, per `docs/RELEASE_LAYOUT.md` §1.
 
 Technical setup content only, per `AGENTS.md` §B — this file never contains channel-specific
 editorial guidance, YouTube SEO strategy, or operations-agent instructions.
@@ -47,19 +50,27 @@ This script (double-clickable from Explorer, or run from a terminal):
 
 1. Checks Node.js is installed.
 2. Checks `.env.local` exists (fails with a clear message and stops if not — see §2).
-3. **If this folder is a git checkout of the repository** (i.e. running directly from `dev`,
-   not from a standalone `published/<version>/` copy): checks for a clean working tree, then
-   `git pull --ff-only` on whatever branch is checked out. If that brings in new commits, runs
-   `npm install`/`npm run build` automatically before starting — no manual `update.bat` step
-   needed for this case. Uncommitted local changes, a diverged history, or no network make it
-   skip this step and continue with the current version rather than force anything. A standalone
-   `published/<version>/` copy has no `.git` and is left entirely untouched by this step (see
+3. Runs `npm install` if `node_modules` is still missing (first run only).
+4. **Rebuild-staleness check (2026-09-21, replacing the earlier `git pull`-based auto-update —
+   see below):** in an actual git checkout of the repository, compares the currently checked-out
+   commit (`git rev-parse HEAD`) against `.next-build-commit.txt`, a marker file recording which
+   commit `.next` was actually built from. If they differ (or the marker/`.next` is missing),
+   rebuilds automatically (`npm run build`) and updates the marker — this is what makes the
+   operator's own `git pull`, done outside this script, actually take effect on the next
+   `start.bat`, instead of silently continuing to serve a stale build just because `.next`
+   happens to already exist. A standalone `published/<version>/` copy has no `.git` and no commit
+   to compare against — it falls back to the original, simpler check (rebuild only if `.next` is
+   entirely missing); `update.bat` remains its one, explicit, human-triggered rebuild step (see
    `docs/RELEASE_LAYOUT.md` §1, `AGENTS.md` §K.4 — no installer/auto-updater exists for that
    distribution form).
-4. Runs `npm install` if `node_modules` is still missing (first run only).
-5. Runs `npm run build` if no build output exists yet.
-6. Starts the production server in its own window titled **"YouTube Operations Manager"** and
+5. Starts the production server in its own window titled **"YouTube Operations Manager"** and
    opens `http://localhost:3000` in your default browser.
+
+**This script never touches git, the network, or your working tree** — no `git pull`, no
+`git fetch`, nothing. An earlier version did run `git pull --ff-only` on your behalf before the
+staleness check above; removed 2026-09-21 at the project owner's explicit request ("за
+актуальностью гита я буду следить сам" — keeping the checkout current is the operator's own job,
+not this script's).
 
 **To stop safely:** run `scripts\windows\stop.bat`, or just close the
 "YouTube Operations Manager" window.
@@ -68,14 +79,18 @@ This script (double-clickable from Explorer, or run from a terminal):
 newer version by hand: run `scripts\windows\update.bat` first (stops any running instance,
 reinstalls dependencies, rebuilds), then `start.bat` as usual. Your database and settings are
 never in this folder — see §6 — so replacing the program files themselves never touches your
-data. (A git checkout running directly from `dev` no longer needs this manual step — see §3.3
-above; `update.bat` still works there too, if you ever want to force a rebuild by hand.)
+data. (A git checkout running directly from `dev` doesn't need this manual step either, per §3.4
+above — `git pull` yourself, then just run `start.bat`; `update.bat` still works there too, if you
+ever want to force a rebuild by hand.)
 
 > **Status of this procedure:** the launcher script has been written and reasoned about against
 > the documented Next.js 16 CLI behavior (`node_modules/next/dist/docs/.../cli/next.md`), but has
 > **not** been executed on a real Windows machine — none was available in the environment this
 > task was implemented in. Treat the steps above as the primary remaining manual verification
-> before this build is operator-ready on Windows (see §7).
+> before this build is operator-ready on Windows (see §7). The rebuild-staleness logic in §3.4 was
+> verified against isolated throwaway git repositories on macOS (`sh`'s POSIX behavior, not
+> `cmd.exe`'s), and the equivalent `.bat` logic was reasoned through by hand but not executed —
+> this remains open, same as the rest of this document's Windows status.
 
 ## 4. Launching on macOS
 
@@ -85,18 +100,19 @@ From the project root:
 ./scripts/macos/start.sh
 ```
 
-Same behavior as the Windows script: checks Node.js and `.env.local`, auto-updates via
-`git pull --ff-only` and rebuilds when run from a git checkout with new commits available (see
-§3 step 3 for the exact conditions and what makes it skip instead), installs dependencies and
-builds only if needed, starts the server, opens your default browser, and prints where its data
-lives.
+Same behavior as the Windows script: checks Node.js and `.env.local`, installs dependencies if
+needed, then runs the same rebuild-staleness check described in §3 step 4 (git-commit-marker
+comparison in a checkout, falling back to "rebuild only if `.next` is missing" otherwise), starts
+the server, opens your default browser, and prints where its data lives. Never touches git, the
+network, or your working tree — no `git pull`, nothing (see §3's note on why, and what changed
+2026-09-21).
 
 **To stop safely:** run `./scripts/macos/stop.sh` (or Ctrl+C the running `start.sh`).
 
 **To update a standalone `published/<version>/` copy:** run `./scripts/macos/update.sh`, then
-`./scripts/macos/start.sh`. A git checkout running directly from `dev` no longer needs this
-manual step (see §3 step 3); `update.sh` still works there too, if you ever want to force a
-rebuild by hand.
+`./scripts/macos/start.sh`. A git checkout running directly from `dev` doesn't need this manual
+step either — `git pull` yourself, then just run `start.sh`; `update.sh` still works there too, if
+you ever want to force a rebuild by hand.
 
 > **Status of this procedure:** unlike the Windows launcher, this one **was actually executed** on
 > real macOS hardware during this task's implementation — `start.sh` (server came up, returned
@@ -104,11 +120,14 @@ rebuild by hand.
 > location), `stop.sh` (process actually stopped, port freed), and `update.sh` (rebuild completed,
 > restarted cleanly) all ran for real, not just against `npm run build`. This is real (if partial —
 > see §7) progress against `docs/TECHNICAL_DEBT.md` RISK-17, which tracked macOS as entirely
-> unvalidated. **The git-checkout auto-update step (§4, added later) is a separate addition**:
-> its shell logic (clean/dirty tree, fast-forward, diverged-history, offline cases) was verified
-> against isolated throwaway git repositories, not against `start.sh`'s actual first-run flow on
-> real Windows/macOS hardware — that remains open, same as the rest of this document's Windows
-> status above.
+> unvalidated. **The rebuild-staleness step (this section, rewritten 2026-09-21 to replace the
+> earlier `git pull`-based auto-update)** was actually executed for real on this same macOS
+> machine: a genuine stale-marker case (an existing `.next` built from an older commit) was
+> confirmed to trigger a real rebuild, and an up-to-date marker was confirmed to skip it, both
+> against the real repository, not a throwaway fixture — see the BL-048 `ROADMAP_STATUS.md` row
+> for the exact scenarios run. The equivalent Windows `.bat` logic was reasoned through by hand
+> and syntax-checked, but not executed on real Windows — that remains open, same as the rest of
+> this document's Windows status above.
 
 ## 5. First run, either platform
 
