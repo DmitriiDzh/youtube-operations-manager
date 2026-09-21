@@ -339,37 +339,91 @@ export function LanguagesManager() {
    * part of `overview.languages`'s union), so the notice below explains that rather than letting
    * the operator think nothing happened (docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md §7.2/E5:
    * real deletion is a separate, not-yet-built capability). */
+  /** The "✕" on a language column header branches into two entirely different actions
+   * depending on whether real data exists (docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md
+   * §7.2/E5a+E5b, owner instruction 2026-09-21):
+   *   - no real translation anywhere on the channel -> untrack only (E5a, unchanged): a pure,
+   *     instant, local display-preference change, nothing to warn about.
+   *   - at least one real translation exists -> propose a real (but not immediate) deletion
+   *     (E5b) instead. Untracking is deliberately NOT called in this branch -- the column would
+   *     stay visible via the real-data union regardless (already explained to the owner), so
+   *     untracking here would be a no-op action that could misleadingly read as "handled."
+   */
   async function handleRemoveTrackedLanguage(language: string) {
     if (!channelId) return;
     const hasRealData = (overview?.videos ?? []).some((v) => v.presentLanguages.includes(language));
+
+    if (!hasRealData) {
+      if (!window.confirm(`Remove "${language}" from tracked languages?`)) return;
+      setTrackedLanguageBusy(true);
+      setTrackedLanguageNotice(null);
+      setError(null);
+      try {
+        const res = await fetch(
+          `/api/channels/${encodeURIComponent(channelId)}/localizations/tracked-languages/${encodeURIComponent(language)}`,
+          { method: "DELETE" }
+        );
+        const data = await res.json();
+        if (!res.ok) {
+          setError(data.message ?? data.error ?? `Error ${res.status}`);
+          return;
+        }
+        await fetchOverview(channelId);
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setTrackedLanguageBusy(false);
+      }
+      return;
+    }
+
     if (
       !window.confirm(
-        hasRealData
-          ? `"${language}" has real translations on this channel. Untracking it will NOT delete those translations, and the column will stay visible until a separate deletion feature is built. Continue?`
-          : `Remove "${language}" from tracked languages?`
+        `"${language}" has real translations on this channel. This will propose DELETING that ` +
+          `localization (title + description) from every video that has it -- this does NOT ` +
+          `delete anything immediately: it creates a Change Set that still needs your approval, ` +
+          `a backup of the current values is captured automatically when the batch pipeline ` +
+          `processes it, and nothing can actually be written to YouTube until Gate B is cleared. ` +
+          `The column will remain visible until that eventually happens and the channel re-syncs. Continue?`
       )
     ) {
       return;
     }
+
     setTrackedLanguageBusy(true);
     setTrackedLanguageNotice(null);
     setError(null);
     try {
       const res = await fetch(
-        `/api/channels/${encodeURIComponent(channelId)}/localizations/tracked-languages/${encodeURIComponent(language)}`,
-        { method: "DELETE" }
+        `/api/channels/${encodeURIComponent(channelId)}/localizations/languages/${encodeURIComponent(language)}/propose-deletion`,
+        { method: "POST" }
       );
       const data = await res.json();
       if (!res.ok) {
         setError(data.message ?? data.error ?? `Error ${res.status}`);
         return;
       }
-      if (hasRealData) {
+      const { changeSet, affectedVideoIds, skippedDefaultLanguageVideoIds } = data as {
+        changeSet: { id: string } | null;
+        affectedVideoIds: string[];
+        skippedDefaultLanguageVideoIds: string[];
+      };
+      if (!changeSet) {
         setTrackedLanguageNotice(
-          `"${language}" untracked, but it still has real translations on this channel, so its column remains visible.`
+          `Nothing to propose for "${language}" -- every matching video has it as their own ` +
+            `default language, which this mechanism never touches (${skippedDefaultLanguageVideoIds.length} skipped).`
         );
+      } else {
+        setTrackedLanguageNotice(
+          `Deletion proposed for "${language}" on ${affectedVideoIds.length} video(s)` +
+            (skippedDefaultLanguageVideoIds.length > 0
+              ? ` (${skippedDefaultLanguageVideoIds.length} skipped -- it's their default language)`
+              : "") +
+            ` -- see the new Change Set in the queue below for review/approval.`
+        );
+        setOpenChangeSetId(changeSet.id);
+        await fetchChangeSets(channelId);
       }
-      await fetchOverview(channelId);
     } catch (e) {
       setError(String(e));
     } finally {

@@ -66,8 +66,11 @@ export const changeSetBulkActionInputSchema = z
 export const proposeLocalizationDeletionInputSchema = z
   .object({
     channelId: z.string().min(1),
-    videoId: z.string().min(1),
     language: z.string().min(1),
+    // Omitted (or absent) means "every video on the channel with a real localization in this
+    // language" -- the whole-column deletion case (docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md
+    // §7.2/E5b). Provided explicitly, it scopes the proposal to exactly those videos.
+    videoIds: z.array(z.string().min(1)).min(1).optional(),
   })
   .strict();
 
