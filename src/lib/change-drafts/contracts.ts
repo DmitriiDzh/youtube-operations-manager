@@ -82,6 +82,15 @@ export type ChannelDraftDocument = {
  * to display "version A" / "version B" style choices in a future conflict-resolution UI, CD6).
  * AC-CRDT-02: nothing here is ever silently discarded -- every concurrently-written value that
  * exists is represented in `valuesByActor`.
+ *
+ * Note for CD6 (the conflict-resolution UI): `updatedAt` is deliberately excluded from
+ * conflict *detection* (`services.ts`'s `MUTABLE_CHANGE_FIELDS`, to avoid every ordinary
+ * concurrent edit spuriously conflicting on its own bookkeeping timestamp) -- but a per-value
+ * timestamp is still exactly what a human needs to tell "version A (edited 14:32)" from
+ * "version B (edited 14:35)" when choosing between them. That timestamp remains separately
+ * recoverable via `Automerge.getConflicts(change, "updatedAt")` on the same change even though
+ * it never appears inside a `FieldConflict` itself -- CD6 needs to fetch it explicitly, it will
+ * not arrive bundled with the `proposedValue`/etc. conflict this type describes.
  */
 export type FieldConflict = {
   changeId: string;
