@@ -379,21 +379,18 @@ export function LanguagesManager() {
     return generateScope?.kind === "row" && generateScope.videoId === videoId;
   }
 
-  // Keeps a bulk-scoped generation session in sync with the selection it is scoped to, whichever
-  // code path changes that selection (independent-review findings, 2026-09-21):
-  //   - round 2: emptying the selection entirely (via "Clear" or unchecking the last row) must
-  //     close the panel -- there is nothing left for a bulk session to be scoped to.
-  //   - round 3: deselecting ONE of several still-selected videos must drop that video's already-
-  //     generated proposal too, or "Create Change Set from reviewed proposals" could still submit
-  //     a Change Set for a video the operator just removed from the bulk selection.
+  // Closes a bulk-scoped session once its selection is entirely empty -- there is nothing left
+  // for it to be scoped to (round-2 independent-review finding, 2026-09-21: this must fire
+  // regardless of which code path emptied the selection -- "Clear" or unchecking the last row).
+  // Deselecting only SOME of several selected videos no longer needs handling here: `targets`
+  // itself is left alone, and `visibleTargets`/`visibleRowErrors` (derived above) already filter
+  // what's displayed/submitted against the live selection, so there is nothing left to prune
+  // imperatively (round-5 independent-review finding, 2026-09-21 -- see handleGenerate's comment
+  // for why the previous version of this effect duplicated that filtering here too).
   useEffect(() => {
-    if (generateScope?.kind !== "bulk") return;
-    if (selectedIds.size === 0) {
+    if (generateScope?.kind === "bulk" && selectedIds.size === 0) {
       closeGeneratePanel();
-      return;
     }
-    setTargets((prev) => prev.filter((t) => selectedIds.has(t.videoId)));
-    setRowErrors((prev) => prev.filter((e) => e.videoId === null || selectedIds.has(e.videoId)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIds, generateScope]);
 
@@ -520,11 +517,12 @@ export function LanguagesManager() {
     // can ever be in flight from this component regardless of session switches in the meantime.
     bumpGenerationRequestId();
     const requestId = generationRequestIdRef.current;
-    // Included in any error this specific request surfaces, so an operator looking at a
-    // DIFFERENT, newer session can tell a failure banner belongs to an earlier, abandoned one
-    // rather than to whatever they're currently looking at (round-4 independent-review finding,
-    // 2026-09-21: the single global error banner has no video/session identifier otherwise).
-    const requestLabel = generateScope.kind === "row" ? `video ${generateScope.videoId}` : `${videoIds.length} selected video(s)`;
+    // Computed at the point of use (not frozen here) so an error message reflects what is
+    // actually selected/open NOW, not what it was when this request started (round-5
+    // independent-review finding, 2026-09-21: a frozen label could overstate a stale video count
+    // if the operator deselected some videos while the request was still in flight).
+    const currentRequestLabel = () =>
+      generateScope.kind === "row" ? `video ${generateScope.videoId}` : `${selectedIdsRef.current.size} selected video(s)`;
     setGenerating(true);
     try {
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/ai-localization/generate`, {
@@ -542,36 +540,71 @@ export function LanguagesManager() {
         // independent-review finding, 2026-09-21: a real provider failure -- quota, invalid key,
         // outage -- must reach the operator even if they've already moved on from this specific
         // panel; only the panel's own review UI below is gated by staleness, not error visibility).
-        setError(`Generation for ${requestLabel} failed: ${data.message ?? "Generation failed"}`);
+        // Known, accepted limitation (docs/TECHNICAL_DEBT.md RISK-44): this shares one global
+        // error banner with every other action in the tab, so it can in principle be immediately
+        // overwritten by an unrelated error -- the same pre-existing property every handler in
+        // this file already has, not something new here.
+        setError(`Generation for ${currentRequestLabel()} failed: ${data.message ?? "Generation failed"}`);
         return;
       }
       if (requestId !== generationRequestIdRef.current) return;
-      // Filtered against the CURRENT selection (via the ref, not the `selectedIds` this closure
-      // captured when the request started) -- a bulk request for videoIds snapshotted at request
-      // time must not resurrect a video the operator deselected while the request was still in
-      // flight (round-4 independent-review finding, 2026-09-21).
-      const stillTargeted = (id: string) => generateScope.kind !== "bulk" || selectedIdsRef.current.has(id);
-      setTargets(data.results.filter((r) => stillTargeted(r.videoId)).map(toEditable));
-      setRowErrors(data.errors.filter((e) => e.videoId === null || stillTargeted(e.videoId)));
+      // Applied unconditionally (no selection-filtering here) -- `visibleTargets`/
+      // `visibleRowErrors` below derive what's actually shown from live `targets` + `selectedIds`
+      // + `generateScope`, so the "only show proposals for currently-selected videos" invariant
+      // holds by construction instead of needing to be re-applied at every point that can change
+      // either input (round-5 independent-review finding, 2026-09-21: filtering only at
+      // apply-time here, plus a separate imperative prune in a `useEffect`, was two independently
+      // maintained copies of the same invariant -- exactly the kind of duplication that had
+      // already let a variant of this bug through three rounds in a row).
+      setTargets(data.results.map(toEditable));
+      setRowErrors(data.errors);
       setGenerationContext(data.generationContext);
     } catch (e) {
       // Round-4 independent-review finding, 2026-09-21: unlike every other async handler in this
       // file (fetchOverview, handleExport, handlePreviewImport, ...), this one had no catch --
       // a network failure or a non-JSON error body threw past both branches above, silently
       // clearing `generating` via `finally` with no error ever shown to the operator.
-      setError(`Generation for ${requestLabel} failed: ${String(e)}`);
+      setError(`Generation for ${currentRequestLabel()} failed: ${String(e)}`);
     } finally {
       setGenerating(false);
     }
   }
 
-  function updateTarget(index: number, patch: Partial<EditableTarget>) {
-    setTargets((prev) => prev.map((t, i) => (i === index ? { ...t, ...patch } : t)));
+  /** What the review panel actually shows -- always a subset of `targets` consistent with the
+   * live selection for a bulk session (row sessions have exactly one video, nothing to filter).
+   * Deriving this instead of imperatively pruning `targets` itself makes "never show a proposal
+   * for a video that isn't targeted anymore" true by construction (round-5 independent-review
+   * finding, 2026-09-21 -- see the comment in handleGenerate for why the previous apply-time +
+   * effect-time double-filtering approach kept reopening variants of this same bug). */
+  const visibleTargets = useMemo(
+    () => (generateScope?.kind === "bulk" ? targets.filter((t) => selectedIds.has(t.videoId)) : targets),
+    [targets, selectedIds, generateScope]
+  );
+  const visibleRowErrors = useMemo(
+    () =>
+      generateScope?.kind === "bulk" ? rowErrors.filter((e) => e.videoId === null || selectedIds.has(e.videoId)) : rowErrors,
+    [rowErrors, selectedIds, generateScope]
+  );
+  /** True when a bulk request actually returned proposals but every one of them was for a video
+   * no longer selected -- surfaced as an explanatory note rather than silently rendering nothing,
+   * which gave the operator no sign that a completed (and, for a real connection, possibly
+   * billed) request's result was entirely discarded (round-5 independent-review finding,
+   * 2026-09-21). */
+  const allResultsDiscardedBySelectionChange = targets.length > 0 && visibleTargets.length === 0;
+
+  // Identified by (videoId, language), not array position -- the review list below renders
+  // `visibleTargets` (a filtered view of `targets`), so an index into that filtered array would
+  // no longer line up with the same entry's real position in the underlying `targets` state.
+  function updateTarget(videoId: string, language: string, patch: Partial<EditableTarget>) {
+    setTargets((prev) => prev.map((t) => (t.videoId === videoId && t.language === language ? { ...t, ...patch } : t)));
   }
 
   async function handleCreateChangeSetFromAi() {
     setError(null);
-    const proposals = targets
+    // From `visibleTargets`, not raw `targets` -- a video the operator has since deselected must
+    // never be submitted into the Change Set just because its proposal is still sitting in state
+    // (round-5 independent-review finding, 2026-09-21).
+    const proposals = visibleTargets
       .filter((t) => t.includeTitle || t.includeDescription)
       .map((t) => ({
         videoId: t.videoId,
@@ -751,9 +784,9 @@ export function LanguagesManager() {
           </p>
         )}
 
-        {rowErrors.length > 0 && (
+        {visibleRowErrors.length > 0 && (
           <div className="rounded-md border border-amber-800 bg-amber-950/30 p-3 text-xs text-amber-300">
-            {rowErrors.map((e, i) => (
+            {visibleRowErrors.map((e, i) => (
               <p key={i}>
                 {e.videoId ?? "?"} / {e.language ?? "?"}: {e.message}
               </p>
@@ -761,10 +794,17 @@ export function LanguagesManager() {
           </div>
         )}
 
-        {targets.length > 0 && (
+        {allResultsDiscardedBySelectionChange && (
+          <p className="rounded-md border border-amber-800 bg-amber-950/30 p-3 text-xs text-amber-300">
+            The selection changed before this request finished, so none of its results still apply
+            &mdash; regenerate for the videos you have selected now.
+          </p>
+        )}
+
+        {visibleTargets.length > 0 && (
           <div className="max-h-[50vh] space-y-4 overflow-y-auto">
             <h3 className="text-sm font-semibold text-zinc-200">Review &amp; edit proposals</h3>
-            {targets.map((t, i) => (
+            {visibleTargets.map((t) => (
               <div key={`${t.videoId}-${t.language}`} className="rounded-lg border border-zinc-800 p-4">
                 <p className="mb-2 text-xs text-zinc-500">
                   {t.videoId} &rarr; {t.language}
@@ -778,13 +818,13 @@ export function LanguagesManager() {
                         <input
                           type="checkbox"
                           checked={t.includeTitle}
-                          onChange={(e) => updateTarget(i, { includeTitle: e.target.checked })}
+                          onChange={(e) => updateTarget(t.videoId, t.language, { includeTitle: e.target.checked })}
                         />
                         Title
                       </span>
                       <textarea
                         value={t.editedTitle}
-                        onChange={(e) => updateTarget(i, { editedTitle: e.target.value })}
+                        onChange={(e) => updateTarget(t.videoId, t.language, { editedTitle: e.target.value })}
                         className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
                         rows={2}
                       />
@@ -794,13 +834,13 @@ export function LanguagesManager() {
                         <input
                           type="checkbox"
                           checked={t.includeDescription}
-                          onChange={(e) => updateTarget(i, { includeDescription: e.target.checked })}
+                          onChange={(e) => updateTarget(t.videoId, t.language, { includeDescription: e.target.checked })}
                         />
                         Description
                       </span>
                       <textarea
                         value={t.editedDescription}
-                        onChange={(e) => updateTarget(i, { editedDescription: e.target.value })}
+                        onChange={(e) => updateTarget(t.videoId, t.language, { editedDescription: e.target.value })}
                         className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
                         rows={3}
                       />
