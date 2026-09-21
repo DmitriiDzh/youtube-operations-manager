@@ -18,6 +18,7 @@ test("resolveAppPaths: Windows resolves under APPDATA", () => {
   assert.equal(result.dbPath, path.join(result.appDataDir, "playlist-manager.db"));
   assert.equal(result.backupsDir, path.join(result.appDataDir, "backups"));
   assert.equal(result.snapshotsDir, path.join(result.appDataDir, "snapshots"));
+  assert.equal(result.changeDraftsDir, path.join(result.appDataDir, "change-drafts"));
   assert.equal(result.bootstrapConfigPath, path.join(result.appDataDir, "bootstrap-config.json"));
 });
 

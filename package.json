@@ -16,6 +16,7 @@
     "publish:snapshot": "node scripts/publish-snapshot.mjs"
   },
   "dependencies": {
+    "@automerge/automerge": "^3.5.0",
     "@libsql/client": "^0.17.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "drizzle-orm": "^0.45.2",

@@ -27,6 +27,8 @@ export type AppPaths = {
   migrationBackupsDir: string;
   /** Directory holding published + staged snapshot directories (src/lib/snapshot/). */
   snapshotsDir: string;
+  /** Directory holding per-channel Automerge draft documents (src/lib/change-drafts/). */
+  changeDraftsDir: string;
   /** Path to the device-local bootstrap config JSON file. */
   bootstrapConfigPath: string;
   /** Path to the CLI/MCP active-user auth-context JSON file. */
