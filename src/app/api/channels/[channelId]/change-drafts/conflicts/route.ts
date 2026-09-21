@@ -53,3 +53,46 @@ export async function GET(
     );
   }
 }
+
+/**
+ * Resolves one conflict by choosing which device's competing value wins
+ * (`change-drafts/services.ts`'s `resolveConflict` -- see its own doc comment: the winning value
+ * is re-derived server-side from `winningActorId`, never trusted as a raw client-supplied
+ * string). A real mutation, so gated by `src/proxy.ts`'s device-availability lock like any other
+ * write (this route is not in its exempt list).
+ */
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ channelId: string }> }
+) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const { channelId } = await params;
+    await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
+
+    const body: unknown = await request.json();
+    const { changeId, field, winningActorId } = (body ?? {}) as {
+      changeId?: unknown;
+      field?: unknown;
+      winningActorId?: unknown;
+    };
+
+    const resolved = await core.resolveConflict({ channelId, changeId, field, winningActorId });
+    return NextResponse.json({ change: resolved });
+  } catch (error) {
+    if (error instanceof DomainError) {
+      return NextResponse.json(
+        { error: error.code, message: error.message, details: error.details },
+        { status: getVideoMetadataErrorStatus(error.code) }
+      );
+    }
+    return NextResponse.json(
+      { error: "internal_error", message: error instanceof Error ? error.message : "Unknown error" },
+      { status: 500 }
+    );
+  }
+}

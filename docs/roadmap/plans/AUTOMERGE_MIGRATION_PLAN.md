@@ -198,8 +198,8 @@ explicitly chose the faster, single-step path ("мы пока только ст�
   this happens, it can silently produce an incomplete result. CD5 must guarantee every device's
   first participation in a channel comes from importing a real exported document (or being the
   one device that ran the migration), never two independent from-scratch bootstraps.
-- **CD6 — Rename the "Devices" tab and make it the conflict-resolution surface. FIRST SLICE
-  DONE, 2026-09-21** (visibility + trigger; the actual "resolve a conflict" action is not).
+- **CD6 — Rename the "Devices" tab and make it the conflict-resolution surface. DONE, 2026-09-21**
+  (both the first slice below and the resolution action).
   The tab is renamed **"Merge"** (`src/app/dashboard/page.tsx`'s `NAV_ITEMS`). Three new API
   routes: `POST /api/change-drafts/sync` (device-wide, triggers `runSyncCycle()`), `GET
   /api/change-drafts/conflicts-summary` (device-wide, cheap read-only aggregate count), `GET
@@ -217,21 +217,47 @@ explicitly chose the faster, single-step path ("мы пока только ст�
   write to local files, protected by `change-drafts-sync/services.ts`'s single-flight guard) polls
   every 60s -- satisfies AC-CRDT-07 (background sync without opening the Merge tab) without
   hitting a write-classed endpoint as often as a UI-freshness poll would otherwise demand.
-  **Explicitly NOT built in this slice:** the actual conflict-resolution action (choosing which
-  competing value wins) -- the UI only detects, syncs, and displays conflicts today; picking a
-  winner would reuse `change-drafts/services.ts`'s existing `updateProposedValue`/`patchChange`
-  (a fresh write on a conflicted field naturally resolves it, no new service method needed), but
-  wiring that into this screen is its own follow-up sub-slice, not silently missing.
-  **Live-verified** against the real Tropico Jazz channel (`claude-in-chrome`): "Sync now" really
-  exported and wrote a `.automerge` file to the actual configured Syncthing folder on an external
-  drive, confirmed as a valid, loadable Automerge document; the sidebar badge correctly showed a
-  stubbed nonzero count and correctly returned to empty after reload; zero console errors. A real
-  live CRDT conflict was not demonstrated through the UI (safely engineering a genuine concurrent
-  edit against the production document without risking real data was judged not worth attempting
-  in this pass) -- the conflict-detection mechanism itself already has thorough unit coverage
-  (`change-drafts/services.test.ts`'s AC-CRDT-02 and neighbors); only the UI's own rendering of
-  that data was left unverified live, and it is a direct, low-risk `.map()` over an
-  already-correct API response.
+  **Live-verified (first slice only)** against the real Tropico Jazz channel (`claude-in-chrome`):
+  "Sync now" really exported and wrote a `.automerge` file to the actual configured Syncthing
+  folder on an external drive, confirmed as a valid, loadable Automerge document; the sidebar
+  badge correctly showed a stubbed nonzero count and correctly returned to empty after reload;
+  zero console errors. A real live CRDT conflict was not demonstrated through the UI in that pass
+  (safely engineering a genuine concurrent edit against the production document without risking
+  real data was judged not worth attempting) -- the conflict-detection mechanism itself already
+  had thorough unit coverage (`change-drafts/services.test.ts`'s AC-CRDT-02 and neighbors).
+
+  **Second sub-slice, conflict resolution, DONE, 2026-09-21** (owner: "продолжай"). New
+  `change-drafts/services.ts` method `resolveConflict({channelId, changeId, field,
+  winningActorId})`: takes `winningActorId`, never a raw value -- the actual winning value is
+  re-derived server-side from `Automerge.getConflicts`, so this can never write a value that
+  wasn't already one of the genuinely-conflicting options a device produced through this module's
+  own validated write paths. Restricted to `proposedValue`/`approvalStatus`/`approvedValue`/
+  `conflictStatus` -- the only fields realistic for two devices to actually conflict on in
+  practice (`baselineValue`/`changeType`/`validationStatus` are set once at creation and never
+  re-edited by this module's own API). Empirically verified (a probe script, not assumed from
+  Automerge's docs) that a fresh `Automerge.change` write to a conflicted field fully clears
+  `Automerge.getConflicts` for that property, both in-memory and across the save/load boundary --
+  this is the mechanism the whole feature depends on. New `POST` handler on the same
+  `.../change-drafts/conflicts` route file as the existing `GET`; gated by `src/proxy.ts` like any
+  other real mutation. UI: a "Use this version" button under each competing value in
+  `device-handoff-panel.tsx`, behind `ConfirmDialog` (BL-043's standing rule for an app-designed,
+  irreversible-once-synced action); a conflict on a non-resolvable field is still shown, never
+  hidden, with an explicit "can't be resolved from this screen yet" note instead of a button.
+  3 new spec-driven tests (success + persistence-across-save/load, an unknown `winningActorId`
+  rejected without partial mutation, a field/change with no actual conflict rejected rather than
+  performing a no-op write). **Live-verified against the real Tropico Jazz channel**, after two
+  advisor-review fixes required spinning the dev server back up anyway (surfacing `pushError`/
+  `peersSkipped` in the Merge tab; a `useRef` guard against a double-click double-firing the
+  resolve request): a disposable test Change Set was created, then a genuine concurrent conflict
+  was constructed (forking the real document into a fake peer file plus an independent edit via
+  the real production `change-drafts` core, so both sides diverge from one real shared ancestor,
+  unlike a plain sequential edit which just fast-forwards with no conflict) -- "Sync now" reported
+  "1 new conflict(s)", the conflict card rendered both competing values, clicking "Use this
+  version" on the local device's value produced the confirm dialog, and after confirming, a direct
+  read of the on-disk `.automerge` file confirmed the chosen value was written and the conflict
+  fully cleared; the Merge tab's list and the sidebar badge both correctly returned to empty after
+  the next poll cycle. Zero console errors. Test artifacts (the fake peer file, the disposable
+  Change Set) were deleted/rejected afterward.
 - **CD7 — CLI/MCP/API surface migration.** Every existing reader/writer of `change_sets`/`changes`
   is re-pointed at the new service layer instead of the SQL tables directly.
 

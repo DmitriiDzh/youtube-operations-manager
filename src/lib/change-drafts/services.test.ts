@@ -177,6 +177,71 @@ test("AC-CRDT-02: two devices edit the SAME field of the same change offline -- 
   assert.equal(listed[0].changeId, "c-1");
 });
 
+test("resolveConflict writes the chosen competing value and clears the conflict, verified in-memory and across the save/load boundary", async () => {
+  const { deviceA, deviceB } = await seedTwoDeviceDrafts();
+  await deviceA.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "Version from Device A" });
+  await deviceB.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "Version from Device B" });
+
+  const bBytes = await deviceB.exportBytes({ channelId: CHANNEL });
+  const merged = await deviceA.mergeIncoming({ channelId: CHANNEL, incomingBytes: bBytes });
+  const conflict = merged.newConflicts[0];
+  const [winningActorId, winningValue] = Object.entries(conflict.valuesByActor).find(
+    ([, v]) => v === "Version from Device B"
+  )!;
+
+  const resolved = await deviceA.resolveConflict({
+    channelId: CHANNEL,
+    changeId: "c-1",
+    field: "proposedValue",
+    winningActorId,
+  });
+  assert.equal(resolved.proposedValue, winningValue);
+
+  // The conflict must be gone, not just "resolved in the return value" -- re-fetch independently.
+  const remainingConflicts = await deviceA.listConflicts({ channelId: CHANNEL });
+  assert.equal(remainingConflicts.length, 0, "the conflict must actually be cleared, not merely reported as resolved");
+
+  const doc = await deviceA.getDocument({ channelId: CHANNEL });
+  assert.equal(doc.changes["c-1"].proposedValue, "Version from Device B");
+});
+
+test("resolveConflict rejects an unknown winningActorId (e.g. a stale conflict already resolved elsewhere) rather than silently writing something", async () => {
+  const { deviceA, deviceB } = await seedTwoDeviceDrafts();
+  await deviceA.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "A" });
+  await deviceB.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "B" });
+  const bBytes = await deviceB.exportBytes({ channelId: CHANNEL });
+  await deviceA.mergeIncoming({ channelId: CHANNEL, incomingBytes: bBytes });
+
+  await assert.rejects(
+    () =>
+      deviceA.resolveConflict({
+        channelId: CHANNEL,
+        changeId: "c-1",
+        field: "proposedValue",
+        winningActorId: "not-a-real-actor-id",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+
+  // Nothing must have changed -- the conflict is still exactly as it was.
+  const remainingConflicts = await deviceA.listConflicts({ channelId: CHANNEL });
+  assert.equal(remainingConflicts.length, 1);
+});
+
+test("resolveConflict rejects a field/change with no actual conflict, rather than performing a no-op write", async () => {
+  const core = createChangeDraftsCore(makeDeps());
+  await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "ai_localization" });
+  await core.addChange({
+    channelId: CHANNEL, changeId: "c-1", changeSetId: "cs-1", videoId: "v1", language: "es",
+    field: "title", baselineValue: "A", proposedValue: "B", changeType: "modify",
+  });
+
+  await assert.rejects(
+    () => core.resolveConflict({ channelId: CHANNEL, changeId: "c-1", field: "proposedValue", winningActorId: "anything" }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
 test("mergeIncoming only reports NEWLY-introduced conflicts, not ones that already existed before this merge", async () => {
   const { deviceA, deviceB } = await seedTwoDeviceDrafts();
 

@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 
 type UnresolvedRow = { batchId: string; ledgerRowId: string; videoId: string; status: string };
 
@@ -27,11 +28,17 @@ type FieldConflictView = {
   valuesByActor: Record<string, unknown>;
 };
 
+/** Mirrors `resolvableConflictFieldSchema` (src/lib/change-drafts/schemas.ts) -- the only fields
+ * realistic for two devices to actually conflict on in practice, and the only ones the resolve
+ * API accepts. Any other field is still displayed (never hidden), just without a resolve action. */
+const RESOLVABLE_CONFLICT_FIELDS = new Set(["proposedValue", "approvalStatus", "approvedValue", "conflictStatus"]);
+
 type SyncCycleResponse = {
   deviceId: string;
   channels: Array<{
     channelId: string;
     pushed: boolean;
+    pushError: string | null;
     peersMerged: string[];
     peersSkipped: Array<{ deviceId: string; reason: string }>;
     newConflicts: FieldConflictView[];
@@ -58,6 +65,20 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
   const [conflicts, setConflicts] = useState<FieldConflictView[]>([]);
   const [syncBusy, setSyncBusy] = useState(false);
   const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null);
+  const [syncPushErrors, setSyncPushErrors] = useState<Array<{ channelId: string; reason: string }>>([]);
+  const [syncPeersSkipped, setSyncPeersSkipped] = useState<Array<{ channelId: string; deviceId: string; reason: string }>>([]);
+  const [pendingResolution, setPendingResolution] = useState<{
+    changeId: string;
+    field: string;
+    winningActorId: string;
+    value: string;
+  } | null>(null);
+  const [resolveBusy, setResolveBusy] = useState(false);
+  // A plain ref, not just the `resolveBusy` state: a rapid double-click can dispatch two click
+  // events before React re-renders with the updated `disabled`-driven UI, and both handler
+  // invocations would otherwise read `resolveBusy` from the same stale render's closure. A ref
+  // mutates synchronously, so the second invocation sees the lock immediately.
+  const resolveInFlight = useRef(false);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -124,11 +145,44 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
         `Synced ${result.channels.length} channel(s): ${channelsPushed} pushed, merged from ` +
           `${peersSeen} other device(s), ${result.totalNewConflicts} new conflict(s) this cycle.`
       );
+      setSyncPushErrors(
+        result.channels
+          .filter((c) => c.pushError)
+          .map((c) => ({ channelId: c.channelId, reason: c.pushError! }))
+      );
+      setSyncPeersSkipped(
+        result.channels.flatMap((c) => c.peersSkipped.map((p) => ({ channelId: c.channelId, ...p })))
+      );
       await refreshConflicts();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sync failed");
     } finally {
       setSyncBusy(false);
+    }
+  }
+
+  async function handleResolveConflict() {
+    if (!pendingResolution || !channelId || resolveInFlight.current) return;
+    resolveInFlight.current = true;
+    setResolveBusy(true);
+    setError(null);
+    try {
+      await fetchJson(`/api/channels/${channelId}/change-drafts/conflicts`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          changeId: pendingResolution.changeId,
+          field: pendingResolution.field,
+          winningActorId: pendingResolution.winningActorId,
+        }),
+      });
+      setPendingResolution(null);
+      await refreshConflicts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to resolve conflict");
+    } finally {
+      resolveInFlight.current = false;
+      setResolveBusy(false);
     }
   }
 
@@ -292,8 +346,8 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
           Change Sets and their proposed changes sync continuously in the background between
           devices sharing the folder above (checked automatically every minute while this app is
           open) &mdash; this button just runs one cycle immediately. A conflict below means two
-          devices edited the same field while offline; nothing is ever picked automatically, and
-          resolving one (choosing which value wins) is not available in this screen yet.
+          devices edited the same field while offline; nothing is ever picked automatically &mdash;
+          choose which version to keep below when one appears.
         </p>
         <button
           onClick={handleSyncNow}
@@ -304,31 +358,102 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
         </button>
         {lastSyncSummary && <p className="mt-3 text-sm text-zinc-400">{lastSyncSummary}</p>}
 
+        {syncPushErrors.length > 0 && (
+          <div className="mt-3 rounded-lg border border-amber-700 bg-amber-950/40 px-4 py-3 text-sm text-amber-200">
+            <p className="mb-1 font-semibold">Sync folder unreachable for {syncPushErrors.length} channel(s)</p>
+            <ul className="list-disc space-y-1 pl-5 text-xs">
+              {syncPushErrors.map((e) => (
+                <li key={e.channelId}>
+                  {e.channelId}: {e.reason}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-xs text-amber-300">
+              Nothing local was lost &mdash; this device&rsquo;s changes just weren&rsquo;t published this
+              cycle. Check that the Syncthing folder above is actually mounted/reachable.
+            </p>
+          </div>
+        )}
+
+        {syncPeersSkipped.length > 0 && (
+          <div className="mt-3 rounded-lg border border-orange-700 bg-orange-950/40 px-4 py-3 text-sm text-orange-200">
+            <p className="mb-1 font-semibold">
+              {syncPeersSkipped.length} peer device file(s) could not be merged this cycle
+            </p>
+            <ul className="list-disc space-y-1 pl-5 text-xs">
+              {syncPeersSkipped.map((p, i) => (
+                <li key={`${p.channelId}.${p.deviceId}.${i}`}>
+                  {p.channelId}, device {p.deviceId.slice(0, 8)}: {p.reason}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-xs text-orange-300">
+              This is not a field-level conflict to choose between &mdash; it means this device
+              and that one can&rsquo;t currently combine their history at all (e.g. a corrupted
+              file, or a genuinely divergent setup). It will keep being skipped every cycle until
+              resolved outside this screen.
+            </p>
+          </div>
+        )}
+
         {conflicts.length > 0 ? (
           <ul className="mt-4 space-y-3">
-            {conflicts.map((conflict) => (
-              <li
-                key={`${conflict.changeId}.${conflict.field}`}
-                className="rounded-lg border border-red-800 bg-red-950/30 px-4 py-3"
-              >
-                <p className="mb-2 text-xs uppercase text-red-300">
-                  Conflict &mdash; change {conflict.changeId}, field &ldquo;{conflict.field}&rdquo;
-                </p>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {Object.entries(conflict.valuesByActor).map(([actor, value]) => (
-                    <div key={actor}>
-                      <p className="text-[10px] uppercase text-zinc-600">Version ({actor.slice(0, 8)})</p>
-                      <p className="whitespace-pre-wrap text-sm text-zinc-100">{String(value)}</p>
-                    </div>
-                  ))}
-                </div>
-              </li>
-            ))}
+            {conflicts.map((conflict) => {
+              const resolvable = RESOLVABLE_CONFLICT_FIELDS.has(conflict.field);
+              return (
+                <li
+                  key={`${conflict.changeId}.${conflict.field}`}
+                  className="rounded-lg border border-red-800 bg-red-950/30 px-4 py-3"
+                >
+                  <p className="mb-2 text-xs uppercase text-red-300">
+                    Conflict &mdash; change {conflict.changeId}, field &ldquo;{conflict.field}&rdquo;
+                  </p>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {Object.entries(conflict.valuesByActor).map(([actor, value]) => (
+                      <div key={actor}>
+                        <p className="text-[10px] uppercase text-zinc-600">Version ({actor.slice(0, 8)})</p>
+                        <p className="whitespace-pre-wrap text-sm text-zinc-100">{String(value)}</p>
+                        {resolvable && (
+                          <button
+                            onClick={() =>
+                              setPendingResolution({
+                                changeId: conflict.changeId,
+                                field: conflict.field,
+                                winningActorId: actor,
+                                value: String(value),
+                              })
+                            }
+                            className="mt-1 rounded-md border border-zinc-700 px-2 py-1 text-xs font-medium text-zinc-300 hover:border-zinc-500"
+                          >
+                            Use this version
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {!resolvable && (
+                    <p className="mt-2 text-xs text-zinc-500">
+                      This field can&rsquo;t be resolved from this screen yet &mdash; contact support.
+                    </p>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         ) : (
           !!channelId && <p className="mt-4 text-sm text-zinc-500">No unresolved conflicts for this channel.</p>
         )}
       </div>
+
+      {pendingResolution && (
+        <ConfirmDialog
+          title="Resolve conflict?"
+          description={`This will overwrite the competing value(s) for "${pendingResolution.field}" with: "${pendingResolution.value}". This cannot be undone once synced to other devices.`}
+          confirmLabel={resolveBusy ? "Resolving..." : "Use this version"}
+          onCancel={() => setPendingResolution(null)}
+          onConfirm={handleResolveConflict}
+        />
+      )}
 
       <div>
         <h2 className="mb-2 text-lg font-semibold">Finish work on this device</h2>
