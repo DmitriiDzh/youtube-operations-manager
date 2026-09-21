@@ -6,6 +6,7 @@ import {
   getChannelForSync,
   getVideoDetailsContext,
   getVideosMetadataContextBatch,
+  listSupportedLanguages,
   listUploadsPlaylistVideoIds,
   pickWritableRecordingDetailsFields,
   pickWritableSnippetFields,
@@ -17,11 +18,13 @@ function fakeYoutubeClient(overrides: {
   playlistItemsList?: youtube_v3.Youtube["playlistItems"]["list"];
   videosList?: youtube_v3.Youtube["videos"]["list"];
   videosUpdate?: youtube_v3.Youtube["videos"]["update"];
+  i18nLanguagesList?: youtube_v3.Youtube["i18nLanguages"]["list"];
 }): youtube_v3.Youtube {
   return {
     channels: { list: overrides.channelsList },
     playlistItems: { list: overrides.playlistItemsList },
     videos: { list: overrides.videosList, update: overrides.videosUpdate },
+    i18nLanguages: { list: overrides.i18nLanguagesList },
   } as unknown as youtube_v3.Youtube;
 }
 
@@ -381,4 +384,39 @@ test("applyVideoDetailsUpdate makes no network call at all when no parts are tou
 
   await applyVideoDetailsUpdate({ youtube, videoId: "v1", parts: {} });
   assert.equal(called, false);
+});
+
+test("listSupportedLanguages maps id/snippet.name and sorts by code, dropping items with no id", async () => {
+  const youtube = fakeYoutubeClient({
+    i18nLanguagesList: (async () => ({
+      data: {
+        items: [
+          { id: "es", snippet: { name: "Spanish" } },
+          { id: "en", snippet: { name: "English" } },
+          { id: undefined, snippet: { name: "Should be dropped" } },
+          { id: "en-US", snippet: { name: "English (United States)" } },
+        ],
+      },
+    })) as unknown as youtube_v3.Youtube["i18nLanguages"]["list"],
+  });
+
+  const languages = await listSupportedLanguages(youtube);
+
+  assert.deepEqual(languages, [
+    { code: "en", name: "English" },
+    { code: "en-US", name: "English (United States)" },
+    { code: "es", name: "Spanish" },
+  ]);
+});
+
+test("listSupportedLanguages falls back to the code as the name when snippet.name is missing", async () => {
+  const youtube = fakeYoutubeClient({
+    i18nLanguagesList: (async () => ({
+      data: { items: [{ id: "xx" }] },
+    })) as unknown as youtube_v3.Youtube["i18nLanguages"]["list"],
+  });
+
+  const languages = await listSupportedLanguages(youtube);
+
+  assert.deepEqual(languages, [{ code: "xx", name: "xx" }]);
 });
