@@ -112,7 +112,18 @@ function patchesEqual(a: Patch | null, b: Patch): boolean {
  * for the EXACT current patch (patchesEqual) -- editing anything after a preview invalidates it,
  * so the operator can never save a diff they didn't actually see (AGENTS.md §G's "approval").
  */
-export function VideoDetailsPanel({ channelId, videoId }: { channelId: string; videoId: string }) {
+export function VideoDetailsPanel({
+  channelId,
+  videoId,
+  onDirtyChange,
+}: {
+  channelId: string;
+  videoId: string;
+  /** Called whenever "does the form differ from the loaded snapshot" changes -- lets a caller
+   * embedding this panel (e.g. inside `video-detail-modal.tsx`) warn before discarding unsaved
+   * edits, without this panel needing to know anything about where/how it's displayed. */
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
   const [snapshot, setSnapshot] = useState<VideoDetailsSnapshot | null>(null);
   const [form, setForm] = useState<FormValues | null>(null);
   const [loading, setLoading] = useState(true);
@@ -164,6 +175,11 @@ export function VideoDetailsPanel({ channelId, videoId }: { channelId: string; v
   const currentPatch = form && snapshot ? buildPatch(form, snapshot) : {};
   const hasChanges = Object.keys(currentPatch).length > 0;
   const canSave = hasChanges && patchesEqual(previewedPatch, currentPatch) && !applying;
+
+  useEffect(() => {
+    onDirtyChange?.(hasChanges);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasChanges]);
 
   async function handlePreview() {
     if (!snapshot || !hasChanges) return;
@@ -228,32 +244,23 @@ export function VideoDetailsPanel({ channelId, videoId }: { channelId: string; v
   const canSetPublishAt = snapshot.privacyStatus === "private" && !snapshot.publishAt;
 
   return (
-    <div className="space-y-4">
+    <div className="flex h-full min-h-0 flex-col space-y-4">
       {error && (
-        <div className="rounded-lg border border-red-900 bg-red-950/50 p-3 text-sm text-red-400">{error}</div>
+        <div className="shrink-0 rounded-lg border border-red-900 bg-red-950/50 p-3 text-sm text-red-400">{error}</div>
       )}
       {applySuccess && (
-        <div className="rounded-lg border border-emerald-800 bg-emerald-950/30 p-3 text-sm text-emerald-300">
+        <div className="shrink-0 rounded-lg border border-emerald-800 bg-emerald-950/30 p-3 text-sm text-emerald-300">
           Saved to YouTube.
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div className="grid shrink-0 grid-cols-1 gap-3 sm:grid-cols-2">
         <label className="block sm:col-span-2">
           <span className="text-xs text-zinc-400">Title</span>
           <input
             value={form.title}
             onChange={(e) => updateForm({ title: e.target.value })}
             maxLength={100}
-            className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
-          />
-        </label>
-        <label className="block sm:col-span-2">
-          <span className="text-xs text-zinc-400">Description</span>
-          <textarea
-            value={form.description}
-            onChange={(e) => updateForm({ description: e.target.value })}
-            rows={4}
             className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
           />
         </label>
@@ -278,25 +285,41 @@ export function VideoDetailsPanel({ channelId, videoId }: { channelId: string; v
             className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
           />
         </label>
-        <label className="block sm:col-span-2">
-          <span className="text-xs text-zinc-400">Tags (comma-separated)</span>
-          <input
-            value={form.tagsText}
-            onChange={(e) => updateForm({ tagsText: e.target.value })}
-            className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
-          />
-        </label>
       </div>
+
+      {/* Grows to fill whatever vertical space the rest of the panel doesn't need (owner
+       * instruction, 2026-09-21: "описание на весь оставшийся объём экрана по высоте"), with its
+       * own internal scrollbar once its own text exceeds that space -- `min-h-0` is required for
+       * a flex child to be allowed to shrink below its content's natural height at all, which is
+       * what lets the textarea's own `overflow-y-auto` take over instead of growing the panel. */}
+      <label className="flex min-h-[140px] flex-1 flex-col">
+        <span className="shrink-0 text-xs text-zinc-400">Description</span>
+        <textarea
+          value={form.description}
+          onChange={(e) => updateForm({ description: e.target.value })}
+          className="mt-1 w-full flex-1 resize-none overflow-y-auto rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
+        />
+      </label>
+
+      <label className="block shrink-0">
+        <span className="text-xs text-zinc-400">Tags (comma-separated)</span>
+        <textarea
+          value={form.tagsText}
+          onChange={(e) => updateForm({ tagsText: e.target.value })}
+          rows={3}
+          className="mt-1 w-full resize-none overflow-y-auto rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
+        />
+      </label>
 
       <button
         onClick={() => setShowMore((v) => !v)}
-        className="text-xs font-medium text-zinc-400 hover:text-zinc-200"
+        className="shrink-0 text-xs font-medium text-zinc-400 hover:text-zinc-200"
       >
         {showMore ? "Hide advanced fields" : "Show more"}
       </button>
 
       {showMore && (
-        <div className="grid grid-cols-1 gap-3 rounded-lg border border-zinc-800 p-3 sm:grid-cols-2">
+        <div className="grid shrink-0 grid-cols-1 gap-3 rounded-lg border border-zinc-800 p-3 sm:grid-cols-2">
           <label className="block">
             <span className="text-xs text-zinc-400">Default language (BCP-47)</span>
             <input
@@ -373,7 +396,7 @@ export function VideoDetailsPanel({ channelId, videoId }: { channelId: string; v
       )}
 
       {diff && diff.length > 0 && (
-        <div className="space-y-2 rounded-lg border border-indigo-900/60 bg-indigo-950/20 p-3">
+        <div className="shrink-0 space-y-2 overflow-y-auto rounded-lg border border-indigo-900/60 bg-indigo-950/20 p-3">
           <p className="text-xs font-semibold text-indigo-300">Preview diff</p>
           {diff.map((d) => (
             <div key={d.field} className="text-xs">
@@ -387,7 +410,7 @@ export function VideoDetailsPanel({ channelId, videoId }: { channelId: string; v
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
         <button
           onClick={handlePreview}
           disabled={!hasChanges || previewing}

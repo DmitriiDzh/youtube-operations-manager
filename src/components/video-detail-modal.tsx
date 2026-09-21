@@ -1,11 +1,19 @@
 "use client";
 
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 type VideoDetailModalProps = {
   title: string;
   thumbnailUrl?: string | null;
   onClose: () => void;
+  /** True while the content inside `children` has edits the operator has not saved/submitted
+   * yet. When true, an attempt to close (backdrop click, Escape, the close button) shows a
+   * "discard unsaved changes?" confirmation instead of closing immediately (owner instruction,
+   * Telegram 2026-09-21: "если в меню были сделаны какие-либо изменения, он никогда не должен
+   * просто закрываться. Должен появляться поп ап окно с вопросом о желании сохранить
+   * изменения"). Defaults to false so existing callers that don't track dirty state are
+   * unaffected. */
+  hasUnsavedChanges?: boolean;
   children: ReactNode;
 };
 
@@ -19,24 +27,47 @@ type VideoDetailModalProps = {
  * rendered inside is entirely up to the caller via `children`, since that content is exactly what
  * differs "в зависимости от того в какой категории мы сейчас находимся."
  */
-export function VideoDetailModal({ title, thumbnailUrl, onClose, children }: VideoDetailModalProps) {
+export function VideoDetailModal({ title, thumbnailUrl, onClose, hasUnsavedChanges = false, children }: VideoDetailModalProps) {
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  // Tracks where the CURRENT mouse gesture started, so a text-selection drag that begins inside
+  // the card and is released past its edge is never mistaken for a click on the backdrop (owner
+  // instruction, 2026-09-21: dragging a text selection and releasing outside the popup must never
+  // close it). A native `click` event fires on the element under the pointer at mouseup
+  // regardless of where the mousedown/selection started, so `onClick` alone cannot tell the two
+  // apart -- only requiring BOTH mousedown and mouseup to land on the backdrop itself can.
+  const mouseDownOnBackdrop = useRef(false);
+
+  function attemptClose() {
+    if (hasUnsavedChanges) {
+      setShowDiscardConfirm(true);
+      return;
+    }
+    onClose();
+  }
+
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") attemptClose();
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasUnsavedChanges]);
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-      onClick={onClose}
+      onMouseDown={(e) => {
+        mouseDownOnBackdrop.current = e.target === e.currentTarget;
+      }}
+      onMouseUp={(e) => {
+        if (mouseDownOnBackdrop.current && e.target === e.currentTarget) attemptClose();
+        mouseDownOnBackdrop.current = false;
+      }}
       role="presentation"
     >
       <div
-        className="flex h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
+        className="relative flex h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950 shadow-2xl"
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -50,7 +81,7 @@ export function VideoDetailModal({ title, thumbnailUrl, onClose, children }: Vid
             <h2 className="truncate text-sm font-semibold text-zinc-100">{title}</h2>
           </div>
           <button
-            onClick={onClose}
+            onClick={attemptClose}
             className="shrink-0 rounded-md px-2 py-1 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
             aria-label="Close"
           >
@@ -58,6 +89,34 @@ export function VideoDetailModal({ title, thumbnailUrl, onClose, children }: Vid
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-5">{children}</div>
+
+        {showDiscardConfirm && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/60 p-4">
+            <div className="w-full max-w-sm space-y-4 rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl">
+              <p className="text-sm font-medium text-zinc-100">Discard unsaved changes?</p>
+              <p className="text-xs text-zinc-400">
+                This video has edits that haven&rsquo;t been saved yet. Closing now will discard them.
+              </p>
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setShowDiscardConfirm(false)}
+                  className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    setShowDiscardConfirm(false);
+                    onClose();
+                  }}
+                  className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700"
+                >
+                  Discard changes
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
