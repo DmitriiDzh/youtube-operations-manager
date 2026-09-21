@@ -32,6 +32,7 @@ export type ServiceDependencies = {
 export function createChangeDraftsSyncCore(deps: ServiceDependencies) {
   async function syncOneChannel(channelId: string, deviceId: string, root: string): Promise<ChannelSyncResult> {
     let pushed = false;
+    let pushError: string | null = null;
     try {
       const bytes = await deps.changeDrafts.exportBytes({ channelId });
       await deps.transport.writeDeviceFile(root, channelId, deviceId, bytes);
@@ -39,9 +40,20 @@ export function createChangeDraftsSyncCore(deps: ServiceDependencies) {
     } catch (error) {
       // A channel this device has never created any drafts for yet has no document to export
       // (`change-drafts/services.ts`'s `exportBytes` throws `not_found` rather than manufacture
-      // one, AC-CRDT semantics) -- nothing to push this cycle, not a failure. Any other error is
-      // real and must propagate.
-      if (!(isDomainError(error) && error.code === "not_found")) throw error;
+      // one, AC-CRDT semantics) -- nothing to push this cycle, not a failure, no error to report.
+      if (isDomainError(error) && error.code === "not_found") {
+        pushError = null;
+      } else {
+        // A REAL push failure -- e.g. the configured Syncthing folder is an unmounted external
+        // drive, a permissions error, disk full. Found via advisor review after this module's
+        // own live verification used exactly such a folder: previously this rethrew, aborting
+        // the entire cycle (including every OTHER channel) with no operator-visible signal
+        // beyond a bare 500 every polling interval. Isolate it to this one channel instead,
+        // exactly like a bad peer file is isolated below -- the pull/merge side is unrelated to
+        // whether the push succeeded, so it still proceeds.
+        pushError = error instanceof Error ? error.message : "unknown error";
+        deps.logger.error({ event: "change_drafts_sync.push_failed", context: { channelId, reason: pushError } });
+      }
     }
 
     const peerFiles = await deps.transport.listPeerFiles(root, channelId, deviceId);
@@ -69,7 +81,7 @@ export function createChangeDraftsSyncCore(deps: ServiceDependencies) {
       }
     }
 
-    return { channelId, pushed, peersMerged, peersSkipped, newConflicts };
+    return { channelId, pushed, pushError, peersMerged, peersSkipped, newConflicts };
   }
 
   async function runCycle(): Promise<SyncCycleResult> {
@@ -80,9 +92,34 @@ export function createChangeDraftsSyncCore(deps: ServiceDependencies) {
       : deps.localFallbackDir;
 
     const channelIds = await deps.listChannelIds();
+
+    // Checked ONCE per cycle, against the RAW configured value -- never against the local
+    // fallback, which is always a safe path under this app's own app-data directory. See
+    // `filesystem-transport.ts`'s `checkRootAvailable` doc comment for the macOS
+    // phantom-mount-point risk this guards against. A missing root makes every channel this
+    // cycle unreachable for both push AND pull (there is nothing behind it to read either), so
+    // this degrades the whole cycle rather than attempting per-channel work that would just fail
+    // the same way for every channel.
+    let rootUnavailableReason: string | null = null;
+    if (config.syncthingRootPath) {
+      try {
+        await deps.transport.checkRootAvailable(config.syncthingRootPath);
+      } catch (error) {
+        rootUnavailableReason = error instanceof Error ? error.message : "unknown error";
+        deps.logger.error({
+          event: "change_drafts_sync.sync_root_unavailable",
+          context: { root: config.syncthingRootPath, reason: rootUnavailableReason },
+        });
+      }
+    }
+
     const channels: ChannelSyncResult[] = [];
     for (const channelId of channelIds) {
-      channels.push(await syncOneChannel(channelId, config.deviceId, root));
+      channels.push(
+        rootUnavailableReason
+          ? { channelId, pushed: false, pushError: rootUnavailableReason, peersMerged: [], peersSkipped: [], newConflicts: [] }
+          : await syncOneChannel(channelId, config.deviceId, root)
+      );
     }
 
     deps.logger.info({

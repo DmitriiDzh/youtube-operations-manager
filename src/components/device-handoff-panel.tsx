@@ -19,6 +19,26 @@ type SnapshotSummary = {
   createdAt: string;
 };
 
+/** Mirrors `FieldConflict` (src/lib/change-drafts/contracts.ts) -- kept as a local structural
+ * type rather than importing a server-only module into a client component. */
+type FieldConflictView = {
+  changeId: string;
+  field: string;
+  valuesByActor: Record<string, unknown>;
+};
+
+type SyncCycleResponse = {
+  deviceId: string;
+  channels: Array<{
+    channelId: string;
+    pushed: boolean;
+    peersMerged: string[];
+    peersSkipped: Array<{ deviceId: string; reason: string }>;
+    newConflicts: FieldConflictView[];
+  }>;
+  totalNewConflicts: number;
+};
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const data = await res.json();
@@ -28,13 +48,16 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
-export function DeviceHandoffPanel() {
+export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [syncthingRootPath, setSyncthingRootPath] = useState("");
   const [snapshots, setSnapshots] = useState<SnapshotSummary[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<string | null>(null);
+  const [conflicts, setConflicts] = useState<FieldConflictView[]>([]);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -65,11 +88,49 @@ export function DeviceHandoffPanel() {
     }
   }, []);
 
+  const refreshConflicts = useCallback(async () => {
+    if (!channelId) {
+      setConflicts([]);
+      return;
+    }
+    try {
+      const data = await fetchJson<{ conflicts: FieldConflictView[] }>(
+        `/api/channels/${channelId}/change-drafts/conflicts`
+      );
+      setConflicts(data.conflicts);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load draft conflicts");
+    }
+  }, [channelId]);
+
   useEffect(() => {
     void refreshStatus();
     void refreshConfig();
     void refreshSnapshots();
   }, [refreshStatus, refreshConfig, refreshSnapshots]);
+
+  useEffect(() => {
+    void refreshConflicts();
+  }, [refreshConflicts]);
+
+  async function handleSyncNow() {
+    setSyncBusy(true);
+    setError(null);
+    try {
+      const result = await fetchJson<SyncCycleResponse>("/api/change-drafts/sync", { method: "POST" });
+      const channelsPushed = result.channels.filter((c) => c.pushed).length;
+      const peersSeen = new Set(result.channels.flatMap((c) => c.peersMerged)).size;
+      setLastSyncSummary(
+        `Synced ${result.channels.length} channel(s): ${channelsPushed} pushed, merged from ` +
+          `${peersSeen} other device(s), ${result.totalNewConflicts} new conflict(s) this cycle.`
+      );
+      await refreshConflicts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Sync failed");
+    } finally {
+      setSyncBusy(false);
+    }
+  }
 
   async function handleSaveConfig() {
     setBusy("config");
@@ -223,6 +284,50 @@ export function DeviceHandoffPanel() {
             {busy === "config" ? "Saving..." : "Save"}
           </button>
         </div>
+      </div>
+
+      <div>
+        <h2 className="mb-2 text-lg font-semibold">Change drafts sync</h2>
+        <p className="mb-3 text-sm text-zinc-400">
+          Change Sets and their proposed changes sync continuously in the background between
+          devices sharing the folder above (checked automatically every minute while this app is
+          open) &mdash; this button just runs one cycle immediately. A conflict below means two
+          devices edited the same field while offline; nothing is ever picked automatically, and
+          resolving one (choosing which value wins) is not available in this screen yet.
+        </p>
+        <button
+          onClick={handleSyncNow}
+          disabled={syncBusy}
+          className="rounded-md border border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 hover:border-zinc-500 disabled:opacity-50"
+        >
+          {syncBusy ? "Syncing..." : "Sync now"}
+        </button>
+        {lastSyncSummary && <p className="mt-3 text-sm text-zinc-400">{lastSyncSummary}</p>}
+
+        {conflicts.length > 0 ? (
+          <ul className="mt-4 space-y-3">
+            {conflicts.map((conflict) => (
+              <li
+                key={`${conflict.changeId}.${conflict.field}`}
+                className="rounded-lg border border-red-800 bg-red-950/30 px-4 py-3"
+              >
+                <p className="mb-2 text-xs uppercase text-red-300">
+                  Conflict &mdash; change {conflict.changeId}, field &ldquo;{conflict.field}&rdquo;
+                </p>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {Object.entries(conflict.valuesByActor).map(([actor, value]) => (
+                    <div key={actor}>
+                      <p className="text-[10px] uppercase text-zinc-600">Version ({actor.slice(0, 8)})</p>
+                      <p className="whitespace-pre-wrap text-sm text-zinc-100">{String(value)}</p>
+                    </div>
+                  ))}
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          !!channelId && <p className="mt-4 text-sm text-zinc-500">No unresolved conflicts for this channel.</p>
+        )}
       </div>
 
       <div>

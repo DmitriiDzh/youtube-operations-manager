@@ -78,6 +78,35 @@ test("two different channels are stored in separate subdirectories, never mixing
   });
 });
 
+test("checkRootAvailable refuses when the configured sync root does not exist, without creating anything (guards against macOS phantom mount-point directories)", async () => {
+  await withTempDir(async (root) => {
+    const transport = createFilesystemTransportAdapter();
+    const missingRoot = path.join(root, "not-actually-mounted");
+
+    await assert.rejects(() => transport.checkRootAvailable(missingRoot), /not available/);
+
+    // Critically: nothing must have been created at the missing root -- this is the exact
+    // filesystem-corruption risk this check exists to prevent.
+    await assert.rejects(() => import("node:fs/promises").then((fs) => fs.stat(missingRoot)));
+  });
+});
+
+test("checkRootAvailable succeeds when the configured sync root already exists", async () => {
+  await withTempDir(async (root) => {
+    const transport = createFilesystemTransportAdapter();
+    await transport.checkRootAvailable(root);
+  });
+});
+
+test("writeDeviceFile still creates its own nested subfolder freely under an already-existing root (the normal first-use case, unaffected by checkRootAvailable)", async () => {
+  await withTempDir(async (root) => {
+    const transport = createFilesystemTransportAdapter();
+    await transport.writeDeviceFile(path.join(root, "change-drafts"), "UC_test", "device-a", new Uint8Array([1]));
+    const peers = await transport.listPeerFiles(path.join(root, "change-drafts"), "UC_test", "someone-else");
+    assert.equal(peers.length, 1);
+  });
+});
+
 test("a channelId/deviceId containing filesystem-unsafe characters is sanitized rather than escaping root", async () => {
   await withTempDir(async (root) => {
     const transport = createFilesystemTransportAdapter();

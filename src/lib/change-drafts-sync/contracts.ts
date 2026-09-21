@@ -15,6 +15,12 @@ export { DomainError, isDomainError };
 export type ChannelSyncResult = {
   channelId: string;
   pushed: boolean;
+  /** Set only when a push was actually attempted (a local document exists) and failed for a
+   * real reason -- e.g. the configured Syncthing folder is an unmounted external drive. `null`
+   * both when the push succeeded and when there was legitimately nothing to push
+   * (no local document for this channel yet). Never thrown -- a push failure isolates to this
+   * one channel, exactly like `peersSkipped` isolates one bad peer file. */
+  pushError: string | null;
   peersMerged: string[];
   peersSkipped: Array<{ deviceId: string; reason: string }>;
   newConflicts: FieldConflict[];

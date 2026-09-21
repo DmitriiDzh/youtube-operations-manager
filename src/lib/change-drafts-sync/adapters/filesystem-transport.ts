@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -24,6 +24,11 @@ import path from "node:path";
  * name and the `.automerge` extension.
  */
 export type ChangeDraftsSyncTransportAdapter = {
+  /** Throws if the operator's raw configured Syncthing root doesn't exist -- called once per
+   * cycle by `services.ts`, only when a Syncthing root is actually configured (never against the
+   * always-safe local fallback directory, and never against the deeper, already-appended `root`
+   * the other two methods receive). See this adapter's own doc comment for why. */
+  checkRootAvailable(configuredRoot: string): Promise<void>;
   writeDeviceFile(root: string, channelId: string, deviceId: string, bytes: Uint8Array): Promise<void>;
   listPeerFiles(
     root: string,
@@ -44,6 +49,31 @@ const DEVICE_FILE_RE = /^([a-zA-Z0-9_-]+)\.automerge$/;
 
 export function createFilesystemTransportAdapter(): ChangeDraftsSyncTransportAdapter {
   return {
+    async checkRootAvailable(configuredRoot) {
+      // Verify the operator's CONFIGURED Syncthing root already exists, before this module ever
+      // appends its own "change-drafts" subfolder onto it and calls a recursive `mkdir` on the
+      // result. This matters specifically on macOS: the configured root is commonly a path under
+      // `/Volumes/<name>` (an external, Syncthing-shared drive) that is currently unmounted -- a
+      // plain recursive `mkdir` targeting a path under it would silently create a REAL empty
+      // directory at that mount point on the boot volume, which can later prevent the actual
+      // external drive from ever mounting there again (or force it to mount under a different
+      // name). Checked once per sync cycle (`services.ts`), against the raw configured value,
+      // never against the already-appended `root` this adapter's other methods receive -- a
+      // missing "change-drafts" subfolder under an otherwise-real, mounted root is the normal,
+      // expected first-use case and must still be created freely.
+      try {
+        const rootStat = await stat(configuredRoot);
+        if (!rootStat.isDirectory()) {
+          throw new Error(`Configured sync folder exists but is not a directory: ${configuredRoot}`);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          throw new Error(`Configured sync folder is not available (does not exist): ${configuredRoot}`);
+        }
+        throw error;
+      }
+    },
+
     async writeDeviceFile(root, channelId, deviceId, bytes) {
       const dir = channelDir(root, channelId);
       await mkdir(dir, { recursive: true });
