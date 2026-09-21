@@ -168,19 +168,37 @@ Key MCP tools:
 
 Most tools accept optional `credentialRef`; if omitted, server falls back to active local auth context.
 
-### Restricted mode (`MCP_RESTRICTED_MODE=true`)
+### MCP connection (Settings tab toggle, off by default)
 
-Set the `MCP_RESTRICTED_MODE` environment variable to `true` (or `1`), or pass
-`{ restrictedMode: true }` as `createMcpServer`'s second argument, to start the server with only
-read/propose/create-class tools registered. `apply`, `playlist_create`, `playlist_update`,
-`playlist_delete`, `playlist_add_videos`, `playlist_remove_videos`, `write_channel_select`, and
-`auth_user_select` are **never registered at all** in this mode — not merely rejected at call
-time, so a connected client cannot even discover them. Every other tool (including
-`channel_sync` and `changeset_create_from_import`, both of which mutate the local database)
-remains registered, since neither ever writes to YouTube. This is the concrete implementation of
-Phase 7's "operation-specific permissions and read-only access to application data"
-(`docs/roadmap/FUTURE_PHASES.md` §3) — the intended default for a Codex operations connection,
-once one exists.
+Renamed and inverted 2026-09-21 from the earlier "restricted mode" (owner instruction: *"По
+началу MCP / агент от всего отключен и получит доступ только если я зайду в настройки и
+переключу этот тумблер... Все взаимодействия MCP / агента должны идти через это переключение"*).
+
+The real entrypoint, `startMcpServer()` (`npm run mcp:video-metadata`), reads a single persisted
+setting (`getMcpConnectionEnabled`, `src/lib/db.ts`) once at process startup and passes it to
+`createMcpServer(core, { connectionEnabled })`. **While disconnected (the default, and the state
+of every newly-created local database), the server registers ZERO tools at all** — not just the
+write/identity-switching ones, every read/propose/create tool too (`whoami`, `list`,
+`changeset_list`, `channel_sync`, everything). A connected MCP client sees a server with no
+capabilities whatsoever until the project owner explicitly turns "MCP connection" on in the
+app's Settings tab. There is no environment-variable override — the Settings-tab toggle is the
+one and only way to grant a connection any access.
+
+Once enabled, every tool is registered — including `apply` and every `playlist_*` tool, which
+remain separately gated by the unrelated "Live writes" toggle (`docs/decisions/
+0005-youtube-write-gateway.md`) before any of them can reach a real YouTube write. Turning on
+"MCP connection" alone never sends anything to YouTube by itself.
+
+Persisted across process boots once turned on — unlike "Live writes" (which resets to off every
+session by design), this is a one-time setup step, per explicit project-owner instruction.
+**Known limitation:** an MCP server's tool set is fixed at `createMcpServer()` construction time
+(standard SDK behavior) — flipping this setting takes effect the next time an MCP client spawns
+or reconnects the server process, not instantly for a connection that is already open.
+
+This is the concrete implementation of Phase 7's "operation-specific permissions and read-only
+access to application data" (`docs/roadmap/FUTURE_PHASES.md` §3) taken to its safer, default-deny
+conclusion — no MCP client, including a future Codex operations connection, gets any access
+until the project owner deliberately opts in.
 
 ---
 

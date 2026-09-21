@@ -160,6 +160,8 @@ Not every issue in this register must be fixed immediately. It must, however, al
 - **Approval required from:** project owner (scope/timing of the apply-class tool vs. Gate B).
 - **Status:** PARTIALLY RESOLVED (2026-09-20) — every read/propose/create tool now exists on both MCP and CLI, plus MCP restricted mode; only a future apply-class Change Set/Batch tool (gated on Gate B) remains OPEN.
 
+**Progress continued (2026-09-21, BL-047, owner instruction).** "MCP restricted mode" renamed to "MCP connection" and its default inverted: previously an opt-in mode hiding only the 8 write/identity tools (unrestricted -- full tool set -- was the default); now a single connection gate that is OFF by default and, while off, registers ZERO tools at all, including every read/propose/create tool this risk's own remediation added. An MCP client only gets any access -- read-only or otherwise -- once the project owner explicitly enables it in Settings; unlike Gate B's "Live writes," this persists across restarts once turned on (a one-time setup step, per explicit owner instruction). The env-var override (`MCP_RESTRICTED_MODE`) is removed entirely. See `docs/interfaces.md`'s "MCP connection" section for the current contract.
+
 ---
 
 ## RISK-05 — No real browser/OAuth end-to-end verification

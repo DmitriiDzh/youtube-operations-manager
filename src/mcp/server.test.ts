@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readFile, readdir } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { DomainError } from "@/lib/video-metadata/contracts";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import type { PlaylistManagementCore } from "@/lib/playlist-management";
@@ -313,59 +316,56 @@ test("MCP whoami returns active local user", async () => {
 });
 
 test("MCP server registers auth_user_select tool", () => {
-  const server = createMcpServer(makeCoreStub());
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
   const tools = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools;
 
   assert.equal(Boolean(tools?.auth_user_select), true);
 });
 
-// Phase 7 "operation-specific permissions and read-only access to application data"
-// (docs/roadmap/FUTURE_PHASES.md §3): restricted mode must OMIT registration of every
-// YouTube-write-capable or identity-switching tool, and must still register every
-// read/propose/create tool, including the ones added in this same task.
+// "MCP connection" gate (owner instruction, 2026-09-21, renamed and inverted from the earlier
+// "MCP restricted mode"): a single boolean now decides whether ANY tool is registered at all,
+// not a per-tool exclusion list. Default (no option passed) must be fully disconnected -- zero
+// tools, not even read-only ones.
 
 function registeredToolNames(server: ReturnType<typeof createMcpServer>): string[] {
   const tools = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools;
   return Object.keys(tools ?? {});
 }
 
-test("MCP server (default mode) registers every mutating tool", () => {
+test("MCP server (default, no option passed) registers zero tools", () => {
   const names = registeredToolNames(createMcpServer(makeCoreStub()));
+  assert.deepEqual(names, []);
+});
 
-  for (const mutating of [
+test("MCP server (connectionEnabled: false) registers zero tools, including every read-only one", () => {
+  const names = registeredToolNames(createMcpServer(makeCoreStub(), { connectionEnabled: false }));
+
+  for (const tool of [
+    "whoami",
+    "list",
+    "transcript",
+    "preview",
+    "playlist_list",
+    "changeset_list",
+    "changeset_get",
+    "batch_list",
+    "batch_get",
+    "channel_sync",
+    "channel_list",
+    "channel_video_list",
     "apply",
     "playlist_create",
-    "playlist_update",
-    "playlist_delete",
-    "playlist_add_videos",
-    "playlist_remove_videos",
     "write_channel_select",
     "auth_user_select",
-    "channel_sync",
-    "changeset_create_from_import",
   ]) {
-    assert.equal(names.includes(mutating), true, `expected ${mutating} to be registered`);
+    assert.equal(names.includes(tool), false, `expected ${tool} to be omitted while disconnected`);
   }
 });
 
-test("MCP server (restrictedMode: true) omits every YouTube-write/identity tool but keeps read/propose/create tools", () => {
-  const names = registeredToolNames(createMcpServer(makeCoreStub(), { restrictedMode: true }));
+test("MCP server (connectionEnabled: true) registers every tool, including write/identity-switching ones", () => {
+  const names = registeredToolNames(createMcpServer(makeCoreStub(), { connectionEnabled: true }));
 
-  for (const excluded of [
-    "apply",
-    "playlist_create",
-    "playlist_update",
-    "playlist_delete",
-    "playlist_add_videos",
-    "playlist_remove_videos",
-    "write_channel_select",
-    "auth_user_select",
-  ]) {
-    assert.equal(names.includes(excluded), false, `expected ${excluded} to be omitted in restricted mode`);
-  }
-
-  for (const kept of [
-    "write_context",
+  for (const tool of [
     "whoami",
     "list",
     "transcript",
@@ -380,40 +380,85 @@ test("MCP server (restrictedMode: true) omits every YouTube-write/identity tool 
     "channel_sync",
     "channel_list",
     "channel_video_list",
+    "apply",
+    "playlist_create",
+    "playlist_update",
+    "playlist_delete",
+    "playlist_add_videos",
+    "playlist_remove_videos",
+    "write_channel_select",
+    "auth_user_select",
+    "write_context",
   ]) {
-    assert.equal(names.includes(kept), true, `expected ${kept} to still be registered in restricted mode`);
+    assert.equal(names.includes(tool), true, `expected ${tool} to be registered once connected`);
   }
 });
 
-test("MCP server honors MCP_RESTRICTED_MODE=true from the environment when no explicit option is passed", () => {
-  const previous = process.env.MCP_RESTRICTED_MODE;
-  process.env.MCP_RESTRICTED_MODE = "true";
-  try {
-    const names = registeredToolNames(createMcpServer(makeCoreStub()));
-    assert.equal(names.includes("apply"), false);
-    assert.equal(names.includes("changeset_list"), true);
-  } finally {
-    if (previous === undefined) {
-      delete process.env.MCP_RESTRICTED_MODE;
-    } else {
-      process.env.MCP_RESTRICTED_MODE = previous;
-    }
-  }
+// Mechanical enforcement of "один шлюз" for the MCP connection gate (owner instruction,
+// 2026-09-21): the local `registerTool` wrapper (which checks `connectionEnabled`) must be the
+// ONLY call site that ever calls the SDK's real `server.registerTool`. A future tool added via
+// `server.registerTool(...)` directly, bypassing the wrapper, would silently escape the gate --
+// this test fails the build the moment that happens, mirroring
+// `src/lib/youtube-write-gateway/gateway-inventory.test.ts`'s same "enforced by a test, not by
+// convention" principle for the write funnel.
+test("MCP connection gate inventory: server.registerTool is called from exactly one place in this file (the local registerTool wrapper)", async () => {
+  const thisFile = fileURLToPath(import.meta.url);
+  const serverFile = path.join(path.dirname(thisFile), "server.ts");
+  const content = await readFile(serverFile, "utf8");
+
+  const matches = content.match(/server\.registerTool\(/g) ?? [];
+  assert.equal(
+    matches.length,
+    1,
+    `expected exactly one "server.registerTool(" call site in src/mcp/server.ts (inside the ` +
+      `local registerTool wrapper), found ${matches.length} -- a second call site would bypass ` +
+      `the connectionEnabled gate entirely`
+  );
 });
 
-test("an explicit restrictedMode option overrides the environment variable", () => {
-  const previous = process.env.MCP_RESTRICTED_MODE;
-  process.env.MCP_RESTRICTED_MODE = "true";
-  try {
-    const names = registeredToolNames(createMcpServer(makeCoreStub(), { restrictedMode: false }));
-    assert.equal(names.includes("apply"), true);
-  } finally {
-    if (previous === undefined) {
-      delete process.env.MCP_RESTRICTED_MODE;
-    } else {
-      process.env.MCP_RESTRICTED_MODE = previous;
+// Mechanical check that `createMcpToolHandlers` (the raw handlers, unprotected by the
+// connection gate -- only `registerTool`'s SDK call is gated) is never imported anywhere except
+// this file and its own test, so no other surface can invoke a tool's logic while bypassing MCP
+// tool registration entirely.
+test("MCP connection gate inventory: createMcpToolHandlers is imported nowhere outside src/mcp/server.ts and its own test", async () => {
+  const thisFile = fileURLToPath(import.meta.url);
+  const mcpDir = path.dirname(thisFile);
+  const repoRoot = path.resolve(mcpDir, "..", "..");
+  const srcDir = path.join(repoRoot, "src");
+
+  async function listTsFiles(dir: string): Promise<string[]> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const files: string[] = [];
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.name === "node_modules") continue;
+      if (entry.isDirectory()) files.push(...(await listTsFiles(full)));
+      else if (/\.(ts|tsx)$/.test(entry.name)) files.push(full);
+    }
+    return files;
+  }
+
+  const allowed = new Set([
+    path.join(mcpDir, "server.ts"),
+    path.join(mcpDir, "server.test.ts"),
+    path.join(mcpDir, "server.recovery-gate.test.ts"),
+  ]);
+  const offenders: string[] = [];
+
+  for (const file of await listTsFiles(srcDir)) {
+    if (allowed.has(file)) continue;
+    const content = await readFile(file, "utf8");
+    if (/\bcreateMcpToolHandlers\s*\(/.test(content)) {
+      offenders.push(path.relative(repoRoot, file));
     }
   }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    `createMcpToolHandlers is called outside src/mcp/server.ts, bypassing the connection gate ` +
+      `entirely: ${offenders.join(", ")}`
+  );
 });
 
 test("MCP write_context returns active write-channel contract", async () => {

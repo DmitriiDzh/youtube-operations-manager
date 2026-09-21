@@ -9,7 +9,7 @@ import { createVideoMetadataCore } from "@/lib/video-metadata";
 import { DomainError } from "@/lib/video-metadata/contracts";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth/service";
-import { getMcpRestrictedModeEnabled } from "@/lib/db";
+import { getMcpConnectionEnabled } from "@/lib/db";
 import type { CredentialRef } from "@/lib/video-metadata/contracts";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
 import { OperationLockError } from "@/lib/operation-lock";
@@ -837,42 +837,26 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
   };
 }
 
-// Phase 7 "operation-specific permissions and read-only access to application data"
-// (docs/roadmap/FUTURE_PHASES.md §3, docs/roadmap/plans/PHASE_7_PLAN.md). Restricted mode
-// registers only read-only and propose/create-class tools -- every tool that can reach a
-// real YouTube write (`apply`, `playlist_create`/`update`/`delete`/`add_videos`/
-// `remove_videos`) or switch local write/auth identity (`write_channel_select`,
-// `auth_user_select`) is never registered at all in this mode, not merely gated at call
-// time. This is what a Codex operations workspace would actually run with -- read/inspect
-// data and draft Change Sets, never reassign identity or touch YouTube.
-const MCP_RESTRICTED_MODE_EXCLUDED_TOOLS = new Set([
-  "write_channel_select",
-  "auth_user_select",
-  "apply",
-  "playlist_create",
-  "playlist_update",
-  "playlist_delete",
-  "playlist_add_videos",
-  "playlist_remove_videos",
-]);
-
-// Env-var fallback only -- `startMcpServer()` (the real entrypoint) prefers the persisted
-// Settings-tab value (`getMcpRestrictedModeEnabled` in src/lib/db.ts) and falls back to this
-// only when no value has ever been explicitly saved there. Still used directly by
-// `createMcpServer`'s own default so a caller that never touches `startMcpServer` (tests, an
-// embedding script) keeps the original env-var-only behavior.
-function isMcpRestrictedModeEnabled(): boolean {
-  return process.env.MCP_RESTRICTED_MODE === "true" || process.env.MCP_RESTRICTED_MODE === "1";
-}
-
+// "MCP connection" gate (owner instruction, 2026-09-21 -- renamed and inverted from the earlier
+// "MCP restricted mode": *"По началу MCP / агент от всего отключен и получит доступ только если
+// я зайду в настройки и переключу этот тумблер... Все взаимодействия MCP / агента должны идти
+// через это переключение"*). This single boolean is now the ONE gate for every MCP tool, not a
+// per-tool exclusion list: when disconnected, `createMcpServer` registers ZERO tools at all --
+// not just the write/identity-switching ones, every read/propose/create tool too (`whoami`,
+// `list`, `changeset_list`, `channel_sync`, etc.). A connecting client sees a server with no
+// capabilities whatsoever until the project owner explicitly enables the connection in Settings.
+// See `docs/decisions/0005-youtube-write-gateway.md`'s "single funnel" reasoning for the same
+// design principle applied here: one shared boolean, checked from one place
+// (`registerTool` below), rather than a per-tool allow/deny list that a future tool could be
+// added to and forgotten.
 export function createMcpServer(
   core: VideoMetadataCoreSubset & PlaylistManagementCoreSubset = {
     ...createVideoMetadataCore(),
     ...createPlaylistManagementCore(),
   },
-  options: { restrictedMode?: boolean } = {}
+  options: { connectionEnabled?: boolean } = {}
 ) {
-  const restrictedMode = options.restrictedMode ?? isMcpRestrictedModeEnabled();
+  const connectionEnabled = options.connectionEnabled ?? false;
 
   const server = new McpServer({
     name: "youtube-video-metadata",
@@ -892,7 +876,7 @@ export function createMcpServer(
     config: { description: string; inputSchema: z.ZodTypeAny },
     handler: (args: never) => Promise<ToolResponse> | ToolResponse | ReturnType<typeof handlers.whoami>
   ) {
-    if (restrictedMode && MCP_RESTRICTED_MODE_EXCLUDED_TOOLS.has(name)) {
+    if (!connectionEnabled) {
       return;
     }
     server.registerTool(name, config as never, handler as never);
@@ -1144,15 +1128,12 @@ export function createMcpServer(
 }
 
 export async function startMcpServer() {
-  // Persisted setting takes precedence over the env var when a value has been explicitly
-  // saved via the Settings tab (owner instruction, 2026-09-21, "by analogy" with the
-  // live-writes toggle) -- see getMcpRestrictedModeEnabled's own doc comment in
-  // src/lib/db.ts for the one known limitation: this is read once, here, at process
-  // startup, since createMcpServer()'s tool registration is itself fixed at construction
-  // time -- an already-running MCP connection keeps its existing tool set until it
-  // reconnects, this is never hot-swapped mid-session.
-  const restrictedMode = await getMcpRestrictedModeEnabled();
-  const server = createMcpServer(undefined, { restrictedMode });
+  // Read once, here, at process startup -- see getMcpConnectionEnabled's own doc comment in
+  // src/lib/db.ts for the one known limitation: createMcpServer()'s tool registration is fixed
+  // at construction time, so an already-running MCP connection keeps its existing tool set
+  // until it reconnects; this is never hot-swapped mid-session.
+  const connectionEnabled = await getMcpConnectionEnabled();
+  const server = createMcpServer(undefined, { connectionEnabled });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

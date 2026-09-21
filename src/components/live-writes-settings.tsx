@@ -5,17 +5,19 @@ import { ConfirmDialog } from "./confirm-dialog";
 
 type Settings = {
   liveWritesEnabled: boolean;
-  mcpRestrictedModeEnabled: boolean;
+  mcpConnectionEnabled: boolean;
 };
 
 /**
  * Settings-tab toggles (owner instruction, 2026-09-21): "Live writes" is the Gate B toggle
  * (docs/TECHNICAL_DEBT.md RISK-09) -- off by default every session (the server forces it back
  * to false on every process boot, `src/lib/db.ts`'s `initializeDatabase`), and turning it on
- * here is layer 1 of the two-layer live-write barrier, never the write itself. "MCP restricted
- * mode" is the persisted counterpart to the `MCP_RESTRICTED_MODE` env var -- it only takes
- * effect the next time an MCP client spawns/reconnects the server process, not for an
- * already-open connection (stated plainly below, not hidden).
+ * here is layer 1 of the two-layer live-write barrier, never the write itself. "MCP connection"
+ * (renamed and inverted from the earlier "MCP restricted mode", same day) is the single gate for
+ * whether an MCP client (Codex, Claude, etc.) sees ANY tool at all -- off by default, and unlike
+ * Live writes it persists across sessions once turned on (a one-time setup step, not reset every
+ * boot). It only takes effect the next time an MCP client spawns/reconnects the server process,
+ * not for an already-open connection (stated plainly below, not hidden).
  */
 export function LiveWritesSettings() {
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -64,7 +66,7 @@ export function LiveWritesSettings() {
 
   if (!draft) return null;
 
-  const dirty = settings && (draft.liveWritesEnabled !== settings.liveWritesEnabled || draft.mcpRestrictedModeEnabled !== settings.mcpRestrictedModeEnabled);
+  const dirty = settings && (draft.liveWritesEnabled !== settings.liveWritesEnabled || draft.mcpConnectionEnabled !== settings.mcpConnectionEnabled);
 
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -93,21 +95,23 @@ export function LiveWritesSettings() {
       </div>
 
       <div className="border-t border-zinc-800 pt-4">
-        <h3 className="text-sm font-semibold text-zinc-100">MCP restricted mode</h3>
+        <h3 className="text-sm font-semibold text-zinc-100">MCP connection</h3>
         <p className="mt-1 text-xs text-zinc-500">
-          When on, an MCP client (e.g. Codex, Claude) only ever sees read/propose/create-class
-          tools -- every write-capable tool (playlists, apply, write-channel/auth switching) is
-          not registered at all, not merely rejected at call time. Known limitation: this takes
-          effect the next time an MCP client spawns or reconnects the server process, not
-          instantly for a connection that is already open.
+          Off by default. While off, an MCP client (e.g. Codex, Claude) sees NO tools at all --
+          not registered at all, not merely rejected at call time. Turning this on registers the
+          full tool set (read/propose/create plus write-capable tools like playlists/apply --
+          Live writes above still separately gates any real YouTube write). Unlike Live writes,
+          this persists across sessions once enabled -- a one-time setup step, not reset every
+          restart. Known limitation: this takes effect the next time an MCP client spawns or
+          reconnects the server process, not instantly for a connection that is already open.
         </p>
         <label className="mt-2 flex items-center gap-2 text-sm text-zinc-300">
           <input
             type="checkbox"
-            checked={draft.mcpRestrictedModeEnabled}
-            onChange={(e) => setDraft({ ...draft, mcpRestrictedModeEnabled: e.target.checked })}
+            checked={draft.mcpConnectionEnabled}
+            onChange={(e) => setDraft({ ...draft, mcpConnectionEnabled: e.target.checked })}
           />
-          Restrict MCP to read/propose/create tools only
+          Enable MCP / agent connection
         </label>
       </div>
 
