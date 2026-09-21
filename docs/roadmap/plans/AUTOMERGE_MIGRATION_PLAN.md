@@ -258,8 +258,30 @@ explicitly chose the faster, single-step path ("мы пока только ст�
   fully cleared; the Merge tab's list and the sidebar badge both correctly returned to empty after
   the next poll cycle. Zero console errors. Test artifacts (the fake peer file, the disposable
   Change Set) were deleted/rejected afterward.
-- **CD7 — CLI/MCP/API surface migration.** Every existing reader/writer of `change_sets`/`changes`
-  is re-pointed at the new service layer instead of the SQL tables directly.
+- **CD7 — CLI/MCP/API surface migration. DONE, 2026-09-22** (confirmation + one dead-code
+  cleanup; no functional change was needed). CD2's own cutover (`changesets/index.ts` wiring
+  `createAutomergeBackedChangeSetStoreAdapter()`) already meant every existing reader/writer of
+  `change_sets`/`changes` was re-pointed at the new service layer automatically -- CLI, MCP, and
+  every API route all go through `createChangeSetCore()`/`changesets/services.ts`, never `db.ts`
+  directly. A full audit (grepping every call site of `db.ts`'s `createChangeSetWithChanges`/
+  `updateStoredChangeSetStatus`/`updateStoredChange`/`bulkUpdateStoredChanges`) confirmed: the
+  only production writer left is `change-drafts/adapters/sql-projection.ts` (via the newer
+  `upsertStoredChangeSet`/`upsertStoredChange`, a distinct pair from the four audited functions);
+  `src/lib/batches/`'s own `changeSetStore` adapter (`batches/adapters/store.ts`) is read-only
+  (`getStoredChangeById` only, for its own narrow AC-BATCH-03 payload-integrity re-check) and
+  never writes to these tables. One real finding: `src/lib/changesets/adapters/store.ts` still
+  defined and wired up the OLD pre-cutover direct-SQL `createChangeSetStoreAdapter()` (all four
+  audited functions), but it had zero callers anywhere in `src/` since `changesets/index.ts` was
+  cut over to the Automerge-backed adapter -- confirmed dead code, deleted along with its
+  now-unused imports (the file now only exports the still-live `createChangeSetChannelStoreAdapter`/
+  `createIdGenerator`). That deletion made `db.ts`'s own `updateStoredChangeSetStatus`/
+  `updateStoredChange`/`bulkUpdateStoredChanges` themselves unreachable (advisor review caught
+  this second-order effect before commit) -- also deleted, along with the doc comment above
+  `upsertStoredChangeSet` that used to contrast against them. `createChangeSetWithChanges`
+  (the fourth audited function) was kept: `change-drafts/adapters/sql-source.test.ts` still calls
+  it directly to seed real SQLite for a read-path test, a legitimate use unrelated to any
+  production write path. `npm test` unchanged (690/690) after both rounds of removal, confirming
+  nothing depended on any of it.
 
 Ordering and exact boundaries between these are a judgment call for whoever scopes each slice at
 assignment time — this list establishes the shape and dependencies (CD4 must land before CD3 can
