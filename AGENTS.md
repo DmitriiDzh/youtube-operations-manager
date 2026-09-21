@@ -93,6 +93,7 @@ Also inspect `git status` and `git diff --check` before presenting work. Do not 
 - Never identify YouTube videos by title when a canonical video ID is available.
 - Never allow blank spreadsheet cells to imply deletion unless explicitly designed and confirmed.
 - Never overwrite unrelated existing YouTube localizations.
+- The Change Set / localization mechanism (import, AI generation, tracked-language management, deletion) has authority over exactly `title` and `description`, per language, and nothing else — never `defaultLanguage`/`defaultAudioLanguage`, tags, category, privacy, scheduling, or captions/subtitles (`docs/PROJECT_SPEC.md` §21). Extending it to any other field requires the project owner's own explicit authorization, never inferred from the YouTube API technically allowing it.
 - Channel-context validation is not automatic — a route or service taking a `channelId` must itself verify the requested resource belongs to that channel (see `docs/DEVELOPMENT_PLAYBOOK.md` §6.6). *An operation is not automatically secure merely because it only touches local SQLite data.*
 - Known, currently-accepted security tradeoffs (plaintext local token storage, no per-user ownership boundary, best-effort upload-size enforcement) are tracked in `docs/TECHNICAL_DEBT.md` with explicit re-evaluation triggers — do not silently carry a *new* security-relevant gap forward without adding it there.
 
