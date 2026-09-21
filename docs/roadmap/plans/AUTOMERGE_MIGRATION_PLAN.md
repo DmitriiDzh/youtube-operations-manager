@@ -117,17 +117,42 @@ explicitly chose the faster, single-step path ("мы пока только ст�
   test (AC-CRDT-03 below) before this can run against any real installation's data. Must land
   before CD2's cutover goes live on an existing installation, precisely because there is no
   dual-write safety net this time.
-- **CD5 — Transport wiring.** File-based, over the existing operator-configured Syncthing folder
-  (§8 below) — no live sync-relay server for this plan's scope.
-- **CD6 — Conflict-surfacing UI.** When a merge produces a same-field conflict, both proposed
-  values are shown for a human decision — reusing this codebase's existing diff/review UI
-  patterns (`change-set-review.tsx`) rather than inventing a new visual language for it.
+- **CD5 — Transport wiring, continuous background sync (revised 2026-09-21, owner instruction).**
+  File-based, over the existing operator-configured Syncthing folder (§8) — but **not**
+  on-demand/manual like today's device-handoff export/import. The owner explicitly wants this to
+  match how Syncthing itself actually behaves in practice: it can run continuously, moving files
+  in near-real-time whenever both machines are online. This layer must support the same model — a
+  background loop that periodically (a) writes the local Automerge document's current state (or
+  its incremental changes) into the shared folder, (b) scans that folder for other devices' files,
+  loads and merges any found, and (c) after every merge, diffs for newly-introduced conflicts and
+  records them for the UI in §CD6 to read. This is a materially bigger piece than "file-based
+  transport" originally implied — it is closer in shape to
+  `docs/roadmap/plans/DEVICE_HANDOFF_AUTO_SYNC_PLAN.md`'s §3.2 periodic-export idea (which that
+  plan left as a judgment call given the *existing* handoff mechanism's real cost — a full-DB
+  `VACUUM`), except here the cost profile is fundamentally different: an Automerge document for
+  the draft layer is small (the CD1 spike measured ~500 bytes for a single-field edit's history),
+  so a frequent background sync loop is proportionate here in a way it explicitly was not for a
+  full database snapshot. The exact polling/push interval is still an implementation-time tuning
+  decision, not a blocker to building the mechanism itself.
+- **CD6 — Rename the "Devices" tab and make it the conflict-resolution surface (revised
+  2026-09-21, owner instruction).** The tab currently called "Device" (`device-handoff-panel.tsx`)
+  is renamed — **"Merge"** is this plan's working name (the owner suggested "Merge" or "Data
+  Transfer"; either is a cheap, reversible cosmetic choice, not worth blocking on). This screen
+  becomes where every detected conflict (from CD5's continuous merge loop, not only from a
+  manual action) is tracked and presented for a human decision — reusing this codebase's existing
+  diff/review UI patterns (`change-set-review.tsx`) rather than inventing a new visual language.
+  The existing top-right header icon area (`app-shell.tsx`, already home to the active-channel/
+  switch-channel/sign-out controls, and the planned "newer snapshot available" bell from
+  `DEVICE_HANDOFF_AUTO_SYNC_PLAN.md` §3.3) gains a second, distinct signal: a badge/indicator for
+  "N conflicts awaiting your decision," separate from that plan's "an update is available" bell,
+  since they mean different things and both may need to be true at once.
 - **CD7 — CLI/MCP/API surface migration.** Every existing reader/writer of `change_sets`/`changes`
   is re-pointed at the new service layer instead of the SQL tables directly.
 
 Ordering and exact boundaries between these are a judgment call for whoever scopes each slice at
 assignment time — this list establishes the shape and dependencies (CD4 must land before CD3 can
-go live on an existing install; CD6/CD7 depend on CD2/CD3 existing), not a fixed schedule.
+go live on an existing install; CD5's continuous sync loop must exist before CD6 has any real
+conflicts to display; CD7 depends on CD2 existing), not a fixed schedule.
 
 ## 7. Acceptance criteria (categories — final wording written at implementation time, per `AGENTS.md` §L, derived from this plan's requirements, never from a draft implementation)
 
@@ -147,6 +172,13 @@ go live on an existing install; CD6/CD7 depend on CD2/CD3 existing), not a fixed
 - **AC-CRDT-06:** `write-context.assertWriteChannel` remains the sole authority for write-channel
   identity decisions; no code path in the new sync/CRDT layer can influence which channel a real
   write targets.
+- **AC-CRDT-07** (added 2026-09-21, CD5's continuous-sync revision): a conflict introduced by the
+  background merge loop (not just a manually-triggered one) is detected and recorded within one
+  sync cycle, without requiring the operator to open the Merge tab to trigger detection.
+- **AC-CRDT-08** (added 2026-09-21, CD6's revision): the header's conflict-count indicator
+  accurately reflects the number of unresolved conflicts at all times a value is displayed, and is
+  visibly distinct from the separate "a newer snapshot is available" bell
+  (`DEVICE_HANDOFF_AUTO_SYNC_PLAN.md` §3.3) — a reader must never confuse the two signals.
 
 ## 8. Required owner decisions — resolved 2026-09-21 (Telegram)
 
