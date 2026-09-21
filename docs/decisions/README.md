@@ -60,3 +60,4 @@ A decision made before this policy existed (e.g. the Phase 2 choice to keep addi
 | [0003](0003-published-release-snapshots.md) | In-repo `published/<version>/` release snapshots, committed directly on `main` | Accepted |
 | [0004](0004-active-channel-read-scoping.md) | Every channel-scoped read is filtered to the session's active channel | Accepted |
 | [0005](0005-youtube-write-gateway.md) | A single gateway module is the only path any code may use to write to YouTube | Accepted |
+| [0006](0006-automerge-for-draft-layer.md) | Adopt Automerge (CRDT) as the source of truth for the draft/change-set layer | Accepted |

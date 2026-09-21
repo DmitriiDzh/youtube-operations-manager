@@ -39,6 +39,17 @@ once there's a concrete driving need for concurrency beyond what handoff already
 project owner wants to make the underlying architecture decision independently of any specific
 feature need.
 
+**Follow-up, 2026-09-21 (BL-049):** the project owner made exactly that architecture decision,
+after a dedicated research pass comparing CRDT engines (Automerge, Yjs, cr-sqlite) against
+Postgres-backed sync platforms (PowerSync, ElectricSQL, Zero) and this project's own libSQL/Turso
+vendor's offline-writes feature. Decision: Automerge, scoped to the `change_sets`/`changes` draft
+layer only (the actual YouTube-write pipeline is unaffected) — see
+`docs/decisions/0006-automerge-for-draft-layer.md` for the full rationale and
+`docs/roadmap/plans/AUTOMERGE_MIGRATION_PLAN.md` for the resulting slice breakdown, acceptance
+criteria, and the owner decisions (transport, rollout strategy, priority) still required before
+any implementation slice may be assigned. This section's own research above remains the accurate
+history of why a plan wasn't written earlier — it is not superseded, only acted on.
+
 ## BL-007 — Automated media production feasibility
 
 **What exists today:** nothing. No audio/video generation, rendering, publishing automation, or
