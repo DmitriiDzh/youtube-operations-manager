@@ -77,6 +77,8 @@ Each row:
   described in `FUTURE_PHASES.md`).
 - **Notes** — free text: current blocker, who assigned it and when (quote or paraphrase the
   actual instruction), branch name once one exists, `ROADMAP_STATUS.md` row/commit once done.
+  Keep this short (`AGENTS.md` §H, added 2026-09-21) — a few sentences plus the commit hash, not
+  a full paragraph re-narrating implementation detail that the commit message already records.
 
 ## Status values and what each one actually means
 
