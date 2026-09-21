@@ -234,6 +234,17 @@ export function LanguagesManager() {
 
   // --- One shared row-selection set (E4/§4.5) -- drives both AI generation and XLSX export. ---
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Always mirrors the latest `selectedIds` -- `handleGenerate` is an async closure created at
+  // the moment "Generate proposals" was clicked, so its own `selectedIds` reference is frozen to
+  // whatever the selection was THEN; reading this ref instead, once the response actually
+  // arrives, lets it filter against what is selected NOW (round-4 independent-review finding,
+  // 2026-09-21: deselecting one video while a bulk request was still in flight was not caught by
+  // the round-3 selection-sync effect, since `targets` was still empty at the moment of
+  // deselection -- there was nothing yet to filter).
+  const selectedIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    selectedIdsRef.current = selectedIds;
+  }, [selectedIds]);
 
   // --- AI generation (primary path) ---
   // Popover visibility for the bulk path is deliberately NOT its own boolean -- it is derived
@@ -509,6 +520,11 @@ export function LanguagesManager() {
     // can ever be in flight from this component regardless of session switches in the meantime.
     bumpGenerationRequestId();
     const requestId = generationRequestIdRef.current;
+    // Included in any error this specific request surfaces, so an operator looking at a
+    // DIFFERENT, newer session can tell a failure banner belongs to an earlier, abandoned one
+    // rather than to whatever they're currently looking at (round-4 independent-review finding,
+    // 2026-09-21: the single global error banner has no video/session identifier otherwise).
+    const requestLabel = generateScope.kind === "row" ? `video ${generateScope.videoId}` : `${videoIds.length} selected video(s)`;
     setGenerating(true);
     try {
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/ai-localization/generate`, {
@@ -526,13 +542,24 @@ export function LanguagesManager() {
         // independent-review finding, 2026-09-21: a real provider failure -- quota, invalid key,
         // outage -- must reach the operator even if they've already moved on from this specific
         // panel; only the panel's own review UI below is gated by staleness, not error visibility).
-        setError(data.message ?? "Generation failed");
+        setError(`Generation for ${requestLabel} failed: ${data.message ?? "Generation failed"}`);
         return;
       }
       if (requestId !== generationRequestIdRef.current) return;
-      setTargets(data.results.map(toEditable));
-      setRowErrors(data.errors);
+      // Filtered against the CURRENT selection (via the ref, not the `selectedIds` this closure
+      // captured when the request started) -- a bulk request for videoIds snapshotted at request
+      // time must not resurrect a video the operator deselected while the request was still in
+      // flight (round-4 independent-review finding, 2026-09-21).
+      const stillTargeted = (id: string) => generateScope.kind !== "bulk" || selectedIdsRef.current.has(id);
+      setTargets(data.results.filter((r) => stillTargeted(r.videoId)).map(toEditable));
+      setRowErrors(data.errors.filter((e) => e.videoId === null || stillTargeted(e.videoId)));
       setGenerationContext(data.generationContext);
+    } catch (e) {
+      // Round-4 independent-review finding, 2026-09-21: unlike every other async handler in this
+      // file (fetchOverview, handleExport, handlePreviewImport, ...), this one had no catch --
+      // a network failure or a non-JSON error body threw past both branches above, silently
+      // clearing `generating` via `finally` with no error ever shown to the operator.
+      setError(`Generation for ${requestLabel} failed: ${String(e)}`);
     } finally {
       setGenerating(false);
     }
