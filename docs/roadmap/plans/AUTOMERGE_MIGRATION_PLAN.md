@@ -103,19 +103,22 @@ addition is committed to. Nothing from this spike ships — it exists to de-risk
 
 ## 6. Proposed implementation slices, once assigned
 
+**Rollout strategy decided 2026-09-21 (§8 below): direct cutover, not dual-write.** The owner
+explicitly chose the faster, single-step path ("мы пока только строим систему и можем себе это
+позволить") over a parallel dual-write period — CD2/CD3 below are a single slice, not two.
+
 - **CD1 — Spike** (§3). Throwaway, no production wiring. Answers whether Automerge's real
   conflict behavior matches this plan's assumptions for this project's actual data shape.
-- **CD2 — Automerge-backed service + SQL read-projection, read-only cutover first.** New service
-  layer exists and is dual-written to (existing code keeps writing SQL as today; new writes also
-  go into a parallel Automerge document) so confidence can build before anything reads from
-  Automerge as the source of truth.
-- **CD3 — Cut writes over.** Automerge becomes the source of truth; the SQL tables become a
-  read-only projection, regenerated on every local edit and every merge.
+- **CD2 — Automerge-backed service + SQL read-projection, direct cutover.** The new service layer
+  becomes the source of truth for reads and writes in one step (no parallel dual-write period);
+  the SQL tables become a read-only projection, regenerated on every local edit and every merge.
 - **CD4 — One-time data migration.** Every existing local `change_sets`/`changes` row converts
   into an initial per-channel Automerge document, with an explicit lossless-conversion acceptance
-  test (AC-CRDT-03 below) before this can run against any real installation's data.
-- **CD5 — Transport wiring.** Implements whichever option §8's owner decision selects (file-based
-  via the existing Syncthing folder, or a live sync-relay server).
+  test (AC-CRDT-03 below) before this can run against any real installation's data. Must land
+  before CD2's cutover goes live on an existing installation, precisely because there is no
+  dual-write safety net this time.
+- **CD5 — Transport wiring.** File-based, over the existing operator-configured Syncthing folder
+  (§8 below) — no live sync-relay server for this plan's scope.
 - **CD6 — Conflict-surfacing UI.** When a merge produces a same-field conflict, both proposed
   values are shown for a human decision — reusing this codebase's existing diff/review UI
   patterns (`change-set-review.tsx`) rather than inventing a new visual language for it.
@@ -145,25 +148,26 @@ go live on an existing install; CD6/CD7 depend on CD2/CD3 existing), not a fixed
   identity decisions; no code path in the new sync/CRDT layer can influence which channel a real
   write targets.
 
-## 8. Required owner decisions before implementation can start
+## 8. Required owner decisions — resolved 2026-09-21 (Telegram)
 
-1. **Transport.** File-based (reuse the existing operator-configured Syncthing folder — no new
-   infrastructure, but async/coarser sync, and "two independently-changed Automerge files with the
-   same name" is exactly the generic file-conflict problem Syncthing already has, needing its own
-   explicit handling since Syncthing has no awareness of Automerge's binary format) vs. a small
-   live sync-relay server (real-time sync, but new always-on infrastructure to run and host — the
-   first genuine departure from this project's "no mandatory server" local-first model to date).
-2. **Rollout strategy.** Dual-write-then-cutover (§6's CD2→CD3 ordering — safer, more total
-   engineering work, a real safety net during the transition) vs. a harder, faster cutover on a
-   chosen slice boundary (less total work, more risk during the transition window).
-3. **Priority relative to other open work.** This is a multi-slice, non-trivial effort. Whether it
-   should be prioritized ahead of, alongside, or after the pending Gate B live-validation test
-   (Rural Japan channel, still pending a separate decision) and any other currently open item is
-   the owner's call, not inferred here.
-4. **Permanent scope boundary or phase-1 boundary?** This plan recommends `change_sets`/`changes`
-   stay the *only* CRDT-backed table indefinitely, with every other table remaining on the
-   existing snapshot/Syncthing mechanism. Whether that split is an acceptable permanent
-   architecture or merely where phase 1 happens to stop is the owner's decision, not assumed here.
+1. **Transport — DECIDED: file-based, over the existing operator-configured Syncthing folder.**
+   ("Можно пока использовать Syncthing.") No live sync-relay server for this plan's scope; the
+   known cost this accepts (Syncthing has no awareness of Automerge's binary format, so "two
+   independently-changed Automerge files with the same name" is the same generic file-conflict
+   problem Syncthing already has generically) still needs its own explicit handling in CD5, just
+   not a different transport.
+2. **Rollout strategy — DECIDED: direct cutover, not dual-write-then-cutover.** ("Вариант Б, мы
+   пока только строим систему и можем себе это позволить.") No parallel dual-write period; §6's
+   CD2 is now a single slice doing both the service-layer build and the cutover together. This
+   accepts more risk during the transition window in exchange for materially less total
+   engineering work — an explicit, informed tradeoff, not an oversight.
+3. **Priority — DECIDED: now**, ahead of/alongside other open work rather than deferred.
+4. **Permanent scope boundary or phase-1 boundary? — DEFERRED, not decided yet.** ("Ок, согласен
+   [с рекомендацией пока ограничиться черновиками]. Можем вернуться к более детальному
+   обсуждению позже, т.к. пока не до конца понимаю.") This plan's recommendation (draft layer
+   only, indefinitely) stands as the working assumption for CD1-CD7, but is explicitly not a
+   final, closed decision — revisit once the owner has more context, likely after CD1-CD2 give a
+   concrete feel for how the new layer actually behaves.
 
 ## 9. Where this is recorded
 
