@@ -717,6 +717,17 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 ---
 
+## RISK-45 — `languages-manager.tsx`'s bulk-generation review list: reselecting a deselected video intentionally resurfaces its proposal (decision record) — RESOLVED, 2026-09-21 (independent review, rounds 6-7)
+
+- **Context:** not an open risk -- a decision record, kept here so it isn't silently re-litigated by a future review round or contributor. During the independent-review cycle over the Languages tab E1-E4b redesign (`docs/roadmap/BACKLOG.md` BL-037), round 6 changed deselecting a video in an open bulk AI-generation session to permanently delete its proposal from `targets` (not just hide it), specifically to stop a reselected video from silently showing its old, unreviewed content. Round 7 found this created two real regressions: (1) an accidental double-click (uncheck, immediately recheck) is indistinguishable from a deliberate removal, so it destroyed operator edits -- and, for a real AI connection, already-billed generation work -- with no way to recover it short of regenerating; (2) an unrelated later selection change could prune the very entries the round-5 "results discarded" notice was about, making that notice silently disappear.
+- **Decision:** reverted round 6's pruning the same day. Deselecting a video only hides its proposal from the current view (via `visibleTargets`/`visibleRowErrors`); the underlying `targets`/`rowErrors` state is left untouched, so reselecting the same video in the same session shows its existing proposal again rather than requiring a fresh generate.
+- **Why this is safe despite "resurrecting" old content:** a resurfaced proposal is still just a local, editable Change Set draft -- it goes through exactly the same review -> approve -> conflict-revalidation -> Gate-B-blocked-write pipeline as a freshly-generated one before anything real could happen (`docs/PROJECT_SPEC.md` §16/§30, `src/lib/batches/`). The selection checkbox is a filter over what's currently displayed, not an approval or deletion action; nothing about reselecting a video bypasses or weakens the actual approval gate.
+- **Gate(s):** none -- this is closed, not blocking anything.
+- **Approval required from:** none further -- recorded so a future contributor (human or agent) who notices "deselecting doesn't destroy the proposal" and is tempted to "fix" it again reads this first.
+- **Status:** RESOLVED, 2026-09-21.
+
+---
+
 ## Summary table
 
 | ID | Title | Gates | Status |
@@ -765,5 +776,6 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-42 | No unit/component test coverage for any `src/components/**` React component (project-wide convention, not one file) | none blocking today | OPEN |
 | RISK-43 | Abandoning an AI-generation session doesn't cancel the underlying (possibly real, billed) provider request | none blocking | OPEN |
 | RISK-44 | `languages-manager.tsx`'s single global error banner can be overwritten by an unrelated, later-arriving error | none blocking | OPEN |
+| RISK-45 | Reselecting a deselected video in bulk AI-generation intentionally resurfaces its proposal (decision record, not a risk) | none | RESOLVED, 2026-09-21 |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
