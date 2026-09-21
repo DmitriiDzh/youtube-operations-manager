@@ -42,8 +42,8 @@ export function createPlaylistYoutubeApiAdapter() {
       description?: string;
       privacyStatus: PlaylistPrivacyStatus;
     }): Promise<Playlist> {
-      const youtube = createAuthorizedClient(args.credentials);
       await assertLiveWritesAuthorized();
+      const youtube = createAuthorizedClient(args.credentials);
       return createPlaylistForAuthenticated(
         youtube,
         args.title,
@@ -64,8 +64,8 @@ export function createPlaylistYoutubeApiAdapter() {
       description: string;
       privacyStatus: PlaylistPrivacyStatus;
     }): Promise<Playlist> {
-      const youtube = createAuthorizedClient(args.credentials);
       await assertLiveWritesAuthorized();
+      const youtube = createAuthorizedClient(args.credentials);
       return updatePlaylistForAuthenticated({
         youtube,
         playlistId: args.playlistId,
@@ -96,8 +96,8 @@ export function createPlaylistYoutubeApiAdapter() {
     },
 
     async deletePlaylist(args: { credentials: ResolvedCredentials; playlistId: string }) {
-      const youtube = createAuthorizedClient(args.credentials);
       await assertLiveWritesAuthorized();
+      const youtube = createAuthorizedClient(args.credentials);
       await deletePlaylistForAuthenticated(youtube, args.playlistId);
     },
 
@@ -106,8 +106,8 @@ export function createPlaylistYoutubeApiAdapter() {
       playlistId: string;
       videoId: string;
     }) {
-      const youtube = createAuthorizedClient(args.credentials);
       await assertLiveWritesAuthorized();
+      const youtube = createAuthorizedClient(args.credentials);
       await addVideoToPlaylistForAuthenticated(youtube, args.videoId, args.playlistId);
     },
 
@@ -120,8 +120,8 @@ export function createPlaylistYoutubeApiAdapter() {
     },
 
     async deletePlaylistItem(args: { credentials: ResolvedCredentials; playlistItemId: string }) {
-      const youtube = createAuthorizedClient(args.credentials);
       await assertLiveWritesAuthorized();
+      const youtube = createAuthorizedClient(args.credentials);
       await deletePlaylistItemById(youtube, args.playlistItemId);
     },
   };

@@ -53,7 +53,8 @@ async function listTsFilesRecursively(dir: string): Promise<string[]> {
 // `captions.download` is deliberately excluded from the mutating-verb list below: despite the
 // name, it is a read (fetches caption track bytes), not a mutation -- see
 // `src/lib/video-metadata/adapters/transcript-provider.ts`, a legitimate, pre-existing
-// read-only caller this test must not flag.
+// read-only caller this test must not flag. `captions.insert/update/delete` (real mutations)
+// are still caught -- only the one verb `download` is excluded, not the whole `captions` resource.
 const WRITE_CALL_PATTERN =
   /\.(videos|playlists|playlistItems|captions|thumbnails|channels|channelSections|channelBanners|comments|commentThreads|subscriptions|liveBroadcasts|liveStreams|liveChatBans|liveChatMessages|liveChatModerators|members|watermarks)\.(insert|update|delete|set|unset|rate|reportAbuse|bind|transition|control|markAsSpam|setModerationStatus)\s*\(/;
 
@@ -98,4 +99,51 @@ test("youtube-write-gateway inventory: no file outside this module imports its w
       `${path.relative(REPO_ROOT, file)} calls the gateway's ${writeFn} but never calls assertLiveWritesAuthorized`
     );
   }
+});
+
+// The call-shape regex above only catches literal `.resource.verb(` dot-call syntax -- a future
+// file writing `const v = youtube.videos; v.update(...)`, or bracket-notation
+// `youtube["videos"]["update"](...)`, would slip past it undetected. An import-level check is
+// verb-agnostic and notation-agnostic in a way no call-shape regex can be: any *production* file
+// (never a `.test.ts`, which legitimately imports `youtube_v3` as a type to build fakes/mocks,
+// never a real client) that imports a runtime (non-`type`-only) value from `googleapis` at all is
+// either this gateway, the read-only `youtube.ts`, or the OAuth client factory in `auth.ts` --
+// confirmed to be the complete, small, stable current set by inspection (2026-09-21). A
+// `import type { youtube_v3 } from "googleapis"` line is exempt everywhere -- TypeScript erases
+// it at compile time, so it can never construct a client or call a method at runtime (see
+// `src/lib/batches/adapters/write-executor.youtube.ts`, which type-only-imports `youtube_v3`
+// purely to type its mockable `MinimalYoutubeWriteClient` boundary).
+const GOOGLEAPIS_IMPORT_ALLOWLIST = new Set([
+  path.join("src", "lib", "youtube.ts"),
+  path.join("src", "lib", "auth.ts"),
+]);
+
+test("youtube-write-gateway inventory: no production file outside this module, youtube.ts, or auth.ts has a runtime import from googleapis", async () => {
+  const allFiles = await listTsFilesRecursively(path.join(REPO_ROOT, "src"));
+  const offenders: string[] = [];
+
+  for (const file of allFiles) {
+    if (file.endsWith(".test.ts")) continue;
+    if (path.resolve(path.dirname(file)) === path.resolve(GATEWAY_DIR)) continue;
+
+    const relative = path.relative(REPO_ROOT, file);
+    if (GOOGLEAPIS_IMPORT_ALLOWLIST.has(relative)) continue;
+
+    const content = await readFile(file, "utf8");
+    const runtimeImport = content
+      .split("\n")
+      .some((line) => /from\s+["']googleapis["']/.test(line) && !/^\s*import\s+type\b/.test(line));
+    if (runtimeImport) {
+      offenders.push(relative);
+    }
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    `The following production files have a runtime (non-type-only) import from "googleapis", ` +
+      `which makes a mutating call possible without ever going through ` +
+      `src/lib/youtube-write-gateway, even in a shape the call-site regex above cannot see ` +
+      `(bracket notation, an aliased reference, etc.): ${offenders.join(", ")}`
+  );
 });

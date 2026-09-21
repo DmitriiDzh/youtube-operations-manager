@@ -77,6 +77,8 @@ export function createVideoDetailsYoutubeApiAdapter() {
       videoId: string;
       patch: VideoDetailsPatch;
     }): Promise<{ before: VideoDetailsSnapshot; after: VideoDetailsSnapshot }> {
+      await assertLiveWritesAuthorized();
+
       const youtube = createAuthorizedClient(args.credentials);
       const context = await getVideoDetailsContext(youtube, args.videoId);
       if (!context) {
@@ -99,8 +101,6 @@ export function createVideoDetailsYoutubeApiAdapter() {
       const touchesSnippet = SNIPPET_PATCH_KEYS.some((key) => key in args.patch);
       const touchesStatus = STATUS_PATCH_KEYS.some((key) => key in args.patch);
       const touchesRecordingDetails = "recordingDate" in args.patch;
-
-      await assertLiveWritesAuthorized();
 
       await applyVideoDetailsUpdate({
         youtube,

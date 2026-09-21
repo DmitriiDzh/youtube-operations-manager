@@ -79,7 +79,6 @@ export function createYoutubeApiAdapter() {
       credentials: ResolvedCredentials;
       proposal: MetadataSyncProposal;
     }) {
-      const youtube = createAuthorizedClient(args.credentials);
       const targetLocalization = args.proposal.update.localizations[args.proposal.targetLanguage];
 
       if (!targetLocalization) {
@@ -93,6 +92,7 @@ export function createYoutubeApiAdapter() {
       }
 
       await assertLiveWritesAuthorized();
+      const youtube = createAuthorizedClient(args.credentials);
 
       try {
         await applyVideoMetadataUpdate({
