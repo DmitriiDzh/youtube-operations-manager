@@ -244,6 +244,11 @@ export function LanguagesManager() {
   const [supportedLanguages, setSupportedLanguages] = useState<{ code: string; name: string }[]>([]);
   const [languageDropdownOpen, setLanguageDropdownOpen] = useState(false);
   const [expandedVideoId, setExpandedVideoId] = useState<string | null>(null);
+  // Which language is shown in the per-video review popup's right (translation) column -- owner
+  // instruction, 2026-09-21: a dropdown over the table's own columns (`overview.languages`), not
+  // a list of every locale that happens to already exist for this one video, so an operator can
+  // also pick a language the video is still MISSING and generate straight from the empty state.
+  const [reviewLanguage, setReviewLanguage] = useState<string>("");
   const [detail, setDetail] = useState<Detail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
@@ -627,6 +632,9 @@ export function LanguagesManager() {
     setExpandedVideoId(videoId);
     setLoadingDetail(true);
     setDetail(null);
+    const video = overview?.videos.find((v) => v.videoId === videoId);
+    const candidates = (overview?.languages ?? []).filter((l) => l !== video?.defaultLanguage);
+    setReviewLanguage((current) => (candidates.includes(current) ? current : (candidates[0] ?? "")));
     try {
       const res = await fetch(
         `/api/channels/${encodeURIComponent(channelId)}/localizations/${encodeURIComponent(videoId)}`
@@ -1100,43 +1108,91 @@ export function LanguagesManager() {
     );
   }
 
-  /** The content of the video-detail popup for this tab -- original title/description, every
-   * existing locale, and the inline "Generate with AI for this video" mini-form/review panel.
-   * Rendered inside the shared `VideoDetailModal` shell (`video-detail-modal.tsx`), which owns the
-   * popup chrome itself; only what's inside differs per tab, per the owner's own framing. */
+  /** The content of the video-detail popup for this tab -- a wide, two-column original/translation
+   * layout (owner instruction, 2026-09-21: "слева оригинальный язык... справа один из
+   * переводов... дропдаун какой именно язык хочу выбрать"), plus the inline "Generate with AI"
+   * mini-form/review panel below. Rendered inside the shared `VideoDetailModal` shell
+   * (`video-detail-modal.tsx`, widened via `widthClassName` for this tab specifically), which owns
+   * the popup chrome itself; only what's inside differs per tab, per the owner's own framing.
+   * The right column's language dropdown is sourced from `overview.languages` (the same
+   * tracked-∪-real-data union the table's own columns show), not from `detail.locales` alone --
+   * this lets the operator pick a language the video is still MISSING and generate straight from
+   * the resulting empty state, not only browse what already exists. */
   function renderVideoLocalizationDetail(video: OverviewRow) {
+    const languageOptions = (overview?.languages ?? []).filter((l) => l !== video.defaultLanguage);
+    const selectedLocale = detail?.locales.find((l) => l.language === reviewLanguage) ?? null;
+
     return (
-      <div className="space-y-4">
+      <div className="flex h-full flex-col">
         {loadingDetail ? (
           <p className="text-sm text-zinc-500">Loading detail...</p>
         ) : detail ? (
-          <div className="space-y-3">
-            <div>
-              <p className="text-xs font-medium text-zinc-500">
+          <div className="grid min-h-0 flex-1 grid-cols-2 gap-4">
+            <div className="flex min-h-0 flex-col">
+              <p className="mb-1 shrink-0 text-xs font-medium text-zinc-500">
                 Original / default language: {detail.defaultLanguage ?? "unset"}
               </p>
-              <p className="text-sm font-medium">{detail.originalTitle}</p>
-              <p className="mt-1 whitespace-pre-wrap text-xs text-zinc-400">{detail.originalDescription}</p>
-            </div>
-            {detail.locales.length === 0 ? (
-              <p className="text-xs text-zinc-500">No existing localizations.</p>
-            ) : (
-              <div className="space-y-2 border-t border-zinc-800 pt-3">
-                {detail.locales.map((locale) => (
-                  <div key={locale.language}>
-                    <p className="text-xs font-medium text-zinc-500">{locale.language}</p>
-                    <p className="text-sm">{locale.remoteTitle}</p>
-                    <p className="mt-0.5 whitespace-pre-wrap text-xs text-zinc-400">{locale.remoteDescription}</p>
-                  </div>
-                ))}
+              <div className="mb-2 shrink-0 rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                <p className="text-sm font-medium text-zinc-100">{detail.originalTitle}</p>
               </div>
-            )}
+              <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                <p className="whitespace-pre-wrap text-xs text-zinc-400">{detail.originalDescription}</p>
+              </div>
+            </div>
+
+            <div className="flex min-h-0 flex-col">
+              <select
+                value={reviewLanguage}
+                onChange={(e) => setReviewLanguage(e.target.value)}
+                disabled={languageOptions.length === 0}
+                className="mb-2 shrink-0 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-200 disabled:opacity-50"
+              >
+                {languageOptions.length === 0 ? (
+                  <option value="">No other tracked languages</option>
+                ) : (
+                  languageOptions.map((lang) => (
+                    <option key={lang} value={lang}>
+                      {lang}
+                    </option>
+                  ))
+                )}
+              </select>
+              {selectedLocale ? (
+                <>
+                  <div className="mb-2 shrink-0 rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                    <p className="text-sm font-medium text-zinc-100">{selectedLocale.remoteTitle}</p>
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                    <p className="whitespace-pre-wrap text-xs text-zinc-400">{selectedLocale.remoteDescription}</p>
+                  </div>
+                </>
+              ) : (
+                <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-zinc-800 p-4 text-center">
+                  <p className="text-xs text-zinc-500">
+                    {languageOptions.length === 0
+                      ? "Add a language column in the table first."
+                      : `No "${reviewLanguage}" translation yet for this video.`}
+                  </p>
+                  {reviewLanguage && (
+                    <button
+                      onClick={() => {
+                        startRowGenerate(video.videoId);
+                        setTargetLanguages(reviewLanguage);
+                      }}
+                      className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
+                    >
+                      Generate with AI for this language
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         ) : (
           <p className="text-sm text-red-400">Failed to load detail.</p>
         )}
 
-        <div className="border-t border-zinc-800 pt-4">
+        <div className="mt-4 shrink-0 border-t border-zinc-800 pt-4">
           {isRowGeneratePanelOpen(video.videoId) ? (
             renderGenerationPanel()
           ) : (
@@ -1574,6 +1630,9 @@ export function LanguagesManager() {
           // never clicked) counts as unsaved work -- closing the popup would otherwise silently
           // discard it, including any hand-edited text (owner instruction, 2026-09-21).
           hasUnsavedChanges={isRowGeneratePanelOpen(expandedVideo.videoId) && visibleTargets.length > 0}
+          // Wider than Content's default (owner instruction, 2026-09-21) for the side-by-side
+          // original/translation layout below.
+          widthClassName="max-w-7xl"
         >
           {renderVideoLocalizationDetail(expandedVideo)}
         </VideoDetailModal>

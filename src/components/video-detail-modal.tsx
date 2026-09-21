@@ -15,6 +15,10 @@ type VideoDetailModalProps = {
    * изменения"). Defaults to false so existing callers that don't track dirty state are
    * unaffected. */
   hasUnsavedChanges?: boolean;
+  /** Overrides the card's max-width Tailwind class (default `max-w-5xl`). Languages' per-video
+   * localization review uses a wider one (owner instruction, 2026-09-21) for its side-by-side
+   * original/translation layout; Content's own popup is unaffected since it doesn't pass this. */
+  widthClassName?: string;
   children: ReactNode;
 };
 
@@ -28,7 +32,14 @@ type VideoDetailModalProps = {
  * rendered inside is entirely up to the caller via `children`, since that content is exactly what
  * differs "в зависимости от того в какой категории мы сейчас находимся."
  */
-export function VideoDetailModal({ title, thumbnailUrl, onClose, hasUnsavedChanges = false, children }: VideoDetailModalProps) {
+export function VideoDetailModal({
+  title,
+  thumbnailUrl,
+  onClose,
+  hasUnsavedChanges = false,
+  widthClassName = "max-w-5xl",
+  children,
+}: VideoDetailModalProps) {
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   // Tracks where the CURRENT mouse gesture started, so a text-selection drag that begins inside
   // the card and is released past its edge is never mistaken for a click on the backdrop (owner
@@ -68,7 +79,7 @@ export function VideoDetailModal({ title, thumbnailUrl, onClose, hasUnsavedChang
       role="presentation"
     >
       <div
-        className="relative flex h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950 shadow-2xl"
+        className={`relative flex h-[92vh] w-full ${widthClassName} flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950 shadow-2xl`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
