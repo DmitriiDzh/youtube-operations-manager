@@ -1331,7 +1331,7 @@ async function setAppSetting(key: string, value: string): Promise<void> {
 }
 
 const LIVE_WRITES_ENABLED_SETTING_KEY = "live_writes_enabled";
-const MCP_RESTRICTED_MODE_SETTING_KEY = "mcp_restricted_mode";
+const MCP_CONNECTION_ENABLED_SETTING_KEY = "mcp_connection_enabled";
 
 /**
  * The persisted half of the Gate B toggle (owner instruction, 2026-09-21, Settings tab) --
@@ -1353,24 +1353,29 @@ export async function setLiveWritesEnabled(enabled: boolean): Promise<void> {
 }
 
 /**
- * Persisted counterpart to the `MCP_RESTRICTED_MODE` env var (owner instruction, 2026-09-21,
- * Settings tab, "by analogy" with the live-writes toggle above). Falls back to the env var, then
- * to `false` (today's existing default), when no Settings-tab value has ever been saved --
- * saving a value here takes precedence going forward. **Known limitation, stated rather than
- * solved (an MCP server's tool set is fixed at `createMcpServer()` construction time, standard
- * SDK behavior, not something this app can hot-swap):** a currently-running, long-lived MCP
- * connection keeps whatever tool set it started with; this setting takes effect the next time an
- * MCP client spawns/reconnects the server process (`startMcpServer()` reads it fresh on each
- * boot), not instantly for an already-open session.
+ * "MCP connection" toggle (owner instruction, 2026-09-21, Settings tab -- renamed and inverted
+ * from the earlier "MCP restricted mode": *"По началу MCP / агент от всего отключен и получит
+ * доступ только если я зайду в настройки и переключу этот тумблер... Все взаимодействия MCP /
+ * агента должны идти через это переключение."*). Defaults to `false` (fully disconnected --
+ * `createMcpServer` registers zero tools) when no value has ever been saved. Unlike
+ * `getLiveWritesEnabled`, this is a one-time setup toggle, not reset on every process boot --
+ * the project owner explicitly confirmed it should persist across sessions once turned on,
+ * the opposite of Gate B's "off by default every session" model. There is deliberately no
+ * environment-variable fallback (the prior `MCP_RESTRICTED_MODE` env var is removed) -- the
+ * Settings-tab toggle is now the one and only way to grant an MCP client any access at all.
+ * **Known limitation, stated rather than solved (an MCP server's tool set is fixed at
+ * `createMcpServer()` construction time, standard SDK behavior, not something this app can
+ * hot-swap):** a currently-running, long-lived MCP connection keeps whatever tool set it started
+ * with; this setting takes effect the next time an MCP client spawns/reconnects the server
+ * process (`startMcpServer()` reads it fresh on each boot), not instantly for an already-open
+ * session.
  */
-export async function getMcpRestrictedModeEnabled(): Promise<boolean> {
-  const stored = await getAppSetting(MCP_RESTRICTED_MODE_SETTING_KEY);
-  if (stored !== null) return stored === "true";
-  return process.env.MCP_RESTRICTED_MODE === "true" || process.env.MCP_RESTRICTED_MODE === "1";
+export async function getMcpConnectionEnabled(): Promise<boolean> {
+  return (await getAppSetting(MCP_CONNECTION_ENABLED_SETTING_KEY)) === "true";
 }
 
-export async function setMcpRestrictedModeEnabled(enabled: boolean): Promise<void> {
-  await setAppSetting(MCP_RESTRICTED_MODE_SETTING_KEY, enabled ? "true" : "false");
+export async function setMcpConnectionEnabled(enabled: boolean): Promise<void> {
+  await setAppSetting(MCP_CONNECTION_ENABLED_SETTING_KEY, enabled ? "true" : "false");
 }
 
 export async function upsertVideos(
