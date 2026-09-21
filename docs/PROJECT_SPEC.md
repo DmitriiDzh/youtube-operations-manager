@@ -950,6 +950,19 @@ buildSafeVideoUpdatePayload(remoteVideo, approvedChanges)
 
 These functions need extensive tests.
 
+**Field scope, permanent constraint (added 2026-09-21, explicit project-owner decision).** The
+Change Set / localization mechanism (XLSX import, AI generation, tracked-language management, and
+any localization-deletion capability built on it) has authority over exactly two fields:
+`title` and `description`, per language. It must never read, write, or delete any other field —
+not the video's own `defaultLanguage`/`defaultAudioLanguage`, not tags, category, privacy,
+scheduling, or any other `snippet`/`status`/`recordingDetails` field (those belong to
+`src/lib/video-details/`, a structurally separate module, per AGENTS.md §F), and not captions/
+subtitles (a distinct YouTube API resource this application does not integrate with at all).
+Extending this mechanism to cover any additional field is a separate product decision requiring
+the project owner's own explicit authorization each time — never something a coding agent infers
+is safe merely because the underlying YouTube API technically allows it, and never done by quietly
+widening an existing type (e.g. `ChangeField`) without first updating this section to say so.
+
 ---
 
 # 22. Idempotent Batch Execution
