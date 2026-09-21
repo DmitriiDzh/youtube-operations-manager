@@ -8,7 +8,7 @@ import type { ResolvedCredentials } from "@/lib/video-metadata/contracts";
 // ultimately implemented via src/lib/youtube.ts's existing videos.list wrappers (reused,
 // not duplicated, per docs/DEVELOPMENT_PLAYBOOK.md §6.4).
 
-function createAuthorizedClient(credentials: ResolvedCredentials) {
+export function createAuthorizedClient(credentials: ResolvedCredentials) {
   const oauth2 = createGoogleOAuthClient();
   oauth2.setCredentials({
     access_token: credentials.accessToken,

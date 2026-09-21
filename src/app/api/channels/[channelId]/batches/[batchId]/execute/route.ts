@@ -2,6 +2,7 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createBatchCore } from "@/lib/batches";
+import { createLiveWriteExecutorIfEnabled } from "@/lib/batches/adapters/write-executor";
 import { DomainError } from "@/lib/batches/contracts";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
@@ -10,13 +11,16 @@ const core = createBatchCore();
 const channelAccess = createChannelAccessCore();
 
 /**
- * Runs the batch's dry-run preview pipeline (identity check, fresh per-video fetch,
- * merge/diff, backup) -- never a real write, since every batch reaching this route was
- * created with `dryRun: true` forced at creation (see the parent route). The sibling
- * `execute` route (added 2026-09-21, the Settings-tab live-writes toggle) is the one
- * place a real write can happen, and only when that toggle is on --
- * `write-path-inventory.test.ts` still enforces that no OTHER API/MCP/CLI file references
- * a live-write-capable symbol.
+ * The one route in this API surface that can perform a real `videos.update` call (owner
+ * instruction, 2026-09-21 -- the Settings-tab live-writes toggle). Only reachable for a batch
+ * created with `dryRun: false` (the sibling `POST .../batches` route only allows that when the
+ * same toggle is on) -- a dry-run batch's ledger rows are already terminal at
+ * `DRY_RUN_COMPLETE` and this call would simply do nothing for them, never a write.
+ *
+ * `createLiveWriteExecutorIfEnabled` is Layer 1 of the two-layer barrier: if the toggle is off
+ * at this exact moment, it returns `null` and this route refuses BEFORE `executeBatch` (which
+ * itself still independently re-checks the same setting as Layer 2, inside the executor,
+ * immediately before any network call) is ever invoked.
  */
 export async function POST(
   _request: Request,
@@ -32,13 +36,26 @@ export async function POST(
     await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
     await core.requireBatchForChannel(channelId, batchId);
 
-    const result = await core.prepareBatchExecution({
+    const credentialRef = { userId: session.user.id };
+    const executor = await createLiveWriteExecutorIfEnabled(credentialRef);
+    if (!executor) {
+      return NextResponse.json(
+        {
+          error: "live_writes_disabled",
+          message: "Real YouTube writes are off -- turn on \"Live writes\" in Settings first.",
+        },
+        { status: 409 }
+      );
+    }
+
+    const summary = await core.executeBatch({
       batchId,
-      credentialRef: { userId: session.user.id },
+      credentialRef,
       expectedChannelId: channelId,
+      executor,
     });
 
-    return NextResponse.json(result);
+    return NextResponse.json(summary);
   } catch (error) {
     if (error instanceof DomainError) {
       return NextResponse.json(

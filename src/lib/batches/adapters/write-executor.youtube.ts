@@ -1,4 +1,5 @@
 import type { youtube_v3 } from "googleapis";
+import { getLiveWritesEnabled } from "@/lib/db";
 import { applyVideoMetadataUpdate } from "@/lib/youtube";
 import { DomainError, type PreparedPayload, type WriteExecutor, type WriteExecutorResult } from "../contracts";
 import { pickWritableSnippetFields } from "../merge";
@@ -167,27 +168,29 @@ export async function performYoutubeWrite(
 }
 
 /**
- * MANDATORY LIVE-WRITE BARRIER (AGENTS.md §K; this task's explicit Slice 4 requirement).
+ * LIVE-WRITE BARRIER, LAYER 2 (AGENTS.md §K; owner instruction 2026-09-21 -- the Settings tab
+ * "live writes" toggle -- is the explicit, reviewed activation this function's own prior
+ * doc-comment required before it could ever become conditional; see that instruction and
+ * `docs/TECHNICAL_DEBT.md` RISK-09 for the authorization trail).
  *
- * Unconditional, parameter-free, hard-coded refusal -- deliberately NOT gated by any
- * environment variable, config flag, request field, or test helper, so nothing at
- * runtime can silently enable it. `dryRun` never reaches this function at all (dry-run
- * batches terminate at DRY_RUN_COMPLETE in `prepareLedgerRow`, long before
- * `executeBatch`/`executeWithRetry` would ever call `attemptWrite`), so this barrier is
- * independent of and additional to that mechanism, not a substitute for it.
- *
- * The only way past this function is to edit this file and remove/condition this throw
- * -- a reviewable source change, not a runtime toggle -- as its own separate,
- * explicitly-authorized activation procedure performed after Gate B (see
- * docs/TECHNICAL_DEBT.md RISK-09/Gate B and AGENTS.md §K's real-write authorization
- * requirement). Do not weaken, wrap, or make this conditional as part of any future
- * change that is not itself that explicitly-authorized activation.
+ * Re-reads the persisted setting itself, at call time -- never passed in as a parameter, never
+ * captured once at construction -- so a stale value cached anywhere else can't defeat this
+ * specific check. This is deliberately the SECOND of two independent layers: Layer 1 is
+ * `src/lib/batches/adapters/write-executor.ts`'s `createLiveWriteExecutorIfEnabled`, which
+ * constructs no `WriteExecutor` at all unless the same setting is already on -- so with the
+ * toggle off, there is still no code path to `videos.update`, exactly as before this change.
+ * `dryRun` never reaches this function at all (dry-run batches terminate at
+ * DRY_RUN_COMPLETE in `prepareLedgerRow`, long before `executeBatch`/`executeWithRetry` would
+ * ever call `attemptWrite`), so this barrier is independent of and additional to that
+ * mechanism, not a substitute for it.
  */
-function assertLiveWritesAuthorized(): void {
+async function assertLiveWritesAuthorized(): Promise<void> {
+  if (await getLiveWritesEnabled()) return;
+
   throw new DomainError({
     code: "live_writes_disabled",
     message:
-      "Real YouTube videos.update execution is disabled pending a separate, explicitly-authorized activation procedure required after Gate B (AGENTS.md §K, docs/TECHNICAL_DEBT.md RISK-09). This is not a configuration flag; it requires a reviewed source change.",
+      "Real YouTube videos.update execution is disabled -- the Settings tab's \"live writes\" toggle is off (defaults off every session, docs/TECHNICAL_DEBT.md RISK-09/Gate B).",
   });
 }
 
@@ -195,14 +198,15 @@ function assertLiveWritesAuthorized(): void {
  * Production factory for the real `WriteExecutor`. Not constructed anywhere in
  * `src/lib/batches/index.ts` or any API route (Layer 1 of the barrier -- an inventory/
  * grep check, AC-SCOPE-01's verification method, confirms no production code path
- * reaches this function at all). Even if it were, `attemptWrite` itself refuses every
- * call via `assertLiveWritesAuthorized` before touching `client` or the network (Layer
+ * reaches this function at all except `write-executor.ts`'s `createLiveWriteExecutorIfEnabled`,
+ * itself gated on the same setting). Even when it is, `attemptWrite` itself independently
+ * re-checks via `assertLiveWritesAuthorized` before touching `client` or the network (Layer
  * 2). Two independent layers, neither dependent on the other holding.
  */
 export function createYoutubeWriteExecutor(deps: { getClient(): Promise<MinimalYoutubeWriteClient> }): WriteExecutor {
   return {
     async attemptWrite(payload: unknown): Promise<WriteExecutorResult> {
-      assertLiveWritesAuthorized();
+      await assertLiveWritesAuthorized();
       const client = await deps.getClient();
       return performYoutubeWrite(client, payload);
     },

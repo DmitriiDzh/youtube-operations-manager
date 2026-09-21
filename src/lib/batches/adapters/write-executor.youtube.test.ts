@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { getLiveWritesEnabled, setLiveWritesEnabled } from "@/lib/db";
 import {
   classifyYoutubeWriteError,
   createYoutubeWriteExecutor,
@@ -219,5 +220,26 @@ test("attemptWrite: the barrier fires regardless of payload content (not gated b
       () => executor.attemptWrite(payload),
       (error: unknown) => error instanceof DomainError && error.code === "live_writes_disabled"
     );
+  }
+});
+
+test("attemptWrite: with the persisted live-writes setting on, the barrier lets the call through to the client (Layer 2 mirror of the off case)", async () => {
+  const alreadyEnabled = await getLiveWritesEnabled();
+  assert.equal(alreadyEnabled, false, "sanity check -- every process boot forces this off; a prior test left it on");
+
+  await setLiveWritesEnabled(true);
+  try {
+    let clientConstructed = false;
+    const executor = createYoutubeWriteExecutor({
+      async getClient(): Promise<MinimalYoutubeWriteClient> {
+        clientConstructed = true;
+        return { videos: { update: (async () => ({ data: {} })) as unknown as MinimalYoutubeWriteClient["videos"]["update"] } };
+      },
+    });
+
+    await executor.attemptWrite(preparedPayload);
+    assert.equal(clientConstructed, true, "the barrier must let the call through once the setting is on");
+  } finally {
+    await setLiveWritesEnabled(false);
   }
 });

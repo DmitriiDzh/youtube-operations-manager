@@ -9,6 +9,7 @@ import { createVideoMetadataCore } from "@/lib/video-metadata";
 import { DomainError } from "@/lib/video-metadata/contracts";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth/service";
+import { getMcpRestrictedModeEnabled } from "@/lib/db";
 import type { CredentialRef } from "@/lib/video-metadata/contracts";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
 import { OperationLockError } from "@/lib/operation-lock";
@@ -855,6 +856,11 @@ const MCP_RESTRICTED_MODE_EXCLUDED_TOOLS = new Set([
   "playlist_remove_videos",
 ]);
 
+// Env-var fallback only -- `startMcpServer()` (the real entrypoint) prefers the persisted
+// Settings-tab value (`getMcpRestrictedModeEnabled` in src/lib/db.ts) and falls back to this
+// only when no value has ever been explicitly saved there. Still used directly by
+// `createMcpServer`'s own default so a caller that never touches `startMcpServer` (tests, an
+// embedding script) keeps the original env-var-only behavior.
 function isMcpRestrictedModeEnabled(): boolean {
   return process.env.MCP_RESTRICTED_MODE === "true" || process.env.MCP_RESTRICTED_MODE === "1";
 }
@@ -1138,7 +1144,15 @@ export function createMcpServer(
 }
 
 export async function startMcpServer() {
-  const server = createMcpServer();
+  // Persisted setting takes precedence over the env var when a value has been explicitly
+  // saved via the Settings tab (owner instruction, 2026-09-21, "by analogy" with the
+  // live-writes toggle) -- see getMcpRestrictedModeEnabled's own doc comment in
+  // src/lib/db.ts for the one known limitation: this is read once, here, at process
+  // startup, since createMcpServer()'s tool registration is itself fixed at construction
+  // time -- an already-running MCP connection keeps its existing tool set until it
+  // reconnects, this is never hot-swapped mid-session.
+  const restrictedMode = await getMcpRestrictedModeEnabled();
+  const server = createMcpServer(undefined, { restrictedMode });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
