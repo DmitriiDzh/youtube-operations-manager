@@ -102,7 +102,13 @@ function createChangesetsFixture() {
     },
   };
 
-  const changeSetServices = createChangeSetServices({ channelStore, changeSetStore, idGenerator: () => `cs-id-${++idCounter}`, logger: { info() {}, error() {} } });
+  const changeSetServices = createChangeSetServices({
+    channelStore,
+    changeSetStore,
+    crdtConflicts: { async listConflictedChangeIds() { return new Set<string>(); } },
+    idGenerator: () => `cs-id-${++idCounter}`,
+    logger: { info() {}, error() {} },
+  });
 
   return { channelStore, changeSetServices };
 }

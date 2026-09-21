@@ -746,14 +746,13 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 ---
 
-## RISK-47 — Approving a Change does not check whether a CRDT field conflict is currently open on it — OPEN, 2026-09-21 (CD6, advisor review)
+## RISK-47 — Approving a Change does not check whether a CRDT field conflict is currently open on it — FIXED, 2026-09-21
 
 - **Context:** `src/lib/change-drafts/`'s CRDT-level `FieldConflict` (two devices concurrently edited the same field, surfaced in the Merge tab, CD6) is a different concept from `changesets`'s own pre-existing `conflictStatus` (baseline vs. currently-synced-remote-value, checked at approval time, `docs/ARCHITECTURE.md` §6.7). Once merged, Automerge deterministically picks one of the conflicting values as the SQL-projected "current" one (`change_sets`/`changes`) -- `change-set-review.tsx` and the approve/reject pipeline see only that single value, with no signal that it was actually contested.
-- **Actual risk:** An operator could approve a change whose `proposedValue` is Automerge's arbitrary pick, while a real, unresolved CRDT conflict on that exact field is sitting in the Merge tab -- not a silent data-loss bug (AC-CRDT-02 is satisfied: the conflict is surfaced, and the header badge is global, not per-tab), but a real product gap: nothing stops approval from happening before the human decision the Merge tab exists to collect.
-- **Required remediation (not designed yet, deliberately):** either block approval of a `Change` whose `changeId` has any open `FieldConflict`, or surface the conflict inline in `change-set-review.tsx` itself so the operator sees it at approval time rather than needing to separately check the Merge tab.
-- **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON` -- CD5/CD6 shipped display+resolution, not this cross-surface integration; not requested or designed yet.
-- **Approval required from:** project owner, on whether/how to couple these two review surfaces.
-- **Status:** OPEN, 2026-09-21.
+- **Actual risk (now closed):** An operator could approve a change whose `proposedValue` is Automerge's arbitrary pick, while a real, unresolved CRDT conflict on that exact field is sitting in the Merge tab.
+- **Fix (owner: "Займись этими рисками"):** chose to block approval (the option of the two originally listed that reuses the exact pattern this pipeline already has for its own `conflictStatus`, rather than a larger UI redesign). `changesets/services.ts`'s `ServiceDependencies` gained a `crdtConflicts.listConflictedChangeIds(channelId)` dependency, wired in `changesets/index.ts` via `createChangeDraftsCoreForProduction().listConflicts()`. `approveChange` now throws a new shared `crdt_conflict_open` `DomainError` (409) if the target change has any open field conflict -- surfaced through the existing generic error-banner pattern in `change-set-review.tsx` with no UI changes needed, since the message text is self-explanatory ("...resolve it in the Merge tab before approving"). `approveAllValid` silently excludes such a change from the bulk approval, the same way it already excludes an invalid/conflicting one, rather than failing the whole batch. `rejectChange`/`rejectAllPending` are deliberately NOT gated -- rejecting a contested change discards it either way, so an open CRDT conflict can never make a rejection incorrect (the pre-existing test "rejecting is always allowed, including for invalid/conflicting changes" already encodes this).
+- **Tests:** 4 new (`changesets/services.test.ts`): single approve refused with `crdt_conflict_open` and no partial mutation; approvable once the conflict is no longer reported; bulk approve excludes the conflicted change without failing the batch; two other test files constructing `createChangeSetServices` directly updated with a no-op fake for the new dependency.
+- **Status:** FIXED, 2026-09-21.
 
 ---
 
@@ -807,6 +806,6 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-44 | `languages-manager.tsx`'s single global error banner can be overwritten by an unrelated, later-arriving error | none blocking | OPEN |
 | RISK-45 | Reselecting a deselected video in bulk AI-generation intentionally resurfaces its proposal (decision record, not a risk) | none | RESOLVED, 2026-09-21 |
 | RISK-46 | A channel whose Automerge document diverged across two devices has no in-app resolution path (CD5) | DEFERRED_WITH_DOCUMENTED_REASON now; BLOCKS_OPERATIONS_RELEASE once multi-device use is real | OPEN |
-| RISK-47 | Approving a Change doesn't check for an open CRDT field conflict on it (CD6) | DEFERRED_WITH_DOCUMENTED_REASON | OPEN |
+| RISK-47 | Approving a Change doesn't check for an open CRDT field conflict on it (CD6) | none (fixed) | FIXED, 2026-09-21 |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
