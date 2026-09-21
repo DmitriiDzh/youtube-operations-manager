@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "./confirm-dialog";
+import { ToggleSwitch } from "./toggle-switch";
 
 type Settings = {
   liveWritesEnabled: boolean;
@@ -26,6 +27,7 @@ export function LiveWritesSettings() {
   const [error, setError] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
   const [confirmingLiveWrites, setConfirmingLiveWrites] = useState(false);
+  const [confirmingMcpConnection, setConfirmingMcpConnection] = useState(false);
 
   const fetchSettings = useCallback(async () => {
     const res = await fetch("/api/settings");
@@ -78,20 +80,20 @@ export function LiveWritesSettings() {
           YouTube. This is layer 1 of a two-layer barrier -- turning it on does not by itself send
           anything.
         </p>
-        <label className="mt-2 flex items-center gap-2 text-sm text-zinc-300">
-          <input
-            type="checkbox"
+        <div className="mt-2 flex items-center gap-2">
+          <ToggleSwitch
+            label="Enable live writes for this session"
             checked={draft.liveWritesEnabled}
-            onChange={(e) => {
-              if (e.target.checked) {
+            onChange={(checked) => {
+              if (checked) {
                 setConfirmingLiveWrites(true);
               } else {
                 setDraft({ ...draft, liveWritesEnabled: false });
               }
             }}
           />
-          Enable live writes for this session
-        </label>
+          <span className="text-sm text-zinc-300">Enable live writes for this session</span>
+        </div>
       </div>
 
       <div className="border-t border-zinc-800 pt-4">
@@ -105,14 +107,20 @@ export function LiveWritesSettings() {
           restart. Known limitation: this takes effect the next time an MCP client spawns or
           reconnects the server process, not instantly for a connection that is already open.
         </p>
-        <label className="mt-2 flex items-center gap-2 text-sm text-zinc-300">
-          <input
-            type="checkbox"
+        <div className="mt-2 flex items-center gap-2">
+          <ToggleSwitch
+            label="Enable MCP / agent connection"
             checked={draft.mcpConnectionEnabled}
-            onChange={(e) => setDraft({ ...draft, mcpConnectionEnabled: e.target.checked })}
+            onChange={(checked) => {
+              if (checked) {
+                setConfirmingMcpConnection(true);
+              } else {
+                setDraft({ ...draft, mcpConnectionEnabled: false });
+              }
+            }}
           />
-          Enable MCP / agent connection
-        </label>
+          <span className="text-sm text-zinc-300">Enable MCP / agent connection</span>
+        </div>
       </div>
 
       {error && <p className="text-xs text-red-400">{error}</p>}
@@ -143,6 +151,20 @@ export function LiveWritesSettings() {
           onConfirm={() => {
             setConfirmingLiveWrites(false);
             setDraft({ ...draft, liveWritesEnabled: true });
+          }}
+        />
+      )}
+
+      {confirmingMcpConnection && (
+        <ConfirmDialog
+          title="Allow an MCP client / agent to connect?"
+          description="Any MCP client (Codex, Claude, etc.) that spawns or reconnects to the server after this is saved will see the full tool set -- including apply and playlist_* write-capable tools, not just read/propose/create ones. This does not by itself send anything to YouTube -- the separate Live writes toggle above still gates any real write. Turn it back off any time; unlike Live writes, this stays on across restarts until you turn it off yourself."
+          confirmLabel="Enable"
+          confirmVariant="danger"
+          onCancel={() => setConfirmingMcpConnection(false)}
+          onConfirm={() => {
+            setConfirmingMcpConnection(false);
+            setDraft({ ...draft, mcpConnectionEnabled: true });
           }}
         />
       )}
