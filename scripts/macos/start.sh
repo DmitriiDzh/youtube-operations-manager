@@ -62,7 +62,8 @@ if [ -n "$CURRENT_REV" ]; then
 fi
 
 if [ -n "$NEED_BUILD" ]; then
-  echo "Building the application (no build found, or the checked-out commit changed since the last build)..."
+  echo "Installing dependencies and building the application (no build found, or the checked-out commit changed since the last build)..."
+  npm install
   npm run build
   if [ -n "$CURRENT_REV" ]; then
     echo "$CURRENT_REV" > "$BUILD_MARKER"

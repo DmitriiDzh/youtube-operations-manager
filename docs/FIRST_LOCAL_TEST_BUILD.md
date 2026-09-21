@@ -87,10 +87,11 @@ ever want to force a rebuild by hand.)
 > the documented Next.js 16 CLI behavior (`node_modules/next/dist/docs/.../cli/next.md`), but has
 > **not** been executed on a real Windows machine — none was available in the environment this
 > task was implemented in. Treat the steps above as the primary remaining manual verification
-> before this build is operator-ready on Windows (see §7). The rebuild-staleness logic in §3.4 was
-> verified against isolated throwaway git repositories on macOS (`sh`'s POSIX behavior, not
-> `cmd.exe`'s), and the equivalent `.bat` logic was reasoned through by hand but not executed —
-> this remains open, same as the rest of this document's Windows status.
+> before this build is operator-ready on Windows (see §7). The `.bat` logic for §3.4's
+> rebuild-staleness check was reasoned through by hand and syntax-checked, but not executed on
+> real Windows -- the marker round-trip (`>` redirect then `set /p`) is the one piece worth a
+> deliberate first check, since a subtle whitespace bug there would silently rebuild on every
+> single launch rather than failing loudly.
 
 ## 4. Launching on macOS
 
