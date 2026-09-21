@@ -543,3 +543,66 @@ just the instant of the file copy.
   which commit was last built, and rebuild automatically — this is what makes the operator's own
   `git pull` actually take effect on the next launch, rather than silently continuing to serve a
   build from before that pull (`docs/FIRST_LOCAL_TEST_BUILD.md` §3/§4).
+
+## 14. Phase 8 (Intelligence Foundation) — schema-only first sub-slice
+
+### 14.1 Status
+
+Assigned 2026-09-22 (Telegram, project owner: "Приступить к полной реализации фазы 8"), on
+`feature/phase-8-intelligence-foundation` (not yet merged to `dev` without the owner's separate,
+explicit consent for that branch specifically). Only `docs/roadmap/plans/PHASE_8_PLAN.md` §6
+slice 2 (the additive `video_metrics_daily` table + tests) is implemented so far. Slices 1
+(Analytics OAuth scope re-consent) and 3-4 (the Analytics adapter, manual "collect now" trigger,
+Web UI) remain **not started** — slice 1 needs the project owner's own explicit decision on
+requesting a new OAuth scope (a user-facing re-consent change) and on which metric to collect
+first, neither of which blocks the table itself (`metricName` as a column, not a fixed set of
+typed columns, is precisely what makes the metric choice non-structural — see §14.2).
+
+### 14.2 Schema (additive, `SCHEMA_MIGRATIONS` version 8)
+
+```text
+video_metrics_daily (new) — channelId, videoId, metricDate (ISO date), metricName (e.g. "views"),
+                             metricValue, collectedAt
+                             PRIMARY KEY (videoId, metricDate, metricName)
+                             + index on channelId
+```
+
+No `videos`/`channels` schema change — this is a purely additive new table alongside the existing
+"current snapshot" `videos` table, storing a time-series `videos` was never meant to hold.
+`channelId` is stored directly on the row (per `docs/PROJECT_SPEC.md` §33's canonical
+`channelId`/`videoId`/`date` linkage) rather than requiring a join through `videos` to scope a
+query to a channel. **Deliberately no foreign key** on `videoId`/`channelId`, following the
+`video_edit_audit_events` precedent (§13 area of this file predates it; see that table's own
+comment in `src/lib/db.ts`) — this database defaults to `foreign_keys=ON` (`docs/TECHNICAL_DEBT.md`
+RISK-33), and an FK here would add a new ordering constraint to `applySnapshotToDatabase`/
+`scrubDatabaseCopy` (`src/lib/snapshot/`) for a table that, like the audit trail, should be free to
+outlive the specific `videos`/`channels` row it was collected against.
+
+### 14.3 Persistence access (`src/lib/db.ts`, additive)
+
+```text
+upsertVideoMetric(input)          — insert-or-update by the table's own primary key; re-collecting
+                                     an already-collected date overwrites metricValue/collectedAt,
+                                     never creates a duplicate row (tested against real SQLite)
+listVideoMetricsByVideo(videoId)  — full metric history for one video
+```
+
+No `src/lib/analytics/` (or equivalent) domain module exists yet — these two functions are called
+directly by tests today (`src/lib/db.test.ts`), with no adapter/service/route consumer, since a
+consumer needs the still-undecided Analytics API adapter (slice 3) to have anything real to write.
+Wrapping these in a store adapter follows the normal §6.2 pattern once that module exists.
+
+### 14.4 Known limitations
+
+No Analytics API client, no OAuth scope request, no route, no UI — this slice is the persistence
+primitive only, exactly `PHASE_8_PLAN.md` §6 slice 2's scope, deliberately not a vertical slice
+end-to-end. See `docs/roadmap/BACKLOG.md` BL-050 for the current blocking status of the remaining
+slices (not yet in `docs/ROADMAP_STATUS.md` — that file records only what has actually merged/
+completed, per the `roadmap-backlog` skill's own convention).
+
+`metricValue` is `INTEGER NOT NULL`, matching the plan's own DDL and correct for `views` (an
+integer count) — but `docs/PROJECT_SPEC.md` §33's own metric list also includes non-integer
+metrics (e.g. "average view duration," "CTR where available"). Storing one of those under the
+current column type is not solved here and would need its own explicit type decision — a
+non-additive change to this table under `docs/decisions/0001-additive-idempotent-schema-strategy.md`
+— before slice 3 picks a metric other than `views`.

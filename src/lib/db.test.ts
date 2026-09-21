@@ -6,10 +6,13 @@ import path from "node:path";
 import { createClient, type Client } from "@libsql/client";
 import {
   copyLegacyDatabaseInto,
+  createIsolatedDb,
   initializeDatabaseSchema,
+  listVideoMetricsByVideo,
   SCHEMA_BASELINE_VERSION,
   SCHEMA_CURRENT_VERSION,
   SCHEMA_MIGRATIONS,
+  upsertVideoMetric,
 } from "./db";
 import { readSchemaVersion } from "@/lib/schema-versioning";
 import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
@@ -47,6 +50,49 @@ test("initializeDatabaseSchema: a fresh database ends stamped at SCHEMA_CURRENT_
     assert.equal(await readSchemaVersion(client), SCHEMA_CURRENT_VERSION);
     assert.equal(await tableExists(client, "users"), true);
     assert.equal(await tableExists(client, "app_operation_locks"), true);
+    assert.equal(await tableExists(client, "video_metrics_daily"), true);
+  }));
+
+// Phase 8 (docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 2, §7 acceptance criteria).
+test("video_metrics_daily: upserting the same (videoId, metricDate, metricName) updates the existing row instead of creating a duplicate", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await upsertVideoMetric(
+      { channelId: "UC_TEST", videoId: "vid1", metricDate: "2026-09-20", metricName: "views", metricValue: 100 },
+      isolatedDb
+    );
+    await upsertVideoMetric(
+      { channelId: "UC_TEST", videoId: "vid1", metricDate: "2026-09-20", metricName: "views", metricValue: 150 },
+      isolatedDb
+    );
+
+    const rows = await listVideoMetricsByVideo("vid1", isolatedDb);
+    assert.equal(rows.length, 1, "re-collecting an already-collected date must update, not duplicate, the row");
+    assert.equal(rows[0].metricValue, 150, "the later collection's value must win");
+  }));
+
+test("video_metrics_daily: distinct metric names for the same video/date coexist as separate rows", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await upsertVideoMetric(
+      { channelId: "UC_TEST", videoId: "vid1", metricDate: "2026-09-20", metricName: "views", metricValue: 100 },
+      isolatedDb
+    );
+    await upsertVideoMetric(
+      { channelId: "UC_TEST", videoId: "vid1", metricDate: "2026-09-20", metricName: "watchTimeMinutes", metricValue: 42 },
+      isolatedDb
+    );
+
+    const rows = await listVideoMetricsByVideo("vid1", isolatedDb);
+    assert.equal(rows.length, 2);
+    assert.deepEqual(
+      rows.map((r) => [r.metricName, r.metricValue]).sort(),
+      [["views", 100], ["watchTimeMinutes", 42]].sort()
+    );
   }));
 
 // AC-SCHEMA-02

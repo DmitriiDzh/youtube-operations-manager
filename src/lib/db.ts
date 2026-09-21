@@ -3,7 +3,7 @@ import { readFile } from "fs/promises";
 import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
 import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, primaryKey, index } from "drizzle-orm/sqlite-core";
 import path from "path";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
@@ -474,6 +474,45 @@ export const appSettings = sqliteTable("app_settings", {
   value: text("value").notNull(),
 });
 
+/**
+ * Phase 8 (Intelligence Foundation, `docs/roadmap/plans/PHASE_8_PLAN.md` §5/§6 slice 2),
+ * SCHEMA_MIGRATIONS version 8. Historical time-series metrics, additive alongside `videos`
+ * (a "current snapshot" table, never a history) -- `docs/PROJECT_SPEC.md` §33's canonical
+ * linkage is `channelId`/`videoId`/`date`, so `channelId` is stored directly here rather than
+ * requiring every reader to join through `videos` to scope a query to a channel. `metricName`
+ * (rather than one column per metric, e.g. `views`/`watchTimeMinutes`) keeps adding a future
+ * metric purely additive -- no migration needed, consistent with
+ * `docs/decisions/0002-additive-schema-versioning.md`.
+ *
+ * **No foreign key on `videoId`/`channelId`**, deliberately following the `video_edit_audit_events`
+ * precedent above (see that table's own comment): this database defaults to `foreign_keys=ON`
+ * (RISK-33), and `applySnapshotToDatabase`/`scrubDatabaseCopy` (`src/lib/snapshot/`) already have
+ * to reason about table restore/scrub ordering under that pragma -- an FK edge here would add a
+ * new ordering constraint to both for a table that, like the audit trail, should be free to
+ * outlive the specific `videos`/`channels` row it was collected against.
+ *
+ * Composite primary key `(videoId, metricDate, metricName)` mirrors the plan's own DDL exactly:
+ * one row per video/day/metric, so re-collecting an already-collected date is a natural upsert,
+ * not a duplicate-row bug (see `upsertVideoMetric` below).
+ */
+export const videoMetricsDaily = sqliteTable(
+  "video_metrics_daily",
+  {
+    channelId: text("channel_id").notNull(),
+    videoId: text("video_id").notNull(),
+    metricDate: text("metric_date").notNull(), // ISO date (YYYY-MM-DD), the Analytics API's own reporting-day granularity
+    metricName: text("metric_name").notNull(), // e.g. "views" -- never a bag of untyped columns
+    metricValue: integer("metric_value").notNull(),
+    collectedAt: integer("collected_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    primaryKey({ columns: [table.videoId, table.metricDate, table.metricName] }),
+    index("video_metrics_daily_channel_id_idx").on(table.channelId),
+  ]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -584,6 +623,26 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     apply: async (client) => {
       await client.execute(
         "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+      );
+    },
+  },
+  {
+    version: 8,
+    description:
+      "video_metrics_daily -- Phase 8 historical metrics time-series (docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 2); no foreign keys, see the table's own comment above for why",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS video_metrics_daily (" +
+          "channel_id TEXT NOT NULL, " +
+          "video_id TEXT NOT NULL, " +
+          "metric_date TEXT NOT NULL, " +
+          "metric_name TEXT NOT NULL, " +
+          "metric_value INTEGER NOT NULL, " +
+          "collected_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "PRIMARY KEY (video_id, metric_date, metric_name))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS video_metrics_daily_channel_id_idx ON video_metrics_daily(channel_id)"
       );
     },
   },
@@ -975,6 +1034,7 @@ const dbSchema = {
   videoExecutionLocks,
   auditEvents,
   videoEditAuditEvents,
+  videoMetricsDaily,
 };
 
 export const db = drizzle(client, { schema: dbSchema });
@@ -2575,4 +2635,67 @@ export async function listVideoEditAuditEventsByVideo(
     .orderBy(videoEditAuditEvents.id);
 
   return rows.map(mapStoredVideoEditAuditEvent);
+}
+
+// video_metrics_daily -- see the table's own comment above (near videoMetricsDaily's
+// definition) for the schema rationale (docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 2).
+export type StoredVideoMetric = {
+  channelId: string;
+  videoId: string;
+  metricDate: string;
+  metricName: string;
+  metricValue: number;
+  collectedAt: Date;
+};
+
+function mapStoredVideoMetric(row: typeof videoMetricsDaily.$inferSelect): StoredVideoMetric {
+  return {
+    channelId: row.channelId,
+    videoId: row.videoId,
+    metricDate: row.metricDate,
+    metricName: row.metricName,
+    metricValue: row.metricValue,
+    collectedAt: row.collectedAt,
+  };
+}
+
+// Upsert by the table's own primary key (videoId, metricDate, metricName) -- re-collecting an
+// already-collected date is idempotent (the existing row's channelId/metricValue/collectedAt are
+// all overwritten with the new collection's result), never a duplicate row. `collectedAt` is
+// deliberately "when this row's CURRENT value was collected" (last-write time), not "when this
+// metric-day was first captured" -- there is no separate first-seen timestamp on this table, by
+// design, since nothing in docs/roadmap/plans/PHASE_8_PLAN.md needs one; if a future slice needs
+// first-seen tracking, that is an additive column, not a change to this function. See
+// docs/roadmap/plans/PHASE_8_PLAN.md §7's explicit acceptance criterion for the idempotency itself.
+export async function upsertVideoMetric(
+  input: {
+    channelId: string;
+    videoId: string;
+    metricDate: string;
+    metricName: string;
+    metricValue: number;
+  },
+  database: AppDb = db
+): Promise<void> {
+  const collectedAt = new Date();
+  await database
+    .insert(videoMetricsDaily)
+    .values({ ...input, collectedAt })
+    .onConflictDoUpdate({
+      target: [videoMetricsDaily.videoId, videoMetricsDaily.metricDate, videoMetricsDaily.metricName],
+      set: { channelId: input.channelId, metricValue: input.metricValue, collectedAt },
+    });
+}
+
+export async function listVideoMetricsByVideo(
+  videoId: string,
+  database: AppDb = db
+): Promise<StoredVideoMetric[]> {
+  const rows = await database
+    .select()
+    .from(videoMetricsDaily)
+    .where(eq(videoMetricsDaily.videoId, videoId))
+    .orderBy(videoMetricsDaily.metricDate, videoMetricsDaily.metricName);
+
+  return rows.map(mapStoredVideoMetric);
 }
