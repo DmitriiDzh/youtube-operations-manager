@@ -333,20 +333,26 @@ export function LanguagesManager() {
     }
   }, [channelId, fetchOverview, fetchChangeSets]);
 
+  /** Invalidates whatever `handleGenerate()` request is currently in flight -- a response that
+   * arrives after this is bumped is recognized as stale and never applied. Deliberately does
+   * NOT touch `generating` (round-3 independent-review finding, 2026-09-21: an earlier version of
+   * `resetGenerationSession` force-cleared `generating` here, which re-enabled "Generate
+   * proposals" while a real, possibly billed request from the abandoned session was still
+   * in flight -- letting the operator fire a second real provider call concurrently with the
+   * first. `generating` is now only ever cleared by the specific fetch that set it true, in its
+   * own `finally`, so at most one real generate request can be in flight from this component at
+   * any time, regardless of how many sessions are opened and abandoned while it runs.) */
+  function bumpGenerationRequestId() {
+    generationRequestIdRef.current += 1;
+  }
+
   /** Clears whatever the previous generation session produced -- shared by every path that starts
    * or ends one (independent-review finding, 2026-09-21: startBulkGenerate/
    * startBulkGenerateForLanguage previously skipped this, so switching from an open row-scoped
    * session straight into a bulk one could silently carry the earlier video's proposals into a
-   * Change Set for a completely different target). Also bumps `generationRequestIdRef` so an
-   * in-flight `handleGenerate()` fetch from the session being abandoned can never land its
-   * response into whatever session opens next (round-2 independent-review finding: a slow
-   * request from a closed panel could otherwise resolve after a *different* video's panel was
-   * already open, silently mislabeling that video with the first request's proposals), and resets
-   * `generating` immediately rather than leaving it stuck true until that abandoned fetch's own
-   * `finally` eventually runs. */
+   * Change Set for a completely different target). */
   function resetGenerationSession() {
-    generationRequestIdRef.current += 1;
-    setGenerating(false);
+    bumpGenerationRequestId();
     setTargets([]);
     setRowErrors([]);
     setCreatedChangeSetId(null);
@@ -362,16 +368,21 @@ export function LanguagesManager() {
     return generateScope?.kind === "row" && generateScope.videoId === videoId;
   }
 
-  // Structural fix for a round-2 independent-review finding: round 1 only taught the "Clear"
-  // button to close a bulk-scoped generate panel when the selection empties, but `toggleSelected`
-  // (unchecking the last selected row) can empty `selectedIds` too, and was missed. Rather than
-  // re-auditing every place that can touch `selectedIds` for this one invariant, enforce it once,
-  // structurally: whenever the selection is empty, a bulk-scoped panel has nothing left to be
-  // scoped to and must close, regardless of which code path emptied it.
+  // Keeps a bulk-scoped generation session in sync with the selection it is scoped to, whichever
+  // code path changes that selection (independent-review findings, 2026-09-21):
+  //   - round 2: emptying the selection entirely (via "Clear" or unchecking the last row) must
+  //     close the panel -- there is nothing left for a bulk session to be scoped to.
+  //   - round 3: deselecting ONE of several still-selected videos must drop that video's already-
+  //     generated proposal too, or "Create Change Set from reviewed proposals" could still submit
+  //     a Change Set for a video the operator just removed from the bulk selection.
   useEffect(() => {
-    if (selectedIds.size === 0 && generateScope?.kind === "bulk") {
+    if (generateScope?.kind !== "bulk") return;
+    if (selectedIds.size === 0) {
       closeGeneratePanel();
+      return;
     }
+    setTargets((prev) => prev.filter((t) => selectedIds.has(t.videoId)));
+    setRowErrors((prev) => prev.filter((e) => e.videoId === null || selectedIds.has(e.videoId)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIds, generateScope]);
 
@@ -488,13 +499,16 @@ export function LanguagesManager() {
       return;
     }
 
-    // Captured before the request starts; resetGenerationSession() (called whenever this session
+    // Captured before the request starts; bumpGenerationRequestId() (called whenever this session
     // is abandoned or superseded -- closing the panel, switching row<->bulk, Clear, the selection
-    // emptying) bumps generationRequestIdRef, so a response that arrives after that point is
-    // recognized as stale below and never applied (round-2 independent-review finding, 2026-09-21:
-    // a slow request from an abandoned session could otherwise land its result into whichever
-    // session happened to be open when it finally resolved).
-    const requestId = (generationRequestIdRef.current += 1);
+    // emptying) invalidates it, so a response that arrives after that point is recognized as
+    // stale below and never applied to the (now different, or gone) review UI (round-2
+    // independent-review finding, 2026-09-21). `generating` itself is intentionally NOT gated by
+    // this staleness check -- see bumpGenerationRequestId's doc comment (round-3 finding): it is
+    // this specific request's own `finally`, unconditionally, so at most one real generate request
+    // can ever be in flight from this component regardless of session switches in the meantime.
+    bumpGenerationRequestId();
+    const requestId = generationRequestIdRef.current;
     setGenerating(true);
     try {
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/ai-localization/generate`, {
@@ -507,16 +521,20 @@ export function LanguagesManager() {
         }),
       });
       const data = (await res.json()) as GenerationResponse & { message?: string };
-      if (requestId !== generationRequestIdRef.current) return;
       if (!res.ok) {
+        // Surfaced unconditionally, even for an abandoned/superseded session (round-3
+        // independent-review finding, 2026-09-21: a real provider failure -- quota, invalid key,
+        // outage -- must reach the operator even if they've already moved on from this specific
+        // panel; only the panel's own review UI below is gated by staleness, not error visibility).
         setError(data.message ?? "Generation failed");
         return;
       }
+      if (requestId !== generationRequestIdRef.current) return;
       setTargets(data.results.map(toEditable));
       setRowErrors(data.errors);
       setGenerationContext(data.generationContext);
     } finally {
-      if (requestId === generationRequestIdRef.current) setGenerating(false);
+      setGenerating(false);
     }
   }
 
