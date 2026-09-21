@@ -65,6 +65,7 @@ export function ContentManager() {
   const [privacyFilter, setPrivacyFilter] = useState<PrivacyFilter>("all");
   const [page, setPage] = useState(1);
   const [expandedVideoId, setExpandedVideoId] = useState<string | null>(null);
+  const [detailsDirty, setDetailsDirty] = useState(false);
 
   const fetchVideos = useCallback(async (channelId: string) => {
     if (!channelId) {
@@ -272,7 +273,10 @@ export function ContentManager() {
                   <tr
                     key={video.videoId}
                     className="cursor-pointer border-b border-zinc-800/50 transition-colors last:border-b-0 hover:bg-zinc-800/50"
-                    onClick={() => setExpandedVideoId(video.videoId)}
+                    onClick={() => {
+                      setExpandedVideoId(video.videoId);
+                      setDetailsDirty(false);
+                    }}
                   >
                     <td className="min-w-0 px-4 py-3">
                       <div className="flex min-w-0 items-start gap-3">
@@ -362,8 +366,13 @@ export function ContentManager() {
           title={expandedVideo.title}
           thumbnailUrl={expandedVideo.thumbnails.default?.url ?? null}
           onClose={() => setExpandedVideoId(null)}
+          hasUnsavedChanges={detailsDirty}
         >
-          <VideoDetailsPanel channelId={expandedVideo.channelId} videoId={expandedVideo.videoId} />
+          <VideoDetailsPanel
+            channelId={expandedVideo.channelId}
+            videoId={expandedVideo.videoId}
+            onDirtyChange={setDetailsDirty}
+          />
         </VideoDetailModal>
       )}
     </div>

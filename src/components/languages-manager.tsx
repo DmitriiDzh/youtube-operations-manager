@@ -1275,6 +1275,10 @@ export function LanguagesManager() {
           title={expandedVideo.title}
           thumbnailUrl={expandedVideo.thumbnailUrl}
           onClose={closeVideoDetail}
+          // A pending, not-yet-submitted AI review (proposals generated but "Create Change Set"
+          // never clicked) counts as unsaved work -- closing the popup would otherwise silently
+          // discard it, including any hand-edited text (owner instruction, 2026-09-21).
+          hasUnsavedChanges={isRowGeneratePanelOpen(expandedVideo.videoId) && visibleTargets.length > 0}
         >
           {renderVideoLocalizationDetail(expandedVideo)}
         </VideoDetailModal>
