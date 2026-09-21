@@ -704,6 +704,19 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 ---
 
+## RISK-44 — `languages-manager.tsx`'s single global error banner can be overwritten by an unrelated, later-arriving error — OPEN, 2026-09-21 (independent review, round 5)
+
+- **Affected components:** `src/components/languages-manager.tsx`'s single `error`/`setError` state, shared by every action in the tab (`fetchOverview`, `handleExport`, `handlePreviewImport`, `handleCreateChangeSetFromXlsx`, `handleGenerate`, `handleCreateChangeSetFromAi`).
+- **Current behavior:** exactly one error message is ever shown at a time, at the top of the tab. Any handler that calls `setError(...)` replaces whatever was there before, regardless of whether it is still relevant to what the operator is currently looking at.
+- **Actual risk:** an abandoned `handleGenerate()` request's failure (deliberately surfaced unconditionally, even for a superseded session, per RISK-43/round-3's fix -- a real provider failure must reach the operator) can arrive and overwrite a more recent, unrelated error from a completely different action (e.g. an XLSX import validation failure) the operator still needs to see and act on. This is a pre-existing property of the whole component's error-handling design, not something introduced by any single round's fix -- every handler in this file has always shared the one banner.
+- **Existing mitigation:** none beyond the banner being visually obvious (red, top of tab) and each new action clearing it first (`setError(null)`) before starting, so a *stuck* stale message cannot linger indefinitely; the risk is specifically a race between two genuinely concurrent operations, not a stuck-forever state.
+- **Required remediation (if ever undertaken):** replace the single `error` state with a small toast/notification queue (each message independently dismissible, scoped to the action that produced it) -- a real UI pattern change affecting every handler in this file, not a one-line fix, and worth doing consistently rather than only for the generation path that happened to surface it.
+- **Gate(s):** none blocking -- a UX rough edge under a genuine two-concurrent-actions race, not a correctness or safety defect (the underlying operations -- Change Set creation, XLSX import -- remain independently correct regardless of which error message is currently visible).
+- **Approval required from:** project owner -- adopting a toast/notification pattern is a UI-design decision affecting the whole tab, not a scoped bug fix.
+- **Status:** OPEN — documented per this file's "explicitly defer, never silently drop" standard rather than solved piecemeal for just the generation path.
+
+---
+
 ## Summary table
 
 | ID | Title | Gates | Status |
@@ -751,5 +764,6 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-41 | `src/lib/backup/` needs an eventual retention/purge policy once a real deletion feature (E5) uses it -- pre-emptively recorded, no code yet | none blocking | OPEN |
 | RISK-42 | No unit/component test coverage for any `src/components/**` React component (project-wide convention, not one file) | none blocking today | OPEN |
 | RISK-43 | Abandoning an AI-generation session doesn't cancel the underlying (possibly real, billed) provider request | none blocking | OPEN |
+| RISK-44 | `languages-manager.tsx`'s single global error banner can be overwritten by an unrelated, later-arriving error | none blocking | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
