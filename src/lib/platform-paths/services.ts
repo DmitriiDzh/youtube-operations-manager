@@ -43,6 +43,7 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     snapshotsDir: path.join(appDataDir, "snapshots"),
     changeDraftsDir: path.join(appDataDir, "change-drafts"),
     changeDraftsSyncFallbackDir: path.join(appDataDir, "change-drafts-sync-local"),
+    changeDraftsDiscardedBackupsDir: path.join(appDataDir, "change-drafts-discarded-backups"),
     bootstrapConfigPath: path.join(appDataDir, "bootstrap-config.json"),
     authContextPath: path.join(appDataDir, "auth-context.json"),
   };

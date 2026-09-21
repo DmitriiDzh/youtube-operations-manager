@@ -37,6 +37,17 @@ export type AppPaths = {
    * `snapshotsDir` so per-device `.automerge` exchange files never mix with snapshot-id folders.
    */
   changeDraftsSyncFallbackDir: string;
+  /**
+   * Directory holding pre-discard backups of a channel's local Automerge document
+   * (`src/lib/change-drafts/`), captured before an operator-triggered "discard my local copy,
+   * adopt a peer's version instead" divergent-lineage resolution (`docs/TECHNICAL_DEBT.md`
+   * RISK-46). Deliberately its OWN directory, not `backupsDir` above -- that one's `write()`
+   * assumes a per-video snapshot shape (`BackupSnapshot`'s `"localization"`/`"video_fields"`
+   * variants); a whole-channel-document discard has no `videoId` to key on, so forcing it into
+   * that shape would be a worse fit than a small, dedicated, timestamped-file store (the same
+   * reasoning `migrationBackupsDir` above already uses for its own whole-database backups).
+   */
+  changeDraftsDiscardedBackupsDir: string;
   /** Path to the device-local bootstrap config JSON file. */
   bootstrapConfigPath: string;
   /** Path to the CLI/MCP active-user auth-context JSON file. */

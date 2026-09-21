@@ -1678,6 +1678,27 @@ export async function upsertStoredChange(record: StoredChange): Promise<void> {
     });
 }
 
+/**
+ * RISK-46 (docs/TECHNICAL_DEBT.md): `upsertStoredChangeSet`/`upsertStoredChange` only ever add or
+ * update a row -- they never remove one that no longer exists in the Automerge document. In
+ * ordinary operation the document's own key set only ever grows (nothing in `change-drafts/`
+ * deletes a change set/change), so this was never a gap -- until `discardLocalAndAdoptPeer`
+ * (CD5/CD6's divergent-lineage resolution) added the one operation that can genuinely shrink it,
+ * by wholesale-replacing the local document with a peer's. Without these, a change set/change
+ * that existed only in the discarded document would remain forever in SQL, readable via
+ * `listChangeSets`/`getChangeSet` but erroring `not_found` the moment anything tried to act on it
+ * (found live -- an operator would see a real, permanently broken phantom row). Called only for
+ * the specific ids the discard operation computes as removed, never as a bulk "clear channel"
+ * operation.
+ */
+export async function deleteStoredChangeSet(changeSetId: string): Promise<void> {
+  await db.delete(changeSets).where(eq(changeSets.id, changeSetId));
+}
+
+export async function deleteStoredChange(changeId: string): Promise<void> {
+  await db.delete(changes).where(eq(changes.id, changeId));
+}
+
 // ---------------------------------------------------------------------------
 // Phase 6 -- Channel Editorial Profiles + generation provenance persistence.
 // ---------------------------------------------------------------------------

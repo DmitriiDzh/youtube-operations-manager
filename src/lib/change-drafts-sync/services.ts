@@ -12,10 +12,11 @@ export type BootstrapConfigLike = {
 };
 
 /** The narrow slice of `ChangeDraftsCore` (`src/lib/change-drafts/`) this module actually needs
- * -- injected rather than the whole core, so a fake in tests only has to implement two methods. */
+ * -- injected rather than the whole core, so a fake in tests only has to implement three methods. */
 export type ChangeDraftsForSync = {
   exportBytes(input: { channelId: string }): Promise<Uint8Array>;
   mergeIncoming(input: { channelId: string; incomingBytes: Uint8Array }): Promise<{ newConflicts: FieldConflict[] }>;
+  discardLocalAndAdoptPeer(input: { channelId: string; incomingBytes: Uint8Array }): Promise<{ backupPath: string | null }>;
 };
 
 export type ServiceDependencies = {
@@ -84,12 +85,21 @@ export function createChangeDraftsSyncCore(deps: ServiceDependencies) {
     return { channelId, pushed, pushError, peersMerged, peersSkipped, newConflicts };
   }
 
-  async function runCycle(): Promise<SyncCycleResult> {
-    const startedAt = new Date().toISOString();
+  /** Shared by `runCycle` and `adoptDivergentPeer` -- both need the same resolved root and the
+   * same device identity, and must apply the identical `checkRootAvailable` guard before
+   * touching anything under a configured (as opposed to local-fallback) Syncthing root. */
+  async function resolveConfigAndRoot(): Promise<{ deviceId: string; syncthingRootPath: string | null; root: string }> {
     const config = await deps.bootstrapConfig.ensureExists();
     const root = config.syncthingRootPath
       ? path.join(config.syncthingRootPath, "change-drafts")
       : deps.localFallbackDir;
+    return { deviceId: config.deviceId, syncthingRootPath: config.syncthingRootPath, root };
+  }
+
+  async function runCycle(): Promise<SyncCycleResult> {
+    const startedAt = new Date().toISOString();
+    const config = await resolveConfigAndRoot();
+    const root = config.root;
 
     const channelIds = await deps.listChannelIds();
 
@@ -141,21 +151,70 @@ export function createChangeDraftsSyncCore(deps: ServiceDependencies) {
     };
   }
 
+  /**
+   * RISK-46 (docs/TECHNICAL_DEBT.md): the explicit, operator-triggered "discard my local copy,
+   * adopt this peer's version instead" resolution for a channel whose document diverged from a
+   * specific peer's (`divergent_document_lineage`, surfaced in `peersSkipped`). Re-reads the
+   * peer's CURRENT file from the sync folder rather than trusting any bytes cached from an
+   * earlier cycle -- the file, or the whole sync root, may no longer be reachable by the time the
+   * operator acts on it, so this applies the identical `checkRootAvailable` guard `runCycle` uses
+   * before touching a configured Syncthing root.
+   */
+  async function adoptDivergentPeerNow(input: { channelId: string; peerDeviceId: string }): Promise<{ backupPath: string | null }> {
+    const config = await resolveConfigAndRoot();
+    if (config.syncthingRootPath) {
+      await deps.transport.checkRootAvailable(config.syncthingRootPath);
+    }
+
+    const peerFiles = await deps.transport.listPeerFiles(config.root, input.channelId, config.deviceId);
+    const peer = peerFiles.find((p) => p.deviceId === input.peerDeviceId);
+    if (!peer) {
+      throw new Error(
+        `Peer device "${input.peerDeviceId}" has no file for channel ${input.channelId} in the sync folder -- it may have already resynced, or the file is temporarily unavailable`
+      );
+    }
+
+    return deps.changeDrafts.discardLocalAndAdoptPeer({ channelId: input.channelId, incomingBytes: peer.bytes });
+  }
+
   // Single-flight guard (advisor-reviewed requirement): multiple overlapping triggers (several
   // open browser tabs each polling on their own timer, plus an explicit "Sync now" click) must
   // never run two sync cycles concurrently against the same local documents/files -- a caller
   // arriving while a cycle is already running gets that SAME cycle's eventual result rather than
-  // starting a second, racing one.
-  let inFlight: Promise<SyncCycleResult> | null = null;
+  // starting a second, racing one. `adoptDivergentPeer` shares this exclusion (via
+  // `syncInFlight`/`adoptInFlight` each waiting on the OTHER's in-flight promise before starting)
+  // rather than coalescing with it -- they are different operations, so a caller of one while the
+  // other is running gets its OWN result once the other finishes, not the other's result.
+  let syncInFlight: Promise<SyncCycleResult> | null = null;
+  let adoptInFlight: Promise<{ backupPath: string | null }> | null = null;
 
   return {
     async runSyncCycle(): Promise<SyncCycleResult> {
-      if (inFlight) return inFlight;
+      if (syncInFlight) return syncInFlight;
+      if (adoptInFlight) await adoptInFlight.catch(() => {});
       const cycle = runCycle().finally(() => {
-        if (inFlight === cycle) inFlight = null;
+        if (syncInFlight === cycle) syncInFlight = null;
       });
-      inFlight = cycle;
+      syncInFlight = cycle;
       return cycle;
+    },
+
+    async adoptDivergentPeer(input: { channelId: string; peerDeviceId: string }): Promise<{ backupPath: string | null }> {
+      // Unlike `runSyncCycle` (parameterless -- coalescing concurrent callers into the same
+      // result is correct there), this takes `{channelId, peerDeviceId}`: two different calls
+      // that happened to overlap (e.g. adopting peer B for one channel, then peer C for another,
+      // in quick succession) must never have the second one silently receive the first one's
+      // result. Reject outright instead -- advisor review caught that the original coalescing
+      // form would report the wrong peer's backup path/success to the caller.
+      if (adoptInFlight) {
+        throw new Error("Another divergent-lineage adoption is already in progress -- try again shortly");
+      }
+      if (syncInFlight) await syncInFlight.catch(() => {});
+      const op = adoptDivergentPeerNow(input).finally(() => {
+        if (adoptInFlight === op) adoptInFlight = null;
+      });
+      adoptInFlight = op;
+      return op;
     },
   };
 }

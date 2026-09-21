@@ -171,6 +171,17 @@ export const mergeIncomingInputSchema = z
   })
   .strict();
 
+// RISK-46 (docs/TECHNICAL_DEBT.md): an operator-triggered, explicit "discard my local copy,
+// adopt this peer's version instead" resolution for a channel whose document diverged (no shared
+// history, `divergent_document_lineage`). Same shape as `mergeIncomingInputSchema` -- this is
+// deliberately not a merge.
+export const discardLocalAndAdoptPeerInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    incomingBytes: z.instanceof(Uint8Array),
+  })
+  .strict();
+
 // The only fields realistic for two devices to actually conflict on in practice: an operator
 // editing an AI-generated proposal, or racing an approve/reject decision. `baselineValue`/
 // `changeType`/`validationStatus`/`validationError`/the identity fields are set once at

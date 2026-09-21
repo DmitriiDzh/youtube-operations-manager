@@ -27,6 +27,9 @@ function fakeChangeDrafts(overrides: Partial<ChangeDraftsForSync> = {}): ChangeD
     async mergeIncoming() {
       return { newConflicts: [] };
     },
+    async discardLocalAndAdoptPeer() {
+      return { backupPath: "/fake/backup.automerge" };
+    },
     ...overrides,
   };
 }
@@ -287,4 +290,127 @@ test("runSyncCycle is single-flight: a call arriving while a cycle is already ru
   // After the first cycle fully completes, a NEW call must start a genuinely new cycle.
   const third = await core.runSyncCycle();
   assert.notEqual(third, firstResult);
+});
+
+test("adoptDivergentPeer rejects a second call arriving while a DIFFERENT adopt is already in flight, rather than coalescing into the first one's result (advisor review)", async () => {
+  let resolveFirst: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => { resolveFirst = resolve; });
+
+  const core = createChangeDraftsSyncCore(
+    makeDeps({
+      transport: fakeTransport({
+        async listPeerFiles() {
+          return [{ deviceId: "device-b", bytes: new Uint8Array([1]) }];
+        },
+      }),
+      changeDrafts: fakeChangeDrafts({
+        async discardLocalAndAdoptPeer(input) {
+          if (input.channelId === "UC_1") await gate; // hold the first call open
+          return { backupPath: `/fake/${input.channelId}.automerge` };
+        },
+      }),
+    })
+  );
+
+  const first = core.adoptDivergentPeer({ channelId: "UC_1", peerDeviceId: "device-b" });
+  const second = core.adoptDivergentPeer({ channelId: "UC_2", peerDeviceId: "device-b" });
+  await assert.rejects(second, /already in progress/);
+
+  resolveFirst?.();
+  const firstResult = await first;
+  assert.equal(firstResult.backupPath, "/fake/UC_1.automerge");
+});
+
+test("adoptDivergentPeer re-reads the peer's CURRENT file and forwards it to discardLocalAndAdoptPeer", async () => {
+  let received: { channelId: string; incomingBytes: Uint8Array } | undefined;
+  const core = createChangeDraftsSyncCore(
+    makeDeps({
+      transport: fakeTransport({
+        async listPeerFiles() {
+          return [{ deviceId: "device-b", bytes: new Uint8Array([42]) }];
+        },
+      }),
+      changeDrafts: fakeChangeDrafts({
+        async discardLocalAndAdoptPeer(input) {
+          received = input;
+          return { backupPath: "/fake/backup.automerge" };
+        },
+      }),
+    })
+  );
+
+  const result = await core.adoptDivergentPeer({ channelId: "UC_1", peerDeviceId: "device-b" });
+  assert.equal(result.backupPath, "/fake/backup.automerge");
+  assert.equal(received?.channelId, "UC_1");
+  assert.deepEqual(Array.from(received!.incomingBytes), [42]);
+});
+
+test("adoptDivergentPeer throws a clear error when the named peer has no file in the sync folder (already resynced, or gone)", async () => {
+  const core = createChangeDraftsSyncCore(
+    makeDeps({
+      transport: fakeTransport({
+        async listPeerFiles() {
+          return [];
+        },
+      }),
+    })
+  );
+
+  await assert.rejects(
+    () => core.adoptDivergentPeer({ channelId: "UC_1", peerDeviceId: "device-b" }),
+    /no file for channel/
+  );
+});
+
+test("adoptDivergentPeer checks the configured Syncthing root's availability before reading peer files, same as a sync cycle", async () => {
+  let checkedRoot: string | undefined;
+  const core = createChangeDraftsSyncCore(
+    makeDeps({
+      bootstrapConfig: { async ensureExists() { return { deviceId: "device-a", syncthingRootPath: "/not/mounted" }; } },
+      transport: fakeTransport({
+        async checkRootAvailable(root) {
+          checkedRoot = root;
+          throw new Error("Configured sync folder is not available (does not exist): /not/mounted");
+        },
+      }),
+    })
+  );
+
+  await assert.rejects(() => core.adoptDivergentPeer({ channelId: "UC_1", peerDeviceId: "device-b" }), /not available/);
+  assert.equal(checkedRoot, "/not/mounted");
+});
+
+test("runSyncCycle and adoptDivergentPeer are mutually exclusive: a call to one waits for an in-flight call to the other, never runs concurrently with it", async () => {
+  const events: string[] = [];
+  let resolveSync: (() => void) | undefined;
+  const syncGate = new Promise<void>((resolve) => { resolveSync = resolve; });
+
+  const core = createChangeDraftsSyncCore(
+    makeDeps({
+      transport: fakeTransport({
+        async listPeerFiles() {
+          return [{ deviceId: "device-b", bytes: new Uint8Array([1]) }];
+        },
+      }),
+      changeDrafts: fakeChangeDrafts({
+        async exportBytes() {
+          events.push("sync:start");
+          await syncGate;
+          events.push("sync:end");
+          return new Uint8Array([1]);
+        },
+        async discardLocalAndAdoptPeer() {
+          events.push("adopt:run");
+          return { backupPath: null };
+        },
+      }),
+    })
+  );
+
+  const syncPromise = core.runSyncCycle();
+  const adoptPromise = core.adoptDivergentPeer({ channelId: "UC_1", peerDeviceId: "device-b" });
+  resolveSync?.();
+  await Promise.all([syncPromise, adoptPromise]);
+
+  assert.deepEqual(events, ["sync:start", "sync:end", "adopt:run"], "adopt must wait for the in-flight sync cycle to finish first");
 });
