@@ -181,6 +181,12 @@ export const channels = sqliteTable("channels", {
     .notNull()
     .$defaultFn(() => new Date()),
   lastSyncedAt: integer("last_synced_at", { mode: "timestamp" }),
+  // Additive, SCHEMA_MIGRATIONS version 6 -- a JSON array of language codes the operator wants
+  // tracked as Languages-tab columns even before any video has a real translation in them
+  // (docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md §7.2/E5, owner instruction 2026-09-21).
+  // NULL means "none explicitly tracked yet", never backfilled to "[]" (RISK-02/RISK-33's "never
+  // silently create a fact that isn't true").
+  targetLanguagesJson: text("target_languages_json"),
 });
 
 export const videos = sqliteTable("videos", {
@@ -547,6 +553,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute(
         "CREATE INDEX IF NOT EXISTS video_edit_audit_events_video_id_idx ON video_edit_audit_events(video_id)"
       );
+    },
+  },
+  {
+    version: 6,
+    description:
+      "channels.target_languages_json -- Languages tab tracked-language columns (docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md §7.2/E5, owner instruction 2026-09-21)",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE channels ADD COLUMN target_languages_json TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
     },
   },
 ];
@@ -1240,6 +1258,29 @@ export async function listStoredChannels(): Promise<StoredChannel[]> {
 export async function getStoredChannel(channelId: string): Promise<StoredChannel | null> {
   const [row] = await db.select().from(channels).where(eq(channels.id, channelId));
   return row ? mapStoredChannel(row) : null;
+}
+
+/** Deliberately separate from `StoredChannel`/`mapStoredChannel` -- almost nothing besides
+ * `src/lib/localization/` needs the tracked-languages list, and every other consumer of
+ * `StoredChannel` (channel-sync, changesets, ai-localization, batches) would otherwise have to
+ * carry a field it never uses (AGENTS.md §D's "narrow, don't ripple" pattern, same reasoning as
+ * `PendingChangeRecord`'s own narrow copy of `Change`). */
+export async function getChannelTargetLanguages(channelId: string): Promise<string[]> {
+  const [row] = await db
+    .select({ targetLanguagesJson: channels.targetLanguagesJson })
+    .from(channels)
+    .where(eq(channels.id, channelId));
+  if (!row?.targetLanguagesJson) return [];
+  try {
+    const parsed: unknown = JSON.parse(row.targetLanguagesJson);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function setChannelTargetLanguages(channelId: string, languages: string[]): Promise<void> {
+  await db.update(channels).set({ targetLanguagesJson: JSON.stringify(languages) }).where(eq(channels.id, channelId));
 }
 
 export async function upsertVideos(
