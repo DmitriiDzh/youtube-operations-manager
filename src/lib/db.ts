@@ -1599,51 +1599,16 @@ export async function getStoredChangeById(
   return row ? mapStoredChange(row) : null;
 }
 
-export async function updateStoredChangeSetStatus(
-  changeSetId: string,
-  status: ChangeSetStatus
-): Promise<void> {
-  await db
-    .update(changeSets)
-    .set({ status, updatedAt: new Date() })
-    .where(eq(changeSets.id, changeSetId));
-}
-
-export async function updateStoredChange(
-  changeId: string,
-  patch: Partial<
-    Pick<StoredChange, "conflictStatus" | "approvalStatus" | "approvedValue">
-  >
-): Promise<void> {
-  await db
-    .update(changes)
-    .set({ ...patch, updatedAt: new Date() })
-    .where(eq(changes.id, changeId));
-}
-
-export async function bulkUpdateStoredChanges(
-  updates: Array<{
-    id: string;
-    patch: Partial<Pick<StoredChange, "conflictStatus" | "approvalStatus" | "approvedValue">>;
-  }>
-): Promise<void> {
-  await db.transaction(async (tx) => {
-    for (const update of updates) {
-      await tx
-        .update(changes)
-        .set({ ...update.patch, updatedAt: new Date() })
-        .where(eq(changes.id, update.id));
-    }
-  });
-}
-
 /**
  * Full-row upsert (`src/lib/change-drafts/`'s SQL read-projection, AUTOMERGE_MIGRATION_PLAN.md
- * §6 CD2): unlike `updateStoredChangeSetStatus`/`updateStoredChange` above (which assume the row
- * already exists from `createChangeSetWithChanges` and only ever patch a narrow column subset),
- * this writes every column and creates the row if it doesn't exist yet -- the Automerge document
- * is the source of truth once this projection is wired in, so a change set/change that originated
- * there (not from an XLSX import) may never have had a SQL row at all.
+ * §6 CD2): writes every column and creates the row if it doesn't exist yet -- the Automerge
+ * document is the source of truth once this projection is wired in, so a change set/change that
+ * originated there (not from an XLSX import) may never have had a SQL row at all. This is the
+ * ONLY writer of `changeSets`/`changes` rows after the CD2 cutover -- the old narrow-patch
+ * functions this replaced (`updateStoredChangeSetStatus`/`updateStoredChange`/
+ * `bulkUpdateStoredChanges`, which assumed the row already existed and only patched a few
+ * columns) were deleted in CD7 after an audit confirmed zero remaining callers anywhere in the
+ * repository (`AUTOMERGE_MIGRATION_PLAN.md` §6 CD7).
  */
 export async function upsertStoredChangeSet(record: StoredChangeSet): Promise<void> {
   await db
