@@ -284,16 +284,22 @@ test("rejectChange then reject-all: rejecting is always allowed, including for i
 });
 
 // ---------------------------------------------------------------------------
-// proposeLocalizationDeletion (docs/PROJECT_SPEC.md §16, 2026-09-20 update).
-// Acceptance fixed before implementation (advisor-reviewed scope): a deletion
-// proposal is a two-Change (title+description), source:"deletion" Change Set that
-// goes through the ordinary review/approval/conflict pipeline -- it is NOT an
-// immediate delete. The one case that must be refused even before a Change Set is
-// created is deleting the video's own defaultLanguage, since that language's
-// title/description live on snippet, not in a removable localizations entry.
+// proposeLocalizationDeletion (docs/PROJECT_SPEC.md §16/§21). Acceptance fixed before
+// implementation (advisor-reviewed scope, E5a/E5b split): a deletion proposal is a
+// two-Change-per-video, source:"deletion" Change Set spanning every affected video,
+// that goes through the ordinary review/approval/conflict pipeline -- it is NOT an
+// immediate delete. `videoIds` omitted means "every video on the channel with a real
+// localization in this language" (the whole-column/E5b case); provided explicitly it
+// scopes to exactly those videos (BL-036's original single-video behavior). A video
+// whose own defaultLanguage equals the requested language is NEVER included --
+// that language's title/description live on snippet, not a removable localizations
+// entry -- and is reported in skippedDefaultLanguageVideoIds instead, computed
+// independently of existingLocalizations (a video can be missing a localizations
+// entry for its own defaultLanguage entirely and must still be reported skipped,
+// not silently uncounted).
 // ---------------------------------------------------------------------------
 
-test("proposeLocalizationDeletion: creates a two-Change, source:\"deletion\" Change Set from the existing localization", async () => {
+test("proposeLocalizationDeletion: creates a two-Change, source:\"deletion\" Change Set from the existing localization (single video, explicit videoIds)", async () => {
   const { services, setVideos } = createFixture();
   setVideos([
     makeVideo({
@@ -302,12 +308,15 @@ test("proposeLocalizationDeletion: creates a two-Change, source:\"deletion\" Cha
     }),
   ]);
 
-  const changeSet = await services.proposeLocalizationDeletion({ channelId: "UC_TEST", videoId: "v1", language: "es" });
+  const result = await services.proposeLocalizationDeletion({ channelId: "UC_TEST", videoIds: ["v1"], language: "es" });
 
-  assert.equal(changeSet.source, "deletion");
-  assert.equal(changeSet.totalChanges, 2);
+  assert.deepEqual(result.affectedVideoIds, ["v1"]);
+  assert.deepEqual(result.skippedDefaultLanguageVideoIds, []);
+  assert.ok(result.changeSet);
+  assert.equal(result.changeSet.source, "deletion");
+  assert.equal(result.changeSet.totalChanges, 2);
 
-  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: changeSet.id });
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: result.changeSet.id });
   const byField = new Map(detail.changes.map((c) => [c.field, c]));
 
   assert.equal(byField.get("title")!.changeType, "delete");
@@ -318,23 +327,60 @@ test("proposeLocalizationDeletion: creates a two-Change, source:\"deletion\" Cha
   assert.equal(byField.get("description")!.proposedValue, "");
 });
 
-test("proposeLocalizationDeletion: refuses to delete the video's own defaultLanguage", async () => {
+test("proposeLocalizationDeletion: never includes a video whose own defaultLanguage equals the requested language, and reports it skipped", async () => {
   const { services, setVideos } = createFixture();
   setVideos([makeVideo({ defaultLanguage: "en", existingLocalizations: {} })]);
 
-  await assert.rejects(
-    () => services.proposeLocalizationDeletion({ channelId: "UC_TEST", videoId: "v1", language: "en" }),
-    (error: unknown) => error instanceof DomainError && error.code === "deletion_targets_default_language"
-  );
+  const result = await services.proposeLocalizationDeletion({ channelId: "UC_TEST", videoIds: ["v1"], language: "en" });
+
+  assert.deepEqual(result.affectedVideoIds, []);
+  assert.deepEqual(result.skippedDefaultLanguageVideoIds, ["v1"]);
+  assert.equal(result.changeSet, null);
 });
 
-test("proposeLocalizationDeletion: refuses when the video has no existing localization for the requested language", async () => {
+test("proposeLocalizationDeletion: a video whose defaultLanguage matches is skipped even with zero existingLocalizations entries for it (the undercount trap)", async () => {
   const { services, setVideos } = createFixture();
-  setVideos([makeVideo({ defaultLanguage: "en", existingLocalizations: {} })]);
+  // "en" is v1's defaultLanguage but was never separately written into existingLocalizations --
+  // collectChannelLanguages-style unions would see nothing here; the skip must still be reported.
+  setVideos([makeVideo({ videoId: "v1", defaultLanguage: "en", existingLocalizations: {} })]);
 
-  await assert.rejects(
-    () => services.proposeLocalizationDeletion({ channelId: "UC_TEST", videoId: "v1", language: "es" }),
-    (error: unknown) => error instanceof DomainError && error.code === "not_found"
+  const result = await services.proposeLocalizationDeletion({ channelId: "UC_TEST", language: "en" });
+
+  assert.deepEqual(result.skippedDefaultLanguageVideoIds, ["v1"]);
+  assert.deepEqual(result.affectedVideoIds, []);
+  assert.equal(result.changeSet, null);
+});
+
+test("proposeLocalizationDeletion: whole-column form (videoIds omitted) spans every video on the channel with a real localization, skipping unrelated ones", async () => {
+  const { services, setVideos } = createFixture();
+  setVideos([
+    makeVideo({
+      videoId: "v1",
+      defaultLanguage: "en",
+      existingLocalizations: { es: { title: "Titulo ES 1", description: "Desc ES 1" } },
+    }),
+    makeVideo({
+      videoId: "v2",
+      defaultLanguage: "en",
+      existingLocalizations: { es: { title: "Titulo ES 2", description: "Desc ES 2" }, de: { title: "DE", description: "DE desc" } },
+    }),
+    // v3 has no "es" localization at all -- must be silently excluded, not an error.
+    makeVideo({ videoId: "v3", defaultLanguage: "en", existingLocalizations: {} }),
+    // v4's defaultLanguage IS "es" -- must be skipped and reported, never deleted.
+    makeVideo({ videoId: "v4", defaultLanguage: "es", existingLocalizations: {} }),
+  ]);
+
+  const result = await services.proposeLocalizationDeletion({ channelId: "UC_TEST", language: "es" });
+
+  assert.deepEqual(result.affectedVideoIds.sort(), ["v1", "v2"]);
+  assert.deepEqual(result.skippedDefaultLanguageVideoIds, ["v4"]);
+  assert.ok(result.changeSet);
+  assert.equal(result.changeSet.totalChanges, 4); // 2 videos x (title + description)
+
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: result.changeSet.id });
+  assert.deepEqual(
+    detail.changes.map((c) => c.videoId).sort(),
+    ["v1", "v1", "v2", "v2"]
   );
 });
 
@@ -347,7 +393,8 @@ test("proposeLocalizationDeletion + re-sync: a third-party edit made after propo
     }),
   ]);
 
-  const changeSet = await services.proposeLocalizationDeletion({ channelId: "UC_TEST", videoId: "v1", language: "es" });
+  const result = await services.proposeLocalizationDeletion({ channelId: "UC_TEST", videoIds: ["v1"], language: "es" });
+  assert.ok(result.changeSet);
 
   // Someone edits the Spanish title directly in YouTube Studio, then the channel re-syncs.
   setVideos([
@@ -357,7 +404,7 @@ test("proposeLocalizationDeletion + re-sync: a third-party edit made after propo
     }),
   ]);
 
-  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: changeSet.id });
+  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: result.changeSet.id });
   const titleChange = after.changes.find((c) => c.field === "title")!;
   assert.equal(titleChange.conflictStatus, "conflict", "a deletion baseline that no longer matches the live remote value must be flagged, never silently applied");
   assert.equal(after.changeSet.status, "in_review");
