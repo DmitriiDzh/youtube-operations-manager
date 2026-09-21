@@ -48,7 +48,8 @@ export type DomainErrorCode =
   | "publish_at_requires_private"
   | "publish_at_already_published"
   | "video_details_conflict"
-  | "deletion_targets_default_language";
+  | "deletion_targets_default_language"
+  | "divergent_document_lineage";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;
