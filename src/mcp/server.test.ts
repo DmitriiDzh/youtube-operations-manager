@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readFile, readdir } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { DomainError } from "@/lib/video-metadata/contracts";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import type { PlaylistManagementCore } from "@/lib/playlist-management";
@@ -389,6 +392,73 @@ test("MCP server (connectionEnabled: true) registers every tool, including write
   ]) {
     assert.equal(names.includes(tool), true, `expected ${tool} to be registered once connected`);
   }
+});
+
+// Mechanical enforcement of "один шлюз" for the MCP connection gate (owner instruction,
+// 2026-09-21): the local `registerTool` wrapper (which checks `connectionEnabled`) must be the
+// ONLY call site that ever calls the SDK's real `server.registerTool`. A future tool added via
+// `server.registerTool(...)` directly, bypassing the wrapper, would silently escape the gate --
+// this test fails the build the moment that happens, mirroring
+// `src/lib/youtube-write-gateway/gateway-inventory.test.ts`'s same "enforced by a test, not by
+// convention" principle for the write funnel.
+test("MCP connection gate inventory: server.registerTool is called from exactly one place in this file (the local registerTool wrapper)", async () => {
+  const thisFile = fileURLToPath(import.meta.url);
+  const serverFile = path.join(path.dirname(thisFile), "server.ts");
+  const content = await readFile(serverFile, "utf8");
+
+  const matches = content.match(/server\.registerTool\(/g) ?? [];
+  assert.equal(
+    matches.length,
+    1,
+    `expected exactly one "server.registerTool(" call site in src/mcp/server.ts (inside the ` +
+      `local registerTool wrapper), found ${matches.length} -- a second call site would bypass ` +
+      `the connectionEnabled gate entirely`
+  );
+});
+
+// Mechanical check that `createMcpToolHandlers` (the raw handlers, unprotected by the
+// connection gate -- only `registerTool`'s SDK call is gated) is never imported anywhere except
+// this file and its own test, so no other surface can invoke a tool's logic while bypassing MCP
+// tool registration entirely.
+test("MCP connection gate inventory: createMcpToolHandlers is imported nowhere outside src/mcp/server.ts and its own test", async () => {
+  const thisFile = fileURLToPath(import.meta.url);
+  const mcpDir = path.dirname(thisFile);
+  const repoRoot = path.resolve(mcpDir, "..", "..");
+  const srcDir = path.join(repoRoot, "src");
+
+  async function listTsFiles(dir: string): Promise<string[]> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const files: string[] = [];
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.name === "node_modules") continue;
+      if (entry.isDirectory()) files.push(...(await listTsFiles(full)));
+      else if (/\.(ts|tsx)$/.test(entry.name)) files.push(full);
+    }
+    return files;
+  }
+
+  const allowed = new Set([
+    path.join(mcpDir, "server.ts"),
+    path.join(mcpDir, "server.test.ts"),
+    path.join(mcpDir, "server.recovery-gate.test.ts"),
+  ]);
+  const offenders: string[] = [];
+
+  for (const file of await listTsFiles(srcDir)) {
+    if (allowed.has(file)) continue;
+    const content = await readFile(file, "utf8");
+    if (/\bcreateMcpToolHandlers\s*\(/.test(content)) {
+      offenders.push(path.relative(repoRoot, file));
+    }
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    `createMcpToolHandlers is called outside src/mcp/server.ts, bypassing the connection gate ` +
+      `entirely: ${offenders.join(", ")}`
+  );
 });
 
 test("MCP write_context returns active write-channel contract", async () => {
