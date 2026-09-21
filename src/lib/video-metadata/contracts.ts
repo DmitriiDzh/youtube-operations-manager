@@ -49,7 +49,8 @@ export type DomainErrorCode =
   | "publish_at_already_published"
   | "video_details_conflict"
   | "deletion_targets_default_language"
-  | "divergent_document_lineage";
+  | "divergent_document_lineage"
+  | "crdt_conflict_open";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

@@ -64,6 +64,7 @@ function createFixture() {
   const changeSets = new Map<string, StoredChangeSetRecord>();
   const changesByChangeSet = new Map<string, StoredChangeRecord[]>();
   let idCounter = 0;
+  const crdtConflictedChangeIds = new Set<string>();
 
   const channelStore = {
     async getChannel(channelId: string) {
@@ -132,9 +133,16 @@ function createFixture() {
     },
   };
 
+  const crdtConflicts = {
+    async listConflictedChangeIds() {
+      return new Set(crdtConflictedChangeIds);
+    },
+  };
+
   const services = createChangeSetServices({
     channelStore,
     changeSetStore,
+    crdtConflicts,
     idGenerator: () => `id-${++idCounter}`,
     logger: { info() {}, error() {} },
   });
@@ -146,6 +154,10 @@ function createFixture() {
     },
     setChannel: (next: StoredChannelRecord) => {
       channel = next;
+    },
+    setCrdtConflictedChangeIds: (ids: string[]) => {
+      crdtConflictedChangeIds.clear();
+      for (const id of ids) crdtConflictedChangeIds.add(id);
     },
   };
 }
@@ -207,6 +219,65 @@ test("approveChange: refuses to approve a conflicting change", async () => {
     () => services.approveChange({ channelId: "UC_TEST", changeSetId, changeId }),
     (error: unknown) => error instanceof DomainError && error.code === "change_not_approvable"
   );
+});
+
+// RISK-47 (docs/TECHNICAL_DEBT.md): a change with an open CRDT-level FieldConflict (a different
+// concept from this module's own conflictStatus, see that risk entry) must also be refused.
+test("approveChange: refuses to approve a change with an open CRDT-level field conflict", async () => {
+  const { services, setCrdtConflictedChangeIds } = createFixture();
+  const buffer = await buildWorkbookBuffer([
+    { video_id: "v1", language: "es", title: "Nuevo Titulo", description: "", remote_title: "", remote_description: "" },
+  ]);
+  const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  const changeSetId = created.changeSet.id;
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId });
+  const changeId = detail.changes[0]!.id;
+
+  setCrdtConflictedChangeIds([changeId]);
+
+  await assert.rejects(
+    () => services.approveChange({ channelId: "UC_TEST", changeSetId, changeId }),
+    (error: unknown) => error instanceof DomainError && error.code === "crdt_conflict_open"
+  );
+
+  // Must not have been partially approved.
+  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId });
+  assert.equal(after.changes[0]!.approvalStatus, "pending");
+});
+
+test("approveChange: a change is approvable once its CRDT-level conflict is no longer reported as open", async () => {
+  const { services, setCrdtConflictedChangeIds } = createFixture();
+  const buffer = await buildWorkbookBuffer([
+    { video_id: "v1", language: "es", title: "Nuevo Titulo", description: "", remote_title: "", remote_description: "" },
+  ]);
+  const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  const changeSetId = created.changeSet.id;
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId });
+  const changeId = detail.changes[0]!.id;
+
+  setCrdtConflictedChangeIds(["some-other-change-id"]);
+
+  const result = await services.approveChange({ channelId: "UC_TEST", changeSetId, changeId });
+  assert.equal(result.change.approvalStatus, "approved");
+});
+
+test("approveAllValid: silently excludes a change with an open CRDT-level conflict from the bulk approval, without failing the whole batch", async () => {
+  const { services, setCrdtConflictedChangeIds } = createFixture();
+  const buffer = await buildWorkbookBuffer([
+    { video_id: "v1", language: "es", title: "Titulo ES", description: "", remote_title: "", remote_description: "" },
+  ]);
+  const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  const changeSetId = created.changeSet.id;
+  const detail = await services.getChangeSet({ channelId: "UC_TEST", changeSetId });
+  const changeId = detail.changes[0]!.id;
+
+  setCrdtConflictedChangeIds([changeId]);
+
+  const result = await services.approveAllValid({ channelId: "UC_TEST", changeSetId });
+  assert.equal(result.approvedCount, 0);
+
+  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId });
+  assert.equal(after.changes[0]!.approvalStatus, "pending");
 });
 
 test("re-sync draft preservation: approving a change, then a later re-sync changing the remote value invalidates the approval", async () => {

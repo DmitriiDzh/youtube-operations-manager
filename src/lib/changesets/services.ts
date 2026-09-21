@@ -70,6 +70,29 @@ type ServiceDependencies = {
     listVideosByChannel(channelId: string): Promise<StoredVideoRecord[]>;
   };
   changeSetStore: ChangeSetStoreDeps;
+  /**
+   * The CRDT-level `FieldConflict` concept (`src/lib/change-drafts/`, two devices concurrently
+   * edited the same field, AUTOMERGE_MIGRATION_PLAN.md §6 CD6) is distinct from this module's own
+   * `conflictStatus` (baseline vs. currently-synced-remote-value). `docs/TECHNICAL_DEBT.md`
+   * RISK-47: without this, an operator could approve a change whose value is Automerge's
+   * arbitrary deterministic pick while a real, unresolved conflict on that exact field sits in
+   * the Merge tab. `listConflictedChangeIds` returns every `changeId` this channel currently has
+   * at least one open field conflict for; `approveChange`/`approveAllValid` refuse to approve any
+   * change in that set, exactly like they already refuse one with `conflictStatus: "conflict"`.
+   * `rejectChange`/`rejectAllPending` deliberately do NOT call this -- rejecting a contested
+   * change discards it either way, so there is nothing a CRDT conflict could make incorrect (see
+   * the existing "rejecting is always allowed, including for invalid/conflicting changes" test).
+   *
+   * Deliberately an approval-time gate only, not a read-path check: this does a full document
+   * scan (`Automerge.load` + `scanForConflicts`, `change-drafts/services.ts`'s `listConflicts`)
+   * every call. Fine on `approveChange`'s single-change path; do NOT wire this into `getChangeSet`
+   * or `listChangeSets` for read-time badging -- that would turn one document scan into one per
+   * change set on every page load. If a future need arises to show conflict status on reads, use
+   * `change-drafts`'s own `listConflicts`/SQL projection directly instead of this dependency.
+   */
+  crdtConflicts: {
+    listConflictedChangeIds(channelId: string): Promise<Set<string>>;
+  };
   idGenerator: () => string;
   logger: {
     info(payload: { event: string; context?: Record<string, unknown> }): void;
@@ -615,6 +638,14 @@ export function createChangeSetServices(deps: ServiceDependencies) {
             details: { changeId: target.id, validationStatus: target.validationStatus, conflictStatus: target.conflictStatus },
           });
         }
+        const conflictedChangeIds = await deps.crdtConflicts.listConflictedChangeIds(parsedInput.channelId);
+        if (conflictedChangeIds.has(target.id)) {
+          throw new DomainError({
+            code: "crdt_conflict_open",
+            message: "This change has an unresolved multi-device conflict -- resolve it in the Merge tab before approving",
+            details: { changeId: target.id },
+          });
+        }
 
         const patch = { approvalStatus: "approved" as const, approvedValue: target.proposedValue, conflictStatus: target.conflictStatus };
         await deps.changeSetStore.updateChange(target.id, patch);
@@ -667,8 +698,13 @@ export function createChangeSetServices(deps: ServiceDependencies) {
 
       try {
         const { changeSet, changes } = await loadRevalidated(deps, parsedInput.channelId, parsedInput.changeSetId);
+        const conflictedChangeIds = await deps.crdtConflicts.listConflictedChangeIds(parsedInput.channelId);
         const toApprove = changes.filter(
-          (c) => c.approvalStatus === "pending" && c.validationStatus === "valid" && c.conflictStatus === "none"
+          (c) =>
+            c.approvalStatus === "pending" &&
+            c.validationStatus === "valid" &&
+            c.conflictStatus === "none" &&
+            !conflictedChangeIds.has(c.id)
         );
 
         if (toApprove.length > 0) {

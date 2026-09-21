@@ -43,6 +43,7 @@ const DOMAIN_ERROR_STATUS = {
   video_details_conflict: 409,
   deletion_targets_default_language: 422,
   divergent_document_lineage: 409,
+  crdt_conflict_open: 409,
 } as const satisfies Partial<Record<DomainErrorCode, number>>;
 
 export function getVideoMetadataErrorStatus(code: DomainErrorCode) {

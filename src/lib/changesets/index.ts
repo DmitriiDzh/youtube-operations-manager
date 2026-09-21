@@ -1,4 +1,5 @@
 import { createDefaultLogger } from "@/lib/channel-sync/adapters/logger";
+import { createChangeDraftsCoreForProduction, isDomainError } from "@/lib/change-drafts";
 import { createChangeSetChannelStoreAdapter, createIdGenerator } from "./adapters/store";
 import { createAutomergeBackedChangeSetStoreAdapter } from "./adapters/change-drafts-store";
 import { createChangeSetServices } from "./services";
@@ -9,9 +10,25 @@ import { createChangeSetServices } from "./services";
 // MCP tools, CLI commands), is completely unaffected; they only ever depended on the adapter's
 // interface, never on how it's implemented underneath.
 export function createChangeSetCore() {
+  const changeDrafts = createChangeDraftsCoreForProduction();
+
   return createChangeSetServices({
     channelStore: createChangeSetChannelStoreAdapter(),
     changeSetStore: createAutomergeBackedChangeSetStoreAdapter(),
+    // RISK-47 (docs/TECHNICAL_DEBT.md): approve must refuse a change with an open CRDT field
+    // conflict, not just this module's own `conflictStatus`. A channel with no Automerge document
+    // at all yet (`not_found`) genuinely has zero conflicts, not an error.
+    crdtConflicts: {
+      async listConflictedChangeIds(channelId: string): Promise<Set<string>> {
+        try {
+          const conflicts = await changeDrafts.listConflicts({ channelId });
+          return new Set(conflicts.map((c) => c.changeId));
+        } catch (error) {
+          if (isDomainError(error) && error.code === "not_found") return new Set();
+          throw error;
+        }
+      },
+    },
     idGenerator: createIdGenerator(),
     logger: createDefaultLogger(),
   });
