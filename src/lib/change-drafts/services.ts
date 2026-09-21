@@ -17,9 +17,11 @@ import {
   updateProposedValueInputSchema,
 } from "./schemas";
 import type { ChangeDraftsStoreAdapter } from "./adapters/automerge-store";
+import type { SqlSourceAdapter } from "./adapters/sql-source";
 
 export type ServiceDependencies = {
   store: ChangeDraftsStoreAdapter;
+  sqlSource: SqlSourceAdapter;
 };
 
 /**
@@ -269,6 +271,55 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       const { channelId } = parseWithSchema(channelIdInputSchema, input, "exportBytes input");
       const doc = await loadDocumentOrThrow(channelId);
       return Automerge.save(doc);
+    },
+
+    /**
+     * CD4 (AUTOMERGE_MIGRATION_PLAN.md §6): one-time bootstrap of a channel's existing SQL
+     * `change_sets`/`changes` rows into its initial Automerge document. Never runs twice against
+     * the same channel -- refuses outright if a document already exists, since a second run would
+     * either silently duplicate already-migrated drafts or (if the document has since been edited
+     * for real) destroy real data by overwriting it wholesale. This is a one-shot bootstrap, not a
+     * sync mechanism; ongoing sync is CD5's job, entirely separate from this function.
+     *
+     * Deliberately all-or-nothing: every change set/change is folded into one in-memory document
+     * before `saveDocument` is called once at the very end -- never incrementally per change set.
+     * If the process dies partway through, nothing is written at all (safe: the refuse-if-exists
+     * guard above will simply let a retry start clean). Do not "optimize" this into an incremental
+     * save per change set -- a save after only some change sets migrated would leave a permanent,
+     * partially-migrated document that the same guard would then refuse to ever retry against.
+     */
+    async migrateFromSql(input: unknown): Promise<{ changeSetCount: number; changeCount: number }> {
+      const { channelId } = parseWithSchema(channelIdInputSchema, input, "migrateFromSql input");
+
+      const existingBytes = await deps.store.loadDocumentBytes(channelId);
+      if (existingBytes) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "A draft document already exists for this channel -- migration only ever runs once",
+          details: { channelId },
+        });
+      }
+
+      const changeSetsFromSql = await deps.sqlSource.listChangeSetsForChannel(channelId);
+      let doc = Automerge.change(emptyDocument(channelId), "migrate change sets from SQL", (draft) => {
+        for (const changeSet of changeSetsFromSql) {
+          draft.changeSets[changeSet.id] = changeSet;
+        }
+      });
+
+      let changeCount = 0;
+      for (const changeSet of changeSetsFromSql) {
+        const changesFromSql = await deps.sqlSource.listChangesForChangeSet(changeSet.id);
+        doc = Automerge.change(doc, `migrate changes for change set ${changeSet.id}`, (draft) => {
+          for (const change of changesFromSql) {
+            draft.changes[change.id] = change;
+            changeCount += 1;
+          }
+        });
+      }
+
+      await saveDocument(channelId, doc);
+      return { changeSetCount: changeSetsFromSql.length, changeCount };
     },
   };
 }

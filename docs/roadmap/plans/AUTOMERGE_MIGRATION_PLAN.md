@@ -107,16 +107,25 @@ addition is committed to. Nothing from this spike ships — it exists to de-risk
 explicitly chose the faster, single-step path ("мы пока только строим систему и можем себе это
 позволить") over a parallel dual-write period — CD2/CD3 below are a single slice, not two.
 
-- **CD1 — Spike** (§3). Throwaway, no production wiring. Answers whether Automerge's real
-  conflict behavior matches this plan's assumptions for this project's actual data shape.
-- **CD2 — Automerge-backed service + SQL read-projection, direct cutover.** The new service layer
-  becomes the source of truth for reads and writes in one step (no parallel dual-write period);
-  the SQL tables become a read-only projection, regenerated on every local edit and every merge.
-- **CD4 — One-time data migration.** Every existing local `change_sets`/`changes` row converts
-  into an initial per-channel Automerge document, with an explicit lossless-conversion acceptance
-  test (AC-CRDT-03 below) before this can run against any real installation's data. Must land
-  before CD2's cutover goes live on an existing installation, precisely because there is no
-  dual-write safety net this time.
+- **CD1 — Spike** (§3). **DONE, 2026-09-21.** Throwaway, no production wiring -- confirmed
+  Automerge's real conflict behavior matches this plan's assumptions.
+- **CD2 — Automerge-backed service + SQL read-projection, direct cutover. IN PROGRESS, first
+  third done 2026-09-21 (`src/lib/change-drafts/`).** What exists: the document model, all
+  mutation operations (create/add/update/approve), `mergeIncoming` with correct new-conflict
+  detection, `listConflicts`, `exportBytes`/`migrateFromSql` -- proven to actually run inside the
+  real Next.js server runtime (`serverExternalPackages` fix for Automerge's WASM binary). **What
+  does not exist yet, and is the rest of this slice:** the SQL read-projection itself (nothing
+  regenerates `change_sets`/`changes` rows from the Automerge document), and the actual cutover
+  (no existing UI/API/MCP/CLI reader has been re-pointed at this module -- `changesets/` is
+  entirely untouched so far). Do not read "CD2 done" from this note; only its foundation is.
+- **CD4 — One-time data migration. DONE, 2026-09-21** (`migrateFromSql`, `adapters/sql-source.ts`).
+  Converts every existing local `change_sets`/`changes` row for a channel into its initial
+  Automerge document, refusing to run a second time against a channel that already has one
+  (all-or-nothing; a crash mid-migration leaves nothing written, safe to retry). AC-CRDT-03
+  verified both via direct field comparison and across the real `Automerge.save`/`load`
+  serialization boundary (not just an in-memory round trip) -- the same class of boundary where
+  this slice's own clone-related merge bug was found. Still needs CD2's actual cutover to matter
+  in practice; migrating data into a document nothing reads yet is inert until then.
 - **CD5 — Transport wiring, continuous background sync (revised 2026-09-21, owner instruction).**
   File-based, over the existing operator-configured Syncthing folder (§8) — but **not**
   on-demand/manual like today's device-handoff export/import. The owner explicitly wants this to
