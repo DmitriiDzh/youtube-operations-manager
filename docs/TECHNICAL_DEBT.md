@@ -678,6 +678,19 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 ---
 
+## RISK-42 — React components in this repository have no unit/component test coverage — OPEN, 2026-09-21 (independent review series)
+
+- **Affected components:** every file under `src/components/` (confirmed: zero `*.test.tsx`/component test files exist anywhere in the repository as of this entry) — flagged concretely this time against `src/components/languages-manager.tsx` by two independent `/code-review high` passes during the Languages-tab E1-E4b redesign's own independent-review cycle (`docs/roadmap/BACKLOG.md` BL-037), one of which explicitly cited `AGENTS.md` §L's "acceptance tests... for changes touching approval integrity" against a stale-generation-state bug this same cycle found and fixed (a UI bug that could have attached AI-generated proposals to the wrong `videoId`/language before a human ever reviewed them).
+- **Current behavior:** every domain module under `src/lib/**` has spec-driven `node:test` coverage per `AGENTS.md` §L; every React component is instead verified by live `claude-in-chrome` browser sessions against a real synced channel, checked at the point each feature ships and not automated to re-run afterward. This is a deliberate, consistently-applied convention across this codebase, not an oversight specific to any one file — it already applies to `src/components/video-details-panel.tsx`, which drives a real, non-dry-run YouTube write (RISK-40) and is at least as safety-adjacent as anything in `languages-manager.tsx`.
+- **Actual risk:** a regression in component-level state logic (which video/language a generated proposal is scoped to, whether a stale async response can land in the wrong place, selection-state invariants) has no automated net and can only be caught by a human noticing it in the browser, or by another independent-review pass reading the code -- exactly how both bugs this entry cites were actually found. `AGENTS.md` §L's testing standard is written at the level of "changes touching approval integrity," and this class of bug is adjacent to that (the malformed draft still has to pass a human approval step before anything could reach `src/lib/batches/`, which has its own independent, already-tested conflict/approval-integrity guarantees unaffected by a UI-layer mislabeling bug) — a real gap, but one layer removed from the write-safety-critical backend pipeline the existing test suite already covers thoroughly.
+- **Existing mitigation:** the backend domains this UI calls into (`changesets`, `ai-localization`, `batches`) are fully spec-tested independently of any UI bug, so a UI-layer mistake produces a wrong *draft* that still requires a human `approve` action, never a bypass of conflict detection, defaultLanguage guards, or the write barrier itself.
+- **Required remediation (if ever undertaken):** either (a) extend the *pure-logic* pieces of complex components (state-transition helpers like this file's `resetGenerationSession`/scope-switching logic, `compareRows`/sort helpers) so they can be exported and unit-tested with `node:test` without a DOM/React-testing-library dependency this project does not currently have, or (b) adopt a component-testing library project-wide (a bigger, separate decision — new dev dependency, new test-running pattern) and apply it consistently rather than to one file in isolation.
+- **Gate(s):** none blocking today (browser verification remains the accepted method); would become relevant to `BLOCKS_OPERATIONS_RELEASE`-class gates only if the project owner decides UI regressions have become a recurring operational problem.
+- **Approval required from:** project owner -- this is a testing-strategy/tooling decision (a new dependency and a new project-wide pattern), not a per-file fix, and should not be solved piecemeal for just one component.
+- **Status:** OPEN — documented per the same "explicitly defer, never silently drop" standard this file's other entries use, rather than adding an inconsistent one-off test file for a single component while leaving the rest of `src/components/` exactly as before.
+
+---
+
 ## Summary table
 
 | ID | Title | Gates | Status |
@@ -723,5 +736,6 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-39 | `syncChannel`'s explicit-channelId path has no OAuth-ownership check (write side) | none blocking | OPEN |
 | RISK-40 | `video-details` module + Content-tab UI done; no CLI/MCP parity, `paidProductPlacementDetails` unimplemented (API ambiguous) | none blocking | OPEN |
 | RISK-41 | `src/lib/backup/` needs an eventual retention/purge policy once a real deletion feature (E5) uses it -- pre-emptively recorded, no code yet | none blocking | OPEN |
+| RISK-42 | No unit/component test coverage for any `src/components/**` React component (project-wide convention, not one file) | none blocking today | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

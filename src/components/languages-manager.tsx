@@ -241,6 +241,11 @@ export function LanguagesManager() {
   // separate `bulkPopoverOpen` boolean had already desynced from `generateScope` at one call site
   // and was one edit away from doing so again at every other one).
   const [generateScope, setGenerateScope] = useState<GenerateScope | null>(null);
+  // Bumped by resetGenerationSession() and by handleGenerate() itself on every call -- a fetch's
+  // response is only ever applied if this still matches the value captured when that fetch
+  // started, so a slow/superseded request can never land its result into whatever session is
+  // open by the time it resolves (round-2 independent-review finding, 2026-09-21).
+  const generationRequestIdRef = useRef(0);
   const [targetLanguages, setTargetLanguages] = useState("es");
   const [generating, setGenerating] = useState(false);
   const [targets, setTargets] = useState<EditableTarget[]>([]);
@@ -332,8 +337,16 @@ export function LanguagesManager() {
    * or ends one (independent-review finding, 2026-09-21: startBulkGenerate/
    * startBulkGenerateForLanguage previously skipped this, so switching from an open row-scoped
    * session straight into a bulk one could silently carry the earlier video's proposals into a
-   * Change Set for a completely different target). */
+   * Change Set for a completely different target). Also bumps `generationRequestIdRef` so an
+   * in-flight `handleGenerate()` fetch from the session being abandoned can never land its
+   * response into whatever session opens next (round-2 independent-review finding: a slow
+   * request from a closed panel could otherwise resolve after a *different* video's panel was
+   * already open, silently mislabeling that video with the first request's proposals), and resets
+   * `generating` immediately rather than leaving it stuck true until that abandoned fetch's own
+   * `finally` eventually runs. */
   function resetGenerationSession() {
+    generationRequestIdRef.current += 1;
+    setGenerating(false);
     setTargets([]);
     setRowErrors([]);
     setCreatedChangeSetId(null);
@@ -348,6 +361,19 @@ export function LanguagesManager() {
   function isRowGeneratePanelOpen(videoId: string): boolean {
     return generateScope?.kind === "row" && generateScope.videoId === videoId;
   }
+
+  // Structural fix for a round-2 independent-review finding: round 1 only taught the "Clear"
+  // button to close a bulk-scoped generate panel when the selection empties, but `toggleSelected`
+  // (unchecking the last selected row) can empty `selectedIds` too, and was missed. Rather than
+  // re-auditing every place that can touch `selectedIds` for this one invariant, enforce it once,
+  // structurally: whenever the selection is empty, a bulk-scoped panel has nothing left to be
+  // scoped to and must close, regardless of which code path emptied it.
+  useEffect(() => {
+    if (selectedIds.size === 0 && generateScope?.kind === "bulk") {
+      closeGeneratePanel();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIds, generateScope]);
 
   async function toggleExpand(videoId: string) {
     if (expandedVideoId === videoId) {
@@ -462,6 +488,13 @@ export function LanguagesManager() {
       return;
     }
 
+    // Captured before the request starts; resetGenerationSession() (called whenever this session
+    // is abandoned or superseded -- closing the panel, switching row<->bulk, Clear, the selection
+    // emptying) bumps generationRequestIdRef, so a response that arrives after that point is
+    // recognized as stale below and never applied (round-2 independent-review finding, 2026-09-21:
+    // a slow request from an abandoned session could otherwise land its result into whichever
+    // session happened to be open when it finally resolved).
+    const requestId = (generationRequestIdRef.current += 1);
     setGenerating(true);
     try {
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/ai-localization/generate`, {
@@ -474,6 +507,7 @@ export function LanguagesManager() {
         }),
       });
       const data = (await res.json()) as GenerationResponse & { message?: string };
+      if (requestId !== generationRequestIdRef.current) return;
       if (!res.ok) {
         setError(data.message ?? "Generation failed");
         return;
@@ -482,7 +516,7 @@ export function LanguagesManager() {
       setRowErrors(data.errors);
       setGenerationContext(data.generationContext);
     } finally {
-      setGenerating(false);
+      if (requestId === generationRequestIdRef.current) setGenerating(false);
     }
   }
 
@@ -525,6 +559,7 @@ export function LanguagesManager() {
       }
       setCreatedChangeSetId(data.changeSet.id);
       setTargets([]);
+      setRowErrors([]);
       setGenerationContext(null);
       await fetchChangeSets(channelId);
       setOpenChangeSetId(data.changeSet.id);
@@ -784,17 +819,7 @@ export function LanguagesManager() {
             <div className="relative flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-950/60 px-4 py-2 text-sm">
               <div className="flex items-center gap-3">
                 <span className="font-medium text-zinc-200">{selectedIds.size} selected</span>
-                <button
-                  onClick={() => {
-                    setSelectedIds(new Set());
-                    // Independent-review finding, 2026-09-21: this used to only clear the
-                    // selection, so the whole bar (and any open popover inside it) visually
-                    // vanished while generateScope/targets stayed set -- reselecting anything
-                    // reopened the popover with the stale, pre-Clear proposals still in it.
-                    if (generateScope?.kind === "bulk") closeGeneratePanel();
-                  }}
-                  className="text-xs text-zinc-500 hover:text-zinc-300"
-                >
+                <button onClick={() => setSelectedIds(new Set())} className="text-xs text-zinc-500 hover:text-zinc-300">
                   Clear
                 </button>
               </div>
