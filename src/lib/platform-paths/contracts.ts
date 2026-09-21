@@ -29,6 +29,14 @@ export type AppPaths = {
   snapshotsDir: string;
   /** Directory holding per-channel Automerge draft documents (src/lib/change-drafts/). */
   changeDraftsDir: string;
+  /**
+   * Local-only fallback exchange directory for change-drafts sync (src/lib/change-drafts-sync/)
+   * when no Syncthing-shared folder is configured yet -- mirrors `resolveSnapshotsDir`'s own
+   * `config.syncthingRootPath ?? appDataPaths.snapshotsDir` fallback pattern
+   * (src/app/api/device-handoff/shared.ts), kept as its own directory rather than reusing
+   * `snapshotsDir` so per-device `.automerge` exchange files never mix with snapshot-id folders.
+   */
+  changeDraftsSyncFallbackDir: string;
   /** Path to the device-local bootstrap config JSON file. */
   bootstrapConfigPath: string;
   /** Path to the CLI/MCP active-user auth-context JSON file. */
