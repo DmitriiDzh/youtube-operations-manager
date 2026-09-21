@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ConfirmDialog } from "./confirm-dialog";
 
 type VideoDetailModalProps = {
   title: string;
@@ -91,31 +92,17 @@ export function VideoDetailModal({ title, thumbnailUrl, onClose, hasUnsavedChang
         <div className="flex-1 overflow-y-auto p-5">{children}</div>
 
         {showDiscardConfirm && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/60 p-4">
-            <div className="w-full max-w-sm space-y-4 rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl">
-              <p className="text-sm font-medium text-zinc-100">Discard unsaved changes?</p>
-              <p className="text-xs text-zinc-400">
-                This video has edits that haven&rsquo;t been saved yet. Closing now will discard them.
-              </p>
-              <div className="flex justify-end gap-2">
-                <button
-                  onClick={() => setShowDiscardConfirm(false)}
-                  className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => {
-                    setShowDiscardConfirm(false);
-                    onClose();
-                  }}
-                  className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700"
-                >
-                  Discard changes
-                </button>
-              </div>
-            </div>
-          </div>
+          <ConfirmDialog
+            title="Discard unsaved changes?"
+            description="This video has edits that haven't been saved yet. Closing now will discard them."
+            confirmLabel="Discard changes"
+            confirmVariant="danger"
+            onCancel={() => setShowDiscardConfirm(false)}
+            onConfirm={() => {
+              setShowDiscardConfirm(false);
+              onClose();
+            }}
+          />
         )}
       </div>
     </div>

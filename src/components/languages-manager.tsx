@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { VideoDetailModal } from "./video-detail-modal";
 import { ChangeSetReview } from "./change-set-review";
+import { ConfirmDialog } from "./confirm-dialog";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -230,6 +231,11 @@ export function LanguagesManager() {
   const [newTrackedLanguage, setNewTrackedLanguage] = useState("");
   const [trackedLanguageBusy, setTrackedLanguageBusy] = useState(false);
   const [trackedLanguageNotice, setTrackedLanguageNotice] = useState<string | null>(null);
+  // Drives the shared ConfirmDialog for "remove tracked language" -- null means no dialog is
+  // open; hasRealData picks which of the two confirmation messages/actions applies.
+  const [pendingRemoveLanguage, setPendingRemoveLanguage] = useState<{ language: string; hasRealData: boolean } | null>(
+    null
+  );
   // Hard allowlist for "which languages can be added" (owner instruction, 2026-09-21: "Пользователь
   // не может добавить язык, которого не будет в этом списке") -- YouTube's own real, official
   // `i18nLanguages.list` set (hardcoded, `src/lib/youtube-supported-languages.ts`, not fetched
@@ -360,47 +366,42 @@ export function LanguagesManager() {
    *     stay visible via the real-data union regardless (already explained to the owner), so
    *     untracking here would be a no-op action that could misleadingly read as "handled."
    */
-  async function handleRemoveTrackedLanguage(language: string) {
+  // Opens the shared in-app ConfirmDialog instead of blocking on window.confirm (owner
+  // instruction, 2026-09-21: any popup/dialog this app itself designs must render through our
+  // own UI in the app's own style, never a native browser dialog). The actual removal/deletion
+  // logic lives in performUntrackLanguage/performProposeLanguageDeletion below, invoked from the
+  // dialog's onConfirm once the operator actually clicks through.
+  function handleRemoveTrackedLanguage(language: string) {
     if (!channelId) return;
     const hasRealData = (overview?.videos ?? []).some((v) => v.presentLanguages.includes(language));
+    setPendingRemoveLanguage({ language, hasRealData });
+  }
 
-    if (!hasRealData) {
-      if (!window.confirm(`Remove "${language}" from tracked languages?`)) return;
-      setTrackedLanguageBusy(true);
-      setTrackedLanguageNotice(null);
-      setError(null);
-      try {
-        const res = await fetch(
-          `/api/channels/${encodeURIComponent(channelId)}/localizations/tracked-languages/${encodeURIComponent(language)}`,
-          { method: "DELETE" }
-        );
-        const data = await res.json();
-        if (!res.ok) {
-          setError(data.message ?? data.error ?? `Error ${res.status}`);
-          return;
-        }
-        await fetchOverview(channelId);
-      } catch (e) {
-        setError(String(e));
-      } finally {
-        setTrackedLanguageBusy(false);
+  async function performUntrackLanguage(language: string) {
+    if (!channelId) return;
+    setTrackedLanguageBusy(true);
+    setTrackedLanguageNotice(null);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/channels/${encodeURIComponent(channelId)}/localizations/tracked-languages/${encodeURIComponent(language)}`,
+        { method: "DELETE" }
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        return;
       }
-      return;
+      await fetchOverview(channelId);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setTrackedLanguageBusy(false);
     }
+  }
 
-    if (
-      !window.confirm(
-        `"${language}" has real translations on this channel. This will propose DELETING that ` +
-          `localization (title + description) from every video that has it -- this does NOT ` +
-          `delete anything immediately: it creates a Change Set that still needs your approval, ` +
-          `a backup of the current values is captured automatically when the batch pipeline ` +
-          `processes it, and nothing can actually be written to YouTube until Gate B is cleared. ` +
-          `The column will remain visible until that eventually happens and the channel re-syncs. Continue?`
-      )
-    ) {
-      return;
-    }
-
+  async function performProposeLanguageDeletion(language: string) {
+    if (!channelId) return;
     setTrackedLanguageBusy(true);
     setTrackedLanguageNotice(null);
     setError(null);
@@ -1576,6 +1577,38 @@ export function LanguagesManager() {
         >
           {renderVideoLocalizationDetail(expandedVideo)}
         </VideoDetailModal>
+      )}
+
+      {pendingRemoveLanguage && (
+        <ConfirmDialog
+          title={
+            pendingRemoveLanguage.hasRealData
+              ? `Propose deleting "${pendingRemoveLanguage.language}"?`
+              : `Remove "${pendingRemoveLanguage.language}" from tracked languages?`
+          }
+          description={
+            pendingRemoveLanguage.hasRealData
+              ? `"${pendingRemoveLanguage.language}" has real translations on this channel. This will propose ` +
+                `DELETING that localization (title + description) from every video that has it -- this does NOT ` +
+                `delete anything immediately: it creates a Change Set that still needs your approval, a backup of ` +
+                `the current values is captured automatically when the batch pipeline processes it, and nothing ` +
+                `can actually be written to YouTube until Gate B is cleared. The column will remain visible until ` +
+                `that eventually happens and the channel re-syncs.`
+              : undefined
+          }
+          confirmLabel={pendingRemoveLanguage.hasRealData ? "Propose deletion" : "Remove"}
+          confirmVariant="danger"
+          onCancel={() => setPendingRemoveLanguage(null)}
+          onConfirm={() => {
+            const { language, hasRealData } = pendingRemoveLanguage;
+            setPendingRemoveLanguage(null);
+            if (hasRealData) {
+              void performProposeLanguageDeletion(language);
+            } else {
+              void performUntrackLanguage(language);
+            }
+          }}
+        />
       )}
     </div>
   );
