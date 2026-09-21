@@ -800,3 +800,27 @@ export async function removeVideosFromPlaylist(
 
   return removed;
 }
+
+export type SupportedLanguage = { code: string; name: string };
+
+/**
+ * The real, official set of `hl` values YouTube's `i18nLanguages.list` endpoint returns,
+ * mapped to their English display names -- used to suggest which language codes an operator
+ * can add as a Languages-tab column (docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md §7.2,
+ * follow-up assignment 2026-09-21). This is a suggestion source, not a hard allowlist: it is
+ * YouTube's own supported *interface* language list, which is a documented, narrower set than
+ * every `localizations` key `videos.update` will actually accept (e.g. regional variants like
+ * "en-US" seen on real synced data are not guaranteed to appear here) -- callers must still
+ * accept any code `isValidLanguageCode` (src/lib/changesets/diff.ts) allows, not only these.
+ */
+export async function listSupportedLanguages(youtube: youtube_v3.Youtube): Promise<SupportedLanguage[]> {
+  const res = await youtube.i18nLanguages.list({ part: ["snippet"], hl: "en" });
+
+  return (res.data.items ?? [])
+    .map((item) => ({
+      code: item.id ?? "",
+      name: item.snippet?.name ?? item.id ?? "",
+    }))
+    .filter((lang) => lang.code.length > 0)
+    .sort((a, b) => a.code.localeCompare(b.code));
+}

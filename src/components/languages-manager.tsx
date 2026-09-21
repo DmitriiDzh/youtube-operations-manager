@@ -221,6 +221,8 @@ type GenerateScope = { kind: "bulk" } | { kind: "row"; videoId: string };
  */
 export function LanguagesManager() {
   const [channelId, setChannelId] = useState("");
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loadingOverview, setLoadingOverview] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -228,6 +230,13 @@ export function LanguagesManager() {
   const [newTrackedLanguage, setNewTrackedLanguage] = useState("");
   const [trackedLanguageBusy, setTrackedLanguageBusy] = useState(false);
   const [trackedLanguageNotice, setTrackedLanguageNotice] = useState<string | null>(null);
+  // Suggestion source for "which languages can actually be added" (owner request, 2026-09-21) --
+  // YouTube's own real, official `i18nLanguages.list` set, not a hand-picked list of our own. This
+  // is a suggestion, not a hard allowlist: a typed code that isn't in this list is still
+  // committable via Enter/Add (server-side isValidLanguageCode is the real gate), since that list
+  // is narrower than every code `videos.update` actually accepts (e.g. regional variants).
+  const [supportedLanguages, setSupportedLanguages] = useState<{ code: string; name: string }[]>([]);
+  const [languageDropdownOpen, setLanguageDropdownOpen] = useState(false);
   const [expandedVideoId, setExpandedVideoId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -308,8 +317,10 @@ export function LanguagesManager() {
     }
   }, []);
 
-  async function handleAddTrackedLanguage() {
-    const language = newTrackedLanguage.trim();
+  async function handleAddTrackedLanguage(explicitLanguage?: string) {
+    // Accepts an explicit code (dropdown selection) since setNewTrackedLanguage() before calling
+    // this wouldn't be visible yet inside this same closure -- React state updates are async.
+    const language = (explicitLanguage ?? newTrackedLanguage).trim();
     if (!channelId || !language) return;
     setTrackedLanguageBusy(true);
     setTrackedLanguageNotice(null);
@@ -443,13 +454,47 @@ export function LanguagesManager() {
     }
   }, []);
 
+  // Same "Sync now" action as Content -- deliberately NOT paired with Content's mount-time
+  // auto-resync-if-stale policy, which exists there to avoid spending real quota on every tab
+  // switch; a manual button here doesn't have that cost, and Languages doesn't need to duplicate
+  // Content's staleness bookkeeping to get one. A re-sync can move a video's remote baseline
+  // (title/description/localizations), which is exactly what can invalidate an existing approval
+  // or raise a fresh conflict (docs/ARCHITECTURE.md §6.7) -- so both the overview table AND the
+  // Change Set list are refetched, not just the table.
+  const handleSync = useCallback(async () => {
+    if (!channelId) return;
+    setSyncing(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/channels/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channelId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        return;
+      }
+      setLastSyncedAt(data.channel?.lastSyncedAt ?? null);
+      await Promise.all([fetchOverview(channelId), fetchChangeSets(channelId)]);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSyncing(false);
+    }
+  }, [channelId, fetchOverview, fetchChangeSets]);
+
   useEffect(() => {
     (async () => {
       const res = await fetch("/api/channels");
       const data = await res.json();
       // Only one channel is ever active (docs/decisions/0004-active-channel-read-scoping.md) --
       // there is nothing for the operator to pick.
-      if (res.ok && data.channels?.[0]) setChannelId(data.channels[0].channelId);
+      if (res.ok && data.channels?.[0]) {
+        setChannelId(data.channels[0].channelId);
+        setLastSyncedAt(data.channels[0].lastSyncedAt ?? null);
+      }
     })();
   }, []);
 
@@ -461,6 +506,32 @@ export function LanguagesManager() {
       setConnections((data.connections ?? []).filter((c: { enabled: boolean }) => c.enabled));
     })();
   }, []);
+
+  useEffect(() => {
+    (async () => {
+      const res = await fetch("/api/youtube/languages");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data.languages)) setSupportedLanguages(data.languages);
+    })();
+  }, []);
+
+  // Excludes columns that already exist (docs/ROADMAP_STATUS.md BL-039's `trackedLanguages ∪
+  // real-data` union -- `overview.languages`, not `trackedLanguages` alone, since offering an
+  // already-present real-data-only column would look addable but do nothing).
+  const addableLanguages = useMemo(() => {
+    const existing = new Set(overview?.languages ?? []);
+    const query = newTrackedLanguage.trim().toLowerCase();
+    return supportedLanguages
+      .filter((lang) => !existing.has(lang.code))
+      .filter(
+        (lang) =>
+          query.length === 0 ||
+          lang.code.toLowerCase().startsWith(query) ||
+          lang.name.toLowerCase().includes(query)
+      )
+      .slice(0, 50);
+  }, [supportedLanguages, overview?.languages, newTrackedLanguage]);
 
   useEffect(() => {
     if (channelId) {
@@ -1079,6 +1150,21 @@ export function LanguagesManager() {
       )}
 
       {channelId && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+          <button
+            onClick={handleSync}
+            disabled={syncing}
+            className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+          >
+            {syncing ? "Syncing..." : "Sync now"}
+          </button>
+          <p className="text-xs text-zinc-500">
+            Last synced: {lastSyncedAt ? new Date(lastSyncedAt).toLocaleString() : "never"}
+          </p>
+        </div>
+      )}
+
+      {channelId && (
         <div className="rounded-xl border border-dashed border-zinc-800 bg-zinc-900/50 px-4 py-3 text-xs text-zinc-500">
           <span className="font-medium text-zinc-400">Recommended languages</span> &mdash; coming with
           Analytics integration (Phase 8). Once real audience data is available, this card will
@@ -1096,24 +1182,54 @@ export function LanguagesManager() {
               placeholder="Search by title..."
               className="min-w-48 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm placeholder:text-zinc-600"
             />
-            <div className="flex items-center gap-2">
+            <div className="relative flex items-center gap-2">
               <input
                 type="text"
                 value={newTrackedLanguage}
-                onChange={(e) => setNewTrackedLanguage(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleAddTrackedLanguage();
+                onChange={(e) => {
+                  setNewTrackedLanguage(e.target.value);
+                  setLanguageDropdownOpen(true);
                 }}
-                placeholder="Add language column (e.g. fr)"
-                className="w-48 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm placeholder:text-zinc-600"
+                onFocus={() => setLanguageDropdownOpen(true)}
+                onBlur={() => setLanguageDropdownOpen(false)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    setLanguageDropdownOpen(false);
+                    handleAddTrackedLanguage();
+                  }
+                  if (e.key === "Escape") setLanguageDropdownOpen(false);
+                }}
+                placeholder="Add language column (code or name)"
+                className="w-56 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm placeholder:text-zinc-600"
               />
               <button
-                onClick={handleAddTrackedLanguage}
+                onClick={() => handleAddTrackedLanguage()}
                 disabled={trackedLanguageBusy || !newTrackedLanguage.trim()}
                 className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
               >
                 Add
               </button>
+
+              {languageDropdownOpen && addableLanguages.length > 0 && (
+                <div className="absolute left-0 top-full z-10 mt-1 max-h-64 w-72 overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-800 shadow-lg">
+                  {addableLanguages.map((lang) => (
+                    <button
+                      key={lang.code}
+                      type="button"
+                      // Keeps focus on the input so `onBlur` above never fires before this click
+                      // is handled -- no setTimeout-based "wait for the click" workaround needed.
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        setLanguageDropdownOpen(false);
+                        handleAddTrackedLanguage(lang.code);
+                      }}
+                      className="block w-full px-3 py-1.5 text-left text-sm text-zinc-200 hover:bg-zinc-700"
+                    >
+                      {lang.code} &mdash; {lang.name}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <span className="text-sm text-zinc-400">
               {loadingOverview ? "Loading..." : `${sortedFilteredVideos.length} of ${overview.totalVideos} videos`}
