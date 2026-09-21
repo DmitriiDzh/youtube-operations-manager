@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { ConfirmDialog } from "./confirm-dialog";
 
 type SyncedChannel = {
   channelId: string;
@@ -63,12 +64,12 @@ type ApiError = { error: string; message: string };
  * select approved changes -> create a Batch -> inspect its immutable membership -> run
  * its dry-run preview -> inspect the resulting diff/status/errors/audit trail.
  *
- * There is deliberately NO "Apply"/live-execution button anywhere in this component --
- * real writes remain disabled by the server-side barrier (src/lib/batches/adapters/
- * write-executor.youtube.ts), and every batch created here is forced dry-run by the API
- * route regardless of what this UI sends (see src/app/api/channels/[channelId]/batches/
- * route.ts). Presenting a live-execution action here would be exactly the "nonfunctional
- * or unsafe Apply button" this task explicitly says not to build.
+ * "Create as a real batch" and the "Execute" action below are only rendered/enabled when
+ * the Settings-tab "live writes" toggle is on (owner instruction, 2026-09-21,
+ * docs/TECHNICAL_DEBT.md RISK-09) -- with it off (the default every session), a batch
+ * created here is still forced dry-run by the API route regardless of what this UI sends
+ * (see src/app/api/channels/[channelId]/batches/route.ts), and Execute is hidden
+ * entirely, exactly as before this change.
  */
 export function BatchManager() {
   const [channels, setChannels] = useState<SyncedChannel[]>([]);
@@ -80,6 +81,8 @@ export function BatchManager() {
   const [changes, setChanges] = useState<Change[]>([]);
   const [selectedChangeIds, setSelectedChangeIds] = useState<Set<string>>(new Set());
   const [creatingBatch, setCreatingBatch] = useState(false);
+  const [createAsLive, setCreateAsLive] = useState(false);
+  const [liveWritesEnabled, setLiveWritesEnabled] = useState(false);
 
   const [batches, setBatches] = useState<Batch[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
@@ -87,6 +90,17 @@ export function BatchManager() {
   const [batchErrors, setBatchErrors] = useState<Array<{ videoId: string; status: string; error: string | null }>>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [preparing, setPreparing] = useState(false);
+  const [executing, setExecuting] = useState(false);
+  const [confirmingExecute, setConfirmingExecute] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const res = await fetch("/api/settings");
+      if (!res.ok) return;
+      const data = await res.json();
+      setLiveWritesEnabled(Boolean(data.liveWritesEnabled));
+    })();
+  }, []);
 
   const fetchChannels = useCallback(async () => {
     const res = await fetch("/api/channels");
@@ -160,7 +174,7 @@ export function BatchManager() {
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/batches`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ selections }),
+        body: JSON.stringify({ selections, dryRun: liveWritesEnabled ? !createAsLive : true }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -168,6 +182,7 @@ export function BatchManager() {
         throw new Error(err.message ?? "Failed to create batch");
       }
       setSelectedChangeIds(new Set());
+      setCreateAsLive(false);
       await fetchBatches(channelId);
       setSelectedBatchId(data.id);
       await openBatch(data.id);
@@ -175,6 +190,27 @@ export function BatchManager() {
       setError(e instanceof Error ? e.message : "Failed to create batch");
     } finally {
       setCreatingBatch(false);
+    }
+  }
+
+  async function executeBatch(batchId: string) {
+    setExecuting(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/batches/${encodeURIComponent(batchId)}/execute`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        const err = data as ApiError;
+        throw new Error(err.message ?? "Failed to execute batch");
+      }
+      await openBatch(batchId);
+      await fetchBatches(channelId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to execute batch");
+    } finally {
+      setExecuting(false);
     }
   }
 
@@ -219,13 +255,25 @@ export function BatchManager() {
     (c) => c.approvalStatus === "approved" && c.validationStatus === "valid" && c.conflictStatus === "none"
   );
 
+  const selectedBatch = batches.find((b) => b.id === selectedBatchId) ?? null;
+  const selectedChannelTitle = channels.find((c) => c.channelId === channelId)?.title ?? channelId;
+  const totalFieldCount = ledgerRows.reduce((sum, row) => sum + row.changeIds.length, 0);
+
   return (
     <div className="space-y-8">
-      <div className="rounded-lg border border-amber-800 bg-amber-950/40 px-4 py-3 text-sm text-amber-200">
-        Real YouTube writes are currently disabled by a server-side safety barrier
-        (Gate B not yet satisfied). Every batch created here always runs in dry-run mode
-        only &mdash; nothing is ever written to YouTube from this tab.
-      </div>
+      {liveWritesEnabled ? (
+        <div className="rounded-lg border border-red-800 bg-red-950/40 px-4 py-3 text-sm text-red-200">
+          &ldquo;Live writes&rdquo; is ON (Settings) &mdash; a batch created below with &ldquo;Create as a real,
+          live batch&rdquo; checked can perform a genuine, non-dry-run write to YouTube once you click
+          Execute. Turn it back off in Settings if you don&rsquo;t intend to do that right now.
+        </div>
+      ) : (
+        <div className="rounded-lg border border-amber-800 bg-amber-950/40 px-4 py-3 text-sm text-amber-200">
+          Real YouTube writes are currently disabled by a server-side safety barrier
+          (&ldquo;Live writes&rdquo; is off in Settings). Every batch created here always runs in dry-run
+          mode only &mdash; nothing is ever written to YouTube from this tab.
+        </div>
+      )}
 
       <div>
         <label className="mb-1 block text-xs text-zinc-500">Channel</label>
@@ -280,12 +328,18 @@ export function BatchManager() {
               <p className="p-2 text-sm text-zinc-500">No approved, valid, non-conflicting changes in this Change Set.</p>
             )}
           </div>
+          {liveWritesEnabled && (
+            <label className="mt-3 flex items-center gap-2 text-xs text-amber-300">
+              <input type="checkbox" checked={createAsLive} onChange={(e) => setCreateAsLive(e.target.checked)} />
+              Create as a real, live batch (will be able to write to YouTube)
+            </label>
+          )}
           <button
             onClick={createBatch}
             disabled={selectedChangeIds.size === 0 || creatingBatch}
-            className="mt-3 rounded-lg bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-900 disabled:opacity-40"
+            className="mt-2 rounded-lg bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-900 disabled:opacity-40"
           >
-            {creatingBatch ? "Creating..." : "Create Batch (dry-run)"}
+            {creatingBatch ? "Creating..." : createAsLive ? "Create Batch (live)" : "Create Batch (dry-run)"}
           </button>
         </div>
       )}
@@ -317,13 +371,24 @@ export function BatchManager() {
             <h3 className="text-sm font-semibold text-zinc-300">
               Batch {selectedBatchId.slice(0, 8)} &mdash; immutable membership ({ledgerRows.length} video{ledgerRows.length === 1 ? "" : "s"})
             </h3>
-            <button
-              onClick={() => runDryRun(selectedBatchId)}
-              disabled={preparing}
-              className="rounded-lg border border-zinc-600 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:border-zinc-400 disabled:opacity-40"
-            >
-              {preparing ? "Running dry-run..." : "Run dry-run preview"}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => runDryRun(selectedBatchId)}
+                disabled={preparing}
+                className="rounded-lg border border-zinc-600 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:border-zinc-400 disabled:opacity-40"
+              >
+                {preparing ? "Running dry-run..." : "Run dry-run preview"}
+              </button>
+              {liveWritesEnabled && selectedBatch && !selectedBatch.dryRun && selectedBatch.status === "PENDING" && (
+                <button
+                  onClick={() => setConfirmingExecute(true)}
+                  disabled={executing}
+                  className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-40"
+                >
+                  {executing ? "Executing..." : "Execute (real write)"}
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="overflow-x-auto">
@@ -379,6 +444,25 @@ export function BatchManager() {
             )}
           </div>
         </div>
+      )}
+
+      {confirmingExecute && selectedBatchId && (
+        <ConfirmDialog
+          title="Send this batch to YouTube for real?"
+          description={
+            `Channel: ${selectedChannelTitle}. ${ledgerRows.length} video${ledgerRows.length === 1 ? "" : "s"}, ` +
+            `${totalFieldCount} field${totalFieldCount === 1 ? "" : "s"} total. This is a real, non-dry-run write -- ` +
+            `each video still goes through identity check, a fresh conflict check, and an automatic backup before ` +
+            `being written, and the result will show here per video. This cannot be undone by this app.`
+          }
+          confirmLabel="Execute"
+          confirmVariant="danger"
+          onCancel={() => setConfirmingExecute(false)}
+          onConfirm={() => {
+            setConfirmingExecute(false);
+            executeBatch(selectedBatchId);
+          }}
+        />
       )}
     </div>
   );

@@ -13,6 +13,16 @@
 // `createScriptedFakeWriteExecutor` symbols themselves, and `performYoutubeWrite`. This
 // fails loudly the moment any future change adds such a reference, rather than relying
 // on a one-time manual grep that can go stale.
+//
+// Revised again 2026-09-21 (owner instruction -- the Settings-tab live-writes toggle,
+// docs/TECHNICAL_DEBT.md RISK-09): the one explicitly-authorized activation this file's
+// own original comment anticipated has now happened. Exactly two new files are allowed
+// to reference these symbols, and only these two -- `ALLOWED_LIVE_WRITE_FILES` below:
+// `src/lib/batches/adapters/write-executor.ts` (Layer 1 -- constructs a real
+// `WriteExecutor` only when the persisted setting is on) and the new
+// `src/app/api/channels/[channelId]/batches/[batchId]/execute/route.ts` (the one route
+// that calls `executeBatch` with it). Every other file in these surfaces is still held
+// to the original, absolute ban.
 // ---------------------------------------------------------------------------
 
 import assert from "node:assert/strict";
@@ -60,7 +70,16 @@ const FORBIDDEN_SYMBOLS = [
   "performYoutubeWrite",
 ];
 
-test("write-path inventory: no API route, MCP tool, or CLI command references any live-write-capable batches symbol", async () => {
+// The one explicitly-authorized exception (owner instruction, 2026-09-21): the route that
+// actually executes a live batch necessarily references `executeBatch`/`WriteExecutor`. Its
+// own Layer 1 gate (`createLiveWriteExecutorIfEnabled`, checked at the top of this file's
+// header comment) is what keeps this from being reachable unless the Settings-tab toggle is
+// on -- this allowlist is deliberately exactly one file, not a directory or a pattern.
+const ALLOWED_LIVE_WRITE_FILES = new Set([
+  path.join("src", "app", "api", "channels", "[channelId]", "batches", "[batchId]", "execute", "route.ts"),
+]);
+
+test("write-path inventory: no API route, MCP tool, or CLI command references any live-write-capable batches symbol, except the one authorized execute route", async () => {
   const surfaces = [
     path.join(REPO_ROOT, "src", "app", "api"),
     path.join(REPO_ROOT, "src", "mcp"),
@@ -71,10 +90,12 @@ test("write-path inventory: no API route, MCP tool, or CLI command references an
   for (const surfaceDir of surfaces) {
     const files = await listTsFilesRecursively(surfaceDir);
     for (const file of files) {
+      const relative = path.relative(REPO_ROOT, file);
+      if (ALLOWED_LIVE_WRITE_FILES.has(relative)) continue;
       const content = await readFile(file, "utf8");
       const hit = FORBIDDEN_SYMBOLS.find((symbol) => content.includes(symbol));
       if (hit) {
-        offenders.push(`${path.relative(REPO_ROOT, file)} (references "${hit}")`);
+        offenders.push(`${relative} (references "${hit}")`);
       }
     }
   }
@@ -104,11 +125,23 @@ test("write-path inventory: createYoutubeWriteExecutor is constructed nowhere ex
   const allowed = new Set([
     path.relative(REPO_ROOT, path.join(batchesDir, "adapters", "write-executor.youtube.ts")),
     path.relative(REPO_ROOT, path.join(batchesDir, "adapters", "write-executor.youtube.test.ts")),
+    path.relative(REPO_ROOT, path.join(batchesDir, "adapters", "write-executor.ts")),
     path.relative(REPO_ROOT, path.join(batchesDir, "write-path-inventory.test.ts")),
   ]);
   const unexpected = referencingFiles.filter((f) => !allowed.has(f));
 
   assert.deepEqual(unexpected, [], `Unexpected reference(s) to createYoutubeWriteExecutor outside its own adapter/test: ${unexpected.join(", ")}`);
+});
+
+test("write-path inventory: the one authorized execute route file actually exists and actually calls executeBatch (the allowlist above isn't a dead exception)", async () => {
+  for (const relative of ALLOWED_LIVE_WRITE_FILES) {
+    const content = await readFile(path.join(REPO_ROOT, relative), "utf8");
+    assert.ok(content.includes("executeBatch"), `${relative} was allowlisted for live-write symbols but doesn't reference executeBatch`);
+    assert.ok(
+      content.includes("createLiveWriteExecutorIfEnabled"),
+      `${relative} must gate its executeBatch call behind createLiveWriteExecutorIfEnabled (Layer 1)`
+    );
+  }
 });
 
 test("write-path inventory: src/lib/batches/index.ts never constructs a WriteExecutor (createBatchCore's returned services object has no wired executor)", async () => {

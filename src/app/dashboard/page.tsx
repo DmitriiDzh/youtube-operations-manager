@@ -8,6 +8,7 @@ import { ContentManager } from "@/components/content-manager";
 import { LanguagesManager } from "@/components/languages-manager";
 import { BatchManager } from "@/components/batch-manager";
 import { AiConnectionsManager } from "@/components/ai-connections-manager";
+import { LiveWritesSettings } from "@/components/live-writes-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
 import { EditorialProfilePanel } from "@/components/editorial-profile-panel";
 import { DeviceHandoffPanel } from "@/components/device-handoff-panel";
@@ -146,25 +147,28 @@ export default function Dashboard() {
       {tab === "batches" && (
         <div>
           <p className="mb-4 text-sm text-zinc-400">
-            Select approved changes into a Batch and preview it in dry-run mode. Real
-            YouTube writes are disabled by a server-side safety barrier &mdash; this tab
-            never performs a live write.
+            Select approved changes into a Batch and preview it in dry-run mode. A real,
+            non-dry-run write is only possible when &ldquo;Live writes&rdquo; is turned on
+            in Settings &mdash; off by default every session.
           </p>
           <BatchManager />
         </div>
       )}
 
       {tab === "settings" && (
-        <div className="max-w-3xl">
+        <div className="max-w-3xl space-y-6">
           <AppVersionInfo />
-          <p className="mb-4 text-sm text-zinc-400">
-            Configure AI provider connections for AI Localization. No specific vendor is
-            built into this app &mdash; every connection is a Base URL, model id, and
-            optional credential you supply. Credentials are encrypted at rest and never
-            shown again once saved. Testing a connection is an explicit action and may
-            incur cost for a real (non-mock) connection.
-          </p>
-          <AiConnectionsManager />
+          <LiveWritesSettings />
+          <div>
+            <p className="mb-4 text-sm text-zinc-400">
+              Configure AI provider connections for AI Localization. No specific vendor is
+              built into this app &mdash; every connection is a Base URL, model id, and
+              optional credential you supply. Credentials are encrypted at rest and never
+              shown again once saved. Testing a connection is an explicit action and may
+              incur cost for a real (non-mock) connection.
+            </p>
+            <AiConnectionsManager />
+          </div>
         </div>
       )}
 

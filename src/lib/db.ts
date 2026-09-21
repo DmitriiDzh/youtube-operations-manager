@@ -464,6 +464,16 @@ export const videoEditAuditEvents = sqliteTable("video_edit_audit_events", {
     .$defaultFn(() => new Date()),
 });
 
+// Generic key/value app settings (SCHEMA_MIGRATIONS version 7) -- currently backs the Gate B
+// "live writes" toggle and the MCP restricted-mode toggle (owner instruction, 2026-09-21,
+// Settings tab). Deliberately a plain key/value table rather than one dedicated column per
+// setting, since these two toggles are the first of what is expected to be several small,
+// independent app-wide flags -- see `getAppSetting`/`setAppSetting` below.
+export const appSettings = sqliteTable("app_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+});
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -565,6 +575,16 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
+    },
+  },
+  {
+    version: 7,
+    description:
+      "app_settings -- generic key/value app-wide settings (Settings tab: live-writes/MCP-restricted-mode toggles, owner instruction 2026-09-21)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+      );
     },
   },
 ];
@@ -884,6 +904,21 @@ async function initializeDatabase() {
   } finally {
     if (lockAcquired) await releaseOperationLock(rawClient);
   }
+
+  // Gate B toggle (owner instruction, 2026-09-21): "по дефолту при запуске сессии он выключен"
+  // -- unconditionally forced back to false on every process boot (Web app, MCP server, or CLI
+  // command, whichever imports this module first), regardless of what was last saved. This is
+  // what makes "off by default each session" hold even though the flag itself is durably
+  // persisted (required for multiple processes/workers to agree on its value while a session is
+  // actually running) rather than an in-memory variable.
+  //
+  // Deliberately `rawClient.execute` here, NOT `setLiveWritesEnabled`/the guarded `db` object:
+  // this function's own promise IS `databaseInitialization`, so the guarded client's "await
+  // databaseInitialization first" wrapper would deadlock waiting for this very call to finish.
+  await rawClient.execute({
+    sql: "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    args: ["live_writes_enabled", "false"],
+  });
 }
 
 export const databaseInitialization = initializeDatabase().catch((error: unknown) => {
@@ -1281,6 +1316,61 @@ export async function getChannelTargetLanguages(channelId: string): Promise<stri
 
 export async function setChannelTargetLanguages(channelId: string, languages: string[]): Promise<void> {
   await db.update(channels).set({ targetLanguagesJson: JSON.stringify(languages) }).where(eq(channels.id, channelId));
+}
+
+async function getAppSetting(key: string): Promise<string | null> {
+  const [row] = await db.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, key));
+  return row?.value ?? null;
+}
+
+async function setAppSetting(key: string, value: string): Promise<void> {
+  await db
+    .insert(appSettings)
+    .values({ key, value })
+    .onConflictDoUpdate({ target: appSettings.key, set: { value } });
+}
+
+const LIVE_WRITES_ENABLED_SETTING_KEY = "live_writes_enabled";
+const MCP_RESTRICTED_MODE_SETTING_KEY = "mcp_restricted_mode";
+
+/**
+ * The persisted half of the Gate B toggle (owner instruction, 2026-09-21, Settings tab) --
+ * `src/lib/batches/adapters/write-executor.youtube.ts`'s `assertLiveWritesAuthorized()` reads
+ * this at call time (not cached, not captured at construction) as the SECOND of two independent
+ * layers: `src/lib/batches/index.ts` still only constructs a real `WriteExecutor` when this is
+ * true (layer 1 -- no code path to `videos.update` exists at all otherwise), and this function
+ * re-checks it again immediately before the write (layer 2). Persisted, not an in-memory module
+ * variable, so every process that reads it (the Web app, a separately-spawned MCP process, the
+ * CLI) agrees -- see `initializeDatabase()`'s unconditional reset to `false` on every process
+ * boot for how "off by default each session" is actually achieved despite that.
+ */
+export async function getLiveWritesEnabled(): Promise<boolean> {
+  return (await getAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY)) === "true";
+}
+
+export async function setLiveWritesEnabled(enabled: boolean): Promise<void> {
+  await setAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY, enabled ? "true" : "false");
+}
+
+/**
+ * Persisted counterpart to the `MCP_RESTRICTED_MODE` env var (owner instruction, 2026-09-21,
+ * Settings tab, "by analogy" with the live-writes toggle above). Falls back to the env var, then
+ * to `false` (today's existing default), when no Settings-tab value has ever been saved --
+ * saving a value here takes precedence going forward. **Known limitation, stated rather than
+ * solved (an MCP server's tool set is fixed at `createMcpServer()` construction time, standard
+ * SDK behavior, not something this app can hot-swap):** a currently-running, long-lived MCP
+ * connection keeps whatever tool set it started with; this setting takes effect the next time an
+ * MCP client spawns/reconnects the server process (`startMcpServer()` reads it fresh on each
+ * boot), not instantly for an already-open session.
+ */
+export async function getMcpRestrictedModeEnabled(): Promise<boolean> {
+  const stored = await getAppSetting(MCP_RESTRICTED_MODE_SETTING_KEY);
+  if (stored !== null) return stored === "true";
+  return process.env.MCP_RESTRICTED_MODE === "true" || process.env.MCP_RESTRICTED_MODE === "1";
+}
+
+export async function setMcpRestrictedModeEnabled(enabled: boolean): Promise<void> {
+  await setAppSetting(MCP_RESTRICTED_MODE_SETTING_KEY, enabled ? "true" : "false");
 }
 
 export async function upsertVideos(

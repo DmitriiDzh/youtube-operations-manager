@@ -5,17 +5,22 @@ import { createBatchCore } from "@/lib/batches";
 import { DomainError } from "@/lib/batches/contracts";
 import { createBatchInputSchema, parseWithSchema } from "@/lib/batches/schemas";
 import { createChannelAccessCore } from "@/lib/channel-access";
+import { getLiveWritesEnabled } from "@/lib/db";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
 const core = createBatchCore();
 const channelAccess = createChannelAccessCore();
 
 // Phase 5 Web UI/API (DEC-OQ-5: Web UI/API only, no CLI/MCP write tools). This route
-// covers only "select approved changes -> create a Batch -> inspect it" (AGENTS.md §G's
-// dry-run-by-default requirement, AC-DRYRUN-02). There is deliberately no route or
-// service call anywhere in this API surface that reaches the live-execution service
-// function (the one that accepts a real write-execution adapter) -- see
-// src/lib/batches/write-path-inventory.test.ts, which fails the build if that changes.
+// covers "select approved changes -> create a Batch -> inspect it" (AGENTS.md §G's
+// dry-run-by-default requirement, AC-DRYRUN-02). Creating a batch with `dryRun: false`
+// (a real, live batch) is only honored when the Settings-tab live-writes toggle is on
+// (owner instruction, 2026-09-21) -- with the toggle off, `dryRun: false` in the request
+// body is silently ignored and the batch is still forced dry-run, exactly as before this
+// change. The sibling `execute` route is the only place that batch's real write can
+// actually run, and only when the same toggle is still on at that later call (Layer 2,
+// re-checked independently -- `write-path-inventory.test.ts` still enforces that no OTHER
+// API/MCP/CLI file references a live-write-capable symbol).
 
 export async function GET(
   _request: Request,
@@ -71,11 +76,12 @@ export async function POST(
 
     const parsedInput = parseWithSchema(createBatchInputSchema, { ...body, channelId }, "create batch input");
 
-    // AGENTS.md §G / AC-DRYRUN-02: dry-run by default, and here unconditionally --
-    // this Web UI never offers a live-execution action at all (no route calls the
-    // live-execution service function), so a batch created through this endpoint can
-    // never be anything other than a dry-run preview, regardless of the request body.
-    const result = await core.createBatch({ ...parsedInput, dryRun: true });
+    // AGENTS.md §G / AC-DRYRUN-02: dry-run by default, and dry-run unconditionally unless
+    // the Settings-tab live-writes toggle is on -- a request body cannot get a live batch
+    // created while that toggle is off, regardless of what it asks for (fail closed).
+    const liveWritesEnabled = await getLiveWritesEnabled();
+    const dryRun = liveWritesEnabled ? (parsedInput.dryRun ?? true) : true;
+    const result = await core.createBatch({ ...parsedInput, dryRun });
 
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
