@@ -734,6 +734,18 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 ---
 
+## RISK-46 — A channel whose Automerge document diverged across two devices has no in-app resolution path — OPEN, 2026-09-21 (CD5)
+
+- **Context:** `AUTOMERGE_MIGRATION_PLAN.md` §6 CD2/CD5's own documented operational constraint: two Automerge documents must share real history to merge correctly. `src/lib/change-drafts/services.ts`'s `mergeIncoming` now detects this case (`genesisChangeHash` comparison, added while building CD5) and fails closed with `divergent_document_lineage` instead of silently corrupting local state (the bug this replaced -- see the two `fix:` commits immediately preceding CD5's sync engine). This condition arises if two devices ever independently run `migrateFromSql`, or otherwise independently bootstrap, the same channel's draft document before ever syncing with each other once.
+- **Current behavior:** `src/lib/change-drafts-sync/services.ts`'s sync loop isolates a `divergent_document_lineage` error per peer file (`peersSkipped`) so it never aborts syncing other peers/channels -- but there is no code path anywhere that ever resolves it. A diverged device's peer file is skipped, silently, on every future sync cycle, forever, until a human manually intervenes outside the app (e.g. by deleting one side's local `.automerge` file and letting it re-adopt the other side's, discarding whatever that side alone had). No UI surfaces which devices are affected or what the discarding tradeoff would be.
+- **Actual risk:** Low probability in the current single-operator, single-primary-device usage pattern (CD4's migration ran once, this session, on one device) but real once a second device is ever set up before CD5/CD6 ship a proper first-sync bootstrap flow (§6 CD5's own note: a new device's first participation in a channel must come from importing another device's real exported bytes, never an independent bootstrap) -- a real but avoidable operator-error class, not a defect in the detection logic itself.
+- **Required remediation:** either (a) a documented, safe first-device-setup procedure that structurally prevents two independent bootstraps (e.g. CD5's own onboarding always imports before it ever creates), making this practically unreachable, or (b) an in-app resolution path once it does happen -- an explicit "discard this device's diverged copy and re-adopt the other side" action, never automatic, mirroring `src/lib/snapshot/`'s own established "divergent lineage blocked explicitly, never auto-resolved by createdAt" pattern. Exactly the same shape as RISK-16 (restricted recovery mode has no in-app resolution path) -- same disposition is appropriate: track, do not block CD5/CD6 on building the resolution UI immediately.
+- **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON` for now (single-operator, single-primary-device usage makes this practically unreachable today); revisit as `BLOCKS_OPERATIONS_RELEASE` once real multi-device usage is expected.
+- **Approval required from:** project owner, on which remediation option to build and when.
+- **Status:** OPEN, 2026-09-21.
+
+---
+
 ## Summary table
 
 | ID | Title | Gates | Status |
@@ -783,5 +795,6 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-43 | Abandoning an AI-generation session doesn't cancel the underlying (possibly real, billed) provider request | none blocking | OPEN |
 | RISK-44 | `languages-manager.tsx`'s single global error banner can be overwritten by an unrelated, later-arriving error | none blocking | OPEN |
 | RISK-45 | Reselecting a deselected video in bulk AI-generation intentionally resurfaces its proposal (decision record, not a risk) | none | RESOLVED, 2026-09-21 |
+| RISK-46 | A channel whose Automerge document diverged across two devices has no in-app resolution path (CD5) | DEFERRED_WITH_DOCUMENTED_REASON now; BLOCKS_OPERATIONS_RELEASE once multi-device use is real | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
