@@ -10,7 +10,7 @@
 //     RISK-03-affected behavior, see docs/TECHNICAL_DEBT.md RISK-03)
 //   - AC-MERGE-01/02/03/04, AC-MULTI-01 (buildSafeLocalizationsPayload)
 
-import { pickWritableSnippetFields } from "@/lib/youtube";
+import { pickWritableSnippetFields } from "@/lib/youtube-write-gateway";
 
 export type FreshVideoLocale = { title: string; description: string };
 
@@ -111,7 +111,7 @@ export type SafeLocalizationsPayload = {
  * `src/lib/video-metadata/services.ts`) shares one definition instead of three
  * independently-drifting copies. See that module's doc comment for the full rationale.
  */
-export { WRITABLE_SNIPPET_FIELDS, pickWritableSnippetFields } from "@/lib/youtube";
+export { WRITABLE_SNIPPET_FIELDS, pickWritableSnippetFields } from "@/lib/youtube-write-gateway";
 
 /**
  * AC-MERGE-01 (preserve untouched locales byte-for-byte), AC-MERGE-02 (built from the

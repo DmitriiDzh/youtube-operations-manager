@@ -1,12 +1,12 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
+import { createYoutubeClient, getVideoDetailsContext } from "@/lib/youtube";
 import {
   applyVideoDetailsUpdate,
-  createYoutubeClient,
-  getVideoDetailsContext,
+  assertLiveWritesAuthorized,
   pickWritableRecordingDetailsFields,
   pickWritableSnippetFields,
   pickWritableStatusFields,
-} from "@/lib/youtube";
+} from "@/lib/youtube-write-gateway";
 import { DomainError, type ResolvedCredentials } from "@/lib/video-metadata/contracts";
 import type { VideoDetailsPatch, VideoDetailsSnapshot } from "../contracts";
 
@@ -99,6 +99,8 @@ export function createVideoDetailsYoutubeApiAdapter() {
       const touchesSnippet = SNIPPET_PATCH_KEYS.some((key) => key in args.patch);
       const touchesStatus = STATUS_PATCH_KEYS.some((key) => key in args.patch);
       const touchesRecordingDetails = "recordingDate" in args.patch;
+
+      await assertLiveWritesAuthorized();
 
       await applyVideoDetailsUpdate({
         youtube,

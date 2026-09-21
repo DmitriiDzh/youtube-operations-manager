@@ -2,15 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { youtube_v3 } from "googleapis";
 import {
-  applyVideoDetailsUpdate,
   getChannelForSync,
   getVideoDetailsContext,
   getVideosMetadataContextBatch,
   listSupportedLanguages,
   listUploadsPlaylistVideoIds,
-  pickWritableRecordingDetailsFields,
-  pickWritableSnippetFields,
-  pickWritableStatusFields,
 } from "./youtube";
 
 function fakeYoutubeClient(overrides: {
@@ -221,18 +217,10 @@ test("getChannelForSync returns null when the channel has no uploads playlist", 
   assert.equal(channel, null);
 });
 
-// ---------------------------------------------------------------------------
-// src/lib/video-details/'s underlying merge/write primitives (Studio-parity "Details" edit,
-// 2026-09-20). Acceptance matrix fixed from the owner's own requirement (Telegram: "чтобы мы
-// могли поменять что-то одно при этом не перезаписывая все остальные параметры") and the
-// OFFICIAL YouTube Data API v3 reference (checked live 2026-09-20):
-//
-// AC-DETAILS-01: patching only one snippet field preserves every other snippet field exactly.
-// AC-DETAILS-02: a snippet-only patch sends no `status` part, and vice versa.
-// AC-DETAILS-03: `localizations` is never part of the request body, under any parts combination.
-// AC-DETAILS-04: `recordingDetails.location`/`locationDescription` are never forwarded, even if
-//   present on the input object (deprecated fields, rejected by the live API today).
-// ---------------------------------------------------------------------------
+// The write primitive `applyVideoDetailsUpdate` and the `pickWritable*` whitelists (and their
+// AC-DETAILS-01..04 acceptance tests) moved to `src/lib/youtube-write-gateway/index.test.ts`
+// (2026-09-21 single-funnel refactor) -- this file keeps only the read-side
+// `getVideoDetailsContext` tests below.
 
 const BASE_VIDEO_ITEM = {
   etag: "etag-1",
@@ -277,113 +265,6 @@ test("getVideoDetailsContext returns null when the video has no snippet/status",
   });
   const context = await getVideoDetailsContext(youtube, "missing");
   assert.equal(context, null);
-});
-
-test("AC-DETAILS-01/02: patching only title preserves every other snippet field and sends no status part", async () => {
-  let updateCall: { part: string[]; requestBody: Record<string, unknown> } | null = null;
-  const youtube = fakeYoutubeClient({
-    videosUpdate: (async (args: { part: string[]; requestBody: Record<string, unknown> }) => {
-      updateCall = args;
-      return { data: {} };
-    }) as unknown as youtube_v3.Youtube["videos"]["update"],
-  });
-
-  const patch = { title: "New Title" };
-  await applyVideoDetailsUpdate({
-    youtube,
-    videoId: "v1",
-    parts: {
-      snippet: pickWritableSnippetFields({
-        ...BASE_VIDEO_ITEM.snippet,
-        ...patch,
-      }) as youtube_v3.Schema$VideoSnippet,
-    },
-  });
-
-  assert.ok(updateCall);
-  const call = updateCall as unknown as { part: string[]; requestBody: { snippet?: Record<string, unknown> } };
-  assert.deepEqual(call.part, ["snippet"]);
-  assert.equal(call.requestBody.snippet?.title, "New Title");
-  assert.equal(call.requestBody.snippet?.description, "Original description");
-  assert.deepEqual(call.requestBody.snippet?.tags, ["a", "b"]);
-  assert.equal(call.requestBody.snippet?.categoryId, "22");
-  assert.equal(call.requestBody.snippet?.defaultLanguage, "en");
-  assert.equal("status" in call.requestBody, false);
-  assert.equal("recordingDetails" in call.requestBody, false);
-});
-
-test("AC-DETAILS-01: patching only privacyStatus preserves every other status field and sends no snippet part", async () => {
-  let updateCall: { part: string[]; requestBody: Record<string, unknown> } | null = null;
-  const youtube = fakeYoutubeClient({
-    videosUpdate: (async (args: { part: string[]; requestBody: Record<string, unknown> }) => {
-      updateCall = args;
-      return { data: {} };
-    }) as unknown as youtube_v3.Youtube["videos"]["update"],
-  });
-
-  await applyVideoDetailsUpdate({
-    youtube,
-    videoId: "v1",
-    parts: {
-      status: pickWritableStatusFields({
-        ...BASE_VIDEO_ITEM.status,
-        privacyStatus: "unlisted",
-      }) as youtube_v3.Schema$VideoStatus,
-    },
-  });
-
-  assert.ok(updateCall);
-  const call = updateCall as unknown as { part: string[]; requestBody: { status?: Record<string, unknown> } };
-  assert.deepEqual(call.part, ["status"]);
-  assert.equal(call.requestBody.status?.privacyStatus, "unlisted");
-  assert.equal(call.requestBody.status?.license, "youtube");
-  assert.equal(call.requestBody.status?.embeddable, true);
-  assert.equal("snippet" in call.requestBody, false);
-});
-
-test("AC-DETAILS-03: localizations is never part of the request body, under any parts combination", async () => {
-  let updateCall: { requestBody: Record<string, unknown> } | null = null;
-  const youtube = fakeYoutubeClient({
-    videosUpdate: (async (args: { requestBody: Record<string, unknown> }) => {
-      updateCall = args;
-      return { data: {} };
-    }) as unknown as youtube_v3.Youtube["videos"]["update"],
-  });
-
-  await applyVideoDetailsUpdate({
-    youtube,
-    videoId: "v1",
-    parts: {
-      snippet: { title: "X" } as youtube_v3.Schema$VideoSnippet,
-      status: { privacyStatus: "private" } as youtube_v3.Schema$VideoStatus,
-      recordingDetails: { recordingDate: "2026-01-01" },
-    },
-  });
-
-  assert.ok(updateCall);
-  assert.equal("localizations" in (updateCall as unknown as { requestBody: Record<string, unknown> }).requestBody, false);
-});
-
-test("AC-DETAILS-04: recordingDate is forwarded but deprecated location fields never are", () => {
-  const picked = pickWritableRecordingDetailsFields({
-    recordingDate: "2026-01-01T00:00:00Z",
-    location: { latitude: 1, longitude: 2 },
-    locationDescription: "Somewhere",
-  });
-  assert.deepEqual(picked, { recordingDate: "2026-01-01T00:00:00Z" });
-});
-
-test("applyVideoDetailsUpdate makes no network call at all when no parts are touched", async () => {
-  let called = false;
-  const youtube = fakeYoutubeClient({
-    videosUpdate: (async () => {
-      called = true;
-      return { data: {} };
-    }) as unknown as youtube_v3.Youtube["videos"]["update"],
-  });
-
-  await applyVideoDetailsUpdate({ youtube, videoId: "v1", parts: {} });
-  assert.equal(called, false);
 });
 
 test("listSupportedLanguages maps id/snippet.name and sorts by code, dropping items with no id", async () => {
