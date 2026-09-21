@@ -4,6 +4,7 @@ import * as Automerge from "@automerge/automerge";
 import { DomainError, type ChannelDraftDocument, type DraftChange, type DraftChangeSet } from "./contracts";
 import { createChangeDraftsCore, type ServiceDependencies } from "./services";
 import type { ChangeDraftsStoreAdapter } from "./adapters/automerge-store";
+import type { SqlProjectionAdapter } from "./adapters/sql-projection";
 import type { SqlSourceAdapter } from "./adapters/sql-source";
 
 function fakeStore(): ChangeDraftsStoreAdapter {
@@ -32,8 +33,29 @@ function fakeSqlSource(overrides: Partial<SqlSourceAdapter> = {}): SqlSourceAdap
   };
 }
 
+/** An in-memory mirror of what a real `createSqlProjectionAdapter()` would write to SQL --
+ * `projectedChangeSets`/`projectedChanges` let AC-CRDT-04 tests assert the projection actually
+ * stayed in sync, without touching a real database. */
+function fakeProjection(): SqlProjectionAdapter & {
+  projectedChangeSets: Map<string, DraftChangeSet>;
+  projectedChanges: Map<string, DraftChange>;
+} {
+  const projectedChangeSets = new Map<string, DraftChangeSet>();
+  const projectedChanges = new Map<string, DraftChange>();
+  return {
+    projectedChangeSets,
+    projectedChanges,
+    async upsertChangeSet(changeSet) {
+      projectedChangeSets.set(changeSet.id, changeSet);
+    },
+    async upsertChange(change) {
+      projectedChanges.set(change.id, change);
+    },
+  };
+}
+
 function makeDeps(overrides: Partial<ServiceDependencies> = {}): ServiceDependencies {
-  return { store: fakeStore(), sqlSource: fakeSqlSource(), ...overrides };
+  return { store: fakeStore(), sqlSource: fakeSqlSource(), projection: fakeProjection(), ...overrides };
 }
 
 const CHANNEL = "UC_test";
@@ -329,4 +351,99 @@ test("migrateFromSql refuses to run a second time against a channel that already
     () => core.migrateFromSql({ channelId: CHANNEL }),
     (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
   );
+});
+
+// AC-CRDT-04: the SQL read-projection always reflects the current merged Automerge state after
+// any local edit or remote merge.
+test("AC-CRDT-04: every mutation (create, add, update, approve) keeps the SQL projection in sync", async () => {
+  const projection = fakeProjection();
+  const core = createChangeDraftsCore(makeDeps({ projection }));
+
+  await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "ai_localization" });
+  assert.equal(projection.projectedChangeSets.get("cs-1")?.status, "in_review");
+
+  await core.addChange({
+    channelId: CHANNEL,
+    changeId: "c-1",
+    changeSetId: "cs-1",
+    videoId: "v1",
+    language: "es",
+    field: "title",
+    baselineValue: "Original",
+    proposedValue: "Original",
+    changeType: "modify",
+  });
+  assert.equal(projection.projectedChanges.get("c-1")?.proposedValue, "Original");
+
+  await core.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "Updated" });
+  assert.equal(projection.projectedChanges.get("c-1")?.proposedValue, "Updated");
+
+  await core.setApprovalStatus({ channelId: CHANNEL, changeId: "c-1", approvalStatus: "approved", approvedValue: "Updated" });
+  assert.equal(projection.projectedChanges.get("c-1")?.approvalStatus, "approved");
+  assert.equal(projection.projectedChanges.get("c-1")?.approvedValue, "Updated");
+});
+
+test("AC-CRDT-04: mergeIncoming projects every change set/change the merge brought in, not just ones this device already knew about", async () => {
+  const projectionA = fakeProjection();
+  const deviceA = createChangeDraftsCore(makeDeps({ projection: projectionA }));
+  await deviceA.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "ai_localization" });
+
+  // A second device forks from A's synced state (a real common history, not an unrelated
+  // from-scratch document -- Automerge.merge assumes a shared lineage), then independently
+  // creates a change set A has never seen.
+  const deviceBStore = fakeStore();
+  await deviceBStore.saveDocumentBytes(CHANNEL, await deviceA.exportBytes({ channelId: CHANNEL }));
+  const deviceB = createChangeDraftsCore(makeDeps({ store: deviceBStore }));
+  await deviceB.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-2", source: "xlsx_import" });
+  await deviceB.addChange({
+    channelId: CHANNEL,
+    changeId: "c-remote",
+    changeSetId: "cs-2",
+    videoId: "v2",
+    language: "fr",
+    field: "description",
+    baselineValue: "",
+    proposedValue: "Nouvelle",
+    changeType: "add",
+  });
+
+  const bBytes = await deviceB.exportBytes({ channelId: CHANNEL });
+  await deviceA.mergeIncoming({ channelId: CHANNEL, incomingBytes: bBytes });
+
+  assert.ok(projectionA.projectedChangeSets.has("cs-2"), "the remote change set must be projected too");
+  assert.equal(projectionA.projectedChanges.get("c-remote")?.proposedValue, "Nouvelle");
+});
+
+// Regression test: a projection failure must never fail the operation that triggered it -- the
+// Automerge document (the real source of truth) already saved successfully by the time the
+// projection runs, so the caller must see success, not an error for an operation that actually
+// happened. See saveDocument's own comment for why a silent, logged failure here is deliberate.
+test("a throwing projection does not fail createChangeSet/addChange/mergeIncoming -- the document write still succeeds", async () => {
+  const throwingProjection: SqlProjectionAdapter = {
+    async upsertChangeSet() {
+      throw new Error("simulated DB failure");
+    },
+    async upsertChange() {
+      throw new Error("simulated DB failure");
+    },
+  };
+  const core = createChangeDraftsCore(makeDeps({ projection: throwingProjection }));
+
+  // Must not throw, despite the projection always throwing.
+  await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "ai_localization" });
+  await core.addChange({
+    channelId: CHANNEL,
+    changeId: "c-1",
+    changeSetId: "cs-1",
+    videoId: "v1",
+    language: "es",
+    field: "title",
+    baselineValue: "Original",
+    proposedValue: "Original",
+    changeType: "modify",
+  });
+
+  // And the document itself genuinely did save, projection failure notwithstanding.
+  const doc = await core.getDocument({ channelId: CHANNEL });
+  assert.equal(doc.changes["c-1"].proposedValue, "Original");
 });

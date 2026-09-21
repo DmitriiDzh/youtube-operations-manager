@@ -17,11 +17,15 @@ import {
   updateProposedValueInputSchema,
 } from "./schemas";
 import type { ChangeDraftsStoreAdapter } from "./adapters/automerge-store";
+import { createDefaultLogger, type ChangeDraftsLogger } from "./adapters/logger";
+import type { SqlProjectionAdapter } from "./adapters/sql-projection";
 import type { SqlSourceAdapter } from "./adapters/sql-source";
 
 export type ServiceDependencies = {
   store: ChangeDraftsStoreAdapter;
   sqlSource: SqlSourceAdapter;
+  projection: SqlProjectionAdapter;
+  logger?: ChangeDraftsLogger;
 };
 
 /**
@@ -96,8 +100,48 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
     return Automerge.load<ChannelDraftDocument>(bytes);
   }
 
+  /**
+   * AC-CRDT-04: the SQL read-projection always reflects the current merged Automerge state
+   * after any local edit or remote merge -- so every existing (and future) UI/API/MCP/CLI reader
+   * of `change_sets`/`changes` keeps working without ever needing to know Automerge exists.
+   * Deliberately projects the WHOLE document on every save, not just the row(s) a given
+   * operation touched -- a channel's draft document is small (CD1's spike measured ~500 bytes
+   * for a single-field edit), and `upsertStoredChangeSet`/`upsertStoredChange` are idempotent, so
+   * this trades a little redundant I/O for never having to enumerate "which rows did this
+   * specific operation affect" at each call site (a `mergeIncoming` can introduce or change any
+   * number of rows at once, unlike a single `updateProposedValue` call).
+   */
+  async function projectToSql(doc: Automerge.Doc<ChannelDraftDocument>): Promise<void> {
+    for (const changeSet of Object.values(doc.changeSets)) {
+      await deps.projection.upsertChangeSet(changeSet);
+    }
+    for (const change of Object.values(doc.changes)) {
+      await deps.projection.upsertChange(change);
+    }
+  }
+
   async function saveDocument(channelId: string, doc: Automerge.Doc<ChannelDraftDocument>): Promise<void> {
+    // The Automerge document -- not the SQL projection -- is this module's source of truth, so
+    // it's saved first and unconditionally. The projection is then deliberately isolated in its
+    // own try/catch: if it throws (a transient DB error, a missing `channels` FK row, SQLite
+    // busy), the caller must NOT see this as a failure of the operation it actually asked for --
+    // the document write already succeeded. Letting the exception propagate here would make a
+    // caller retry an operation that already happened; for `mergeIncoming` specifically, a retry
+    // would re-merge the identical bytes and correctly find zero *new* conflicts the second time
+    // (by design, see that function's own comment) -- silently losing the AC-CRDT-07 notification
+    // for a conflict the merge genuinely just introduced, caused by nothing more than a transient
+    // projection failure. A stale projection is an acceptable, recoverable degradation (the next
+    // successful save re-projects the whole document anyway); losing a conflict notification is
+    // not.
     await deps.store.saveDocumentBytes(channelId, Automerge.save(doc));
+    try {
+      await projectToSql(doc);
+    } catch (error) {
+      (deps.logger ?? createDefaultLogger()).error({
+        event: "change_drafts.projection.failed",
+        context: { channelId, cause: error instanceof Error ? error.message : String(error) },
+      });
+    }
   }
 
   return {
@@ -231,6 +275,16 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
      * be silently absorbed into the existing conflict without ever being reported, even though
      * the operator has never seen that particular value and AC-CRDT-02 requires every
      * concurrently-written value stay visible, not just the first two.
+     *
+     * IMPORTANT operational constraint, found empirically while testing this function: two
+     * documents must share a real Automerge history to merge correctly -- two independently
+     * created documents (e.g. two devices that each ran `migrateFromSql`/started fresh for the
+     * same channel without ever syncing once first) are NOT safely mergeable, and Automerge does
+     * not throw or warn when you try; it can silently produce an incomplete result. CD5's
+     * continuous sync loop (and CD4's own rollout) must ensure every device's very first
+     * participation in a channel comes from importing another device's actual exported bytes
+     * (or being the one device that ran `migrateFromSql`), never from two devices independently
+     * bootstrapping the same channel's document from scratch.
      */
     async mergeIncoming(input: unknown): Promise<MergeResult> {
       const parsed = parseWithSchema(mergeIncomingInputSchema, input, "mergeIncoming input");
