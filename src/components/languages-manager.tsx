@@ -1,6 +1,7 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { VideoDetailModal } from "./video-detail-modal";
 import { ChangeSetReview } from "./change-set-review";
 
 // ---------------------------------------------------------------------------
@@ -404,18 +405,16 @@ export function LanguagesManager() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIds, generateScope]);
 
-  async function toggleExpand(videoId: string) {
-    if (expandedVideoId === videoId) {
-      setExpandedVideoId(null);
-      setDetail(null);
-      if (isRowGeneratePanelOpen(videoId)) closeGeneratePanel();
-      return;
-    }
-
-    // Switching to a different row -- a row-scoped generate panel belongs to the row that was
-    // expanded when it was opened, never a different one.
+  function closeVideoDetail() {
+    // A row-scoped generate panel belongs to whichever video's popup is open -- closing that
+    // popup must close the panel with it, not leave it dangling against a video no longer shown.
     if (generateScope?.kind === "row") closeGeneratePanel();
+    setExpandedVideoId(null);
+    setDetail(null);
+  }
 
+  async function openVideoDetail(videoId: string) {
+    if (generateScope?.kind === "row") closeGeneratePanel();
     setExpandedVideoId(videoId);
     setLoadingDetail(true);
     setDetail(null);
@@ -755,6 +754,9 @@ export function LanguagesManager() {
 
   const languages = overview?.languages ?? [];
   const tableMinWidth = Math.max(600, 420 + languages.length * 56);
+  // Looked up from the full `overview.videos` list, not the search-filtered/sorted view, so the
+  // popup stays open and correct even if the operator changes the search or sort while it's open.
+  const expandedVideo = expandedVideoId ? (overview?.videos.find((v) => v.videoId === expandedVideoId) ?? null) : null;
 
   /** Shared generate/review/create-change-set panel, rendered either inside the bulk popover or
    * inside one row's expanded detail depending on `generateScope` (E4, §4.2/§4.3) -- one
@@ -889,6 +891,58 @@ export function LanguagesManager() {
     );
   }
 
+  /** The content of the video-detail popup for this tab -- original title/description, every
+   * existing locale, and the inline "Generate with AI for this video" mini-form/review panel.
+   * Rendered inside the shared `VideoDetailModal` shell (`video-detail-modal.tsx`), which owns the
+   * popup chrome itself; only what's inside differs per tab, per the owner's own framing. */
+  function renderVideoLocalizationDetail(video: OverviewRow) {
+    return (
+      <div className="space-y-4">
+        {loadingDetail ? (
+          <p className="text-sm text-zinc-500">Loading detail...</p>
+        ) : detail ? (
+          <div className="space-y-3">
+            <div>
+              <p className="text-xs font-medium text-zinc-500">
+                Original / default language: {detail.defaultLanguage ?? "unset"}
+              </p>
+              <p className="text-sm font-medium">{detail.originalTitle}</p>
+              <p className="mt-1 whitespace-pre-wrap text-xs text-zinc-400">{detail.originalDescription}</p>
+            </div>
+            {detail.locales.length === 0 ? (
+              <p className="text-xs text-zinc-500">No existing localizations.</p>
+            ) : (
+              <div className="space-y-2 border-t border-zinc-800 pt-3">
+                {detail.locales.map((locale) => (
+                  <div key={locale.language}>
+                    <p className="text-xs font-medium text-zinc-500">{locale.language}</p>
+                    <p className="text-sm">{locale.remoteTitle}</p>
+                    <p className="mt-0.5 whitespace-pre-wrap text-xs text-zinc-400">{locale.remoteDescription}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <p className="text-sm text-red-400">Failed to load detail.</p>
+        )}
+
+        <div className="border-t border-zinc-800 pt-4">
+          {isRowGeneratePanelOpen(video.videoId) ? (
+            renderGenerationPanel()
+          ) : (
+            <button
+              onClick={() => startRowGenerate(video.videoId)}
+              className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
+            >
+              Generate with AI for this video
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       {!channelId && <p className="text-sm text-zinc-400">No channel synchronized yet.</p>}
@@ -993,10 +1047,10 @@ export function LanguagesManager() {
               </thead>
               <tbody>
                 {sortedFilteredVideos.map((video) => (
-                  <Fragment key={video.videoId}>
                     <tr
+                      key={video.videoId}
                       className="cursor-pointer border-b border-zinc-800/50 transition-colors hover:bg-zinc-800/50"
-                      onClick={() => toggleExpand(video.videoId)}
+                      onClick={() => openVideoDetail(video.videoId)}
                     >
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <input
@@ -1039,61 +1093,6 @@ export function LanguagesManager() {
                         {new Date(video.lastSyncedAt).toLocaleDateString()}
                       </td>
                     </tr>
-                    {expandedVideoId === video.videoId && (
-                      <tr className="border-b border-zinc-800/50 bg-zinc-950/50">
-                        <td colSpan={4 + languages.length} className="px-4 py-4">
-                          {loadingDetail ? (
-                            <p className="text-sm text-zinc-500">Loading detail...</p>
-                          ) : detail ? (
-                            <div className="space-y-3">
-                              <div>
-                                <p className="text-xs font-medium text-zinc-500">
-                                  Original / default language: {detail.defaultLanguage ?? "unset"}
-                                </p>
-                                <p className="text-sm font-medium">{detail.originalTitle}</p>
-                                <p className="mt-1 whitespace-pre-wrap text-xs text-zinc-400">
-                                  {detail.originalDescription}
-                                </p>
-                              </div>
-                              {detail.locales.length === 0 ? (
-                                <p className="text-xs text-zinc-500">No existing localizations.</p>
-                              ) : (
-                                <div className="space-y-2 border-t border-zinc-800 pt-3">
-                                  {detail.locales.map((locale) => (
-                                    <div key={locale.language}>
-                                      <p className="text-xs font-medium text-zinc-500">{locale.language}</p>
-                                      <p className="text-sm">{locale.remoteTitle}</p>
-                                      <p className="mt-0.5 whitespace-pre-wrap text-xs text-zinc-400">
-                                        {locale.remoteDescription}
-                                      </p>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          ) : (
-                            <p className="text-sm text-red-400">Failed to load detail.</p>
-                          )}
-
-                          <div className="mt-4 border-t border-zinc-800 pt-4">
-                            {isRowGeneratePanelOpen(video.videoId) ? (
-                              renderGenerationPanel()
-                            ) : (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  startRowGenerate(video.videoId);
-                                }}
-                                className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
-                              >
-                                Generate with AI for this video
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -1269,6 +1268,16 @@ export function LanguagesManager() {
             </div>
           )}
         </div>
+      )}
+
+      {expandedVideo && (
+        <VideoDetailModal
+          title={expandedVideo.title}
+          thumbnailUrl={expandedVideo.thumbnailUrl}
+          onClose={closeVideoDetail}
+        >
+          {renderVideoLocalizationDetail(expandedVideo)}
+        </VideoDetailModal>
       )}
     </div>
   );

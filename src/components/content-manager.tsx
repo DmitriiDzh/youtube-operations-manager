@@ -1,6 +1,7 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { VideoDetailModal } from "./video-detail-modal";
 import { VideoDetailsPanel } from "./video-details-panel";
 
 type SyncedChannel = {
@@ -165,6 +166,9 @@ export function ContentManager() {
   const clampedPage = Math.min(page, pageCount);
   const pageStart = (clampedPage - 1) * PAGE_SIZE;
   const pageVideos = filteredVideos.slice(pageStart, pageStart + PAGE_SIZE);
+  // Looked up from the full `videos` list, not just the current page/filter, so the popup stays
+  // open and correct even if the operator changes the search/filter/page while it's open.
+  const expandedVideo = expandedVideoId ? videos.find((v) => v.videoId === expandedVideoId) ?? null : null;
 
   return (
     <div className="space-y-4">
@@ -265,12 +269,10 @@ export function ContentManager() {
             </thead>
             <tbody>
               {pageVideos.map((video) => (
-                <Fragment key={video.videoId}>
                   <tr
+                    key={video.videoId}
                     className="cursor-pointer border-b border-zinc-800/50 transition-colors last:border-b-0 hover:bg-zinc-800/50"
-                    onClick={() =>
-                      setExpandedVideoId((prev) => (prev === video.videoId ? null : video.videoId))
-                    }
+                    onClick={() => setExpandedVideoId(video.videoId)}
                   >
                     <td className="min-w-0 px-4 py-3">
                       <div className="flex min-w-0 items-start gap-3">
@@ -315,14 +317,6 @@ export function ContentManager() {
                       {formatCount(video.commentCount)}
                     </td>
                   </tr>
-                  {expandedVideoId === video.videoId && (
-                    <tr className="border-b border-zinc-800/50 bg-zinc-950/50">
-                      <td colSpan={5} className="px-4 py-4">
-                        <VideoDetailsPanel channelId={video.channelId} videoId={video.videoId} />
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
               ))}
             </tbody>
           </table>
@@ -361,6 +355,16 @@ export function ContentManager() {
             </div>
           )}
         </div>
+      )}
+
+      {expandedVideo && (
+        <VideoDetailModal
+          title={expandedVideo.title}
+          thumbnailUrl={expandedVideo.thumbnails.default?.url ?? null}
+          onClose={() => setExpandedVideoId(null)}
+        >
+          <VideoDetailsPanel channelId={expandedVideo.channelId} videoId={expandedVideo.videoId} />
+        </VideoDetailModal>
       )}
     </div>
   );
