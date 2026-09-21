@@ -1,6 +1,6 @@
 ---
 name: autonomous-dev-loop
-description: Runs this project's autonomous, cyclical development loop -- finds or creates the next actionable backlog item from docs/roadmap/{FUTURE_PHASES.md,ROADMAP_STATUS.md,BACKLOG.md} (via the roadmap-backlog skill), implements it through AGENTS.md's standard workflow, and when nothing is actionable runs independent-review cycles until clean. Use when the project owner asks to "work autonomously", "run the autonomous/independent loop", or invokes this skill by name. Never a substitute for AGENTS.md's authorization gates -- section 1 below states the ones this skill can never widen, and every agent picking this file up must read that section first, every time, before treating anything else here as license to act.
+description: Runs this project's autonomous, cyclical development loop -- finds or creates the next actionable backlog item from docs/roadmap/{FUTURE_PHASES.md,ROADMAP_STATUS.md,BACKLOG.md} (via the roadmap-backlog skill), implements it through AGENTS.md's standard workflow, and when nothing is actionable runs independent-review cycles until clean. Gated by an explicit on/off toggle in state.json -- check that before anything else. Use when the project owner asks to "work autonomously", "run the autonomous/independent loop", or invokes this skill by name. Never a substitute for AGENTS.md's authorization gates -- section 1 below states the ones this skill can never widen, and every agent picking this file up must read that section first, every time, before treating anything else here as license to act.
 ---
 
 # Autonomous development loop
@@ -8,15 +8,46 @@ description: Runs this project's autonomous, cyclical development loop -- finds 
 **Confirmed 2026-09-21 (Telegram):** the project owner reviewed this draft and approved it --
 "Подтверждаю, можешь приступать к работе используя этот скилл" -- and named Phase 6 as the
 current phase for section 2's step 0. This skill is live from this point on, scoped exactly as
-sections 1-5 state.
+sections 1-5 state -- **but only when the toggle below is on.**
 
-## 0. What this is, and the one rule that outranks the rest of this file
+## 0. The on/off toggle -- check this before anything else, every time
 
-This skill exists so development can keep moving between check-ins with the project owner,
-without going idle just because nobody is watching it right now. It creates **no new authority**
-beyond what section 1 spells out. Read section 1 before anything else, every time this skill
-fires -- it governs even when the rest of this file says "proceed autonomously," and no later
-section in this file may be read as loosening it.
+The project owner asked for this explicitly the same day the skill was confirmed (Telegram,
+2026-09-21): *"Скилл который мы делали вчера, отвечающий за самостоятельную независимую работу,
+должен иметь 'тумблер'. Чтобы я мог включать и выключать автономный режим работы когда нужно."*
+Confirming this skill once does not mean it stays on for every future session or every future
+request -- the owner controls whether it is live at all, independently of everything sections 1-5
+describe.
+
+**State lives in `.claude/skills/autonomous-dev-loop/state.json`**, a single `{"enabled": true |
+false, "lastChangedAt": ..., "lastChangedBy": ...}` object -- deliberately a separate file from
+this one, so checking it never requires parsing this whole document, and so the current on/off
+state is never confused with the (stable) instructions for what happens while it's on.
+
+**Before doing anything else this skill would otherwise authorize** -- running a loop iteration,
+applying section 3's next-phase exception, starting an independent-review cycle on your own
+initiative, or even treating an owner message as "start the loop" -- read that file.
+
+- If `enabled` is not literally `true`: autonomous mode is **off**. Do not run any part of this
+  skill's loop. If the owner asks you to invoke it, tell them it's off and ask whether to turn it
+  on, rather than silently proceeding or silently refusing.
+- If `enabled` is `true`: proceed to section 1.
+
+**Only the project owner can flip this toggle**, in any session or channel, by asking in plain
+language ("включи автономный режим" / "turn on autonomous mode", and the reverse). When they do:
+update `state.json`'s `enabled` field (and `lastChangedAt`/`lastChangedBy`) through the normal git
+workflow for this repo -- a `feature/*` branch, `--no-ff` merge to `dev`, push -- like any other
+tracked change (`AGENTS.md` §K.1; this file is a real, git-tracked part of the repo, not a
+throwaway local setting), then confirm back to them once it's done. Never flip it because the
+shape of a request merely *resembles* wanting autonomous work (e.g. "keep going with this") --
+only an explicit on/off instruction counts.
+
+**What this is, once the toggle is on:** this skill exists so development can keep moving between
+check-ins with the project owner, without going idle just because nobody is watching it right now.
+It creates **no new authority** beyond what section 1 spells out. Read section 1 before anything
+else once the toggle above is confirmed on, every time this skill fires -- it governs even when
+the rest of this file says "proceed autonomously," and no later section in this file may be read
+as loosening it.
 
 ## 1. Absolute boundaries -- never relaxed by this skill, under any condition it can create
 
