@@ -41,6 +41,7 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     backupsDir: path.join(appDataDir, "backups"),
     migrationBackupsDir: path.join(appDataDir, "backups", "migrations"),
     snapshotsDir: path.join(appDataDir, "snapshots"),
+    changeDraftsDir: path.join(appDataDir, "change-drafts"),
     bootstrapConfigPath: path.join(appDataDir, "bootstrap-config.json"),
     authContextPath: path.join(appDataDir, "auth-context.json"),
   };
