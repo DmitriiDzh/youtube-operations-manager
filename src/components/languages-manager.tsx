@@ -382,15 +382,26 @@ export function LanguagesManager() {
   // Closes a bulk-scoped session once its selection is entirely empty -- there is nothing left
   // for it to be scoped to (round-2 independent-review finding, 2026-09-21: this must fire
   // regardless of which code path emptied the selection -- "Clear" or unchecking the last row).
-  // Deselecting only SOME of several selected videos no longer needs handling here: `targets`
-  // itself is left alone, and `visibleTargets`/`visibleRowErrors` (derived above) already filter
-  // what's displayed/submitted against the live selection, so there is nothing left to prune
-  // imperatively (round-5 independent-review finding, 2026-09-21 -- see handleGenerate's comment
-  // for why the previous version of this effect duplicated that filtering here too).
+  //
+  // Also permanently drops a deselected video's already-generated proposal from `targets` itself
+  // (round-6 independent-review finding, 2026-09-21), not just from the filtered `visibleTargets`
+  // view: round 5 relied on display-time filtering alone and stopped pruning `targets`, which
+  // meant deselecting a video during an open session hid its proposal but reselecting the SAME
+  // video later silently resurrected the old, never-regenerated content -- confusing at best, a
+  // stale-approval risk at worst. This effect and `visibleTargets` serve two different purposes
+  // that only look redundant: this one enforces "a deselected video's proposal doesn't survive to
+  // be resurrected" (a session-hygiene rule, reactive to selection changes only); `visibleTargets`
+  // is the render-time guarantee that covers the narrower async gap this effect cannot reach on
+  // its own -- a `handleGenerate` response arriving for videos already deselected, before this
+  // effect gets a chance to run again (round-5's original finding, still valid, still needed).
   useEffect(() => {
-    if (generateScope?.kind === "bulk" && selectedIds.size === 0) {
+    if (generateScope?.kind !== "bulk") return;
+    if (selectedIds.size === 0) {
       closeGeneratePanel();
+      return;
     }
+    setTargets((prev) => prev.filter((t) => selectedIds.has(t.videoId)));
+    setRowErrors((prev) => prev.filter((e) => e.videoId === null || selectedIds.has(e.videoId)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIds, generateScope]);
 
@@ -548,14 +559,13 @@ export function LanguagesManager() {
         return;
       }
       if (requestId !== generationRequestIdRef.current) return;
-      // Applied unconditionally (no selection-filtering here) -- `visibleTargets`/
-      // `visibleRowErrors` below derive what's actually shown from live `targets` + `selectedIds`
-      // + `generateScope`, so the "only show proposals for currently-selected videos" invariant
-      // holds by construction instead of needing to be re-applied at every point that can change
-      // either input (round-5 independent-review finding, 2026-09-21: filtering only at
-      // apply-time here, plus a separate imperative prune in a `useEffect`, was two independently
-      // maintained copies of the same invariant -- exactly the kind of duplication that had
-      // already let a variant of this bug through three rounds in a row).
+      // Applied unconditionally here (no selection-filtering at apply time) -- the selection-sync
+      // `useEffect` above prunes a deselected video's proposal out of `targets` reactively, and
+      // `visibleTargets`/`visibleRowErrors` below additionally derive what's actually rendered
+      // from the live selection, covering the narrower async gap between this response landing
+      // and that effect's next run (round-5 independent-review finding, 2026-09-21: a response
+      // for videos already deselected before it arrives must never flash into the review UI, even
+      // for the one render before the effect catches up).
       setTargets(data.results.map(toEditable));
       setRowErrors(data.errors);
       setGenerationContext(data.generationContext);
