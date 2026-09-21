@@ -25,7 +25,15 @@ export type LocalizationOverviewRow = {
 export type LocalizationOverview = {
   channelId: string;
   channelTitle: string;
+  // The union of `trackedLanguages` and every language with at least one real, synced
+  // localization -- this is what determines which columns the Languages tab actually renders.
   languages: string[];
+  // Explicitly tracked by the operator (`proposeTrackedLanguage`/`removeTrackedLanguage`) --
+  // may or may not have any real translation yet. Exposed separately from `languages` so the UI
+  // can tell "this column exists only because it's tracked" from "this column has real data and
+  // removing it from `trackedLanguages` alone won't hide it" (docs/roadmap/plans/
+  // LANGUAGES_UX_REDESIGN_PLAN.md §7.2/E5).
+  trackedLanguages: string[];
   totalVideos: number;
   videos: LocalizationOverviewRow[];
 };

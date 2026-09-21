@@ -28,8 +28,17 @@ export const localizationOverviewOutputSchema = z
     channelId: z.string().min(1),
     channelTitle: z.string(),
     languages: z.array(z.string()),
+    trackedLanguages: z.array(z.string()),
     totalVideos: z.number().int().nonnegative(),
     videos: z.array(localizationOverviewRowSchema),
+  })
+  .strict();
+
+export const manageTrackedLanguageInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+    language: z.string().min(1),
   })
   .strict();
 
@@ -74,6 +83,7 @@ export type LocalizationOverviewOutput = z.infer<typeof localizationOverviewOutp
 export type VideoLocalizationDetailInput = z.infer<typeof videoLocalizationDetailInputSchema>;
 export type VideoLocalizationDetailOutput = z.infer<typeof videoLocalizationDetailOutputSchema>;
 export type ExportLocalizationsInput = z.infer<typeof exportLocalizationsInputSchema>;
+export type ManageTrackedLanguageInput = z.infer<typeof manageTrackedLanguageInputSchema>;
 
 export function formatZodError(error: ZodError) {
   return error.issues.map((issue) => ({

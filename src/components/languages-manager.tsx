@@ -24,6 +24,7 @@ type Overview = {
   channelId: string;
   channelTitle: string;
   languages: string[];
+  trackedLanguages: string[];
   totalVideos: number;
   videos: OverviewRow[];
 };
@@ -224,6 +225,9 @@ export function LanguagesManager() {
   const [loadingOverview, setLoadingOverview] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [newTrackedLanguage, setNewTrackedLanguage] = useState("");
+  const [trackedLanguageBusy, setTrackedLanguageBusy] = useState(false);
+  const [trackedLanguageNotice, setTrackedLanguageNotice] = useState<string | null>(null);
   const [expandedVideoId, setExpandedVideoId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -303,6 +307,75 @@ export function LanguagesManager() {
       setLoadingOverview(false);
     }
   }, []);
+
+  async function handleAddTrackedLanguage() {
+    const language = newTrackedLanguage.trim();
+    if (!channelId || !language) return;
+    setTrackedLanguageBusy(true);
+    setTrackedLanguageNotice(null);
+    setError(null);
+    try {
+      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/localizations/tracked-languages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ language }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        return;
+      }
+      setNewTrackedLanguage("");
+      await fetchOverview(channelId);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setTrackedLanguageBusy(false);
+    }
+  }
+
+  /** Untracks a language column. This is a display preference only -- if the language still has
+   * a real localization on at least one video, the column stays visible regardless (it's still
+   * part of `overview.languages`'s union), so the notice below explains that rather than letting
+   * the operator think nothing happened (docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md §7.2/E5:
+   * real deletion is a separate, not-yet-built capability). */
+  async function handleRemoveTrackedLanguage(language: string) {
+    if (!channelId) return;
+    const hasRealData = (overview?.videos ?? []).some((v) => v.presentLanguages.includes(language));
+    if (
+      !window.confirm(
+        hasRealData
+          ? `"${language}" has real translations on this channel. Untracking it will NOT delete those translations, and the column will stay visible until a separate deletion feature is built. Continue?`
+          : `Remove "${language}" from tracked languages?`
+      )
+    ) {
+      return;
+    }
+    setTrackedLanguageBusy(true);
+    setTrackedLanguageNotice(null);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/channels/${encodeURIComponent(channelId)}/localizations/tracked-languages/${encodeURIComponent(language)}`,
+        { method: "DELETE" }
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        return;
+      }
+      if (hasRealData) {
+        setTrackedLanguageNotice(
+          `"${language}" untracked, but it still has real translations on this channel, so its column remains visible.`
+        );
+      }
+      await fetchOverview(channelId);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setTrackedLanguageBusy(false);
+    }
+  }
 
   const fetchChangeSets = useCallback(async (id: string) => {
     if (!id) {
@@ -969,10 +1042,35 @@ export function LanguagesManager() {
               placeholder="Search by title..."
               className="min-w-48 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm placeholder:text-zinc-600"
             />
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={newTrackedLanguage}
+                onChange={(e) => setNewTrackedLanguage(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleAddTrackedLanguage();
+                }}
+                placeholder="Add language column (e.g. fr)"
+                className="w-48 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm placeholder:text-zinc-600"
+              />
+              <button
+                onClick={handleAddTrackedLanguage}
+                disabled={trackedLanguageBusy || !newTrackedLanguage.trim()}
+                className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
+              >
+                Add
+              </button>
+            </div>
             <span className="text-sm text-zinc-400">
               {loadingOverview ? "Loading..." : `${sortedFilteredVideos.length} of ${overview.totalVideos} videos`}
             </span>
           </div>
+
+          {trackedLanguageNotice && (
+            <p className="border-b border-zinc-800 bg-amber-950/20 px-4 py-2 text-xs text-amber-300">
+              {trackedLanguageNotice}
+            </p>
+          )}
 
           {selectedIds.size > 0 && (
             <div className="relative flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-950/60 px-4 py-2 text-sm">
@@ -1023,10 +1121,21 @@ export function LanguagesManager() {
                   </th>
                   {languages.map((lang) => (
                     <th key={lang} className="w-14 px-2 py-2 text-center font-medium">
-                      <button onClick={() => handleSort(`${LANG_SORT_PREFIX}${lang}`)} className="block w-full hover:text-zinc-300">
-                        {lang}
-                        {sortIndicator(`${LANG_SORT_PREFIX}${lang}`, sort)}
-                      </button>
+                      <div className="flex items-center justify-center gap-1">
+                        <button onClick={() => handleSort(`${LANG_SORT_PREFIX}${lang}`)} className="hover:text-zinc-300">
+                          {lang}
+                          {sortIndicator(`${LANG_SORT_PREFIX}${lang}`, sort)}
+                        </button>
+                        <button
+                          onClick={() => handleRemoveTrackedLanguage(lang)}
+                          disabled={trackedLanguageBusy}
+                          className="text-zinc-600 hover:text-red-400 disabled:opacity-50"
+                          title={`Remove "${lang}" column`}
+                          aria-label={`Remove ${lang} column`}
+                        >
+                          &#10005;
+                        </button>
+                      </div>
                       {(missingCountByLanguage.get(lang) ?? 0) > 0 && (
                         <button
                           onClick={() => startBulkGenerateForLanguage(lang)}

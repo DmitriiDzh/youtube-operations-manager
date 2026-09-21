@@ -480,7 +480,8 @@ test("applySnapshotToDatabase: merges by column name, not physical position (RIS
         thumbnail_url TEXT,
         uploads_playlist_id TEXT NOT NULL,
         connected_at INTEGER NOT NULL DEFAULT (unixepoch()),
-        last_synced_at INTEGER
+        last_synced_at INTEGER,
+        target_languages_json TEXT
       )
     `);
     await source.execute({
