@@ -61,6 +61,10 @@ data/auth-context.json
 # macOS launcher script's own PID file (scripts/macos/start.sh / stop.sh)
 /.launcher.pid
 
+# start.sh/start.bat's own rebuild-staleness marker (records which commit .next was built from,
+# in a git checkout) -- local build state, never a source file to commit.
+/.next-build-commit.txt
+
 # generated at build time by scripts/write-build-info.mjs (npm's prebuild/predev hook) -- a
 # build artifact regenerated on every build/dev start, never a source file to commit.
 /public/build-info.json
@@ -72,6 +76,7 @@ data/auth-context.json
 published/*/node_modules/
 published/*/.next/
 published/*/.launcher.pid
+published/*/.next-build-commit.txt
 published/*/data/*.db
 published/*/data/*.db-wal
 published/*/data/*.db-shm

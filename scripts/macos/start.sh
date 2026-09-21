@@ -24,45 +24,50 @@ if [ -n "$(lsof -ti tcp:3000 2>/dev/null)" ]; then
   exit 1
 fi
 
-# Auto-update: only when this is an actual git checkout of the repository (this device's own
-# `origin`, which the operator already controls -- never a standalone published/<version>/
-# release copy, which has no .git and is intentionally left untouched here, see
-# docs/RELEASE_LAYOUT.md §1's "no installer or auto-updater" scope note and AGENTS.md §K.4).
-if [ -d ".git" ] && command -v git >/dev/null 2>&1; then
-  if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-    echo "[WARN] Uncommitted local changes detected in this git checkout -- skipping auto-update"
-    echo "so your work isn't touched. Commit or stash your changes, then re-run start.sh to pick"
-    echo "up the latest version automatically."
-  else
-    CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
-    if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "HEAD" ] && git remote get-url origin >/dev/null 2>&1; then
-      echo "Checking for updates on '$CURRENT_BRANCH'..."
-      BEFORE_REV="$(git rev-parse HEAD)"
-      if git pull --ff-only origin "$CURRENT_BRANCH"; then
-        AFTER_REV="$(git rev-parse HEAD)"
-        if [ "$BEFORE_REV" != "$AFTER_REV" ]; then
-          echo "Update found -- installing dependencies and rebuilding before starting..."
-          npm install
-          npm run build
-        else
-          echo "Already up to date."
-        fi
-      else
-        echo "[WARN] Could not fast-forward to the latest '$CURRENT_BRANCH' (offline, or local"
-        echo "history has diverged) -- continuing with the current version."
-      fi
-    fi
-  fi
-fi
-
 if [ ! -d "node_modules" ]; then
   echo "Installing dependencies (first run only, this can take a few minutes)..."
   npm install
 fi
 
+# Rebuild-staleness check. This script no longer touches the network, the remote, or the working
+# tree in any way (it previously ran `git pull --ff-only` itself before this check -- removed
+# 2026-09-21 at the project owner's explicit request: "за актуальностью гита я буду следить сам"
+# -- keeping git entirely up to the operator, not this script).
+#
+# In an actual git checkout of the repository, compare the currently checked-out commit against
+# a marker file recording which commit `.next` was actually built from, so a build the operator
+# did on an earlier commit (e.g. before their own `git pull`) is detected and rebuilt
+# automatically -- rather than relying on ".next merely exists" as the only signal, which cannot
+# tell a stale build apart from a current one. A standalone published/<version>/ release copy has
+# no `.git` and no commit to compare against -- `update.sh` remains its one, explicit,
+# human-triggered rebuild step (docs/RELEASE_LAYOUT.md §1, AGENTS.md §K.4).
+BUILD_MARKER=".next-build-commit.txt"
+CURRENT_REV=""
+if [ -d ".git" ] && command -v git >/dev/null 2>&1; then
+  CURRENT_REV="$(git rev-parse HEAD 2>/dev/null || echo "")"
+fi
+
+NEED_BUILD=""
 if [ ! -d ".next" ]; then
-  echo "No build found - building the application (first run, or after a manual update.sh)..."
+  NEED_BUILD=1
+fi
+if [ -n "$CURRENT_REV" ]; then
+  BUILT_REV=""
+  if [ -f "$BUILD_MARKER" ]; then
+    BUILT_REV="$(cat "$BUILD_MARKER" 2>/dev/null || echo "")"
+  fi
+  if [ "$CURRENT_REV" != "$BUILT_REV" ]; then
+    NEED_BUILD=1
+  fi
+fi
+
+if [ -n "$NEED_BUILD" ]; then
+  echo "Installing dependencies and building the application (no build found, or the checked-out commit changed since the last build)..."
+  npm install
   npm run build
+  if [ -n "$CURRENT_REV" ]; then
+    echo "$CURRENT_REV" > "$BUILD_MARKER"
+  fi
 fi
 
 echo "Starting YouTube Operations Manager on http://localhost:3000 ..."
