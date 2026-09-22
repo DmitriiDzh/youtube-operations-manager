@@ -25,4 +25,4 @@ export function createAnalyticsCore() {
 
 export type AnalyticsCore = ReturnType<typeof createAnalyticsCore>;
 export { ANALYTICS_METRIC_NAMES } from "./contracts";
-export type { AnalyticsMetricName, CollectMetricsResult } from "./contracts";
+export type { AnalyticsMetricName, CollectMetricsResult, ListMetricsResult, StoredVideoMetricRow } from "./contracts";

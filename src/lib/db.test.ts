@@ -9,6 +9,7 @@ import {
   copyLegacyDatabaseInto,
   createIsolatedDb,
   initializeDatabaseSchema,
+  listVideoMetricsByChannel,
   listVideoMetricsByVideo,
   SCHEMA_BASELINE_VERSION,
   SCHEMA_CURRENT_VERSION,
@@ -48,7 +49,7 @@ async function tableExists(client: Client, name: string): Promise<boolean> {
 
 // video_metrics_daily.videoId has a real FK on videos.id (Phase 8, PHASE_8_PLAN.md §5) -- a
 // channel + video row must exist first, or the insert fails closed with a constraint error.
-async function seedChannelAndVideo(database: AppDb, channelId: string, videoId: string): Promise<void> {
+async function seedChannel(database: AppDb, channelId: string): Promise<void> {
   await database.insert(channels).values({
     id: channelId,
     title: "Test Channel",
@@ -56,6 +57,9 @@ async function seedChannelAndVideo(database: AppDb, channelId: string, videoId: 
     uploadsPlaylistId: "UU_TEST",
     connectedUserId: null,
   });
+}
+
+async function seedVideo(database: AppDb, channelId: string, videoId: string): Promise<void> {
   await database.insert(videos).values({
     id: videoId,
     channelId,
@@ -66,6 +70,11 @@ async function seedChannelAndVideo(database: AppDb, channelId: string, videoId: 
     thumbnailsJson: "{}",
     localizationsJson: "{}",
   });
+}
+
+async function seedChannelAndVideo(database: AppDb, channelId: string, videoId: string): Promise<void> {
+  await seedChannel(database, channelId);
+  await seedVideo(database, channelId, videoId);
 }
 
 // AC-SCHEMA-01
@@ -138,6 +147,39 @@ test("video_metrics_daily: a fractional metricValue round-trips exactly through 
     const rows = await listVideoMetricsByVideo("vid1", isolatedDb);
     assert.equal(rows.length, 1);
     assert.equal(rows[0].metricValue, 63.75);
+  }));
+
+// Phase 8 (BL-053, docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 4): the Web UI's read-only display
+// needs every metric row for a channel, across every video, in one query -- and only that
+// channel's own rows, never another locally-known channel's (the same channel-scoping discipline
+// AGENTS.md §F requires elsewhere).
+test("video_metrics_daily: listVideoMetricsByChannel returns every video's rows for that channel, never another channel's", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannelAndVideo(isolatedDb, "UC_A", "vid1");
+    await seedVideo(isolatedDb, "UC_A", "vid2");
+    await seedChannelAndVideo(isolatedDb, "UC_B", "vid3");
+
+    await upsertVideoMetric(
+      { channelId: "UC_A", videoId: "vid1", metricDate: "2026-09-20", metricName: "views", metricValue: 100 },
+      isolatedDb
+    );
+    await upsertVideoMetric(
+      { channelId: "UC_A", videoId: "vid2", metricDate: "2026-09-20", metricName: "views", metricValue: 200 },
+      isolatedDb
+    );
+    await upsertVideoMetric(
+      { channelId: "UC_B", videoId: "vid3", metricDate: "2026-09-20", metricName: "views", metricValue: 300 },
+      isolatedDb
+    );
+
+    const rows = await listVideoMetricsByChannel("UC_A", isolatedDb);
+    assert.deepEqual(
+      rows.map((r) => r.videoId).sort(),
+      ["vid1", "vid2"]
+    );
+    assert.ok(!rows.some((r) => r.videoId === "vid3"), "must never include a different channel's video");
   }));
 
 test("video_metrics_daily: a videoId with no matching videos row is rejected by its foreign key", () =>

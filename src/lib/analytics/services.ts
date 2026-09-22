@@ -5,9 +5,17 @@ import {
   DomainError,
   isDomainError,
   type CollectMetricsResult,
+  type ListMetricsResult,
   type ResolvedCredentials,
+  type StoredVideoMetricRow,
 } from "./contracts";
-import { collectMetricsInputSchema, collectMetricsOutputSchema, parseWithSchema } from "./schemas";
+import {
+  collectMetricsInputSchema,
+  collectMetricsOutputSchema,
+  listMetricsInputSchema,
+  listMetricsOutputSchema,
+  parseWithSchema,
+} from "./schemas";
 
 export type StoredVideoRef = {
   videoId: string;
@@ -42,6 +50,7 @@ type ServiceDependencies = {
       metricName: string;
       metricValue: number;
     }): Promise<void>;
+    listMetricsByChannel(channelId: string): Promise<StoredVideoMetricRow[]>;
   };
   channelAccess: ChannelAccessService;
   logger: {
@@ -184,6 +193,41 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         const mapped = mapUnknownError(error, "unauthorized");
         deps.logger.error({ event: "analytics.collect_metrics.error", context: { code: mapped.code } });
         throw mapped;
+      }
+    },
+
+    /**
+     * Read-only display of every metric row already collected for `channelId`
+     * (`docs/roadmap/plans/PHASE_8_PLAN.md` §6 slice 4's "read-only Web UI display"). Pure local
+     * read -- no `authResolver`/YouTube scope needed, since it never calls the Analytics API
+     * itself. Same active-channel check as `collectMetrics`, for the same reason
+     * (`docs/decisions/0004-active-channel-read-scoping.md`).
+     */
+    async listMetrics(input: unknown): Promise<ListMetricsResult> {
+      const parsedInput = parseWithSchema(listMetricsInputSchema, input, "list metrics input");
+
+      try {
+        const userId = getCredentialUserId(parsedInput.credentialRef);
+        await deps.channelAccess.assertActiveChannel({
+          userId,
+          channelId: parsedInput.channelId,
+        });
+
+        const records = await deps.metricStore.listMetricsByChannel(parsedInput.channelId);
+        const rows = records.map((record) => ({
+          videoId: record.videoId,
+          metricDate: record.metricDate,
+          metricName: record.metricName,
+          metricValue: record.metricValue,
+        }));
+
+        return parseWithSchema(
+          listMetricsOutputSchema,
+          { channelId: parsedInput.channelId, rows },
+          "list metrics output"
+        );
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
       }
     },
   };

@@ -51,3 +51,29 @@ export const collectMetricsOutputSchema = z
 
 export type CollectMetricsInput = z.infer<typeof collectMetricsInputSchema>;
 export type CollectMetricsOutput = z.infer<typeof collectMetricsOutputSchema>;
+
+export const listMetricsInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+  })
+  .strict();
+
+const storedVideoMetricRowSchema = z
+  .object({
+    videoId: z.string().min(1),
+    metricDate: z.string(),
+    metricName: z.string(),
+    metricValue: z.number(),
+  })
+  .strict();
+
+export const listMetricsOutputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    rows: z.array(storedVideoMetricRowSchema),
+  })
+  .strict();
+
+export type ListMetricsInput = z.infer<typeof listMetricsInputSchema>;
+export type ListMetricsOutput = z.infer<typeof listMetricsOutputSchema>;

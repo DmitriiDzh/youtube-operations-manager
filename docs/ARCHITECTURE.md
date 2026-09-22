@@ -605,10 +605,10 @@ upsertVideoMetric(input)          — insert-or-update by the table's own primar
 listVideoMetricsByVideo(videoId)  — full metric history for one video
 ```
 
-`src/lib/analytics/adapters/store.ts` now wraps both (§14.5) — no longer a bare `db.test.ts`-only
+`src/lib/analytics/adapters/store.ts` now wraps both (§14.4) — no longer a bare `db.test.ts`-only
 pair.
 
-### 14.4 Analytics domain module (`src/lib/analytics/`, BL-052 part 2) — no caller yet
+### 14.4 Analytics domain module (`src/lib/analytics/`)
 
 Follows the standard `contracts/schemas/services/adapters/index` layering (§6.2). One operation,
 `collectMetrics({credentialRef, channelId, startDate, endDate, metricNames?})`: for every video
@@ -639,12 +639,41 @@ module references any `videos`/`channels`-mutating `db.ts` function or any
 criterion as a structural, automated check, not an inference from the dependency-injection shape
 alone.
 
-**Nothing calls `collectMetrics` yet** — no route, no CLI/MCP tool, no UI. BL-053 is the first
-real consumer. `credentialRef` shapes with no `userId` (e.g. a hypothetical future CLI caller
-passing raw tokens) can never pass `assertActiveChannel` and so can never use this service today —
-documented as a known constraint in the function's own doc comment, not a bug.
+`credentialRef` shapes with no `userId` (e.g. a hypothetical future CLI caller passing raw tokens)
+can never pass `assertActiveChannel` and so can never use this service — documented as a known
+constraint in the function's own doc comment, not a bug.
 
-### 14.5 Known limitations
+A second read-only operation, `listMetrics({credentialRef, channelId})`, returns every already-
+collected `(videoId, metricDate, metricName, metricValue)` row for the channel (via a new
+`listVideoMetricsByChannel` in `db.ts`, mirroring `listVideoMetricsByVideo`'s own shape) — pure
+local read, no `authResolver`/YouTube call, same active-channel check as `collectMetrics`.
+
+### 14.5 Manual "collect now" trigger + Web UI (BL-053) — **IMPLEMENTED**
+
+`POST /api/channels/[channelId]/analytics/collect` (real local-state mutation — writes
+`video_metrics_daily` rows — gated normally by `src/proxy.ts`'s blanket device-availability check,
+deliberately NOT added to its read-only exemption list) and `GET /api/channels/[channelId]/analytics`
+(pure read, ungated) call `collectMetrics`/`listMetrics` directly. Neither route calls
+`channelAccess.assertActiveChannel` itself — both services already do, mirroring
+`channel-sync`'s own `videos/route.ts`, not `ai-localization`'s routes (whose services don't
+receive `credentialRef` the same way).
+
+Web UI: `src/components/analytics-manager.tsx`, replacing the Studio-parity S6-stub "coming soon"
+placeholder in the Analytics tab (`docs/roadmap/BACKLOG.md` BL-017). A date-range form (local-date
+defaults, ending *yesterday* — the Analytics API's own documented behavior is that a `day`-dimension
+query never returns the most recent day(s) yet, so defaulting to "today" would look like a silent
+partial failure) plus a "Collect now" button, and a paginated read-only table of whatever
+`GET .../analytics` returns (no video-title join — this component only knows about metrics, video
+metadata display stays `content-manager.tsx`'s concern).
+
+**Live-verified against the real "Tropico Jazz" channel (2026-09-22, `claude-in-chrome`):** the
+tab resolves the active channel and loads its (empty) collected-metrics table correctly; clicking
+"Collect now" exercises the real chain (session → active-channel check → credential resolution →
+scope check) end to end and correctly fails with `AUTH_SCOPE_INSUFFICIENT` — the real stored
+token predates BL-051's scope addition, so this is exactly the expected, correct outcome pending
+the owner's own re-consent, not a bug. Zero console errors throughout.
+
+### 14.6 Known limitations
 
 No Analytics API client, no OAuth scope request, no route, no UI — this slice is the persistence
 primitive only, exactly `PHASE_8_PLAN.md` §6 slice 2's scope, deliberately not a vertical slice

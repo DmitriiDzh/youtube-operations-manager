@@ -92,3 +92,16 @@ test("proxy gates the video-details apply route like any other real mutation", a
     await releaseOperationLock(rawSqlClient);
   }
 });
+
+// Phase 8 (BL-053): analytics/collect is a real local-state mutation (writes video_metrics_daily
+// rows) -- unlike ai-localization's own `generate` (exempted because it persists nothing), this
+// must stay behind the ordinary gate, not be added to EXEMPT_READ_ONLY_PATH_SUFFIXES.
+test("proxy gates the analytics collect route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/channels/chan-1/analytics/collect"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});

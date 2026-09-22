@@ -76,3 +76,15 @@ export type CollectMetricsResult = {
    */
   skippedVideoIds: string[];
 };
+
+export type StoredVideoMetricRow = {
+  videoId: string;
+  metricDate: string;
+  metricName: string;
+  metricValue: number;
+};
+
+export type ListMetricsResult = {
+  channelId: string;
+  rows: StoredVideoMetricRow[];
+};

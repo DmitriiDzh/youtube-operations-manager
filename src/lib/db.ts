@@ -503,7 +503,7 @@ export const appSettings = sqliteTable("app_settings", {
  * orphan case: a snapshot-import replace of `videos` can leave a local `video_metrics_daily` row
  * referencing a `videoId` no longer present in the receiving device's `videos` table after import
  * (FK enforcement is disabled for that whole operation, so this never crashes, it just leaves a
- * stale row). See `docs/ARCHITECTURE.md` §14.5.
+ * stale row). See `docs/ARCHITECTURE.md` §14.6.
  *
  * Composite primary key `(videoId, metricDate, metricName)` mirrors the plan's own DDL exactly:
  * one row per video/day/metric, so re-collecting an already-collected date is a natural upsert,
@@ -2730,6 +2730,21 @@ export async function listVideoMetricsByVideo(
     .from(videoMetricsDaily)
     .where(eq(videoMetricsDaily.videoId, videoId))
     .orderBy(videoMetricsDaily.metricDate, videoMetricsDaily.metricName);
+
+  return rows.map(mapStoredVideoMetric);
+}
+
+// BL-053 (docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 4) -- the Web UI's read-only display needs
+// every metric row for a channel at once, not one video at a time.
+export async function listVideoMetricsByChannel(
+  channelId: string,
+  database: AppDb = db
+): Promise<StoredVideoMetric[]> {
+  const rows = await database
+    .select()
+    .from(videoMetricsDaily)
+    .where(eq(videoMetricsDaily.channelId, channelId))
+    .orderBy(videoMetricsDaily.videoId, videoMetricsDaily.metricDate, videoMetricsDaily.metricName);
 
   return rows.map(mapStoredVideoMetric);
 }

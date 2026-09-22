@@ -4,6 +4,7 @@ import { useSession, signOut, signIn } from "next-auth/react";
 import { redirect } from "next/navigation";
 import { useEffect, useState, useCallback } from "react";
 import type { ComponentType, SVGProps } from "react";
+import { AnalyticsManager } from "@/components/analytics-manager";
 import { ContentManager } from "@/components/content-manager";
 import { LanguagesManager } from "@/components/languages-manager";
 import { BatchManager } from "@/components/batch-manager";
@@ -190,13 +191,13 @@ export default function Dashboard() {
       )}
 
       {tab === "analytics" && (
-        <div className="max-w-3xl">
-          <p className="text-sm text-zinc-400">
-            Coming soon — real analytics data requires the YouTube Analytics API and a new
-            OAuth scope, gated on its own separate decision
-            (docs/roadmap/plans/PHASE_8_PLAN.md, docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slice
-            S6).
+        <div>
+          <p className="mb-4 text-sm text-zinc-400">
+            Manual collection for now (BL-054&apos;s daily auto-collection is a separate,
+            not-yet-built follow-up) &mdash; facts only, no comparisons or recommendations yet
+            (Phase 10&apos;s own scope).
           </p>
+          <AnalyticsManager />
         </div>
       )}
 

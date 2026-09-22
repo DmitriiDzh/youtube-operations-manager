@@ -70,6 +70,9 @@ function createServicesFixture(opts: {
       metricRowsByKey.set(key, args.metricValue); // upsert semantics -- overwrite, never duplicate
       upsertedRows.push(args);
     },
+    async listMetricsByChannel(channelId: string) {
+      return upsertedRows.filter((row) => row.channelId === channelId);
+    },
   };
 
   const authResolver = {
@@ -253,7 +256,7 @@ test("collectMetrics defaults to the full ANALYTICS_METRIC_NAMES list when metri
         return [{ videoId: "v1", channelId: "UC_A" }];
       },
     },
-    metricStore: { async upsertMetric() {} },
+    metricStore: { async upsertMetric() {}, async listMetricsByChannel() { return []; } },
     channelAccess,
     logger: { info() {}, error() {} },
   });
@@ -268,4 +271,36 @@ test("collectMetrics defaults to the full ANALYTICS_METRIC_NAMES list when metri
   assert.ok(requestedMetricNames && requestedMetricNames.length > 20, "should default to the full metric list, not an empty/short one");
   assert.ok(requestedMetricNames?.includes("views"));
   assert.ok(!requestedMetricNames?.some((name) => /revenue|Cpm|adImpressions|monetizedPlaybacks/i.test(name)), "must never default-request a monetary metric");
+});
+
+test("listMetrics fails closed when the requested channel is not the caller's active channel", async () => {
+  const { services } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+
+  await assert.rejects(
+    () => services.listMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }),
+    (error: unknown) => error instanceof DomainError && error.code === "CHANNEL_NOT_ACTIVE"
+  );
+});
+
+test("listMetrics returns every previously-collected row for the channel, shaped for display", async () => {
+  const { services, channelAccess, upsertedRows } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await services.collectMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-01",
+    endDate: "2026-09-01",
+  });
+  assert.equal(upsertedRows.length, 1);
+
+  const result = await services.listMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+
+  assert.equal(result.channelId, "UC_A");
+  assert.deepEqual(result.rows, [
+    { videoId: "v1", metricDate: "2026-09-01", metricName: "views", metricValue: 100 },
+  ]);
 });
