@@ -47,6 +47,9 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     editorialProfileDraftsDir: path.join(appDataDir, "editorial-profile-drafts"),
     editorialProfileSyncFallbackDir: path.join(appDataDir, "editorial-profile-sync-local"),
     editorialProfileDiscardedBackupsDir: path.join(appDataDir, "editorial-profile-discarded-backups"),
+    aiConnectionsCatalogDraftsDir: path.join(appDataDir, "ai-connections-catalog-drafts"),
+    aiConnectionsCatalogSyncFallbackDir: path.join(appDataDir, "ai-connections-catalog-sync-local"),
+    aiConnectionsCatalogDiscardedBackupsDir: path.join(appDataDir, "ai-connections-catalog-discarded-backups"),
     bootstrapConfigPath: path.join(appDataDir, "bootstrap-config.json"),
     authContextPath: path.join(appDataDir, "auth-context.json"),
   };

@@ -2330,6 +2330,54 @@ export async function deleteStoredAiConnection(connectionId: string): Promise<vo
   });
 }
 
+/**
+ * Raw overwrite upsert -- writes exactly the row it is given, no defaulting or patch-merge logic
+ * of its own. Used only as the SQL read-projection target for
+ * `src/lib/sync-gateway/ai-connections-catalog/` (2026-09-22, `docs/roadmap/plans/
+ * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3) -- that module's single global Automerge document
+ * is now the source of truth for every connection's non-secret config; `deleteStoredAiConnection`
+ * above (unchanged) remains the target for a connection removed from the document entirely.
+ */
+export async function setStoredAiConnectionRow(record: StoredAiConnection): Promise<void> {
+  await db
+    .insert(aiConnections)
+    .values({
+      id: record.id,
+      displayName: record.displayName,
+      adapterType: record.adapterType,
+      baseUrl: record.baseUrl,
+      modelId: record.modelId,
+      localInferenceMode: record.localInferenceMode,
+      enabled: record.enabled,
+      status: record.status,
+      statusMessage: record.statusMessage,
+      statusCheckedAt: record.statusCheckedAt,
+      capabilitiesJson: record.capabilitiesJson,
+      assignedTasksJson: record.assignedTasksJson,
+      pricingJson: record.pricingJson,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    })
+    .onConflictDoUpdate({
+      target: aiConnections.id,
+      set: {
+        displayName: record.displayName,
+        adapterType: record.adapterType,
+        baseUrl: record.baseUrl,
+        modelId: record.modelId,
+        localInferenceMode: record.localInferenceMode,
+        enabled: record.enabled,
+        status: record.status,
+        statusMessage: record.statusMessage,
+        statusCheckedAt: record.statusCheckedAt,
+        capabilitiesJson: record.capabilitiesJson,
+        assignedTasksJson: record.assignedTasksJson,
+        pricingJson: record.pricingJson,
+        updatedAt: record.updatedAt,
+      },
+    });
+}
+
 export type StoredAiConnectionCredential = {
   connectionId: string;
   ciphertext: string;

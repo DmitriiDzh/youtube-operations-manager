@@ -21,7 +21,13 @@
 //     (`channel_editorial_profiles`), added 2026-09-22 per the owner's "отдельными документами"
 //     decision: its own document, its own independent sync cycle (own Syncthing subfolder), so a
 //     bug in one family's sync never blocks the other's.
-//   - `./automerge-core` -- the shared engine both families above build on (generic per-key
+//   - `./ai-connections-catalog` + `./ai-connections-catalog-sync` -- AI provider connections'
+//     non-secret config (`ai_connections`, added 2026-09-22). Unlike the two families above, this
+//     is a single GLOBAL document, not one per channel (`ai_connections` has no `channel_id` --
+//     device/account-wide config) -- its sync runner reuses the same per-channel
+//     `createSyncRunner` with exactly one constant "channel," rather than a separate
+//     single-document runner implementation.
+//   - `./automerge-core` -- the shared engine every family above builds on (generic per-key
 //     document store, merge-safety logic, filesystem transport, sync-cycle runner). Owns no
 //     document shape or business logic itself.
 //
@@ -38,3 +44,7 @@ export type { FieldConflict } from "./change-drafts/contracts";
 export { createEditorialProfileCoreForProduction } from "./editorial-profile";
 export type { EditorialProfileDocument, FieldConflict as EditorialProfileFieldConflict } from "./editorial-profile";
 export { createEditorialProfileSyncRunnerForProduction } from "./editorial-profile-sync";
+
+export { createAiConnectionsCatalogCoreForProduction } from "./ai-connections-catalog";
+export type { AiConnectionEntry, FieldConflict as AiConnectionFieldConflict } from "./ai-connections-catalog";
+export { createAiConnectionsCatalogSyncRunnerForProduction } from "./ai-connections-catalog-sync";

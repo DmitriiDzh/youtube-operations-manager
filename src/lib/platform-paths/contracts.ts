@@ -59,6 +59,15 @@ export type AppPaths = {
   /** Pre-discard backups of a channel's local editorial-profile document, mirroring
    * `changeDraftsDiscardedBackupsDir`'s identical reasoning. */
   editorialProfileDiscardedBackupsDir: string;
+  /** Directory holding the single global ai-connections-catalog Automerge document
+   * (`src/lib/sync-gateway/ai-connections-catalog/`, added 2026-09-22, `docs/roadmap/plans/
+   * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3) -- unlike the two directories above, this
+   * holds exactly one document (`ai_connections` has no `channel_id`, device/account-wide). */
+  aiConnectionsCatalogDraftsDir: string;
+  /** Local-only fallback exchange directory for the ai-connections-catalog sync runner. */
+  aiConnectionsCatalogSyncFallbackDir: string;
+  /** Pre-discard backups of the global ai-connections-catalog document. */
+  aiConnectionsCatalogDiscardedBackupsDir: string;
   /** Path to the device-local bootstrap config JSON file. */
   bootstrapConfigPath: string;
   /** Path to the CLI/MCP active-user auth-context JSON file. */
