@@ -88,12 +88,21 @@ test("getStatus: nothing connected -> { connected: false }", async () => {
   assert.deepEqual(await services.getStatus(), { connected: false });
 });
 
-test("beginConnect: requests exactly the cloud-platform scope and returns a state to verify later", () => {
+// Corrected 2026-09-22 after a real, live failure: the first real connection attempt threw
+// "Unable to fetch user identity from Google" because only `cloud-platform` was requested --
+// `fetchGoogleIdentity` (src/lib/auth.ts) needs `openid`/`email` (an id_token, or the userinfo
+// endpoint) to resolve which account connected, and a `cloud-platform`-only access token cannot
+// read either. Not "the implementation doesn't do this" -- the original requirement itself
+// (msg 424's own "запрашиваем ровно cloud-platform") was incomplete; corrected here rather than
+// weakened, per AGENTS.md §L.
+test("beginConnect: requests cloud-platform AND openid/email (needed to resolve connectedEmail), and returns a state to verify later", () => {
   const { services } = createFixture();
   const { authUrl, state } = services.beginConnect({ redirectUri: "http://localhost:3000/api/cloud-connection/callback" });
 
   assert.equal(state, "fixed-state-value");
-  assert.ok(authUrl.includes(encodeURIComponent(CLOUD_CONNECTION_SCOPE)));
+  assert.ok(authUrl.includes(encodeURIComponent(CLOUD_CONNECTION_SCOPE)), "must request cloud-platform");
+  assert.ok(authUrl.includes(encodeURIComponent("openid")), "must request openid, or fetchGoogleIdentity has no id_token to decode");
+  assert.ok(authUrl.includes(encodeURIComponent("email")), "must request email, or the userinfo fallback cannot resolve it either");
   assert.ok(authUrl.includes("state=fixed-state-value"));
 });
 

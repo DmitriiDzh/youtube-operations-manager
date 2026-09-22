@@ -14,9 +14,18 @@ export { DomainError, isDomainError };
 // against Google's own REST reference that the Cloud Quotas API's `quotaInfos.list` has no
 // narrower scope option (the Cloud Monitoring API's usage query would accept the narrower
 // `monitoring.read`, but `cloud-platform` is a superset and only one grant is requested).
+//
+// `openid`/`email` are ALSO requested alongside it -- not for any Cloud Quotas/Monitoring
+// purpose, but because `completeConnect` needs to show *which* Google account is connected
+// (`connectedEmail`) and `fetchGoogleIdentity` (`src/lib/auth.ts`) can only resolve that either
+// from an `id_token` (needs `openid`) or from the userinfo endpoint (needs `email`/`profile`) --
+// an access token scoped to `cloud-platform` alone cannot read either. Found live: the first real
+// connection attempt failed with "Unable to fetch user identity from Google" for exactly this
+// reason, before this scope was added.
 // ---------------------------------------------------------------------------
 
 export const CLOUD_CONNECTION_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
+export const CLOUD_CONNECTION_REQUESTED_SCOPES = ["openid", "email", CLOUD_CONNECTION_SCOPE] as const;
 
 /** Public shape -- NEVER includes the access/refresh token. */
 export type CloudConnectionStatus =

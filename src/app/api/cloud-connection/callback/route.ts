@@ -2,7 +2,6 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createCloudConnectionCore } from "@/lib/cloud-connection";
-import { isDomainError } from "@/lib/cloud-connection/contracts";
 import { cloudConnectionCallbackRedirectUri } from "@/lib/cloud-connection/redirect-uri";
 import { CLOUD_CONNECTION_STATE_COOKIE } from "../start/route";
 
@@ -11,6 +10,15 @@ import { CLOUD_CONNECTION_STATE_COOKIE } from "../start/route";
  * (`docs/decisions/0008-cloud-connection.md`). Always redirects back to the dashboard --
  * this is a full-page browser navigation from Google's own consent screen, never an XHR/fetch
  * call, so there is no JSON response to return here even on failure.
+ *
+ * Catches EVERY error from `completeConnect`, not only `DomainError` -- found live (2026-09-22):
+ * an unexpected error (`fetchGoogleIdentity` throwing "Unable to fetch user identity from
+ * Google") propagated past an earlier version of this route that only caught `DomainError`,
+ * surfacing as a raw framework 500 page ("localhost is currently unable to handle this
+ * request") instead of a clean redirect the Settings card can explain. A full-page OAuth
+ * redirect boundary has no JS error handling available to the browser either way, so there is
+ * no upside to distinguishing error types here -- only the real error, logged server-side, is
+ * lost if this route lets anything propagate.
  */
 export async function GET(request: Request) {
   const session = await getServerSession(authOptions);
@@ -43,7 +51,11 @@ export async function GET(request: Request) {
       });
       redirectTo.searchParams.set("cloudConnection", "connected");
     } catch (error) {
-      if (!isDomainError(error)) throw error;
+      console.error(JSON.stringify({
+        level: "error",
+        event: "cloud_connection.complete_connect.failed",
+        context: { message: error instanceof Error ? error.message : "Unknown error" },
+      }));
       redirectTo.searchParams.set("cloudConnection", "error");
     }
   }

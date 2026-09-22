@@ -90,8 +90,16 @@ Three things needed deciding:
   (`AGENTS.md` §M). Fails closed (`encryption_key_not_configured`) if unset, never a plaintext
   fallback -- unlike `users`' RISK-07 tradeoff, plaintext was judged not acceptable here given the
   broader scope requested (tracked as RISK-48, mirroring RISK-15's shape).
-- **Requested scope is exactly `https://www.googleapis.com/auth/cloud-platform`** -- a superset of
-  `monitoring.read`, so one grant covers both the future Quotas and Monitoring calls.
+- **Requested scope is `https://www.googleapis.com/auth/cloud-platform` plus `openid`/`email`** --
+  the former is a superset of `monitoring.read` (one grant covers both the future Quotas and
+  Monitoring calls); the latter two are needed only so `fetchGoogleIdentity` (`src/lib/auth.ts`)
+  can resolve *which* account connected (`connectedEmail`), via an `id_token` or the userinfo
+  endpoint -- a `cloud-platform`-only access token cannot read either. **Found live, 2026-09-22:**
+  the first real connection attempt threw "Unable to fetch user identity from Google" before
+  `openid`/`email` were added; the callback route also unconditionally rethrew any non-`DomainError`
+  at the time, so this surfaced as a raw framework 500 page instead of a clean redirect -- fixed
+  alongside the scope fix (the route now catches and logs every error, since a full-page OAuth
+  redirect has no JS error handling available either way).
 - **New routes, entirely separate from the NextAuth channel-login flow**: `GET
   /api/cloud-connection/start` (redirects to Google's consent screen, `state` in a short-lived
   httpOnly cookie), `GET /api/cloud-connection/callback` (exchanges the code, persists the

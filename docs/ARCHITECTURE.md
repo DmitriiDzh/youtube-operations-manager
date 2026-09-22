@@ -856,9 +856,11 @@ Entirely separate from the NextAuth channel-login flow (`src/lib/auth.ts`'s `aut
 
 1. `GET /api/cloud-connection/start` — requires an active channel-login session (any authenticated
    user of this app, independent of which channel is currently active). Builds Google's consent
-   URL via `createGoogleOAuthClient(redirectUri).generateAuthUrl(...)` requesting exactly
-   `https://www.googleapis.com/auth/cloud-platform`, with a random `state` stored in a short-lived
-   (600s) httpOnly cookie scoped to `/api/cloud-connection`, and redirects the browser there.
+   URL via `createGoogleOAuthClient(redirectUri).generateAuthUrl(...)` requesting
+   `https://www.googleapis.com/auth/cloud-platform` **plus `openid`/`email`** (needed only so the
+   callback can resolve *which* account connected — see the correction note below), with a random
+   `state` stored in a short-lived (600s) httpOnly cookie scoped to `/api/cloud-connection`, and
+   redirects the browser there.
 2. `GET /api/cloud-connection/callback` — reads `code`/`state` from the query string and the
    expected state from the cookie; a mismatch (or a missing code/state, or an `error` param from
    Google) is refused before any token exchange. On success, exchanges the code
@@ -868,7 +870,17 @@ Entirely separate from the NextAuth channel-login flow (`src/lib/auth.ts`'s `aut
    `cloud_connection` row. Always redirects back to `/dashboard` with a `?cloudConnection=
    connected|error` query param the Settings card reads client-side (via
    `window.location.search`, not `useSearchParams()` — `/dashboard` is statically prerendered, and
-   `useSearchParams()` would force a Suspense boundary just for this one-time banner).
+   `useSearchParams()` would force a Suspense boundary just for this one-time banner). **Catches
+   every error from `completeConnect`, not only `DomainError`** — a full-page OAuth redirect has
+   no JS error handling available to the browser either way, so an unexpected error is logged
+   server-side and still redirects cleanly rather than surfacing a raw framework 500 page.
+   **Correction, found live, 2026-09-22:** the first real connection attempt requested only
+   `cloud-platform` and this route only caught `DomainError` — `fetchGoogleIdentity` threw
+   "Unable to fetch user identity from Google" (a `cloud-platform`-only token cannot read an
+   `id_token` or the userinfo endpoint, both of which need `openid`/`email`), and the uncaught
+   error surfaced as a raw "localhost is currently unable to handle this request" page. Both
+   fixed together: the requested scope now includes `openid`/`email`, and this route catches
+   everything.
 3. `GET /api/cloud-connection/status` — the public shape only (`{ connected, connectedEmail,
    scope, connectedAt }` or `{ connected: false }`), never the token.
 4. `POST /api/cloud-connection/disconnect` — revokes the refresh (or access, if no refresh) token

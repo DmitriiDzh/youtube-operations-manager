@@ -5,7 +5,7 @@ import {
   revokeGoogleToken,
 } from "@/lib/auth";
 import { decryptSecret, encryptSecret, requireEncryptionKey, type ResolveEncryptionKey } from "./crypto";
-import { CLOUD_CONNECTION_SCOPE, DomainError, type CloudConnectionStatus } from "./contracts";
+import { CLOUD_CONNECTION_REQUESTED_SCOPES, DomainError, type CloudConnectionStatus } from "./contracts";
 import { completeConnectInputSchema, parseWithSchema } from "./schemas";
 
 type StoredCloudConnection = {
@@ -78,7 +78,7 @@ export function createCloudConnectionServices(deps: ServiceDependencies) {
       const authUrl = oauthClient.generateAuthUrl({
         access_type: "offline",
         prompt: "consent",
-        scope: [CLOUD_CONNECTION_SCOPE],
+        scope: [...CLOUD_CONNECTION_REQUESTED_SCOPES],
         state,
         redirect_uri: args.redirectUri,
       });
@@ -130,7 +130,7 @@ export function createCloudConnectionServices(deps: ServiceDependencies) {
 
       await deps.store.upsert({
         connectedEmail: identity.email,
-        scope: tokenResponse.tokens.scope ?? CLOUD_CONNECTION_SCOPE,
+        scope: tokenResponse.tokens.scope ?? CLOUD_CONNECTION_REQUESTED_SCOPES.join(" "),
         ciphertext: encrypted.ciphertext,
         iv: encrypted.iv,
         authTag: encrypted.authTag,
