@@ -1,0 +1,7 @@
+# Windows batch scripts must always use CRLF line endings, regardless of which OS commits the
+# change -- cmd.exe's batch interpreter can misparse an LF-only file in ways that are hard to
+# diagnose from the resulting error (e.g. a `cd` a few lines later silently failing with "The
+# system cannot find the path specified" instead of erroring on the malformed line itself).
+# Without this, editing scripts/windows/*.bat from a macOS/Linux checkout (this project's usual
+# development environment) silently strips the CRLF on save/commit.
+*.bat text eol=crlf
