@@ -483,21 +483,22 @@ export const appSettings = sqliteTable("app_settings", {
 });
 
 /**
- * SCHEMA_MIGRATIONS version 10 (owner instruction, 2026-09-22, Telegram: "Можем ли мы собирать
- * статистику? В каждом случае сколько запросов было сделано / сколько прошло сквозь шлюз"). One
- * row per gateway category (`data_api_reads`, `analytics_reads`, `live_writes`, `mcp_tool_calls`
- * -- see `GatewayTrafficCategory` below), counting how many real calls that category's own gate
- * (`assertDataApiReadsAuthorized`, etc.) let through versus refused, since this counter started
- * (not retroactive -- there is no historical call log to backfill from). `mcp_tool_calls` has no
- * meaningful "blocked" count: when MCP connection is off, a tool is never registered at all, so
- * there is no failed call to count, only an absent one -- `blockedCount` simply stays 0 for it.
+ * SCHEMA_MIGRATIONS version 10 (owner instruction, 2026-09-22, Telegram, refined after an
+ * initial cumulative-counter design: "Я думаю лучше выводить 1. Сколько было попыток пройти
+ * через шлюз за последние сутки 2. Сколько попыток пройти через шлюз увенчались успехом за
+ * последние сутки"). One row per real call (`category`, `outcome`, `occurredAt`), not one
+ * running-total row per category -- a rolling 24h window needs per-event timestamps to know
+ * which calls are still "in the window," which a simple incrementing counter can never answer
+ * once time has passed. See `getGatewayTrafficLast24h` below for the windowed read and
+ * `pruneOldGatewayCallEvents` for why this table does not grow unboundedly forever.
+ * `mcp_tool_calls` never records a `blocked` outcome: when MCP connection is off, a tool is
+ * never registered at all, so there is no failed call to log, only an absent one.
  */
-export const gatewayTrafficCounters = sqliteTable("gateway_traffic_counters", {
-  category: text("category").primaryKey(),
-  allowedCount: integer("allowed_count").notNull().default(0),
-  blockedCount: integer("blocked_count").notNull().default(0),
-  lastAllowedAt: integer("last_allowed_at"),
-  lastBlockedAt: integer("last_blocked_at"),
+export const gatewayCallEvents = sqliteTable("gateway_call_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  category: text("category").notNull(),
+  outcome: text("outcome").notNull(),
+  occurredAt: integer("occurred_at").notNull(),
 });
 
 /**
@@ -713,15 +714,17 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 10,
     description:
-      "gateway_traffic_counters -- per-gateway allowed/blocked call counts for the Settings tab (owner instruction, 2026-09-22, Telegram: \"сколько запросов было сделано / сколько прошло сквозь шлюз\")",
+      "gateway_call_events -- per-call event log for the Settings tab's rolling 24h traffic stats (owner instruction, 2026-09-22, Telegram: \"сколько было попыток пройти через шлюз за последние сутки... сколько попыток... увенчались успехом\")",
     apply: async (client) => {
       await client.execute(
-        "CREATE TABLE IF NOT EXISTS gateway_traffic_counters (" +
-          "category TEXT PRIMARY KEY, " +
-          "allowed_count INTEGER NOT NULL DEFAULT 0, " +
-          "blocked_count INTEGER NOT NULL DEFAULT 0, " +
-          "last_allowed_at INTEGER, " +
-          "last_blocked_at INTEGER)"
+        "CREATE TABLE IF NOT EXISTS gateway_call_events (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "category TEXT NOT NULL, " +
+          "outcome TEXT NOT NULL, " +
+          "occurred_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS gateway_call_events_category_occurred_at_idx ON gateway_call_events(category, occurred_at)"
       );
     },
   },
@@ -1578,12 +1581,12 @@ export async function setAnalyticsReadsEnabled(enabled: boolean, database: AppDb
 
 export type GatewayTrafficCategory = "data_api_reads" | "analytics_reads" | "live_writes" | "mcp_tool_calls";
 
-export type GatewayTrafficCounter = {
+export type GatewayTrafficWindow = {
   category: GatewayTrafficCategory;
-  allowedCount: number;
-  blockedCount: number;
-  lastAllowedAt: number | null;
-  lastBlockedAt: number | null;
+  /** Every real call attempt in the window, allowed or blocked. */
+  totalAttempts: number;
+  /** The subset of `totalAttempts` that succeeded (passed the gate). */
+  succeeded: number;
 };
 
 const GATEWAY_TRAFFIC_CATEGORIES: readonly GatewayTrafficCategory[] = [
@@ -1593,13 +1596,19 @@ const GATEWAY_TRAFFIC_CATEGORIES: readonly GatewayTrafficCategory[] = [
   "mcp_tool_calls",
 ];
 
+// Kept well past the 24h window this table exists to answer (owner instruction, 2026-09-22:
+// "сколько было попыток пройти через шлюз за последние сутки") -- a few days of slack in case
+// that window is ever widened, without ever letting this table grow unboundedly over the life
+// of a long-running local install. Pruned opportunistically on every write (call volumes here
+// are at most dozens per session, so a DELETE on every insert is not a real cost).
+const GATEWAY_CALL_EVENT_RETENTION_SECONDS = 7 * 24 * 60 * 60;
+
 /**
  * Records one real call outcome for the given gateway category -- called from inside the
  * gateway's own assert function (`assertDataApiReadsAuthorized`, etc.) or, for
- * `mcp_tool_calls`, from the MCP server's shared tool-dispatch wrapper. An upsert with an
- * atomic `+1` (not read-then-write) so two concurrent calls never lose an increment to each
- * other. Never throws on its own -- a counting failure must not be allowed to break the real
- * call it is merely observing (caught and logged by the caller if it cares, not required to).
+ * `mcp_tool_calls`, from the MCP server's shared tool-dispatch wrapper. Appends one event row
+ * (never an update-in-place -- see the table's own doc comment for why a rolling window needs
+ * per-event timestamps) and opportunistically prunes anything older than the retention window.
  */
 export async function recordGatewayCallOutcome(
   category: GatewayTrafficCategory,
@@ -1607,42 +1616,48 @@ export async function recordGatewayCallOutcome(
   database: AppDb = db
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
-  const insertValues =
-    outcome === "allowed"
-      ? { category, allowedCount: 1, blockedCount: 0, lastAllowedAt: now, lastBlockedAt: null }
-      : { category, allowedCount: 0, blockedCount: 1, lastAllowedAt: null, lastBlockedAt: now };
-
+  await database.insert(gatewayCallEvents).values({ category, outcome, occurredAt: now });
   await database
-    .insert(gatewayTrafficCounters)
-    .values(insertValues)
-    .onConflictDoUpdate({
-      target: gatewayTrafficCounters.category,
-      set:
-        outcome === "allowed"
-          ? { allowedCount: sql`${gatewayTrafficCounters.allowedCount} + 1`, lastAllowedAt: now }
-          : { blockedCount: sql`${gatewayTrafficCounters.blockedCount} + 1`, lastBlockedAt: now },
-    });
+    .delete(gatewayCallEvents)
+    .where(sql`${gatewayCallEvents.occurredAt} < ${now - GATEWAY_CALL_EVENT_RETENTION_SECONDS}`);
 }
 
 /**
- * Returns one row per known category, always -- a category with zero calls so far still gets a
- * `{allowedCount: 0, blockedCount: 0, ...: null}` entry, rather than being silently absent (the
+ * Returns one row per known category, always -- a category with zero calls in the window still
+ * gets a `{totalAttempts: 0, succeeded: 0}` entry, rather than being silently absent (the
  * Settings UI displays all four gateways regardless of whether each has been exercised yet).
+ * `windowSeconds` defaults to 24h (the owner's own stated window); callers needing a different
+ * window (a future "last 7 days" view, say) can pass one without touching the retention policy.
  */
-export async function getGatewayTrafficCounters(database: AppDb = db): Promise<GatewayTrafficCounter[]> {
-  const rows = await database.select().from(gatewayTrafficCounters);
-  const byCategory = new Map(rows.map((row) => [row.category as GatewayTrafficCategory, row]));
+export async function getGatewayTrafficLast24h(
+  database: AppDb = db,
+  windowSeconds = 24 * 60 * 60
+): Promise<GatewayTrafficWindow[]> {
+  const since = Math.floor(Date.now() / 1000) - windowSeconds;
+  const rows = await database
+    .select({
+      category: gatewayCallEvents.category,
+      outcome: gatewayCallEvents.outcome,
+      count: sql<number>`count(*)`,
+    })
+    .from(gatewayCallEvents)
+    .where(sql`${gatewayCallEvents.occurredAt} >= ${since}`)
+    .groupBy(gatewayCallEvents.category, gatewayCallEvents.outcome);
 
-  return GATEWAY_TRAFFIC_CATEGORIES.map((category) => {
-    const row = byCategory.get(category);
-    return {
-      category,
-      allowedCount: row?.allowedCount ?? 0,
-      blockedCount: row?.blockedCount ?? 0,
-      lastAllowedAt: row?.lastAllowedAt ?? null,
-      lastBlockedAt: row?.lastBlockedAt ?? null,
-    };
-  });
+  const totals = new Map<GatewayTrafficCategory, { totalAttempts: number; succeeded: number }>();
+  for (const row of rows) {
+    const category = row.category as GatewayTrafficCategory;
+    const entry = totals.get(category) ?? { totalAttempts: 0, succeeded: 0 };
+    entry.totalAttempts += row.count;
+    if (row.outcome === "allowed") entry.succeeded += row.count;
+    totals.set(category, entry);
+  }
+
+  return GATEWAY_TRAFFIC_CATEGORIES.map((category) => ({
+    category,
+    totalAttempts: totals.get(category)?.totalAttempts ?? 0,
+    succeeded: totals.get(category)?.succeeded ?? 0,
+  }));
 }
 
 const ANALYTICS_SYNC_LOCAL_TIME_SETTING_KEY = "analytics_sync_local_time";

@@ -1,13 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { GatewayTrafficStats, type GatewayTrafficCounterView } from "./gateway-traffic-stats";
+import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 import { ToggleSwitch } from "./toggle-switch";
 
 type Settings = {
   dataApiReadsEnabled: boolean;
   analyticsReadsEnabled: boolean;
-  gatewayTraffic?: GatewayTrafficCounterView[];
+  gatewayTraffic?: GatewayTrafficWindowView[];
 };
 
 /**
@@ -93,7 +93,7 @@ export function ReadGatewaySettings() {
           <span className="text-sm text-zinc-300">Enable Data API reads</span>
         </div>
         <GatewayTrafficStats
-          counter={settings?.gatewayTraffic?.find((c) => c.category === "data_api_reads")}
+          window={settings?.gatewayTraffic?.find((c) => c.category === "data_api_reads")}
         />
       </div>
 
@@ -112,7 +112,7 @@ export function ReadGatewaySettings() {
           <span className="text-sm text-zinc-300">Enable Analytics reads</span>
         </div>
         <GatewayTrafficStats
-          counter={settings?.gatewayTraffic?.find((c) => c.category === "analytics_reads")}
+          window={settings?.gatewayTraffic?.find((c) => c.category === "analytics_reads")}
         />
       </div>
 

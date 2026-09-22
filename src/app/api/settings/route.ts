@@ -6,7 +6,7 @@ import {
   getAnalyticsReadsEnabled,
   getAnalyticsSyncSettings,
   getDataApiReadsEnabled,
-  getGatewayTrafficCounters,
+  getGatewayTrafficLast24h,
   getLiveWritesEnabled,
   getMcpConnectionEnabled,
   setAnalyticsReadsEnabled,
@@ -39,11 +39,10 @@ import {
  *   fails any write path that depends on that category's reads (intentional, see that same
  *   doc comment).
  * - `gatewayTraffic` -- read-only, not settable via `POST`: one row per gateway category
- *   (`data_api_reads`/`analytics_reads`/`live_writes`/`mcp_tool_calls`) with `allowedCount`/
- *   `blockedCount`/`lastAllowedAt`/`lastBlockedAt`, from `src/lib/db.ts`'s
- *   `getGatewayTrafficCounters` (owner instruction, 2026-09-22 -- "сколько запросов было
- *   сделано / сколько прошло сквозь шлюз"). Counts start from when this shipped, not
- *   retroactive.
+ *   (`data_api_reads`/`analytics_reads`/`live_writes`/`mcp_tool_calls`) with `totalAttempts`/
+ *   `succeeded` for a rolling 24h window, from `src/lib/db.ts`'s `getGatewayTrafficLast24h`
+ *   (owner instruction, 2026-09-22 -- "сколько было попыток пройти через шлюз за последние
+ *   сутки... сколько попыток... увенчались успехом"). Only the last 24h, not all-time.
  *
  * **`GET` here is not purely read-only**: `getAnalyticsSyncSettings()` persists the OS-detected
  * timezone the first time it is ever read (`src/lib/db.ts`'s own doc comment). Two concurrent
@@ -66,7 +65,7 @@ async function getSettingsSnapshot() {
     getAnalyticsSyncSettings(),
     getDataApiReadsEnabled(),
     getAnalyticsReadsEnabled(),
-    getGatewayTrafficCounters(),
+    getGatewayTrafficLast24h(),
   ]);
 
   return {

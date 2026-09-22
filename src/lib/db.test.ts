@@ -9,10 +9,11 @@ import {
   channels,
   copyLegacyDatabaseInto,
   createIsolatedDb,
+  gatewayCallEvents,
   getAnalyticsReadsEnabled,
   getAnalyticsSyncSettings,
   getDataApiReadsEnabled,
-  getGatewayTrafficCounters,
+  getGatewayTrafficLast24h,
   initializeDatabaseSchema,
   listVideoMetricsByChannel,
   listVideoMetricsByVideo,
@@ -284,30 +285,30 @@ test("setDataApiReadsEnabled/setAnalyticsReadsEnabled: an explicit false persist
     );
   }));
 
-// Gateway traffic counters (2026-09-22, owner instruction -- "сколько запросов было сделано /
-// сколько прошло сквозь шлюз"). AC: a never-exercised category still reports a real zeroed row
-// (not absent), a category's counts are independent of the others, and concurrent increments
-// are never lost (the atomic `+1` in recordGatewayCallOutcome, not read-then-write).
-test("getGatewayTrafficCounters: all four categories report a zeroed row before any call is recorded", () =>
+// Gateway traffic, rolling 24h window (2026-09-22, owner instruction, refined from an initial
+// cumulative-counter design -- "Сколько было попыток пройти через шлюз за последние сутки...
+// Сколько попыток... увенчались успехом"). AC: a never-exercised category still reports a real
+// zeroed row (not absent), a category's counts are independent of the others, concurrent writes
+// are never lost, and -- the core behavior a rolling window actually exists to provide -- an
+// event outside the window is excluded from the count even though it is still in the table.
+test("getGatewayTrafficLast24h: all four categories report a zeroed row before any call is recorded", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
 
-    const counters = await getGatewayTrafficCounters(isolatedDb);
+    const windows = await getGatewayTrafficLast24h(isolatedDb);
 
     assert.deepEqual(
-      counters.map((c) => c.category).sort(),
+      windows.map((w) => w.category).sort(),
       ["analytics_reads", "data_api_reads", "live_writes", "mcp_tool_calls"]
     );
-    for (const counter of counters) {
-      assert.equal(counter.allowedCount, 0);
-      assert.equal(counter.blockedCount, 0);
-      assert.equal(counter.lastAllowedAt, null);
-      assert.equal(counter.lastBlockedAt, null);
+    for (const w of windows) {
+      assert.equal(w.totalAttempts, 0);
+      assert.equal(w.succeeded, 0);
     }
   }));
 
-test("recordGatewayCallOutcome: allowed/blocked counts accumulate independently per category", () =>
+test("getGatewayTrafficLast24h: totalAttempts/succeeded accumulate independently per category", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
@@ -317,24 +318,40 @@ test("recordGatewayCallOutcome: allowed/blocked counts accumulate independently 
     await recordGatewayCallOutcome("data_api_reads", "blocked", isolatedDb);
     await recordGatewayCallOutcome("live_writes", "blocked", isolatedDb);
 
-    const counters = await getGatewayTrafficCounters(isolatedDb);
-    const dataApiReads = counters.find((c) => c.category === "data_api_reads");
-    const liveWrites = counters.find((c) => c.category === "live_writes");
-    const analyticsReads = counters.find((c) => c.category === "analytics_reads");
+    const windows = await getGatewayTrafficLast24h(isolatedDb);
+    const dataApiReads = windows.find((w) => w.category === "data_api_reads");
+    const liveWrites = windows.find((w) => w.category === "live_writes");
+    const analyticsReads = windows.find((w) => w.category === "analytics_reads");
 
-    assert.equal(dataApiReads?.allowedCount, 2);
-    assert.equal(dataApiReads?.blockedCount, 1);
-    assert.ok(dataApiReads?.lastAllowedAt);
-    assert.ok(dataApiReads?.lastBlockedAt);
+    assert.equal(dataApiReads?.totalAttempts, 3);
+    assert.equal(dataApiReads?.succeeded, 2);
 
-    assert.equal(liveWrites?.allowedCount, 0);
-    assert.equal(liveWrites?.blockedCount, 1);
+    assert.equal(liveWrites?.totalAttempts, 1);
+    assert.equal(liveWrites?.succeeded, 0);
 
-    assert.equal(analyticsReads?.allowedCount, 0, "categories never called stay at zero, unaffected by others");
-    assert.equal(analyticsReads?.blockedCount, 0);
+    assert.equal(analyticsReads?.totalAttempts, 0, "categories never called stay at zero, unaffected by others");
+    assert.equal(analyticsReads?.succeeded, 0);
   }));
 
-test("recordGatewayCallOutcome: concurrent increments are never lost (atomic +1, not read-then-write)", () =>
+test("getGatewayTrafficLast24h: an event older than the window is excluded, even though it is still stored", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const now = Math.floor(Date.now() / 1000);
+
+    await isolatedDb.insert(gatewayCallEvents).values([
+      { category: "data_api_reads", outcome: "allowed", occurredAt: now - 25 * 60 * 60 }, // 25h ago -- outside the 24h window
+      { category: "data_api_reads", outcome: "allowed", occurredAt: now - 60 }, // 1 minute ago -- inside
+    ]);
+
+    const windows = await getGatewayTrafficLast24h(isolatedDb);
+    const dataApiReads = windows.find((w) => w.category === "data_api_reads");
+
+    assert.equal(dataApiReads?.totalAttempts, 1, "the 25h-old event must not be counted in the 24h window");
+    assert.equal(dataApiReads?.succeeded, 1);
+  }));
+
+test("recordGatewayCallOutcome: concurrent writes are never lost", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
@@ -343,9 +360,28 @@ test("recordGatewayCallOutcome: concurrent increments are never lost (atomic +1,
       Array.from({ length: 20 }, () => recordGatewayCallOutcome("analytics_reads", "allowed", isolatedDb))
     );
 
-    const counters = await getGatewayTrafficCounters(isolatedDb);
-    const analyticsReads = counters.find((c) => c.category === "analytics_reads");
-    assert.equal(analyticsReads?.allowedCount, 20);
+    const windows = await getGatewayTrafficLast24h(isolatedDb);
+    const analyticsReads = windows.find((w) => w.category === "analytics_reads");
+    assert.equal(analyticsReads?.totalAttempts, 20);
+    assert.equal(analyticsReads?.succeeded, 20);
+  }));
+
+test("recordGatewayCallOutcome: prunes events older than the retention window on every write", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const now = Math.floor(Date.now() / 1000);
+    const eightDaysAgo = now - 8 * 24 * 60 * 60;
+
+    await isolatedDb
+      .insert(gatewayCallEvents)
+      .values({ category: "live_writes", outcome: "blocked", occurredAt: eightDaysAgo });
+
+    await recordGatewayCallOutcome("live_writes", "blocked", isolatedDb);
+
+    const remaining = await isolatedDb.select().from(gatewayCallEvents);
+    assert.equal(remaining.length, 1, "the 8-day-old row must be pruned; only the fresh insert remains");
+    assert.ok(remaining[0].occurredAt > eightDaysAgo);
   }));
 
 test("video_metrics_daily: a videoId with no matching videos row is rejected by its foreign key", () =>

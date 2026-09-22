@@ -2,13 +2,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "./confirm-dialog";
-import { GatewayTrafficStats, type GatewayTrafficCounterView } from "./gateway-traffic-stats";
+import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 import { ToggleSwitch } from "./toggle-switch";
 
 type Settings = {
   liveWritesEnabled: boolean;
   mcpConnectionEnabled: boolean;
-  gatewayTraffic?: GatewayTrafficCounterView[];
+  gatewayTraffic?: GatewayTrafficWindowView[];
 };
 
 /**
@@ -97,7 +97,7 @@ export function LiveWritesSettings() {
           <span className="text-sm text-zinc-300">Enable live writes for this session</span>
         </div>
         <GatewayTrafficStats
-          counter={settings?.gatewayTraffic?.find((c) => c.category === "live_writes")}
+          window={settings?.gatewayTraffic?.find((c) => c.category === "live_writes")}
         />
       </div>
 
@@ -127,9 +127,7 @@ export function LiveWritesSettings() {
           <span className="text-sm text-zinc-300">Enable MCP / agent connection</span>
         </div>
         <GatewayTrafficStats
-          counter={settings?.gatewayTraffic?.find((c) => c.category === "mcp_tool_calls")}
-          hideBlocked
-          allowedLabel="Tool calls served"
+          window={settings?.gatewayTraffic?.find((c) => c.category === "mcp_tool_calls")}
         />
       </div>
 
