@@ -631,7 +631,7 @@ pair.
 Follows the standard `contracts/schemas/services/adapters/index` layering (§6.2). One operation,
 `collectMetrics({credentialRef, channelId, startDate, endDate, metricNames?})`: for every video
 `videoStore.listVideosByChannel(channelId)` returns, calls the low-level
-`queryVideoAnalyticsReport` (§14 area / `src/lib/youtube-analytics.ts`) once and upserts every
+`queryVideoAnalyticsReport` (§14 area / `src/lib/youtube-read-gateway/analytics-api.ts`) once and upserts every
 returned `(date, metric)` pair via `upsertVideoMetric`. `metricNames` defaults to
 `ANALYTICS_METRIC_NAMES` (the full non-monetary list, `PHASE_8_PLAN.md` §10 item 2) when omitted.
 

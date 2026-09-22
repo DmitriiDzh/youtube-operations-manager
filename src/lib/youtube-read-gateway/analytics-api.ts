@@ -1,17 +1,42 @@
 // Phase 8 (Intelligence Foundation), BL-057 (docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 3).
-// The single low-level wrapper for the YouTube Analytics API (`google.youtubeAnalytics`), the
-// same role src/lib/youtube.ts plays for the YouTube Data API v3 -- kept as its own file rather
-// than added to youtube.ts because these are two structurally distinct Google API products with
-// their own client namespace (`youtubeAnalytics_v2.Youtubeanalytics`, not `youtube_v3.Youtube`)
-// and their own OAuth scope (YOUTUBE_ANALYTICS_READ_SCOPE, never YOUTUBE_READ_SCOPE). Read-only:
-// there is no mutating method on this API surface for this app to ever call, so there is nothing
-// here for src/lib/youtube-write-gateway/ to own.
+// The single low-level wrapper for the YouTube Analytics API (`google.youtubeAnalytics`) --
+// this gateway's second read-category child (folded in 2026-09-22 from the standalone
+// `src/lib/youtube-analytics.ts`, completing `docs/decisions/0007-youtube-read-gateway.md`'s
+// own deferred follow-up). Kept as its own file rather than merged into `data-api.ts` because
+// these are two structurally distinct Google API products with their own client namespace
+// (`youtubeAnalytics_v2.Youtubeanalytics`, not `youtube_v3.Youtube`) and their own OAuth scope
+// (YOUTUBE_ANALYTICS_READ_SCOPE, never YOUTUBE_READ_SCOPE). Read-only: there is no mutating
+// method on this API surface for this app to ever call, so there is nothing here for
+// `src/lib/youtube-write-gateway/` to own.
 import { google } from "googleapis";
 import type { youtubeAnalytics_v2 } from "googleapis";
+import { getAnalyticsReadsEnabled } from "../db";
+import { DomainError } from "../video-metadata/contracts";
 
-export function createYoutubeAnalyticsClient(
+/**
+ * "Analytics API reads enabled" toggle -- the Analytics-category counterpart to
+ * `assertDataApiReadsAuthorized` (`data-api.ts`, see its own doc comment and
+ * `src/lib/db.ts`'s `getAnalyticsReadsEnabled` for the full rationale).
+ */
+export async function assertAnalyticsReadsAuthorized(): Promise<void> {
+  if (await getAnalyticsReadsEnabled()) return;
+
+  throw new DomainError({
+    code: "analytics_reads_disabled",
+    message:
+      "YouTube Analytics API reads are disabled -- the Settings tab's \"Analytics reads\" toggle is off.",
+  });
+}
+
+/**
+ * The single choke point every Analytics API read passes through to get a client -- see
+ * `data-api.ts`'s `createYoutubeClient` for why the check lives inside the client
+ * constructor itself rather than requiring each caller to remember it.
+ */
+export async function createYoutubeAnalyticsClient(
   auth: youtubeAnalytics_v2.Options["auth"]
-): youtubeAnalytics_v2.Youtubeanalytics {
+): Promise<youtubeAnalytics_v2.Youtubeanalytics> {
+  await assertAnalyticsReadsAuthorized();
   return google.youtubeAnalytics({ version: "v2", auth });
 }
 

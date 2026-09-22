@@ -53,18 +53,12 @@ async function listTsFilesRecursively(dir: string): Promise<string[]> {
   return files;
 }
 
-// Narrow exceptions: the OAuth client factory itself, which must import `googleapis` to
-// construct `google.auth.OAuth2` (never calls any resource/method, only builds the client object
-// both gateways then use); and, temporarily, `youtube-analytics.ts` (Phase 8, merged 2026-09-22
-// from `feature/phase-8-intelligence-foundation`) -- a distinct Google API product/client
-// namespace (`google.youtubeAnalytics`, read-only, no mutating method on this surface at all) not
-// yet folded into this gateway as a second child (`analytics-api.ts`), per
-// `docs/decisions/0007-youtube-read-gateway.md`'s own deferred follow-up note. Removing this
-// entry is that follow-up's job, not incidental to an unrelated change.
-const GOOGLEAPIS_IMPORT_ALLOWLIST = new Set([
-  path.join("src", "lib", "auth.ts"),
-  path.join("src", "lib", "youtube-analytics.ts"),
-]);
+// The single narrow exception: the OAuth client factory itself, which must import `googleapis`
+// to construct `google.auth.OAuth2` -- it never calls any resource/method, only builds the
+// client object both gateways then use. (`youtube-analytics.ts` no longer needs its own entry
+// here -- folded into this gateway as `analytics-api.ts`, 2026-09-22, so it's already excluded
+// by the `isInsideDir(file, READ_GATEWAY_DIR)` check below.)
+const GOOGLEAPIS_IMPORT_ALLOWLIST = new Set([path.join("src", "lib", "auth.ts")]);
 
 function isInsideDir(file: string, dir: string): boolean {
   const relative = path.relative(dir, file);

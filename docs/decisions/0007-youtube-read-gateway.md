@@ -135,12 +135,16 @@ its file location and how the rest of the codebase imports it changed. `npm test
 this file, verified again after), `npm run lint`, and `npm run build` all pass against the full
 moved and rewired state.
 
-**Follow-up left out of this change, explicitly deferred:** `feature/phase-8-intelligence-foundation`
-still has its own `src/lib/youtube-analytics.ts`, built before this refactor existed. Folding it in
-as this gateway's second child (`analytics-api.ts`) is a follow-up task on that branch once it
-merges — that branch itself still cannot merge to `dev` without the project owner's own separate,
-explicit consent (an unrelated, standing restriction on that branch, not affected by this
-refactor).
+**Follow-up completed, 2026-09-22, same day:** once Phase 8 merged to `dev` (owner consent given
+separately, per that branch's own standing restriction), `src/lib/youtube-analytics.ts` was folded
+into this gateway as its second child, `analytics-api.ts`, exactly as anticipated above — no
+behavioral change, only file location and the barrel re-export. The same day, per a further owner
+instruction ("Делаем отдельный тумблер на каждый модуль / шлюз API чтения"), each child gained its
+own "reads enabled" toggle (`assertDataApiReadsAuthorized`/`assertAnalyticsReadsAuthorized`,
+`getDataApiReadsEnabled`/`getAnalyticsReadsEnabled` in `src/lib/db.ts`), checked inside that
+child's own client constructor — the umbrella-plus-children shape this ADR chose turned out to
+also be exactly the right shape for per-category toggles, one gate per child, with no changes
+needed to the barrel or the inventory tests' core structure.
 
 ## Compatibility / migration impact
 

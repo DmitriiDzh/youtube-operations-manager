@@ -15,7 +15,10 @@ import { createYoutubeWriteExecutor } from "./write-executor.youtube";
  * Layer 2 is `assertLiveWritesAuthorized()` inside the executor itself (`write-executor.youtube.ts`),
  * which re-reads the identical setting independently, immediately before any `videos.update`
  * call -- two separate reads of the same flag are the point (a stale cache or a bad read in one
- * layer doesn't defeat the other).
+ * layer doesn't defeat the other). Note: `createAuthorizedClient` (imported below) also now
+ * fails closed if the separate "Data API reads" toggle is off (`docs/decisions/0007-youtube-
+ * read-gateway.md`) -- intentional, since this write path cannot safely proceed without reads
+ * either (see that toggle's own doc comment).
  */
 export async function createLiveWriteExecutorIfEnabled(credentialRef: CredentialRef): Promise<WriteExecutor | null> {
   if (!(await getLiveWritesEnabled())) return null;

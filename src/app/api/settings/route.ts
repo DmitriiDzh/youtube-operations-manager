@@ -3,10 +3,14 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { isValidIanaTimezone, isValidLocalTimeOfDay } from "@/lib/analytics/staleness";
 import {
+  getAnalyticsReadsEnabled,
   getAnalyticsSyncSettings,
+  getDataApiReadsEnabled,
   getLiveWritesEnabled,
   getMcpConnectionEnabled,
+  setAnalyticsReadsEnabled,
   setAnalyticsSyncSettings,
+  setDataApiReadsEnabled,
   setLiveWritesEnabled,
   setMcpConnectionEnabled,
 } from "@/lib/db";
@@ -27,6 +31,12 @@ import {
  *   validated before being persisted (`isValidLocalTimeOfDay`/`isValidIanaTimezone`) -- a bad
  *   timezone string would otherwise only surface as a thrown `RangeError` deep inside the
  *   staleness check on a later dashboard load, not at the point the owner actually typed it.
+ * - `dataApiReadsEnabled`/`analyticsReadsEnabled` -- per-category read-gateway toggles (owner
+ *   instruction, 2026-09-22, `docs/decisions/0007-youtube-read-gateway.md`). Unlike the two
+ *   booleans above, these default to **enabled** and persist across restarts (see
+ *   `src/lib/db.ts`'s `getDataApiReadsEnabled` for the full rationale) -- disabling one also
+ *   fails any write path that depends on that category's reads (intentional, see that same
+ *   doc comment).
  *
  * **`GET` here is not purely read-only**: `getAnalyticsSyncSettings()` persists the OS-detected
  * timezone the first time it is ever read (`src/lib/db.ts`'s own doc comment). Two concurrent
@@ -36,17 +46,22 @@ import {
  * later while debugging something unrelated.
  */
 async function getSettingsSnapshot() {
-  const [liveWritesEnabled, mcpConnectionEnabled, analyticsSync] = await Promise.all([
-    getLiveWritesEnabled(),
-    getMcpConnectionEnabled(),
-    getAnalyticsSyncSettings(),
-  ]);
+  const [liveWritesEnabled, mcpConnectionEnabled, analyticsSync, dataApiReadsEnabled, analyticsReadsEnabled] =
+    await Promise.all([
+      getLiveWritesEnabled(),
+      getMcpConnectionEnabled(),
+      getAnalyticsSyncSettings(),
+      getDataApiReadsEnabled(),
+      getAnalyticsReadsEnabled(),
+    ]);
 
   return {
     liveWritesEnabled,
     mcpConnectionEnabled,
     analyticsSyncLocalTime: analyticsSync.localTime,
     analyticsSyncTimezone: analyticsSync.timezone,
+    dataApiReadsEnabled,
+    analyticsReadsEnabled,
   };
 }
 
@@ -77,6 +92,12 @@ export async function POST(request: Request) {
   }
   if (typeof body.mcpConnectionEnabled === "boolean") {
     await setMcpConnectionEnabled(body.mcpConnectionEnabled);
+  }
+  if (typeof body.dataApiReadsEnabled === "boolean") {
+    await setDataApiReadsEnabled(body.dataApiReadsEnabled);
+  }
+  if (typeof body.analyticsReadsEnabled === "boolean") {
+    await setAnalyticsReadsEnabled(body.analyticsReadsEnabled);
   }
 
   if (body.analyticsSyncLocalTime !== undefined) {

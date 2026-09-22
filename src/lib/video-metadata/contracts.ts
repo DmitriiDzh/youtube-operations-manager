@@ -37,6 +37,8 @@ export type DomainErrorCode =
   | "backup_item_failed"
   | "backup_infrastructure_unavailable"
   | "live_writes_disabled"
+  | "data_api_reads_disabled"
+  | "analytics_reads_disabled"
   | "provider_not_configured"
   | "generation_invalid_target_language"
   | "generation_no_proposals"

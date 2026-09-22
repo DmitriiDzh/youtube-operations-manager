@@ -1,8 +1,8 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
-import { createYoutubeAnalyticsClient, queryVideoAnalyticsReport } from "@/lib/youtube-analytics";
+import { createYoutubeAnalyticsClient, queryVideoAnalyticsReport } from "@/lib/youtube-read-gateway";
 import type { ResolvedCredentials } from "../contracts";
 
-function createAuthorizedClient(credentials: ResolvedCredentials) {
+async function createAuthorizedClient(credentials: ResolvedCredentials) {
   const oauth2 = createGoogleOAuthClient();
   oauth2.setCredentials({
     access_token: credentials.accessToken,
@@ -22,7 +22,7 @@ export function createAnalyticsYoutubeApiAdapter() {
       endDate: string;
       metricNames: readonly string[];
     }) {
-      const youtubeAnalytics = createAuthorizedClient(args.credentials);
+      const youtubeAnalytics = await createAuthorizedClient(args.credentials);
       return queryVideoAnalyticsReport(youtubeAnalytics, {
         channelId: args.channelId,
         videoId: args.videoId,

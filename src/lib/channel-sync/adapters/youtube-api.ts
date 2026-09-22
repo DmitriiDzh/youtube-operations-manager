@@ -20,7 +20,7 @@ function createAuthorizedClient(credentials: ResolvedCredentials) {
 export function createChannelSyncYoutubeApiAdapter() {
   return {
     async getChannelForSync(args: { credentials: ResolvedCredentials; channelId?: string }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       return getChannelForSync(youtube, args.channelId);
     },
 
@@ -28,7 +28,7 @@ export function createChannelSyncYoutubeApiAdapter() {
       credentials: ResolvedCredentials;
       uploadsPlaylistId: string;
     }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       return listUploadsPlaylistVideoIds(youtube, args.uploadsPlaylistId);
     },
 
@@ -36,7 +36,7 @@ export function createChannelSyncYoutubeApiAdapter() {
       credentials: ResolvedCredentials;
       videoIds: string[];
     }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       return getVideosMetadataContextBatch(youtube, args.videoIds);
     },
   };
