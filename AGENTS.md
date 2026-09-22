@@ -157,6 +157,7 @@ Established 2026-09-19 ("Git Branching and Release Policy"). This section is aut
 **`dev`** — the stable integration branch.
 - No direct feature development on `dev`.
 - A feature is integrated into `dev` only after it has passed its own acceptance criteria and validation (§E, and §L for anything safety-critical).
+- **A merge into `dev` carries a complete, fully working feature, never a partial slice (established 2026-09-22, project owner instruction, Telegram, verbatim: "Мы не льем в дев каждую правку. Только целиком протестированную и полностью рабочую фичу. Которая точно полностью работает.").** Passing its own narrow unit tests is necessary but not sufficient — the thing being merged must actually work end-to-end as a feature, not merely be internally self-consistent. This does not forbid delivering a large phase across several backlog items/branches (§C's "smallest safe implementation slice" is unaffected) — it requires that *each* slice merged to `dev` is itself a complete, independently working unit of functionality, not a fragment that only compiles or only satisfies its own isolated test file while leaving the feature it belongs to non-functional as a whole.
 - Integration is `feature/* → dev` via explicit `git merge --no-ff` — never squashed by default (a feature branch's real commit history is preserved so its development steps remain inspectable).
 - After every integration, verify the resulting `dev` state (§K.3). A failed or unverified integration is never left in place as if it were stable, and is never pushed.
 
@@ -215,6 +216,33 @@ For substantial or safety-critical changes (anything touching write-safety, chan
 - **Never weaken a test merely to make the implementation pass.** A failing test is evidence requiring investigation of the implementation — it is not, by itself, an instruction to change the test.
 - **Never replace a fixed expected value with a dynamically generated value derived from the implementation** (e.g. asserting `result === computeResult(input)` using the same function under test, or a snapshot taken from a first run without independent verification that the snapshot itself is correct).
 - Changing a previously-approved acceptance test requires explicit justification: state which requirement the old test was wrong about (or which requirement changed), not "the implementation doesn't do this" alone. See `docs/DEVELOPMENT_PLAYBOOK.md` §6.14's "Test changes during implementation" for the required procedure — do not silently rewrite an acceptance test.
+
+## M. Feature module independence and shared-logic extraction
+
+Established 2026-09-22, project owner instruction (Telegram) — a foundational architecture
+principle for this project, alongside (not a replacement for) the domain-module layering pattern
+in `docs/DEVELOPMENT_PLAYBOOK.md` §6.2.
+
+- **Every large feature vertical must be built so the rest of the application keeps working if
+  that feature is disabled or removed.** The owner's own examples of what counts as this scale of
+  module: a translations/localization module, an analytics module — larger, product-level
+  verticals, as distinct from the smaller `contracts/schemas/services/adapters` domain modules
+  already used under `src/lib/`. Verbatim: "Каждая фича должна делаться как отдельный модуль...
+  Если один модуль отключается — вся система должна быть способна работать без проблем." A feature
+  module going down, being toggled off, or failing must never take down or break functionality
+  that does not actually depend on it.
+- **Shared logic needed by more than one such feature module is extracted into its own separate
+  module, never left inside one feature module for another to reach into.** Verbatim: "Если для
+  работы этих больших модулей нужны какие-то общие логические точки — они выносятся в отдельные
+  модули и к ним обращаются те кому нужны эти функции." The `youtube-read-gateway`/
+  `youtube-write-gateway` pair (§G) is an existing example of exactly this shape — a shared
+  capability multiple higher-level modules depend on, factored out on its own rather than owned by
+  whichever feature happened to need it first.
+- This principle governs how new feature-module work is designed and built going forward. It does
+  not, by itself, authorize or require retroactively refactoring an already-shipped module (e.g.
+  the existing localization/Change Set pipeline, or Phase 8's analytics work) to comply — bringing
+  an existing module into line with this principle is its own separately-scoped task requiring its
+  own assignment, per §C, not something to start on the strength of this section alone.
 
 ## Standard development workflow
 
