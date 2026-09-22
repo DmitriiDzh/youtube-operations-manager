@@ -1,5 +1,12 @@
 @echo off
-setlocal enabledelayedexpansion
+REM Delayed expansion (needed below for the !VAR! build-marker comparison) is intentionally NOT
+REM enabled yet at this point in the script. cmd.exe's parser strips literal "!" characters as
+REM soon as enabledelayedexpansion is active -- including inside %~dp0 -- and this project's own
+REM folder name starts with "!" (E:\...\!YouTube Operations Manager\...). Enabling it before the
+REM `cd /d` below silently mangles that path, `cd /d` fails, and every relative check that follows
+REM (.env.local, node_modules, .next) then runs against the wrong directory. Keep delayed expansion
+REM off until after the `cd /d`.
+setlocal
 cd /d "%~dp0..\.."
 
 echo === YouTube Operations Manager - Windows launcher ===
@@ -38,6 +45,7 @@ REM rebuilt automatically -- rather than relying on ".next merely exists" as the
 REM which cannot tell a stale build apart from a current one. A standalone published\<version>\
 REM release copy has no `.git` and no commit to compare against -- `update.bat` remains its one,
 REM explicit, human-triggered rebuild step (docs\RELEASE_LAYOUT.md §1, AGENTS.md §K.4).
+setlocal enabledelayedexpansion
 set "BUILD_MARKER=.next-build-commit.txt"
 set "CURRENT_REV="
 if exist ".git" (
