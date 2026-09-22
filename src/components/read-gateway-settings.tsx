@@ -83,7 +83,7 @@ export function ReadGatewaySettings() {
       <SettingsSectionRow
         left={
           <div>
-            <h3 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
+            <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
               Data API reads
               <InfoTooltip>
                 On by default. Governs every real call to the YouTube Data API v3 (channel sync,
@@ -117,7 +117,7 @@ export function ReadGatewaySettings() {
         <SettingsSectionRow
           left={
             <div>
-              <h3 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
+              <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
                 Analytics reads
                 <InfoTooltip>
                   On by default. Governs every real call to the YouTube Analytics API (the

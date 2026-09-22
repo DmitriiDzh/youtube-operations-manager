@@ -77,7 +77,7 @@ export function CloudConnectionSettings() {
   return (
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div>
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
+        <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
           Google Cloud connection
           <InfoTooltip>
             A single, device-persistent grant powering the real Google Cloud quota numbers shown

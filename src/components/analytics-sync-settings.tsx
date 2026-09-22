@@ -78,7 +78,7 @@ export function AnalyticsSyncSettings() {
   return (
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div>
-        <h3 className="flex items-center gap-1.5 text-sm font-medium text-zinc-100">
+        <h3 className="flex items-center gap-1.5 text-base font-medium text-zinc-100">
           Analytics auto-collection
           <InfoTooltip>
             Once a day, on entering the dashboard, this app checks whether analytics were already

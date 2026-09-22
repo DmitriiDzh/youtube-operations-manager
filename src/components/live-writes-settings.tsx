@@ -81,7 +81,7 @@ export function LiveWritesSettings() {
       <SettingsSectionRow
         left={
           <div>
-            <h3 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
+            <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
               Live writes
               <InfoTooltip>
                 Off by default every session. When on, a Batch you create can be a real
@@ -124,7 +124,7 @@ export function LiveWritesSettings() {
         <SettingsSectionRow
           left={
             <div>
-              <h3 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
+              <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
                 MCP connection
                 <InfoTooltip>
                   Off by default. While off, an MCP client (e.g. Codex, Claude) sees NO tools at
