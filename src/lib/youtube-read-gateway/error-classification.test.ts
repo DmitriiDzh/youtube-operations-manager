@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DomainError } from "../video-metadata/contracts";
-import { callYoutubeApi, classifyYoutubeReadError } from "./error-classification";
+import { callYoutubeApi, classifyYoutubeReadError, wrapYoutubeClientForQuotaClassification } from "./error-classification";
 
 function googleApiError(status: number, reason?: string, message?: string) {
   return {
@@ -94,4 +94,81 @@ test("callYoutubeApi: a non-quota error thrown by the wrapped call propagates un
       }),
     (error: unknown) => error === original
   );
+});
+
+// --- wrapYoutubeClientForQuotaClassification -----------------------------------------------
+// Owner instruction, 2026-09-22, Telegram, after an earlier version wrapped each of the ~15
+// individual call sites instead: "у нас же один шлюз который взаимодействует с API, он и может
+// и обрабатывать / переводить это сообщение". This is the single choke point
+// (`createYoutubeClient`/`createYoutubeAnalyticsClient`) applying classification once, to a
+// fake client shaped like the real nested `youtube_v3.Youtube`/`youtubeAnalytics_v2.Youtubeanalytics`
+// (resource sub-objects with methods), never a real googleapis client.
+
+// **Matches the real `googleapis` client's own property shape, not an arbitrary plain object.**
+// Found live (2026-09-22): the real `youtube_v3.Youtube` client defines each resource
+// (`.channels`, `.videos`, etc.) as a NON-CONFIGURABLE, NON-WRITABLE own property -- an earlier
+// version of `wrapYoutubeClientForQuotaClassification` used `new Proxy(client, {get...})`
+// directly, which throws `TypeError: 'get' on proxy: property '...' is a read-only and
+// non-configurable data property...` for exactly this shape. A plain-object fixture (the
+// original version of this fixture) does NOT trigger that invariant, which is exactly why the
+// bug wasn't caught until a live check against the real client -- this fixture is deliberately
+// built with `Object.defineProperty` to reproduce the real constraint and prevent a regression.
+function fakeYoutubeLikeClient(overrides: {
+  listResult?: unknown;
+  listError?: unknown;
+}) {
+  const client = {};
+  Object.defineProperty(client, "videos", {
+    value: {
+      async list() {
+        if (overrides.listError) throw overrides.listError;
+        return overrides.listResult ?? { data: { items: [] } };
+      },
+    },
+    writable: false,
+    configurable: false,
+    enumerable: true,
+  });
+  Object.defineProperty(client, "channels", {
+    value: {
+      async list() {
+        return { data: { items: [{ id: "UC_untouched" }] } };
+      },
+    },
+    writable: false,
+    configurable: false,
+    enumerable: true,
+  });
+  return client as { videos: { list(): Promise<unknown> }; channels: { list(): Promise<unknown> } };
+}
+
+test("wrapYoutubeClientForQuotaClassification: a successful call's result passes through unchanged", async () => {
+  const client = wrapYoutubeClientForQuotaClassification(
+    fakeYoutubeLikeClient({ listResult: { data: { items: [{ id: "vid1" }] } } })
+  );
+  const result = await client.videos.list();
+  assert.deepEqual(result, { data: { items: [{ id: "vid1" }] } });
+});
+
+test("wrapYoutubeClientForQuotaClassification: a quotaExceeded thrown by ANY resource's method is classified, with no per-call-site wrapping needed", async () => {
+  const client = wrapYoutubeClientForQuotaClassification(
+    fakeYoutubeLikeClient({ listError: googleApiError(403, "quotaExceeded") })
+  );
+  await assert.rejects(
+    () => client.videos.list(),
+    (error: unknown) => error instanceof DomainError && error.code === "youtube_quota_exceeded"
+  );
+});
+
+test("wrapYoutubeClientForQuotaClassification: a non-quota error from one resource's method propagates unchanged, and does not affect other resources", async () => {
+  const original = googleApiError(404, "videoNotFound");
+  const client = wrapYoutubeClientForQuotaClassification(fakeYoutubeLikeClient({ listError: original }));
+
+  await assert.rejects(
+    () => client.videos.list(),
+    (error: unknown) => error === original
+  );
+  // A different, untouched resource on the SAME wrapped client still works normally.
+  const channelsResult = await client.channels.list();
+  assert.deepEqual(channelsResult, { data: { items: [{ id: "UC_untouched" }] } });
 });

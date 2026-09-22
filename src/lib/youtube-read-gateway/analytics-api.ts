@@ -12,7 +12,7 @@ import { google } from "googleapis";
 import type { youtubeAnalytics_v2 } from "googleapis";
 import { getAnalyticsReadsEnabled, recordGatewayCallOutcome } from "../db";
 import { DomainError } from "../video-metadata/contracts";
-import { callYoutubeApi } from "./error-classification";
+import { wrapYoutubeClientForQuotaClassification } from "./error-classification";
 
 /**
  * "Analytics API reads enabled" toggle -- the Analytics-category counterpart to
@@ -42,7 +42,7 @@ export async function createYoutubeAnalyticsClient(
   auth: youtubeAnalytics_v2.Options["auth"]
 ): Promise<youtubeAnalytics_v2.Youtubeanalytics> {
   await assertAnalyticsReadsAuthorized();
-  return google.youtubeAnalytics({ version: "v2", auth });
+  return wrapYoutubeClientForQuotaClassification(google.youtubeAnalytics({ version: "v2", auth }));
 }
 
 export type VideoAnalyticsMetricRow = {
@@ -89,16 +89,14 @@ export async function queryVideoAnalyticsReport(
     metricNames: readonly string[];
   }
 ): Promise<VideoAnalyticsMetricRow[]> {
-  const res = await callYoutubeApi(() =>
-    youtubeAnalytics.reports.query({
-      ids: `channel==${args.channelId}`,
-      startDate: args.startDate,
-      endDate: args.endDate,
-      metrics: args.metricNames.join(","),
-      dimensions: "day",
-      filters: `video==${args.videoId}`,
-    })
-  );
+  const res = await youtubeAnalytics.reports.query({
+    ids: `channel==${args.channelId}`,
+    startDate: args.startDate,
+    endDate: args.endDate,
+    metrics: args.metricNames.join(","),
+    dimensions: "day",
+    filters: `video==${args.videoId}`,
+  });
 
   const columnHeaders = res.data.columnHeaders ?? [];
   const dayColumnIndex = columnHeaders.findIndex(
