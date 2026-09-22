@@ -6,6 +6,7 @@ import {
   getAnalyticsReadsEnabled,
   getAnalyticsSyncSettings,
   getDataApiReadsEnabled,
+  getGatewayTrafficCounters,
   getLiveWritesEnabled,
   getMcpConnectionEnabled,
   setAnalyticsReadsEnabled,
@@ -37,6 +38,12 @@ import {
  *   `src/lib/db.ts`'s `getDataApiReadsEnabled` for the full rationale) -- disabling one also
  *   fails any write path that depends on that category's reads (intentional, see that same
  *   doc comment).
+ * - `gatewayTraffic` -- read-only, not settable via `POST`: one row per gateway category
+ *   (`data_api_reads`/`analytics_reads`/`live_writes`/`mcp_tool_calls`) with `allowedCount`/
+ *   `blockedCount`/`lastAllowedAt`/`lastBlockedAt`, from `src/lib/db.ts`'s
+ *   `getGatewayTrafficCounters` (owner instruction, 2026-09-22 -- "сколько запросов было
+ *   сделано / сколько прошло сквозь шлюз"). Counts start from when this shipped, not
+ *   retroactive.
  *
  * **`GET` here is not purely read-only**: `getAnalyticsSyncSettings()` persists the OS-detected
  * timezone the first time it is ever read (`src/lib/db.ts`'s own doc comment). Two concurrent
@@ -46,14 +53,21 @@ import {
  * later while debugging something unrelated.
  */
 async function getSettingsSnapshot() {
-  const [liveWritesEnabled, mcpConnectionEnabled, analyticsSync, dataApiReadsEnabled, analyticsReadsEnabled] =
-    await Promise.all([
-      getLiveWritesEnabled(),
-      getMcpConnectionEnabled(),
-      getAnalyticsSyncSettings(),
-      getDataApiReadsEnabled(),
-      getAnalyticsReadsEnabled(),
-    ]);
+  const [
+    liveWritesEnabled,
+    mcpConnectionEnabled,
+    analyticsSync,
+    dataApiReadsEnabled,
+    analyticsReadsEnabled,
+    gatewayTraffic,
+  ] = await Promise.all([
+    getLiveWritesEnabled(),
+    getMcpConnectionEnabled(),
+    getAnalyticsSyncSettings(),
+    getDataApiReadsEnabled(),
+    getAnalyticsReadsEnabled(),
+    getGatewayTrafficCounters(),
+  ]);
 
   return {
     liveWritesEnabled,
@@ -62,6 +76,7 @@ async function getSettingsSnapshot() {
     analyticsSyncTimezone: analyticsSync.timezone,
     dataApiReadsEnabled,
     analyticsReadsEnabled,
+    gatewayTraffic,
   };
 }
 

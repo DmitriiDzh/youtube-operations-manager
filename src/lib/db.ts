@@ -5,7 +5,7 @@ import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index } from "drizzle-orm/sqlite-core";
 import path from "path";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
 import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
@@ -483,6 +483,24 @@ export const appSettings = sqliteTable("app_settings", {
 });
 
 /**
+ * SCHEMA_MIGRATIONS version 10 (owner instruction, 2026-09-22, Telegram: "Можем ли мы собирать
+ * статистику? В каждом случае сколько запросов было сделано / сколько прошло сквозь шлюз"). One
+ * row per gateway category (`data_api_reads`, `analytics_reads`, `live_writes`, `mcp_tool_calls`
+ * -- see `GatewayTrafficCategory` below), counting how many real calls that category's own gate
+ * (`assertDataApiReadsAuthorized`, etc.) let through versus refused, since this counter started
+ * (not retroactive -- there is no historical call log to backfill from). `mcp_tool_calls` has no
+ * meaningful "blocked" count: when MCP connection is off, a tool is never registered at all, so
+ * there is no failed call to count, only an absent one -- `blockedCount` simply stays 0 for it.
+ */
+export const gatewayTrafficCounters = sqliteTable("gateway_traffic_counters", {
+  category: text("category").primaryKey(),
+  allowedCount: integer("allowed_count").notNull().default(0),
+  blockedCount: integer("blocked_count").notNull().default(0),
+  lastAllowedAt: integer("last_allowed_at"),
+  lastBlockedAt: integer("last_blocked_at"),
+});
+
+/**
  * Phase 8 (Intelligence Foundation, `docs/roadmap/plans/PHASE_8_PLAN.md` §5/§6 slice 2),
  * SCHEMA_MIGRATIONS version 8. Historical time-series metrics, additive alongside `videos`
  * (a "current snapshot" table, never a history) -- `docs/PROJECT_SPEC.md` §33's canonical
@@ -690,6 +708,21 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
+    },
+  },
+  {
+    version: 10,
+    description:
+      "gateway_traffic_counters -- per-gateway allowed/blocked call counts for the Settings tab (owner instruction, 2026-09-22, Telegram: \"сколько запросов было сделано / сколько прошло сквозь шлюз\")",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS gateway_traffic_counters (" +
+          "category TEXT PRIMARY KEY, " +
+          "allowed_count INTEGER NOT NULL DEFAULT 0, " +
+          "blocked_count INTEGER NOT NULL DEFAULT 0, " +
+          "last_allowed_at INTEGER, " +
+          "last_blocked_at INTEGER)"
+      );
     },
   },
 ];
@@ -1541,6 +1574,75 @@ export async function getAnalyticsReadsEnabled(database: AppDb = db): Promise<bo
 
 export async function setAnalyticsReadsEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
   await setAppSetting(ANALYTICS_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
+}
+
+export type GatewayTrafficCategory = "data_api_reads" | "analytics_reads" | "live_writes" | "mcp_tool_calls";
+
+export type GatewayTrafficCounter = {
+  category: GatewayTrafficCategory;
+  allowedCount: number;
+  blockedCount: number;
+  lastAllowedAt: number | null;
+  lastBlockedAt: number | null;
+};
+
+const GATEWAY_TRAFFIC_CATEGORIES: readonly GatewayTrafficCategory[] = [
+  "data_api_reads",
+  "analytics_reads",
+  "live_writes",
+  "mcp_tool_calls",
+];
+
+/**
+ * Records one real call outcome for the given gateway category -- called from inside the
+ * gateway's own assert function (`assertDataApiReadsAuthorized`, etc.) or, for
+ * `mcp_tool_calls`, from the MCP server's shared tool-dispatch wrapper. An upsert with an
+ * atomic `+1` (not read-then-write) so two concurrent calls never lose an increment to each
+ * other. Never throws on its own -- a counting failure must not be allowed to break the real
+ * call it is merely observing (caught and logged by the caller if it cares, not required to).
+ */
+export async function recordGatewayCallOutcome(
+  category: GatewayTrafficCategory,
+  outcome: "allowed" | "blocked",
+  database: AppDb = db
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const insertValues =
+    outcome === "allowed"
+      ? { category, allowedCount: 1, blockedCount: 0, lastAllowedAt: now, lastBlockedAt: null }
+      : { category, allowedCount: 0, blockedCount: 1, lastAllowedAt: null, lastBlockedAt: now };
+
+  await database
+    .insert(gatewayTrafficCounters)
+    .values(insertValues)
+    .onConflictDoUpdate({
+      target: gatewayTrafficCounters.category,
+      set:
+        outcome === "allowed"
+          ? { allowedCount: sql`${gatewayTrafficCounters.allowedCount} + 1`, lastAllowedAt: now }
+          : { blockedCount: sql`${gatewayTrafficCounters.blockedCount} + 1`, lastBlockedAt: now },
+    });
+}
+
+/**
+ * Returns one row per known category, always -- a category with zero calls so far still gets a
+ * `{allowedCount: 0, blockedCount: 0, ...: null}` entry, rather than being silently absent (the
+ * Settings UI displays all four gateways regardless of whether each has been exercised yet).
+ */
+export async function getGatewayTrafficCounters(database: AppDb = db): Promise<GatewayTrafficCounter[]> {
+  const rows = await database.select().from(gatewayTrafficCounters);
+  const byCategory = new Map(rows.map((row) => [row.category as GatewayTrafficCategory, row]));
+
+  return GATEWAY_TRAFFIC_CATEGORIES.map((category) => {
+    const row = byCategory.get(category);
+    return {
+      category,
+      allowedCount: row?.allowedCount ?? 0,
+      blockedCount: row?.blockedCount ?? 0,
+      lastAllowedAt: row?.lastAllowedAt ?? null,
+      lastBlockedAt: row?.lastBlockedAt ?? null,
+    };
+  });
 }
 
 const ANALYTICS_SYNC_LOCAL_TIME_SETTING_KEY = "analytics_sync_local_time";

@@ -10,7 +10,7 @@
 // `src/lib/youtube-write-gateway/` to own.
 import { google } from "googleapis";
 import type { youtubeAnalytics_v2 } from "googleapis";
-import { getAnalyticsReadsEnabled } from "../db";
+import { getAnalyticsReadsEnabled, recordGatewayCallOutcome } from "../db";
 import { DomainError } from "../video-metadata/contracts";
 
 /**
@@ -19,8 +19,12 @@ import { DomainError } from "../video-metadata/contracts";
  * `src/lib/db.ts`'s `getAnalyticsReadsEnabled` for the full rationale).
  */
 export async function assertAnalyticsReadsAuthorized(): Promise<void> {
-  if (await getAnalyticsReadsEnabled()) return;
+  if (await getAnalyticsReadsEnabled()) {
+    await recordGatewayCallOutcome("analytics_reads", "allowed");
+    return;
+  }
 
+  await recordGatewayCallOutcome("analytics_reads", "blocked");
   throw new DomainError({
     code: "analytics_reads_disabled",
     message:

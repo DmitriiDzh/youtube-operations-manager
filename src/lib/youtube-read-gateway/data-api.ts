@@ -1,7 +1,12 @@
 import { google } from "googleapis";
 import type { youtube_v3 } from "googleapis";
 import { createGoogleOAuthClient } from "../auth";
-import { getDataApiReadsEnabled, getUserOAuthTokens, saveUserOAuthTokens } from "../db";
+import {
+  getDataApiReadsEnabled,
+  getUserOAuthTokens,
+  recordGatewayCallOutcome,
+  saveUserOAuthTokens,
+} from "../db";
 import { DomainError } from "../video-metadata/contracts";
 
 /**
@@ -22,8 +27,12 @@ import { DomainError } from "../video-metadata/contracts";
  * precondition, not a replacement for it.
  */
 export async function assertDataApiReadsAuthorized(): Promise<void> {
-  if (await getDataApiReadsEnabled()) return;
+  if (await getDataApiReadsEnabled()) {
+    await recordGatewayCallOutcome("data_api_reads", "allowed");
+    return;
+  }
 
+  await recordGatewayCallOutcome("data_api_reads", "blocked");
   throw new DomainError({
     code: "data_api_reads_disabled",
     message:

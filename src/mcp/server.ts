@@ -9,7 +9,7 @@ import { createVideoMetadataCore } from "@/lib/video-metadata";
 import { DomainError } from "@/lib/video-metadata/contracts";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth/service";
-import { getMcpConnectionEnabled } from "@/lib/db";
+import { getMcpConnectionEnabled, recordGatewayCallOutcome } from "@/lib/db";
 import type { CredentialRef } from "@/lib/video-metadata/contracts";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
 import { OperationLockError } from "@/lib/operation-lock";
@@ -879,7 +879,15 @@ export function createMcpServer(
     if (!connectionEnabled) {
       return;
     }
-    server.registerTool(name, config as never, handler as never);
+    // Counts real tool invocations for the Settings tab's traffic stats (owner instruction,
+    // 2026-09-22) -- there is no meaningful "blocked" count here, unlike the other three
+    // gateways: when MCP connection is off, this wrapper never even runs (registerTool
+    // returns above), so there is no failed call to count, only an absent tool.
+    const countedHandler = (async (args: never) => {
+      await recordGatewayCallOutcome("mcp_tool_calls", "allowed");
+      return handler(args);
+    }) as typeof handler;
+    server.registerTool(name, config as never, countedHandler as never);
   }
 
   registerTool(

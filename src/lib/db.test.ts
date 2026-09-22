@@ -12,10 +12,12 @@ import {
   getAnalyticsReadsEnabled,
   getAnalyticsSyncSettings,
   getDataApiReadsEnabled,
+  getGatewayTrafficCounters,
   initializeDatabaseSchema,
   listVideoMetricsByChannel,
   listVideoMetricsByVideo,
   markAnalyticsAutoCollected,
+  recordGatewayCallOutcome,
   SCHEMA_BASELINE_VERSION,
   SCHEMA_CURRENT_VERSION,
   SCHEMA_MIGRATIONS,
@@ -280,6 +282,70 @@ test("setDataApiReadsEnabled/setAnalyticsReadsEnabled: an explicit false persist
       false,
       "re-enabling Data API reads must not affect the independent Analytics reads toggle"
     );
+  }));
+
+// Gateway traffic counters (2026-09-22, owner instruction -- "сколько запросов было сделано /
+// сколько прошло сквозь шлюз"). AC: a never-exercised category still reports a real zeroed row
+// (not absent), a category's counts are independent of the others, and concurrent increments
+// are never lost (the atomic `+1` in recordGatewayCallOutcome, not read-then-write).
+test("getGatewayTrafficCounters: all four categories report a zeroed row before any call is recorded", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    const counters = await getGatewayTrafficCounters(isolatedDb);
+
+    assert.deepEqual(
+      counters.map((c) => c.category).sort(),
+      ["analytics_reads", "data_api_reads", "live_writes", "mcp_tool_calls"]
+    );
+    for (const counter of counters) {
+      assert.equal(counter.allowedCount, 0);
+      assert.equal(counter.blockedCount, 0);
+      assert.equal(counter.lastAllowedAt, null);
+      assert.equal(counter.lastBlockedAt, null);
+    }
+  }));
+
+test("recordGatewayCallOutcome: allowed/blocked counts accumulate independently per category", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await recordGatewayCallOutcome("data_api_reads", "allowed", isolatedDb);
+    await recordGatewayCallOutcome("data_api_reads", "allowed", isolatedDb);
+    await recordGatewayCallOutcome("data_api_reads", "blocked", isolatedDb);
+    await recordGatewayCallOutcome("live_writes", "blocked", isolatedDb);
+
+    const counters = await getGatewayTrafficCounters(isolatedDb);
+    const dataApiReads = counters.find((c) => c.category === "data_api_reads");
+    const liveWrites = counters.find((c) => c.category === "live_writes");
+    const analyticsReads = counters.find((c) => c.category === "analytics_reads");
+
+    assert.equal(dataApiReads?.allowedCount, 2);
+    assert.equal(dataApiReads?.blockedCount, 1);
+    assert.ok(dataApiReads?.lastAllowedAt);
+    assert.ok(dataApiReads?.lastBlockedAt);
+
+    assert.equal(liveWrites?.allowedCount, 0);
+    assert.equal(liveWrites?.blockedCount, 1);
+
+    assert.equal(analyticsReads?.allowedCount, 0, "categories never called stay at zero, unaffected by others");
+    assert.equal(analyticsReads?.blockedCount, 0);
+  }));
+
+test("recordGatewayCallOutcome: concurrent increments are never lost (atomic +1, not read-then-write)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await Promise.all(
+      Array.from({ length: 20 }, () => recordGatewayCallOutcome("analytics_reads", "allowed", isolatedDb))
+    );
+
+    const counters = await getGatewayTrafficCounters(isolatedDb);
+    const analyticsReads = counters.find((c) => c.category === "analytics_reads");
+    assert.equal(analyticsReads?.allowedCount, 20);
   }));
 
 test("video_metrics_daily: a videoId with no matching videos row is rejected by its foreign key", () =>
