@@ -554,11 +554,14 @@ explicit consent for that branch specifically). `docs/roadmap/plans/PHASE_8_PLAN
 (the additive `video_metrics_daily` table + tests) is implemented and reviewed. The owner answered
 §8's two required decisions on 2026-09-22 (Telegram msg 356, recorded verbatim in the plan's §10):
 OAuth scope approved, and metric scope widened to every metric `yt-analytics.readonly` covers (not
-`views` alone) — see §14.2 below for the schema consequence. Slices 1 (OAuth scope + re-consent),
-3 (Analytics adapter), and 4 (manual "collect now" trigger, Web UI) are **assigned, not yet
-implemented** (`docs/roadmap/BACKLOG.md` BL-051/BL-052/BL-053); a fourth item, BL-054 (daily
-staleness-based auto-collection + a configurable local sync-time/timezone setting), was also
-authorized the same day, superseding the plan's original "no scheduling" boundary (plan §10 items
+`views` alone) — see §14.2 below for the schema consequence. Slice 1 (OAuth scope, BL-051) is now
+**done** — `YOUTUBE_ANALYTICS_READ_SCOPE` added to `src/lib/auth.ts`'s `YOUTUBE_SCOPES`; see
+§2.1's own updated entry in `docs/SYSTEM_MAP.md` for why no separate re-consent mechanism needed
+to be built (every existing sign-in path already forces full consent). Slices 3 (Analytics
+adapter) and 4 (manual "collect now" trigger, Web UI) are **assigned, not yet implemented**
+(`docs/roadmap/BACKLOG.md` BL-052/BL-053); a fourth item, BL-054 (daily staleness-based
+auto-collection + a configurable local sync-time/timezone setting), was also authorized the same
+day, superseding the plan's original "no scheduling" boundary (plan §10 items
 3-4).
 
 ### 14.2 Schema (additive, `SCHEMA_MIGRATIONS` version 8)
