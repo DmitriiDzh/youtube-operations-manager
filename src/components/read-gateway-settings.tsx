@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { CloudQuotaProgress, type ServiceQuotaStatusView } from "./cloud-quota-progress";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 import { ToggleSwitch } from "./toggle-switch";
 
@@ -8,6 +9,7 @@ type Settings = {
   dataApiReadsEnabled: boolean;
   analyticsReadsEnabled: boolean;
   gatewayTraffic?: GatewayTrafficWindowView[];
+  cloudQuotaStatus?: { dataApi: ServiceQuotaStatusView; analytics: ServiceQuotaStatusView };
 };
 
 /**
@@ -95,6 +97,7 @@ export function ReadGatewaySettings() {
         <GatewayTrafficStats
           window={settings?.gatewayTraffic?.find((c) => c.category === "data_api_reads")}
         />
+        <CloudQuotaProgress status={settings?.cloudQuotaStatus?.dataApi} />
       </div>
 
       <div className="border-t border-zinc-800 pt-4">
@@ -114,6 +117,7 @@ export function ReadGatewaySettings() {
         <GatewayTrafficStats
           window={settings?.gatewayTraffic?.find((c) => c.category === "analytics_reads")}
         />
+        <CloudQuotaProgress status={settings?.cloudQuotaStatus?.analytics} />
       </div>
 
       {error && <p className="text-xs text-red-400">{error}</p>}

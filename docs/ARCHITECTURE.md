@@ -904,3 +904,84 @@ No Cloud Quotas API (`quotaInfos.list`) or Cloud Monitoring API (`timeseries.lis
 anywhere in this codebase. No Settings UI shows a quota number or usage percentage — only
 connect/disconnect status. Encryption-key rotation/backup tooling does not exist (RISK-48,
 `docs/TECHNICAL_DEBT.md`, the same accepted shape as RISK-15's AI-connections equivalent).
+
+## 16. Cloud Quotas (`src/lib/cloud-quotas/`) — real limit/usage numbers, slice 3 of `docs/decisions/0008-cloud-connection.md`'s plan
+
+### 16.1 What this replaces
+
+Section 15 established the Cloud connection (a device-persistent OAuth grant). This section covers
+the actual real numbers that connection was for: the gateway traffic counters (§2.9k of
+`docs/SYSTEM_MAP.md`) show local attempt counts, not how close the project actually is to Google's
+own limits — this module closes that gap.
+
+### 16.2 The Cloud Quotas API turned out to be unnecessary
+
+The original plan (`docs/decisions/0008-cloud-connection.md`) assumed the Cloud Quotas API
+(`quotaInfos.list`) would supply the limit half and Cloud Monitoring API (`timeSeries.list`) the
+usage half. A live spike (2026-09-22, using a temporary diagnostic route reusing the app's own
+session-based credential resolution, removed immediately after use — same pattern as the earlier
+Phase 8 bulk-query probe) found:
+
+- Cloud Quotas API is disabled for this project (`403 SERVICE_DISABLED`) and was never enabled.
+- Cloud Monitoring API, already usable via the existing Cloud connection, exposes BOTH numbers on
+  its own: `serviceruntime.googleapis.com/quota/limit` (a GAUGE, filtered to
+  `limit_name="defaultPerDayPerProject"`) for the limit, and
+  `serviceruntime.googleapis.com/quota/rate/net_usage` (a DELTA, summed over the query window) for
+  usage. The BETA `quota/ratev2/*` metrics returned no data for this project and are not used.
+
+This means Cloud Quotas API integration was dropped entirely — `src/lib/cloud-quotas/` only ever
+calls Cloud Monitoring API's REST endpoints, via plain `fetch` (never the `googleapis` npm client,
+mirroring `src/lib/auth.ts`'s own existing convention for simple REST calls like
+`revokeGoogleToken`/`fetchGoogleIdentity`). Because no file in this module imports from
+`"googleapis"`, `read-gateway-inventory.test.ts`'s project-wide check does not need to be amended
+for this module at all — there is nothing for it to catch.
+
+### 16.3 Project number
+
+Cloud Monitoring's REST endpoints are scoped to `projects/{project}`. Rather than adding a new
+configuration value, the project owner pointed out directly that Google's own OAuth client ID
+format already encodes it: `{project_number}-{random}.apps.googleusercontent.com`. Confirmed real
+and correct against the live spike. `deriveGoogleCloudProjectNumber()` (`src/lib/cloud-quotas/
+index.ts`) extracts it from the existing `GOOGLE_CLIENT_ID` via a simple regex; returns `null`
+(never throws) if unset or malformed, and the whole quota-status pipeline degrades to "unknown"
+rather than crashing in that case.
+
+### 16.4 Two independent pools, one shared UI number
+
+`youtube.googleapis.com` covers both Data API v3 reads and Live writes (the same underlying Google
+service — confirmed live: identical numbers appeared under both toggles' progress bars at the same
+moment); `youtubeanalytics.googleapis.com` is a separate service with its own pool (confirmed:
+10,000/day vs 100,000/day respectively at spike time). Per the owner's own instruction ("Можем пока
+что отображать на Live write и на Data reads один и тот же счетчик"), `getQuotaStatus()`'s
+`dataApi` field is deliberately reused by both `LiveWritesSettings` and `ReadGatewaySettings` in
+the UI, rather than computing or displaying two separate numbers for what is actually one pool.
+
+### 16.5 A real bug found and fixed before this shipped
+
+The first live check after wiring the UI showed `analytics: null` despite the spike having
+confirmed real Analytics quota data minutes earlier. Root cause: `quota/limit` is not a constant
+heartbeat metric — Google only emits a fresh sample when the service actually receives traffic.
+Data API v3 (near-constant traffic from ordinary use) always had a sample in a 1-hour lookback
+window; the much less frequently called Analytics API often did not, making its card silently show
+"unknown" even though the connection and the real limit were both fine. Fixed by widening
+`fetchDailyQuotaLimit`'s window to 25 hours (a day plus buffer, the same margin
+`gateway_call_events`' 7-day retention already uses around its own 24h window) — verified live
+afterward: `analytics: { limit: 100000, usedLast24h: 176 }` came back correctly.
+
+### 16.6 Failure handling
+
+`getQuotaStatus()` never throws over an external Monitoring API problem. Each service's real fetch
+is wrapped independently: a failure (rate limit, transient network error, the API becoming
+disabled) degrades that one service to `null` ("unknown," never a fabricated `0`) without affecting
+the other service or crashing the `/api/settings` response the Settings tab depends on. Not
+connected at all, or `GOOGLE_CLIENT_ID` missing/malformed, degrades both services to `null` up
+front without making any real network call.
+
+### 16.7 What remains deliberately unimplemented
+
+No caching or throttling — every `/api/settings` GET while the Settings tab is open makes 4 real
+Cloud Monitoring API calls (limit + usage × 2 services). Acceptable for a personal, low-traffic
+project (Monitoring reads are not the kind of API this project is trying to conserve quota on) but
+not optimized; revisit if this becomes a real cost or latency concern. No dedicated
+`/api/cloud-quotas` route exists — the numbers ride along inside the existing `/api/settings`
+snapshot both consuming components already fetch.

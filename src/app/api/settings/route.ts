@@ -2,6 +2,7 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { isValidIanaTimezone, isValidLocalTimeOfDay } from "@/lib/analytics/staleness";
+import { createCloudQuotasCore } from "@/lib/cloud-quotas";
 import {
   getAnalyticsReadsEnabled,
   getAnalyticsSyncSettings,
@@ -43,6 +44,13 @@ import {
  *   `succeeded` for a rolling 24h window, from `src/lib/db.ts`'s `getGatewayTrafficLast24h`
  *   (owner instruction, 2026-09-22 -- "сколько было попыток пройти через шлюз за последние
  *   сутки... сколько попыток... увенчались успехом"). Only the last 24h, not all-time.
+ * - `cloudQuotaStatus` -- read-only, not settable via `POST`: real Google Cloud quota
+ *   limit/usage from the Cloud Monitoring API (`docs/decisions/0008-cloud-connection.md`'s
+ *   follow-up, owner instruction 2026-09-22 -- "сколько максимальная квота... сколько из неё
+ *   уже использовано"). `dataApi` covers BOTH Data API v3 reads and Live writes (same
+ *   underlying Google service, owner instruction: "Можем пока что отображать на Live write и
+ *   на Data reads один и тот же счетчик"); `analytics` is a separate quota pool. Each is `null`
+ *   when Cloud isn't connected yet or the real query failed -- never a fabricated number.
  *
  * **`GET` here is not purely read-only**: `getAnalyticsSyncSettings()` persists the OS-detected
  * timezone the first time it is ever read (`src/lib/db.ts`'s own doc comment). Two concurrent
@@ -59,6 +67,7 @@ async function getSettingsSnapshot() {
     dataApiReadsEnabled,
     analyticsReadsEnabled,
     gatewayTraffic,
+    cloudQuotaStatus,
   ] = await Promise.all([
     getLiveWritesEnabled(),
     getMcpConnectionEnabled(),
@@ -66,6 +75,7 @@ async function getSettingsSnapshot() {
     getDataApiReadsEnabled(),
     getAnalyticsReadsEnabled(),
     getGatewayTrafficLast24h(),
+    createCloudQuotasCore().getQuotaStatus(),
   ]);
 
   return {
@@ -76,6 +86,7 @@ async function getSettingsSnapshot() {
     dataApiReadsEnabled,
     analyticsReadsEnabled,
     gatewayTraffic,
+    cloudQuotaStatus,
   };
 }
 

@@ -214,10 +214,11 @@ implemented during Phases 7-10 unless separately approved:
   own limits." Splits into three slices: (1) the counters themselves (done); (2) a single,
   device-persistent Google Cloud OAuth grant, entirely decoupled from per-channel YouTube login so
   a channel switch/re-login never revokes it (`docs/decisions/0008-cloud-connection.md`, done); (3)
-  the actual Cloud Quotas API (`quotaInfos.list`, limits, requires the full `cloud-platform` scope
-  per Google's own reference — no narrower option) and Cloud Monitoring API (`timeseries.list`,
-  actual usage) calls, surfaced in Settings (not started — no plan document exists yet for this
-  slice specifically).
+  real limit/usage numbers surfaced in Settings under a reusable progress-bar component (done,
+  `docs/ARCHITECTURE.md` §16) — a live spike found the Cloud Quotas API unnecessary, since the
+  already-connected Cloud Monitoring API supplies both the limit and the usage numbers on its own.
+  All three slices are complete on `feature/gateway-traffic-counters`, not yet merged to `dev`
+  pending the owner's separate merge approval.
 
 ## 8. How to use this roadmap in future sessions
 

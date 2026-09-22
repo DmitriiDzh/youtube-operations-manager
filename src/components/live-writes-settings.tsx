@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { CloudQuotaProgress, type ServiceQuotaStatusView } from "./cloud-quota-progress";
 import { ConfirmDialog } from "./confirm-dialog";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 import { ToggleSwitch } from "./toggle-switch";
@@ -9,6 +10,7 @@ type Settings = {
   liveWritesEnabled: boolean;
   mcpConnectionEnabled: boolean;
   gatewayTraffic?: GatewayTrafficWindowView[];
+  cloudQuotaStatus?: { dataApi: ServiceQuotaStatusView };
 };
 
 /**
@@ -99,6 +101,10 @@ export function LiveWritesSettings() {
         <GatewayTrafficStats
           window={settings?.gatewayTraffic?.find((c) => c.category === "live_writes")}
         />
+        {/* Shared with Data API reads below -- same underlying Google service, owner
+            instruction 2026-09-22: "Можем пока что отображать на Live write и на Data reads
+            один и тот же счетчик". */}
+        <CloudQuotaProgress status={settings?.cloudQuotaStatus?.dataApi} />
       </div>
 
       <div className="border-t border-zinc-800 pt-4">
