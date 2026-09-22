@@ -30,12 +30,11 @@ export type VideoAnalyticsMetricRow = {
  * Fetches daily metrics for a single video over a date range, in one `reports.query` call
  * covering every requested metric name in one response (docs/roadmap/plans/PHASE_8_PLAN.md §10
  * item 5 -- one query per video per collection run, not per video per day per metric). **This
- * per-video shape is provisional, not confirmed**: whether a single bulk query (e.g.
- * `dimensions=video,day`, no `filters=video==...`) can return every video's daily rows at once
- * instead remains an open question the plan flags as unresolved -- it cannot be checked until the
- * owner's OAuth re-consent (BL-051) makes a real `reports.query` call possible. The services
- * layer that calls this function must treat the query shape as substitutable, not hardcode the
- * per-video loop as settled.
+ * per-video shape is confirmed required, not merely provisional (2026-09-22, live-verified):** a
+ * real `dimensions=video,day` query with no `filters=video==...` (the hypothesized bulk
+ * alternative) was tried against the live API and rejected outright -- "The query is not
+ * supported." One query per video is the only shape the API accepts for this report; this is not
+ * a missed optimization.
  *
  * Response parsing is deliberately **name-based, not positional**: `columnHeaders` is grouped by
  * `columnType` ("DIMENSION" for `day`, "METRIC" for every requested metric) rather than assuming

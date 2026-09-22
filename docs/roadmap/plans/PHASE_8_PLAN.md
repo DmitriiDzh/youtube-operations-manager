@@ -227,18 +227,16 @@ this plan's §8 posed (msg 350 → msg 356, verbatim, numbered by the owner):
      must be stated explicitly in `docs/ARCHITECTURE.md` when the collection job is built — it is
      exactly the kind of thing that stays invisible until someone compares two devices' numbers or
      a report crosses a day boundary.
-5. **Per-video API cost -- an unconfirmed working hypothesis, not a verified fact (added after
-   advisor review, 2026-09-22).** An automated fetch-and-summarize pass over the official
-   "Available Reports" docs on 2026-09-22 reported that YouTube Analytics API video reports do
-   not support combining a `video` (all videos) dimension with a `day` dimension in one query for
-   per-video-per-day granularity -- a follow-up attempt to independently corroborate that specific
-   claim did not succeed either way. **BL-052 must re-check this directly** (the `dimensions`
-   reference page, or simply attempting a real `dimensions=video,day` query and reading the
-   actual error/response) before committing to a per-video-loop adapter design -- if a single
-   query genuinely does return per-video-per-day rows, the adapter shape changes from N calls to
-   one, which is worth resolving with certainty before writing the loop, not assuming from a page
-   summary. The rest of this item describes the N-calls design *as a contingency*, pending that
-   check: daily metrics for a specific video would require
+5. **Per-video API cost -- confirmed by a real query, 2026-09-22.** An automated fetch-and-
+   summarize pass over the official "Available Reports" docs on 2026-09-22 reported that YouTube
+   Analytics API video reports do not support combining a `video` (all videos) dimension with a
+   `day` dimension in one query for per-video-per-day granularity, but a follow-up attempt to
+   independently corroborate that specific claim from the docs alone did not succeed either way.
+   **Resolved by a real, live test (2026-09-22, after BL-051's re-consent and enabling "YouTube
+   Analytics API" in Google Cloud Console):** a real `reports.query` with `dimensions=video,day`
+   and no `filters=video==...` was rejected by the live API with "The query is not supported."
+   The N-calls-per-video design below is therefore the confirmed, required shape, not a
+   contingency: daily metrics for a specific video require
    `filters=video==VIDEO_ID` with `dimensions=day`, one query per video (though one query already
    covers an entire date range and every requested metric in a single response, so it is one call
    per video **per collection run**, not per video per day per metric). The real channel currently
