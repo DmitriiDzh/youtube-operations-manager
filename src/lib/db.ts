@@ -2255,41 +2255,6 @@ function mapStoredAiConnection(row: typeof aiConnections.$inferSelect): StoredAi
   };
 }
 
-export async function createStoredAiConnection(input: {
-  id: string;
-  displayName: string;
-  adapterType: string;
-  baseUrl: string | null;
-  modelId: string;
-  localInferenceMode: boolean;
-  enabled: boolean;
-  capabilitiesJson: string;
-  assignedTasksJson: string;
-  pricingJson: string | null;
-}): Promise<StoredAiConnection> {
-  const now = new Date();
-  await db.insert(aiConnections).values({
-    id: input.id,
-    displayName: input.displayName,
-    adapterType: input.adapterType,
-    baseUrl: input.baseUrl,
-    modelId: input.modelId,
-    localInferenceMode: input.localInferenceMode,
-    enabled: input.enabled,
-    status: "unknown",
-    statusMessage: null,
-    statusCheckedAt: null,
-    capabilitiesJson: input.capabilitiesJson,
-    assignedTasksJson: input.assignedTasksJson,
-    pricingJson: input.pricingJson,
-    createdAt: now,
-    updatedAt: now,
-  });
-  const stored = await getStoredAiConnection(input.id);
-  if (!stored) throw new Error("Connection disappeared immediately after creation");
-  return stored;
-}
-
 export async function listStoredAiConnections(): Promise<StoredAiConnection[]> {
   const rows = await db.select().from(aiConnections).orderBy(desc(aiConnections.createdAt));
   return rows.map(mapStoredAiConnection);
@@ -2298,29 +2263,6 @@ export async function listStoredAiConnections(): Promise<StoredAiConnection[]> {
 export async function getStoredAiConnection(connectionId: string): Promise<StoredAiConnection | null> {
   const [row] = await db.select().from(aiConnections).where(eq(aiConnections.id, connectionId));
   return row ? mapStoredAiConnection(row) : null;
-}
-
-export async function updateStoredAiConnection(
-  connectionId: string,
-  patch: Partial<{
-    displayName: string;
-    baseUrl: string | null;
-    modelId: string;
-    localInferenceMode: boolean;
-    enabled: boolean;
-    status: string;
-    statusMessage: string | null;
-    statusCheckedAt: Date | null;
-    capabilitiesJson: string;
-    assignedTasksJson: string;
-    pricingJson: string | null;
-  }>
-): Promise<StoredAiConnection | null> {
-  await db
-    .update(aiConnections)
-    .set({ ...patch, updatedAt: new Date() })
-    .where(eq(aiConnections.id, connectionId));
-  return getStoredAiConnection(connectionId);
 }
 
 export async function deleteStoredAiConnection(connectionId: string): Promise<void> {
