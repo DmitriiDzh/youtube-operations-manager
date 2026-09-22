@@ -8,6 +8,7 @@ import {
   saveUserOAuthTokens,
 } from "../db";
 import { DomainError } from "../video-metadata/contracts";
+import { callYoutubeApi } from "./error-classification";
 
 /**
  * "Data API v3 reads enabled" toggle (owner instruction, 2026-09-22, Telegram -- see
@@ -93,10 +94,12 @@ export async function getAuthenticatedYoutubeFromTokens(credentials: {
 }
 
 export async function getMyChannelId(youtube: youtube_v3.Youtube) {
-  const res = await youtube.channels.list({
-    part: ["id"],
-    mine: true,
-  });
+  const res = await callYoutubeApi(() =>
+    youtube.channels.list({
+      part: ["id"],
+      mine: true,
+    })
+  );
   return res.data.items?.[0]?.id;
 }
 
@@ -105,10 +108,12 @@ export async function listVideosByChannel(args: {
   channelId: string;
   maxResults?: number;
 }) {
-  const uploadsPlaylistRes = await args.youtube.channels.list({
-    part: ["contentDetails"],
-    id: [args.channelId],
-  });
+  const uploadsPlaylistRes = await callYoutubeApi(() =>
+    args.youtube.channels.list({
+      part: ["contentDetails"],
+      id: [args.channelId],
+    })
+  );
 
   const uploadsPlaylistId =
     uploadsPlaylistRes.data.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
@@ -132,12 +137,14 @@ export async function listVideosByChannel(args: {
   let pageToken: string | undefined;
 
   do {
-    const res = await args.youtube.playlistItems.list({
-      part: ["snippet"],
-      playlistId: uploadsPlaylistId,
-      maxResults: 50,
-      pageToken,
-    });
+    const res = await callYoutubeApi(() =>
+      args.youtube.playlistItems.list({
+        part: ["snippet"],
+        playlistId: uploadsPlaylistId,
+        maxResults: 50,
+        pageToken,
+      })
+    );
 
     for (const item of res.data.items ?? []) {
       const videoId = item.snippet?.resourceId?.videoId;
@@ -173,10 +180,12 @@ export async function getChannelForSync(
   youtube: youtube_v3.Youtube,
   channelId?: string
 ): Promise<ChannelForSync | null> {
-  const res = await youtube.channels.list(
-    channelId
-      ? { part: ["snippet", "contentDetails"], id: [channelId] }
-      : { part: ["snippet", "contentDetails"], mine: true }
+  const res = await callYoutubeApi(() =>
+    youtube.channels.list(
+      channelId
+        ? { part: ["snippet", "contentDetails"], id: [channelId] }
+        : { part: ["snippet", "contentDetails"], mine: true }
+    )
   );
 
   const channel = res.data.items?.[0];
@@ -203,12 +212,14 @@ export async function listUploadsPlaylistVideoIds(
   let pageToken: string | undefined;
 
   do {
-    const res = await youtube.playlistItems.list({
-      part: ["contentDetails"],
-      playlistId: uploadsPlaylistId,
-      maxResults: 50,
-      pageToken,
-    });
+    const res = await callYoutubeApi(() =>
+      youtube.playlistItems.list({
+        part: ["contentDetails"],
+        playlistId: uploadsPlaylistId,
+        maxResults: 50,
+        pageToken,
+      })
+    );
 
     for (const item of res.data.items ?? []) {
       const videoId = item.contentDetails?.videoId;
@@ -285,11 +296,13 @@ export async function getVideosMetadataContextBatch(
   for (const batch of chunk(videoIds, YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
     if (batch.length === 0) continue;
 
-    const res = await youtube.videos.list({
-      part: ["snippet", "status", "localizations", "statistics"],
-      id: batch,
-      maxResults: YOUTUBE_VIDEOS_LIST_BATCH_SIZE,
-    });
+    const res = await callYoutubeApi(() =>
+      youtube.videos.list({
+        part: ["snippet", "status", "localizations", "statistics"],
+        id: batch,
+        maxResults: YOUTUBE_VIDEOS_LIST_BATCH_SIZE,
+      })
+    );
 
     for (const item of res.data.items ?? []) {
       if (!item.id || !item.snippet) continue;
@@ -322,10 +335,12 @@ export async function getVideoById(
   youtube: youtube_v3.Youtube,
   videoId: string
 ) {
-  const res = await youtube.videos.list({
-    part: ["snippet"],
-    id: [videoId],
-  });
+  const res = await callYoutubeApi(() =>
+    youtube.videos.list({
+      part: ["snippet"],
+      id: [videoId],
+    })
+  );
 
   const video = res.data.items?.[0];
   if (!video?.id || !video.snippet) return null;
@@ -342,10 +357,12 @@ export async function getVideoSnippet(
   youtube: youtube_v3.Youtube,
   videoId: string
 ) {
-  const res = await youtube.videos.list({
-    part: ["snippet"],
-    id: [videoId],
-  });
+  const res = await callYoutubeApi(() =>
+    youtube.videos.list({
+      part: ["snippet"],
+      id: [videoId],
+    })
+  );
 
   const snippet = res.data.items?.[0]?.snippet;
   if (!snippet) return null;
@@ -379,10 +396,12 @@ export async function getVideoMetadataContext(
   youtube: youtube_v3.Youtube,
   videoId: string
 ) {
-  const res = await youtube.videos.list({
-    part: ["snippet", "localizations"],
-    id: [videoId],
-  });
+  const res = await callYoutubeApi(() =>
+    youtube.videos.list({
+      part: ["snippet", "localizations"],
+      id: [videoId],
+    })
+  );
 
   const item = res.data.items?.[0];
   const snippet = item?.snippet;
@@ -408,10 +427,12 @@ export async function getVideoDetailsContext(
   youtube: youtube_v3.Youtube,
   videoId: string
 ): Promise<VideoDetailsContext | null> {
-  const res = await youtube.videos.list({
-    part: ["snippet", "status", "recordingDetails"],
-    id: [videoId],
-  });
+  const res = await callYoutubeApi(() =>
+    youtube.videos.list({
+      part: ["snippet", "status", "recordingDetails"],
+      id: [videoId],
+    })
+  );
 
   const item = res.data.items?.[0];
   if (!item?.snippet || !item.status) return null;
@@ -475,12 +496,14 @@ export async function listPlaylistsForAuthenticated(youtube: youtube_v3.Youtube)
   let pageToken: string | undefined;
 
   do {
-    const res = await youtube.playlists.list({
-      part: ["snippet", "status"],
-      channelId,
-      maxResults: 50,
-      pageToken,
-    });
+    const res = await callYoutubeApi(() =>
+      youtube.playlists.list({
+        part: ["snippet", "status"],
+        channelId,
+        maxResults: 50,
+        pageToken,
+      })
+    );
 
     for (const item of res.data.items ?? []) {
       const mapped = mapPlaylistMetadata(item);
@@ -498,11 +521,13 @@ export async function getPlaylistForUpdate(
   youtube: youtube_v3.Youtube,
   playlistId: string
 ): Promise<PlaylistMetadataWithChannel | null> {
-  const response = await youtube.playlists.list({
-    part: ["id", "snippet", "status"],
-    id: [playlistId],
-    maxResults: 1,
-  });
+  const response = await callYoutubeApi(() =>
+    youtube.playlists.list({
+      part: ["id", "snippet", "status"],
+      id: [playlistId],
+      maxResults: 1,
+    })
+  );
 
   const playlist = response.data.items?.[0];
   const mapped = playlist ? mapPlaylistMetadata(playlist) : null;
@@ -526,12 +551,14 @@ export async function listPlaylistItemIdsByVideo(
   let pageToken: string | undefined;
 
   do {
-    const res = await youtube.playlistItems.list({
-      part: ["snippet"],
-      playlistId,
-      maxResults: 50,
-      pageToken,
-    });
+    const res = await callYoutubeApi(() =>
+      youtube.playlistItems.list({
+        part: ["snippet"],
+        playlistId,
+        maxResults: 50,
+        pageToken,
+      })
+    );
 
     for (const item of res.data.items ?? []) {
       const videoId = item.snippet?.resourceId?.videoId;
@@ -561,7 +588,7 @@ export type SupportedLanguage = { code: string; name: string };
  * accept any code `isValidLanguageCode` (src/lib/changesets/diff.ts) allows, not only these.
  */
 export async function listSupportedLanguages(youtube: youtube_v3.Youtube): Promise<SupportedLanguage[]> {
-  const res = await youtube.i18nLanguages.list({ part: ["snippet"], hl: "en" });
+  const res = await callYoutubeApi(() => youtube.i18nLanguages.list({ part: ["snippet"], hl: "en" }));
 
   return (res.data.items ?? [])
     .map((item) => ({

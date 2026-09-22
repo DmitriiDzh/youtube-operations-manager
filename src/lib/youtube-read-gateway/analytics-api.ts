@@ -12,6 +12,7 @@ import { google } from "googleapis";
 import type { youtubeAnalytics_v2 } from "googleapis";
 import { getAnalyticsReadsEnabled, recordGatewayCallOutcome } from "../db";
 import { DomainError } from "../video-metadata/contracts";
+import { callYoutubeApi } from "./error-classification";
 
 /**
  * "Analytics API reads enabled" toggle -- the Analytics-category counterpart to
@@ -88,14 +89,16 @@ export async function queryVideoAnalyticsReport(
     metricNames: readonly string[];
   }
 ): Promise<VideoAnalyticsMetricRow[]> {
-  const res = await youtubeAnalytics.reports.query({
-    ids: `channel==${args.channelId}`,
-    startDate: args.startDate,
-    endDate: args.endDate,
-    metrics: args.metricNames.join(","),
-    dimensions: "day",
-    filters: `video==${args.videoId}`,
-  });
+  const res = await callYoutubeApi(() =>
+    youtubeAnalytics.reports.query({
+      ids: `channel==${args.channelId}`,
+      startDate: args.startDate,
+      endDate: args.endDate,
+      metrics: args.metricNames.join(","),
+      dimensions: "day",
+      filters: `video==${args.videoId}`,
+    })
+  );
 
   const columnHeaders = res.data.columnHeaders ?? [];
   const dayColumnIndex = columnHeaders.findIndex(

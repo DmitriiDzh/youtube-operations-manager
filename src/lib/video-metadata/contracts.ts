@@ -40,6 +40,7 @@ export type DomainErrorCode =
   | "data_api_reads_disabled"
   | "analytics_reads_disabled"
   | "analytics_data_current"
+  | "youtube_quota_exceeded"
   | "provider_not_configured"
   | "generation_invalid_target_language"
   | "generation_no_proposals"
