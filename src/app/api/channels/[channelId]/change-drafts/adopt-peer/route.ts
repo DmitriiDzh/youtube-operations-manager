@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { createChangeDraftsSyncCoreForProduction } from "@/lib/change-drafts-sync";
+import { createChangeDraftsSyncCoreForProduction } from "@/lib/sync-gateway";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { DomainError } from "@/lib/video-metadata/contracts";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";

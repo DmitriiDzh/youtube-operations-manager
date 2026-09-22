@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { createChangeDraftsCoreForProduction, DomainError, isDomainError, type FieldConflict } from "@/lib/change-drafts";
+import { createChangeDraftsCoreForProduction, DomainError, isDomainError, type FieldConflict } from "@/lib/sync-gateway";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 

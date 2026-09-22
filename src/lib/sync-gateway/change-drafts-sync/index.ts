@@ -1,5 +1,5 @@
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
-import { createChangeDraftsCoreForProduction } from "@/lib/change-drafts";
+import { createChangeDraftsCoreForProduction } from "../change-drafts";
 import { createDefaultLogger } from "@/lib/channel-sync/adapters/logger";
 import { listStoredChannels } from "@/lib/db";
 import { getProductionAppPaths } from "@/lib/platform-paths/runtime";
@@ -18,7 +18,7 @@ import { createChangeDraftsSyncCore, type ChangeDraftsSyncCore } from "./service
 //
 // This guarantee depends on all THREE current callers -- `/api/change-drafts/sync`,
 // `/api/change-drafts/conflicts-summary`, and `/api/channels/[channelId]/change-drafts/
-// adopt-peer` -- resolving `import "@/lib/change-drafts-sync"` to the same module instance
+// adopt-peer` -- resolving `import "@/lib/sync-gateway"` to the same module instance
 // within one running server process. Verified by reasoning about Node.js-runtime module caching
 // (this app runs as a persistent `next dev`/`next start` Node server, never as isolated
 // per-route serverless functions, where ES module imports of the same resolved path are cached

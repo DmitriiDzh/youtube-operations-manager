@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { upsertChannel, upsertVideos } from "@/lib/db";
-import { createChangeDraftsCoreForProduction } from "@/lib/change-drafts";
+import { createChangeDraftsCoreForProduction } from "@/lib/sync-gateway";
 import { createChangeSetCore } from "./index";
 
 // Real end-to-end test of the CD2 cutover (docs/decisions/0006-*.md,

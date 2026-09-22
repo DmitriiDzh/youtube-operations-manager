@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { createChangeDraftsSyncCoreForProduction } from "@/lib/change-drafts-sync";
+import { createChangeDraftsSyncCoreForProduction } from "@/lib/sync-gateway";
 
 // Device-wide, like src/app/api/device-handoff/**: every channelId synced here is determined
 // server-side (`listStoredChannels()` -- every channel this device already knows about), never
