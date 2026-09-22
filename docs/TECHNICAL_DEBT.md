@@ -760,6 +760,19 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 ---
 
+## RISK-48 — Cloud connection encryption key has no rotation/backup procedure — OPEN, 2026-09-22
+
+- **Affected components:** `src/lib/cloud-connection/crypto.ts` (`CLOUD_CONNECTION_ENCRYPTION_KEY`); `cloud_connection` table.
+- **Current behavior:** Same shape as RISK-15 (`AI_CONNECTIONS_ENCRYPTION_KEY`), a separate single operator-supplied environment variable with no rotation or backup procedure -- if lost, the stored Cloud OAuth grant becomes permanently undecryptable (the operator simply reconnects via Settings; no data beyond the grant itself is affected).
+- **Actual risk:** Operator inconvenience (reconnecting after losing the encryption key), not a security exposure -- losing the key makes the stored grant more protected, not less.
+- **Existing mitigation:** Deliberately a SEPARATE key from `AI_CONNECTIONS_ENCRYPTION_KEY` (`docs/decisions/0008-cloud-connection.md`, `AGENTS.md` §M feature-module independence) rather than reusing it, even though the tradeoff itself (no rotation tooling) is identical to RISK-15's. Chosen over RISK-07's plaintext-storage pattern because this is still a real Google Cloud grant (`monitoring.read`, narrowed 2026-09-22 from the originally-requested full `cloud-platform` once the Cloud Quotas API that justified the broader scope turned out to be unnecessary -- `docs/ARCHITECTURE.md` §16.2) rather than a YouTube-scoped token -- so plaintext was not an acceptable default here the way it was for the `users` table's channel-login tokens.
+- **Required remediation (if ever needed):** A documented key-rotation script (decrypt-then-re-encrypt under a new key), same shape as RISK-15's.
+- **Gate(s):** `DEFERRED_WITH_DOCUMENTED_REASON`.
+- **Approval required from:** project owner, only if rotation tooling is ever requested.
+- **Status:** OPEN — low severity, documented rather than silently absent.
+
+---
+
 ## Summary table
 
 | ID | Title | Gates | Status |
@@ -811,5 +824,6 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-45 | Reselecting a deselected video in bulk AI-generation intentionally resurfaces its proposal (decision record, not a risk) | none | RESOLVED, 2026-09-21 |
 | RISK-46 | Divergent-lineage resolution path built (option b); structural prevention (option a) still open | DEFERRED_WITH_DOCUMENTED_REASON now; BLOCKS_OPERATIONS_RELEASE once multi-device use is real | PARTIALLY FIXED, 2026-09-22 |
 | RISK-47 | Approving a Change doesn't check for an open CRDT field conflict on it (CD6) | none (fixed) | FIXED, 2026-09-21 |
+| RISK-48 | Cloud connection encryption key has no rotation/backup procedure | DEFERRED | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

@@ -5,7 +5,7 @@ import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index } from "drizzle-orm/sqlite-core";
 import path from "path";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
 import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
@@ -483,6 +483,72 @@ export const appSettings = sqliteTable("app_settings", {
 });
 
 /**
+ * SCHEMA_MIGRATIONS version 10 (owner instruction, 2026-09-22, Telegram, refined after an
+ * initial cumulative-counter design: "Я думаю лучше выводить 1. Сколько было попыток пройти
+ * через шлюз за последние сутки 2. Сколько попыток пройти через шлюз увенчались успехом за
+ * последние сутки"). One row per real call (`category`, `outcome`, `occurredAt`), not one
+ * running-total row per category -- a rolling 24h window needs per-event timestamps to know
+ * which calls are still "in the window," which a simple incrementing counter can never answer
+ * once time has passed. See `getGatewayTrafficLast24h` below for the windowed read and
+ * `pruneOldGatewayCallEvents` for why this table does not grow unboundedly forever.
+ * `mcp_tool_calls` never records a `blocked` outcome: when MCP connection is off, a tool is
+ * never registered at all, so there is no failed call to log, only an absent one.
+ *
+ * `cloud_monitoring_reads` (added 2026-09-22, owner instruction, Telegram, after being told
+ * checking Google Cloud's own quota numbers is itself a real API call: "в таком случае на него
+ * нам нужно повесить такие же счетчики, как на другие API") -- every real call
+ * `src/lib/cloud-quotas/adapters/monitoring-client.ts` makes to the Cloud Monitoring API. Also
+ * never records `blocked`: there is no enable/disable toggle for this category (unlike
+ * `data_api_reads`/`analytics_reads`), so every attempt is, by definition, allowed.
+ */
+export const gatewayCallEvents = sqliteTable("gateway_call_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  category: text("category").notNull(),
+  outcome: text("outcome").notNull(),
+  occurredAt: integer("occurred_at").notNull(),
+});
+
+/**
+ * SCHEMA_MIGRATIONS version 11. A single, device-persistent Google Cloud OAuth grant, entirely
+ * decoupled from the per-channel YouTube login in `users` (owner instruction, 2026-09-22,
+ * Telegram: "право получать эту информацию не должно отзываться при смене аккаунта / логина...
+ * пока я сам не отзову это право - этот компьютер должен в любой сессии иметь возможность
+ * получить эту информацию"). Feeds `src/lib/cloud-quotas/`'s real Cloud Monitoring API calls
+ * (`docs/decisions/0008-cloud-connection.md`, `docs/ARCHITECTURE.md` §16) -- no Cloud Quotas API
+ * call exists anywhere in this codebase (a live spike found it unnecessary).
+ *
+ * A true singleton: exactly zero or one row, always keyed `id = "default"`, since this app
+ * tracks at most one Cloud-level grant regardless of how many YouTube channels/logins it has
+ * synced. `accessToken`/`refreshToken`/`tokenExpiry` are stored as one encrypted JSON blob
+ * (AES-256-GCM, `src/lib/cloud-connection/crypto.ts`, key from `CLOUD_CONNECTION_ENCRYPTION_KEY`)
+ * -- a DELIBERATELY SEPARATE key from `AI_CONNECTIONS_ENCRYPTION_KEY` (`docs/AGENTS.md` §M,
+ * feature-module independence: the Cloud-quota feature must not fail closed just because the
+ * unrelated AI-localization module's key is absent, or vice versa). Encrypted, unlike `users`'
+ * plaintext tokens (`docs/TECHNICAL_DEBT.md` RISK-07), because this is still a real Google Cloud
+ * grant (`monitoring.read`, narrowed 2026-09-22 from the originally-requested full `cloud-platform`
+ * once the Cloud Quotas API that justified the broader scope turned out to be unnecessary) rather
+ * than a YouTube-scoped token if the database file were ever read by someone else.
+ *
+ * `connectedEmail`/`scope`/`connectedAt` are plaintext (not secrets, shown as-is in Settings).
+ *
+ * **Deliberately NOT added to `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`)
+ * -- device-local, same reasoning as `users` and `ai_connection_credentials`: a Cloud grant is
+ * re-established per device via its own Connect flow, never handed off with a snapshot.
+ */
+export const cloudConnection = sqliteTable("cloud_connection", {
+  id: text("id").primaryKey(),
+  connectedEmail: text("connected_email"),
+  scope: text("scope"),
+  ciphertext: text("ciphertext"),
+  iv: text("iv"),
+  authTag: text("auth_tag"),
+  connectedAt: integer("connected_at", { mode: "timestamp" }),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+/**
  * Phase 8 (Intelligence Foundation, `docs/roadmap/plans/PHASE_8_PLAN.md` §5/§6 slice 2),
  * SCHEMA_MIGRATIONS version 8. Historical time-series metrics, additive alongside `videos`
  * (a "current snapshot" table, never a history) -- `docs/PROJECT_SPEC.md` §33's canonical
@@ -690,6 +756,41 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
+    },
+  },
+  {
+    version: 10,
+    description:
+      "gateway_call_events -- per-call event log for the Settings tab's rolling 24h traffic stats (owner instruction, 2026-09-22, Telegram: \"сколько было попыток пройти через шлюз за последние сутки... сколько попыток... увенчались успехом\")",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS gateway_call_events (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "category TEXT NOT NULL, " +
+          "outcome TEXT NOT NULL, " +
+          "occurred_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS gateway_call_events_category_occurred_at_idx ON gateway_call_events(category, occurred_at)"
+      );
+    },
+  },
+  {
+    version: 11,
+    description:
+      "cloud_connection -- single device-persistent Google Cloud OAuth grant, decoupled from channel login (owner instruction, 2026-09-22, Telegram, docs/decisions/0008-cloud-connection.md)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS cloud_connection (" +
+          "id TEXT PRIMARY KEY, " +
+          "connected_email TEXT, " +
+          "scope TEXT, " +
+          "ciphertext TEXT, " +
+          "iv TEXT, " +
+          "auth_tag TEXT, " +
+          "connected_at INTEGER, " +
+          "updated_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
     },
   },
 ];
@@ -1541,6 +1642,93 @@ export async function getAnalyticsReadsEnabled(database: AppDb = db): Promise<bo
 
 export async function setAnalyticsReadsEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
   await setAppSetting(ANALYTICS_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
+}
+
+export type GatewayTrafficCategory =
+  | "data_api_reads"
+  | "analytics_reads"
+  | "live_writes"
+  | "mcp_tool_calls"
+  | "cloud_monitoring_reads";
+
+export type GatewayTrafficWindow = {
+  category: GatewayTrafficCategory;
+  /** Every real call attempt in the window, allowed or blocked. */
+  totalAttempts: number;
+  /** The subset of `totalAttempts` that succeeded (passed the gate). */
+  succeeded: number;
+};
+
+const GATEWAY_TRAFFIC_CATEGORIES: readonly GatewayTrafficCategory[] = [
+  "data_api_reads",
+  "analytics_reads",
+  "live_writes",
+  "mcp_tool_calls",
+  "cloud_monitoring_reads",
+];
+
+// Kept well past the 24h window this table exists to answer (owner instruction, 2026-09-22:
+// "сколько было попыток пройти через шлюз за последние сутки") -- a few days of slack in case
+// that window is ever widened, without ever letting this table grow unboundedly over the life
+// of a long-running local install. Pruned opportunistically on every write (call volumes here
+// are at most dozens per session, so a DELETE on every insert is not a real cost).
+const GATEWAY_CALL_EVENT_RETENTION_SECONDS = 7 * 24 * 60 * 60;
+
+/**
+ * Records one real call outcome for the given gateway category -- called from inside the
+ * gateway's own assert function (`assertDataApiReadsAuthorized`, etc.) or, for
+ * `mcp_tool_calls`, from the MCP server's shared tool-dispatch wrapper. Appends one event row
+ * (never an update-in-place -- see the table's own doc comment for why a rolling window needs
+ * per-event timestamps) and opportunistically prunes anything older than the retention window.
+ */
+export async function recordGatewayCallOutcome(
+  category: GatewayTrafficCategory,
+  outcome: "allowed" | "blocked",
+  database: AppDb = db
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await database.insert(gatewayCallEvents).values({ category, outcome, occurredAt: now });
+  await database
+    .delete(gatewayCallEvents)
+    .where(sql`${gatewayCallEvents.occurredAt} < ${now - GATEWAY_CALL_EVENT_RETENTION_SECONDS}`);
+}
+
+/**
+ * Returns one row per known category, always -- a category with zero calls in the window still
+ * gets a `{totalAttempts: 0, succeeded: 0}` entry, rather than being silently absent (the
+ * Settings UI displays all four gateways regardless of whether each has been exercised yet).
+ * `windowSeconds` defaults to 24h (the owner's own stated window); callers needing a different
+ * window (a future "last 7 days" view, say) can pass one without touching the retention policy.
+ */
+export async function getGatewayTrafficLast24h(
+  database: AppDb = db,
+  windowSeconds = 24 * 60 * 60
+): Promise<GatewayTrafficWindow[]> {
+  const since = Math.floor(Date.now() / 1000) - windowSeconds;
+  const rows = await database
+    .select({
+      category: gatewayCallEvents.category,
+      outcome: gatewayCallEvents.outcome,
+      count: sql<number>`count(*)`,
+    })
+    .from(gatewayCallEvents)
+    .where(sql`${gatewayCallEvents.occurredAt} >= ${since}`)
+    .groupBy(gatewayCallEvents.category, gatewayCallEvents.outcome);
+
+  const totals = new Map<GatewayTrafficCategory, { totalAttempts: number; succeeded: number }>();
+  for (const row of rows) {
+    const category = row.category as GatewayTrafficCategory;
+    const entry = totals.get(category) ?? { totalAttempts: 0, succeeded: 0 };
+    entry.totalAttempts += row.count;
+    if (row.outcome === "allowed") entry.succeeded += row.count;
+    totals.set(category, entry);
+  }
+
+  return GATEWAY_TRAFFIC_CATEGORIES.map((category) => ({
+    category,
+    totalAttempts: totals.get(category)?.totalAttempts ?? 0,
+    succeeded: totals.get(category)?.succeeded ?? 0,
+  }));
 }
 
 const ANALYTICS_SYNC_LOCAL_TIME_SETTING_KEY = "analytics_sync_local_time";
@@ -2871,4 +3059,68 @@ export async function listVideoMetricsByChannel(
     .orderBy(videoMetricsDaily.videoId, videoMetricsDaily.metricDate, videoMetricsDaily.metricName);
 
   return rows.map(mapStoredVideoMetric);
+}
+
+// The one and only row this table ever holds -- see `cloudConnection`'s own doc comment above.
+const CLOUD_CONNECTION_SINGLETON_ID = "default";
+
+export type StoredCloudConnection = {
+  connectedEmail: string;
+  scope: string;
+  ciphertext: string;
+  iv: string;
+  authTag: string;
+  connectedAt: Date;
+};
+
+export async function getStoredCloudConnection(database: AppDb = db): Promise<StoredCloudConnection | null> {
+  const [row] = await database
+    .select()
+    .from(cloudConnection)
+    .where(eq(cloudConnection.id, CLOUD_CONNECTION_SINGLETON_ID));
+
+  if (!row || !row.ciphertext || !row.iv || !row.authTag || !row.connectedEmail || !row.scope || !row.connectedAt) {
+    return null;
+  }
+
+  return {
+    connectedEmail: row.connectedEmail,
+    scope: row.scope,
+    ciphertext: row.ciphertext,
+    iv: row.iv,
+    authTag: row.authTag,
+    connectedAt: row.connectedAt,
+  };
+}
+
+export async function upsertStoredCloudConnection(
+  input: {
+    connectedEmail: string;
+    scope: string;
+    ciphertext: string;
+    iv: string;
+    authTag: string;
+  },
+  database: AppDb = db
+): Promise<void> {
+  const now = new Date();
+  const existing = await getStoredCloudConnection(database);
+
+  if (existing) {
+    await database
+      .update(cloudConnection)
+      .set({ ...input, updatedAt: now })
+      .where(eq(cloudConnection.id, CLOUD_CONNECTION_SINGLETON_ID));
+  } else {
+    await database.insert(cloudConnection).values({
+      id: CLOUD_CONNECTION_SINGLETON_ID,
+      ...input,
+      connectedAt: now,
+      updatedAt: now,
+    });
+  }
+}
+
+export async function clearStoredCloudConnection(database: AppDb = db): Promise<void> {
+  await database.delete(cloudConnection).where(eq(cloudConnection.id, CLOUD_CONNECTION_SINGLETON_ID));
 }

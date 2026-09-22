@@ -18,6 +18,9 @@ export type { SqlExecutor };
  *   - `video_metrics_daily` (Phase 8, `docs/roadmap/plans/PHASE_8_PLAN.md` §6 slice 2) -- an
  *     accepted, documented limitation (`docs/ARCHITECTURE.md` §14.7), not an oversight:
  *     collected metrics stay device-local and do not travel with a snapshot/handoff.
+ *   - `cloud_connection` (`docs/decisions/0008-cloud-connection.md`) -- device-local encrypted
+ *     Google Cloud OAuth grant, same reasoning as `users`/`ai_connection_credentials`: never
+ *     handed off, re-established per device via its own Connect flow.
  *
  * `schema_meta` IS included -- the receiving device needs to know what schema version the
  * snapshot's data.db is actually at in order to safely apply migrations to the staged copy

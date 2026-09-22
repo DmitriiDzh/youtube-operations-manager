@@ -26,6 +26,7 @@ function createServicesFixture(opts: {
   analyticsResponses: Record<string, FakeAnalyticsRow[] | Error>;
   syncSettings?: { localTime: string; timezone: string };
   now?: Date;
+  authResolverError?: Error;
 }) {
   const channelAccess = createFakeChannelAccess();
   const analyticsCalls: Array<{ channelId: string; videoId: string }> = [];
@@ -79,6 +80,7 @@ function createServicesFixture(opts: {
 
   const authResolver = {
     async resolve(): Promise<ResolvedCredentials> {
+      if (opts.authResolverError) throw opts.authResolverError;
       return {
         credentialRef: { userId: "user-1" },
         accessToken: "fake-access-token",
@@ -210,12 +212,20 @@ test("collectMetrics writes one row per (video, date, metric) returned by the An
 
 // docs/roadmap/plans/PHASE_8_PLAN.md §7: "Re-running collection for a date range already
 // collected is idempotent (upsert by the table's primary key), not a duplicate-row bug."
-test("collectMetrics run twice over the same range is idempotent at the service layer", async () => {
-  const { services, channelAccess, metricRowsByKey } = createServicesFixture({
+// This test previously called collectMetrics twice back-to-back with no time advance between
+// calls -- valid until the 2026-09-22 daily-freshness-gate instruction ("шлюзы не должны
+// позволять повторные вызовы... сколько было попыток... за последние сутки") made that second,
+// same-day call something collectMetrics must now REFUSE (analytics_data_current), not silently
+// re-run. Rewritten to actually exercise both requirements: the gate refuses the same-day repeat,
+// and -- the original intent, still true -- a genuine next-day re-collection over an overlapping
+// date range updates the same (video, date, metric) row rather than creating a second one.
+test("collectMetrics: refuses a same-day repeat, but a genuine next-day re-collection over the same range is idempotent", async () => {
+  const { services, channelAccess, metricRowsByKey, setNow } = createServicesFixture({
     videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
     analyticsResponses: {
       v1: [{ date: "2026-09-01", metrics: { views: 100 } }],
     },
+    now: new Date("2026-09-22T13:00:00Z"), // after the 12:00 UTC default boundary
   });
   await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
 
@@ -228,10 +238,77 @@ test("collectMetrics run twice over the same range is idempotent at the service 
     });
 
   await collect();
+
+  await assert.rejects(
+    () => collect(),
+    (error: unknown) => error instanceof DomainError && error.code === "analytics_data_current"
+  );
+  assert.equal(metricRowsByKey.size, 1, "the refused repeat must not touch the store at all");
+
+  setNow(new Date("2026-09-23T13:00:00Z")); // next day, past that day's own boundary
   await collect();
 
-  assert.equal(metricRowsByKey.size, 1, "re-running must update the same (video, date, metric) key, not create a second one");
+  assert.equal(metricRowsByKey.size, 1, "the next-day re-collection must update the same (video, date, metric) key, not create a second one");
   assert.equal(metricRowsByKey.get("v1|2026-09-01|views"), 100);
+});
+
+// The daily-freshness gate must apply no matter WHICH caller triggers the second attempt (owner
+// instruction: "ни человеку, ни агенту, ни каким-то скриптам") -- exercised here as an
+// auto-collection marking the channel fresh, then a manual "Collect now" call for the same
+// channel being refused, since both paths funnel through this same collectMetrics gate.
+test("collectMetrics: a manual call is refused if an auto-collection already ran today for this channel", async () => {
+  const { services, channelAccess, analyticsCalls } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+    now: new Date("2026-09-22T13:00:00Z"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+  assert.equal(analyticsCalls.length, 1, "sanity check -- the auto-trigger actually ran once");
+
+  await assert.rejects(
+    () =>
+      services.collectMetrics({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-09-01",
+        endDate: "2026-09-01",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "analytics_data_current"
+  );
+  assert.equal(analyticsCalls.length, 1, "the manual call must never reach the real Analytics API");
+});
+
+// Regression test for a real bug the project owner hit in this session ("Credentials are missing
+// required OAuth scopes"): the gate used to mark the channel collected-for-today BEFORE resolving
+// credentials, so a credential failure -- zero real data fetched -- still locked the manual button
+// out until tomorrow's boundary, with no UI way to undo it. The mark must only happen once
+// credentials have actually resolved, so a failed attempt leaves the channel exactly as stale as
+// it was and a retry is still possible immediately.
+test("collectMetrics: a credential-resolution failure does not mark the channel as collected -- the next attempt is still allowed", async () => {
+  const { services, channelAccess, lastAutoCollectedAtByChannel, analyticsCalls } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+    now: new Date("2026-09-22T13:00:00Z"),
+    authResolverError: new Error("Credentials are missing required OAuth scopes"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(() =>
+    services.collectMetrics({
+      credentialRef: { userId: "user-1" },
+      channelId: "UC_A",
+      startDate: "2026-09-01",
+      endDate: "2026-09-01",
+    })
+  );
+  assert.equal(
+    lastAutoCollectedAtByChannel.get("UC_A") ?? null,
+    null,
+    "a credential failure must not mark the channel as collected"
+  );
+  assert.equal(analyticsCalls.length, 0, "no real Analytics API call was made");
 });
 
 // One video's collection failing (e.g. an API error) must not fail the whole channel's run.

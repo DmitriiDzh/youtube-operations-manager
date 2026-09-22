@@ -10,8 +10,9 @@
 // `src/lib/youtube-write-gateway/` to own.
 import { google } from "googleapis";
 import type { youtubeAnalytics_v2 } from "googleapis";
-import { getAnalyticsReadsEnabled } from "../db";
+import { getAnalyticsReadsEnabled, recordGatewayCallOutcome } from "../db";
 import { DomainError } from "../video-metadata/contracts";
+import { wrapYoutubeClientForQuotaClassification } from "./error-classification";
 
 /**
  * "Analytics API reads enabled" toggle -- the Analytics-category counterpart to
@@ -19,8 +20,12 @@ import { DomainError } from "../video-metadata/contracts";
  * `src/lib/db.ts`'s `getAnalyticsReadsEnabled` for the full rationale).
  */
 export async function assertAnalyticsReadsAuthorized(): Promise<void> {
-  if (await getAnalyticsReadsEnabled()) return;
+  if (await getAnalyticsReadsEnabled()) {
+    await recordGatewayCallOutcome("analytics_reads", "allowed");
+    return;
+  }
 
+  await recordGatewayCallOutcome("analytics_reads", "blocked");
   throw new DomainError({
     code: "analytics_reads_disabled",
     message:
@@ -37,7 +42,7 @@ export async function createYoutubeAnalyticsClient(
   auth: youtubeAnalytics_v2.Options["auth"]
 ): Promise<youtubeAnalytics_v2.Youtubeanalytics> {
   await assertAnalyticsReadsAuthorized();
-  return google.youtubeAnalytics({ version: "v2", auth });
+  return wrapYoutubeClientForQuotaClassification(google.youtubeAnalytics({ version: "v2", auth }));
 }
 
 export type VideoAnalyticsMetricRow = {

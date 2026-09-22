@@ -260,6 +260,24 @@ An approved `Change` is never sent to YouTube by any of these routes — Phase 5
 - `POST /api/youtube/remove-from-playlist`
 - `GET /api/youtube/channel-info`
 
+### Cloud connection API (2026-09-22, `docs/decisions/0008-cloud-connection.md` — on `feature/gateway-traffic-counters`, not yet in `dev`)
+
+A single, device-persistent Google Cloud OAuth grant, entirely independent of the channel-login
+session above (though every route still requires one) and of which YouTube channel is active.
+These four routes are connect/disconnect status only -- the real Cloud Monitoring API calls
+(`src/lib/cloud-quotas/`, `docs/ARCHITECTURE.md` §16) ride along inside `GET /api/settings`
+instead, not a route here.
+
+- `GET /api/cloud-connection/start` — redirects the browser to Google's consent screen requesting
+  `https://www.googleapis.com/auth/monitoring.read` (narrowed 2026-09-22 from the originally
+  broader `cloud-platform` once the Cloud Quotas API that justified it turned out to be
+  unnecessary); sets a short-lived httpOnly `state` cookie
+- `GET /api/cloud-connection/callback` — exchanges the authorization code, persists the encrypted
+  grant, redirects back to `/dashboard?cloudConnection=connected|error`
+- `GET /api/cloud-connection/status` — `{ "connected": false }` or `{ "connected": true,
+  "connectedEmail": "...", "scope": "...", "connectedAt": "..." }` — never includes a token
+- `POST /api/cloud-connection/disconnect` — revokes the token with Google, clears the stored grant
+
 -> Next: [docs/troubleshooting.md](./troubleshooting.md)
 
 <- [Back to README](../README.md)

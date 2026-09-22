@@ -1,5 +1,5 @@
 import type { youtube_v3 } from "googleapis";
-import { getLiveWritesEnabled } from "@/lib/db";
+import { getLiveWritesEnabled, recordGatewayCallOutcome } from "@/lib/db";
 import {
   mapPlaylistMetadata,
   type PlaylistMetadata,
@@ -47,8 +47,12 @@ import { DomainError, type LocaleMetadata } from "./contracts";
 // ---------------------------------------------------------------------------
 
 export async function assertLiveWritesAuthorized(): Promise<void> {
-  if (await getLiveWritesEnabled()) return;
+  if (await getLiveWritesEnabled()) {
+    await recordGatewayCallOutcome("live_writes", "allowed");
+    return;
+  }
 
+  await recordGatewayCallOutcome("live_writes", "blocked");
   throw new DomainError({
     code: "live_writes_disabled",
     message:

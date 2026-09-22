@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { InfoTooltip } from "./info-tooltip";
 
 type SyncSettings = {
   analyticsSyncLocalTime: string;
@@ -77,12 +78,14 @@ export function AnalyticsSyncSettings() {
   return (
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div>
-        <h3 className="text-sm font-medium text-zinc-100">Analytics auto-collection</h3>
-        <p className="mt-1 text-sm text-zinc-400">
-          Once a day, on entering the dashboard, this app checks whether analytics were already
-          collected today after the time below and collects them if not. This does not run on a
-          background schedule &mdash; it only checks when you actually open the dashboard.
-        </p>
+        <h3 className="flex items-center gap-1.5 text-base font-medium text-zinc-100">
+          Analytics auto-collection
+          <InfoTooltip>
+            Once a day, on entering the dashboard, this app checks whether analytics were already
+            collected today after the time below and collects them if not. This does not run on a
+            background schedule &mdash; it only checks when you actually open the dashboard.
+          </InfoTooltip>
+        </h3>
       </div>
 
       <div className="flex flex-wrap items-end gap-3">

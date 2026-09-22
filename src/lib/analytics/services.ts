@@ -1,6 +1,6 @@
 import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import type { ChannelAccessService } from "@/lib/channel-access";
-import { computeDefaultAutoCollectionRange, isAnalyticsCollectionStale } from "./staleness";
+import { computeDefaultAutoCollectionRange, computeNextRefreshAt, isAnalyticsCollectionStale } from "./staleness";
 import {
   ANALYTICS_METRIC_NAMES,
   AUTO_COLLECTION_RANGE_DAYS,
@@ -135,6 +135,29 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
      * correct fail-closed behavior, not a bug, but it does mean this service is only reachable via
      * a caller that resolves to a real `userId` (the Web UI/API path) until/unless a future
      * CLI/MCP surface is added with its own `userId`-resolving credentialRef.
+     *
+     * **Daily freshness gate (owner instruction, 2026-09-22, Telegram): "Данные на самом деле
+     * обновляются раз в сутки... шлюзы не должны позволять повторный вызовы. Ни человеку, ни
+     * агенту, ни каким-то скриптам."** The real YouTube Analytics API itself only refreshes data
+     * roughly once a day (unlike the YouTube Data API v3, which this rule deliberately does NOT
+     * apply to -- Content's own manual "Sync now" stays uncapped, per the owner's own explicit
+     * "для даты будем отслеживать поток данных и наши лимиты" instead). This function is the one
+     * choke point every caller -- the manual "Collect now" button, `runAutoCollectionIfStale`
+     * below, and any future MCP/CLI surface -- ultimately calls to fetch real data, so the gate
+     * lives here, not duplicated in each caller. If this channel was already collected on/after
+     * today's configured local boundary, the call is refused outright (`analytics_data_current`,
+     * no real API call made) rather than silently re-fetching data YouTube itself has not
+     * refreshed yet.
+     *
+     * The mark happens right after credentials resolve successfully -- deliberately NOT before
+     * (an earlier version of this gate marked the channel collected before resolving credentials,
+     * which meant a credential failure, e.g. the real "Credentials are missing required OAuth
+     * scopes" case this owner hit earlier, left the channel marked collected-for-today with zero
+     * data actually fetched, locking even the manual button until tomorrow's boundary with no UI
+     * way out). Marking after a successful resolve narrows, rather than removes, the concurrency
+     * window two callers (a manual click racing the auto-trigger, or two browser tabs) could both
+     * pass through in -- both would then spend one real day's worth of Analytics quota instead of
+     * none, which is strictly better than a 24h lockout from a single failed attempt.
      */
     async collectMetrics(input: unknown): Promise<CollectMetricsResult> {
       const parsedInput = parseWithSchema(collectMetricsInputSchema, input, "collect metrics input");
@@ -147,10 +170,27 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           channelId: parsedInput.channelId,
         });
 
+        const now = deps.clock.now();
+        const [lastCollectedAt, { localTime, timezone }] = await Promise.all([
+          deps.channelStore.getAnalyticsLastAutoCollectedAt(parsedInput.channelId),
+          deps.settingsStore.getAnalyticsSyncSettings(),
+        ]);
+
+        if (!isAnalyticsCollectionStale({ now, lastAutoCollectedAt: lastCollectedAt, timezone, localTime })) {
+          const nextRefreshAt = computeNextRefreshAt({ now, timezone, localTime });
+          throw new DomainError({
+            code: "analytics_data_current",
+            message: `Analytics data is already up to date for today. YouTube itself only refreshes this data about once a day -- the next refresh is available at ${nextRefreshAt.toISOString()}.`,
+            details: { lastCollectedAt: lastCollectedAt?.toISOString() ?? null, nextRefreshAt: nextRefreshAt.toISOString(), timezone },
+          });
+        }
+
         const credentials = await deps.authResolver.resolve({
           credentialRef: parsedInput.credentialRef,
           requiredScopes: [YOUTUBE_ANALYTICS_READ_SCOPE],
         });
+
+        await deps.channelStore.markAnalyticsAutoCollected(parsedInput.channelId, now);
 
         const videos = await deps.videoStore.listVideosByChannel(parsedInput.channelId);
 
@@ -256,14 +296,14 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
      * dashboard mount (`src/app/dashboard/page.tsx`), not on a repeating interval -- this is a
      * once-a-day check, not a continuous poll.
      *
-     * **Mark-then-run, not run-then-mark** (advisor review): `channelStore.markAnalyticsAutoCollected`
-     * is called BEFORE `collectMetrics`, not after. Two browser tabs mounting the dashboard at
-     * the same moment would otherwise both see "stale" and both run a full per-video collection,
-     * doubling real Analytics API quota for no benefit -- marking first means the second caller
-     * sees fresh and no-ops. The tradeoff this accepts: if the collection itself then fails or
-     * crashes mid-run, today's window is still marked "collected" and won't be retried until
-     * tomorrow's boundary. That is the better failure mode than doubling quota on every
-     * multi-tab dashboard load.
+     * **The staleness check and mark-then-run now live entirely inside `collectMetrics` itself**
+     * (2026-09-22 daily-freshness-gate instruction, see that function's own doc comment) --
+     * this function no longer duplicates that logic; it only computes the auto-collection's own
+     * default date range and calls `collectMetrics`, treating that gate's `analytics_data_current`
+     * refusal as the expected "nothing to do today" outcome, not an error. Two callers racing
+     * (a manual click and this auto-trigger, or two browser tabs) are still safe for the same
+     * reason as before -- `collectMetrics`'s own mark-then-run is the single point that decides
+     * who actually gets to run the real collection.
      */
     async runAutoCollectionIfStale(input: unknown): Promise<AutoCollectResult> {
       const parsedInput = parseWithSchema(runAutoCollectionInputSchema, input, "run auto collection input");
@@ -276,30 +316,27 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         });
 
         const now = deps.clock.now();
-        const [lastAutoCollectedAt, { localTime, timezone }] = await Promise.all([
-          deps.channelStore.getAnalyticsLastAutoCollectedAt(parsedInput.channelId),
-          deps.settingsStore.getAnalyticsSyncSettings(),
-        ]);
-
-        const stale = isAnalyticsCollectionStale({ now, lastAutoCollectedAt, timezone, localTime });
-        if (!stale) {
-          return parseWithSchema(runAutoCollectionOutputSchema, { ranCollection: false }, "run auto collection output");
-        }
-
-        await deps.channelStore.markAnalyticsAutoCollected(parsedInput.channelId, now);
-
+        const { timezone } = await deps.settingsStore.getAnalyticsSyncSettings();
         const { startDate, endDate } = computeDefaultAutoCollectionRange({
           now,
           timezone,
           rangeDays: AUTO_COLLECTION_RANGE_DAYS,
         });
 
-        const result = await services.collectMetrics({
-          credentialRef: parsedInput.credentialRef,
-          channelId: parsedInput.channelId,
-          startDate,
-          endDate,
-        });
+        let result: CollectMetricsResult;
+        try {
+          result = await services.collectMetrics({
+            credentialRef: parsedInput.credentialRef,
+            channelId: parsedInput.channelId,
+            startDate,
+            endDate,
+          });
+        } catch (error) {
+          if (isDomainError(error) && error.code === "analytics_data_current") {
+            return parseWithSchema(runAutoCollectionOutputSchema, { ranCollection: false }, "run auto collection output");
+          }
+          throw error;
+        }
 
         return parseWithSchema(
           runAutoCollectionOutputSchema,

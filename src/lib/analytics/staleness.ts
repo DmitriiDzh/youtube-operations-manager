@@ -68,6 +68,47 @@ export function isAnalyticsCollectionStale(args: {
   return lastZoned.localTime < args.localTime; // same local day -- stale only if before today's boundary
 }
 
+function utcMillisFromLocalParts(localDate: string, localTime: string): number {
+  const [year, month, day] = localDate.split("-").map(Number);
+  const [hour, minute] = localTime.split(":").map(Number);
+  return Date.UTC(year, month - 1, day, hour, minute);
+}
+
+/**
+ * The absolute instant of the next daily refresh boundary (owner instruction, 2026-09-22 --
+ * "Надо возращать сообщение... новая будет доступна через столько-то времени"), for display
+ * when `isAnalyticsCollectionStale` says "not stale" (i.e. today's boundary has already passed
+ * with a real collection). Always the day AFTER `now`'s own local calendar date, at `localTime`,
+ * in `timezone` -- never "the next occurrence of `localTime`, whichever day that lands on,"
+ * since this is only ever called once today's own boundary has already been used.
+ *
+ * Converting a civil (zone, Y-M-D, H:M) into an absolute UTC instant needs the zone's actual
+ * offset for that specific date, which a DST transition can change from one day to the next --
+ * unlike `isAnalyticsCollectionStale` above (a pure string comparison with no such need), this
+ * genuinely cannot avoid resolving a real offset. Solved with the standard fixed-point
+ * correction: guess an instant, read back what wall-clock time that guess actually represents in
+ * `timezone`, and shift the guess by the observed difference -- converges in one step whenever
+ * the offset is constant across the correction, and in two when the correction itself crosses a
+ * DST boundary (see `staleness.test.ts`'s dedicated spring-forward/fall-back tests).
+ */
+export function computeNextRefreshAt(args: { now: Date; timezone: string; localTime: string }): Date {
+  const { localDate } = formatZonedDateAndTime(args.now, args.timezone);
+  const [year, month, day] = localDate.split("-").map(Number);
+  const [hour, minute] = args.localTime.split(":").map(Number);
+  const targetMillis = Date.UTC(year, month - 1, day + 1, hour, minute);
+
+  let guessMillis = targetMillis;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const observed = formatZonedDateAndTime(new Date(guessMillis), args.timezone);
+    const observedMillis = utcMillisFromLocalParts(observed.localDate, observed.localTime);
+    const diff = targetMillis - observedMillis;
+    if (diff === 0) break;
+    guessMillis += diff;
+  }
+
+  return new Date(guessMillis);
+}
+
 /**
  * The date range an unattended auto-collection run picks (`AUTO_COLLECTION_RANGE_DAYS`,
  * contracts.ts) -- `endDate` is *yesterday's* local calendar date in `timezone` (the Analytics

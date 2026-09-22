@@ -49,6 +49,18 @@ function formatMetricValue(value: number): string {
   return Number.isInteger(value) ? value.toLocaleString() : value.toFixed(2);
 }
 
+// Owner instruction, 2026-09-22 (Telegram msg 417): a ticking countdown reads better than a fixed
+// "next refresh available at <date/time>" -- the person doesn't have to do the subtraction
+// themselves. Clamped to zero rather than going negative once the boundary passes.
+function formatCountdown(msRemaining: number): string {
+  const totalSeconds = Math.max(0, Math.floor(msRemaining / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+}
+
 /**
  * The "Analytics" tab (Phase 8, BL-058, docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 4) --
  * replaces the earlier "coming soon" placeholder (Studio-parity S6-stub, BL-017) now that the
@@ -64,6 +76,18 @@ export function AnalyticsManager() {
   const [loadingRows, setLoadingRows] = useState(false);
   const [collecting, setCollecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Separate from `error` -- "already up to date" (owner instruction, 2026-09-22's daily
+  // freshness gate) is expected, normal behavior, not a failure, so it gets neutral styling
+  // rather than the red error box below. Stored as the absolute instant (not a pre-formatted
+  // string) so the notice can render as a live ticking countdown (owner instruction, msg 417).
+  const [nextRefreshAt, setNextRefreshAt] = useState<Date | null>(null);
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    if (!nextRefreshAt) return;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [nextRefreshAt]);
   const [collectResult, setCollectResult] = useState<CollectResult | null>(null);
   const [page, setPage] = useState(1);
 
@@ -114,6 +138,7 @@ export function AnalyticsManager() {
     if (!channel) return;
     setCollecting(true);
     setError(null);
+    setNextRefreshAt(null);
     setCollectResult(null);
     try {
       const res = await fetch(`/api/channels/${encodeURIComponent(channel.channelId)}/analytics/collect`, {
@@ -123,7 +148,11 @@ export function AnalyticsManager() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Collection failed");
+        if (data.error === "analytics_data_current" && data.details?.nextRefreshAt) {
+          setNextRefreshAt(new Date(data.details.nextRefreshAt));
+        } else {
+          setError(data.message ?? "Collection failed");
+        }
         return;
       }
       setCollectResult({
@@ -212,6 +241,17 @@ export function AnalyticsManager() {
               ` (${collectResult.skippedVideoIds.length} video${collectResult.skippedVideoIds.length === 1 ? "" : "s"} skipped due to an error)`}
             .
           </p>
+        )}
+
+        {nextRefreshAt && (
+          <div className="rounded-lg border border-zinc-700 bg-zinc-800/60 p-3 text-sm text-zinc-300">
+            Analytics data is already up to date for today -- YouTube itself only refreshes it
+            about once a day. Next refresh available in{" "}
+            <span className="font-mono tabular-nums text-zinc-100">
+              {formatCountdown(nextRefreshAt.getTime() - nowTick)}
+            </span>
+            .
+          </div>
         )}
 
         {error && (

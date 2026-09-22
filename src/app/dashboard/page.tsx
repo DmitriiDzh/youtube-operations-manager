@@ -12,10 +12,12 @@ import { AiConnectionsManager } from "@/components/ai-connections-manager";
 import { AnalyticsSyncSettings } from "@/components/analytics-sync-settings";
 import { LiveWritesSettings } from "@/components/live-writes-settings";
 import { ReadGatewaySettings } from "@/components/read-gateway-settings";
+import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
 import { EditorialProfilePanel } from "@/components/editorial-profile-panel";
 import { DeviceHandoffPanel } from "@/components/device-handoff-panel";
 import { AppShell } from "@/components/app-shell";
+import { InfoTooltip } from "@/components/info-tooltip";
 import {
   AnalyticsIcon,
   BatchesIcon,
@@ -247,15 +249,19 @@ export default function Dashboard() {
           <AppVersionInfo />
           <LiveWritesSettings />
           <ReadGatewaySettings />
+          <CloudConnectionSettings />
           <AnalyticsSyncSettings />
-          <div>
-            <p className="mb-4 text-sm text-zinc-400">
-              Configure AI provider connections for AI Localization. No specific vendor is
-              built into this app &mdash; every connection is a Base URL, model id, and
-              optional credential you supply. Credentials are encrypted at rest and never
-              shown again once saved. Testing a connection is an explicit action and may
-              incur cost for a real (non-mock) connection.
-            </p>
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+            <h3 className="mb-4 flex items-center gap-1.5 text-base font-semibold text-zinc-100">
+              AI provider connections
+              <InfoTooltip>
+                Configure AI provider connections for AI Localization. No specific vendor is
+                built into this app &mdash; every connection is a Base URL, model id, and
+                optional credential you supply. Credentials are encrypted at rest and never
+                shown again once saved. Testing a connection is an explicit action and may
+                incur cost for a real (non-mock) connection.
+              </InfoTooltip>
+            </h3>
             <AiConnectionsManager />
           </div>
         </div>

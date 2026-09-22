@@ -2,10 +2,12 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { isValidIanaTimezone, isValidLocalTimeOfDay } from "@/lib/analytics/staleness";
+import { createCloudQuotasCore } from "@/lib/cloud-quotas";
 import {
   getAnalyticsReadsEnabled,
   getAnalyticsSyncSettings,
   getDataApiReadsEnabled,
+  getGatewayTrafficLast24h,
   getLiveWritesEnabled,
   getMcpConnectionEnabled,
   setAnalyticsReadsEnabled,
@@ -37,6 +39,18 @@ import {
  *   `src/lib/db.ts`'s `getDataApiReadsEnabled` for the full rationale) -- disabling one also
  *   fails any write path that depends on that category's reads (intentional, see that same
  *   doc comment).
+ * - `gatewayTraffic` -- read-only, not settable via `POST`: one row per gateway category
+ *   (`data_api_reads`/`analytics_reads`/`live_writes`/`mcp_tool_calls`) with `totalAttempts`/
+ *   `succeeded` for a rolling 24h window, from `src/lib/db.ts`'s `getGatewayTrafficLast24h`
+ *   (owner instruction, 2026-09-22 -- "сколько было попыток пройти через шлюз за последние
+ *   сутки... сколько попыток... увенчались успехом"). Only the last 24h, not all-time.
+ * - `cloudQuotaStatus` -- read-only, not settable via `POST`: real Google Cloud quota
+ *   limit/usage from the Cloud Monitoring API (`docs/decisions/0008-cloud-connection.md`'s
+ *   follow-up, owner instruction 2026-09-22 -- "сколько максимальная квота... сколько из неё
+ *   уже использовано"). `dataApi` covers BOTH Data API v3 reads and Live writes (same
+ *   underlying Google service, owner instruction: "Можем пока что отображать на Live write и
+ *   на Data reads один и тот же счетчик"); `analytics` is a separate quota pool. Each is `null`
+ *   when Cloud isn't connected yet or the real query failed -- never a fabricated number.
  *
  * **`GET` here is not purely read-only**: `getAnalyticsSyncSettings()` persists the OS-detected
  * timezone the first time it is ever read (`src/lib/db.ts`'s own doc comment). Two concurrent
@@ -46,14 +60,23 @@ import {
  * later while debugging something unrelated.
  */
 async function getSettingsSnapshot() {
-  const [liveWritesEnabled, mcpConnectionEnabled, analyticsSync, dataApiReadsEnabled, analyticsReadsEnabled] =
-    await Promise.all([
-      getLiveWritesEnabled(),
-      getMcpConnectionEnabled(),
-      getAnalyticsSyncSettings(),
-      getDataApiReadsEnabled(),
-      getAnalyticsReadsEnabled(),
-    ]);
+  const [
+    liveWritesEnabled,
+    mcpConnectionEnabled,
+    analyticsSync,
+    dataApiReadsEnabled,
+    analyticsReadsEnabled,
+    gatewayTraffic,
+    cloudQuotaStatus,
+  ] = await Promise.all([
+    getLiveWritesEnabled(),
+    getMcpConnectionEnabled(),
+    getAnalyticsSyncSettings(),
+    getDataApiReadsEnabled(),
+    getAnalyticsReadsEnabled(),
+    getGatewayTrafficLast24h(),
+    createCloudQuotasCore().getQuotaStatus(),
+  ]);
 
   return {
     liveWritesEnabled,
@@ -62,6 +85,8 @@ async function getSettingsSnapshot() {
     analyticsSyncTimezone: analyticsSync.timezone,
     dataApiReadsEnabled,
     analyticsReadsEnabled,
+    gatewayTraffic,
+    cloudQuotaStatus,
   };
 }
 

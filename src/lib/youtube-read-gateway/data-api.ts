@@ -1,8 +1,14 @@
 import { google } from "googleapis";
 import type { youtube_v3 } from "googleapis";
 import { createGoogleOAuthClient } from "../auth";
-import { getDataApiReadsEnabled, getUserOAuthTokens, saveUserOAuthTokens } from "../db";
+import {
+  getDataApiReadsEnabled,
+  getUserOAuthTokens,
+  recordGatewayCallOutcome,
+  saveUserOAuthTokens,
+} from "../db";
 import { DomainError } from "../video-metadata/contracts";
+import { wrapYoutubeClientForQuotaClassification } from "./error-classification";
 
 /**
  * "Data API v3 reads enabled" toggle (owner instruction, 2026-09-22, Telegram -- see
@@ -22,8 +28,12 @@ import { DomainError } from "../video-metadata/contracts";
  * precondition, not a replacement for it.
  */
 export async function assertDataApiReadsAuthorized(): Promise<void> {
-  if (await getDataApiReadsEnabled()) return;
+  if (await getDataApiReadsEnabled()) {
+    await recordGatewayCallOutcome("data_api_reads", "allowed");
+    return;
+  }
 
+  await recordGatewayCallOutcome("data_api_reads", "blocked");
   throw new DomainError({
     code: "data_api_reads_disabled",
     message:
@@ -44,7 +54,7 @@ export async function createYoutubeClient(
   auth: youtube_v3.Options["auth"]
 ): Promise<youtube_v3.Youtube> {
   await assertDataApiReadsAuthorized();
-  return google.youtube({ version: "v3", auth });
+  return wrapYoutubeClientForQuotaClassification(google.youtube({ version: "v3", auth }));
 }
 
 export async function getAuthenticatedYoutube(userId: string) {
