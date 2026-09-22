@@ -1,12 +1,12 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
-import { createYoutubeClient, getVideoMetadataContext, getVideosMetadataContextBatch } from "@/lib/youtube";
+import { createYoutubeClient, getVideoMetadataContext, getVideosMetadataContextBatch } from "@/lib/youtube-read-gateway";
 import type { ResolvedCredentials } from "@/lib/video-metadata/contracts";
 
 // Architectural decision #2 (2026-09-17 plan approval): preliminary batched metadata
 // collection and the mandatory fresh per-video pre-write check are two explicitly
 // separate call sites, never substituted for one another, even though both are
-// ultimately implemented via src/lib/youtube.ts's existing videos.list wrappers (reused,
-// not duplicated, per docs/DEVELOPMENT_PLAYBOOK.md §6.4).
+// ultimately implemented via src/lib/youtube-read-gateway's existing videos.list wrappers
+// (reused, not duplicated, per docs/DEVELOPMENT_PLAYBOOK.md §6.4).
 
 export function createAuthorizedClient(credentials: ResolvedCredentials) {
   const oauth2 = createGoogleOAuthClient();

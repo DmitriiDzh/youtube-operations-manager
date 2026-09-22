@@ -76,12 +76,12 @@ Web UI / API → core.syncChannel({ credentialRef, channelId? })
   8. return { channel, videoCount, syncedAt }
 ```
 
-Steps 4–5 are the two YouTube-quota-relevant calls. Step 4 uses the **uploads-playlist enumeration strategy** (never `search.list`), matching `docs/PROJECT_SPEC.md` §9. Step 5 batches up to 50 video IDs per `videos.list` call — for a channel with, say, 420 videos, this is **9 API calls total for full metadata**, not 420. See `src/lib/youtube.ts`:
+Steps 4–5 are the two YouTube-quota-relevant calls. Step 4 uses the **uploads-playlist enumeration strategy** (never `search.list`), matching `docs/PROJECT_SPEC.md` §9. Step 5 batches up to 50 video IDs per `videos.list` call — for a channel with, say, 420 videos, this is **9 API calls total for full metadata**, not 420. See `src/lib/youtube-read-gateway/data-api.ts` (the single read-side child module for the YouTube Data API v3, reached only through the `@/lib/youtube-read-gateway` barrel — `docs/decisions/0007-youtube-read-gateway.md`; this file was `src/lib/youtube.ts` before that refactor):
 
 - `listUploadsPlaylistVideoIds(youtube, uploadsPlaylistId)` — paginated enumeration, dedupes video IDs.
 - `getVideosMetadataContextBatch(youtube, videoIds)` — chunks `videoIds` into groups of ≤50 and issues one `videos.list` call per chunk.
 
-Both are unit-tested directly against a mocked `youtube_v3.Youtube`-shaped client in `src/lib/youtube.test.ts` (not just indirectly through the service layer), specifically to verify the chunking math (120 ids → 3 calls of 50/50/20) independent of any service-level mocking.
+Both are unit-tested directly against a mocked `youtube_v3.Youtube`-shaped client in `src/lib/youtube-read-gateway/data-api.test.ts` (not just indirectly through the service layer), specifically to verify the chunking math (120 ids → 3 calls of 50/50/20) independent of any service-level mocking.
 
 ### 4.3 Why this phase has no write-context guardrail check
 
@@ -556,20 +556,20 @@ explicit consent for that branch specifically). `docs/roadmap/plans/PHASE_8_PLAN
 OAuth scope approved, and metric scope widened to every metric `yt-analytics.readonly` covers (not
 `views` alone) — see §14.2 below for the schema consequence.
 
-**All four slices are now implemented:** slice 1 (OAuth scope, BL-051) — `YOUTUBE_ANALYTICS_READ_SCOPE`
+**All four slices are now implemented:** slice 1 (OAuth scope, BL-056) — `YOUTUBE_ANALYTICS_READ_SCOPE`
 added to `src/lib/auth.ts`'s `YOUTUBE_SCOPES`, no separate re-consent mechanism needed (every
-sign-in path already forces full consent, `docs/SYSTEM_MAP.md` §2.1); slice 2 (table, BL-050);
-slice 3 (Analytics adapter + domain module, BL-052) — `collectMetrics`/`listMetrics`, tested
+sign-in path already forces full consent, `docs/SYSTEM_MAP.md` §2.1); slice 2 (table, BL-055);
+slice 3 (Analytics adapter + domain module, BL-057) — `collectMetrics`/`listMetrics`, tested
 against mocked HTTP, but the per-video query shape (one call per video vs. a hypothetical bulk
 query) remains unconfirmed against a real API response, since that needs the owner's own
-re-consent to test; slice 4 (manual "collect now" trigger + Web UI, BL-053). A fifth item, BL-054
+re-consent to test; slice 4 (manual "collect now" trigger + Web UI, BL-058). A fifth item, BL-059
 (daily staleness-based auto-collection + a configurable local sync-time/timezone setting,
 superseding the plan's original "no scheduling" boundary, plan §10 items 3-4), is also done —
 see §14.6.
 
 **Live-verified against the real "Tropico Jazz" channel** (`claude-in-chrome`, 2026-09-22, twice):
 the manual trigger correctly reaches and fails at `AUTH_SCOPE_INSUFFICIENT` (the real stored token
-predates BL-051's scope); the dashboard-mount auto-collect effect (BL-054) correctly fires once,
+predates BL-056's scope); the dashboard-mount auto-collect effect (BL-059) correctly fires once,
 reaches the same point, and — per its own documented mark-then-run tradeoff — marks
 `analyticsLastAutoCollectedAt` even though the underlying collection failed. That real timestamp
 was reset back to `NULL` on the real channel after verification (a throwaway script, not
@@ -583,7 +583,7 @@ video_metrics_daily (new, v8) — channelId, videoId, metricDate (ISO date), met
                                  metricValue (REAL), collectedAt
                                  PRIMARY KEY (videoId, metricDate, metricName)
                                  + index on channelId
-channels.analytics_last_auto_collected_at (new column, v9) — nullable timestamp, BL-054's
+channels.analytics_last_auto_collected_at (new column, v9) — nullable timestamp, BL-059's
                                  per-channel "when did the daily auto-collection last actually
                                  run" marker
 ```
@@ -637,7 +637,7 @@ returned `(date, metric)` pair via `upsertVideoMetric`. `metricNames` defaults t
 
 Channel-context validation mirrors `channel-sync/services.ts`'s `listSyncedVideos` exactly: since
 this service already receives `credentialRef`, it calls `channelAccess.assertActiveChannel`
-itself (once, here) rather than deferring to a future route — a future BL-053 route must not add
+itself (once, here) rather than deferring to a future route — a future BL-058 route must not add
 a second check. A video genuinely belonging to a different channel can never be reached through a
 given `channelId` by construction (`listVideosByChannel(channelId)` only returns that channel's
 own rows), proven by an explicit cross-channel test (`services.test.ts`) rather than left as an
@@ -666,7 +666,7 @@ collected `(videoId, metricDate, metricName, metricValue)` row for the channel (
 `listVideoMetricsByChannel` in `db.ts`, mirroring `listVideoMetricsByVideo`'s own shape) — pure
 local read, no `authResolver`/YouTube call, same active-channel check as `collectMetrics`.
 
-### 14.5 Manual "collect now" trigger + Web UI (BL-053) — **IMPLEMENTED**
+### 14.5 Manual "collect now" trigger + Web UI (BL-058) — **IMPLEMENTED**
 
 `POST /api/channels/[channelId]/analytics/collect` (real local-state mutation — writes
 `video_metrics_daily` rows — gated normally by `src/proxy.ts`'s blanket device-availability check,
@@ -688,10 +688,10 @@ metadata display stays `content-manager.tsx`'s concern).
 tab resolves the active channel and loads its (empty) collected-metrics table correctly; clicking
 "Collect now" exercises the real chain (session → active-channel check → credential resolution →
 scope check) end to end and correctly fails with `AUTH_SCOPE_INSUFFICIENT` — the real stored
-token predates BL-051's scope addition, so this is exactly the expected, correct outcome pending
+token predates BL-056's scope addition, so this is exactly the expected, correct outcome pending
 the owner's own re-consent, not a bug. Zero console errors throughout.
 
-### 14.6 Daily staleness-based auto-collection (BL-054) — **IMPLEMENTED**
+### 14.6 Daily staleness-based auto-collection (BL-059) — **IMPLEMENTED**
 
 The owner's own rule, verbatim (Telegram msg 356, items 3-6): a daily check "при входе в наш
 дашборд" (on entering the dashboard), comparing "now" against a **wall-clock local boundary**
@@ -755,15 +755,15 @@ persisted to `app_settings` on the first `GET /api/settings` call. Zero console 
 occasionally logs a `SQLITE_BUSY: database is locked` (or, once, a stale-schema-version rejection
 from a leftover local DB state during this session's own testing) from one of several parallel
 build workers racing to initialize the same real local database file — confirmed present on a
-clean pre-BL-054 tree too (`git stash -u` + rebuild), so this is a pre-existing characteristic of
+clean pre-BL-059 tree too (`git stash -u` + rebuild), so this is a pre-existing characteristic of
 this dev environment's multi-worker build touching a real, singleton-guarded database file, not a
-regression from this slice. Build exit code is unaffected (0) both with and without BL-054.
+regression from this slice. Build exit code is unaffected (0) both with and without BL-059.
 
 ### 14.7 Known limitations
 
 No Analytics API client, no OAuth scope request, no route, no UI — this slice is the persistence
 primitive only, exactly `PHASE_8_PLAN.md` §6 slice 2's scope, deliberately not a vertical slice
-end-to-end. See `docs/roadmap/BACKLOG.md` BL-051/BL-052/BL-053/BL-054 for the current status of
+end-to-end. See `docs/roadmap/BACKLOG.md` BL-056/BL-057/BL-058/BL-059 for the current status of
 the remaining slices.
 
 `metricValue` is `REAL NOT NULL` (changed 2026-09-22, before this table ever merged to `dev` —

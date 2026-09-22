@@ -4,6 +4,13 @@ Status: Accepted
 
 Decided directly with the project owner over Telegram, 2026-09-21.
 
+**Note (2026-09-22):** every reference below to `src/lib/youtube.ts` describes that file's name and
+location *at the time this decision was made*. It was subsequently moved, unchanged in behavior, to
+`src/lib/youtube-read-gateway/data-api.ts` as the read-side counterpart to this write gateway — see
+`docs/decisions/0007-youtube-read-gateway.md`. This ADR's own decision (the write gateway itself) is
+unaffected; this note exists only so a reader following a `youtube.ts` reference below finds the
+current location instead of a dead path.
+
 ## Context
 
 Before this change, four independent places in the codebase called a mutating `youtube_v3`

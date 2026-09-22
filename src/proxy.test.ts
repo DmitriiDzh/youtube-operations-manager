@@ -93,7 +93,7 @@ test("proxy gates the video-details apply route like any other real mutation", a
   }
 });
 
-// Phase 8 (BL-053): analytics/collect is a real local-state mutation (writes video_metrics_daily
+// Phase 8 (BL-058): analytics/collect is a real local-state mutation (writes video_metrics_daily
 // rows) -- unlike ai-localization's own `generate` (exempted because it persists nothing), this
 // must stay behind the ordinary gate, not be added to EXEMPT_READ_ONLY_PATH_SUFFIXES.
 test("proxy gates the analytics collect route like any other real mutation", async () => {
@@ -106,7 +106,7 @@ test("proxy gates the analytics collect route like any other real mutation", asy
   }
 });
 
-// Phase 8 (BL-054): the auto-collect trigger is a POST that MAY perform the same real mutation --
+// Phase 8 (BL-059): the auto-collect trigger is a POST that MAY perform the same real mutation --
 // gated the same way, never exempted, even though it often no-ops.
 test("proxy gates the analytics auto-collect route like any other real mutation", async () => {
   await acquireOperationLock(rawSqlClient, "export");

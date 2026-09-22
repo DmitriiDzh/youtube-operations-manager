@@ -187,7 +187,7 @@ export const channels = sqliteTable("channels", {
   // NULL means "none explicitly tracked yet", never backfilled to "[]" (RISK-02/RISK-33's "never
   // silently create a fact that isn't true").
   targetLanguagesJson: text("target_languages_json"),
-  // Additive, SCHEMA_MIGRATIONS version 9 (BL-054, docs/roadmap/plans/PHASE_8_PLAN.md §10 items
+  // Additive, SCHEMA_MIGRATIONS version 9 (BL-059, docs/roadmap/plans/PHASE_8_PLAN.md §10 items
   // 3-5). Mirrors `lastSyncedAt` exactly, but for the daily auto-collection check specifically --
   // deliberately NOT derived from MAX(video_metrics_daily.collected_at), since that column is a
   // per-row last-write time (a manual re-collection of an old date range would bump it without
@@ -1393,7 +1393,7 @@ export async function markChannelSynced(channelId: string, syncedAt: Date): Prom
   await db.update(channels).set({ lastSyncedAt: syncedAt }).where(eq(channels.id, channelId));
 }
 
-// BL-054 -- written BEFORE a collection run starts (mark-then-run), not after, so two concurrent
+// BL-059 -- written BEFORE a collection run starts (mark-then-run), not after, so two concurrent
 // triggers never both see "stale" and both run a full collection (src/lib/analytics/staleness.ts).
 // Takes an injectable `database` (unlike the older markChannelSynced) so schema-initialization
 // tests can exercise it against an isolated temp database (docs/DEVELOPMENT_PLAYBOOK.md §6.11)
@@ -1504,7 +1504,7 @@ const ANALYTICS_SYNC_TIMEZONE_SETTING_KEY = "analytics_sync_timezone";
 const DEFAULT_ANALYTICS_SYNC_LOCAL_TIME = "12:05";
 
 /**
- * BL-054 (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-4) -- the daily auto-collection
+ * BL-059 (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-4) -- the daily auto-collection
  * boundary. `timezone` defaults to this machine's own OS timezone (`Intl.DateTimeFormat().
  * resolvedOptions().timeZone`), detected once on first read and persisted immediately, never
  * re-detected on later reads -- so an explicit override the owner later saves in Settings is
@@ -2814,7 +2814,7 @@ export async function listVideoMetricsByVideo(
   return rows.map(mapStoredVideoMetric);
 }
 
-// BL-053 (docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 4) -- the Web UI's read-only display needs
+// BL-058 (docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 4) -- the Web UI's read-only display needs
 // every metric row for a channel at once, not one video at a time.
 export async function listVideoMetricsByChannel(
   channelId: string,

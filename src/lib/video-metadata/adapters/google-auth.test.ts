@@ -77,10 +77,10 @@ test("resolveGoogleCredentials rejects credentials with insufficient scopes", as
   );
 });
 
-// Phase 8 (BL-051, docs/roadmap/plans/PHASE_8_PLAN.md §10 item 1): a token stored before the
+// Phase 8 (BL-056, docs/roadmap/plans/PHASE_8_PLAN.md §10 item 1): a token stored before the
 // analytics scope was added to YOUTUBE_SCOPES (a real "pre-existing user" scenario, not a
 // hypothetical) must fail closed for a future Analytics adapter requiring it -- proving the
-// re-consent claim in BL-051's own commit message, not just asserting it.
+// re-consent claim in BL-056's own commit message, not just asserting it.
 test("resolveGoogleCredentials rejects a pre-Phase-8 token missing the analytics scope", async () => {
   const resolveGoogleCredentials = createGoogleCredentialResolver({
     createOAuthClient: () =>

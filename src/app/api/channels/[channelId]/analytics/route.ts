@@ -7,7 +7,7 @@ import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-stat
 
 const core = createAnalyticsCore();
 
-// Phase 8 (BL-053, docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 4) -- read-only display of
+// Phase 8 (BL-058, docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 4) -- read-only display of
 // whatever this channel's own `POST .../analytics/collect` has already collected. Pure local
 // read (no YouTube call), GET is never gated by src/proxy.ts's mutation check.
 export async function GET(

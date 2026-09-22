@@ -22,7 +22,7 @@ import {
  *   process boots -- a one-time setup toggle, not reset every session. Takes effect the next
  *   time an MCP client spawns/reconnects the server process, not for an already-open MCP
  *   connection (an MCP server's tool set is fixed at construction time).
- * - `analyticsSyncLocalTime`/`analyticsSyncTimezone` -- BL-054's daily auto-collection boundary
+ * - `analyticsSyncLocalTime`/`analyticsSyncTimezone` -- BL-059's daily auto-collection boundary
  *   (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-4). Unlike the two booleans above, these are
  *   validated before being persisted (`isValidLocalTimeOfDay`/`isValidIanaTimezone`) -- a bad
  *   timezone string would otherwise only surface as a thrown `RangeError` deep inside the

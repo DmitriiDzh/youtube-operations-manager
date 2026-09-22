@@ -58,7 +58,7 @@ type ServiceDependencies = {
     listMetricsByChannel(channelId: string): Promise<StoredVideoMetricRow[]>;
   };
   channelAccess: ChannelAccessService;
-  // BL-054 -- the per-channel "when did the daily auto-collection last actually run" timestamp,
+  // BL-059 -- the per-channel "when did the daily auto-collection last actually run" timestamp,
   // deliberately separate from metricStore's per-row collected_at (see channels.
   // analyticsLastAutoCollectedAt's own doc comment in db.ts for why).
   channelStore: {
@@ -251,7 +251,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
     },
 
     /**
-     * BL-054 (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5) -- "on dashboard entry, check
+     * BL-059 (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5) -- "on dashboard entry, check
      * when the daily collection last ran; if it's stale, run it." Meant to be called once per
      * dashboard mount (`src/app/dashboard/page.tsx`), not on a repeating interval -- this is a
      * once-a-day check, not a continuous poll.

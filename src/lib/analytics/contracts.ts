@@ -11,7 +11,7 @@ export type { CredentialRef, DomainErrorCode, DomainErrorShape, ResolvedCredenti
 export { DomainError, isDomainError };
 
 /**
- * Phase 8 (BL-052, docs/roadmap/plans/PHASE_8_PLAN.md §10 item 2) -- every metric
+ * Phase 8 (BL-057, docs/roadmap/plans/PHASE_8_PLAN.md §10 item 2) -- every metric
  * `yt-analytics.readonly` covers, deliberately EXCLUDING every monetary metric (those require
  * the separate `yt-analytics-monetary.readonly` scope and YouTube Partner Program / CMS access,
  * neither requested nor approved). **Provenance note:** captured from an automated
@@ -90,7 +90,7 @@ export type ListMetricsResult = {
 };
 
 /**
- * BL-054 (docs/roadmap/plans/PHASE_8_PLAN.md §10 item 5) -- the date range an *unattended* daily
+ * BL-059 (docs/roadmap/plans/PHASE_8_PLAN.md §10 item 5) -- the date range an *unattended* daily
  * auto-collection run picks, since (unlike the manual "Collect now" trigger) there is no operator
  * to ask. Matches the manual UI's own default window exactly (`analytics-manager.tsx`'s
  * `defaultDateRange`) -- 7 days, ending yesterday (the Analytics API's own documented behavior is

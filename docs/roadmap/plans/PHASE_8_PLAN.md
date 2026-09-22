@@ -148,7 +148,7 @@ this plan's §8 posed (msg 350 → msg 356, verbatim, numbered by the owner):
    instruction #4 from msg 349 ("не мердж эту ветку в дев... без моего согласия") is a separate,
    still-standing constraint, unaffected by this answer (`AGENTS.md` §K.2's "a prior approval
    never carries forward to a new, unrelated action" applies here explicitly). **Implemented as
-   BL-051** (`src/lib/auth.ts`'s `YOUTUBE_SCOPES`) — no separate re-consent flow needed to be
+   BL-056** (`src/lib/auth.ts`'s `YOUTUBE_SCOPES`) — no separate re-consent flow needed to be
    built, since every existing sign-in path already forces full consent on every login. One thing
    the owner should know about the one-time re-consent action itself: Google returns a
    `refresh_token` only when consent is genuinely re-prompted with `access_type=offline` (which
@@ -165,13 +165,13 @@ this plan's §8 posed (msg 350 → msg 356, verbatim, numbered by the owner):
    metric-by-metric against the API reference or a real response — the same honest-capture
    discipline `src/lib/youtube-supported-languages.ts` already uses for its own hardcoded list
    (including that file’s own documented known gap). Treat this as the *starting* list for
-   BL-052, not a verified enumeration: BL-052’s adapter must be designed so an
+   BL-057, not a verified enumeration: BL-057’s adapter must be designed so an
    unknown/rejected metric name from a real `reports.query` call degrades to skipping that one
    metric (recorded/logged), never failing the whole collection run — the real API response,
-   once BL-052 actually calls it, is the authoritative source, this list is only the starting
+   once BL-057 actually calls it, is the authoritative source, this list is only the starting
    hypothesis.
    The full 28-name list is now implemented as `ANALYTICS_METRIC_NAMES` in
-   `src/lib/analytics/contracts.ts` (added in BL-052 part 2) -- that constant, not this
+   `src/lib/analytics/contracts.ts` (added in BL-057 part 2) -- that constant, not this
    document, is the source of truth for the exact names going forward, so the two never drift
    as the real API response updates it (e.g. `views`, `likes`, `comments`,
    `estimatedMinutesWatched`, `averageViewPercentage`, `subscribersGained`, and 22 more --
@@ -232,7 +232,7 @@ this plan's §8 posed (msg 350 → msg 356, verbatim, numbered by the owner):
    Analytics API video reports do not support combining a `video` (all videos) dimension with a
    `day` dimension in one query for per-video-per-day granularity, but a follow-up attempt to
    independently corroborate that specific claim from the docs alone did not succeed either way.
-   **Resolved by a real, live test (2026-09-22, after BL-051's re-consent and enabling "YouTube
+   **Resolved by a real, live test (2026-09-22, after BL-056's re-consent and enabling "YouTube
    Analytics API" in Google Cloud Console):** a real `reports.query` with `dimensions=video,day`
    and no `filters=video==...` was rejected by the live API with "The query is not supported."
    The N-calls-per-video design below is therefore the confirmed, required shape, not a

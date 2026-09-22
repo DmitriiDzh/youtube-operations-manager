@@ -85,7 +85,7 @@ export default function Dashboard() {
     }
   }, [session, fetchChannel]);
 
-  // Phase 8 (BL-054, docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5): "при входе в дашборд"
+  // Phase 8 (BL-059, docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5): "при входе в дашборд"
   // (on entering the dashboard) -- a mount-once check, not a repeating interval like the Merge
   // tab's polls above (this is a once-a-day rule, not a continuous one). The server itself
   // decides whether anything actually runs (`runAutoCollectionIfStale`'s own staleness check) --
@@ -209,7 +209,7 @@ export default function Dashboard() {
       {tab === "analytics" && (
         <div>
           <p className="mb-4 text-sm text-zinc-400">
-            Manual collection for now (BL-054&apos;s daily auto-collection is a separate,
+            Manual collection for now (BL-059&apos;s daily auto-collection is a separate,
             not-yet-built follow-up) &mdash; facts only, no comparisons or recommendations yet
             (Phase 10&apos;s own scope).
           </p>

@@ -1,4 +1,4 @@
-// Phase 8 (BL-054, docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5). Pure, no I/O -- the
+// Phase 8 (BL-059, docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5). Pure, no I/O -- the
 // owner's own rule, verbatim: "повторный запрос информации чаще раза в день имеет смысл только
 // если прошлый был до 12:00 сегодняшнего дня" (a repeat collection only makes sense if the
 // previous one was before today's local boundary time). This is a **wall-clock boundary** rule,

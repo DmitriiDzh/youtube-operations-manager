@@ -1,5 +1,5 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
-import { createYoutubeClient, getVideoDetailsContext } from "@/lib/youtube";
+import { createYoutubeClient, getVideoDetailsContext } from "@/lib/youtube-read-gateway";
 import {
   applyVideoDetailsUpdate,
   assertLiveWritesAuthorized,

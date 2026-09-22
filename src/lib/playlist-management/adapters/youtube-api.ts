@@ -4,7 +4,7 @@ import {
   getPlaylistForUpdate as getPlaylistForUpdateFromYoutube,
   listPlaylistItemIdsByVideo,
   listPlaylistsForAuthenticated,
-} from "@/lib/youtube";
+} from "@/lib/youtube-read-gateway";
 import {
   addVideoToPlaylistForAuthenticated,
   assertLiveWritesAuthorized,

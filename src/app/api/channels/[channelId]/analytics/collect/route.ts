@@ -7,7 +7,7 @@ import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-stat
 
 const core = createAnalyticsCore();
 
-// Phase 8 (BL-053, docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 4) -- the manual "collect now"
+// Phase 8 (BL-058, docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 4) -- the manual "collect now"
 // trigger. A real, local-state mutation (writes video_metrics_daily rows), gated normally by
 // src/proxy.ts's blanket device-availability check like any other POST route -- deliberately NOT
 // added to that file's read-only exemption list, unlike e.g. ai-localization's `generate` route.

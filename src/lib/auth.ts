@@ -9,7 +9,7 @@ export const YOUTUBE_READ_SCOPE =
 export const YOUTUBE_WRITE_SCOPE = "https://www.googleapis.com/auth/youtube";
 export const YOUTUBE_FORCE_SSL_SCOPE =
   "https://www.googleapis.com/auth/youtube.force-ssl";
-// Phase 8 (Intelligence Foundation), BL-051 -- owner-approved 2026-09-22 (Telegram msg 356,
+// Phase 8 (Intelligence Foundation), BL-056 -- owner-approved 2026-09-22 (Telegram msg 356,
 // "Да, разрешаю", answering the exact scope named in msg 355). Read-only access to the YouTube
 // Analytics API's channel/video reports (`docs/roadmap/plans/PHASE_8_PLAN.md` §10 item 1/2) --
 // deliberately NOT `yt-analytics-monetary.readonly` (revenue metrics), which was never asked

@@ -11,7 +11,7 @@ test("default YouTube scopes include youtube.force-ssl", () => {
   assert.equal(YOUTUBE_SCOPES.includes(YOUTUBE_FORCE_SSL_SCOPE), true);
 });
 
-// Phase 8 (BL-051, docs/roadmap/plans/PHASE_8_PLAN.md §10 item 1): owner-approved 2026-09-22.
+// Phase 8 (BL-056, docs/roadmap/plans/PHASE_8_PLAN.md §10 item 1): owner-approved 2026-09-22.
 test("default YouTube scopes include the yt-analytics.readonly scope, never the monetary scope", () => {
   assert.equal(YOUTUBE_SCOPES.includes(YOUTUBE_ANALYTICS_READ_SCOPE), true);
   assert.equal(YOUTUBE_ANALYTICS_READ_SCOPE, "https://www.googleapis.com/auth/yt-analytics.readonly");

@@ -9,7 +9,7 @@ import {
 
 // Deliberately thin: only wraps the db.ts functions this module actually needs
 // (upsertVideoMetric + a channel-scoped metrics read + a read of already-synced videos +
-// the BL-054 auto-collection timestamp/settings). Never wraps upsertVideos/upsertChannel/
+// the BL-059 auto-collection timestamp/settings). Never wraps upsertVideos/upsertChannel/
 // markChannelSynced or anything from youtube-write-gateway -- this module has no legitimate
 // reason to ever call them (docs/roadmap/plans/PHASE_8_PLAN.md §7's "never writes to
 // videos/channels" acceptance criterion; see ../write-path-inventory.test.ts for the automated

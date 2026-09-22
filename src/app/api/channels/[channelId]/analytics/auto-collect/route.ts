@@ -7,7 +7,7 @@ import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-stat
 
 const core = createAnalyticsCore();
 
-// Phase 8 (BL-054, docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5) -- called once per dashboard
+// Phase 8 (BL-059, docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5) -- called once per dashboard
 // mount (src/app/dashboard/page.tsx), regardless of which tab is active ("при входе в наш
 // дашборд", the owner's own words), not on a repeating interval. A real mutation when (and only
 // when) it decides to actually collect -- `runAutoCollectionIfStale` marks the per-channel

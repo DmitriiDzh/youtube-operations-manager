@@ -8,7 +8,7 @@ type SyncSettings = {
 };
 
 /**
- * Settings-tab section for BL-054's daily auto-collection boundary
+ * Settings-tab section for BL-059's daily auto-collection boundary
  * (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-4). Not a boolean toggle (no ToggleSwitch
  * here) -- these are two text values, validated server-side before being saved
  * (`isValidLocalTimeOfDay`/`isValidIanaTimezone`, `/api/settings`). The timezone defaults to this

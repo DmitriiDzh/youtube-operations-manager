@@ -153,7 +153,7 @@ test("video_metrics_daily: a fractional metricValue round-trips exactly through 
     assert.equal(rows[0].metricValue, 63.75);
   }));
 
-// Phase 8 (BL-053, docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 4): the Web UI's read-only display
+// Phase 8 (BL-058, docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 4): the Web UI's read-only display
 // needs every metric row for a channel, across every video, in one query -- and only that
 // channel's own rows, never another locally-known channel's (the same channel-scoping discipline
 // AGENTS.md §F requires elsewhere).
@@ -186,7 +186,7 @@ test("video_metrics_daily: listVideoMetricsByChannel returns every video's rows 
     assert.ok(!rows.some((r) => r.videoId === "vid3"), "must never include a different channel's video");
   }));
 
-// Phase 8 (BL-054, docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5): the per-channel timestamp
+// Phase 8 (BL-059, docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5): the per-channel timestamp
 // the staleness check reads.
 test("channels.analyticsLastAutoCollectedAt: starts NULL, and markAnalyticsAutoCollected sets it for exactly the given channel", () =>
   withTempClient(async (client) => {
@@ -207,7 +207,7 @@ test("channels.analyticsLastAutoCollectedAt: starts NULL, and markAnalyticsAutoC
     assert.equal(afterB.analyticsLastAutoCollectedAt, null, "must never touch a different channel's row");
   }));
 
-// Phase 8 (BL-054): the one piece of getAnalyticsSyncSettings with real, silently-regressable
+// Phase 8 (BL-059): the one piece of getAnalyticsSyncSettings with real, silently-regressable
 // state -- detect the OS timezone once, persist it, and never re-detect on a later read (so a
 // later owner override in Settings is never clobbered by a fresh OS read).
 test("getAnalyticsSyncSettings: detects and persists the OS timezone once, never re-detects on a later read", () =>

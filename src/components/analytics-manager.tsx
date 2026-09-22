@@ -50,11 +50,11 @@ function formatMetricValue(value: number): string {
 }
 
 /**
- * The "Analytics" tab (Phase 8, BL-053, docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 4) --
+ * The "Analytics" tab (Phase 8, BL-058, docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 4) --
  * replaces the earlier "coming soon" placeholder (Studio-parity S6-stub, BL-017) now that the
- * OAuth scope (BL-051) and the collection adapter (BL-052) exist. Deliberately minimal: a manual
+ * OAuth scope (BL-056) and the collection adapter (BL-057) exist. Deliberately minimal: a manual
  * "Collect now" trigger and a read-only table of whatever has been collected so far -- no
- * scheduling UI yet (BL-054, separate), no reports/comparisons (Phase 10's own scope per
+ * scheduling UI yet (BL-059, separate), no reports/comparisons (Phase 10's own scope per
  * `docs/roadmap/FUTURE_PHASES.md` §4's "facts only" constraint).
  */
 export function AnalyticsManager() {

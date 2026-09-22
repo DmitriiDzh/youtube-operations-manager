@@ -87,7 +87,7 @@ test("analytics write-path-inventory: no file in src/lib/analytics references a 
 // mirroring gateway-inventory.test.ts's own "curated by inspection" allowlist discipline.
 const ALLOWED_DB_WRITE_IMPORTS = new Set([
   "upsertVideoMetric", // this module's own metric rows
-  "markAnalyticsAutoCollected", // this module's own single channels column (BL-054)
+  "markAnalyticsAutoCollected", // this module's own single channels column (BL-059)
 ]);
 
 test("analytics write-path-inventory: adapters/store.ts imports no db.ts write function beyond its own two", async () => {
