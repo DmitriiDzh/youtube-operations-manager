@@ -26,6 +26,7 @@ function createServicesFixture(opts: {
   analyticsResponses: Record<string, FakeAnalyticsRow[] | Error>;
   syncSettings?: { localTime: string; timezone: string };
   now?: Date;
+  authResolverError?: Error;
 }) {
   const channelAccess = createFakeChannelAccess();
   const analyticsCalls: Array<{ channelId: string; videoId: string }> = [];
@@ -79,6 +80,7 @@ function createServicesFixture(opts: {
 
   const authResolver = {
     async resolve(): Promise<ResolvedCredentials> {
+      if (opts.authResolverError) throw opts.authResolverError;
       return {
         credentialRef: { userId: "user-1" },
         accessToken: "fake-access-token",
@@ -276,6 +278,37 @@ test("collectMetrics: a manual call is refused if an auto-collection already ran
     (error: unknown) => error instanceof DomainError && error.code === "analytics_data_current"
   );
   assert.equal(analyticsCalls.length, 1, "the manual call must never reach the real Analytics API");
+});
+
+// Regression test for a real bug the project owner hit in this session ("Credentials are missing
+// required OAuth scopes"): the gate used to mark the channel collected-for-today BEFORE resolving
+// credentials, so a credential failure -- zero real data fetched -- still locked the manual button
+// out until tomorrow's boundary, with no UI way to undo it. The mark must only happen once
+// credentials have actually resolved, so a failed attempt leaves the channel exactly as stale as
+// it was and a retry is still possible immediately.
+test("collectMetrics: a credential-resolution failure does not mark the channel as collected -- the next attempt is still allowed", async () => {
+  const { services, channelAccess, lastAutoCollectedAtByChannel, analyticsCalls } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+    now: new Date("2026-09-22T13:00:00Z"),
+    authResolverError: new Error("Credentials are missing required OAuth scopes"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(() =>
+    services.collectMetrics({
+      credentialRef: { userId: "user-1" },
+      channelId: "UC_A",
+      startDate: "2026-09-01",
+      endDate: "2026-09-01",
+    })
+  );
+  assert.equal(
+    lastAutoCollectedAtByChannel.get("UC_A") ?? null,
+    null,
+    "a credential failure must not mark the channel as collected"
+  );
+  assert.equal(analyticsCalls.length, 0, "no real Analytics API call was made");
 });
 
 // One video's collection failing (e.g. an API error) must not fail the whole channel's run.

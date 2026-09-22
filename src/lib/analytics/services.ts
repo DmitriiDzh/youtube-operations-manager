@@ -147,10 +147,17 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
      * lives here, not duplicated in each caller. If this channel was already collected on/after
      * today's configured local boundary, the call is refused outright (`analytics_data_current`,
      * no real API call made) rather than silently re-fetching data YouTube itself has not
-     * refreshed yet. Mark-then-run (`channelStore.markAnalyticsAutoCollected` called before the
-     * real work, not after) for the same reason `runAutoCollectionIfStale` originally used it:
-     * two concurrent callers (a manual click racing the auto-trigger, or two browser tabs) must
-     * never both see "stale" and both spend real Analytics API quota on the same day's data.
+     * refreshed yet.
+     *
+     * The mark happens right after credentials resolve successfully -- deliberately NOT before
+     * (an earlier version of this gate marked the channel collected before resolving credentials,
+     * which meant a credential failure, e.g. the real "Credentials are missing required OAuth
+     * scopes" case this owner hit earlier, left the channel marked collected-for-today with zero
+     * data actually fetched, locking even the manual button until tomorrow's boundary with no UI
+     * way out). Marking after a successful resolve narrows, rather than removes, the concurrency
+     * window two callers (a manual click racing the auto-trigger, or two browser tabs) could both
+     * pass through in -- both would then spend one real day's worth of Analytics quota instead of
+     * none, which is strictly better than a 24h lockout from a single failed attempt.
      */
     async collectMetrics(input: unknown): Promise<CollectMetricsResult> {
       const parsedInput = parseWithSchema(collectMetricsInputSchema, input, "collect metrics input");
@@ -178,12 +185,12 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           });
         }
 
-        await deps.channelStore.markAnalyticsAutoCollected(parsedInput.channelId, now);
-
         const credentials = await deps.authResolver.resolve({
           credentialRef: parsedInput.credentialRef,
           requiredScopes: [YOUTUBE_ANALYTICS_READ_SCOPE],
         });
+
+        await deps.channelStore.markAnalyticsAutoCollected(parsedInput.channelId, now);
 
         const videos = await deps.videoStore.listVideosByChannel(parsedInput.channelId);
 
