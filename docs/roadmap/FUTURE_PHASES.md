@@ -207,6 +207,19 @@ implemented during Phases 7-10 unless separately approved:
   constraints found by reading the actual export/import code (export is expensive — an app-wide
   lock plus a full-database `VACUUM` — so "export on every single change" is deliberately not
   the literal design; see that plan §2).
+- **Migrate the remaining whole-DB Device-Handoff tables onto Automerge, retiring whole-database
+  snapshot transfer entirely** (recorded 2026-09-22, owner request via Telegram: "Все остальное
+  думаю можно перевести на новую систему миграции"). Beyond the already-migrated draft layer
+  (`change_sets`/`changes`, CD1-CD7), the remaining tables split into: pure external caches needing
+  no CRDT work at all (`channels`/`videos` — always re-derivable via "Sync now"); operator-authored
+  config that fits the exact pattern already proven for drafts (`channel_editorial_profiles`,
+  `ai_connections` config fields); append-only draft provenance (`ai_localization_generation_
+  provenance`); and the safety-critical write pipeline (`batches`/`batch_ledger_rows`/
+  `batch_attempts`/`audit_events`), which ADR 0006 originally excluded and which reopening needs
+  its own explicit owner decision. If all of these move off whole-DB snapshot transfer, the
+  Device-Handoff mechanism itself (and `BL-027`'s cost question) becomes moot rather than merely
+  answered. See `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` for the full category
+  breakdown, findings, and the specific decisions still open before any slice can be assigned.
 - **Real Google Cloud Quotas/Monitoring numbers for the gateway traffic counters** (recorded
   2026-09-22, owner request via Telegram: "Можем ли мы собирать статистику?... сколько наши
   лимиты"). The gateway traffic counters (rolling 24h attempts/succeeded per category,
