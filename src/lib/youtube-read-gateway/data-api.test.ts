@@ -7,7 +7,7 @@ import {
   getVideosMetadataContextBatch,
   listSupportedLanguages,
   listUploadsPlaylistVideoIds,
-} from "./youtube";
+} from "./data-api";
 
 function fakeYoutubeClient(overrides: {
   channelsList?: youtube_v3.Youtube["channels"]["list"];

@@ -240,7 +240,8 @@ test("applyVideoMetadataUpdate sends id/snippet/localizations exactly as given",
 });
 
 // ---------------------------------------------------------------------------
-// Playlist write primitives -- moved from src/lib/youtube.ts, and (deletePlaylist) newly
+// Playlist write primitives -- moved from what is now src/lib/youtube-read-gateway/data-api.ts
+// (src/lib/youtube.ts at the time of this move), and (deletePlaylist) newly
 // wrapped here so `playlists.delete` no longer lives inline in
 // `playlist-management/adapters/youtube-api.ts` (owner instruction: the gateway is the only
 // place allowed to make this call).

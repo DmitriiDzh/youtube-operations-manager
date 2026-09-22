@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { getAuthenticatedYoutube } from "@/lib/youtube";
+import { getAuthenticatedYoutube } from "@/lib/youtube-read-gateway";
 import { createChannelAccessCore } from "@/lib/channel-access";
 
 const channelAccess = createChannelAccessCore();

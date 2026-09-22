@@ -4,7 +4,7 @@ import {
   getChannelForSync,
   getVideosMetadataContextBatch,
   listUploadsPlaylistVideoIds,
-} from "@/lib/youtube";
+} from "@/lib/youtube-read-gateway";
 import type { ResolvedCredentials } from "../contracts";
 
 function createAuthorizedClient(credentials: ResolvedCredentials) {

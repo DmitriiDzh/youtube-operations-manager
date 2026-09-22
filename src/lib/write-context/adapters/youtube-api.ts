@@ -1,5 +1,5 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
-import { createYoutubeClient } from "@/lib/youtube";
+import { createYoutubeClient } from "@/lib/youtube-read-gateway";
 import type { ResolvedCredentials } from "@/lib/video-metadata/contracts";
 import type { WriteChannelInfo } from "../contracts";
 

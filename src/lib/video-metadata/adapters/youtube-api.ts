@@ -5,7 +5,7 @@ import {
   getVideoById,
   getVideoMetadataContext,
   listVideosByChannel,
-} from "@/lib/youtube";
+} from "@/lib/youtube-read-gateway";
 import { applyVideoMetadataUpdate, assertLiveWritesAuthorized } from "@/lib/youtube-write-gateway";
 import {
   DomainError,
