@@ -30,6 +30,15 @@ export type { SqlExecutor };
  *     2026-09-22 (owner instruction, "Правила авто-добавления в плейлисты — можно удалить"),
  *     which also closes RISK-33's `rules.user_id REFERENCES users(id)` scrub hazard
  *     (`docs/TECHNICAL_DEBT.md`).
+ *   - `channels` / `videos` -- removed from this list 2026-09-22
+ *     (`docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §2 Category A, M2). Both are
+ *     pure caches of the real YouTube API: `upsertChannel`/`upsertVideos` (`src/lib/db.ts`) are
+ *     always a fresh keyed upsert from a real `channel_sync`/"Sync now" call -- there is no
+ *     local-only write path for either table, so every row's true source of truth is YouTube
+ *     itself, never this device's own edits. A new or second device "onboards" this data by
+ *     signing in and clicking "Sync now" instead of receiving a copy of it -- functionally
+ *     identical to refreshing a stale cache, at the cost of one API round-trip nobody was
+ *     avoiding anyway. No CRDT/sync-gateway work needed for either table.
  *
  * `schema_meta` IS included -- the receiving device needs to know what schema version the
  * snapshot's data.db is actually at in order to safely apply migrations to the staged copy
@@ -37,8 +46,6 @@ export type { SqlExecutor };
  */
 export const SNAPSHOT_TRANSFERRED_TABLES = [
   "schema_meta",
-  "channels",
-  "videos",
   "change_sets",
   "changes",
   "channel_editorial_profiles",
