@@ -2131,59 +2131,15 @@ export async function getStoredEditorialProfile(channelId: string): Promise<Stor
 }
 
 /**
- * Upserts a channel's editorial profile, incrementing `version` on every save
- * (including the very first save, which starts at 1) so a later generation can record
- * exactly which version it used (docs/acceptance/PHASE_6_ACCEPTANCE.md AC-PROFILE-04).
- * A field explicitly submitted as `null` clears that field; a field left `undefined`
- * leaves its stored value unchanged (services.ts is responsible for this distinction --
- * this function trusts whatever it is given).
- */
-export async function upsertStoredEditorialProfile(input: {
-  channelId: string;
-  targetAudience?: string | null;
-  toneNotes?: string | null;
-  terminologyNotes?: string | null;
-  titleConstraints?: string | null;
-  descriptionConstraints?: string | null;
-}): Promise<StoredEditorialProfile> {
-  const existing = await getStoredEditorialProfile(input.channelId);
-  const nextVersion = existing ? existing.version + 1 : 1;
-  const now = new Date();
-
-  const merged = {
-    targetAudience: input.targetAudience !== undefined ? input.targetAudience : (existing?.targetAudience ?? null),
-    toneNotes: input.toneNotes !== undefined ? input.toneNotes : (existing?.toneNotes ?? null),
-    terminologyNotes: input.terminologyNotes !== undefined ? input.terminologyNotes : (existing?.terminologyNotes ?? null),
-    titleConstraints: input.titleConstraints !== undefined ? input.titleConstraints : (existing?.titleConstraints ?? null),
-    descriptionConstraints:
-      input.descriptionConstraints !== undefined ? input.descriptionConstraints : (existing?.descriptionConstraints ?? null),
-  };
-
-  if (existing) {
-    await db
-      .update(channelEditorialProfiles)
-      .set({ ...merged, version: nextVersion, updatedAt: now })
-      .where(eq(channelEditorialProfiles.channelId, input.channelId));
-  } else {
-    await db.insert(channelEditorialProfiles).values({
-      channelId: input.channelId,
-      version: nextVersion,
-      ...merged,
-      updatedAt: now,
-    });
-  }
-
-  return { channelId: input.channelId, version: nextVersion, ...merged, updatedAt: now };
-}
-
-/**
- * Raw overwrite upsert -- unlike `upsertStoredEditorialProfile` above, this does NOT compute
- * `version` or merge `undefined`-vs-`null` semantics itself; it writes exactly the row it is
- * given. Used only as the SQL read-projection target for `src/lib/sync-gateway/editorial-
- * profile/` (2026-09-22, `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3) --
- * the Automerge document is the source of truth for versioning once that module owns writes,
- * mirroring `upsertStoredChangeSet`/`upsertStoredChange`'s identical raw-overwrite shape for the
- * draft layer.
+ * Raw overwrite upsert -- writes exactly the row it is given, no `version` computation or
+ * `undefined`-vs-`null` merge semantics of its own. Used only as the SQL read-projection target
+ * for `src/lib/sync-gateway/editorial-profile/` (2026-09-22, `docs/roadmap/plans/
+ * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3) -- that module's Automerge document is now the
+ * source of truth for versioning, mirroring `upsertStoredChangeSet`/`upsertStoredChange`'s
+ * identical raw-overwrite shape for the draft layer. The old direct-SQL
+ * `upsertStoredEditorialProfile`, which computed `version` itself, was deleted the same day once
+ * its only caller was repointed at that module -- confirmed zero remaining callers anywhere in
+ * `src/`, mirroring CD7's identical dead-code check for `createChangeSetStoreAdapter`.
  */
 export async function setStoredEditorialProfileRow(record: StoredEditorialProfile): Promise<void> {
   await db
