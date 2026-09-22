@@ -10,6 +10,14 @@ import type { ReactNode } from "react";
  * после названия раздела... Пусть это всплывает как тултип отдельным локальным окном при
  * наведении или клике"). One shared component so every Settings section renders this the same
  * way, rather than each section re-implementing its own show/hide logic.
+ *
+ * **Anchored to the icon's left edge, growing right, not centered under it** (owner instruction,
+ * 2026-09-22, Telegram, after the icon sits right next to the left sidebar's boundary for most
+ * Settings sections: "тултипы должны учитывать расположение границы левой 'полосы' кнопок, чтобы
+ * не прятаться под нее"). A centered popover (`left-1/2 -translate-x-1/2`) extends half its width
+ * to the left of the icon -- for an icon this close to the sidebar, that pushed the tooltip's left
+ * half under/behind the sidebar. Growing rightward from the icon's own left edge instead keeps the
+ * whole popover inside the content column regardless of how close the icon is to the sidebar.
  */
 export function InfoTooltip({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
@@ -48,7 +56,7 @@ export function InfoTooltip({ children }: { children: ReactNode }) {
         <span
           id={tooltipId}
           role="tooltip"
-          className="absolute left-1/2 top-full z-20 mt-2 w-72 -translate-x-1/2 rounded-lg border border-zinc-700 bg-zinc-800 p-3 text-xs font-normal leading-relaxed text-zinc-300 shadow-lg"
+          className="absolute left-0 top-full z-20 mt-2 w-72 max-w-[min(18rem,90vw)] rounded-lg border border-zinc-700 bg-zinc-800 p-3 text-xs font-normal leading-relaxed text-zinc-300 shadow-lg"
         >
           {children}
         </span>
