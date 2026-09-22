@@ -147,12 +147,29 @@ this plan's §8 posed (msg 350 → msg 356, verbatim, numbered by the owner):
    objected to). **This is consent for the scope, not for merging this branch to `dev`** —
    instruction #4 from msg 349 ("не мердж эту ветку в дев... без моего согласия") is a separate,
    still-standing constraint, unaffected by this answer (`AGENTS.md` §K.2's "a prior approval
-   never carries forward to a new, unrelated action" applies here explicitly).
+   never carries forward to a new, unrelated action" applies here explicitly). **Implemented as
+   BL-051** (`src/lib/auth.ts`'s `YOUTUBE_SCOPES`) — no separate re-consent flow needed to be
+   built, since every existing sign-in path already forces full consent on every login. One thing
+   the owner should know about the one-time re-consent action itself: Google returns a
+   `refresh_token` only when consent is genuinely re-prompted with `access_type=offline` (which
+   this app's flow already sets) — if the resulting token set ever lacks one, the existing
+   `AUTH_REFRESH_TOKEN_MISSING` handling (`docs/SYSTEM_MAP.md` §2.2) already covers it; no new
+   code needed, just something to recognize if it happens rather than treating it as a new bug.
 2. **Metric scope: everything the scope covers, not just `views`.** "Собираем полный объем, все
    что можно вытащить через API" — **supersedes §3's "views alone" and §4's "any metric beyond
    views is out of scope."** Concretely this means every metric in the YouTube Analytics API's
    "Basic user activity" / "Time-based activity" video reports available under
-   `yt-analytics.readonly` alone (verified against the current official docs, 2026-09-22):
+   `yt-analytics.readonly` alone. **Provenance note (added after advisor review, 2026-09-22):**
+   the list below was captured from an automated fetch-and-summarize pass over the official
+   “Available Reports”/metrics pages on 2026-09-22, not independently confirmed
+   metric-by-metric against the API reference or a real response — the same honest-capture
+   discipline `src/lib/youtube-supported-languages.ts` already uses for its own hardcoded list
+   (including that file’s own documented known gap). Treat this as the *starting* list for
+   BL-052, not a verified enumeration: BL-052’s adapter must be designed so an
+   unknown/rejected metric name from a real `reports.query` call degrades to skipping that one
+   metric (recorded/logged), never failing the whole collection run — the real API response,
+   once BL-052 actually calls it, is the authoritative source, this list is only the starting
+   hypothesis.
    `views`, `redViews`, `engagedViews`, `comments`, `likes`, `dislikes`,
    `videosAddedToPlaylists`, `videosRemovedFromPlaylists`, `shares`, `estimatedMinutesWatched`,
    `estimatedRedMinutesWatched`, `averageViewDuration`, `averageViewPercentage`,
@@ -211,10 +228,18 @@ this plan's §8 posed (msg 350 → msg 356, verbatim, numbered by the owner):
      must be stated explicitly in `docs/ARCHITECTURE.md` when the collection job is built — it is
      exactly the kind of thing that stays invisible until someone compares two devices' numbers or
      a report crosses a day boundary.
-5. **Per-video API cost, verified against the real "Tropico Jazz" channel (2026-09-22):** the
-   YouTube Analytics API's video reports do not support combining a `video` (all videos) dimension
-   with a `day` dimension in one query for per-video-per-day granularity (verified against the
-   current official "Available Reports" docs) — daily metrics for a specific video require
+5. **Per-video API cost -- an unconfirmed working hypothesis, not a verified fact (added after
+   advisor review, 2026-09-22).** An automated fetch-and-summarize pass over the official
+   "Available Reports" docs on 2026-09-22 reported that YouTube Analytics API video reports do
+   not support combining a `video` (all videos) dimension with a `day` dimension in one query for
+   per-video-per-day granularity -- a follow-up attempt to independently corroborate that specific
+   claim did not succeed either way. **BL-052 must re-check this directly** (the `dimensions`
+   reference page, or simply attempting a real `dimensions=video,day` query and reading the
+   actual error/response) before committing to a per-video-loop adapter design -- if a single
+   query genuinely does return per-video-per-day rows, the adapter shape changes from N calls to
+   one, which is worth resolving with certainty before writing the loop, not assuming from a page
+   summary. The rest of this item describes the N-calls design *as a contingency*, pending that
+   check: daily metrics for a specific video would require
    `filters=video==VIDEO_ID` with `dimensions=day`, one query per video (though one query already
    covers an entire date range and every requested metric in a single response, so it is one call
    per video **per collection run**, not per video per day per metric). The real channel currently

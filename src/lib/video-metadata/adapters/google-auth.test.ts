@@ -77,6 +77,40 @@ test("resolveGoogleCredentials rejects credentials with insufficient scopes", as
   );
 });
 
+// Phase 8 (BL-051, docs/roadmap/plans/PHASE_8_PLAN.md §10 item 1): a token stored before the
+// analytics scope was added to YOUTUBE_SCOPES (a real "pre-existing user" scenario, not a
+// hypothetical) must fail closed for a future Analytics adapter requiring it -- proving the
+// re-consent claim in BL-051's own commit message, not just asserting it.
+test("resolveGoogleCredentials rejects a pre-Phase-8 token missing the analytics scope", async () => {
+  const resolveGoogleCredentials = createGoogleCredentialResolver({
+    createOAuthClient: () =>
+      makeOAuthClientStub({
+        getTokenInfo: async () => ({ scopes: [authModule.YOUTUBE_READ_SCOPE, authModule.YOUTUBE_WRITE_SCOPE] }),
+      }) as unknown as ReturnType<typeof authModule.createGoogleOAuthClient>,
+    getUserTokens: async () => null,
+    saveUserTokens: async () => undefined,
+  });
+
+  await assert.rejects(
+    () =>
+      resolveGoogleCredentials({
+        credentialRef: {
+          accessToken: "access-token",
+          tokenExpiry: Math.floor(Date.now() / 1000) + 3600,
+          scope: `${authModule.YOUTUBE_READ_SCOPE} ${authModule.YOUTUBE_WRITE_SCOPE}`,
+        },
+        requiredScopes: [authModule.YOUTUBE_ANALYTICS_READ_SCOPE],
+      }),
+    (error: unknown) => {
+      if (!(error instanceof DomainError)) return false;
+      if (error.code !== "AUTH_SCOPE_INSUFFICIENT") return false;
+
+      const details = error.details as { missingScopes?: string[] };
+      return details.missingScopes?.includes(authModule.YOUTUBE_ANALYTICS_READ_SCOPE) === true;
+    }
+  );
+});
+
 test("resolveGoogleCredentials fails consistently when token is expired and cannot refresh", async () => {
   const resolveGoogleCredentials = createGoogleCredentialResolver({
     createOAuthClient:
