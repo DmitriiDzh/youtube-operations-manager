@@ -294,7 +294,7 @@ test("setDataApiReadsEnabled/setAnalyticsReadsEnabled: an explicit false persist
 // zeroed row (not absent), a category's counts are independent of the others, concurrent writes
 // are never lost, and -- the core behavior a rolling window actually exists to provide -- an
 // event outside the window is excluded from the count even though it is still in the table.
-test("getGatewayTrafficLast24h: all four categories report a zeroed row before any call is recorded", () =>
+test("getGatewayTrafficLast24h: all five categories report a zeroed row before any call is recorded", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
@@ -303,7 +303,7 @@ test("getGatewayTrafficLast24h: all four categories report a zeroed row before a
 
     assert.deepEqual(
       windows.map((w) => w.category).sort(),
-      ["analytics_reads", "data_api_reads", "live_writes", "mcp_tool_calls"]
+      ["analytics_reads", "cloud_monitoring_reads", "data_api_reads", "live_writes", "mcp_tool_calls"]
     );
     for (const w of windows) {
       assert.equal(w.totalAttempts, 0);

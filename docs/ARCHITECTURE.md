@@ -987,3 +987,28 @@ project (Monitoring reads are not the kind of API this project is trying to cons
 not optimized; revisit if this becomes a real cost or latency concern. No dedicated
 `/api/cloud-quotas` route exists — the numbers ride along inside the existing `/api/settings`
 snapshot both consuming components already fetch.
+
+### 16.8 Cloud Monitoring reads get the same traffic counter as the other gateways
+
+Owner instruction, 2026-09-22, once told checking Google Cloud's own quota numbers is itself a
+real API call: *"в таком случае на него нам нужно повесить такие же счетчики, как на другие API.
+Он сделан по такой же схеме модуля / шлюза? чтобы все такие запросы шли только через него и
+никак иначе?"* -- confirming the same single-gateway-per-API-category principle
+(`docs/decisions/0007-youtube-read-gateway.md`) should apply here too.
+
+`monitoring-client.ts`'s `callMonitoring` function is already the one choke point both
+`fetchDailyQuotaLimit` and `fetchDailyQuotaUsage` (including its pagination loop) go through --
+extended to call `recordGatewayCallOutcome("cloud_monitoring_reads", "allowed")` on every real
+attempt, mirroring `assertDataApiReadsAuthorized`'s own pattern
+(`src/lib/youtube-read-gateway/data-api.ts`). A fifth `GatewayTrafficCategory` value
+(`src/lib/db.ts`) means it renders through the exact same `GatewayTrafficStats` component the
+other three gateways already use -- shown in the "Google Cloud connection" Settings card. Like
+`mcp_tool_calls`, it never records a `blocked` outcome: there is no enable/disable toggle for this
+category, so every attempt is allowed by definition.
+
+**Mechanical enforcement is a literal-string check, not an import check**, unlike
+`read-gateway-inventory.test.ts`: this module never imports `googleapis` at all (§16.2), so there
+is nothing for that kind of check to catch. `cloud-quotas-inventory.test.ts` instead fails the
+build if any production file outside `adapters/monitoring-client.ts` contains the literal string
+`monitoring.googleapis.com` -- catching a future accidental second call site that would silently
+bypass both this counter and the single-funnel property it exists to protect.

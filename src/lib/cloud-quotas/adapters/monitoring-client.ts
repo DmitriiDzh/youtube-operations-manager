@@ -3,11 +3,14 @@
 // (`revokeGoogleToken`, `fetchGoogleIdentity`, `startGoogleDeviceAuthorization` all use plain
 // `fetch`, not the `googleapis` client library). This also means this module is exempt from
 // `read-gateway-inventory.test.ts`'s "no runtime import from googleapis" check by construction --
-// there is nothing to import.
+// there is nothing to import. `cloud-quotas-inventory.test.ts` is this module's own equivalent
+// enforcement: no file outside this module may call `monitoring.googleapis.com` directly.
 //
 // `fetchImpl` is an explicit dependency (never a bare global `fetch` reference), matching
 // `src/lib/ai-connections/adapters/openai-compatible.ts`'s own `FetchLike` convention -- so a
 // test can never reach a real host by omission.
+import { recordGatewayCallOutcome } from "@/lib/db";
+
 export type FetchLike = (url: string, init: RequestInit) => Promise<{
   ok: boolean;
   status: number;
@@ -21,7 +24,13 @@ type TimeSeriesResponse = {
   nextPageToken?: string;
 };
 
+// The single choke point every real call in this module goes through (both
+// `fetchDailyQuotaLimit` and `fetchDailyQuotaUsage`'s pagination loop) -- the one place traffic
+// is recorded, mirroring `assertDataApiReadsAuthorized`'s own choke-point pattern
+// (`src/lib/youtube-read-gateway/data-api.ts`). Never records `blocked` -- there is no
+// enable/disable toggle for this category, so every attempt is allowed by definition.
 async function callMonitoring(args: { url: string; accessToken: string; fetchImpl: FetchLike }): Promise<TimeSeriesResponse> {
+  await recordGatewayCallOutcome("cloud_monitoring_reads", "allowed");
   const response = await args.fetchImpl(args.url, {
     headers: { authorization: `Bearer ${args.accessToken}` },
   } as RequestInit);

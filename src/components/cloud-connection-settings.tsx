@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 
 type Status = { connected: false } | { connected: true; connectedEmail: string; scope: string; connectedAt: string };
 
@@ -8,11 +9,14 @@ type Status = { connected: false } | { connected: true; connectedEmail: string; 
  * Settings-tab card for the Google Cloud connection (`docs/decisions/0008-cloud-connection.md`,
  * owner instruction, 2026-09-22): a single, device-persistent grant, entirely decoupled from the
  * per-channel YouTube login above -- connecting/disconnecting here never affects which channel is
- * active, and switching channels never affects this connection. This slice only shows
- * connect/disconnect status; no Cloud Quotas/Monitoring numbers exist yet (a future slice).
+ * active, and switching channels never affects this connection. Real limit/usage numbers
+ * (`src/lib/cloud-quotas/`) are shown under the Data API reads / Live writes / Analytics reads
+ * toggles elsewhere in Settings, not here -- this card is connection status only, plus its own
+ * `cloud_monitoring_reads` traffic count (how many real calls checking those numbers have made).
  */
 export function CloudConnectionSettings() {
   const [status, setStatus] = useState<Status | null>(null);
+  const [gatewayTraffic, setGatewayTraffic] = useState<GatewayTrafficWindowView[] | undefined>(undefined);
   const [disconnecting, setDisconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Read directly from window.location rather than `useSearchParams()` -- this page is statically
@@ -27,10 +31,18 @@ export function CloudConnectionSettings() {
     setStatus((await res.json()) as Status);
   }, []);
 
+  const fetchGatewayTraffic = useCallback(async () => {
+    const res = await fetch("/api/settings");
+    if (!res.ok) return;
+    const data = (await res.json()) as { gatewayTraffic?: GatewayTrafficWindowView[] };
+    setGatewayTraffic(data.gatewayTraffic);
+  }, []);
+
   useEffect(() => {
     fetchStatus();
+    fetchGatewayTraffic();
     setCallbackResult(new URLSearchParams(window.location.search).get("cloudConnection"));
-  }, [fetchStatus]);
+  }, [fetchStatus, fetchGatewayTraffic]);
 
   async function handleDisconnect() {
     setDisconnecting(true);
@@ -57,10 +69,10 @@ export function CloudConnectionSettings() {
       <div>
         <h3 className="text-sm font-semibold text-zinc-100">Google Cloud connection</h3>
         <p className="mt-1 text-xs text-zinc-500">
-          A single, device-persistent grant for the project&apos;s Google Cloud Quotas/Monitoring
-          numbers (not built yet -- this only establishes the connection). Independent of the
-          YouTube channel login above: connecting or disconnecting here does not affect which
-          channel is active, and switching channels never revokes this grant.
+          A single, device-persistent grant powering the real Google Cloud quota numbers shown
+          under the toggles above. Independent of the YouTube channel login above: connecting or
+          disconnecting here does not affect which channel is active, and switching channels never
+          revokes this grant.
         </p>
       </div>
 
@@ -77,6 +89,7 @@ export function CloudConnectionSettings() {
             Connected as <span className="font-mono text-zinc-100">{status.connectedEmail}</span>
           </p>
           <p className="text-xs text-zinc-500">Since {new Date(status.connectedAt).toLocaleString()}</p>
+          <GatewayTrafficStats window={gatewayTraffic?.find((c) => c.category === "cloud_monitoring_reads")} />
           <button
             onClick={handleDisconnect}
             disabled={disconnecting}

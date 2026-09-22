@@ -493,6 +493,13 @@ export const appSettings = sqliteTable("app_settings", {
  * `pruneOldGatewayCallEvents` for why this table does not grow unboundedly forever.
  * `mcp_tool_calls` never records a `blocked` outcome: when MCP connection is off, a tool is
  * never registered at all, so there is no failed call to log, only an absent one.
+ *
+ * `cloud_monitoring_reads` (added 2026-09-22, owner instruction, Telegram, after being told
+ * checking Google Cloud's own quota numbers is itself a real API call: "в таком случае на него
+ * нам нужно повесить такие же счетчики, как на другие API") -- every real call
+ * `src/lib/cloud-quotas/adapters/monitoring-client.ts` makes to the Cloud Monitoring API. Also
+ * never records `blocked`: there is no enable/disable toggle for this category (unlike
+ * `data_api_reads`/`analytics_reads`), so every attempt is, by definition, allowed.
  */
 export const gatewayCallEvents = sqliteTable("gateway_call_events", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -1637,7 +1644,12 @@ export async function setAnalyticsReadsEnabled(enabled: boolean, database: AppDb
   await setAppSetting(ANALYTICS_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
 }
 
-export type GatewayTrafficCategory = "data_api_reads" | "analytics_reads" | "live_writes" | "mcp_tool_calls";
+export type GatewayTrafficCategory =
+  | "data_api_reads"
+  | "analytics_reads"
+  | "live_writes"
+  | "mcp_tool_calls"
+  | "cloud_monitoring_reads";
 
 export type GatewayTrafficWindow = {
   category: GatewayTrafficCategory;
@@ -1652,6 +1664,7 @@ const GATEWAY_TRAFFIC_CATEGORIES: readonly GatewayTrafficCategory[] = [
   "analytics_reads",
   "live_writes",
   "mcp_tool_calls",
+  "cloud_monitoring_reads",
 ];
 
 // Kept well past the 24h window this table exists to answer (owner instruction, 2026-09-22:
