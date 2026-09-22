@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   computeDefaultAutoCollectionRange,
+  computeNextRefreshAt,
   isAnalyticsCollectionStale,
   isValidIanaTimezone,
   isValidLocalTimeOfDay,
@@ -156,6 +157,56 @@ test("computeDefaultAutoCollectionRange: rolls over a month/year boundary correc
   });
   assert.equal(endDate, "2027-01-02");
   assert.equal(startDate, "2026-12-26");
+});
+
+// Owner instruction, 2026-09-22: "Надо возращать сообщение что актуальная на сегодня информация
+// и новая будет доступна через столько-то времени". Every expected value here is computed by
+// hand from the zone's own documented UTC offset (matching this file's own established
+// discipline, AGENTS.md §L), never derived by calling computeNextRefreshAt and copying its output.
+test("computeNextRefreshAt: UTC -- next refresh is tomorrow's local date at the boundary time, as an absolute instant", () => {
+  const result = computeNextRefreshAt({
+    now: new Date("2026-09-22T13:00:00Z"),
+    timezone: "UTC",
+    localTime: "12:00",
+  });
+  assert.equal(result.toISOString(), "2026-09-23T12:00:00.000Z");
+});
+
+test("computeNextRefreshAt: respects real DST transitions for America/New_York, not a fixed offset", () => {
+  // January -- EST, UTC-5. Tomorrow (Jan 16) at 12:00 EST = 17:00Z.
+  assert.equal(
+    computeNextRefreshAt({
+      now: new Date("2026-01-15T20:00:00Z"),
+      timezone: "America/New_York",
+      localTime: "12:00",
+    }).toISOString(),
+    "2026-01-16T17:00:00.000Z"
+  );
+
+  // July -- EDT, UTC-4. Tomorrow (Jul 16) at 12:00 EDT = 16:00Z.
+  assert.equal(
+    computeNextRefreshAt({
+      now: new Date("2026-07-15T20:00:00Z"),
+      timezone: "America/New_York",
+      localTime: "12:00",
+    }).toISOString(),
+    "2026-07-16T16:00:00.000Z"
+  );
+});
+
+// The real edge case the iterative offset-correction exists for: `now` (March 7, still EST,
+// UTC-5) and the TARGET day (March 8, the real 2026 US spring-forward date -- clocks jump from
+// 02:00 EST to 03:00 EDT) sit on opposite sides of the transition. The boundary (12:00, well
+// after the 2am jump) falls in EDT (UTC-4) on the target day even though `now` itself is still
+// in EST -- a correction based on *today's* offset instead of the target day's own would compute
+// 2026-03-08T17:00:00Z (off by exactly the 1h DST jump) instead of the correct 16:00Z.
+test("computeNextRefreshAt: uses the TARGET day's own offset, not the offset of the day `now` falls on, across a spring-forward transition", () => {
+  const result = computeNextRefreshAt({
+    now: new Date("2026-03-07T20:00:00Z"), // March 7, still EST (UTC-5)
+    timezone: "America/New_York",
+    localTime: "12:00",
+  });
+  assert.equal(result.toISOString(), "2026-03-08T16:00:00.000Z");
 });
 
 test("isValidIanaTimezone accepts real zones, rejects garbage without throwing", () => {

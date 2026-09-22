@@ -64,6 +64,10 @@ export function AnalyticsManager() {
   const [loadingRows, setLoadingRows] = useState(false);
   const [collecting, setCollecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Separate from `error` -- "already up to date" (owner instruction, 2026-09-22's daily
+  // freshness gate) is expected, normal behavior, not a failure, so it gets neutral styling
+  // rather than the red error box below.
+  const [dataCurrentNotice, setDataCurrentNotice] = useState<string | null>(null);
   const [collectResult, setCollectResult] = useState<CollectResult | null>(null);
   const [page, setPage] = useState(1);
 
@@ -114,6 +118,7 @@ export function AnalyticsManager() {
     if (!channel) return;
     setCollecting(true);
     setError(null);
+    setDataCurrentNotice(null);
     setCollectResult(null);
     try {
       const res = await fetch(`/api/channels/${encodeURIComponent(channel.channelId)}/analytics/collect`, {
@@ -123,7 +128,13 @@ export function AnalyticsManager() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Collection failed");
+        if (data.error === "analytics_data_current" && data.details?.nextRefreshAt) {
+          setDataCurrentNotice(
+            `Analytics data is already up to date for today -- YouTube itself only refreshes it about once a day. Next refresh available at ${new Date(data.details.nextRefreshAt).toLocaleString()}.`
+          );
+        } else {
+          setError(data.message ?? "Collection failed");
+        }
         return;
       }
       setCollectResult({
@@ -212,6 +223,12 @@ export function AnalyticsManager() {
               ` (${collectResult.skippedVideoIds.length} video${collectResult.skippedVideoIds.length === 1 ? "" : "s"} skipped due to an error)`}
             .
           </p>
+        )}
+
+        {dataCurrentNotice && (
+          <div className="rounded-lg border border-zinc-700 bg-zinc-800/60 p-3 text-sm text-zinc-300">
+            {dataCurrentNotice}
+          </div>
         )}
 
         {error && (
