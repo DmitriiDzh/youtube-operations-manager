@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { CloudQuotaProgress, type ServiceQuotaStatusView } from "./cloud-quota-progress";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
+import { InfoTooltip } from "./info-tooltip";
 import { ToggleSwitch } from "./toggle-switch";
 
 type Settings = {
@@ -79,13 +80,15 @@ export function ReadGatewaySettings() {
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div>
-        <h3 className="text-sm font-semibold text-zinc-100">Data API reads</h3>
-        <p className="mt-1 text-xs text-zinc-500">
-          On by default. Governs every real call to the YouTube Data API v3 (channel sync, video
-          listing, playlists). Turning this off also fails any write path that depends on a read
-          first (Batches, the pre-write channel identity check) -- Live writes above still
-          separately governs whether a write is otherwise allowed.
-        </p>
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
+          Data API reads
+          <InfoTooltip>
+            On by default. Governs every real call to the YouTube Data API v3 (channel sync, video
+            listing, playlists). Turning this off also fails any write path that depends on a read
+            first (Batches, the pre-write channel identity check) -- Live writes above still
+            separately governs whether a write is otherwise allowed.
+          </InfoTooltip>
+        </h3>
         <div className="mt-2 flex items-center gap-2">
           <ToggleSwitch
             label="Enable Data API reads"
@@ -101,11 +104,13 @@ export function ReadGatewaySettings() {
       </div>
 
       <div className="border-t border-zinc-800 pt-4">
-        <h3 className="text-sm font-semibold text-zinc-100">Analytics reads</h3>
-        <p className="mt-1 text-xs text-zinc-500">
-          On by default. Governs every real call to the YouTube Analytics API (the Analytics
-          tab&apos;s manual and automatic collection).
-        </p>
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
+          Analytics reads
+          <InfoTooltip>
+            On by default. Governs every real call to the YouTube Analytics API (the Analytics
+            tab&apos;s manual and automatic collection).
+          </InfoTooltip>
+        </h3>
         <div className="mt-2 flex items-center gap-2">
           <ToggleSwitch
             label="Enable Analytics reads"

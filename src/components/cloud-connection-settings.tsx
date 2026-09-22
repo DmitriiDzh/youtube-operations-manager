@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { CloudQuotaProgressPerMinute, type PerMinuteQuotaStatusView } from "./cloud-quota-progress";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
+import { InfoTooltip } from "./info-tooltip";
 
 type Status = { connected: false } | { connected: true; connectedEmail: string; scope: string; connectedAt: string };
 
@@ -75,13 +76,15 @@ export function CloudConnectionSettings() {
   return (
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div>
-        <h3 className="text-sm font-semibold text-zinc-100">Google Cloud connection</h3>
-        <p className="mt-1 text-xs text-zinc-500">
-          A single, device-persistent grant powering the real Google Cloud quota numbers shown
-          under the toggles above. Independent of the YouTube channel login above: connecting or
-          disconnecting here does not affect which channel is active, and switching channels never
-          revokes this grant.
-        </p>
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
+          Google Cloud connection
+          <InfoTooltip>
+            A single, device-persistent grant powering the real Google Cloud quota numbers shown
+            under the toggles above. Independent of the YouTube channel login above: connecting or
+            disconnecting here does not affect which channel is active, and switching channels
+            never revokes this grant.
+          </InfoTooltip>
+        </h3>
       </div>
 
       {callbackResult === "connected" && (
