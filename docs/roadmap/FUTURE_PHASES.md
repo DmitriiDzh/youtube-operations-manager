@@ -207,6 +207,17 @@ implemented during Phases 7-10 unless separately approved:
   constraints found by reading the actual export/import code (export is expensive — an app-wide
   lock plus a full-database `VACUUM` — so "export on every single change" is deliberately not
   the literal design; see that plan §2).
+- **Real Google Cloud Quotas/Monitoring numbers for the gateway traffic counters** (recorded
+  2026-09-22, owner request via Telegram: "Можем ли мы собирать статистику?... сколько наши
+  лимиты"). The gateway traffic counters (rolling 24h attempts/succeeded per category,
+  `docs/SYSTEM_MAP.md` §2.9k) answer "how much are we calling," not "how close are we to Google's
+  own limits." Splits into three slices: (1) the counters themselves (done); (2) a single,
+  device-persistent Google Cloud OAuth grant, entirely decoupled from per-channel YouTube login so
+  a channel switch/re-login never revokes it (`docs/decisions/0008-cloud-connection.md`, done); (3)
+  the actual Cloud Quotas API (`quotaInfos.list`, limits, requires the full `cloud-platform` scope
+  per Google's own reference — no narrower option) and Cloud Monitoring API (`timeseries.list`,
+  actual usage) calls, surfaced in Settings (not started — no plan document exists yet for this
+  slice specifically).
 
 ## 8. How to use this roadmap in future sessions
 

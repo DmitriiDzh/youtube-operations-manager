@@ -7,6 +7,7 @@ import { createClient, type Client } from "@libsql/client";
 import { eq } from "drizzle-orm";
 import {
   channels,
+  clearStoredCloudConnection,
   copyLegacyDatabaseInto,
   createIsolatedDb,
   gatewayCallEvents,
@@ -14,6 +15,7 @@ import {
   getAnalyticsSyncSettings,
   getDataApiReadsEnabled,
   getGatewayTrafficLast24h,
+  getStoredCloudConnection,
   initializeDatabaseSchema,
   listVideoMetricsByChannel,
   listVideoMetricsByVideo,
@@ -26,6 +28,7 @@ import {
   setAnalyticsSyncSettings,
   setDataApiReadsEnabled,
   type AppDb,
+  upsertStoredCloudConnection,
   upsertVideoMetric,
   videos,
 } from "./db";
@@ -611,4 +614,68 @@ test("copyLegacyDatabaseInto: a failure partway through rolls back every table, 
     // failed. A partial result here would be exactly the silent data loss RISK-25 describes.
     assert.equal(await tableExists(destClient, "users"), false);
     assert.equal(await tableExists(destClient, "channels"), false);
+  }));
+
+// cloud_connection (SCHEMA_MIGRATIONS version 11, docs/decisions/0008-cloud-connection.md): a
+// true singleton row, keyed internally on a fixed id -- never exposed to callers, who only ever
+// see "connected or not."
+test("getStoredCloudConnection: returns null before anything is ever connected", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    assert.equal(await getStoredCloudConnection(isolatedDb), null);
+  }));
+
+test("upsertStoredCloudConnection then getStoredCloudConnection round-trips the stored fields", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await upsertStoredCloudConnection(
+      { connectedEmail: "owner@example.com", scope: "https://www.googleapis.com/auth/cloud-platform", ciphertext: "c1", iv: "i1", authTag: "t1" },
+      isolatedDb
+    );
+
+    const stored = await getStoredCloudConnection(isolatedDb);
+    assert.equal(stored?.connectedEmail, "owner@example.com");
+    assert.equal(stored?.scope, "https://www.googleapis.com/auth/cloud-platform");
+    assert.equal(stored?.ciphertext, "c1");
+    assert.ok(stored?.connectedAt instanceof Date);
+  }));
+
+test("upsertStoredCloudConnection called twice replaces the single row rather than inserting a second one", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await upsertStoredCloudConnection(
+      { connectedEmail: "first@example.com", scope: "scope-a", ciphertext: "c1", iv: "i1", authTag: "t1" },
+      isolatedDb
+    );
+    await upsertStoredCloudConnection(
+      { connectedEmail: "second@example.com", scope: "scope-b", ciphertext: "c2", iv: "i2", authTag: "t2" },
+      isolatedDb
+    );
+
+    const stored = await getStoredCloudConnection(isolatedDb);
+    assert.equal(stored?.connectedEmail, "second@example.com");
+
+    const rowCount = await client.execute("SELECT COUNT(*) as count FROM cloud_connection");
+    assert.equal(rowCount.rows[0]?.count, 1);
+  }));
+
+test("clearStoredCloudConnection removes the row -- a later getStoredCloudConnection sees disconnected", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await upsertStoredCloudConnection(
+      { connectedEmail: "owner@example.com", scope: "scope-a", ciphertext: "c1", iv: "i1", authTag: "t1" },
+      isolatedDb
+    );
+    assert.ok(await getStoredCloudConnection(isolatedDb));
+
+    await clearStoredCloudConnection(isolatedDb);
+    assert.equal(await getStoredCloudConnection(isolatedDb), null);
   }));

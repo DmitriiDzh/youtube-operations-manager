@@ -1,0 +1,100 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+
+type Status = { connected: false } | { connected: true; connectedEmail: string; scope: string; connectedAt: string };
+
+/**
+ * Settings-tab card for the Google Cloud connection (`docs/decisions/0008-cloud-connection.md`,
+ * owner instruction, 2026-09-22): a single, device-persistent grant, entirely decoupled from the
+ * per-channel YouTube login above -- connecting/disconnecting here never affects which channel is
+ * active, and switching channels never affects this connection. This slice only shows
+ * connect/disconnect status; no Cloud Quotas/Monitoring numbers exist yet (a future slice).
+ */
+export function CloudConnectionSettings() {
+  const [status, setStatus] = useState<Status | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Read directly from window.location rather than `useSearchParams()` -- this page is statically
+  // prerendered (`○ /dashboard` in the build output), and `useSearchParams()` would force a
+  // Suspense boundary just for this one-time post-redirect banner. A plain client-side read after
+  // mount has no such requirement.
+  const [callbackResult, setCallbackResult] = useState<string | null>(null);
+
+  const fetchStatus = useCallback(async () => {
+    const res = await fetch("/api/cloud-connection/status");
+    if (!res.ok) return;
+    setStatus((await res.json()) as Status);
+  }, []);
+
+  useEffect(() => {
+    fetchStatus();
+    setCallbackResult(new URLSearchParams(window.location.search).get("cloudConnection"));
+  }, [fetchStatus]);
+
+  async function handleDisconnect() {
+    setDisconnecting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/cloud-connection/disconnect", { method: "POST" });
+      const data = (await res.json()) as Status | { error?: string; message?: string };
+      if (!res.ok) {
+        setError("message" in data && data.message ? data.message : "Disconnect failed");
+        return;
+      }
+      setStatus(data as Status);
+    } catch {
+      setError("Disconnect failed");
+    } finally {
+      setDisconnecting(false);
+    }
+  }
+
+  if (!status) return null;
+
+  return (
+    <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+      <div>
+        <h3 className="text-sm font-semibold text-zinc-100">Google Cloud connection</h3>
+        <p className="mt-1 text-xs text-zinc-500">
+          A single, device-persistent grant for the project&apos;s Google Cloud Quotas/Monitoring
+          numbers (not built yet -- this only establishes the connection). Independent of the
+          YouTube channel login above: connecting or disconnecting here does not affect which
+          channel is active, and switching channels never revokes this grant.
+        </p>
+      </div>
+
+      {callbackResult === "connected" && (
+        <p className="text-xs text-emerald-400">Connected.</p>
+      )}
+      {callbackResult === "error" && (
+        <p className="text-xs text-red-400">Connection failed. Please try again.</p>
+      )}
+
+      {status.connected ? (
+        <div className="space-y-2">
+          <p className="text-sm text-zinc-300">
+            Connected as <span className="font-mono text-zinc-100">{status.connectedEmail}</span>
+          </p>
+          <p className="text-xs text-zinc-500">Since {new Date(status.connectedAt).toLocaleString()}</p>
+          <button
+            onClick={handleDisconnect}
+            disabled={disconnecting}
+            className="rounded-md border border-red-900 bg-red-950/50 px-4 py-1.5 text-sm font-medium text-red-400 hover:bg-red-950 disabled:opacity-50"
+          >
+            {disconnecting ? "Disconnecting..." : "Disconnect"}
+          </button>
+        </div>
+      ) : (
+        <a
+          href="/api/cloud-connection/start"
+          className="inline-block rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
+        >
+          Connect Google Cloud
+        </a>
+      )}
+
+      {error && <p className="text-xs text-red-400">{error}</p>}
+    </div>
+  );
+}

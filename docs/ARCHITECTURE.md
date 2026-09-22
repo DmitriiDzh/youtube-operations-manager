@@ -790,3 +790,105 @@ losing collected history silently on every handoff is worth flagging explicitly 
 letting it repeat as an unstated gap — revisit whether this table should join
 `SNAPSHOT_TRANSFERRED_TABLES` once real collection (slice 3+) makes the data worth carrying
 across devices.
+
+## 15. Cloud connection (`src/lib/cloud-connection/`) — slice 1 of 3, not yet in `dev`
+
+### 15.1 Status and scope
+
+Owner instruction, 2026-09-22 (Telegram): a real Google Cloud Quotas/Monitoring integration was
+requested to give the gateway traffic counters (§2.9k of `docs/SYSTEM_MAP.md`) actual limit/usage
+numbers, not just local attempt counts. Research this session established the requirement splits
+into two separate Google Cloud APIs (`docs/decisions/0008-cloud-connection.md` has the full trail):
+Cloud Quotas API (`quotaInfos.list`, limits only, requires the full `cloud-platform` scope — no
+narrower option per Google's own REST reference) and Cloud Monitoring API (`timeseries.list`,
+actual usage, `monitoring.read` suffices but `cloud-platform` is a superset). The owner then added
+an identity constraint: this grant must survive a channel re-login/switch (`users` does not).
+
+This section covers **only slice 1**: the connection itself. No Cloud Quotas/Monitoring API call
+exists in this codebase yet — `resolveCloudCredentials()` (below) is built for a future slice to
+call, not called from anywhere in production code today.
+
+### 15.2 Why a new, independent module
+
+`AGENTS.md` §M (feature-module independence) requires shared logic used by more than one large
+feature vertical to live in its own module, never grafted onto an unrelated one. This credential
+does not fit either existing OAuth surface:
+
+- Not `users` (`src/lib/db.ts`) — that table is channel-login-scoped, replaced on every re-login;
+  the owner's own requirement is that this grant survive exactly that event.
+- Not `ai_connection_credentials` — a different feature's own secret, encrypted under
+  `AI_CONNECTIONS_ENCRYPTION_KEY`. Reusing that key would make the Cloud-quota feature fail closed
+  whenever the unrelated AI-localization module's key is absent, and vice versa.
+- Not `youtube-read-gateway` (`docs/decisions/0007-youtube-read-gateway.md`) — that gateway is
+  explicitly scoped to "a real YouTube-family read client" with per-channel identity; Cloud Quotas
+  and Monitoring are a different Google product family entirely, with a device-level, not
+  channel-level, identity model.
+
+`src/lib/cloud-connection/` therefore follows the same contracts/schemas/services/adapters shape
+every other domain module uses (`docs/DEVELOPMENT_PLAYBOOK.md` §6.2), with its own singleton table,
+its own encryption key, and its own OAuth entry points.
+
+### 15.3 Storage
+
+`cloud_connection` (`src/lib/db.ts`, SCHEMA_MIGRATIONS version 11) is a true singleton — exactly
+zero or one row, always keyed on a fixed internal id never exposed to callers. `accessToken`/
+`refreshToken`/`tokenExpiry` are serialized as one JSON blob and encrypted as a single unit
+(AES-256-GCM, `src/lib/cloud-connection/crypto.ts`, the same approach `ai-connections/crypto.ts`
+already uses, under its own `CLOUD_CONNECTION_ENCRYPTION_KEY` env var — deliberately not
+`AI_CONNECTIONS_ENCRYPTION_KEY`). `connectedEmail`/`scope`/`connectedAt` are plaintext columns,
+never secrets, shown as-is in the Settings tab.
+
+**Plaintext was considered and rejected**, unlike `users`' own accepted RISK-07 tradeoff: this
+grant requests the full `cloud-platform` scope, a materially larger blast radius than a
+YouTube-scoped token if the database file were ever read by someone else. Encryption failing
+closed (`encryption_key_not_configured` when the key is unset) was judged the correct default here
+specifically because of that scope breadth — not a blanket "encrypt everything" policy this
+codebase otherwise follows (`users` remains plaintext, tracked and accepted as RISK-07).
+
+**Deliberately NOT added to `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`) — same
+reasoning as `users`/`ai_connection_credentials`: device-local, re-established per device via its
+own Connect flow, never handed off with a snapshot/device-handoff import.
+
+### 15.4 OAuth flow
+
+Entirely separate from the NextAuth channel-login flow (`src/lib/auth.ts`'s `authOptions`/
+`GoogleProvider`) — a full-page browser redirect, not a NextAuth provider:
+
+1. `GET /api/cloud-connection/start` — requires an active channel-login session (any authenticated
+   user of this app, independent of which channel is currently active). Builds Google's consent
+   URL via `createGoogleOAuthClient(redirectUri).generateAuthUrl(...)` requesting exactly
+   `https://www.googleapis.com/auth/cloud-platform`, with a random `state` stored in a short-lived
+   (600s) httpOnly cookie scoped to `/api/cloud-connection`, and redirects the browser there.
+2. `GET /api/cloud-connection/callback` — reads `code`/`state` from the query string and the
+   expected state from the cookie; a mismatch (or a missing code/state, or an `error` param from
+   Google) is refused before any token exchange. On success, exchanges the code
+   (`oauthClient.getToken`), fetches the connected account's email via the existing
+   `fetchGoogleIdentity` helper (shown in Settings only, never used for anything else — this grant
+   is entirely independent of channel identity), encrypts the token set, and upserts the one
+   `cloud_connection` row. Always redirects back to `/dashboard` with a `?cloudConnection=
+   connected|error` query param the Settings card reads client-side (via
+   `window.location.search`, not `useSearchParams()` — `/dashboard` is statically prerendered, and
+   `useSearchParams()` would force a Suspense boundary just for this one-time banner).
+3. `GET /api/cloud-connection/status` — the public shape only (`{ connected, connectedEmail,
+   scope, connectedAt }` or `{ connected: false }`), never the token.
+4. `POST /api/cloud-connection/disconnect` — revokes the refresh (or access, if no refresh) token
+   with Google via the existing `revokeGoogleToken` helper, then clears the stored row regardless
+   of whether the revoke call itself succeeded (a token Google no longer recognizes must not be
+   left stored as if it were still usable).
+
+### 15.5 Refresh
+
+`resolveCloudCredentials()` mirrors the refresh pattern already established in
+`src/lib/video-metadata/adapters/google-auth.ts`'s `resolveGoogleCredentials`: check the stored
+`tokenExpiry` against the current time; if not expired, return the stored access token unchanged;
+if expired, call `oauthClient.refreshAccessToken()` with the stored refresh token, re-encrypt and
+persist the refreshed token set, and return the new access token. Throws (fails closed) if no
+connection is stored, or if the token is expired with no refresh token available. Not called from
+any production code path yet — reserved for the future Cloud Quotas/Monitoring slice.
+
+### 15.6 What remains deliberately unimplemented
+
+No Cloud Quotas API (`quotaInfos.list`) or Cloud Monitoring API (`timeseries.list`) call exists
+anywhere in this codebase. No Settings UI shows a quota number or usage percentage — only
+connect/disconnect status. Encryption-key rotation/backup tooling does not exist (RISK-48,
+`docs/TECHNICAL_DEBT.md`, the same accepted shape as RISK-15's AI-connections equivalent).

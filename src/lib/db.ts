@@ -502,6 +502,46 @@ export const gatewayCallEvents = sqliteTable("gateway_call_events", {
 });
 
 /**
+ * SCHEMA_MIGRATIONS version 11. A single, device-persistent Google Cloud OAuth grant, entirely
+ * decoupled from the per-channel YouTube login in `users` (owner instruction, 2026-09-22,
+ * Telegram: "право получать эту информацию не должно отзываться при смене аккаунта / логина...
+ * пока я сам не отзову это право - этот компьютер должен в любой сессии иметь возможность
+ * получить эту информацию"). Feeds the future Cloud Quotas/Monitoring integration
+ * (`docs/decisions/0008-cloud-connection.md`) -- this slice only establishes the connection
+ * itself (connect/disconnect, Settings tab), no Quotas/Monitoring API call is made yet.
+ *
+ * A true singleton: exactly zero or one row, always keyed `id = "default"`, since this app
+ * tracks at most one Cloud-level grant regardless of how many YouTube channels/logins it has
+ * synced. `accessToken`/`refreshToken`/`tokenExpiry` are stored as one encrypted JSON blob
+ * (AES-256-GCM, `src/lib/cloud-connection/crypto.ts`, key from `CLOUD_CONNECTION_ENCRYPTION_KEY`)
+ * -- a DELIBERATELY SEPARATE key from `AI_CONNECTIONS_ENCRYPTION_KEY` (`docs/AGENTS.md` §M,
+ * feature-module independence: the Cloud-quota feature must not fail closed just because the
+ * unrelated AI-localization module's key is absent, or vice versa). Encrypted, unlike `users`'
+ * plaintext tokens (`docs/TECHNICAL_DEBT.md` RISK-07), because this grant requires the full
+ * `cloud-platform` scope -- the Cloud Quotas API's `quotaInfos.list` has no narrower scope option
+ * (confirmed against Google's own REST reference) -- a materially larger blast radius than a
+ * YouTube-scoped token if the database file were ever read by someone else.
+ *
+ * `connectedEmail`/`scope`/`connectedAt` are plaintext (not secrets, shown as-is in Settings).
+ *
+ * **Deliberately NOT added to `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`)
+ * -- device-local, same reasoning as `users` and `ai_connection_credentials`: a Cloud grant is
+ * re-established per device via its own Connect flow, never handed off with a snapshot.
+ */
+export const cloudConnection = sqliteTable("cloud_connection", {
+  id: text("id").primaryKey(),
+  connectedEmail: text("connected_email"),
+  scope: text("scope"),
+  ciphertext: text("ciphertext"),
+  iv: text("iv"),
+  authTag: text("auth_tag"),
+  connectedAt: integer("connected_at", { mode: "timestamp" }),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+/**
  * Phase 8 (Intelligence Foundation, `docs/roadmap/plans/PHASE_8_PLAN.md` §5/§6 slice 2),
  * SCHEMA_MIGRATIONS version 8. Historical time-series metrics, additive alongside `videos`
  * (a "current snapshot" table, never a history) -- `docs/PROJECT_SPEC.md` §33's canonical
@@ -725,6 +765,24 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
       await client.execute(
         "CREATE INDEX IF NOT EXISTS gateway_call_events_category_occurred_at_idx ON gateway_call_events(category, occurred_at)"
+      );
+    },
+  },
+  {
+    version: 11,
+    description:
+      "cloud_connection -- single device-persistent Google Cloud OAuth grant, decoupled from channel login (owner instruction, 2026-09-22, Telegram, docs/decisions/0008-cloud-connection.md)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS cloud_connection (" +
+          "id TEXT PRIMARY KEY, " +
+          "connected_email TEXT, " +
+          "scope TEXT, " +
+          "ciphertext TEXT, " +
+          "iv TEXT, " +
+          "auth_tag TEXT, " +
+          "connected_at INTEGER, " +
+          "updated_at INTEGER NOT NULL DEFAULT (unixepoch()))"
       );
     },
   },
@@ -2988,4 +3046,68 @@ export async function listVideoMetricsByChannel(
     .orderBy(videoMetricsDaily.videoId, videoMetricsDaily.metricDate, videoMetricsDaily.metricName);
 
   return rows.map(mapStoredVideoMetric);
+}
+
+// The one and only row this table ever holds -- see `cloudConnection`'s own doc comment above.
+const CLOUD_CONNECTION_SINGLETON_ID = "default";
+
+export type StoredCloudConnection = {
+  connectedEmail: string;
+  scope: string;
+  ciphertext: string;
+  iv: string;
+  authTag: string;
+  connectedAt: Date;
+};
+
+export async function getStoredCloudConnection(database: AppDb = db): Promise<StoredCloudConnection | null> {
+  const [row] = await database
+    .select()
+    .from(cloudConnection)
+    .where(eq(cloudConnection.id, CLOUD_CONNECTION_SINGLETON_ID));
+
+  if (!row || !row.ciphertext || !row.iv || !row.authTag || !row.connectedEmail || !row.scope || !row.connectedAt) {
+    return null;
+  }
+
+  return {
+    connectedEmail: row.connectedEmail,
+    scope: row.scope,
+    ciphertext: row.ciphertext,
+    iv: row.iv,
+    authTag: row.authTag,
+    connectedAt: row.connectedAt,
+  };
+}
+
+export async function upsertStoredCloudConnection(
+  input: {
+    connectedEmail: string;
+    scope: string;
+    ciphertext: string;
+    iv: string;
+    authTag: string;
+  },
+  database: AppDb = db
+): Promise<void> {
+  const now = new Date();
+  const existing = await getStoredCloudConnection(database);
+
+  if (existing) {
+    await database
+      .update(cloudConnection)
+      .set({ ...input, updatedAt: now })
+      .where(eq(cloudConnection.id, CLOUD_CONNECTION_SINGLETON_ID));
+  } else {
+    await database.insert(cloudConnection).values({
+      id: CLOUD_CONNECTION_SINGLETON_ID,
+      ...input,
+      connectedAt: now,
+      updatedAt: now,
+    });
+  }
+}
+
+export async function clearStoredCloudConnection(database: AppDb = db): Promise<void> {
+  await database.delete(cloudConnection).where(eq(cloudConnection.id, CLOUD_CONNECTION_SINGLETON_ID));
 }
