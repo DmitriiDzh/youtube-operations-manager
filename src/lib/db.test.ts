@@ -4,16 +4,20 @@ import { mkdtemp, rm, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createClient, type Client } from "@libsql/client";
+import { eq } from "drizzle-orm";
 import {
   channels,
   copyLegacyDatabaseInto,
   createIsolatedDb,
+  getAnalyticsSyncSettings,
   initializeDatabaseSchema,
   listVideoMetricsByChannel,
   listVideoMetricsByVideo,
+  markAnalyticsAutoCollected,
   SCHEMA_BASELINE_VERSION,
   SCHEMA_CURRENT_VERSION,
   SCHEMA_MIGRATIONS,
+  setAnalyticsSyncSettings,
   type AppDb,
   upsertVideoMetric,
   videos,
@@ -180,6 +184,59 @@ test("video_metrics_daily: listVideoMetricsByChannel returns every video's rows 
       ["vid1", "vid2"]
     );
     assert.ok(!rows.some((r) => r.videoId === "vid3"), "must never include a different channel's video");
+  }));
+
+// Phase 8 (BL-054, docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5): the per-channel timestamp
+// the staleness check reads.
+test("channels.analyticsLastAutoCollectedAt: starts NULL, and markAnalyticsAutoCollected sets it for exactly the given channel", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannel(isolatedDb, "UC_A");
+    await seedChannel(isolatedDb, "UC_B");
+
+    const [before] = await isolatedDb.select().from(channels).where(eq(channels.id, "UC_A"));
+    assert.equal(before.analyticsLastAutoCollectedAt, null);
+
+    const markedAt = new Date("2026-09-22T12:05:00.000Z");
+    await markAnalyticsAutoCollected("UC_A", markedAt, isolatedDb);
+
+    const [afterA] = await isolatedDb.select().from(channels).where(eq(channels.id, "UC_A"));
+    const [afterB] = await isolatedDb.select().from(channels).where(eq(channels.id, "UC_B"));
+    assert.equal(afterA.analyticsLastAutoCollectedAt?.getTime(), markedAt.getTime());
+    assert.equal(afterB.analyticsLastAutoCollectedAt, null, "must never touch a different channel's row");
+  }));
+
+// Phase 8 (BL-054): the one piece of getAnalyticsSyncSettings with real, silently-regressable
+// state -- detect the OS timezone once, persist it, and never re-detect on a later read (so a
+// later owner override in Settings is never clobbered by a fresh OS read).
+test("getAnalyticsSyncSettings: detects and persists the OS timezone once, never re-detects on a later read", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    const first = await getAnalyticsSyncSettings(isolatedDb);
+    assert.equal(first.localTime, "12:05", "default local time before anything is saved");
+    assert.equal(first.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone);
+
+    // Simulate the owner overriding the timezone in Settings after the first-read detection.
+    await setAnalyticsSyncSettings({ timezone: "Europe/Moscow" }, isolatedDb);
+
+    const second = await getAnalyticsSyncSettings(isolatedDb);
+    assert.equal(second.timezone, "Europe/Moscow", "a later read must return the saved override, never re-detect the OS zone");
+  }));
+
+test("setAnalyticsSyncSettings: updates only the given field(s), never touches the other", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await setAnalyticsSyncSettings({ localTime: "09:30", timezone: "Asia/Tokyo" }, isolatedDb);
+    await setAnalyticsSyncSettings({ localTime: "18:00" }, isolatedDb);
+
+    const settings = await getAnalyticsSyncSettings(isolatedDb);
+    assert.equal(settings.localTime, "18:00");
+    assert.equal(settings.timezone, "Asia/Tokyo", "updating localTime alone must not touch timezone");
   }));
 
 test("video_metrics_daily: a videoId with no matching videos row is rejected by its foreign key", () =>

@@ -105,3 +105,15 @@ test("proxy gates the analytics collect route like any other real mutation", asy
     await releaseOperationLock(rawSqlClient);
   }
 });
+
+// Phase 8 (BL-054): the auto-collect trigger is a POST that MAY perform the same real mutation --
+// gated the same way, never exempted, even though it often no-ops.
+test("proxy gates the analytics auto-collect route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/channels/chan-1/analytics/auto-collect"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});

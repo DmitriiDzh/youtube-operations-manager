@@ -88,3 +88,17 @@ export type ListMetricsResult = {
   channelId: string;
   rows: StoredVideoMetricRow[];
 };
+
+/**
+ * BL-054 (docs/roadmap/plans/PHASE_8_PLAN.md §10 item 5) -- the date range an *unattended* daily
+ * auto-collection run picks, since (unlike the manual "Collect now" trigger) there is no operator
+ * to ask. Matches the manual UI's own default window exactly (`analytics-manager.tsx`'s
+ * `defaultDateRange`) -- 7 days, ending yesterday (the Analytics API's own documented behavior is
+ * that a `day`-dimension query never returns the most recent day(s) yet, so ending "today" would
+ * make every auto-run look like it silently returned less than requested).
+ */
+export const AUTO_COLLECTION_RANGE_DAYS = 7;
+
+export type AutoCollectResult =
+  | { ranCollection: false }
+  | { ranCollection: true; result: CollectMetricsResult };

@@ -1,9 +1,12 @@
 import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import type { ChannelAccessService } from "@/lib/channel-access";
+import { computeDefaultAutoCollectionRange, isAnalyticsCollectionStale } from "./staleness";
 import {
   ANALYTICS_METRIC_NAMES,
+  AUTO_COLLECTION_RANGE_DAYS,
   DomainError,
   isDomainError,
+  type AutoCollectResult,
   type CollectMetricsResult,
   type ListMetricsResult,
   type ResolvedCredentials,
@@ -15,6 +18,8 @@ import {
   listMetricsInputSchema,
   listMetricsOutputSchema,
   parseWithSchema,
+  runAutoCollectionInputSchema,
+  runAutoCollectionOutputSchema,
 } from "./schemas";
 
 export type StoredVideoRef = {
@@ -53,6 +58,20 @@ type ServiceDependencies = {
     listMetricsByChannel(channelId: string): Promise<StoredVideoMetricRow[]>;
   };
   channelAccess: ChannelAccessService;
+  // BL-054 -- the per-channel "when did the daily auto-collection last actually run" timestamp,
+  // deliberately separate from metricStore's per-row collected_at (see channels.
+  // analyticsLastAutoCollectedAt's own doc comment in db.ts for why).
+  channelStore: {
+    getAnalyticsLastAutoCollectedAt(channelId: string): Promise<Date | null>;
+    markAnalyticsAutoCollected(channelId: string, at: Date): Promise<void>;
+  };
+  settingsStore: {
+    getAnalyticsSyncSettings(): Promise<{ localTime: string; timezone: string }>;
+  };
+  /** Injectable so staleness tests never depend on the real wall clock. */
+  clock: {
+    now(): Date;
+  };
   logger: {
     info(payload: { event: string; context?: Record<string, unknown> }): void;
     error(payload: { event: string; context?: Record<string, unknown> }): void;
@@ -78,7 +97,7 @@ function mapUnknownError(error: unknown, fallbackCode: DomainError["code"]) {
 }
 
 export function createAnalyticsServices(deps: ServiceDependencies) {
-  return {
+  const services = {
     /**
      * Collects daily metrics for every locally-synced video under `channelId`, over
      * `[startDate, endDate]`, and upserts each (video, date, metric) row via `metricStore`.
@@ -230,7 +249,70 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         throw mapUnknownError(error, "unauthorized");
       }
     },
+
+    /**
+     * BL-054 (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5) -- "on dashboard entry, check
+     * when the daily collection last ran; if it's stale, run it." Meant to be called once per
+     * dashboard mount (`src/app/dashboard/page.tsx`), not on a repeating interval -- this is a
+     * once-a-day check, not a continuous poll.
+     *
+     * **Mark-then-run, not run-then-mark** (advisor review): `channelStore.markAnalyticsAutoCollected`
+     * is called BEFORE `collectMetrics`, not after. Two browser tabs mounting the dashboard at
+     * the same moment would otherwise both see "stale" and both run a full per-video collection,
+     * doubling real Analytics API quota for no benefit -- marking first means the second caller
+     * sees fresh and no-ops. The tradeoff this accepts: if the collection itself then fails or
+     * crashes mid-run, today's window is still marked "collected" and won't be retried until
+     * tomorrow's boundary. That is the better failure mode than doubling quota on every
+     * multi-tab dashboard load.
+     */
+    async runAutoCollectionIfStale(input: unknown): Promise<AutoCollectResult> {
+      const parsedInput = parseWithSchema(runAutoCollectionInputSchema, input, "run auto collection input");
+
+      try {
+        const userId = getCredentialUserId(parsedInput.credentialRef);
+        await deps.channelAccess.assertActiveChannel({
+          userId,
+          channelId: parsedInput.channelId,
+        });
+
+        const now = deps.clock.now();
+        const [lastAutoCollectedAt, { localTime, timezone }] = await Promise.all([
+          deps.channelStore.getAnalyticsLastAutoCollectedAt(parsedInput.channelId),
+          deps.settingsStore.getAnalyticsSyncSettings(),
+        ]);
+
+        const stale = isAnalyticsCollectionStale({ now, lastAutoCollectedAt, timezone, localTime });
+        if (!stale) {
+          return parseWithSchema(runAutoCollectionOutputSchema, { ranCollection: false }, "run auto collection output");
+        }
+
+        await deps.channelStore.markAnalyticsAutoCollected(parsedInput.channelId, now);
+
+        const { startDate, endDate } = computeDefaultAutoCollectionRange({
+          now,
+          timezone,
+          rangeDays: AUTO_COLLECTION_RANGE_DAYS,
+        });
+
+        const result = await services.collectMetrics({
+          credentialRef: parsedInput.credentialRef,
+          channelId: parsedInput.channelId,
+          startDate,
+          endDate,
+        });
+
+        return parseWithSchema(
+          runAutoCollectionOutputSchema,
+          { ranCollection: true, result },
+          "run auto collection output"
+        );
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
+      }
+    },
   };
+
+  return services;
 }
 
 export type AnalyticsServices = ReturnType<typeof createAnalyticsServices>;

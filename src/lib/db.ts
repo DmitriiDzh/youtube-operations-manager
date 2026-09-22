@@ -187,6 +187,14 @@ export const channels = sqliteTable("channels", {
   // NULL means "none explicitly tracked yet", never backfilled to "[]" (RISK-02/RISK-33's "never
   // silently create a fact that isn't true").
   targetLanguagesJson: text("target_languages_json"),
+  // Additive, SCHEMA_MIGRATIONS version 9 (BL-054, docs/roadmap/plans/PHASE_8_PLAN.md §10 items
+  // 3-5). Mirrors `lastSyncedAt` exactly, but for the daily auto-collection check specifically --
+  // deliberately NOT derived from MAX(video_metrics_daily.collected_at), since that column is a
+  // per-row last-write time (a manual re-collection of an old date range would bump it without
+  // today's actual auto-collection ever having run) -- see the analytics staleness check's own
+  // doc comment. Written BEFORE a collection run starts, not after, so two concurrent triggers
+  // (e.g. two open browser tabs) never both run a full collection (src/lib/analytics/staleness.ts).
+  analyticsLastAutoCollectedAt: integer("analytics_last_auto_collected_at", { mode: "timestamp" }),
 });
 
 export const videos = sqliteTable("videos", {
@@ -503,7 +511,7 @@ export const appSettings = sqliteTable("app_settings", {
  * orphan case: a snapshot-import replace of `videos` can leave a local `video_metrics_daily` row
  * referencing a `videoId` no longer present in the receiving device's `videos` table after import
  * (FK enforcement is disabled for that whole operation, so this never crashes, it just leaves a
- * stale row). See `docs/ARCHITECTURE.md` §14.6.
+ * stale row). See `docs/ARCHITECTURE.md` §14.7.
  *
  * Composite primary key `(videoId, metricDate, metricName)` mirrors the plan's own DDL exactly:
  * one row per video/day/metric, so re-collecting an already-collected date is a natural upsert,
@@ -670,6 +678,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute(
         "CREATE INDEX IF NOT EXISTS video_metrics_daily_channel_id_idx ON video_metrics_daily(channel_id)"
       );
+    },
+  },
+  {
+    version: 9,
+    description:
+      "channels.analytics_last_auto_collected_at -- Phase 8 daily auto-collection staleness check (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5)",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE channels ADD COLUMN analytics_last_auto_collected_at INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
     },
   },
 ];
@@ -1285,6 +1305,7 @@ export type StoredChannel = {
   connectedUserId: string | null;
   connectedAt: Date;
   lastSyncedAt: Date | null;
+  analyticsLastAutoCollectedAt: Date | null;
 };
 
 export type StoredVideo = {
@@ -1314,6 +1335,7 @@ function mapStoredChannel(row: typeof channels.$inferSelect): StoredChannel {
     connectedUserId: row.connectedUserId,
     connectedAt: row.connectedAt,
     lastSyncedAt: row.lastSyncedAt,
+    analyticsLastAutoCollectedAt: row.analyticsLastAutoCollectedAt,
   };
 }
 
@@ -1371,6 +1393,19 @@ export async function markChannelSynced(channelId: string, syncedAt: Date): Prom
   await db.update(channels).set({ lastSyncedAt: syncedAt }).where(eq(channels.id, channelId));
 }
 
+// BL-054 -- written BEFORE a collection run starts (mark-then-run), not after, so two concurrent
+// triggers never both see "stale" and both run a full collection (src/lib/analytics/staleness.ts).
+// Takes an injectable `database` (unlike the older markChannelSynced) so schema-initialization
+// tests can exercise it against an isolated temp database (docs/DEVELOPMENT_PLAYBOOK.md §6.11)
+// rather than the operator's real one.
+export async function markAnalyticsAutoCollected(
+  channelId: string,
+  at: Date,
+  database: AppDb = db
+): Promise<void> {
+  await database.update(channels).set({ analyticsLastAutoCollectedAt: at }).where(eq(channels.id, channelId));
+}
+
 export async function listStoredChannels(): Promise<StoredChannel[]> {
   const rows = await db.select().from(channels);
   return rows.map(mapStoredChannel);
@@ -1404,13 +1439,13 @@ export async function setChannelTargetLanguages(channelId: string, languages: st
   await db.update(channels).set({ targetLanguagesJson: JSON.stringify(languages) }).where(eq(channels.id, channelId));
 }
 
-async function getAppSetting(key: string): Promise<string | null> {
-  const [row] = await db.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, key));
+async function getAppSetting(key: string, database: AppDb = db): Promise<string | null> {
+  const [row] = await database.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, key));
   return row?.value ?? null;
 }
 
-async function setAppSetting(key: string, value: string): Promise<void> {
-  await db
+async function setAppSetting(key: string, value: string, database: AppDb = db): Promise<void> {
+  await database
     .insert(appSettings)
     .values({ key, value })
     .onConflictDoUpdate({ target: appSettings.key, set: { value } });
@@ -1462,6 +1497,51 @@ export async function getMcpConnectionEnabled(): Promise<boolean> {
 
 export async function setMcpConnectionEnabled(enabled: boolean): Promise<void> {
   await setAppSetting(MCP_CONNECTION_ENABLED_SETTING_KEY, enabled ? "true" : "false");
+}
+
+const ANALYTICS_SYNC_LOCAL_TIME_SETTING_KEY = "analytics_sync_local_time";
+const ANALYTICS_SYNC_TIMEZONE_SETTING_KEY = "analytics_sync_timezone";
+const DEFAULT_ANALYTICS_SYNC_LOCAL_TIME = "12:05";
+
+/**
+ * BL-054 (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-4) -- the daily auto-collection
+ * boundary. `timezone` defaults to this machine's own OS timezone (`Intl.DateTimeFormat().
+ * resolvedOptions().timeZone`), detected once on first read and persisted immediately, never
+ * re-detected on later reads -- so an explicit override the owner later saves in Settings is
+ * never silently clobbered by a fresh OS read. This is safe specifically because this app's
+ * server and the operator's browser are the same machine (the established "local-first
+ * single-operator tool" model, AGENTS.md) -- the OS timezone genuinely is the operator's own.
+ */
+// Takes an injectable `database` (unlike getLiveWritesEnabled/getMcpConnectionEnabled) so the
+// detect-and-persist-once behavior -- the one thing here with real, silently-regressable
+// state -- can be exercised against an isolated temp database (docs/DEVELOPMENT_PLAYBOOK.md
+// §6.11) rather than asserted only by reasoning.
+export async function getAnalyticsSyncSettings(
+  database: AppDb = db
+): Promise<{ localTime: string; timezone: string }> {
+  const localTime =
+    (await getAppSetting(ANALYTICS_SYNC_LOCAL_TIME_SETTING_KEY, database)) ?? DEFAULT_ANALYTICS_SYNC_LOCAL_TIME;
+  let timezone = await getAppSetting(ANALYTICS_SYNC_TIMEZONE_SETTING_KEY, database);
+  if (!timezone) {
+    timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    await setAppSetting(ANALYTICS_SYNC_TIMEZONE_SETTING_KEY, timezone, database);
+  }
+  return { localTime, timezone };
+}
+
+// Validation (valid HH:MM, valid IANA zone) is the caller's responsibility
+// (src/lib/analytics/staleness.ts's isValidLocalTimeOfDay/isValidIanaTimezone) -- this function
+// persists whatever it is given, same division of labor as every other setter in this file.
+export async function setAnalyticsSyncSettings(
+  input: { localTime?: string; timezone?: string },
+  database: AppDb = db
+): Promise<void> {
+  if (input.localTime !== undefined) {
+    await setAppSetting(ANALYTICS_SYNC_LOCAL_TIME_SETTING_KEY, input.localTime, database);
+  }
+  if (input.timezone !== undefined) {
+    await setAppSetting(ANALYTICS_SYNC_TIMEZONE_SETTING_KEY, input.timezone, database);
+  }
 }
 
 export async function upsertVideos(

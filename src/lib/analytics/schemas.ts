@@ -77,3 +77,19 @@ export const listMetricsOutputSchema = z
 
 export type ListMetricsInput = z.infer<typeof listMetricsInputSchema>;
 export type ListMetricsOutput = z.infer<typeof listMetricsOutputSchema>;
+
+export const runAutoCollectionInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+  })
+  .strict();
+
+export type RunAutoCollectionInput = z.infer<typeof runAutoCollectionInputSchema>;
+
+export const runAutoCollectionOutputSchema = z.discriminatedUnion("ranCollection", [
+  z.object({ ranCollection: z.literal(false) }).strict(),
+  z.object({ ranCollection: z.literal(true), result: collectMetricsOutputSchema }).strict(),
+]);
+
+export type RunAutoCollectionOutput = z.infer<typeof runAutoCollectionOutputSchema>;

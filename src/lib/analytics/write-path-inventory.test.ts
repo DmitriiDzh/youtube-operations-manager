@@ -80,11 +80,28 @@ test("analytics write-path-inventory: no file in src/lib/analytics references a 
   assert.deepEqual(offenders, [], `Found forbidden write references:\n${offenders.join("\n")}`);
 });
 
-test("analytics write-path-inventory: adapters/store.ts's only db.ts write import is upsertVideoMetric", async () => {
+// A "write" import from db.ts is anything not obviously read-only by name (get*/list*). This is
+// deliberately a denylist-by-shape check, not an allowlist of two exact names, so a future
+// legitimate read (e.g. a third get*/list* helper) never needs this test edited to pass, while
+// any new write import DOES need a human to update ALLOWED_DB_WRITE_IMPORTS with a reason --
+// mirroring gateway-inventory.test.ts's own "curated by inspection" allowlist discipline.
+const ALLOWED_DB_WRITE_IMPORTS = new Set([
+  "upsertVideoMetric", // this module's own metric rows
+  "markAnalyticsAutoCollected", // this module's own single channels column (BL-054)
+]);
+
+test("analytics write-path-inventory: adapters/store.ts imports no db.ts write function beyond its own two", async () => {
   const content = await readFile(path.join(MODULE_ROOT, "adapters", "store.ts"), "utf8");
-  const importLine = content.split("\n").find((line) => /from\s+["']@\/lib\/db["']/.test(line));
-  assert.ok(importLine, "expected an import from @/lib/db");
-  assert.match(importLine!, /upsertVideoMetric/);
-  assert.doesNotMatch(importLine!, /upsertVideos\b/);
-  assert.doesNotMatch(importLine!, /upsertChannel\b/);
+  const importMatch = content.match(/import\s*\{([^}]*)\}\s*from\s*["']@\/lib\/db["']/);
+  assert.ok(importMatch, "expected an import from @/lib/db");
+
+  const importedNames = importMatch![1]
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  const looksLikeWrite = (name: string) => !/^(get|list)[A-Z]/.test(name);
+  const offenders = importedNames.filter((name) => looksLikeWrite(name) && !ALLOWED_DB_WRITE_IMPORTS.has(name));
+
+  assert.deepEqual(offenders, [], `Unexpected write-shaped db.ts import(s): ${offenders.join(", ")}`);
 });

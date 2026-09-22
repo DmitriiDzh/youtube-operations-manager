@@ -24,6 +24,8 @@ type FakeAnalyticsRow = { date: string; metrics: Record<string, number> };
 function createServicesFixture(opts: {
   videosByChannel: Record<string, FakeVideo[]>;
   analyticsResponses: Record<string, FakeAnalyticsRow[] | Error>;
+  syncSettings?: { localTime: string; timezone: string };
+  now?: Date;
 }) {
   const channelAccess = createFakeChannelAccess();
   const analyticsCalls: Array<{ channelId: string; videoId: string }> = [];
@@ -88,16 +90,48 @@ function createServicesFixture(opts: {
 
   const logger = { info() {}, error() {} };
 
+  const lastAutoCollectedAtByChannel = new Map<string, Date | null>();
+  const channelStore = {
+    async getAnalyticsLastAutoCollectedAt(channelId: string) {
+      return lastAutoCollectedAtByChannel.get(channelId) ?? null;
+    },
+    async markAnalyticsAutoCollected(channelId: string, at: Date) {
+      lastAutoCollectedAtByChannel.set(channelId, at);
+    },
+  };
+
+  const settingsStore = {
+    async getAnalyticsSyncSettings() {
+      return opts.syncSettings ?? { localTime: "12:00", timezone: "UTC" };
+    },
+  };
+
+  let currentNow = opts.now ?? new Date("2026-09-22T15:00:00Z");
+  const clock = { now: () => currentNow };
+
   const services = createAnalyticsServices({
     authResolver,
     youtubeApi,
     videoStore,
     metricStore,
+    channelStore,
+    settingsStore,
+    clock,
     channelAccess,
     logger,
   });
 
-  return { services, channelAccess, analyticsCalls, upsertedRows, metricRowsByKey };
+  return {
+    services,
+    channelAccess,
+    analyticsCalls,
+    upsertedRows,
+    metricRowsByKey,
+    lastAutoCollectedAtByChannel,
+    setNow: (date: Date) => {
+      currentNow = date;
+    },
+  };
 }
 
 test("collectMetrics fails closed when the requested channel is not the caller's active channel", async () => {
@@ -257,6 +291,14 @@ test("collectMetrics defaults to the full ANALYTICS_METRIC_NAMES list when metri
       },
     },
     metricStore: { async upsertMetric() {}, async listMetricsByChannel() { return []; } },
+    channelStore: {
+      async getAnalyticsLastAutoCollectedAt() { return null; },
+      async markAnalyticsAutoCollected() {},
+    },
+    settingsStore: {
+      async getAnalyticsSyncSettings() { return { localTime: "12:00", timezone: "UTC" }; },
+    },
+    clock: { now: () => new Date("2026-09-22T15:00:00Z") },
     channelAccess,
     logger: { info() {}, error() {} },
   });
@@ -303,4 +345,68 @@ test("listMetrics returns every previously-collected row for the channel, shaped
   assert.deepEqual(result.rows, [
     { videoId: "v1", metricDate: "2026-09-01", metricName: "views", metricValue: 100 },
   ]);
+});
+
+test("runAutoCollectionIfStale fails closed when the requested channel is not the caller's active channel", async () => {
+  const { services } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+
+  await assert.rejects(
+    () => services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }),
+    (error: unknown) => error instanceof DomainError && error.code === "CHANNEL_NOT_ACTIVE"
+  );
+});
+
+test("runAutoCollectionIfStale: never collected before -> runs collection and marks the timestamp", async () => {
+  const { services, channelAccess, analyticsCalls, lastAutoCollectedAtByChannel } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+    syncSettings: { localTime: "12:00", timezone: "UTC" },
+    now: new Date("2026-09-22T15:00:00Z"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const result = await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+
+  assert.equal(result.ranCollection, true);
+  if (result.ranCollection) {
+    assert.equal(result.result.videoCount, 1);
+  }
+  assert.equal(analyticsCalls.length, 1);
+  assert.equal(lastAutoCollectedAtByChannel.get("UC_A")?.getTime(), new Date("2026-09-22T15:00:00Z").getTime());
+});
+
+test("runAutoCollectionIfStale: already collected today after the boundary -> no-ops, never calls the Analytics API", async () => {
+  const { services, channelAccess, analyticsCalls, lastAutoCollectedAtByChannel } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+    syncSettings: { localTime: "12:00", timezone: "UTC" },
+    now: new Date("2026-09-22T15:00:00Z"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  lastAutoCollectedAtByChannel.set("UC_A", new Date("2026-09-22T12:30:00Z")); // today, after the 12:00 boundary
+
+  const result = await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+
+  assert.deepEqual(result, { ranCollection: false });
+  assert.equal(analyticsCalls.length, 0);
+});
+
+// Advisor review: mark-then-run, not run-then-mark, so two near-simultaneous callers (e.g. two
+// open browser tabs) never both run a full collection. Simulated here as two sequential calls at
+// the same `now` -- the first call's mark must already be visible to the second.
+test("runAutoCollectionIfStale: a second call at the same instant sees the first call's mark and no-ops", async () => {
+  const { services, channelAccess, analyticsCalls } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+    syncSettings: { localTime: "12:00", timezone: "UTC" },
+    now: new Date("2026-09-22T15:00:00Z"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const first = await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+  const second = await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+
+  assert.equal(first.ranCollection, true);
+  assert.deepEqual(second, { ranCollection: false });
+  assert.equal(analyticsCalls.length, 1, "the second call must never trigger a second collection run");
 });

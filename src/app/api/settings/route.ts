@@ -1,9 +1,12 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
+import { isValidIanaTimezone, isValidLocalTimeOfDay } from "@/lib/analytics/staleness";
 import {
+  getAnalyticsSyncSettings,
   getLiveWritesEnabled,
   getMcpConnectionEnabled,
+  setAnalyticsSyncSettings,
   setLiveWritesEnabled,
   setMcpConnectionEnabled,
 } from "@/lib/db";
@@ -19,19 +22,41 @@ import {
  *   process boots -- a one-time setup toggle, not reset every session. Takes effect the next
  *   time an MCP client spawns/reconnects the server process, not for an already-open MCP
  *   connection (an MCP server's tool set is fixed at construction time).
+ * - `analyticsSyncLocalTime`/`analyticsSyncTimezone` -- BL-054's daily auto-collection boundary
+ *   (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-4). Unlike the two booleans above, these are
+ *   validated before being persisted (`isValidLocalTimeOfDay`/`isValidIanaTimezone`) -- a bad
+ *   timezone string would otherwise only surface as a thrown `RangeError` deep inside the
+ *   staleness check on a later dashboard load, not at the point the owner actually typed it.
+ *
+ * **`GET` here is not purely read-only**: `getAnalyticsSyncSettings()` persists the OS-detected
+ * timezone the first time it is ever read (`src/lib/db.ts`'s own doc comment). Two concurrent
+ * first-ever `GET`s (e.g. this route's two consuming components both mounting at once) can both
+ * detect-and-write -- benign, since `setAppSetting` is an upsert and both writes carry the same
+ * value, but a `GET` with a real side effect is worth stating plainly rather than discovering
+ * later while debugging something unrelated.
  */
+async function getSettingsSnapshot() {
+  const [liveWritesEnabled, mcpConnectionEnabled, analyticsSync] = await Promise.all([
+    getLiveWritesEnabled(),
+    getMcpConnectionEnabled(),
+    getAnalyticsSyncSettings(),
+  ]);
+
+  return {
+    liveWritesEnabled,
+    mcpConnectionEnabled,
+    analyticsSyncLocalTime: analyticsSync.localTime,
+    analyticsSyncTimezone: analyticsSync.timezone,
+  };
+}
+
 export async function GET() {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const [liveWritesEnabled, mcpConnectionEnabled] = await Promise.all([
-    getLiveWritesEnabled(),
-    getMcpConnectionEnabled(),
-  ]);
-
-  return NextResponse.json({ liveWritesEnabled, mcpConnectionEnabled });
+  return NextResponse.json(await getSettingsSnapshot());
 }
 
 export async function POST(request: Request) {
@@ -54,10 +79,25 @@ export async function POST(request: Request) {
     await setMcpConnectionEnabled(body.mcpConnectionEnabled);
   }
 
-  const [liveWritesEnabled, mcpConnectionEnabled] = await Promise.all([
-    getLiveWritesEnabled(),
-    getMcpConnectionEnabled(),
-  ]);
+  if (body.analyticsSyncLocalTime !== undefined) {
+    if (typeof body.analyticsSyncLocalTime !== "string" || !isValidLocalTimeOfDay(body.analyticsSyncLocalTime)) {
+      return NextResponse.json(
+        { error: "validation_failed", message: "analyticsSyncLocalTime must be a valid 24-hour HH:MM string" },
+        { status: 400 }
+      );
+    }
+    await setAnalyticsSyncSettings({ localTime: body.analyticsSyncLocalTime });
+  }
 
-  return NextResponse.json({ liveWritesEnabled, mcpConnectionEnabled });
+  if (body.analyticsSyncTimezone !== undefined) {
+    if (typeof body.analyticsSyncTimezone !== "string" || !isValidIanaTimezone(body.analyticsSyncTimezone)) {
+      return NextResponse.json(
+        { error: "validation_failed", message: "analyticsSyncTimezone must be a valid IANA timezone name" },
+        { status: 400 }
+      );
+    }
+    await setAnalyticsSyncSettings({ timezone: body.analyticsSyncTimezone });
+  }
+
+  return NextResponse.json(await getSettingsSnapshot());
 }

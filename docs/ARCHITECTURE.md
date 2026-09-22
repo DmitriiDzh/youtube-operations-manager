@@ -554,28 +554,46 @@ explicit consent for that branch specifically). `docs/roadmap/plans/PHASE_8_PLAN
 (the additive `video_metrics_daily` table + tests) is implemented and reviewed. The owner answered
 §8's two required decisions on 2026-09-22 (Telegram msg 356, recorded verbatim in the plan's §10):
 OAuth scope approved, and metric scope widened to every metric `yt-analytics.readonly` covers (not
-`views` alone) — see §14.2 below for the schema consequence. Slice 1 (OAuth scope, BL-051) is
-**done** — `YOUTUBE_ANALYTICS_READ_SCOPE` added to `src/lib/auth.ts`'s `YOUTUBE_SCOPES`; see
-§2.1's own updated entry in `docs/SYSTEM_MAP.md` for why no separate re-consent mechanism needed
-to be built (every existing sign-in path already forces full consent). Slice 3 (Analytics
-adapter, BL-052) is **in progress**: the low-level `src/lib/youtube-analytics.ts` client and the
-full `src/lib/analytics/` domain module (`collectMetrics`, per-video isolation, active-channel
-check) both exist and are tested against mocked HTTP, but nothing calls `collectMetrics` yet —
-slice 4's route (BL-053) is the first real consumer, and the per-video query shape remains
-unconfirmed against a real API response (needs BL-051's re-consent). Slice 4 (manual "collect now"
-trigger, Web UI, BL-053) is **assigned, not yet implemented**; a fourth item, BL-054 (daily
-staleness-based auto-collection + a configurable local sync-time/timezone setting), was also
-authorized the same day, superseding the plan's original "no scheduling" boundary (plan §10 items
-3-4).
+`views` alone) — see §14.2 below for the schema consequence.
 
-### 14.2 Schema (additive, `SCHEMA_MIGRATIONS` version 8)
+**All four slices are now implemented:** slice 1 (OAuth scope, BL-051) — `YOUTUBE_ANALYTICS_READ_SCOPE`
+added to `src/lib/auth.ts`'s `YOUTUBE_SCOPES`, no separate re-consent mechanism needed (every
+sign-in path already forces full consent, `docs/SYSTEM_MAP.md` §2.1); slice 2 (table, BL-050);
+slice 3 (Analytics adapter + domain module, BL-052) — `collectMetrics`/`listMetrics`, tested
+against mocked HTTP, but the per-video query shape (one call per video vs. a hypothetical bulk
+query) remains unconfirmed against a real API response, since that needs the owner's own
+re-consent to test; slice 4 (manual "collect now" trigger + Web UI, BL-053). A fifth item, BL-054
+(daily staleness-based auto-collection + a configurable local sync-time/timezone setting,
+superseding the plan's original "no scheduling" boundary, plan §10 items 3-4), is also done —
+see §14.6.
+
+**Live-verified against the real "Tropico Jazz" channel** (`claude-in-chrome`, 2026-09-22, twice):
+the manual trigger correctly reaches and fails at `AUTH_SCOPE_INSUFFICIENT` (the real stored token
+predates BL-051's scope); the dashboard-mount auto-collect effect (BL-054) correctly fires once,
+reaches the same point, and — per its own documented mark-then-run tradeoff — marks
+`analyticsLastAutoCollectedAt` even though the underlying collection failed. That real timestamp
+was reset back to `NULL` on the real channel after verification (a throwaway script, not
+committed) specifically so the owner's own first post-re-consent dashboard load is not skipped
+until the next day's boundary. Zero console errors across both verification passes.
+
+### 14.2 Schema (additive, `SCHEMA_MIGRATIONS` versions 8-9)
 
 ```text
-video_metrics_daily (new) — channelId, videoId, metricDate (ISO date), metricName (e.g. "views"),
-                             metricValue (REAL), collectedAt
-                             PRIMARY KEY (videoId, metricDate, metricName)
-                             + index on channelId
+video_metrics_daily (new, v8) — channelId, videoId, metricDate (ISO date), metricName (e.g. "views"),
+                                 metricValue (REAL), collectedAt
+                                 PRIMARY KEY (videoId, metricDate, metricName)
+                                 + index on channelId
+channels.analytics_last_auto_collected_at (new column, v9) — nullable timestamp, BL-054's
+                                 per-channel "when did the daily auto-collection last actually
+                                 run" marker
 ```
+
+`channels.analyticsLastAutoCollectedAt` mirrors the existing `lastSyncedAt` column's own shape
+exactly (same table, same nullable-timestamp pattern) — deliberately NOT derived from
+`MAX(video_metrics_daily.collected_at)`, since that column is a per-row last-*write* time: a
+manual re-collection of an old date range would bump it without today's actual auto-collection
+run ever having happened, silently defeating the staleness check's own purpose. See
+`src/lib/analytics/staleness.ts`'s own doc comment and §14.6 below.
 
 No `videos`/`channels` schema change — this is a purely additive new table alongside the existing
 "current snapshot" `videos` table, storing a time-series `videos` was never meant to hold.
@@ -673,7 +691,75 @@ scope check) end to end and correctly fails with `AUTH_SCOPE_INSUFFICIENT` — t
 token predates BL-051's scope addition, so this is exactly the expected, correct outcome pending
 the owner's own re-consent, not a bug. Zero console errors throughout.
 
-### 14.6 Known limitations
+### 14.6 Daily staleness-based auto-collection (BL-054) — **IMPLEMENTED**
+
+The owner's own rule, verbatim (Telegram msg 356, items 3-6): a daily check "при входе в наш
+дашборд" (on entering the dashboard), comparing "now" against a **wall-clock local boundary**
+(e.g. 12:05), not an elapsed-duration window — a run at 11:59 local today is still stale, a run at
+12:06 local today is fresh. This app has no background daemon/cron separate from the Next.js
+server process, so the check runs once per dashboard mount
+(`src/app/dashboard/page.tsx`'s `autoCollectTriggeredRef`-guarded effect, independent of which tab
+is active), not on a repeating interval — reusing the same "check once per mount, not a
+continuous poll" discipline `content-manager.tsx`'s own `AUTO_RESYNC_STALENESS_MS` pattern
+already established, generalized from "20 minutes" to "once a day."
+
+**`src/lib/analytics/staleness.ts`** (pure, no I/O): `isAnalyticsCollectionStale` formats both
+"now" and the last-collected instant into the target IANA timezone's own local calendar
+date + time strings (one `Intl.DateTimeFormat` each) and compares those strings — deliberately
+NOT an offset-arithmetic instant conversion (`Date.UTC` + `formatToParts` + diff-correction),
+which is unnecessary for a pure comparison and easy to get subtly wrong. `Intl` already applies
+the zone's real DST rules to each instant independently, proven by a dedicated test that gets a
+*different* result for the same wall-clock UTC hour in January (EST) vs. July (EDT) for
+`America/New_York` — the owner's own "зимнее/летнее время" concern, verified, not assumed.
+`computeDefaultAutoCollectionRange` (same file) picks the unattended run's date range — 7 days,
+ending yesterday, matching the manual UI's own default (`AUTO_COLLECTION_RANGE_DAYS`,
+`contracts.ts`) — via pure calendar-day arithmetic on the zone's own Y-M-D components, so it has
+no DST edge case to reason about (a calendar day is a calendar day in every zone).
+
+**Settings:** two new `app_settings` keys (reusing the existing key/value table, `docs/SYSTEM_MAP.md`
+§2.9f, not a new table) — `analytics_sync_local_time` (default `"12:05"`) and
+`analytics_sync_timezone` (default: this machine's own OS timezone, detected via
+`Intl.DateTimeFormat().resolvedOptions().timeZone` the first time it's ever read, then persisted —
+never re-detected on a later read, so an explicit owner override is never silently clobbered;
+safe specifically because this app's server and the operator's browser are the same machine, the
+established "local-first single-operator tool" model). Both are validated at the `/api/settings`
+write boundary (`isValidLocalTimeOfDay`/`isValidIanaTimezone`) rather than letting a bad value
+throw inside the staleness check on a later dashboard load. UI: `src/components/analytics-sync-settings.tsx`
+(Settings tab) — plain text/time inputs, not `ToggleSwitch` (these aren't booleans).
+
+**Concurrency (advisor review):** `runAutoCollectionIfStale` marks
+`channels.analyticsLastAutoCollectedAt` **before** calling `collectMetrics`, not after. Two
+browser tabs mounting the dashboard at the same moment would otherwise both see "stale" and both
+run a full per-video collection, doubling real Analytics API quota for no benefit — marking first
+means the second caller sees fresh and no-ops (proven by a dedicated test simulating two
+sequential calls at the same instant). The accepted tradeoff: if the collection itself then fails
+or crashes mid-run, today's window is still marked "collected" and won't retry until tomorrow's
+boundary — judged the better failure mode than doubling quota on every multi-tab load.
+
+**`GET /api/settings` is not purely read-only**: `getAnalyticsSyncSettings`'s detect-and-persist
+behavior means a plain `GET` can write the OS-detected timezone on first read (stated in that
+route's own doc comment, not left as a surprise).
+
+**Live-verified against the real "Tropico Jazz" channel (2026-09-22, `claude-in-chrome`):** the
+dashboard-mount effect fires exactly once and reaches the real `runAutoCollectionIfStale` →
+`collectMetrics` chain, correctly failing at `AUTH_SCOPE_INSUFFICIENT` for the same
+not-yet-re-consented reason as §14.5's manual trigger. Confirmed directly against the real
+database that this **did** mark `analyticsLastAutoCollectedAt` despite the underlying collection
+failing — exactly the documented mark-then-run tradeoff, not a bug — and then reset that column
+back to `NULL` on the real channel afterward (a throwaway, uncommitted script) so the owner's own
+first post-re-consent dashboard load is not skipped until the next day's boundary. Separately
+confirmed the real machine's OS timezone (`Europe/Helsinki`) was correctly auto-detected and
+persisted to `app_settings` on the first `GET /api/settings` call. Zero console errors.
+
+**Build-time note, observed not introduced:** `npm run build`'s "Collecting page data" step
+occasionally logs a `SQLITE_BUSY: database is locked` (or, once, a stale-schema-version rejection
+from a leftover local DB state during this session's own testing) from one of several parallel
+build workers racing to initialize the same real local database file — confirmed present on a
+clean pre-BL-054 tree too (`git stash -u` + rebuild), so this is a pre-existing characteristic of
+this dev environment's multi-worker build touching a real, singleton-guarded database file, not a
+regression from this slice. Build exit code is unaffected (0) both with and without BL-054.
+
+### 14.7 Known limitations
 
 No Analytics API client, no OAuth scope request, no route, no UI — this slice is the persistence
 primitive only, exactly `PHASE_8_PLAN.md` §6 slice 2's scope, deliberately not a vertical slice
