@@ -207,19 +207,28 @@ implemented during Phases 7-10 unless separately approved:
   constraints found by reading the actual export/import code (export is expensive — an app-wide
   lock plus a full-database `VACUUM` — so "export on every single change" is deliberately not
   the literal design; see that plan §2).
-- **Migrate the remaining whole-DB Device-Handoff tables onto Automerge, retiring whole-database
-  snapshot transfer entirely** (recorded 2026-09-22, owner request via Telegram: "Все остальное
-  думаю можно перевести на новую систему миграции"). Beyond the already-migrated draft layer
-  (`change_sets`/`changes`, CD1-CD7), the remaining tables split into: pure external caches needing
-  no CRDT work at all (`channels`/`videos` — always re-derivable via "Sync now"); operator-authored
-  config that fits the exact pattern already proven for drafts (`channel_editorial_profiles`,
-  `ai_connections` config fields); append-only draft provenance (`ai_localization_generation_
-  provenance`); and the safety-critical write pipeline (`batches`/`batch_ledger_rows`/
-  `batch_attempts`/`audit_events`), which ADR 0006 originally excluded and which reopening needs
-  its own explicit owner decision. If all of these move off whole-DB snapshot transfer, the
-  Device-Handoff mechanism itself (and `BL-027`'s cost question) becomes moot rather than merely
-  answered. See `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` for the full category
-  breakdown, findings, and the specific decisions still open before any slice can be assigned.
+- **Consolidate device sync into one "Sync Gateway" module; migrate the remaining whole-DB
+  Device-Handoff tables into it; retire whole-database snapshot transfer entirely** (recorded
+  2026-09-22, owner request via Telegram, extended same day: "Все остальное думаю можно перевести
+  на новую систему миграции" → confirmed categories, confirmed retiring the old mechanism → "Так же
+  используем так же правило 1 модуля и шлюза. Объединяем весь этот функционал в отдельный модуль.
+  Он отвечает за отслеживание изменений, каталогизировать это отправлять на перенос. Транспортом
+  пока занимается syncthing."). One new module (`src/lib/sync-gateway/`, name open to confirmation)
+  absorbs `change-drafts`/`change-drafts-sync` and owns three responsibilities — change tracking,
+  cataloging (the Automerge document layer), and transport dispatch behind a swappable interface
+  (Syncthing today, a custom transport later) — mirroring this project's existing single-gateway
+  pattern (`docs/decisions/0005`/`0007`). Beyond the already-migrated draft layer (`change_sets`/
+  `changes`, CD1-CD7), it also catalogs: pure external caches needing no CRDT work at all
+  (`channels`/`videos` — dropped from cross-device transfer, always re-derivable via "Sync now");
+  operator-authored config (`channel_editorial_profiles`, `ai_connections` config fields);
+  append-only draft provenance (`ai_localization_generation_provenance`); and the safety-critical
+  write pipeline (`batches`/`batch_ledger_rows`/`batch_attempts`/`audit_events`) — ADR 0006's
+  original exclusion of that last group is now reopened and confirmed (execution-time safety is
+  unchanged; only how the *record* propagates changes). Once everything moves off it,
+  `src/lib/device-handoff/`/`src/lib/snapshot/` are deleted outright (not kept as a parallel
+  backup), which also makes `BL-027`'s cost question moot rather than merely answering it. See
+  `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` for the full breakdown and slice
+  order (M0-M6).
 - **Real Google Cloud Quotas/Monitoring numbers for the gateway traffic counters** (recorded
   2026-09-22, owner request via Telegram: "Можем ли мы собирать статистику?... сколько наши
   лимиты"). The gateway traffic counters (rolling 24h attempts/succeeded per category,

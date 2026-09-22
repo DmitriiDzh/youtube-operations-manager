@@ -1,16 +1,15 @@
-# Full Device-Handoff → Automerge Migration Plan
+# Sync Gateway Plan — consolidating Device-Handoff + Automerge into one module
 
 Produced 2026-09-22, per the project owner's Telegram request, after being walked through exactly
 which tables the whole-database Device-Handoff snapshot mechanism still carries beyond the
 already-migrated draft layer (`change_sets`/`changes`, `docs/decisions/0006-automerge-for-draft-
-layer.md`, CD1-CD7, `AUTOMERGE_MIGRATION_PLAN.md`). Owner's own words: *"Правила авто-добавления в
-плейлисты — можно удалить. Все остальное думаю можно перевести на новую систему миграции.
-Разработай план."* ("The playlist auto-add rules can be deleted. I think everything else can be
-moved onto the new [Automerge] sync system. Develop a plan.")
+layer.md`, CD1-CD7, `AUTOMERGE_MIGRATION_PLAN.md`). Owner's own words, first draft: *"Правила
+авто-добавления в плейлисты — можно удалить. Все остальное думаю можно перевести на новую систему
+миграции. Разработай план."*
 
 **This is a plan, not an implementation.** Nothing here is authorized to run until its own
-explicit assignment (`AGENTS.md` §C). It also does not relitigate or touch CD1-CD7, which are
-already shipped and unaffected by anything below.
+explicit assignment (`AGENTS.md` §C). It also does not relitigate or touch CD1-CD7's already-
+shipped logic — only where that logic *lives* (§4 below).
 
 ## 1. What this is not
 
@@ -25,16 +24,15 @@ already shipped and unaffected by anything below.
 - **Not a Gate B or Live-writes change.** Nothing here touches whether a real YouTube write is
   authorized; `assertLiveWritesAuthorized` and the two-layer barrier are entirely orthogonal to how
   the *record* of a write later syncs between devices.
-- **Not an automatic reopening of ADR 0006's scope decision.** That ADR is "Accepted" and explicitly
-  excluded `batches`/`batch_ledger_rows`/`batch_attempts`/`audit_events` with stated reasoning.
-  §4 below treats revisiting that exclusion as its own explicit decision the owner needs to confirm,
-  not something this plan quietly assumes on the strength of "everything else."
+- **Not a permanent commitment to Syncthing.** Per §4, transport is deliberately factored out as
+  its own replaceable piece — Syncthing is today's implementation, not an assumption baked into the
+  rest of the design.
 
 ## 2. Scope: the tables beyond `change_sets`/`changes`, grouped by what they actually need
 
-The owner's "everything else" spans four structurally different categories, found by reading the
-actual code (`src/lib/db.ts`, `src/lib/snapshot/contracts.ts`, `src/lib/device-handoff/`,
-`src/lib/change-drafts/contracts.ts`) rather than assumed from the table names alone.
+Found by reading the actual code (`src/lib/db.ts`, `src/lib/snapshot/contracts.ts`,
+`src/lib/device-handoff/`, `src/lib/change-drafts/contracts.ts`) rather than assumed from table
+names alone. **Confirmed by the owner 2026-09-22 ("а. Ок").**
 
 ### Category A — pure external caches: `channels`, `videos`
 
@@ -43,31 +41,28 @@ by a real `channel_sync`/"Sync now" action against the live YouTube API. There i
 write path for either table — every row's true source of truth is YouTube itself, not this
 device's edits.
 
-**Proposal: do not migrate these to Automerge at all.** Drop them from cross-device transfer
-entirely. A new or second device "onboards" this data by signing in and clicking "Sync now" —
-functionally identical to refreshing a stale cache, at the cost of one API round-trip nobody was
-avoiding anyway. This is the smallest possible slice (a deletion from an allowlist plus a doc
-update), not a CRDT migration.
+**Decision: do not migrate these into the sync gateway at all.** Drop them from cross-device
+transfer entirely. A new or second device "onboards" this data by signing in and clicking
+"Sync now" — functionally identical to refreshing a stale cache, at the cost of one API round-trip
+nobody was avoiding anyway.
 
 ### Category B — operator-authored config, same shape as the already-proven draft layer:
 `channel_editorial_profiles`, `ai_connections` (config fields only)
 
-These are mutable, occasionally-revised, human-edited settings — structurally identical to the
+Mutable, occasionally-revised, human-edited settings — structurally identical to the
 `change_sets`/`changes` documents CD1/CD2 already built and tested (a plain `Record<id, T>` map of
-scalar fields, LWW/field-conflict semantics via `Automerge.getConflicts`). This is the least new
-engineering of any category: the same primitive, same conflict-detection pattern, same
-`change-drafts`/`change-drafts-sync` machinery, just a new document (or a new field group inside
-the existing per-channel one).
+scalar fields, LWW/field-conflict semantics via `Automerge.getConflicts`). Least new engineering of
+any category: same primitive, same conflict-detection pattern.
 
-**`ai_connections`' encrypted credential stays exactly where it is today** — device-local,
-never synced, same reasoning as `users`/`cloud_connection` (`AGENTS.md` §F). Only the
-non-secret config fields (display name, base URL, model id, adapter type) are candidates here.
+**`ai_connections`' encrypted credential stays exactly where it is today** — device-local, never
+synced, same reasoning as `users`/`cloud_connection` (`AGENTS.md` §F). Only the non-secret config
+fields (display name, base URL, model id, adapter type) are candidates here.
 
 ### Category C — append-only provenance tied to drafts: `ai_localization_generation_provenance`
 
-This is already a satellite of a change proposal (records which AI generation produced which
-draft). It folds naturally into the same per-channel Automerge document as `change_sets`/`changes`
-rather than needing a document of its own — likely the smallest slice of the four categories.
+Already a satellite of a change proposal (records which AI generation produced which draft). Folds
+naturally into the same per-channel document as `change_sets`/`changes` rather than needing a
+document of its own.
 
 ### Category D — the safety-critical write pipeline: `batches`, `batch_ledger_rows`,
 `batch_attempts`, `audit_events`
@@ -80,117 +75,125 @@ This is the one category ADR 0006 explicitly excluded:
 > exactly as \[it is] today: relational SQLite... the part of the system with the least tolerance
 > for a new failure mode... stays outside the blast radius of this migration entirely."
 
-Revisiting that exclusion is a real, separate decision (§4) — but three findings from re-reading
-the actual code change the risk picture from when 0006 was decided, and are worth the owner's
-attention before deciding:
+**Reopened and confirmed by the owner 2026-09-22** (see §4) on the strength of three findings that
+change the risk picture from when 0006 was decided:
 
 1. **These tables are structurally append-only and immutable once written, uniquely keyed by a
    generated UUID.** A device only ever creates *new* rows for its own batch/attempt/audit entry —
    it never edits a row another device wrote. Automerge's field-level conflict machinery exists for
    *repeatedly revised* values (a title two people both edit); there is no realistic scenario where
    two devices write the *same* id with *different* content here. In CRDT terms this is a **lower-
-   risk shape** than what's already shipped for `change_sets` (which genuinely does need per-field
-   conflict resolution), not a harder one.
+   risk shape** than what's already shipped for `change_sets`, not a harder one.
 2. **No cross-device concurrency guard exists today, for anything.** `assertDeviceAvailableForMutation`
    (`src/lib/device-handoff/services.ts`) only checks this device's own operation lock and its own
-   recovery-mode state — it never reads another device's status. "One active device at a time" is
-   an **operator convention**, not an enforced distributed lock, and was already true before this
-   plan. Migrating these tables to Automerge would not remove a safety mechanism that exists today;
-   it would *add* cross-device visibility (every device sees a batch/attempt/audit event as soon as
-   it happens) on top of the same informal convention.
-3. **There is an independent, non-CRDT-enthusiasm motivation.** `docs/TECHNICAL_DEBT.md`'s RISK-29
-   (fixed) and RISK-33 (partially fixed) are both about real, already-hit fragility in the
-   *current* whole-table-replace-on-import mechanism specifically striking `batch_ledger_rows`
-   (positional-column corruption across schema versions; `FOREIGN KEY` failures needing
-   `PRAGMA foreign_keys=OFF` bracketing). That entire fragility class disappears if these tables
-   move to CRDT merge instead of whole-table SQL replace-on-import.
+   recovery-mode state — it never reads another device's status. "One active device at a time" is an
+   **operator convention**, not an enforced distributed lock, and was already true before this plan.
+3. **An independent, non-CRDT-enthusiasm motivation.** `docs/TECHNICAL_DEBT.md`'s RISK-29 (fixed)
+   and RISK-33 (partially fixed) are both about real, already-hit fragility in the *current*
+   whole-table-replace-on-import mechanism specifically striking `batch_ledger_rows` (positional-
+   column corruption across schema versions; `FOREIGN KEY` failures needing `PRAGMA
+   foreign_keys=OFF` bracketing). This fragility class disappears entirely once these tables move
+   off whole-table SQL replace-on-import.
 
-**What genuinely stays hard, and is not assumed away by the above:** *executing* a batch (a real
-Live-writes call) is a mutating action with a real external side effect — even if the *record* of
-what happened merges safely as an append-only log, the *act* of executing must still never happen
-twice for the same batch from two devices. Today nothing prevents that except the same informal
-"one device at a time" convention finding #2 above already describes. This migration doesn't make
-that better or worse by itself, but near-real-time sync (instead of "next whole-DB handoff, maybe
-hours later") means two devices could act on a stale ledger state *faster* than before. Whether
-that warrants a real distributed execution claim (e.g. `executingDeviceId` + a lease/expiry,
-written into the same shared document, checked before `createLiveWriteExecutorIfEnabled` proceeds)
-or is an acceptable, unchanged risk to carry forward is decision 4(b) below — not something this
-plan resolves on its own.
+**On the distributed-execution-claim question (§4(b) of the first draft):** the owner's answer —
+*"Если нет конфликтов то не страшно"* ("if there are no conflicts, it's not a problem") — accepts
+finding #1's reasoning and does **not** ask for a new `executingDeviceId`/lease mechanism. The
+existing informal one-device-at-a-time convention for batch *execution* is carried forward
+unchanged; this plan only changes how the *record* of a batch/attempt/audit event propagates
+between devices, never the execution-time safety story, which stays exactly as it is today.
 
-## 3. `schema_meta` and the whole-DB snapshot mechanism's own fate
+## 3. Confirmed: the old whole-DB Device-Handoff mechanism is retired, not kept in parallel
 
-`schema_meta` exists in `SNAPSHOT_TRANSFERRED_TABLES` for exactly one reason: so a snapshot
-*importer* knows which schema version the *sender's* copy was built from, in order to safely apply
-migrations to the staged copy before merging. Once categories A-D above no longer need whole-DB
-snapshot transfer, `schema_meta`'s cross-device role is meaningless — there's nothing left to
-import.
-
-**Proposal (the plan's natural end state, not an immediate step):** once A-D are migrated and
-proven live, retire the whole-database Device-Handoff snapshot/export mechanism
-(`src/lib/device-handoff/`, `src/lib/snapshot/`) entirely, not just empty its table allowlist. This
-would also **fully resolve `BL-027`** (the periodic-auto-export cost/interval question) by
+Owner, 2026-09-22: *"с. Да, старый механизм я бы удалил."* — decision 4(c) from the first draft is
+resolved: once every category above is off it, `src/lib/device-handoff/` and `src/lib/snapshot/`
+(whole-SQLite-copy export/import, checksum/lineage verification, the exclusive app-wide lock +
+`VACUUM`) are deleted outright, not kept running as a parallel backup. `schema_meta`'s only reason
+to travel cross-device (letting a snapshot importer apply the sender's migrations) disappears with
+it. This **fully resolves `BL-027`** (the periodic-auto-export cost/interval question) by
 eliminating the need for periodic export altogether, rather than by answering its interval
-question — there would be nothing left worth exporting that Automerge doesn't already sync
-continuously and far more cheaply (no exclusive app-wide lock, no `VACUUM`). This is presented as
-the plan's overall direction, not a decision to make today — see 4(c).
+question — there is nothing left to export that the sync gateway (§4) doesn't already propagate
+continuously and far more cheaply.
 
-## 4. Explicit decisions needed from the owner before any slice is assigned
+## 4. New: one module — the Sync Gateway — owns all of this
 
-- **(a) Confirm the four-category grouping in §2**, especially: (i) dropping `channels`/`videos`
-  from cross-device transfer entirely rather than "migrating" them — no CRDT work is proposed for
-  them at all; (ii) reopening ADR 0006's exclusion of `batches`/`batch_ledger_rows`/
-  `batch_attempts`/`audit_events` specifically for CRDT-based sync — this revises a decision already
-  recorded as "Accepted" and needs its own explicit yes, not an inference from "everything else."
-- **(b) For Category D specifically:** does batch *execution* need a real distributed claim
-  mechanism now that sync would be near-real-time, or is the existing informal one-device-at-a-time
-  convention still acceptable to carry forward unchanged? (Shipping visibility-only sync now, and
-  deferring the execution-claim question, is a legitimate answer — but it should be a deliberate
-  one, not a silent omission.)
-- **(c) Whether retiring the whole-DB Device-Handoff snapshot mechanism (§3) is the intended end
-  state**, or whether it should keep running indefinitely in parallel as a belt-and-suspenders full
-  backup regardless of what else migrates.
-- **(d) `rules` table — already decided by the owner, and simpler than it looks.** Its feature
-  surface (Drizzle definition, UI, API routes) was already removed on 2026-09-20, per the owner's
-  own prior instruction ("давай удалим их, т.к. пока не вижу им применения") — only a harmless,
-  permanently-empty `CREATE TABLE IF NOT EXISTS rules` statement remains (`src/lib/db.ts` around
-  line 863), deliberately kept rather than dropped, per `docs/decisions/0001-additive-idempotent-
-  schema-strategy.md`'s rule that a *subtractive* schema change needs its own ADR first. What the
-  owner's new "можно удалить" actually resolves is narrower than a fresh feature removal: just
-  drop `rules` from `SNAPSHOT_TRANSFERRED_TABLES` (it should never have kept traveling in a
-  snapshot for a feature that no longer exists), which also fully resolves the `rules.user_id
-  REFERENCES users(id)` foreign-key hazard `docs/TECHNICAL_DEBT.md`'s RISK-33 already flagged as a
-  scrub complication. Actually dropping the empty table itself is optional and lower priority —
-  it needs the small subtractive-migration ADR ADR-0001 calls for, whereas removing it from the
-  snapshot allowlist does not.
+Owner, 2026-09-22, extending this project's existing single-gateway-per-domain principle
+(`docs/decisions/0005-youtube-write-gateway.md`, `0007-youtube-read-gateway.md`) to this domain:
+
+> "Так же используем так же правило 1 модуля и шлюза. Объединяем весь этот функционал в отдельный
+> модуль. Он отвечает за отслеживание изменений, каталогизировать это отправлять на перенос.
+> Транспортом пока занимается syncthing. До тех пор пока не придумаем собственное решение."
+
+This changes the plan's shape: rather than bolting each category B/C/D onto the existing
+`change-drafts`/`change-drafts-sync` pair piecemeal, **all of it consolidates into one new module**
+(proposed name: `src/lib/sync-gateway/`, open to the owner's own naming preference) with exactly
+three responsibilities, mirroring the read/write gateways' own barrel-plus-adapters shape
+(`AGENTS.md` §M cites that pair as precisely this project's model for a shared capability multiple
+higher-level features depend on):
+
+1. **Change tracking** — detecting that something a category B/C/D table holds has changed and
+   needs to propagate (today's `change-drafts` already does this for `change_sets`/`changes`;
+   generalizes to cover editorial profiles, AI-connection config, provenance, and — per §2
+   Category D — batches/ledger/attempts/audit).
+2. **Cataloging** — representing tracked changes as the actual synced documents (today's per-
+   channel Automerge document, `Automerge.change`/`saveDocument`), including the conflict-detection
+   semantics already proven in CD1-CD7. This is the module's core, reused across every category
+   rather than reimplemented per table.
+3. **Transport dispatch** — handing a cataloged document off to whatever moves bytes between
+   devices. **Deliberately abstracted behind one interface, not hardcoded to Syncthing** — the
+   owner was explicit that Syncthing is a stand-in ("пока", "до тех пор пока не придумаем
+   собственное решение") until a custom transport exists. Today's only implementation is a
+   `SyncthingFolderTransport` adapter (what `change-drafts-sync` already does: each device writes
+   its own `<deviceId>.automerge` file into an operator-configured shared folder, reads/merges every
+   peer's file). A future transport (e.g. a small relay service, direct device-to-device) becomes a
+   second adapter behind the same interface — tracking and cataloging never need to change for that
+   swap, exactly the point of factoring it out now rather than after a second transport is needed.
+
+**What this absorbs:** `src/lib/change-drafts/` and `src/lib/change-drafts-sync/` move into this
+new module (their proven logic is preserved, not rewritten — this is a module-boundary/location
+change, validated with the same rigor as any refactor of already-shipped, safety-adjacent code,
+`AGENTS.md` §D/§E), plus the new cataloging logic for categories B/C/D. Once Category D and the
+whole-DB retirement (§3) are both live, `src/lib/device-handoff/` and `src/lib/snapshot/` have no
+remaining job and are deleted, not merged in — there is nothing left in them worth preserving as a
+"transport" once every table they used to carry has its own gateway-native path.
+
+**Naming and exact internal file layout are proposed, not fixed** — `contracts/schemas/services/
+adapters` per this project's own domain-module convention (`docs/DEVELOPMENT_PLAYBOOK.md` §6.2)
+is the natural fit (a `TransportAdapter` interface in `contracts.ts`, `adapters/syncthing-
+transport.ts` as its one implementation today), but the owner should confirm the module name before
+any branch is opened.
 
 ## 5. Proposed slices, once assigned
 
 - **M0 — drop `rules` from `SNAPSHOT_TRANSFERRED_TABLES`** (its feature surface was already removed
-  2026-09-20; only the empty table itself remains, see 4(d)). Independent of every other slice
-  below; already approved by the owner (twice); also removes RISK-33's `rules.user_id` FK scrub
-  hazard. Actually dropping the empty table is a separate, optional, lower-priority follow-up that
-  needs its own small ADR per `docs/decisions/0001`.
-- **M1 — drop `channels`/`videos` from `SNAPSHOT_TRANSFERRED_TABLES`**, and document that a new or
-  second device re-syncs this data from YouTube directly rather than receiving a copy of it. No new
-  CRDT code.
-- **M2 — migrate `channel_editorial_profiles` + `ai_connections` (config fields only) onto
-  Automerge**, reusing CD1-CD4's exact proven document/conflict pattern.
-- **M3 — fold `ai_localization_generation_provenance` into the existing per-channel Automerge
-  document** alongside `change_sets`/`changes`.
-- **M4 (needs decision 4a/4b first) — migrate `batches`/`batch_ledger_rows`/`batch_attempts`/
-  `audit_events`** onto Automerge as an append-only replicated log; resolve the execution-claim
-  question from 4(b) as part of this slice's own design, not deferred silently.
-- **M5 (needs decision 4c) — retire the whole-database Device-Handoff snapshot/export mechanism**
-  once M1-M4 are live and proven; this is where `BL-027` closes as moot rather than merely
-  answered.
+  2026-09-20; only the empty table itself remains). Independent of every other slice; already
+  approved by the owner (twice); also removes RISK-33's `rules.user_id` FK scrub hazard. Actually
+  dropping the empty table is a separate, optional, lower-priority follow-up needing its own small
+  ADR per `docs/decisions/0001`.
+- **M1 — stand up `src/lib/sync-gateway/`**: move `change-drafts`/`change-drafts-sync` into it
+  unchanged in behavior, extract the `TransportAdapter` interface, and re-home the existing
+  Syncthing logic as its first adapter. Pure refactor, no new sync behavior — proves the new module
+  boundary against CD1-CD7's existing test suite before anything new is added to it. Foundational;
+  every slice below depends on this one.
+- **M2 — drop `channels`/`videos`** from cross-device transfer entirely (Category A); document that
+  a new/second device re-syncs this data from YouTube directly.
+- **M3 — catalog `channel_editorial_profiles` + `ai_connections` (config fields only)** through the
+  gateway (Category B), reusing the moved CD1/CD2 pattern.
+- **M4 — catalog `ai_localization_generation_provenance`** alongside `change_sets`/`changes`
+  (Category C).
+- **M5 — catalog `batches`/`batch_ledger_rows`/`batch_attempts`/`audit_events`** as an append-only
+  replicated log through the gateway (Category D) — execution-time safety is unchanged (§2).
+- **M6 — delete `src/lib/device-handoff/` and `src/lib/snapshot/`** once M2-M5 are live and proven
+  (§3); this is where `BL-027` closes as moot rather than merely answered.
 
-M0-M3 have no unresolved open design questions blocking them once 4(a)'s grouping is confirmed
-(the design choices in §2 are the resolutions); M4 needs 4(a)/4(b) answered, and M5 needs 4(c),
-before either can be scoped precisely — mirroring how `AUTOMERGE_MIGRATION_PLAN.md` §4 left its own
-D5 slice unscoped pending a single owner decision.
+M1 gates everything else and should be assigned first. M2-M4 have no unresolved open design
+questions once M1 lands. M5 is the most safety-sensitive slice and should get its own acceptance-
+test pass per `AGENTS.md` §L before merging, mirroring Phase 5's own acceptance discipline. M6 is
+only safe once M2-M5 are each independently verified live.
 
 ## 6. What doesn't change, under any slice above
 
 `users`, `ai_connection_credentials`, `cloud_connection` — device-local secrets/grants, never
 synced by any mechanism, exactly as today (`AGENTS.md` §F, `docs/decisions/0006`'s own precedent
-for `users`/`ai_connection_credentials`).
+for `users`/`ai_connection_credentials`). Live-writes/Gate B, and every check in `AGENTS.md` §G's
+identity → validation → backup → diff → approval → dry-run → audit → verification sequence, are
+unaffected by any slice in this plan.
