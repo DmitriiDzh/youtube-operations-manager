@@ -16,7 +16,7 @@ export type { SqlExecutor };
  *   - `video_execution_locks` / `app_operation_locks` (runtime-only, meaningless off-device);
  *   - `handoff_log` / `recovery_acknowledgements` (this device's own operational bookkeeping);
  *   - `video_metrics_daily` (Phase 8, `docs/roadmap/plans/PHASE_8_PLAN.md` §6 slice 2) -- an
- *     accepted, documented limitation (`docs/ARCHITECTURE.md` §14.4), not an oversight:
+ *     accepted, documented limitation (`docs/ARCHITECTURE.md` §14.5), not an oversight:
  *     collected metrics stay device-local and do not travel with a snapshot/handoff.
  *
  * `schema_meta` IS included -- the receiving device needs to know what schema version the

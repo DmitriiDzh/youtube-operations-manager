@@ -170,13 +170,12 @@ this plan's §8 posed (msg 350 → msg 356, verbatim, numbered by the owner):
    metric (recorded/logged), never failing the whole collection run — the real API response,
    once BL-052 actually calls it, is the authoritative source, this list is only the starting
    hypothesis.
-   `views`, `redViews`, `engagedViews`, `comments`, `likes`, `dislikes`,
-   `videosAddedToPlaylists`, `videosRemovedFromPlaylists`, `shares`, `estimatedMinutesWatched`,
-   `estimatedRedMinutesWatched`, `averageViewDuration`, `averageViewPercentage`,
-   `subscribersGained`, `subscribersLost`, `annotationClickThroughRate`, `annotationCloseRate`,
-   `annotationImpressions`, `annotationClickableImpressions`, `annotationClosableImpressions`,
-   `annotationClicks`, `annotationCloses`, `cardClickRate`, `cardTeaserClickRate`,
-   `cardImpressions`, `cardTeaserImpressions`, `cardClicks`, `cardTeaserClicks`. **Explicitly
+   The full 28-name list is now implemented as `ANALYTICS_METRIC_NAMES` in
+   `src/lib/analytics/contracts.ts` (added in BL-052 part 2) -- that constant, not this
+   document, is the source of truth for the exact names going forward, so the two never drift
+   as the real API response updates it (e.g. `views`, `likes`, `comments`,
+   `estimatedMinutesWatched`, `averageViewPercentage`, `subscribersGained`, and 22 more --
+   see that file for the complete, current list). **Explicitly
    excluded, even under "everything":** every metric marked monetary in the official docs
    (`estimatedRevenue`, `estimatedAdRevenue`, `grossRevenue`, `estimatedRedPartnerRevenue`,
    `monetizedPlaybacks`, `playbackBasedCpm`, `adImpressions`, `cpm`) — these require the separate

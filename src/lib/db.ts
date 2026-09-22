@@ -503,7 +503,7 @@ export const appSettings = sqliteTable("app_settings", {
  * orphan case: a snapshot-import replace of `videos` can leave a local `video_metrics_daily` row
  * referencing a `videoId` no longer present in the receiving device's `videos` table after import
  * (FK enforcement is disabled for that whole operation, so this never crashes, it just leaves a
- * stale row). See `docs/ARCHITECTURE.md` §14.4.
+ * stale row). See `docs/ARCHITECTURE.md` §14.5.
  *
  * Composite primary key `(videoId, metricDate, metricName)` mirrors the plan's own DDL exactly:
  * one row per video/day/metric, so re-collecting an already-collected date is a natural upsert,

@@ -554,14 +554,18 @@ explicit consent for that branch specifically). `docs/roadmap/plans/PHASE_8_PLAN
 (the additive `video_metrics_daily` table + tests) is implemented and reviewed. The owner answered
 §8's two required decisions on 2026-09-22 (Telegram msg 356, recorded verbatim in the plan's §10):
 OAuth scope approved, and metric scope widened to every metric `yt-analytics.readonly` covers (not
-`views` alone) — see §14.2 below for the schema consequence. Slice 1 (OAuth scope, BL-051) is now
+`views` alone) — see §14.2 below for the schema consequence. Slice 1 (OAuth scope, BL-051) is
 **done** — `YOUTUBE_ANALYTICS_READ_SCOPE` added to `src/lib/auth.ts`'s `YOUTUBE_SCOPES`; see
 §2.1's own updated entry in `docs/SYSTEM_MAP.md` for why no separate re-consent mechanism needed
-to be built (every existing sign-in path already forces full consent). Slices 3 (Analytics
-adapter) and 4 (manual "collect now" trigger, Web UI) are **assigned, not yet implemented**
-(`docs/roadmap/BACKLOG.md` BL-052/BL-053); a fourth item, BL-054 (daily staleness-based
-auto-collection + a configurable local sync-time/timezone setting), was also authorized the same
-day, superseding the plan's original "no scheduling" boundary (plan §10 items
+to be built (every existing sign-in path already forces full consent). Slice 3 (Analytics
+adapter, BL-052) is **in progress**: the low-level `src/lib/youtube-analytics.ts` client and the
+full `src/lib/analytics/` domain module (`collectMetrics`, per-video isolation, active-channel
+check) both exist and are tested against mocked HTTP, but nothing calls `collectMetrics` yet —
+slice 4's route (BL-053) is the first real consumer, and the per-video query shape remains
+unconfirmed against a real API response (needs BL-051's re-consent). Slice 4 (manual "collect now"
+trigger, Web UI, BL-053) is **assigned, not yet implemented**; a fourth item, BL-054 (daily
+staleness-based auto-collection + a configurable local sync-time/timezone setting), was also
+authorized the same day, superseding the plan's original "no scheduling" boundary (plan §10 items
 3-4).
 
 ### 14.2 Schema (additive, `SCHEMA_MIGRATIONS` version 8)
@@ -601,12 +605,46 @@ upsertVideoMetric(input)          — insert-or-update by the table's own primar
 listVideoMetricsByVideo(videoId)  — full metric history for one video
 ```
 
-No `src/lib/analytics/` (or equivalent) domain module exists yet — these two functions are called
-directly by tests today (`src/lib/db.test.ts`), with no adapter/service/route consumer, since a
-consumer needs the still-undecided Analytics API adapter (slice 3) to have anything real to write.
-Wrapping these in a store adapter follows the normal §6.2 pattern once that module exists.
+`src/lib/analytics/adapters/store.ts` now wraps both (§14.5) — no longer a bare `db.test.ts`-only
+pair.
 
-### 14.4 Known limitations
+### 14.4 Analytics domain module (`src/lib/analytics/`, BL-052 part 2) — no caller yet
+
+Follows the standard `contracts/schemas/services/adapters/index` layering (§6.2). One operation,
+`collectMetrics({credentialRef, channelId, startDate, endDate, metricNames?})`: for every video
+`videoStore.listVideosByChannel(channelId)` returns, calls the low-level
+`queryVideoAnalyticsReport` (§14 area / `src/lib/youtube-analytics.ts`) once and upserts every
+returned `(date, metric)` pair via `upsertVideoMetric`. `metricNames` defaults to
+`ANALYTICS_METRIC_NAMES` (the full non-monetary list, `PHASE_8_PLAN.md` §10 item 2) when omitted.
+
+Channel-context validation mirrors `channel-sync/services.ts`'s `listSyncedVideos` exactly: since
+this service already receives `credentialRef`, it calls `channelAccess.assertActiveChannel`
+itself (once, here) rather than deferring to a future route — a future BL-053 route must not add
+a second check. A video genuinely belonging to a different channel can never be reached through a
+given `channelId` by construction (`listVideosByChannel(channelId)` only returns that channel's
+own rows), proven by an explicit cross-channel test (`services.test.ts`) rather than left as an
+inferred property.
+
+One video's Analytics call throwing is isolated into `skippedVideoIds` (logged), never failing the
+whole channel's run — mirrors `change-drafts-sync`'s per-peer isolation. `upsertsIssued` counts
+upsert *attempts*, not distinct new rows — re-collecting an already-collected range reports a
+nonzero count even though the underlying rows were only overwritten, not created (see the field's
+own doc comment in `contracts.ts`). A metric absent/non-finite in a given API response row is
+silently omitted from that row's upserts, never defaulted to `0` (matches `videos.viewCount`'s
+existing nullable-never-zeroed convention, §2.7).
+
+An automated `write-path-inventory.test.ts` (mirroring `ai-localization`'s) proves no file in this
+module references any `videos`/`channels`-mutating `db.ts` function or any
+`youtube-write-gateway` symbol — the plan's §7 "never writes to videos/channels" acceptance
+criterion as a structural, automated check, not an inference from the dependency-injection shape
+alone.
+
+**Nothing calls `collectMetrics` yet** — no route, no CLI/MCP tool, no UI. BL-053 is the first
+real consumer. `credentialRef` shapes with no `userId` (e.g. a hypothetical future CLI caller
+passing raw tokens) can never pass `assertActiveChannel` and so can never use this service today —
+documented as a known constraint in the function's own doc comment, not a bug.
+
+### 14.5 Known limitations
 
 No Analytics API client, no OAuth scope request, no route, no UI — this slice is the persistence
 primitive only, exactly `PHASE_8_PLAN.md` §6 slice 2's scope, deliberately not a vertical slice
