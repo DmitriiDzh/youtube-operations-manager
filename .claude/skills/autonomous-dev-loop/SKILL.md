@@ -83,15 +83,29 @@ asking each time:**
 
 - Create a `feature/*` branch from `dev`'s tip for a task this loop has picked up.
 - Commit on that branch.
-- Merge a completed, verified feature into local `dev` with `--no-ff`.
-- `git push origin dev`.
+- Merge a completed, verified **small/low-risk** change into local `dev` with `--no-ff` (a narrow
+  bug fix, a documentation-only change, a single-file or config/script fix -- same definition as
+  `AGENTS.md` §K.2's table).
+- `git push origin dev` (once a merge -- small/low-risk, or an approved substantive feature -- has
+  actually happened).
 
-If this loop's next action would cross into the first list, stop that specific action -- leave
-in-progress work exactly where it is (uncommitted, or on its own feature branch; never force-
+**Requires the project owner's explicit approval, every time (established 2026-09-22, `AGENTS.md`
+§K.2):** merging a completed, verified **substantive feature** into `dev` -- new functionality, a
+new module/subsystem, a multi-file behavioral change, anything this loop would itself describe as
+"a feature." Work and commit on that feature's own branch exactly as before (that part is still
+standing-authorized); once the loop itself considers the feature finished and verified, present it
+to the owner and explicitly ask whether they agree, then treat that question exactly like any other
+"needs the owner's input" case in section 2 step 2 below -- including its 15-minute wait-then-park
+rule. Never merge a substantive feature on the strength of silence, a clean review cycle, or this
+skill's own judgment that it's "obviously done."
+
+If this loop's next action would cross into the first (never) list, stop that specific action --
+leave in-progress work exactly where it is (uncommitted, or on its own feature branch; never force-
 pushed, never discarded) -- and report to the project owner what is ready and what it is waiting
-on. Silence is never approval for anything in the first list. The only place silence has any
-defined effect in this skill is section 2's 15-minute rule, and that only ever moves this loop on
-to a *different* task -- it never grants itself something from the first list.
+on. Silence is never approval for anything in the first list, nor for a substantive-feature merge.
+The only place silence has any defined effect in this skill is section 2's 15-minute rule, and that
+only ever moves this loop on to a *different* task -- it never grants itself something from the
+first list, and it never merges the parked feature itself.
 
 ## 2. The loop, one iteration
 
@@ -105,21 +119,31 @@ to a *different* task -- it never grants itself something from the first list.
    `roadmap-backlog` skill) to find the current phase's open items.
 2. If an `assigned` or `in_progress` backlog item exists: work it, following `AGENTS.md`'s
    Standard development workflow exactly as in any other task -- smallest safe slice, tests before
-   merge, docs updated per §H, `--no-ff` merge to `dev`, push, Telegram notification per the
-   standing rule (a real, repeated autonomous run will send one notification per merge -- say so
-   to the owner before starting, so a burst of messages during an active run isn't a surprise).
+   merge, docs updated per §H. For a small/low-risk change, `--no-ff` merge to `dev`, push, and
+   send the Telegram notification per the standing rule as before (a real, repeated autonomous run
+   will send one notification per merge -- say so to the owner before starting, so a burst of
+   messages during an active run isn't a surprise). For a **substantive feature**, do not merge on
+   your own judgment that it's done -- present it to the owner and explicitly ask whether they
+   agree it's finished and ready, per section 1's new rule above.
    - If that item's next step genuinely needs the project owner's input, or an authorization this
-     skill cannot grant itself (anything in section 1's first list, or a product/scope decision
-     only they can make): ask over Telegram, then check back in **15 minutes**
-     (`ScheduleWakeup`, or the next `/loop` iteration). If 15 minutes pass with no reply, do
-     **not** invent a new `BACKLOG.md` status -- `roadmap-backlog` defines exactly five
-     (`proposed`/`assigned`/`in_progress`/`done`/`dropped`) and this skill must not contradict it.
-     Instead, leave the item's status as-is and add a note to its **Notes** column recording the
-     timestamp and exactly what it is waiting on, then move to the next actionable item instead of
-     idling on this one. A parked item stays parked, not abandoned: re-check it on this loop's
-     normal cadence (each time step 1 re-reads the backlog), not by re-asking the same question
-     every 15 minutes. **A parked item still counts as "found" for section 3(a)** -- see the
-     explicit warning there.
+     skill cannot grant itself (anything in section 1's first list, a product/scope decision only
+     they can make, **or a substantive-feature merge approval**): ask over Telegram, then check
+     back in **15 minutes** (`ScheduleWakeup`, or the next `/loop` iteration). If 15 minutes pass
+     with no reply, do **not** invent a new `BACKLOG.md` status -- `roadmap-backlog` defines
+     exactly five (`proposed`/`assigned`/`in_progress`/`done`/`dropped`) and this skill must not
+     contradict it. Instead, leave the item's status as-is (a feature awaiting merge approval stays
+     `in_progress`, its branch committed and unmerged) and add a note to its **Notes** column
+     recording the timestamp and exactly what it is waiting on, then move to the next actionable
+     item instead of idling on this one. A parked item stays parked, not abandoned: re-check it on
+     this loop's normal cadence (each time step 1 re-reads the backlog), not by re-asking the same
+     question every 15 minutes. **A parked item still counts as "found" for section 3(a)** -- see
+     the explicit warning there. **The next actionable item's own new branch is created from
+     `dev`'s current tip, never from the tip of the parked, still-unmerged feature branch**
+     (project owner's own explicit clarification, Telegram, 2026-09-22 -- stacking unrelated work
+     on top of something still awaiting approval tangles the two together and makes either one
+     harder to review or revert independently). Group that new branch's own commits by logical
+     scope/module rather than fragmenting further, so parked-and-awaiting-approval branches don't
+     accumulate faster than the owner can review them.
 3. If nothing in `BACKLOG.md` is `assigned`/`in_progress`, and applying `roadmap-backlog`'s own
    "turn a phase into backlog items" procedure to the *current* phase produces no further
    `proposed` item worth doing either: run an independent-review cycle (section 4).
@@ -170,8 +194,9 @@ its final round.
 
 When both hold, this loop may move to `FUTURE_PHASES.md`'s next phase, in order, treating it as
 authorized for planning **and** implementation. Everything else about how that work proceeds is
-unchanged: smallest safe slice first, its own `feature/*` branch, tests before merge, `--no-ff`
-merge to `dev`, and every gate in section 1's first list still applies exactly as written. This
+unchanged: smallest safe slice first, its own `feature/*` branch, tests before merge, section 1's
+substantive-feature merge-approval rule (a new phase's own work is virtually always substantive,
+not small/low-risk), and every gate in section 1's first list still applies exactly as written. This
 exception widens *which phase* may be started; it does not touch *how* any phase's work is
 validated, merged, or released.
 
