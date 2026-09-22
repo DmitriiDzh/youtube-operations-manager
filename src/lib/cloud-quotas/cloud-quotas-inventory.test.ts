@@ -8,11 +8,14 @@
 // Unlike `read-gateway-inventory.test.ts` (an import-level check on the `googleapis` npm
 // package), this module deliberately never imports `googleapis` at all -- it calls the Cloud
 // Monitoring REST API via plain `fetch` (`src/lib/cloud-quotas/adapters/monitoring-client.ts`'s
-// own doc comment explains why). So the equivalent enforcement here is a literal-string check: no
-// production file outside this module's own `adapters/monitoring-client.ts` may reference the
-// `monitoring.googleapis.com` host at all -- catches a future accidental second call site that
-// would silently bypass this module's own traffic counter (`cloud_monitoring_reads`,
-// `src/lib/db.ts`).
+// own doc comment explains why). So the equivalent enforcement here is a literal-string check on
+// the actual request URL (`https://monitoring.googleapis.com`), not the bare host name --
+// `contracts.ts`/`services.ts` legitimately reference the bare `"monitoring.googleapis.com"`
+// string as a `QuotaService` type value / parameter (identifying WHICH service's quota to ask
+// about), never to construct a URL themselves. No production file outside this module's own
+// `adapters/monitoring-client.ts` may contain the URL literal -- catches a future accidental
+// second call site that would silently bypass this module's own traffic counter
+// (`cloud_monitoring_reads`, `src/lib/db.ts`).
 // ---------------------------------------------------------------------------
 
 import assert from "node:assert/strict";
@@ -45,16 +48,16 @@ async function listTsFilesRecursively(dir: string): Promise<string[]> {
   return files;
 }
 
-test("cloud-quotas inventory: no file outside adapters/monitoring-client.ts references monitoring.googleapis.com", async () => {
+test("cloud-quotas inventory: no file outside adapters/monitoring-client.ts constructs a monitoring.googleapis.com URL", async () => {
   const allFiles = await listTsFilesRecursively(path.join(REPO_ROOT, "src"));
   const offenders: string[] = [];
 
   for (const file of allFiles) {
-    if (file.endsWith(".test.ts")) continue; // a test may reference the host string in a fixture URL/comment
+    if (file.endsWith(".test.ts")) continue; // a test may reference the URL in a fixture/comment
     if (file === MONITORING_CLIENT_FILE) continue;
 
     const content = await readFile(file, "utf8");
-    if (content.includes("monitoring.googleapis.com")) {
+    if (content.includes("https://monitoring.googleapis.com")) {
       offenders.push(path.relative(REPO_ROOT, file));
     }
   }
@@ -62,7 +65,7 @@ test("cloud-quotas inventory: no file outside adapters/monitoring-client.ts refe
   assert.deepEqual(
     offenders,
     [],
-    `The following production files reference monitoring.googleapis.com directly instead of going ` +
-      `through src/lib/cloud-quotas/adapters/monitoring-client.ts: ${offenders.join(", ")}`
+    `The following production files construct a monitoring.googleapis.com request URL directly ` +
+      `instead of going through src/lib/cloud-quotas/adapters/monitoring-client.ts: ${offenders.join(", ")}`
   );
 });

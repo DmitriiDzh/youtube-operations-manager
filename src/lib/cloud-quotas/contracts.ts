@@ -26,7 +26,7 @@ export { DomainError, isDomainError };
 // и тот же счетчик").
 // ---------------------------------------------------------------------------
 
-export type QuotaService = "youtube.googleapis.com" | "youtubeanalytics.googleapis.com";
+export type QuotaService = "youtube.googleapis.com" | "youtubeanalytics.googleapis.com" | "monitoring.googleapis.com";
 
 /** `null` means "unknown" -- not connected, or the real query failed -- never a fabricated 0. */
 export type ServiceQuotaStatus = { limit: number; usedLast24h: number } | null;
@@ -36,4 +36,9 @@ export type CloudQuotaStatus = {
   /** Covers Data API v3 reads AND Live writes (same underlying Google service). */
   dataApi: ServiceQuotaStatus;
   analytics: ServiceQuotaStatus;
+  /** Cloud Monitoring API's own quota -- the same real numbers shown next to its own
+   * `cloud_monitoring_reads` traffic counter (owner instruction, 2026-09-22: "Не вижу прогресс
+   * бара у Google Cloud connection" -- the other three gateways get both a traffic count AND a
+   * real quota bar; this one is no different a Google API than the others). */
+  monitoring: ServiceQuotaStatus;
 };

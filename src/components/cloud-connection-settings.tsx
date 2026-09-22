@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { CloudQuotaProgress, type ServiceQuotaStatusView } from "./cloud-quota-progress";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 
 type Status = { connected: false } | { connected: true; connectedEmail: string; scope: string; connectedAt: string };
@@ -9,14 +10,17 @@ type Status = { connected: false } | { connected: true; connectedEmail: string; 
  * Settings-tab card for the Google Cloud connection (`docs/decisions/0008-cloud-connection.md`,
  * owner instruction, 2026-09-22): a single, device-persistent grant, entirely decoupled from the
  * per-channel YouTube login above -- connecting/disconnecting here never affects which channel is
- * active, and switching channels never affects this connection. Real limit/usage numbers
+ * active, and switching channels never affects this connection. YouTube's own limit/usage numbers
  * (`src/lib/cloud-quotas/`) are shown under the Data API reads / Live writes / Analytics reads
- * toggles elsewhere in Settings, not here -- this card is connection status only, plus its own
- * `cloud_monitoring_reads` traffic count (how many real calls checking those numbers have made).
+ * toggles elsewhere in Settings; this card shows Cloud Monitoring API's OWN quota (it is a real
+ * Google API too, and checking the others' quota consumes its own -- owner instruction,
+ * 2026-09-22: "Не вижу прогресс бара у Google Cloud connection") plus its own
+ * `cloud_monitoring_reads` traffic count.
  */
 export function CloudConnectionSettings() {
   const [status, setStatus] = useState<Status | null>(null);
   const [gatewayTraffic, setGatewayTraffic] = useState<GatewayTrafficWindowView[] | undefined>(undefined);
+  const [monitoringQuota, setMonitoringQuota] = useState<ServiceQuotaStatusView | undefined>(undefined);
   const [disconnecting, setDisconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Read directly from window.location rather than `useSearchParams()` -- this page is statically
@@ -34,8 +38,12 @@ export function CloudConnectionSettings() {
   const fetchGatewayTraffic = useCallback(async () => {
     const res = await fetch("/api/settings");
     if (!res.ok) return;
-    const data = (await res.json()) as { gatewayTraffic?: GatewayTrafficWindowView[] };
+    const data = (await res.json()) as {
+      gatewayTraffic?: GatewayTrafficWindowView[];
+      cloudQuotaStatus?: { monitoring: ServiceQuotaStatusView };
+    };
     setGatewayTraffic(data.gatewayTraffic);
+    setMonitoringQuota(data.cloudQuotaStatus?.monitoring);
   }, []);
 
   useEffect(() => {
@@ -90,6 +98,7 @@ export function CloudConnectionSettings() {
           </p>
           <p className="text-xs text-zinc-500">Since {new Date(status.connectedAt).toLocaleString()}</p>
           <GatewayTrafficStats window={gatewayTraffic?.find((c) => c.category === "cloud_monitoring_reads")} />
+          <CloudQuotaProgress status={monitoringQuota} />
           <button
             onClick={handleDisconnect}
             disabled={disconnecting}

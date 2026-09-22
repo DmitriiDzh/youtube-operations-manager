@@ -50,18 +50,19 @@ export function createCloudQuotasServices(deps: ServiceDependencies) {
     async getQuotaStatus(): Promise<CloudQuotaStatus> {
       const connectionStatus = await deps.cloudConnection.getStatus();
       if (!connectionStatus.connected || !deps.projectNumber) {
-        return { connected: connectionStatus.connected, dataApi: null, analytics: null };
+        return { connected: connectionStatus.connected, dataApi: null, analytics: null, monitoring: null };
       }
 
       const { accessToken } = await deps.cloudConnection.resolveCloudCredentials();
       const projectNumber = deps.projectNumber;
 
-      const [dataApi, analytics] = await Promise.all([
+      const [dataApi, analytics, monitoring] = await Promise.all([
         fetchServiceQuota({ service: "youtube.googleapis.com", accessToken, projectNumber, deps }),
         fetchServiceQuota({ service: "youtubeanalytics.googleapis.com", accessToken, projectNumber, deps }),
+        fetchServiceQuota({ service: "monitoring.googleapis.com", accessToken, projectNumber, deps }),
       ]);
 
-      return { connected: true, dataApi, analytics };
+      return { connected: true, dataApi, analytics, monitoring };
     },
   };
 }

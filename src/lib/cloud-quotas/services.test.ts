@@ -40,26 +40,32 @@ function createFixture(opts: {
   return { services };
 }
 
-test("getQuotaStatus: not connected -> connected: false, both services unknown, never calls the real APIs", async () => {
+test("getQuotaStatus: not connected -> connected: false, all three services unknown, never calls the real APIs", async () => {
   const { services } = createFixture({ connected: false });
   const status = await services.getQuotaStatus();
-  assert.deepEqual(status, { connected: false, dataApi: null, analytics: null });
+  assert.deepEqual(status, { connected: false, dataApi: null, analytics: null, monitoring: null });
 });
 
 test("getQuotaStatus: no project number derivable (GOOGLE_CLIENT_ID unset/malformed) -> degrades to unknown rather than throwing", async () => {
   const { services } = createFixture({ connected: true, projectNumber: null });
   const status = await services.getQuotaStatus();
-  assert.deepEqual(status, { connected: true, dataApi: null, analytics: null });
+  assert.deepEqual(status, { connected: true, dataApi: null, analytics: null, monitoring: null });
 });
 
 // Real confirmed numbers from the live spike (2026-09-22): Data API v3 limit 10,000/day,
 // Analytics API limit 100,000/day -- distinct pools, exactly matching the owner's "Live writes +
-// Data reads share one counter, Analytics is separate" instruction.
-test("getQuotaStatus: connected -> returns real limit/usage per service, dataApi and analytics kept separate", async () => {
+// Data reads share one counter, Analytics is separate" instruction. Cloud Monitoring's own quota
+// added 2026-09-22 (owner: "Не вижу прогресс бара у Google Cloud connection") -- the same real
+// numbers as the other two, just for monitoring.googleapis.com itself.
+test("getQuotaStatus: connected -> returns real limit/usage per service, all three kept separate", async () => {
   const { services } = createFixture({
     connected: true,
-    limitByService: { "youtube.googleapis.com": 10000, "youtubeanalytics.googleapis.com": 100000 },
-    usageByService: { "youtube.googleapis.com": 42, "youtubeanalytics.googleapis.com": 28 },
+    limitByService: {
+      "youtube.googleapis.com": 10000,
+      "youtubeanalytics.googleapis.com": 100000,
+      "monitoring.googleapis.com": 6000,
+    },
+    usageByService: { "youtube.googleapis.com": 42, "youtubeanalytics.googleapis.com": 28, "monitoring.googleapis.com": 8 },
   });
 
   const status = await services.getQuotaStatus();
@@ -68,14 +74,15 @@ test("getQuotaStatus: connected -> returns real limit/usage per service, dataApi
     connected: true,
     dataApi: { limit: 10000, usedLast24h: 42 },
     analytics: { limit: 100000, usedLast24h: 28 },
+    monitoring: { limit: 6000, usedLast24h: 8 },
   });
 });
 
-test("getQuotaStatus: one service's real call fails -> that service is null, the other is unaffected", async () => {
+test("getQuotaStatus: one service's real call fails -> that service is null, the others are unaffected", async () => {
   const { services } = createFixture({
     connected: true,
-    limitByService: { "youtubeanalytics.googleapis.com": 100000 },
-    usageByService: { "youtubeanalytics.googleapis.com": 28 },
+    limitByService: { "youtubeanalytics.googleapis.com": 100000, "monitoring.googleapis.com": 6000 },
+    usageByService: { "youtubeanalytics.googleapis.com": 28, "monitoring.googleapis.com": 8 },
     throwForService: "youtube.googleapis.com",
   });
 
@@ -85,6 +92,7 @@ test("getQuotaStatus: one service's real call fails -> that service is null, the
     connected: true,
     dataApi: null,
     analytics: { limit: 100000, usedLast24h: 28 },
+    monitoring: { limit: 6000, usedLast24h: 8 },
   });
 });
 

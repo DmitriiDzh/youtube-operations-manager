@@ -1009,6 +1009,22 @@ category, so every attempt is allowed by definition.
 **Mechanical enforcement is a literal-string check, not an import check**, unlike
 `read-gateway-inventory.test.ts`: this module never imports `googleapis` at all (§16.2), so there
 is nothing for that kind of check to catch. `cloud-quotas-inventory.test.ts` instead fails the
-build if any production file outside `adapters/monitoring-client.ts` contains the literal string
-`monitoring.googleapis.com` -- catching a future accidental second call site that would silently
-bypass both this counter and the single-funnel property it exists to protect.
+build if any production file outside `adapters/monitoring-client.ts` contains the URL literal
+`https://monitoring.googleapis.com` -- catching a future accidental second call site that would
+silently bypass both this counter and the single-funnel property it exists to protect. The check
+is scoped to the full URL, not the bare host name, because `QuotaService`
+(`src/lib/cloud-quotas/contracts.ts`) and `services.ts` legitimately reference the bare
+`"monitoring.googleapis.com"` string as a parameter value (identifying which service's quota to
+ask about) without themselves ever constructing a request URL.
+
+### 16.9 A third quota card: Cloud Monitoring's own limit/usage
+
+Same day, once told checking the other two services' quota is itself a real (separately quota'd)
+API call, the owner noticed an inconsistency: *"Не вижу прогресс бара у Google Cloud connection"*
+-- the other three gateway cards each show both a traffic count and a real quota progress bar, but
+the Cloud connection card only had the former. `getQuotaStatus()`'s `CloudQuotaStatus` gained a
+third field, `monitoring`, fetched exactly like `dataApi`/`analytics` but for
+`monitoring.googleapis.com` itself (the same `quota/limit`/`quota/rate/net_usage` metrics exist for
+every Google Cloud service, including Cloud Monitoring's own). Rendered via the same
+`CloudQuotaProgress` component in the "Google Cloud connection" Settings card, alongside its
+`cloud_monitoring_reads` traffic count from §16.8.
