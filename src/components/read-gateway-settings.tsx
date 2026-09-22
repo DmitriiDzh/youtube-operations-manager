@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { CloudQuotaProgress, type ServiceQuotaStatusView } from "./cloud-quota-progress";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 import { InfoTooltip } from "./info-tooltip";
+import { SettingsSectionRow } from "./settings-section-row";
 import { ToggleSwitch } from "./toggle-switch";
 
 type Settings = {
@@ -79,50 +80,70 @@ export function ReadGatewaySettings() {
 
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-      <div>
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
-          Data API reads
-          <InfoTooltip>
-            On by default. Governs every real call to the YouTube Data API v3 (channel sync, video
-            listing, playlists). Turning this off also fails any write path that depends on a read
-            first (Batches, the pre-write channel identity check) -- Live writes above still
-            separately governs whether a write is otherwise allowed.
-          </InfoTooltip>
-        </h3>
-        <div className="mt-2 flex items-center gap-2">
-          <ToggleSwitch
-            label="Enable Data API reads"
-            checked={draft.dataApiReadsEnabled}
-            onChange={(checked) => setDraft({ ...draft, dataApiReadsEnabled: checked })}
-          />
-          <span className="text-sm text-zinc-300">Enable Data API reads</span>
-        </div>
-        <GatewayTrafficStats
-          window={settings?.gatewayTraffic?.find((c) => c.category === "data_api_reads")}
-        />
-        <CloudQuotaProgress status={settings?.cloudQuotaStatus?.dataApi} />
-      </div>
+      <SettingsSectionRow
+        left={
+          <div>
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
+              Data API reads
+              <InfoTooltip>
+                On by default. Governs every real call to the YouTube Data API v3 (channel sync,
+                video listing, playlists). Turning this off also fails any write path that depends
+                on a read first (Batches, the pre-write channel identity check) -- Live writes
+                above still separately governs whether a write is otherwise allowed.
+              </InfoTooltip>
+            </h3>
+            <div className="mt-2 flex items-center gap-2">
+              <ToggleSwitch
+                label="Enable Data API reads"
+                checked={draft.dataApiReadsEnabled}
+                onChange={(checked) => setDraft({ ...draft, dataApiReadsEnabled: checked })}
+              />
+              <span className="text-sm text-zinc-300">Enable Data API reads</span>
+            </div>
+          </div>
+        }
+        right={
+          <>
+            <GatewayTrafficStats
+              size="lg"
+              window={settings?.gatewayTraffic?.find((c) => c.category === "data_api_reads")}
+            />
+            <CloudQuotaProgress size="lg" status={settings?.cloudQuotaStatus?.dataApi} />
+          </>
+        }
+      />
 
       <div className="border-t border-zinc-800 pt-4">
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
-          Analytics reads
-          <InfoTooltip>
-            On by default. Governs every real call to the YouTube Analytics API (the Analytics
-            tab&apos;s manual and automatic collection).
-          </InfoTooltip>
-        </h3>
-        <div className="mt-2 flex items-center gap-2">
-          <ToggleSwitch
-            label="Enable Analytics reads"
-            checked={draft.analyticsReadsEnabled}
-            onChange={(checked) => setDraft({ ...draft, analyticsReadsEnabled: checked })}
-          />
-          <span className="text-sm text-zinc-300">Enable Analytics reads</span>
-        </div>
-        <GatewayTrafficStats
-          window={settings?.gatewayTraffic?.find((c) => c.category === "analytics_reads")}
+        <SettingsSectionRow
+          left={
+            <div>
+              <h3 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
+                Analytics reads
+                <InfoTooltip>
+                  On by default. Governs every real call to the YouTube Analytics API (the
+                  Analytics tab&apos;s manual and automatic collection).
+                </InfoTooltip>
+              </h3>
+              <div className="mt-2 flex items-center gap-2">
+                <ToggleSwitch
+                  label="Enable Analytics reads"
+                  checked={draft.analyticsReadsEnabled}
+                  onChange={(checked) => setDraft({ ...draft, analyticsReadsEnabled: checked })}
+                />
+                <span className="text-sm text-zinc-300">Enable Analytics reads</span>
+              </div>
+            </div>
+          }
+          right={
+            <>
+              <GatewayTrafficStats
+                size="lg"
+                window={settings?.gatewayTraffic?.find((c) => c.category === "analytics_reads")}
+              />
+              <CloudQuotaProgress size="lg" status={settings?.cloudQuotaStatus?.analytics} />
+            </>
+          }
         />
-        <CloudQuotaProgress status={settings?.cloudQuotaStatus?.analytics} />
       </div>
 
       {error && <p className="text-xs text-red-400">{error}</p>}

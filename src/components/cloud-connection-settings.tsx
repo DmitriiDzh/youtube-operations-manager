@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { CloudQuotaProgressPerMinute, type PerMinuteQuotaStatusView } from "./cloud-quota-progress";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 import { InfoTooltip } from "./info-tooltip";
+import { SettingsSectionRow } from "./settings-section-row";
 
 type Status = { connected: false } | { connected: true; connectedEmail: string; scope: string; connectedAt: string };
 
@@ -95,21 +96,32 @@ export function CloudConnectionSettings() {
       )}
 
       {status.connected ? (
-        <div className="space-y-2">
-          <p className="text-sm text-zinc-300">
-            Connected as <span className="font-mono text-zinc-100">{status.connectedEmail}</span>
-          </p>
-          <p className="text-xs text-zinc-500">Since {new Date(status.connectedAt).toLocaleString()}</p>
-          <GatewayTrafficStats window={gatewayTraffic?.find((c) => c.category === "cloud_monitoring_reads")} />
-          <CloudQuotaProgressPerMinute status={monitoringQuota} />
-          <button
-            onClick={handleDisconnect}
-            disabled={disconnecting}
-            className="rounded-md border border-red-900 bg-red-950/50 px-4 py-1.5 text-sm font-medium text-red-400 hover:bg-red-950 disabled:opacity-50"
-          >
-            {disconnecting ? "Disconnecting..." : "Disconnect"}
-          </button>
-        </div>
+        <SettingsSectionRow
+          left={
+            <div className="space-y-2">
+              <p className="text-sm text-zinc-300">
+                Connected as <span className="font-mono text-zinc-100">{status.connectedEmail}</span>
+              </p>
+              <p className="text-xs text-zinc-500">Since {new Date(status.connectedAt).toLocaleString()}</p>
+              <button
+                onClick={handleDisconnect}
+                disabled={disconnecting}
+                className="rounded-md border border-red-900 bg-red-950/50 px-4 py-1.5 text-sm font-medium text-red-400 hover:bg-red-950 disabled:opacity-50"
+              >
+                {disconnecting ? "Disconnecting..." : "Disconnect"}
+              </button>
+            </div>
+          }
+          right={
+            <>
+              <GatewayTrafficStats
+                size="lg"
+                window={gatewayTraffic?.find((c) => c.category === "cloud_monitoring_reads")}
+              />
+              <CloudQuotaProgressPerMinute size="lg" status={monitoringQuota} />
+            </>
+          }
+        />
       ) : (
         <a
           href="/api/cloud-connection/start"

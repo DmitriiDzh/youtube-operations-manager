@@ -5,6 +5,7 @@ import { CloudQuotaProgress, type ServiceQuotaStatusView } from "./cloud-quota-p
 import { ConfirmDialog } from "./confirm-dialog";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 import { InfoTooltip } from "./info-tooltip";
+import { SettingsSectionRow } from "./settings-section-row";
 import { ToggleSwitch } from "./toggle-switch";
 
 type Settings = {
@@ -77,68 +78,87 @@ export function LiveWritesSettings() {
 
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-      <div>
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
-          Live writes
-          <InfoTooltip>
-            Off by default every session. When on, a Batch you create can be a real (non-dry-run)
-            one, and the Batches tab gets an actual &ldquo;Execute&rdquo; action that writes to
-            YouTube. This is layer 1 of a two-layer barrier -- turning it on does not by itself
-            send anything.
-          </InfoTooltip>
-        </h3>
-        <div className="mt-2 flex items-center gap-2">
-          <ToggleSwitch
-            label="Enable live writes for this session"
-            checked={draft.liveWritesEnabled}
-            onChange={(checked) => {
-              if (checked) {
-                setConfirmingLiveWrites(true);
-              } else {
-                setDraft({ ...draft, liveWritesEnabled: false });
-              }
-            }}
-          />
-          <span className="text-sm text-zinc-300">Enable live writes for this session</span>
-        </div>
-        <GatewayTrafficStats
-          window={settings?.gatewayTraffic?.find((c) => c.category === "live_writes")}
-        />
-        {/* Shared with Data API reads below -- same underlying Google service, owner
-            instruction 2026-09-22: "Можем пока что отображать на Live write и на Data reads
-            один и тот же счетчик". */}
-        <CloudQuotaProgress status={settings?.cloudQuotaStatus?.dataApi} />
-      </div>
+      <SettingsSectionRow
+        left={
+          <div>
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
+              Live writes
+              <InfoTooltip>
+                Off by default every session. When on, a Batch you create can be a real
+                (non-dry-run) one, and the Batches tab gets an actual &ldquo;Execute&rdquo; action
+                that writes to YouTube. This is layer 1 of a two-layer barrier -- turning it on
+                does not by itself send anything.
+              </InfoTooltip>
+            </h3>
+            <div className="mt-2 flex items-center gap-2">
+              <ToggleSwitch
+                label="Enable live writes for this session"
+                checked={draft.liveWritesEnabled}
+                onChange={(checked) => {
+                  if (checked) {
+                    setConfirmingLiveWrites(true);
+                  } else {
+                    setDraft({ ...draft, liveWritesEnabled: false });
+                  }
+                }}
+              />
+              <span className="text-sm text-zinc-300">Enable live writes for this session</span>
+            </div>
+          </div>
+        }
+        right={
+          <>
+            <GatewayTrafficStats
+              size="lg"
+              window={settings?.gatewayTraffic?.find((c) => c.category === "live_writes")}
+            />
+            {/* Shared with Data API reads below -- same underlying Google service, owner
+                instruction 2026-09-22: "Можем пока что отображать на Live write и на Data reads
+                один и тот же счетчик". */}
+            <CloudQuotaProgress size="lg" status={settings?.cloudQuotaStatus?.dataApi} />
+          </>
+        }
+      />
 
       <div className="border-t border-zinc-800 pt-4">
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
-          MCP connection
-          <InfoTooltip>
-            Off by default. While off, an MCP client (e.g. Codex, Claude) sees NO tools at all --
-            not registered at all, not merely rejected at call time. Turning this on registers the
-            full tool set (read/propose/create plus write-capable tools like playlists/apply --
-            Live writes above still separately gates any real YouTube write). Unlike Live writes,
-            this persists across sessions once enabled -- a one-time setup step, not reset every
-            restart. Known limitation: this takes effect the next time an MCP client spawns or
-            reconnects the server process, not instantly for a connection that is already open.
-          </InfoTooltip>
-        </h3>
-        <div className="mt-2 flex items-center gap-2">
-          <ToggleSwitch
-            label="Enable MCP / agent connection"
-            checked={draft.mcpConnectionEnabled}
-            onChange={(checked) => {
-              if (checked) {
-                setConfirmingMcpConnection(true);
-              } else {
-                setDraft({ ...draft, mcpConnectionEnabled: false });
-              }
-            }}
-          />
-          <span className="text-sm text-zinc-300">Enable MCP / agent connection</span>
-        </div>
-        <GatewayTrafficStats
-          window={settings?.gatewayTraffic?.find((c) => c.category === "mcp_tool_calls")}
+        <SettingsSectionRow
+          left={
+            <div>
+              <h3 className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
+                MCP connection
+                <InfoTooltip>
+                  Off by default. While off, an MCP client (e.g. Codex, Claude) sees NO tools at
+                  all -- not registered at all, not merely rejected at call time. Turning this on
+                  registers the full tool set (read/propose/create plus write-capable tools like
+                  playlists/apply -- Live writes above still separately gates any real YouTube
+                  write). Unlike Live writes, this persists across sessions once enabled -- a
+                  one-time setup step, not reset every restart. Known limitation: this takes
+                  effect the next time an MCP client spawns or reconnects the server process, not
+                  instantly for a connection that is already open.
+                </InfoTooltip>
+              </h3>
+              <div className="mt-2 flex items-center gap-2">
+                <ToggleSwitch
+                  label="Enable MCP / agent connection"
+                  checked={draft.mcpConnectionEnabled}
+                  onChange={(checked) => {
+                    if (checked) {
+                      setConfirmingMcpConnection(true);
+                    } else {
+                      setDraft({ ...draft, mcpConnectionEnabled: false });
+                    }
+                  }}
+                />
+                <span className="text-sm text-zinc-300">Enable MCP / agent connection</span>
+              </div>
+            </div>
+          }
+          right={
+            <GatewayTrafficStats
+              size="lg"
+              window={settings?.gatewayTraffic?.find((c) => c.category === "mcp_tool_calls")}
+            />
+          }
         />
       </div>
 

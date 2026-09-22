@@ -11,13 +11,20 @@ export type ServiceQuotaStatusView = { limit: number; usedLast24h: number } | nu
  * Monitoring API query failed -- renders nothing rather than a fabricated 0/0 bar in that case
  * (`src/lib/cloud-quotas` never invents a number it didn't actually get back from Google).
  */
-export function CloudQuotaProgress({ status }: { status: ServiceQuotaStatusView | undefined }) {
+export function CloudQuotaProgress({
+  status,
+  size = "sm",
+}: {
+  status: ServiceQuotaStatusView | undefined;
+  size?: "sm" | "lg";
+}) {
   if (!status) return null;
 
   return (
     <ProgressBar
       value={status.usedLast24h}
       max={status.limit}
+      size={size}
       label={`Google Cloud quota (24h): ${status.usedLast24h.toLocaleString()} / ${status.limit.toLocaleString()}`}
     />
   );
@@ -33,7 +40,13 @@ export type PerMinuteQuotaStatusView = { limit: number; usedLastMinute: number }
  * кнопки соединения с Cloud") so it reads as structurally different at a glance, not just a
  * fourth copy of the same red 24h bar.
  */
-export function CloudQuotaProgressPerMinute({ status }: { status: PerMinuteQuotaStatusView | undefined }) {
+export function CloudQuotaProgressPerMinute({
+  status,
+  size = "sm",
+}: {
+  status: PerMinuteQuotaStatusView | undefined;
+  size?: "sm" | "lg";
+}) {
   if (!status) return null;
 
   return (
@@ -41,6 +54,7 @@ export function CloudQuotaProgressPerMinute({ status }: { status: PerMinuteQuota
       value={status.usedLastMinute}
       max={status.limit}
       color="indigo"
+      size={size}
       label={`Google Cloud quota (per minute): ${status.usedLastMinute.toLocaleString()} / ${status.limit.toLocaleString()}`}
     />
   );

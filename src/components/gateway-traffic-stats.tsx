@@ -12,14 +12,26 @@ export type GatewayTrafficWindowView = {
  * увенчались успехом"), rendered under that category's own `ToggleSwitch` in Settings. Always the
  * last 24 hours, never all-time (see `src/lib/db.ts`'s `getGatewayTrafficLast24h`).
  */
-export function GatewayTrafficStats({ window }: { window: GatewayTrafficWindowView | undefined }) {
+export function GatewayTrafficStats({
+  window,
+  size = "sm",
+}: {
+  window: GatewayTrafficWindowView | undefined;
+  /** `"lg"` is the larger rendering used when this line sits alone in a Settings section's
+   * right-hand column (`SettingsSectionRow`, owner instruction 2026-09-22: "статистику и прогресс
+   * бар сделаем крупнее"). `"sm"` (default) is unchanged from before that instruction. */
+  size?: "sm" | "lg";
+}) {
   if (!window) return null;
 
+  const textClass = size === "lg" ? "text-sm text-zinc-400" : "text-xs text-zinc-500";
+  const valueClass = size === "lg" ? "font-medium text-zinc-100" : "text-zinc-300";
+
   return (
-    <p className="mt-2 text-xs text-zinc-500">
-      Attempts (24h): <span className="text-zinc-300">{window.totalAttempts.toLocaleString()}</span>
+    <p className={`mt-2 ${textClass}`}>
+      Attempts (24h): <span className={valueClass}>{window.totalAttempts.toLocaleString()}</span>
       {" — "}
-      Succeeded: <span className="text-zinc-300">{window.succeeded.toLocaleString()}</span>
+      Succeeded: <span className={valueClass}>{window.succeeded.toLocaleString()}</span>
     </p>
   );
 }
