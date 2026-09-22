@@ -1,0 +1,412 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { createChannelAccessService } from "@/lib/channel-access";
+import { DomainError } from "./contracts";
+import { createAnalyticsServices } from "./services";
+import type { ResolvedCredentials } from "./contracts";
+
+function createFakeChannelAccess() {
+  const selections = new Map<string, string>();
+  const service = createChannelAccessService({
+    async getSelectedChannelId(userId: string) {
+      return selections.get(userId) ?? null;
+    },
+    async setSelectedChannelId(userId: string, channelId: string) {
+      selections.set(userId, channelId);
+    },
+  });
+  return service;
+}
+
+type FakeVideo = { videoId: string; channelId: string };
+type FakeAnalyticsRow = { date: string; metrics: Record<string, number> };
+
+function createServicesFixture(opts: {
+  videosByChannel: Record<string, FakeVideo[]>;
+  analyticsResponses: Record<string, FakeAnalyticsRow[] | Error>;
+  syncSettings?: { localTime: string; timezone: string };
+  now?: Date;
+}) {
+  const channelAccess = createFakeChannelAccess();
+  const analyticsCalls: Array<{ channelId: string; videoId: string }> = [];
+  const upsertedRows: Array<{
+    channelId: string;
+    videoId: string;
+    metricDate: string;
+    metricName: string;
+    metricValue: number;
+  }> = [];
+  const metricRowsByKey = new Map<string, number>();
+
+  const youtubeApi = {
+    async queryVideoAnalyticsReport(args: {
+      credentials: ResolvedCredentials;
+      channelId: string;
+      videoId: string;
+      startDate: string;
+      endDate: string;
+      metricNames: readonly string[];
+    }) {
+      analyticsCalls.push({ channelId: args.channelId, videoId: args.videoId });
+      const response = opts.analyticsResponses[args.videoId];
+      if (response instanceof Error) throw response;
+      return response ?? [];
+    },
+  };
+
+  const videoStore = {
+    async listVideosByChannel(channelId: string) {
+      return opts.videosByChannel[channelId] ?? [];
+    },
+  };
+
+  const metricStore = {
+    async upsertMetric(args: {
+      channelId: string;
+      videoId: string;
+      metricDate: string;
+      metricName: string;
+      metricValue: number;
+    }) {
+      const key = `${args.videoId}|${args.metricDate}|${args.metricName}`;
+      metricRowsByKey.set(key, args.metricValue); // upsert semantics -- overwrite, never duplicate
+      upsertedRows.push(args);
+    },
+    async listMetricsByChannel(channelId: string) {
+      return upsertedRows.filter((row) => row.channelId === channelId);
+    },
+  };
+
+  const authResolver = {
+    async resolve(): Promise<ResolvedCredentials> {
+      return {
+        credentialRef: { userId: "user-1" },
+        accessToken: "fake-access-token",
+        refreshToken: "fake-refresh-token",
+        scopeSet: new Set(["https://www.googleapis.com/auth/yt-analytics.readonly"]),
+      };
+    },
+  };
+
+  const logger = { info() {}, error() {} };
+
+  const lastAutoCollectedAtByChannel = new Map<string, Date | null>();
+  const channelStore = {
+    async getAnalyticsLastAutoCollectedAt(channelId: string) {
+      return lastAutoCollectedAtByChannel.get(channelId) ?? null;
+    },
+    async markAnalyticsAutoCollected(channelId: string, at: Date) {
+      lastAutoCollectedAtByChannel.set(channelId, at);
+    },
+  };
+
+  const settingsStore = {
+    async getAnalyticsSyncSettings() {
+      return opts.syncSettings ?? { localTime: "12:00", timezone: "UTC" };
+    },
+  };
+
+  let currentNow = opts.now ?? new Date("2026-09-22T15:00:00Z");
+  const clock = { now: () => currentNow };
+
+  const services = createAnalyticsServices({
+    authResolver,
+    youtubeApi,
+    videoStore,
+    metricStore,
+    channelStore,
+    settingsStore,
+    clock,
+    channelAccess,
+    logger,
+  });
+
+  return {
+    services,
+    channelAccess,
+    analyticsCalls,
+    upsertedRows,
+    metricRowsByKey,
+    lastAutoCollectedAtByChannel,
+    setNow: (date: Date) => {
+      currentNow = date;
+    },
+  };
+}
+
+test("collectMetrics fails closed when the requested channel is not the caller's active channel", async () => {
+  const { services } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: {},
+  });
+
+  await assert.rejects(
+    () =>
+      services.collectMetrics({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-09-01",
+        endDate: "2026-09-20",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "CHANNEL_NOT_ACTIVE"
+  );
+});
+
+// docs/roadmap/plans/PHASE_8_PLAN.md §7: "A wrong-channel metrics request (video belonging to a
+// different synced channel) fails closed." A video genuinely belonging to a DIFFERENT channel
+// (UC_B) must never be queried when collecting for UC_A, even though both channels are locally
+// known -- proven directly by asserting UC_B's video id never appears in analyticsCalls, not just
+// inferred from listVideosByChannel's own filtering.
+test("collectMetrics never queries a video belonging to a different channel", async () => {
+  const { services, channelAccess, analyticsCalls } = createServicesFixture({
+    videosByChannel: {
+      UC_A: [{ videoId: "v1", channelId: "UC_A" }],
+      UC_B: [{ videoId: "v2", channelId: "UC_B" }],
+    },
+    analyticsResponses: {
+      v1: [{ date: "2026-09-01", metrics: { views: 100 } }],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const result = await services.collectMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-01",
+    endDate: "2026-09-01",
+  });
+
+  assert.equal(result.videoCount, 1);
+  assert.deepEqual(
+    analyticsCalls.map((c) => c.videoId),
+    ["v1"]
+  );
+  assert.ok(!analyticsCalls.some((c) => c.videoId === "v2"), "must never query UC_B's video while collecting for UC_A");
+});
+
+test("collectMetrics writes one row per (video, date, metric) returned by the Analytics API", async () => {
+  const { services, channelAccess, upsertedRows } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: {
+      v1: [
+        { date: "2026-09-01", metrics: { views: 100, likes: 5 } },
+        { date: "2026-09-02", metrics: { views: 150, likes: 7 } },
+      ],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const result = await services.collectMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-01",
+    endDate: "2026-09-02",
+  });
+
+  assert.equal(result.upsertsIssued, 4);
+  assert.equal(upsertedRows.length, 4);
+  assert.deepEqual(result.skippedVideoIds, []);
+});
+
+// docs/roadmap/plans/PHASE_8_PLAN.md §7: "Re-running collection for a date range already
+// collected is idempotent (upsert by the table's primary key), not a duplicate-row bug."
+test("collectMetrics run twice over the same range is idempotent at the service layer", async () => {
+  const { services, channelAccess, metricRowsByKey } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: {
+      v1: [{ date: "2026-09-01", metrics: { views: 100 } }],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const collect = () =>
+    services.collectMetrics({
+      credentialRef: { userId: "user-1" },
+      channelId: "UC_A",
+      startDate: "2026-09-01",
+      endDate: "2026-09-01",
+    });
+
+  await collect();
+  await collect();
+
+  assert.equal(metricRowsByKey.size, 1, "re-running must update the same (video, date, metric) key, not create a second one");
+  assert.equal(metricRowsByKey.get("v1|2026-09-01|views"), 100);
+});
+
+// One video's collection failing (e.g. an API error) must not fail the whole channel's run.
+test("collectMetrics isolates a per-video failure into skippedVideoIds, other videos still succeed", async () => {
+  const { services, channelAccess, upsertedRows } = createServicesFixture({
+    videosByChannel: {
+      UC_A: [
+        { videoId: "v1", channelId: "UC_A" },
+        { videoId: "v2", channelId: "UC_A" },
+      ],
+    },
+    analyticsResponses: {
+      v1: new Error("simulated Analytics API failure for v1"),
+      v2: [{ date: "2026-09-01", metrics: { views: 50 } }],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const result = await services.collectMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-01",
+    endDate: "2026-09-01",
+  });
+
+  assert.equal(result.videoCount, 2);
+  assert.deepEqual(result.skippedVideoIds, ["v1"]);
+  assert.equal(result.upsertsIssued, 1);
+  assert.equal(upsertedRows.length, 1);
+  assert.equal(upsertedRows[0]?.videoId, "v2");
+});
+
+test("collectMetrics defaults to the full ANALYTICS_METRIC_NAMES list when metricNames is omitted", async () => {
+  let requestedMetricNames: readonly string[] | undefined;
+  const { channelAccess } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const services = createAnalyticsServices({
+    authResolver: {
+      async resolve(): Promise<ResolvedCredentials> {
+        return {
+          credentialRef: { userId: "user-1" },
+          accessToken: "token",
+          scopeSet: new Set(),
+        };
+      },
+    },
+    youtubeApi: {
+      async queryVideoAnalyticsReport(args: { metricNames: readonly string[] }) {
+        requestedMetricNames = args.metricNames;
+        return [];
+      },
+    },
+    videoStore: {
+      async listVideosByChannel() {
+        return [{ videoId: "v1", channelId: "UC_A" }];
+      },
+    },
+    metricStore: { async upsertMetric() {}, async listMetricsByChannel() { return []; } },
+    channelStore: {
+      async getAnalyticsLastAutoCollectedAt() { return null; },
+      async markAnalyticsAutoCollected() {},
+    },
+    settingsStore: {
+      async getAnalyticsSyncSettings() { return { localTime: "12:00", timezone: "UTC" }; },
+    },
+    clock: { now: () => new Date("2026-09-22T15:00:00Z") },
+    channelAccess,
+    logger: { info() {}, error() {} },
+  });
+
+  await services.collectMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-01",
+    endDate: "2026-09-01",
+  });
+
+  assert.ok(requestedMetricNames && requestedMetricNames.length > 20, "should default to the full metric list, not an empty/short one");
+  assert.ok(requestedMetricNames?.includes("views"));
+  assert.ok(!requestedMetricNames?.some((name) => /revenue|Cpm|adImpressions|monetizedPlaybacks/i.test(name)), "must never default-request a monetary metric");
+});
+
+test("listMetrics fails closed when the requested channel is not the caller's active channel", async () => {
+  const { services } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+
+  await assert.rejects(
+    () => services.listMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }),
+    (error: unknown) => error instanceof DomainError && error.code === "CHANNEL_NOT_ACTIVE"
+  );
+});
+
+test("listMetrics returns every previously-collected row for the channel, shaped for display", async () => {
+  const { services, channelAccess, upsertedRows } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await services.collectMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-01",
+    endDate: "2026-09-01",
+  });
+  assert.equal(upsertedRows.length, 1);
+
+  const result = await services.listMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+
+  assert.equal(result.channelId, "UC_A");
+  assert.deepEqual(result.rows, [
+    { videoId: "v1", metricDate: "2026-09-01", metricName: "views", metricValue: 100 },
+  ]);
+});
+
+test("runAutoCollectionIfStale fails closed when the requested channel is not the caller's active channel", async () => {
+  const { services } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+
+  await assert.rejects(
+    () => services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }),
+    (error: unknown) => error instanceof DomainError && error.code === "CHANNEL_NOT_ACTIVE"
+  );
+});
+
+test("runAutoCollectionIfStale: never collected before -> runs collection and marks the timestamp", async () => {
+  const { services, channelAccess, analyticsCalls, lastAutoCollectedAtByChannel } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+    syncSettings: { localTime: "12:00", timezone: "UTC" },
+    now: new Date("2026-09-22T15:00:00Z"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const result = await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+
+  assert.equal(result.ranCollection, true);
+  if (result.ranCollection) {
+    assert.equal(result.result.videoCount, 1);
+  }
+  assert.equal(analyticsCalls.length, 1);
+  assert.equal(lastAutoCollectedAtByChannel.get("UC_A")?.getTime(), new Date("2026-09-22T15:00:00Z").getTime());
+});
+
+test("runAutoCollectionIfStale: already collected today after the boundary -> no-ops, never calls the Analytics API", async () => {
+  const { services, channelAccess, analyticsCalls, lastAutoCollectedAtByChannel } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+    syncSettings: { localTime: "12:00", timezone: "UTC" },
+    now: new Date("2026-09-22T15:00:00Z"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  lastAutoCollectedAtByChannel.set("UC_A", new Date("2026-09-22T12:30:00Z")); // today, after the 12:00 boundary
+
+  const result = await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+
+  assert.deepEqual(result, { ranCollection: false });
+  assert.equal(analyticsCalls.length, 0);
+});
+
+// Advisor review: mark-then-run, not run-then-mark, so two near-simultaneous callers (e.g. two
+// open browser tabs) never both run a full collection. Simulated here as two sequential calls at
+// the same `now` -- the first call's mark must already be visible to the second.
+test("runAutoCollectionIfStale: a second call at the same instant sees the first call's mark and no-ops", async () => {
+  const { services, channelAccess, analyticsCalls } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+    syncSettings: { localTime: "12:00", timezone: "UTC" },
+    now: new Date("2026-09-22T15:00:00Z"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const first = await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+  const second = await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+
+  assert.equal(first.ranCollection, true);
+  assert.deepEqual(second, { ranCollection: false });
+  assert.equal(analyticsCalls.length, 1, "the second call must never trigger a second collection run");
+});

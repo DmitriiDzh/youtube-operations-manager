@@ -3,7 +3,7 @@ import { readFile } from "fs/promises";
 import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
 import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, primaryKey, index } from "drizzle-orm/sqlite-core";
 import path from "path";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
@@ -187,6 +187,14 @@ export const channels = sqliteTable("channels", {
   // NULL means "none explicitly tracked yet", never backfilled to "[]" (RISK-02/RISK-33's "never
   // silently create a fact that isn't true").
   targetLanguagesJson: text("target_languages_json"),
+  // Additive, SCHEMA_MIGRATIONS version 9 (BL-059, docs/roadmap/plans/PHASE_8_PLAN.md §10 items
+  // 3-5). Mirrors `lastSyncedAt` exactly, but for the daily auto-collection check specifically --
+  // deliberately NOT derived from MAX(video_metrics_daily.collected_at), since that column is a
+  // per-row last-write time (a manual re-collection of an old date range would bump it without
+  // today's actual auto-collection ever having run) -- see the analytics staleness check's own
+  // doc comment. Written BEFORE a collection run starts, not after, so two concurrent triggers
+  // (e.g. two open browser tabs) never both run a full collection (src/lib/analytics/staleness.ts).
+  analyticsLastAutoCollectedAt: integer("analytics_last_auto_collected_at", { mode: "timestamp" }),
 });
 
 export const videos = sqliteTable("videos", {
@@ -474,6 +482,71 @@ export const appSettings = sqliteTable("app_settings", {
   value: text("value").notNull(),
 });
 
+/**
+ * Phase 8 (Intelligence Foundation, `docs/roadmap/plans/PHASE_8_PLAN.md` §5/§6 slice 2),
+ * SCHEMA_MIGRATIONS version 8. Historical time-series metrics, additive alongside `videos`
+ * (a "current snapshot" table, never a history) -- `docs/PROJECT_SPEC.md` §33's canonical
+ * linkage is `channelId`/`videoId`/`date`, so `channelId` is stored directly here rather than
+ * requiring every reader to join through `videos` to scope a query to a channel. `metricName`
+ * (rather than one column per metric, e.g. `views`/`watchTimeMinutes`) keeps adding a future
+ * metric purely additive -- no migration needed, consistent with
+ * `docs/decisions/0002-additive-schema-versioning.md`.
+ *
+ * **`videoId` has a foreign key on `videos.id`**, matching `PHASE_8_PLAN.md` §5's own DDL
+ * exactly. An earlier draft of this table omitted it, citing the `video_edit_audit_events` no-FK
+ * precedent above and claiming an FK here would add a new table-ordering constraint to
+ * `applySnapshotToDatabase`/`scrubDatabaseCopy` (`src/lib/snapshot/`) under RISK-33's
+ * `foreign_keys=ON` default -- an independent review caught that this claim doesn't survive
+ * reading those two functions: both already wrap their *entire* drop/replace sequence in
+ * `PRAGMA foreign_keys = OFF` ... `ON` regardless of any relationship, so an FK here adds no new
+ * ordering constraint to either. Unlike `video_edit_audit_events` (an audit trail that must
+ * genuinely outlive the row it describes), this table has no such requirement, so there is no
+ * remaining reason to deviate from the plan's own explicit schema. `channelId` stays a plain,
+ * non-FK column -- a denormalized convenience for cheap per-channel filtering, never an
+ * identity/authorization boundary (`write-context.assertWriteChannel` remains that).
+ *
+ * **Deliberately NOT added to `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`)
+ * in this slice -- collected metrics stay device-local and do not travel with a device
+ * handoff/snapshot import. Accepted limitation, parallel in kind to RISK-33's own `rules.user_id`
+ * orphan case: a snapshot-import replace of `videos` can leave a local `video_metrics_daily` row
+ * referencing a `videoId` no longer present in the receiving device's `videos` table after import
+ * (FK enforcement is disabled for that whole operation, so this never crashes, it just leaves a
+ * stale row). See `docs/ARCHITECTURE.md` §14.7.
+ *
+ * Composite primary key `(videoId, metricDate, metricName)` mirrors the plan's own DDL exactly:
+ * one row per video/day/metric, so re-collecting an already-collected date is a natural upsert,
+ * not a duplicate-row bug (see `upsertVideoMetric` below).
+ *
+ * **`metricValue` is `REAL`, not `INTEGER`** (owner decision 2026-09-22, `PHASE_8_PLAN.md` §10
+ * item 2 -- collect every metric `yt-analytics.readonly` covers, not `views` alone). Several of
+ * those metrics are inherently fractional (e.g. `averageViewPercentage`,
+ * `annotationClickThroughRate`) while others are integer counts (`views`, `likes`) -- `REAL`
+ * represents both exactly (SQLite/JS doubles are exact for integers well beyond any realistic
+ * view count) without a second, metric-type-dependent column. Changed here, before this table
+ * ever merged to `dev` or shipped to a real database -- a genuinely non-additive column-type
+ * change after that point would need its own ADR per
+ * `docs/decisions/0001-additive-idempotent-schema-strategy.md`.
+ */
+export const videoMetricsDaily = sqliteTable(
+  "video_metrics_daily",
+  {
+    channelId: text("channel_id").notNull(),
+    videoId: text("video_id")
+      .notNull()
+      .references(() => videos.id),
+    metricDate: text("metric_date").notNull(), // ISO date (YYYY-MM-DD), the Analytics API's own reporting-day granularity
+    metricName: text("metric_name").notNull(), // e.g. "views" -- never a bag of untyped columns
+    metricValue: real("metric_value").notNull(),
+    collectedAt: integer("collected_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    primaryKey({ columns: [table.videoId, table.metricDate, table.metricName] }),
+    index("video_metrics_daily_channel_id_idx").on(table.channelId),
+  ]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -585,6 +658,38 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute(
         "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
       );
+    },
+  },
+  {
+    version: 8,
+    description:
+      "video_metrics_daily -- Phase 8 historical metrics time-series (docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 2); video_id has a foreign key on videos(id), see the table's own comment above for why",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS video_metrics_daily (" +
+          "channel_id TEXT NOT NULL, " +
+          "video_id TEXT NOT NULL REFERENCES videos(id), " +
+          "metric_date TEXT NOT NULL, " +
+          "metric_name TEXT NOT NULL, " +
+          "metric_value REAL NOT NULL, " +
+          "collected_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "PRIMARY KEY (video_id, metric_date, metric_name))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS video_metrics_daily_channel_id_idx ON video_metrics_daily(channel_id)"
+      );
+    },
+  },
+  {
+    version: 9,
+    description:
+      "channels.analytics_last_auto_collected_at -- Phase 8 daily auto-collection staleness check (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5)",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE channels ADD COLUMN analytics_last_auto_collected_at INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
     },
   },
 ];
@@ -975,6 +1080,7 @@ const dbSchema = {
   videoExecutionLocks,
   auditEvents,
   videoEditAuditEvents,
+  videoMetricsDaily,
 };
 
 export const db = drizzle(client, { schema: dbSchema });
@@ -1199,6 +1305,7 @@ export type StoredChannel = {
   connectedUserId: string | null;
   connectedAt: Date;
   lastSyncedAt: Date | null;
+  analyticsLastAutoCollectedAt: Date | null;
 };
 
 export type StoredVideo = {
@@ -1228,6 +1335,7 @@ function mapStoredChannel(row: typeof channels.$inferSelect): StoredChannel {
     connectedUserId: row.connectedUserId,
     connectedAt: row.connectedAt,
     lastSyncedAt: row.lastSyncedAt,
+    analyticsLastAutoCollectedAt: row.analyticsLastAutoCollectedAt,
   };
 }
 
@@ -1285,6 +1393,19 @@ export async function markChannelSynced(channelId: string, syncedAt: Date): Prom
   await db.update(channels).set({ lastSyncedAt: syncedAt }).where(eq(channels.id, channelId));
 }
 
+// BL-059 -- written BEFORE a collection run starts (mark-then-run), not after, so two concurrent
+// triggers never both see "stale" and both run a full collection (src/lib/analytics/staleness.ts).
+// Takes an injectable `database` (unlike the older markChannelSynced) so schema-initialization
+// tests can exercise it against an isolated temp database (docs/DEVELOPMENT_PLAYBOOK.md §6.11)
+// rather than the operator's real one.
+export async function markAnalyticsAutoCollected(
+  channelId: string,
+  at: Date,
+  database: AppDb = db
+): Promise<void> {
+  await database.update(channels).set({ analyticsLastAutoCollectedAt: at }).where(eq(channels.id, channelId));
+}
+
 export async function listStoredChannels(): Promise<StoredChannel[]> {
   const rows = await db.select().from(channels);
   return rows.map(mapStoredChannel);
@@ -1318,13 +1439,13 @@ export async function setChannelTargetLanguages(channelId: string, languages: st
   await db.update(channels).set({ targetLanguagesJson: JSON.stringify(languages) }).where(eq(channels.id, channelId));
 }
 
-async function getAppSetting(key: string): Promise<string | null> {
-  const [row] = await db.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, key));
+async function getAppSetting(key: string, database: AppDb = db): Promise<string | null> {
+  const [row] = await database.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, key));
   return row?.value ?? null;
 }
 
-async function setAppSetting(key: string, value: string): Promise<void> {
-  await db
+async function setAppSetting(key: string, value: string, database: AppDb = db): Promise<void> {
+  await database
     .insert(appSettings)
     .values({ key, value })
     .onConflictDoUpdate({ target: appSettings.key, set: { value } });
@@ -1376,6 +1497,51 @@ export async function getMcpConnectionEnabled(): Promise<boolean> {
 
 export async function setMcpConnectionEnabled(enabled: boolean): Promise<void> {
   await setAppSetting(MCP_CONNECTION_ENABLED_SETTING_KEY, enabled ? "true" : "false");
+}
+
+const ANALYTICS_SYNC_LOCAL_TIME_SETTING_KEY = "analytics_sync_local_time";
+const ANALYTICS_SYNC_TIMEZONE_SETTING_KEY = "analytics_sync_timezone";
+const DEFAULT_ANALYTICS_SYNC_LOCAL_TIME = "12:05";
+
+/**
+ * BL-059 (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-4) -- the daily auto-collection
+ * boundary. `timezone` defaults to this machine's own OS timezone (`Intl.DateTimeFormat().
+ * resolvedOptions().timeZone`), detected once on first read and persisted immediately, never
+ * re-detected on later reads -- so an explicit override the owner later saves in Settings is
+ * never silently clobbered by a fresh OS read. This is safe specifically because this app's
+ * server and the operator's browser are the same machine (the established "local-first
+ * single-operator tool" model, AGENTS.md) -- the OS timezone genuinely is the operator's own.
+ */
+// Takes an injectable `database` (unlike getLiveWritesEnabled/getMcpConnectionEnabled) so the
+// detect-and-persist-once behavior -- the one thing here with real, silently-regressable
+// state -- can be exercised against an isolated temp database (docs/DEVELOPMENT_PLAYBOOK.md
+// §6.11) rather than asserted only by reasoning.
+export async function getAnalyticsSyncSettings(
+  database: AppDb = db
+): Promise<{ localTime: string; timezone: string }> {
+  const localTime =
+    (await getAppSetting(ANALYTICS_SYNC_LOCAL_TIME_SETTING_KEY, database)) ?? DEFAULT_ANALYTICS_SYNC_LOCAL_TIME;
+  let timezone = await getAppSetting(ANALYTICS_SYNC_TIMEZONE_SETTING_KEY, database);
+  if (!timezone) {
+    timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    await setAppSetting(ANALYTICS_SYNC_TIMEZONE_SETTING_KEY, timezone, database);
+  }
+  return { localTime, timezone };
+}
+
+// Validation (valid HH:MM, valid IANA zone) is the caller's responsibility
+// (src/lib/analytics/staleness.ts's isValidLocalTimeOfDay/isValidIanaTimezone) -- this function
+// persists whatever it is given, same division of labor as every other setter in this file.
+export async function setAnalyticsSyncSettings(
+  input: { localTime?: string; timezone?: string },
+  database: AppDb = db
+): Promise<void> {
+  if (input.localTime !== undefined) {
+    await setAppSetting(ANALYTICS_SYNC_LOCAL_TIME_SETTING_KEY, input.localTime, database);
+  }
+  if (input.timezone !== undefined) {
+    await setAppSetting(ANALYTICS_SYNC_TIMEZONE_SETTING_KEY, input.timezone, database);
+  }
 }
 
 export async function upsertVideos(
@@ -2575,4 +2741,90 @@ export async function listVideoEditAuditEventsByVideo(
     .orderBy(videoEditAuditEvents.id);
 
   return rows.map(mapStoredVideoEditAuditEvent);
+}
+
+// video_metrics_daily -- see the table's own comment above (near videoMetricsDaily's
+// definition) for the schema rationale (docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 2).
+export type StoredVideoMetric = {
+  channelId: string;
+  videoId: string;
+  metricDate: string;
+  metricName: string;
+  metricValue: number;
+  collectedAt: Date;
+};
+
+function mapStoredVideoMetric(row: typeof videoMetricsDaily.$inferSelect): StoredVideoMetric {
+  return {
+    channelId: row.channelId,
+    videoId: row.videoId,
+    metricDate: row.metricDate,
+    metricName: row.metricName,
+    metricValue: row.metricValue,
+    collectedAt: row.collectedAt,
+  };
+}
+
+// Upsert by the table's own primary key (videoId, metricDate, metricName) -- re-collecting an
+// already-collected date is idempotent (the existing row's channelId/metricValue/collectedAt are
+// all overwritten with the new collection's result), never a duplicate row. `collectedAt` is
+// deliberately "when this row's CURRENT value was collected" (last-write time), not "when this
+// metric-day was first captured" -- there is no separate first-seen timestamp on this table, by
+// design, since nothing in docs/roadmap/plans/PHASE_8_PLAN.md needs one; if a future slice needs
+// first-seen tracking, that is an additive column, not a change to this function. See
+// docs/roadmap/plans/PHASE_8_PLAN.md §7's explicit acceptance criterion for the idempotency itself.
+//
+// `channelId` is trusted as given, NOT cross-checked against `videoId`'s actual `videos.channelId`
+// -- this function has no channel-scoping enforcement of its own (AGENTS.md §F: "a route or
+// service taking a channelId must itself verify the requested resource belongs to that channel").
+// Harmless today (only tests call this, with hardcoded consistent values); slice 3's Analytics
+// adapter must derive channelId from the video's own FK-verified row, never accept it as a second,
+// independent caller-supplied parameter, or a channel-scoped metrics view could show/hide the
+// wrong video's data.
+export async function upsertVideoMetric(
+  input: {
+    channelId: string;
+    videoId: string;
+    metricDate: string;
+    metricName: string;
+    metricValue: number;
+  },
+  database: AppDb = db
+): Promise<void> {
+  const collectedAt = new Date();
+  await database
+    .insert(videoMetricsDaily)
+    .values({ ...input, collectedAt })
+    .onConflictDoUpdate({
+      target: [videoMetricsDaily.videoId, videoMetricsDaily.metricDate, videoMetricsDaily.metricName],
+      set: { channelId: input.channelId, metricValue: input.metricValue, collectedAt },
+    });
+}
+
+export async function listVideoMetricsByVideo(
+  videoId: string,
+  database: AppDb = db
+): Promise<StoredVideoMetric[]> {
+  const rows = await database
+    .select()
+    .from(videoMetricsDaily)
+    .where(eq(videoMetricsDaily.videoId, videoId))
+    .orderBy(videoMetricsDaily.metricDate, videoMetricsDaily.metricName);
+
+  return rows.map(mapStoredVideoMetric);
+}
+
+// BL-058 (docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 4) -- the Web UI's read-only display needs
+// every metric row for a channel at once, not one video at a time.
+export async function listVideoMetricsByChannel(
+  channelId: string,
+  database: AppDb = db
+): Promise<StoredVideoMetric[]> {
+  const rows = await database
+    .select()
+    .from(videoMetricsDaily)
+    .where(eq(videoMetricsDaily.channelId, channelId))
+    .orderBy(videoMetricsDaily.videoId, videoMetricsDaily.metricDate, videoMetricsDaily.metricName);
+
+  return rows.map(mapStoredVideoMetric);
 }

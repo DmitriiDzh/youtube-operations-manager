@@ -2,12 +2,14 @@
 
 import { useSession, signOut, signIn } from "next-auth/react";
 import { redirect } from "next/navigation";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import type { ComponentType, SVGProps } from "react";
+import { AnalyticsManager } from "@/components/analytics-manager";
 import { ContentManager } from "@/components/content-manager";
 import { LanguagesManager } from "@/components/languages-manager";
 import { BatchManager } from "@/components/batch-manager";
 import { AiConnectionsManager } from "@/components/ai-connections-manager";
+import { AnalyticsSyncSettings } from "@/components/analytics-sync-settings";
 import { LiveWritesSettings } from "@/components/live-writes-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
 import { EditorialProfilePanel } from "@/components/editorial-profile-panel";
@@ -82,6 +84,21 @@ export default function Dashboard() {
       });
     }
   }, [session, fetchChannel]);
+
+  // Phase 8 (BL-059, docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5): "при входе в дашборд"
+  // (on entering the dashboard) -- a mount-once check, not a repeating interval like the Merge
+  // tab's polls above (this is a once-a-day rule, not a continuous one). The server itself
+  // decides whether anything actually runs (`runAutoCollectionIfStale`'s own staleness check) --
+  // this effect only ever fires the request once per dashboard session, regardless of how many
+  // times `channel` updates (e.g. after a re-sync), via the ref guard.
+  const autoCollectTriggeredRef = useRef(false);
+  useEffect(() => {
+    if (!channel?.id || autoCollectTriggeredRef.current) return;
+    autoCollectTriggeredRef.current = true;
+    fetch(`/api/channels/${encodeURIComponent(channel.id)}/analytics/auto-collect`, { method: "POST" }).catch(() => {
+      // Non-fatal -- the staleness check means the next dashboard load simply tries again.
+    });
+  }, [channel]);
 
   const refreshConflictSummary = useCallback(async () => {
     try {
@@ -190,13 +207,13 @@ export default function Dashboard() {
       )}
 
       {tab === "analytics" && (
-        <div className="max-w-3xl">
-          <p className="text-sm text-zinc-400">
-            Coming soon — real analytics data requires the YouTube Analytics API and a new
-            OAuth scope, gated on its own separate decision
-            (docs/roadmap/plans/PHASE_8_PLAN.md, docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slice
-            S6).
+        <div>
+          <p className="mb-4 text-sm text-zinc-400">
+            Manual collection for now (BL-059&apos;s daily auto-collection is a separate,
+            not-yet-built follow-up) &mdash; facts only, no comparisons or recommendations yet
+            (Phase 10&apos;s own scope).
           </p>
+          <AnalyticsManager />
         </div>
       )}
 
@@ -228,6 +245,7 @@ export default function Dashboard() {
         <div className="max-w-3xl space-y-6">
           <AppVersionInfo />
           <LiveWritesSettings />
+          <AnalyticsSyncSettings />
           <div>
             <p className="mb-4 text-sm text-zinc-400">
               Configure AI provider connections for AI Localization. No specific vendor is

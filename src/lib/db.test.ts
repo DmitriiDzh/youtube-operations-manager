@@ -4,12 +4,23 @@ import { mkdtemp, rm, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createClient, type Client } from "@libsql/client";
+import { eq } from "drizzle-orm";
 import {
+  channels,
   copyLegacyDatabaseInto,
+  createIsolatedDb,
+  getAnalyticsSyncSettings,
   initializeDatabaseSchema,
+  listVideoMetricsByChannel,
+  listVideoMetricsByVideo,
+  markAnalyticsAutoCollected,
   SCHEMA_BASELINE_VERSION,
   SCHEMA_CURRENT_VERSION,
   SCHEMA_MIGRATIONS,
+  setAnalyticsSyncSettings,
+  type AppDb,
+  upsertVideoMetric,
+  videos,
 } from "./db";
 import { readSchemaVersion } from "@/lib/schema-versioning";
 import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
@@ -40,6 +51,36 @@ async function tableExists(client: Client, name: string): Promise<boolean> {
   return result.rows.length > 0;
 }
 
+// video_metrics_daily.videoId has a real FK on videos.id (Phase 8, PHASE_8_PLAN.md §5) -- a
+// channel + video row must exist first, or the insert fails closed with a constraint error.
+async function seedChannel(database: AppDb, channelId: string): Promise<void> {
+  await database.insert(channels).values({
+    id: channelId,
+    title: "Test Channel",
+    thumbnailUrl: null,
+    uploadsPlaylistId: "UU_TEST",
+    connectedUserId: null,
+  });
+}
+
+async function seedVideo(database: AppDb, channelId: string, videoId: string): Promise<void> {
+  await database.insert(videos).values({
+    id: videoId,
+    channelId,
+    title: "Test Video",
+    description: "",
+    publishedAt: "2026-01-01T00:00:00Z",
+    privacyStatus: "public",
+    thumbnailsJson: "{}",
+    localizationsJson: "{}",
+  });
+}
+
+async function seedChannelAndVideo(database: AppDb, channelId: string, videoId: string): Promise<void> {
+  await seedChannel(database, channelId);
+  await seedVideo(database, channelId, videoId);
+}
+
 // AC-SCHEMA-01
 test("initializeDatabaseSchema: a fresh database ends stamped at SCHEMA_CURRENT_VERSION with every table present", () =>
   withTempClient(async (client) => {
@@ -47,6 +88,175 @@ test("initializeDatabaseSchema: a fresh database ends stamped at SCHEMA_CURRENT_
     assert.equal(await readSchemaVersion(client), SCHEMA_CURRENT_VERSION);
     assert.equal(await tableExists(client, "users"), true);
     assert.equal(await tableExists(client, "app_operation_locks"), true);
+    assert.equal(await tableExists(client, "video_metrics_daily"), true);
+  }));
+
+// Phase 8 (docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 2, §7 acceptance criteria).
+test("video_metrics_daily: upserting the same (videoId, metricDate, metricName) updates the existing row instead of creating a duplicate", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannelAndVideo(isolatedDb, "UC_TEST", "vid1");
+
+    await upsertVideoMetric(
+      { channelId: "UC_TEST", videoId: "vid1", metricDate: "2026-09-20", metricName: "views", metricValue: 100 },
+      isolatedDb
+    );
+    await upsertVideoMetric(
+      { channelId: "UC_TEST", videoId: "vid1", metricDate: "2026-09-20", metricName: "views", metricValue: 150 },
+      isolatedDb
+    );
+
+    const rows = await listVideoMetricsByVideo("vid1", isolatedDb);
+    assert.equal(rows.length, 1, "re-collecting an already-collected date must update, not duplicate, the row");
+    assert.equal(rows[0].metricValue, 150, "the later collection's value must win");
+  }));
+
+test("video_metrics_daily: distinct metric names for the same video/date coexist as separate rows", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannelAndVideo(isolatedDb, "UC_TEST", "vid1");
+
+    await upsertVideoMetric(
+      { channelId: "UC_TEST", videoId: "vid1", metricDate: "2026-09-20", metricName: "views", metricValue: 100 },
+      isolatedDb
+    );
+    await upsertVideoMetric(
+      { channelId: "UC_TEST", videoId: "vid1", metricDate: "2026-09-20", metricName: "watchTimeMinutes", metricValue: 42 },
+      isolatedDb
+    );
+
+    const rows = await listVideoMetricsByVideo("vid1", isolatedDb);
+    assert.equal(rows.length, 2);
+    assert.deepEqual(
+      rows.map((r) => [r.metricName, r.metricValue]).sort(),
+      [["views", 100], ["watchTimeMinutes", 42]].sort()
+    );
+  }));
+
+// Phase 8 (docs/roadmap/plans/PHASE_8_PLAN.md §10 item 2): metric_value is REAL, not INTEGER,
+// specifically to hold fractional Analytics metrics (e.g. averageViewPercentage) exactly.
+test("video_metrics_daily: a fractional metricValue round-trips exactly through REAL storage", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannelAndVideo(isolatedDb, "UC_TEST", "vid1");
+
+    await upsertVideoMetric(
+      { channelId: "UC_TEST", videoId: "vid1", metricDate: "2026-09-20", metricName: "averageViewPercentage", metricValue: 63.75 },
+      isolatedDb
+    );
+
+    const rows = await listVideoMetricsByVideo("vid1", isolatedDb);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].metricValue, 63.75);
+  }));
+
+// Phase 8 (BL-058, docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 4): the Web UI's read-only display
+// needs every metric row for a channel, across every video, in one query -- and only that
+// channel's own rows, never another locally-known channel's (the same channel-scoping discipline
+// AGENTS.md §F requires elsewhere).
+test("video_metrics_daily: listVideoMetricsByChannel returns every video's rows for that channel, never another channel's", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannelAndVideo(isolatedDb, "UC_A", "vid1");
+    await seedVideo(isolatedDb, "UC_A", "vid2");
+    await seedChannelAndVideo(isolatedDb, "UC_B", "vid3");
+
+    await upsertVideoMetric(
+      { channelId: "UC_A", videoId: "vid1", metricDate: "2026-09-20", metricName: "views", metricValue: 100 },
+      isolatedDb
+    );
+    await upsertVideoMetric(
+      { channelId: "UC_A", videoId: "vid2", metricDate: "2026-09-20", metricName: "views", metricValue: 200 },
+      isolatedDb
+    );
+    await upsertVideoMetric(
+      { channelId: "UC_B", videoId: "vid3", metricDate: "2026-09-20", metricName: "views", metricValue: 300 },
+      isolatedDb
+    );
+
+    const rows = await listVideoMetricsByChannel("UC_A", isolatedDb);
+    assert.deepEqual(
+      rows.map((r) => r.videoId).sort(),
+      ["vid1", "vid2"]
+    );
+    assert.ok(!rows.some((r) => r.videoId === "vid3"), "must never include a different channel's video");
+  }));
+
+// Phase 8 (BL-059, docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-5): the per-channel timestamp
+// the staleness check reads.
+test("channels.analyticsLastAutoCollectedAt: starts NULL, and markAnalyticsAutoCollected sets it for exactly the given channel", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannel(isolatedDb, "UC_A");
+    await seedChannel(isolatedDb, "UC_B");
+
+    const [before] = await isolatedDb.select().from(channels).where(eq(channels.id, "UC_A"));
+    assert.equal(before.analyticsLastAutoCollectedAt, null);
+
+    const markedAt = new Date("2026-09-22T12:05:00.000Z");
+    await markAnalyticsAutoCollected("UC_A", markedAt, isolatedDb);
+
+    const [afterA] = await isolatedDb.select().from(channels).where(eq(channels.id, "UC_A"));
+    const [afterB] = await isolatedDb.select().from(channels).where(eq(channels.id, "UC_B"));
+    assert.equal(afterA.analyticsLastAutoCollectedAt?.getTime(), markedAt.getTime());
+    assert.equal(afterB.analyticsLastAutoCollectedAt, null, "must never touch a different channel's row");
+  }));
+
+// Phase 8 (BL-059): the one piece of getAnalyticsSyncSettings with real, silently-regressable
+// state -- detect the OS timezone once, persist it, and never re-detect on a later read (so a
+// later owner override in Settings is never clobbered by a fresh OS read).
+test("getAnalyticsSyncSettings: detects and persists the OS timezone once, never re-detects on a later read", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    const first = await getAnalyticsSyncSettings(isolatedDb);
+    assert.equal(first.localTime, "12:05", "default local time before anything is saved");
+    assert.equal(first.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone);
+
+    // Simulate the owner overriding the timezone in Settings after the first-read detection.
+    await setAnalyticsSyncSettings({ timezone: "Europe/Moscow" }, isolatedDb);
+
+    const second = await getAnalyticsSyncSettings(isolatedDb);
+    assert.equal(second.timezone, "Europe/Moscow", "a later read must return the saved override, never re-detect the OS zone");
+  }));
+
+test("setAnalyticsSyncSettings: updates only the given field(s), never touches the other", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await setAnalyticsSyncSettings({ localTime: "09:30", timezone: "Asia/Tokyo" }, isolatedDb);
+    await setAnalyticsSyncSettings({ localTime: "18:00" }, isolatedDb);
+
+    const settings = await getAnalyticsSyncSettings(isolatedDb);
+    assert.equal(settings.localTime, "18:00");
+    assert.equal(settings.timezone, "Asia/Tokyo", "updating localTime alone must not touch timezone");
+  }));
+
+test("video_metrics_daily: a videoId with no matching videos row is rejected by its foreign key", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await assert.rejects(
+      () =>
+        upsertVideoMetric(
+          { channelId: "UC_TEST", videoId: "nonexistent", metricDate: "2026-09-20", metricName: "views", metricValue: 100 },
+          isolatedDb
+        ),
+      // drizzle wraps the raw libsql error as `.cause` -- the FK failure text lives there,
+      // not on the outer "Failed query: insert into ..." message (verified against the actual
+      // rejection shape, not assumed).
+      (error: unknown) =>
+        error instanceof Error && /FOREIGN KEY constraint failed/.test(String(error.cause) + error.message),
+      "must fail specifically on the videoId foreign key, not some unrelated error"
+    );
   }));
 
 // AC-SCHEMA-02

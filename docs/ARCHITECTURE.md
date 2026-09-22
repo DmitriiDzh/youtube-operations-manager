@@ -543,3 +543,250 @@ just the instant of the file copy.
   which commit was last built, and rebuild automatically — this is what makes the operator's own
   `git pull` actually take effect on the next launch, rather than silently continuing to serve a
   build from before that pull (`docs/FIRST_LOCAL_TEST_BUILD.md` §3/§4).
+
+## 14. Phase 8 (Intelligence Foundation) — schema-only first sub-slice
+
+### 14.1 Status
+
+Assigned 2026-09-22 (Telegram, project owner: "Приступить к полной реализации фазы 8"), on
+`feature/phase-8-intelligence-foundation` (not yet merged to `dev` without the owner's separate,
+explicit consent for that branch specifically). `docs/roadmap/plans/PHASE_8_PLAN.md` §6 slice 2
+(the additive `video_metrics_daily` table + tests) is implemented and reviewed. The owner answered
+§8's two required decisions on 2026-09-22 (Telegram msg 356, recorded verbatim in the plan's §10):
+OAuth scope approved, and metric scope widened to every metric `yt-analytics.readonly` covers (not
+`views` alone) — see §14.2 below for the schema consequence.
+
+**All four slices are now implemented:** slice 1 (OAuth scope, BL-056) — `YOUTUBE_ANALYTICS_READ_SCOPE`
+added to `src/lib/auth.ts`'s `YOUTUBE_SCOPES`, no separate re-consent mechanism needed (every
+sign-in path already forces full consent, `docs/SYSTEM_MAP.md` §2.1); slice 2 (table, BL-055);
+slice 3 (Analytics adapter + domain module, BL-057) — `collectMetrics`/`listMetrics`, tested
+against mocked HTTP, but the per-video query shape (one call per video vs. a hypothetical bulk
+query) remains unconfirmed against a real API response, since that needs the owner's own
+re-consent to test; slice 4 (manual "collect now" trigger + Web UI, BL-058). A fifth item, BL-059
+(daily staleness-based auto-collection + a configurable local sync-time/timezone setting,
+superseding the plan's original "no scheduling" boundary, plan §10 items 3-4), is also done —
+see §14.6.
+
+**Live-verified against the real "Tropico Jazz" channel** (`claude-in-chrome`, 2026-09-22, twice):
+the manual trigger correctly reaches and fails at `AUTH_SCOPE_INSUFFICIENT` (the real stored token
+predates BL-056's scope); the dashboard-mount auto-collect effect (BL-059) correctly fires once,
+reaches the same point, and — per its own documented mark-then-run tradeoff — marks
+`analyticsLastAutoCollectedAt` even though the underlying collection failed. That real timestamp
+was reset back to `NULL` on the real channel after verification (a throwaway script, not
+committed) specifically so the owner's own first post-re-consent dashboard load is not skipped
+until the next day's boundary. Zero console errors across both verification passes.
+
+### 14.2 Schema (additive, `SCHEMA_MIGRATIONS` versions 8-9)
+
+```text
+video_metrics_daily (new, v8) — channelId, videoId, metricDate (ISO date), metricName (e.g. "views"),
+                                 metricValue (REAL), collectedAt
+                                 PRIMARY KEY (videoId, metricDate, metricName)
+                                 + index on channelId
+channels.analytics_last_auto_collected_at (new column, v9) — nullable timestamp, BL-059's
+                                 per-channel "when did the daily auto-collection last actually
+                                 run" marker
+```
+
+`channels.analyticsLastAutoCollectedAt` mirrors the existing `lastSyncedAt` column's own shape
+exactly (same table, same nullable-timestamp pattern) — deliberately NOT derived from
+`MAX(video_metrics_daily.collected_at)`, since that column is a per-row last-*write* time: a
+manual re-collection of an old date range would bump it without today's actual auto-collection
+run ever having happened, silently defeating the staleness check's own purpose. See
+`src/lib/analytics/staleness.ts`'s own doc comment and §14.6 below.
+
+No `videos`/`channels` schema change — this is a purely additive new table alongside the existing
+"current snapshot" `videos` table, storing a time-series `videos` was never meant to hold.
+`channelId` is stored directly on the row (per `docs/PROJECT_SPEC.md` §33's canonical
+`channelId`/`videoId`/`date` linkage) rather than requiring a join through `videos` to scope a
+query to a channel, and stays a plain, non-FK column (denormalized convenience only, never an
+identity/authorization boundary — `write-context.assertWriteChannel` remains that).
+
+**`videoId` has a foreign key on `videos.id`**, matching `PHASE_8_PLAN.md` §5's own DDL exactly.
+An earlier draft of this section claimed "deliberately no foreign key," following the
+`video_edit_audit_events` precedent (§13; this database defaults to `foreign_keys=ON`,
+`docs/TECHNICAL_DEBT.md` RISK-33) and reasoning that an FK here would add a new table-ordering
+constraint to `applySnapshotToDatabase`/`scrubDatabaseCopy` (`src/lib/snapshot/`). An independent
+review caught that this doesn't survive reading those two functions: both already wrap their
+*entire* drop/replace sequence in `PRAGMA foreign_keys = OFF` ... `ON` regardless of any
+relationship, so an FK here adds no new ordering constraint to either. Unlike
+`video_edit_audit_events` (an audit trail that must genuinely outlive the row it describes), this
+table has no such requirement, so there was no remaining reason to deviate from the plan's own
+explicit schema — corrected in `src/lib/db.ts` and here.
+
+### 14.3 Persistence access (`src/lib/db.ts`, additive)
+
+```text
+upsertVideoMetric(input)          — insert-or-update by the table's own primary key; re-collecting
+                                     an already-collected date overwrites metricValue/collectedAt,
+                                     never creates a duplicate row (tested against real SQLite)
+listVideoMetricsByVideo(videoId)  — full metric history for one video
+```
+
+`src/lib/analytics/adapters/store.ts` now wraps both (§14.4) — no longer a bare `db.test.ts`-only
+pair.
+
+### 14.4 Analytics domain module (`src/lib/analytics/`)
+
+Follows the standard `contracts/schemas/services/adapters/index` layering (§6.2). One operation,
+`collectMetrics({credentialRef, channelId, startDate, endDate, metricNames?})`: for every video
+`videoStore.listVideosByChannel(channelId)` returns, calls the low-level
+`queryVideoAnalyticsReport` (§14 area / `src/lib/youtube-analytics.ts`) once and upserts every
+returned `(date, metric)` pair via `upsertVideoMetric`. `metricNames` defaults to
+`ANALYTICS_METRIC_NAMES` (the full non-monetary list, `PHASE_8_PLAN.md` §10 item 2) when omitted.
+
+Channel-context validation mirrors `channel-sync/services.ts`'s `listSyncedVideos` exactly: since
+this service already receives `credentialRef`, it calls `channelAccess.assertActiveChannel`
+itself (once, here) rather than deferring to a future route — a future BL-058 route must not add
+a second check. A video genuinely belonging to a different channel can never be reached through a
+given `channelId` by construction (`listVideosByChannel(channelId)` only returns that channel's
+own rows), proven by an explicit cross-channel test (`services.test.ts`) rather than left as an
+inferred property.
+
+One video's Analytics call throwing is isolated into `skippedVideoIds` (logged), never failing the
+whole channel's run — mirrors `change-drafts-sync`'s per-peer isolation. `upsertsIssued` counts
+upsert *attempts*, not distinct new rows — re-collecting an already-collected range reports a
+nonzero count even though the underlying rows were only overwritten, not created (see the field's
+own doc comment in `contracts.ts`). A metric absent/non-finite in a given API response row is
+silently omitted from that row's upserts, never defaulted to `0` (matches `videos.viewCount`'s
+existing nullable-never-zeroed convention, §2.7).
+
+An automated `write-path-inventory.test.ts` (mirroring `ai-localization`'s) proves no file in this
+module references any `videos`/`channels`-mutating `db.ts` function or any
+`youtube-write-gateway` symbol — the plan's §7 "never writes to videos/channels" acceptance
+criterion as a structural, automated check, not an inference from the dependency-injection shape
+alone.
+
+`credentialRef` shapes with no `userId` (e.g. a hypothetical future CLI caller passing raw tokens)
+can never pass `assertActiveChannel` and so can never use this service — documented as a known
+constraint in the function's own doc comment, not a bug.
+
+A second read-only operation, `listMetrics({credentialRef, channelId})`, returns every already-
+collected `(videoId, metricDate, metricName, metricValue)` row for the channel (via a new
+`listVideoMetricsByChannel` in `db.ts`, mirroring `listVideoMetricsByVideo`'s own shape) — pure
+local read, no `authResolver`/YouTube call, same active-channel check as `collectMetrics`.
+
+### 14.5 Manual "collect now" trigger + Web UI (BL-058) — **IMPLEMENTED**
+
+`POST /api/channels/[channelId]/analytics/collect` (real local-state mutation — writes
+`video_metrics_daily` rows — gated normally by `src/proxy.ts`'s blanket device-availability check,
+deliberately NOT added to its read-only exemption list) and `GET /api/channels/[channelId]/analytics`
+(pure read, ungated) call `collectMetrics`/`listMetrics` directly. Neither route calls
+`channelAccess.assertActiveChannel` itself — both services already do, mirroring
+`channel-sync`'s own `videos/route.ts`, not `ai-localization`'s routes (whose services don't
+receive `credentialRef` the same way).
+
+Web UI: `src/components/analytics-manager.tsx`, replacing the Studio-parity S6-stub "coming soon"
+placeholder in the Analytics tab (`docs/roadmap/BACKLOG.md` BL-017). A date-range form (local-date
+defaults, ending *yesterday* — the Analytics API's own documented behavior is that a `day`-dimension
+query never returns the most recent day(s) yet, so defaulting to "today" would look like a silent
+partial failure) plus a "Collect now" button, and a paginated read-only table of whatever
+`GET .../analytics` returns (no video-title join — this component only knows about metrics, video
+metadata display stays `content-manager.tsx`'s concern).
+
+**Live-verified against the real "Tropico Jazz" channel (2026-09-22, `claude-in-chrome`):** the
+tab resolves the active channel and loads its (empty) collected-metrics table correctly; clicking
+"Collect now" exercises the real chain (session → active-channel check → credential resolution →
+scope check) end to end and correctly fails with `AUTH_SCOPE_INSUFFICIENT` — the real stored
+token predates BL-056's scope addition, so this is exactly the expected, correct outcome pending
+the owner's own re-consent, not a bug. Zero console errors throughout.
+
+### 14.6 Daily staleness-based auto-collection (BL-059) — **IMPLEMENTED**
+
+The owner's own rule, verbatim (Telegram msg 356, items 3-6): a daily check "при входе в наш
+дашборд" (on entering the dashboard), comparing "now" against a **wall-clock local boundary**
+(e.g. 12:05), not an elapsed-duration window — a run at 11:59 local today is still stale, a run at
+12:06 local today is fresh. This app has no background daemon/cron separate from the Next.js
+server process, so the check runs once per dashboard mount
+(`src/app/dashboard/page.tsx`'s `autoCollectTriggeredRef`-guarded effect, independent of which tab
+is active), not on a repeating interval — reusing the same "check once per mount, not a
+continuous poll" discipline `content-manager.tsx`'s own `AUTO_RESYNC_STALENESS_MS` pattern
+already established, generalized from "20 minutes" to "once a day."
+
+**`src/lib/analytics/staleness.ts`** (pure, no I/O): `isAnalyticsCollectionStale` formats both
+"now" and the last-collected instant into the target IANA timezone's own local calendar
+date + time strings (one `Intl.DateTimeFormat` each) and compares those strings — deliberately
+NOT an offset-arithmetic instant conversion (`Date.UTC` + `formatToParts` + diff-correction),
+which is unnecessary for a pure comparison and easy to get subtly wrong. `Intl` already applies
+the zone's real DST rules to each instant independently, proven by a dedicated test that gets a
+*different* result for the same wall-clock UTC hour in January (EST) vs. July (EDT) for
+`America/New_York` — the owner's own "зимнее/летнее время" concern, verified, not assumed.
+`computeDefaultAutoCollectionRange` (same file) picks the unattended run's date range — 7 days,
+ending yesterday, matching the manual UI's own default (`AUTO_COLLECTION_RANGE_DAYS`,
+`contracts.ts`) — via pure calendar-day arithmetic on the zone's own Y-M-D components, so it has
+no DST edge case to reason about (a calendar day is a calendar day in every zone).
+
+**Settings:** two new `app_settings` keys (reusing the existing key/value table, `docs/SYSTEM_MAP.md`
+§2.9f, not a new table) — `analytics_sync_local_time` (default `"12:05"`) and
+`analytics_sync_timezone` (default: this machine's own OS timezone, detected via
+`Intl.DateTimeFormat().resolvedOptions().timeZone` the first time it's ever read, then persisted —
+never re-detected on a later read, so an explicit owner override is never silently clobbered;
+safe specifically because this app's server and the operator's browser are the same machine, the
+established "local-first single-operator tool" model). Both are validated at the `/api/settings`
+write boundary (`isValidLocalTimeOfDay`/`isValidIanaTimezone`) rather than letting a bad value
+throw inside the staleness check on a later dashboard load. UI: `src/components/analytics-sync-settings.tsx`
+(Settings tab) — plain text/time inputs, not `ToggleSwitch` (these aren't booleans).
+
+**Concurrency (advisor review):** `runAutoCollectionIfStale` marks
+`channels.analyticsLastAutoCollectedAt` **before** calling `collectMetrics`, not after. Two
+browser tabs mounting the dashboard at the same moment would otherwise both see "stale" and both
+run a full per-video collection, doubling real Analytics API quota for no benefit — marking first
+means the second caller sees fresh and no-ops (proven by a dedicated test simulating two
+sequential calls at the same instant). The accepted tradeoff: if the collection itself then fails
+or crashes mid-run, today's window is still marked "collected" and won't retry until tomorrow's
+boundary — judged the better failure mode than doubling quota on every multi-tab load.
+
+**`GET /api/settings` is not purely read-only**: `getAnalyticsSyncSettings`'s detect-and-persist
+behavior means a plain `GET` can write the OS-detected timezone on first read (stated in that
+route's own doc comment, not left as a surprise).
+
+**Live-verified against the real "Tropico Jazz" channel (2026-09-22, `claude-in-chrome`):** the
+dashboard-mount effect fires exactly once and reaches the real `runAutoCollectionIfStale` →
+`collectMetrics` chain, correctly failing at `AUTH_SCOPE_INSUFFICIENT` for the same
+not-yet-re-consented reason as §14.5's manual trigger. Confirmed directly against the real
+database that this **did** mark `analyticsLastAutoCollectedAt` despite the underlying collection
+failing — exactly the documented mark-then-run tradeoff, not a bug — and then reset that column
+back to `NULL` on the real channel afterward (a throwaway, uncommitted script) so the owner's own
+first post-re-consent dashboard load is not skipped until the next day's boundary. Separately
+confirmed the real machine's OS timezone (`Europe/Helsinki`) was correctly auto-detected and
+persisted to `app_settings` on the first `GET /api/settings` call. Zero console errors.
+
+**Build-time note, observed not introduced:** `npm run build`'s "Collecting page data" step
+occasionally logs a `SQLITE_BUSY: database is locked` (or, once, a stale-schema-version rejection
+from a leftover local DB state during this session's own testing) from one of several parallel
+build workers racing to initialize the same real local database file — confirmed present on a
+clean pre-BL-059 tree too (`git stash -u` + rebuild), so this is a pre-existing characteristic of
+this dev environment's multi-worker build touching a real, singleton-guarded database file, not a
+regression from this slice. Build exit code is unaffected (0) both with and without BL-059.
+
+### 14.7 Known limitations
+
+No Analytics API client, no OAuth scope request, no route, no UI — this slice is the persistence
+primitive only, exactly `PHASE_8_PLAN.md` §6 slice 2's scope, deliberately not a vertical slice
+end-to-end. See `docs/roadmap/BACKLOG.md` BL-056/BL-057/BL-058/BL-059 for the current status of
+the remaining slices.
+
+`metricValue` is `REAL NOT NULL` (changed 2026-09-22, before this table ever merged to `dev` —
+`docs/roadmap/plans/PHASE_8_PLAN.md` §10 item 2). The plan's original DDL had it as `INTEGER`,
+correct for `views` alone; once the owner authorized collecting every metric
+`yt-analytics.readonly` covers, several of those (e.g. `averageViewPercentage`,
+`annotationClickThroughRate`) are inherently fractional, so the column was widened to `REAL`
+(exact for both integer counts and fractional rates) rather than adding a second,
+metric-type-dependent column. Because this happened before the table shipped anywhere, no ADR was
+needed (`docs/decisions/0001-additive-idempotent-schema-strategy.md`'s "non-additive change" gate
+applies to a change against an already-released schema, not an in-progress, unmerged one) — any
+*future* change to this column's type would need one.
+
+`video_metrics_daily` is **deliberately not added to `SNAPSHOT_TRANSFERRED_TABLES`**
+(`src/lib/snapshot/contracts.ts`) in this slice — collected metrics stay device-local and do not
+travel with a device handoff/snapshot import. Accepted limitation, parallel in kind to RISK-33's
+own `rules.user_id` orphan case: a snapshot-import replace of `videos` (`SNAPSHOT_REPLACE_ON_IMPORT_TABLES`
+already includes `videos`) can leave a local `video_metrics_daily` row referencing a `videoId` no
+longer present in the receiving device's `videos` table after import — this never crashes (FK
+enforcement is disabled for that entire operation, same as every other table it processes), it
+just leaves a stale row. `docs/PROJECT_SPEC.md` §33 frames this data as the future basis for real
+recommendations, so unlike `video_edit_audit_events` (a local audit trail with no such framing),
+losing collected history silently on every handoff is worth flagging explicitly rather than
+letting it repeat as an unstated gap — revisit whether this table should join
+`SNAPSHOT_TRANSFERRED_TABLES` once real collection (slice 3+) makes the data worth carrying
+across devices.

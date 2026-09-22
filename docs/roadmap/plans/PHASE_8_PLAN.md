@@ -135,3 +135,117 @@ For slice 2-4 above, once assigned:
 
 This plan lives here, not in `docs/roadmap/BACKLOG.md` or `docs/roadmap/FUTURE_PHASES.md`, per
 `FUTURE_PHASES.md` §9 step 9. `BL-003` points at this document once marked `done`.
+
+## 10. Owner decisions received 2026-09-22 (Telegram msg 356) — supersedes §3/§4/§8 where noted
+
+Assignment: "Приступить к полной реализации фазы 8" (msg 349) plus, answering the two questions
+this plan's §8 posed (msg 350 → msg 356, verbatim, numbered by the owner):
+
+1. **OAuth scope: approved.** "Да, разрешаю" — approves requesting
+   `https://www.googleapis.com/auth/yt-analytics.readonly` exactly as asked. The owner understands
+   this requires them to personally re-consent the real Google account (stated in msg 355, not
+   objected to). **This is consent for the scope, not for merging this branch to `dev`** —
+   instruction #4 from msg 349 ("не мердж эту ветку в дев... без моего согласия") is a separate,
+   still-standing constraint, unaffected by this answer (`AGENTS.md` §K.2's "a prior approval
+   never carries forward to a new, unrelated action" applies here explicitly). **Implemented as
+   BL-056** (`src/lib/auth.ts`'s `YOUTUBE_SCOPES`) — no separate re-consent flow needed to be
+   built, since every existing sign-in path already forces full consent on every login. One thing
+   the owner should know about the one-time re-consent action itself: Google returns a
+   `refresh_token` only when consent is genuinely re-prompted with `access_type=offline` (which
+   this app's flow already sets) — if the resulting token set ever lacks one, the existing
+   `AUTH_REFRESH_TOKEN_MISSING` handling (`docs/SYSTEM_MAP.md` §2.2) already covers it; no new
+   code needed, just something to recognize if it happens rather than treating it as a new bug.
+2. **Metric scope: everything the scope covers, not just `views`.** "Собираем полный объем, все
+   что можно вытащить через API" — **supersedes §3's "views alone" and §4's "any metric beyond
+   views is out of scope."** Concretely this means every metric in the YouTube Analytics API's
+   "Basic user activity" / "Time-based activity" video reports available under
+   `yt-analytics.readonly` alone. **Provenance note (added after advisor review, 2026-09-22):**
+   the list below was captured from an automated fetch-and-summarize pass over the official
+   “Available Reports”/metrics pages on 2026-09-22, not independently confirmed
+   metric-by-metric against the API reference or a real response — the same honest-capture
+   discipline `src/lib/youtube-supported-languages.ts` already uses for its own hardcoded list
+   (including that file’s own documented known gap). Treat this as the *starting* list for
+   BL-057, not a verified enumeration: BL-057’s adapter must be designed so an
+   unknown/rejected metric name from a real `reports.query` call degrades to skipping that one
+   metric (recorded/logged), never failing the whole collection run — the real API response,
+   once BL-057 actually calls it, is the authoritative source, this list is only the starting
+   hypothesis.
+   The full 28-name list is now implemented as `ANALYTICS_METRIC_NAMES` in
+   `src/lib/analytics/contracts.ts` (added in BL-057 part 2) -- that constant, not this
+   document, is the source of truth for the exact names going forward, so the two never drift
+   as the real API response updates it (e.g. `views`, `likes`, `comments`,
+   `estimatedMinutesWatched`, `averageViewPercentage`, `subscribersGained`, and 22 more --
+   see that file for the complete, current list). **Explicitly
+   excluded, even under "everything":** every metric marked monetary in the official docs
+   (`estimatedRevenue`, `estimatedAdRevenue`, `grossRevenue`, `estimatedRedPartnerRevenue`,
+   `monetizedPlaybacks`, `playbackBasedCpm`, `adImpressions`, `cpm`) — these require the separate
+   `yt-analytics-monetary.readonly` scope and YouTube Partner Program / CMS access, which was
+   never asked about or approved; requesting it would be a second, distinct re-consent decision
+   this answer does not cover.
+   - **Schema consequence:** `video_metrics_daily.metric_value` was `INTEGER NOT NULL`
+     (`SCHEMA_MIGRATIONS` version 8) when this table was first implemented for the `views`-only
+     slice. The official metric docs do not crisply state each metric's numeric type, but rate/
+     percentage metrics (`averageViewPercentage`, `*ClickThroughRate`, `*CloseRate`) are
+     inherently fractional. Since this table had not yet merged to `dev` (still on
+     `feature/phase-8-intelligence-foundation`) when this answer arrived, the column was changed
+     to `REAL NOT NULL` in place — a real, exact representation for both integer counts and
+     fractional rates, avoiding a second `metric_value_real` column and avoiding a second,
+     separately-versioned migration for a table nothing has consumed yet. Once this branch merges
+     to `dev`, any *future* type change to this column would need its own ADR
+     (`docs/decisions/0001-additive-idempotent-schema-strategy.md`) — this is the last point
+     where changing it is free.
+3. **Automatic daily collection: yes, staleness-checked, not a true scheduler.** "Можно проводить
+   скан раз в день, например в 12:05" + "если не можем обновлять данные сразу по всем каналам, то
+   при входе в дашборд надо проверять когда последний раз проходило вытягивание — делать его... с
+   учётом времени" + "повторный запрос... имеет смысл только если прошлый был до 12:00 сегодняшнего
+   дня" — **supersedes §4's "automatic/scheduled collection is out of scope."** This app has no
+   background daemon/cron separate from the Next.js dev/production server process, so "raз в день
+   в 12:05" is implemented the same way `content-manager.tsx`'s existing
+   `AUTO_RESYNC_STALENESS_MS` pattern already works for video-stat re-sync (`docs/SYSTEM_MAP.md`
+   §2.7) — reused, not reinvented (`AGENTS.md` §D): on dashboard load, compare "now" against a
+   **wall-clock boundary**, not an elapsed-duration window — the owner's own rule is "before
+   today's local 12:00 → refetch; at/after today's local 12:00 (and no successful collection since)
+   → don't," which must be tested with hand-picked boundary timestamps (11:59 today → stale; 12:06
+   today → fresh; 23:00 yesterday → stale), never derived by running the implementation.
+4. **The collection-time-of-day is a device-local, user-adjustable setting**, not hardcoded
+   `12:05`. "Время имеется в виду по местному. Можно вынести в настройки это время синхронизации
+   аналитики, т.к. оно может меняться в зимнее / летнее время" — stored as two new `app_settings`
+   keys (reusing the existing key/value settings table and pattern from `docs/SYSTEM_MAP.md`
+   §2.9f, not a new table): an IANA timezone string (default: read once from the OS via
+   `Intl.DateTimeFormat().resolvedOptions().timeZone` the first time the setting is read, then
+   persisted — never re-read from the OS on every check, so a user's explicit override in Settings
+   is never silently clobbered) and an `HH:MM` local-time string (default `12:05`, matching the
+   owner's own example). Using a named IANA zone (not a fixed UTC offset) is what makes DST
+   transitions correct automatically, addressing the owner's own "зимнее/летнее время" concern
+   without any manual seasonal-offset code.
+   - **This is a distinct concept from `metric_date`.** The YouTube Analytics API reports each
+     day's data in **Pacific Time**, regardless of the channel owner's own location — a row the
+     API labels `2026-09-21` is a Pacific-Time calendar day, not the operator's local calendar
+     day. `metric_date` stores the API's own reported date verbatim, unconverted; the local
+     timezone/time-of-day setting governs only *when the collection job itself runs/considers
+     itself stale*, never how `metric_date` values are interpreted or displayed. This distinction
+     must be stated explicitly in `docs/ARCHITECTURE.md` when the collection job is built — it is
+     exactly the kind of thing that stays invisible until someone compares two devices' numbers or
+     a report crosses a day boundary.
+5. **Per-video API cost -- confirmed by a real query, 2026-09-22.** An automated fetch-and-
+   summarize pass over the official "Available Reports" docs on 2026-09-22 reported that YouTube
+   Analytics API video reports do not support combining a `video` (all videos) dimension with a
+   `day` dimension in one query for per-video-per-day granularity, but a follow-up attempt to
+   independently corroborate that specific claim from the docs alone did not succeed either way.
+   **Resolved by a real, live test (2026-09-22, after BL-056's re-consent and enabling "YouTube
+   Analytics API" in Google Cloud Console):** a real `reports.query` with `dimensions=video,day`
+   and no `filters=video==...` was rejected by the live API with "The query is not supported."
+   The N-calls-per-video design below is therefore the confirmed, required shape, not a
+   contingency: daily metrics for a specific video require
+   `filters=video==VIDEO_ID` with `dimensions=day`, one query per video (though one query already
+   covers an entire date range and every requested metric in a single response, so it is one call
+   per video **per collection run**, not per video per day per metric). The real channel currently
+   has 35 synced videos, so a daily run costs ~35 Analytics API calls today; this scales linearly
+   with catalog size and is not a redesign trigger at this channel's current scale, but is
+   recorded here so a future, much larger channel's Analytics quota consumption is a known,
+   pre-documented characteristic rather than a surprise (mirrors the existing, accepted tension
+   already documented for the unrelated Data-API-v3 case, RISK-13/AC-QUOTA-01).
+
+Slices 2-4 of §6 above proceed as originally sliced (table → adapter → manual trigger + UI), with
+the metric list, column type, and daily-staleness-trigger behavior above as the now-authorized
+scope for slices 3-4. Slice 1 (OAuth scope) proceeds next, as the hard dependency for slice 3.
