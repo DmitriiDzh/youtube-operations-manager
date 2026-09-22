@@ -32,7 +32,7 @@ export function createYoutubeApiAdapter() {
       channelId?: string;
       maxResults?: number;
     }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       const channelId = args.channelId ?? (await getMyChannelId(youtube));
 
       if (!channelId) {
@@ -46,7 +46,7 @@ export function createYoutubeApiAdapter() {
     },
 
     async getVideo(args: { credentials: ResolvedCredentials; videoId: string }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       const video = await getVideoById(youtube, args.videoId);
 
       if (!video) {
@@ -61,7 +61,7 @@ export function createYoutubeApiAdapter() {
     },
 
     async getVideoMetadataContext(args: { credentials: ResolvedCredentials; videoId: string }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       const context = await getVideoMetadataContext(youtube, args.videoId);
 
       if (!context) {
@@ -92,7 +92,7 @@ export function createYoutubeApiAdapter() {
       }
 
       await assertLiveWritesAuthorized();
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
 
       try {
         await applyVideoMetadataUpdate({

@@ -12,9 +12,18 @@
 // way: its own file in this directory, re-exported here, picked up automatically by
 // `read-gateway-inventory.test.ts`'s allowlist.
 //
-// Today's only child: `data-api.ts` (YouTube Data API v3 -- channels/videos/playlists
-// reads). `docs/roadmap/plans/PHASE_8_PLAN.md`'s `youtube-analytics.ts` (YouTube
-// Analytics API reads) becomes a second child here once that branch merges.
+// Two children today: `data-api.ts` (YouTube Data API v3 -- channels/videos/playlists
+// reads) and `analytics-api.ts` (YouTube Analytics API reads, folded in from Phase 8's
+// `feature/phase-8-intelligence-foundation` branch, 2026-09-22, completing the deferred
+// follow-up `docs/decisions/0007-youtube-read-gateway.md` itself named).
+//
+// Each read category also has its own "reads enabled" toggle (Settings tab, mirroring the
+// write gateway's own "Live writes" toggle): `assertDataApiReadsAuthorized`/
+// `assertAnalyticsReadsAuthorized`, re-exported below. Every caller that constructs a client
+// for that category calls the matching assert function first -- enforced by
+// `read-gateway-inventory.test.ts`, the same way the write gateway enforces
+// `assertLiveWritesAuthorized`.
 // ---------------------------------------------------------------------------
 
 export * from "./data-api";
+export * from "./analytics-api";

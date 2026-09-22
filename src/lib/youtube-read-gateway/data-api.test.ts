@@ -1,13 +1,41 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { youtube_v3 } from "googleapis";
+import { getDataApiReadsEnabled, setDataApiReadsEnabled } from "@/lib/db";
+import { DomainError } from "@/lib/video-metadata/contracts";
 import {
+  assertDataApiReadsAuthorized,
+  createYoutubeClient,
   getChannelForSync,
   getVideoDetailsContext,
   getVideosMetadataContextBatch,
   listSupportedLanguages,
   listUploadsPlaylistVideoIds,
 } from "./data-api";
+
+// The "Data API reads" toggle (owner instruction, 2026-09-22): default-enabled, unlike Gate B's
+// default-disabled Live Writes, so a fresh install never silently blocks reads.
+test("assertDataApiReadsAuthorized / createYoutubeClient: default-enabled, throws data_api_reads_disabled when turned off", async () => {
+  const alreadyEnabled = await getDataApiReadsEnabled();
+  assert.equal(alreadyEnabled, true, "sanity check -- defaults to enabled, never reset on boot");
+
+  await assertDataApiReadsAuthorized();
+  await createYoutubeClient(undefined);
+
+  await setDataApiReadsEnabled(false);
+  try {
+    await assert.rejects(
+      () => assertDataApiReadsAuthorized(),
+      (error: unknown) => error instanceof DomainError && error.code === "data_api_reads_disabled"
+    );
+    await assert.rejects(
+      () => createYoutubeClient(undefined),
+      (error: unknown) => error instanceof DomainError && error.code === "data_api_reads_disabled"
+    );
+  } finally {
+    await setDataApiReadsEnabled(true);
+  }
+});
 
 function fakeYoutubeClient(overrides: {
   channelsList?: youtube_v3.Youtube["channels"]["list"];

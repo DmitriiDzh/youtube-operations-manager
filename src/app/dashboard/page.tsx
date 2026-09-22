@@ -11,6 +11,7 @@ import { BatchManager } from "@/components/batch-manager";
 import { AiConnectionsManager } from "@/components/ai-connections-manager";
 import { AnalyticsSyncSettings } from "@/components/analytics-sync-settings";
 import { LiveWritesSettings } from "@/components/live-writes-settings";
+import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
 import { EditorialProfilePanel } from "@/components/editorial-profile-panel";
 import { DeviceHandoffPanel } from "@/components/device-handoff-panel";
@@ -245,6 +246,7 @@ export default function Dashboard() {
         <div className="max-w-3xl space-y-6">
           <AppVersionInfo />
           <LiveWritesSettings />
+          <ReadGatewaySettings />
           <AnalyticsSyncSettings />
           <div>
             <p className="mb-4 text-sm text-zinc-400">

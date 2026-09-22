@@ -1,11 +1,49 @@
 import { google } from "googleapis";
 import type { youtube_v3 } from "googleapis";
 import { createGoogleOAuthClient } from "../auth";
-import { getUserOAuthTokens, saveUserOAuthTokens } from "../db";
+import { getDataApiReadsEnabled, getUserOAuthTokens, saveUserOAuthTokens } from "../db";
+import { DomainError } from "../video-metadata/contracts";
 
-export function createYoutubeClient(
+/**
+ * "Data API v3 reads enabled" toggle (owner instruction, 2026-09-22, Telegram -- see
+ * `src/lib/db.ts`'s `getDataApiReadsEnabled` for the full rationale and default/persistence
+ * model, deliberately the opposite of Gate B's write-side toggle).
+ *
+ * **Deliberately couples to write paths too, unlike the write gateway's own per-caller
+ * `assertLiveWritesAuthorized` pattern.** This check lives inside `createYoutubeClient` itself
+ * (below) -- the one shared constructor every Data API v3 caller in the repo uses, read or
+ * write -- so disabling reads also blocks Batches' write-client construction and
+ * `write-context`'s pre-write identity check. This is intentional, not an oversight: a write
+ * path here always depends on a read first (a mandatory fresh pre-write fetch, or resolving
+ * "which channel am I" before comparing it against the expected one) -- if reads are disabled,
+ * that dependency cannot be satisfied safely, and failing the write closed is this codebase's
+ * existing fail-closed philosophy applied consistently, not a new behavior. Live Writes remains
+ * the sole *authorization* for whether a write is allowed at all; this is an orthogonal
+ * precondition, not a replacement for it.
+ */
+export async function assertDataApiReadsAuthorized(): Promise<void> {
+  if (await getDataApiReadsEnabled()) return;
+
+  throw new DomainError({
+    code: "data_api_reads_disabled",
+    message:
+      "YouTube Data API v3 reads are disabled -- the Settings tab's \"Data API reads\" toggle is off. " +
+      "This also blocks write paths, which require a read to verify channel identity and fetch fresh state first.",
+  });
+}
+
+/**
+ * The single choke point every Data API v3 call in the repo passes through to get a client --
+ * every `adapters/youtube-api.ts`, plus `getAuthenticatedYoutube`/`getAuthenticatedYoutubeFromTokens`
+ * below, call this rather than constructing a `youtube_v3.Youtube` any other way. `async`
+ * specifically so `assertDataApiReadsAuthorized` lives here, checked exactly once, mechanically,
+ * for every caller -- see that function's own doc comment for why this also covers write-adjacent
+ * callers, unlike the write gateway's per-caller design.
+ */
+export async function createYoutubeClient(
   auth: youtube_v3.Options["auth"]
-): youtube_v3.Youtube {
+): Promise<youtube_v3.Youtube> {
+  await assertDataApiReadsAuthorized();
   return google.youtube({ version: "v3", auth });
 }
 

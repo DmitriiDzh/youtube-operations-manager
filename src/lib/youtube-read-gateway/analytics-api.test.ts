@@ -1,7 +1,37 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { youtubeAnalytics_v2 } from "googleapis";
-import { queryVideoAnalyticsReport } from "./youtube-analytics";
+import { getAnalyticsReadsEnabled, setAnalyticsReadsEnabled } from "@/lib/db";
+import { DomainError } from "@/lib/video-metadata/contracts";
+import {
+  assertAnalyticsReadsAuthorized,
+  createYoutubeAnalyticsClient,
+  queryVideoAnalyticsReport,
+} from "./analytics-api";
+
+// The "Analytics reads" toggle (owner instruction, 2026-09-22): default-enabled, mirroring the
+// Data API v3 toggle's own default (see data-api.test.ts's equivalent test).
+test("assertAnalyticsReadsAuthorized / createYoutubeAnalyticsClient: default-enabled, throws analytics_reads_disabled when turned off", async () => {
+  const alreadyEnabled = await getAnalyticsReadsEnabled();
+  assert.equal(alreadyEnabled, true, "sanity check -- defaults to enabled, never reset on boot");
+
+  await assertAnalyticsReadsAuthorized();
+  await createYoutubeAnalyticsClient(undefined);
+
+  await setAnalyticsReadsEnabled(false);
+  try {
+    await assert.rejects(
+      () => assertAnalyticsReadsAuthorized(),
+      (error: unknown) => error instanceof DomainError && error.code === "analytics_reads_disabled"
+    );
+    await assert.rejects(
+      () => createYoutubeAnalyticsClient(undefined),
+      (error: unknown) => error instanceof DomainError && error.code === "analytics_reads_disabled"
+    );
+  } finally {
+    await setAnalyticsReadsEnabled(true);
+  }
+});
 
 function fakeAnalyticsClient(
   reportsQuery: youtubeAnalytics_v2.Resource$Reports["query"]

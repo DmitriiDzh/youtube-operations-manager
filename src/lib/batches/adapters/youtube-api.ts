@@ -28,7 +28,7 @@ export function createBatchYoutubeApiAdapter() {
      * fetchFreshVideoContext below, which is mandatory for all three.
      */
     async fetchPreliminaryBatchContext(args: { credentials: ResolvedCredentials; videoIds: string[] }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       return getVideosMetadataContextBatch(youtube, args.videoIds);
     },
 
@@ -39,7 +39,7 @@ export function createBatchYoutubeApiAdapter() {
      * preliminary batched pass above -- always this fresh call).
      */
     async fetchFreshVideoContext(args: { credentials: ResolvedCredentials; videoId: string }) {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       const result = await getVideoMetadataContext(youtube, args.videoId);
       if (!result) return null;
 

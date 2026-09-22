@@ -33,7 +33,7 @@ type YoutubeClientLike = {
 type TranscriptProviderDeps = {
   provider?: string;
   createOAuthClient?: () => OAuthClientLike;
-  createYoutubeClient?: (oauth: OAuthClientLike) => YoutubeClientLike;
+  createYoutubeClient?: (oauth: OAuthClientLike) => YoutubeClientLike | Promise<YoutubeClientLike>;
 };
 
 const RATE_LIMIT_REASONS = new Set(["ratelimitexceeded", "userratelimitexceeded", "quotaexceeded"]);
@@ -209,7 +209,7 @@ export function createTranscriptProvider(deps: TranscriptProviderDeps = {}) {
     deps.createYoutubeClient ??
     ((oauth: OAuthClientLike) =>
       createYoutubeClient(oauth as unknown as Parameters<typeof createYoutubeClient>[0]) as
-        unknown as YoutubeClientLike);
+        unknown as Promise<YoutubeClientLike>);
 
   return {
     async getTranscript(args: {
@@ -229,7 +229,7 @@ export function createTranscriptProvider(deps: TranscriptProviderDeps = {}) {
         refresh_token: args.credentials.refreshToken,
       });
 
-      const youtube = createYoutube(oauth2);
+      const youtube = await createYoutube(oauth2);
 
       let listRes: Awaited<ReturnType<YoutubeClientLike["captions"]["list"]>>;
       try {

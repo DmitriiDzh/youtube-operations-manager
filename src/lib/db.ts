@@ -1024,6 +1024,12 @@ async function initializeDatabase() {
     sql: "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     args: ["live_writes_enabled", "false"],
   });
+
+  // The read-side toggles (`data_api_reads_enabled`/`analytics_reads_enabled`, see
+  // `getDataApiReadsEnabled`/`getAnalyticsReadsEnabled` below) are deliberately NOT reset here,
+  // unlike `live_writes_enabled` above -- they persist across restarts by design (see their own
+  // doc comment for why). Do not add them to this per-boot reset without re-reading that
+  // reasoning first.
 }
 
 export const databaseInitialization = initializeDatabase().catch((error: unknown) => {
@@ -1497,6 +1503,44 @@ export async function getMcpConnectionEnabled(): Promise<boolean> {
 
 export async function setMcpConnectionEnabled(enabled: boolean): Promise<void> {
   await setAppSetting(MCP_CONNECTION_ENABLED_SETTING_KEY, enabled ? "true" : "false");
+}
+
+const DATA_API_READS_ENABLED_SETTING_KEY = "data_api_reads_enabled";
+const ANALYTICS_READS_ENABLED_SETTING_KEY = "analytics_reads_enabled";
+
+/**
+ * Per-category "reads enabled" toggles (owner instruction, 2026-09-22, Telegram -- "выведи
+ * такие же тублеры в настройки по запросам API (теперь входящим). Делаем отдельный тумблер на
+ * каждый модуль / шлюз API чтения"), Settings tab, one per `src/lib/youtube-read-gateway/`
+ * child. Read by `assertDataApiReadsAuthorized`/`assertAnalyticsReadsAuthorized`
+ * (`docs/decisions/0007-youtube-read-gateway.md`) immediately before that category's client is
+ * constructed -- the read-side analog of `getLiveWritesEnabled`'s Gate B check, mechanically
+ * enforced the same way (`read-gateway-inventory.test.ts`).
+ *
+ * **Deliberately the opposite default and persistence model from `getLiveWritesEnabled`:**
+ * reads are not a safety-critical action needing an off-by-default, reset-every-boot posture --
+ * disabling one is an intentional, occasional "pause this data source" action, so each toggle
+ * defaults to **enabled** when never set, and persists across restarts once changed (matching
+ * `getMcpConnectionEnabled`'s persistence model, not `getLiveWritesEnabled`'s per-boot reset).
+ */
+// Takes an injectable `database` (like `getAnalyticsSyncSettings`, unlike
+// `getLiveWritesEnabled`/`getMcpConnectionEnabled`) so the default-true-when-unset inversion --
+// the one genuinely regressable bit of this pair -- can be exercised against an isolated temp
+// database (docs/DEVELOPMENT_PLAYBOOK.md §6.11) rather than asserted only by reasoning.
+export async function getDataApiReadsEnabled(database: AppDb = db): Promise<boolean> {
+  return (await getAppSetting(DATA_API_READS_ENABLED_SETTING_KEY, database)) !== "false";
+}
+
+export async function setDataApiReadsEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
+  await setAppSetting(DATA_API_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
+}
+
+export async function getAnalyticsReadsEnabled(database: AppDb = db): Promise<boolean> {
+  return (await getAppSetting(ANALYTICS_READS_ENABLED_SETTING_KEY, database)) !== "false";
+}
+
+export async function setAnalyticsReadsEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
+  await setAppSetting(ANALYTICS_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
 }
 
 const ANALYTICS_SYNC_LOCAL_TIME_SETTING_KEY = "analytics_sync_local_time";

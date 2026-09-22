@@ -9,7 +9,9 @@ import {
   channels,
   copyLegacyDatabaseInto,
   createIsolatedDb,
+  getAnalyticsReadsEnabled,
   getAnalyticsSyncSettings,
+  getDataApiReadsEnabled,
   initializeDatabaseSchema,
   listVideoMetricsByChannel,
   listVideoMetricsByVideo,
@@ -17,7 +19,9 @@ import {
   SCHEMA_BASELINE_VERSION,
   SCHEMA_CURRENT_VERSION,
   SCHEMA_MIGRATIONS,
+  setAnalyticsReadsEnabled,
   setAnalyticsSyncSettings,
+  setDataApiReadsEnabled,
   type AppDb,
   upsertVideoMetric,
   videos,
@@ -237,6 +241,45 @@ test("setAnalyticsSyncSettings: updates only the given field(s), never touches t
     const settings = await getAnalyticsSyncSettings(isolatedDb);
     assert.equal(settings.localTime, "18:00");
     assert.equal(settings.timezone, "Asia/Tokyo", "updating localTime alone must not touch timezone");
+  }));
+
+// The read-gateway toggles' one genuinely regressable bit (2026-09-22, owner instruction --
+// "тумблеры... на каждый шлюз API чтения"): default to ENABLED when never set, the opposite
+// inversion from getLiveWritesEnabled's default-false. Getting this backwards would silently
+// disable every YouTube read on a fresh install.
+test("getDataApiReadsEnabled/getAnalyticsReadsEnabled: default to true when never set", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    assert.equal(await getDataApiReadsEnabled(isolatedDb), true);
+    assert.equal(await getAnalyticsReadsEnabled(isolatedDb), true);
+  }));
+
+test("setDataApiReadsEnabled/setAnalyticsReadsEnabled: an explicit false persists and is independent per category", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await setDataApiReadsEnabled(false, isolatedDb);
+
+    assert.equal(await getDataApiReadsEnabled(isolatedDb), false);
+    assert.equal(
+      await getAnalyticsReadsEnabled(isolatedDb),
+      true,
+      "disabling Data API reads must not affect the independent Analytics reads toggle"
+    );
+
+    await setAnalyticsReadsEnabled(false, isolatedDb);
+    assert.equal(await getAnalyticsReadsEnabled(isolatedDb), false);
+
+    await setDataApiReadsEnabled(true, isolatedDb);
+    assert.equal(await getDataApiReadsEnabled(isolatedDb), true, "re-enabling must persist too");
+    assert.equal(
+      await getAnalyticsReadsEnabled(isolatedDb),
+      false,
+      "re-enabling Data API reads must not affect the independent Analytics reads toggle"
+    );
   }));
 
 test("video_metrics_daily: a videoId with no matching videos row is rejected by its foreign key", () =>

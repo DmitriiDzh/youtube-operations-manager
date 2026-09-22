@@ -54,7 +54,7 @@ const STATUS_PATCH_KEYS = [
 export function createVideoDetailsYoutubeApiAdapter() {
   return {
     async getSnapshot(args: { credentials: ResolvedCredentials; videoId: string }): Promise<VideoDetailsSnapshot> {
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       const context = await getVideoDetailsContext(youtube, args.videoId);
       if (!context) {
         throw new DomainError({
@@ -79,7 +79,7 @@ export function createVideoDetailsYoutubeApiAdapter() {
     }): Promise<{ before: VideoDetailsSnapshot; after: VideoDetailsSnapshot }> {
       await assertLiveWritesAuthorized();
 
-      const youtube = createAuthorizedClient(args.credentials);
+      const youtube = await createAuthorizedClient(args.credentials);
       const context = await getVideoDetailsContext(youtube, args.videoId);
       if (!context) {
         throw new DomainError({

@@ -30,6 +30,8 @@ const DOMAIN_ERROR_STATUS = {
   backup_item_failed: 422,
   backup_infrastructure_unavailable: 503,
   live_writes_disabled: 503,
+  data_api_reads_disabled: 503,
+  analytics_reads_disabled: 503,
   provider_not_configured: 501,
   generation_invalid_target_language: 422,
   generation_no_proposals: 422,
