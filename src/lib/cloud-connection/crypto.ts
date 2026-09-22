@@ -15,9 +15,11 @@ export type ResolveEncryptionKey = () => Buffer | null;
  * Default key resolver: reads `CLOUD_CONNECTION_ENCRYPTION_KEY` from the environment
  * (base64-encoded 32 bytes), never committed to the repository, never a hardcoded fallback.
  * Returns `null` if unset or malformed, which callers must treat as "encryption unavailable,"
- * never silently falling back to plaintext (this grant requires the full `cloud-platform` scope,
- * a materially larger blast radius than the plaintext-accepted `users` OAuth tokens --
- * `docs/TECHNICAL_DEBT.md` RISK-07 -- so plaintext storage is not an acceptable fallback here).
+ * never silently falling back to plaintext. Narrowed from the full `cloud-platform` scope to
+ * `monitoring.read` (2026-09-22, once the Cloud Quotas API that justified the broader scope
+ * turned out to be unnecessary), but this is still a real Google Cloud grant, not a YouTube-scoped
+ * one -- encryption stays the default here rather than falling back to `users`' plaintext
+ * tradeoff (`docs/TECHNICAL_DEBT.md` RISK-07).
  */
 export function resolveEncryptionKeyFromEnv(): Buffer | null {
   const raw = process.env.CLOUD_CONNECTION_ENCRYPTION_KEY;

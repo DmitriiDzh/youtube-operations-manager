@@ -264,11 +264,14 @@ An approved `Change` is never sent to YouTube by any of these routes — Phase 5
 
 A single, device-persistent Google Cloud OAuth grant, entirely independent of the channel-login
 session above (though every route still requires one) and of which YouTube channel is active.
-Slice 1 only: connect/disconnect status. No Cloud Quotas/Monitoring API call is made by any of
-these routes yet.
+These four routes are connect/disconnect status only -- the real Cloud Monitoring API calls
+(`src/lib/cloud-quotas/`, `docs/ARCHITECTURE.md` §16) ride along inside `GET /api/settings`
+instead, not a route here.
 
 - `GET /api/cloud-connection/start` — redirects the browser to Google's consent screen requesting
-  `https://www.googleapis.com/auth/cloud-platform`; sets a short-lived httpOnly `state` cookie
+  `https://www.googleapis.com/auth/monitoring.read` (narrowed 2026-09-22 from the originally
+  broader `cloud-platform` once the Cloud Quotas API that justified it turned out to be
+  unnecessary); sets a short-lived httpOnly `state` cookie
 - `GET /api/cloud-connection/callback` — exchanges the authorization code, persists the encrypted
   grant, redirects back to `/dashboard?cloudConnection=connected|error`
 - `GET /api/cloud-connection/status` — `{ "connected": false }` or `{ "connected": true,

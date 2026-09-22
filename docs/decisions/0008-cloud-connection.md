@@ -150,3 +150,25 @@ assigned.
 Purely additive: one new table (`cloud_connection`, SCHEMA_MIGRATIONS version 11), no existing
 table or column changed. No existing route, contract, or UI behavior changed -- the new Settings
 card and API routes are new surface area only.
+
+## Update (2026-09-22, later the same day): scope narrowed after the Cloud Quotas API was dropped
+
+Slice 3 (`docs/ARCHITECTURE.md` §16) shipped a live spike that found the Cloud Quotas API's
+`quotaInfos.list` -- this ADR's own stated reason for requesting the full `cloud-platform` scope
+above -- unnecessary: the Cloud Monitoring API alone supplies both the limit and usage numbers.
+The project owner asked directly, once told this (Telegram, verbatim): *"Если он нам действительно
+не нужен, то зачем нам его оставлять? Давай удалим из проекта"* -- and, once the choice was
+explained (no Cloud Quotas API code exists to delete, but the broad scope it had justified could be
+narrowed), confirmed: *"ок, давай сузим."*
+
+**`CLOUD_CONNECTION_SCOPE` changed from `cloud-platform` to `https://www.googleapis.com/auth/
+monitoring.read`** (`src/lib/cloud-connection/contracts.ts`) -- the actual, narrower requirement
+Cloud Monitoring's `timeSeries.list` needs (confirmed against Google's own REST reference,
+per this ADR's own §Context). `openid`/`email` are unaffected -- still requested for
+`fetchGoogleIdentity`, unrelated to which Cloud API scope is used.
+
+**This narrows an already-granted scope, which Google does not downgrade automatically** -- a
+previously-connected account (granted under the old, broader `cloud-platform`) must be
+disconnected and reconnected for the new, narrower consent to actually take effect. Encryption
+(`src/lib/cloud-connection/crypto.ts`) is unaffected -- `monitoring.read` is still a real Google
+Cloud grant, not a YouTube-scoped one, so plaintext remains not an acceptable default here.

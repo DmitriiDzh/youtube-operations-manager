@@ -506,9 +506,9 @@ export const gatewayCallEvents = sqliteTable("gateway_call_events", {
  * decoupled from the per-channel YouTube login in `users` (owner instruction, 2026-09-22,
  * Telegram: "право получать эту информацию не должно отзываться при смене аккаунта / логина...
  * пока я сам не отзову это право - этот компьютер должен в любой сессии иметь возможность
- * получить эту информацию"). Feeds the future Cloud Quotas/Monitoring integration
- * (`docs/decisions/0008-cloud-connection.md`) -- this slice only establishes the connection
- * itself (connect/disconnect, Settings tab), no Quotas/Monitoring API call is made yet.
+ * получить эту информацию"). Feeds `src/lib/cloud-quotas/`'s real Cloud Monitoring API calls
+ * (`docs/decisions/0008-cloud-connection.md`, `docs/ARCHITECTURE.md` §16) -- no Cloud Quotas API
+ * call exists anywhere in this codebase (a live spike found it unnecessary).
  *
  * A true singleton: exactly zero or one row, always keyed `id = "default"`, since this app
  * tracks at most one Cloud-level grant regardless of how many YouTube channels/logins it has
@@ -517,10 +517,10 @@ export const gatewayCallEvents = sqliteTable("gateway_call_events", {
  * -- a DELIBERATELY SEPARATE key from `AI_CONNECTIONS_ENCRYPTION_KEY` (`docs/AGENTS.md` §M,
  * feature-module independence: the Cloud-quota feature must not fail closed just because the
  * unrelated AI-localization module's key is absent, or vice versa). Encrypted, unlike `users`'
- * plaintext tokens (`docs/TECHNICAL_DEBT.md` RISK-07), because this grant requires the full
- * `cloud-platform` scope -- the Cloud Quotas API's `quotaInfos.list` has no narrower scope option
- * (confirmed against Google's own REST reference) -- a materially larger blast radius than a
- * YouTube-scoped token if the database file were ever read by someone else.
+ * plaintext tokens (`docs/TECHNICAL_DEBT.md` RISK-07), because this is still a real Google Cloud
+ * grant (`monitoring.read`, narrowed 2026-09-22 from the originally-requested full `cloud-platform`
+ * once the Cloud Quotas API that justified the broader scope turned out to be unnecessary) rather
+ * than a YouTube-scoped token if the database file were ever read by someone else.
  *
  * `connectedEmail`/`scope`/`connectedAt` are plaintext (not secrets, shown as-is in Settings).
  *

@@ -838,12 +838,12 @@ already uses, under its own `CLOUD_CONNECTION_ENCRYPTION_KEY` env var — delibe
 `AI_CONNECTIONS_ENCRYPTION_KEY`). `connectedEmail`/`scope`/`connectedAt` are plaintext columns,
 never secrets, shown as-is in the Settings tab.
 
-**Plaintext was considered and rejected**, unlike `users`' own accepted RISK-07 tradeoff: this
-grant requests the full `cloud-platform` scope, a materially larger blast radius than a
-YouTube-scoped token if the database file were ever read by someone else. Encryption failing
-closed (`encryption_key_not_configured` when the key is unset) was judged the correct default here
-specifically because of that scope breadth — not a blanket "encrypt everything" policy this
-codebase otherwise follows (`users` remains plaintext, tracked and accepted as RISK-07).
+**Plaintext was considered and rejected**, unlike `users`' own accepted RISK-07 tradeoff: this is a
+real Google Cloud grant (`monitoring.read`, narrowed 2026-09-22 from the originally-requested full
+`cloud-platform` once §16.2 found the Cloud Quotas API unnecessary — a materially narrower scope
+than before, but still not a YouTube-scoped token), so plaintext storage was judged not an
+acceptable default here — not a blanket "encrypt everything" policy this codebase otherwise
+follows (`users` remains plaintext, tracked and accepted as RISK-07).
 
 **Deliberately NOT added to `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`) — same
 reasoning as `users`/`ai_connection_credentials`: device-local, re-established per device via its
@@ -857,9 +857,11 @@ Entirely separate from the NextAuth channel-login flow (`src/lib/auth.ts`'s `aut
 1. `GET /api/cloud-connection/start` — requires an active channel-login session (any authenticated
    user of this app, independent of which channel is currently active). Builds Google's consent
    URL via `createGoogleOAuthClient(redirectUri).generateAuthUrl(...)` requesting
-   `https://www.googleapis.com/auth/cloud-platform` **plus `openid`/`email`** (needed only so the
-   callback can resolve *which* account connected — see the correction note below), with a random
-   `state` stored in a short-lived (600s) httpOnly cookie scoped to `/api/cloud-connection`, and
+   `https://www.googleapis.com/auth/monitoring.read` (narrowed 2026-09-22 from the originally
+   broader `cloud-platform` once §16.2 found the Cloud Quotas API unnecessary) **plus
+   `openid`/`email`** (needed only so the callback can resolve *which* account connected — see
+   the correction note below), with a random `state` stored in a short-lived (600s) httpOnly
+   cookie scoped to `/api/cloud-connection`, and
    redirects the browser there.
 2. `GET /api/cloud-connection/callback` — reads `code`/`state` from the query string and the
    expected state from the cookie; a mismatch (or a missing code/state, or an `error` param from
