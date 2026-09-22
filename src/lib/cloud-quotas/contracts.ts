@@ -31,6 +31,11 @@ export type QuotaService = "youtube.googleapis.com" | "youtubeanalytics.googleap
 /** `null` means "unknown" -- not connected, or the real query failed -- never a fabricated 0. */
 export type ServiceQuotaStatus = { limit: number; usedLast24h: number } | null;
 
+/** Same shape, different window: some services (Cloud Monitoring API itself, found live
+ * 2026-09-22) have no daily quota at all, only a per-minute one. `null` means "unknown," exactly
+ * like `ServiceQuotaStatus`. */
+export type PerMinuteQuotaStatus = { limit: number; usedLastMinute: number } | null;
+
 export type CloudQuotaStatus = {
   connected: boolean;
   /** Covers Data API v3 reads AND Live writes (same underlying Google service). */
@@ -41,12 +46,13 @@ export type CloudQuotaStatus = {
    * бара у Google Cloud connection" -- the other three gateways get both a traffic count AND a
    * real quota bar; this one is no different a Google API than the others).
    *
-   * **Verified live to genuinely be `null` for this project, not a bug:** unlike
+   * **`PerMinuteQuotaStatus`, not `ServiceQuotaStatus` -- verified live, not a bug:** unlike
    * `youtube.googleapis.com`/`youtubeanalytics.googleapis.com` (both have a
-   * `defaultPerDayPerProject` limit), Cloud Monitoring API's own quota in this project is
-   * modeled entirely per-MINUTE (`DefaultRequestsPerMinutePerUser`, effectively unlimited;
-   * `QueryRequestsPerMinutePerProject`, 6000/min) -- there is no daily limit metric to match
-   * `fetchDailyQuotaLimit`'s `defaultPerDayPerProject` filter against. `null` here honestly
-   * reflects "this service has no comparable daily quota to show," not a failed query. */
-  monitoring: ServiceQuotaStatus;
+   * `defaultPerDayPerProject` limit), Cloud Monitoring API's own quota in this project has no
+   * daily metric at all -- only per-minute ones (`DefaultRequestsPerMinutePerUser`, effectively
+   * unlimited; `QueryRequestsPerMinutePerProject`, a real 6000/min cap). Comparing a 24h usage
+   * sum against a per-minute limit would always read as wildly "over," so this field uses the
+   * most recent single minute's usage instead (owner instruction, after the "24h" framing was
+   * clarified as a translation error on the agent's part: "поминутные", not "помесячные"). */
+  monitoring: PerMinuteQuotaStatus;
 };

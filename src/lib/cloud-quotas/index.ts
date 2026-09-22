@@ -1,5 +1,11 @@
 import { createCloudConnectionCore } from "@/lib/cloud-connection";
-import { fetchDailyQuotaLimit, fetchDailyQuotaUsage, type FetchLike } from "./adapters/monitoring-client";
+import {
+  fetchDailyQuotaLimit,
+  fetchDailyQuotaUsage,
+  fetchLatestMinuteUsage,
+  fetchPerMinuteQuotaLimit,
+  type FetchLike,
+} from "./adapters/monitoring-client";
 import { createCloudQuotasServices } from "./services";
 
 // Google's own OAuth client ID convention: "{project_number}-{random}.apps.googleusercontent.com"
@@ -20,10 +26,10 @@ const productionFetch: FetchLike = (url, init) => fetch(url, init);
 export function createCloudQuotasCore() {
   return createCloudQuotasServices({
     cloudConnection: createCloudConnectionCore(),
-    monitoringClient: { fetchDailyQuotaLimit, fetchDailyQuotaUsage },
+    monitoringClient: { fetchDailyQuotaLimit, fetchDailyQuotaUsage, fetchPerMinuteQuotaLimit, fetchLatestMinuteUsage },
     fetchImpl: productionFetch,
     projectNumber: deriveGoogleCloudProjectNumber(process.env.GOOGLE_CLIENT_ID),
   });
 }
 
-export type { CloudQuotaStatus, QuotaService, ServiceQuotaStatus } from "./contracts";
+export type { CloudQuotaStatus, PerMinuteQuotaStatus, QuotaService, ServiceQuotaStatus } from "./contracts";

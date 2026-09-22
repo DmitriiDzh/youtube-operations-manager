@@ -20,7 +20,9 @@ export type FetchLike = (url: string, init: RequestInit) => Promise<{
 const MONITORING_BASE_URL = "https://monitoring.googleapis.com/v3";
 
 type TimeSeriesResponse = {
-  timeSeries?: Array<{ points?: Array<{ value?: { int64Value?: string } }> }>;
+  timeSeries?: Array<{
+    points?: Array<{ interval?: { endTime?: string }; value?: { int64Value?: string } }>;
+  }>;
   nextPageToken?: string;
 };
 
@@ -113,5 +115,85 @@ export async function fetchDailyQuotaUsage(args: {
     pageToken = body.nextPageToken;
   } while (pageToken);
 
+  return total;
+}
+
+/**
+ * `serviceruntime.googleapis.com/quota/limit`, filtered to
+ * `limit_name="QueryRequestsPerMinutePerProject"` -- for services (Cloud Monitoring API itself,
+ * found live 2026-09-22) that have no `defaultPerDayPerProject` metric at all and are modeled
+ * entirely per-minute instead. A GAUGE metric, same 25h lookback window as
+ * `fetchDailyQuotaLimit` for the same reason (a fresh sample only appears when the service
+ * actually receives traffic). Returns `null` if this service has no per-minute limit metric
+ * either (a genuinely different service than the one this was built for).
+ */
+export async function fetchPerMinuteQuotaLimit(args: {
+  accessToken: string;
+  projectNumber: string;
+  service: string;
+  fetchImpl: FetchLike;
+}): Promise<number | null> {
+  const now = new Date();
+  const startTime = new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString();
+  const endTime = now.toISOString();
+  const filter =
+    `metric.type="serviceruntime.googleapis.com/quota/limit" AND resource.type="consumer_quota" ` +
+    `AND resource.labels.service="${args.service}" AND metric.labels.limit_name="QueryRequestsPerMinutePerProject"`;
+  const url =
+    `${MONITORING_BASE_URL}/projects/${args.projectNumber}/timeSeries?filter=${encodeURIComponent(filter)}` +
+    `&interval.startTime=${startTime}&interval.endTime=${endTime}`;
+
+  const body = await callMonitoring({ url, accessToken: args.accessToken, fetchImpl: args.fetchImpl });
+  const raw = body.timeSeries?.[0]?.points?.[0]?.value?.int64Value;
+  return raw !== undefined ? Number(raw) : null;
+}
+
+/**
+ * `serviceruntime.googleapis.com/quota/rate/net_usage`, scoped to `quota_metric` (the SAME
+ * quota pool `fetchPerMinuteQuotaLimit`'s `limit_name` identifies -- e.g. `"query_requests"` for
+ * `QueryRequestsPerMinutePerProject`; usage has no `limit_name` label of its own, only
+ * `quota_metric`, confirmed against real data). Summed only across points sharing the single most
+ * recent `endTime` found (there can be more than one series -- e.g. per `method` -- reporting
+ * into the same quota pool), never across a wider window like `fetchDailyQuotaUsage` does: each
+ * point already represents exactly one minute's usage (`samplePeriod: "60s"`), so summing several
+ * different minutes would compare multiple minutes' worth of usage against a single-minute limit,
+ * always appearing "over" it. Looks back 10 minutes to reliably find at least one recent point
+ * despite Monitoring's own ingest delay, and returns 0 (not `null`) if none exists -- genuinely
+ * zero usage in that window is a valid, real answer, not a failed query.
+ */
+export async function fetchLatestMinuteUsage(args: {
+  accessToken: string;
+  projectNumber: string;
+  service: string;
+  quotaMetric: string;
+  fetchImpl: FetchLike;
+}): Promise<number> {
+  const now = new Date();
+  const startTime = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
+  const endTime = now.toISOString();
+  const filter =
+    `metric.type="serviceruntime.googleapis.com/quota/rate/net_usage" AND resource.type="consumer_quota" ` +
+    `AND resource.labels.service="${args.service}" AND metric.labels.quota_metric="${args.quotaMetric}"`;
+  const url =
+    `${MONITORING_BASE_URL}/projects/${args.projectNumber}/timeSeries?filter=${encodeURIComponent(filter)}` +
+    `&interval.startTime=${startTime}&interval.endTime=${endTime}`;
+
+  const body = await callMonitoring({ url, accessToken: args.accessToken, fetchImpl: args.fetchImpl });
+
+  let latestEndTime: string | null = null;
+  for (const series of body.timeSeries ?? []) {
+    const candidate = series.points?.[0]?.interval?.endTime;
+    if (candidate && (!latestEndTime || candidate > latestEndTime)) latestEndTime = candidate;
+  }
+  if (!latestEndTime) return 0;
+
+  let total = 0;
+  for (const series of body.timeSeries ?? []) {
+    for (const point of series.points ?? []) {
+      if (point.interval?.endTime === latestEndTime && point.value?.int64Value !== undefined) {
+        total += Number(point.value.int64Value);
+      }
+    }
+  }
   return total;
 }

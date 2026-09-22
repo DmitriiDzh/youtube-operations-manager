@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { CloudQuotaProgress, type ServiceQuotaStatusView } from "./cloud-quota-progress";
+import { CloudQuotaProgressPerMinute, type PerMinuteQuotaStatusView } from "./cloud-quota-progress";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 
 type Status = { connected: false } | { connected: true; connectedEmail: string; scope: string; connectedAt: string };
@@ -20,7 +20,7 @@ type Status = { connected: false } | { connected: true; connectedEmail: string; 
 export function CloudConnectionSettings() {
   const [status, setStatus] = useState<Status | null>(null);
   const [gatewayTraffic, setGatewayTraffic] = useState<GatewayTrafficWindowView[] | undefined>(undefined);
-  const [monitoringQuota, setMonitoringQuota] = useState<ServiceQuotaStatusView | undefined>(undefined);
+  const [monitoringQuota, setMonitoringQuota] = useState<PerMinuteQuotaStatusView | undefined>(undefined);
   const [disconnecting, setDisconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Read directly from window.location rather than `useSearchParams()` -- this page is statically
@@ -40,7 +40,7 @@ export function CloudConnectionSettings() {
     if (!res.ok) return;
     const data = (await res.json()) as {
       gatewayTraffic?: GatewayTrafficWindowView[];
-      cloudQuotaStatus?: { monitoring: ServiceQuotaStatusView };
+      cloudQuotaStatus?: { monitoring: PerMinuteQuotaStatusView };
     };
     setGatewayTraffic(data.gatewayTraffic);
     setMonitoringQuota(data.cloudQuotaStatus?.monitoring);
@@ -98,7 +98,7 @@ export function CloudConnectionSettings() {
           </p>
           <p className="text-xs text-zinc-500">Since {new Date(status.connectedAt).toLocaleString()}</p>
           <GatewayTrafficStats window={gatewayTraffic?.find((c) => c.category === "cloud_monitoring_reads")} />
-          <CloudQuotaProgress status={monitoringQuota} />
+          <CloudQuotaProgressPerMinute status={monitoringQuota} />
           <button
             onClick={handleDisconnect}
             disabled={disconnecting}

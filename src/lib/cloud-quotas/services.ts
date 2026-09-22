@@ -1,5 +1,11 @@
-import type { FetchLike, fetchDailyQuotaLimit, fetchDailyQuotaUsage } from "./adapters/monitoring-client";
-import type { CloudQuotaStatus, QuotaService, ServiceQuotaStatus } from "./contracts";
+import type {
+  fetchDailyQuotaLimit,
+  fetchDailyQuotaUsage,
+  fetchLatestMinuteUsage,
+  fetchPerMinuteQuotaLimit,
+  FetchLike,
+} from "./adapters/monitoring-client";
+import type { CloudQuotaStatus, PerMinuteQuotaStatus, QuotaService, ServiceQuotaStatus } from "./contracts";
 
 type ServiceDependencies = {
   cloudConnection: {
@@ -9,6 +15,8 @@ type ServiceDependencies = {
   monitoringClient: {
     fetchDailyQuotaLimit: typeof fetchDailyQuotaLimit;
     fetchDailyQuotaUsage: typeof fetchDailyQuotaUsage;
+    fetchPerMinuteQuotaLimit: typeof fetchPerMinuteQuotaLimit;
+    fetchLatestMinuteUsage: typeof fetchLatestMinuteUsage;
   };
   fetchImpl: FetchLike;
   /** `null` when `GOOGLE_CLIENT_ID` is unset/malformed -- quota status degrades to "unknown" rather than throwing. */
@@ -45,6 +53,40 @@ async function fetchServiceQuota(args: {
   }
 }
 
+// Cloud Monitoring API's own per-minute quota pool (`QueryRequestsPerMinutePerProject` limit
+// name pairs with `quota_metric="monitoring.googleapis.com/query_requests"` -- confirmed live,
+// they always co-occur on the same time series; usage has no `limit_name` label of its own, only
+// `quota_metric`, so it must be looked up by that instead).
+const MONITORING_QUOTA_METRIC = "monitoring.googleapis.com/query_requests";
+
+async function fetchMonitoringOwnQuota(args: {
+  accessToken: string;
+  projectNumber: string;
+  deps: ServiceDependencies;
+}): Promise<PerMinuteQuotaStatus> {
+  try {
+    const [limit, usedLastMinute] = await Promise.all([
+      args.deps.monitoringClient.fetchPerMinuteQuotaLimit({
+        accessToken: args.accessToken,
+        projectNumber: args.projectNumber,
+        service: "monitoring.googleapis.com",
+        fetchImpl: args.deps.fetchImpl,
+      }),
+      args.deps.monitoringClient.fetchLatestMinuteUsage({
+        accessToken: args.accessToken,
+        projectNumber: args.projectNumber,
+        service: "monitoring.googleapis.com",
+        quotaMetric: MONITORING_QUOTA_METRIC,
+        fetchImpl: args.deps.fetchImpl,
+      }),
+    ]);
+    if (limit === null) return null;
+    return { limit, usedLastMinute };
+  } catch {
+    return null;
+  }
+}
+
 export function createCloudQuotasServices(deps: ServiceDependencies) {
   return {
     async getQuotaStatus(): Promise<CloudQuotaStatus> {
@@ -59,7 +101,7 @@ export function createCloudQuotasServices(deps: ServiceDependencies) {
       const [dataApi, analytics, monitoring] = await Promise.all([
         fetchServiceQuota({ service: "youtube.googleapis.com", accessToken, projectNumber, deps }),
         fetchServiceQuota({ service: "youtubeanalytics.googleapis.com", accessToken, projectNumber, deps }),
-        fetchServiceQuota({ service: "monitoring.googleapis.com", accessToken, projectNumber, deps }),
+        fetchMonitoringOwnQuota({ accessToken, projectNumber, deps }),
       ]);
 
       return { connected: true, dataApi, analytics, monitoring };

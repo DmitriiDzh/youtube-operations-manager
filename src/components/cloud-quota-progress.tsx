@@ -22,3 +22,26 @@ export function CloudQuotaProgress({ status }: { status: ServiceQuotaStatusView 
     />
   );
 }
+
+export type PerMinuteQuotaStatusView = { limit: number; usedLastMinute: number } | null;
+
+/**
+ * Same idea as `CloudQuotaProgress`, but for a service (Cloud Monitoring API itself, found live
+ * 2026-09-22) that has no daily quota to show -- only a per-minute one. Deliberately a distinct
+ * label ("per minute," not "24h") and color (indigo, matching "Connect Google Cloud" / "Save /
+ * Apply" -- owner instruction, 2026-09-22: "можем и цвет ему дать фиолетовый, так же как у
+ * кнопки соединения с Cloud") so it reads as structurally different at a glance, not just a
+ * fourth copy of the same red 24h bar.
+ */
+export function CloudQuotaProgressPerMinute({ status }: { status: PerMinuteQuotaStatusView | undefined }) {
+  if (!status) return null;
+
+  return (
+    <ProgressBar
+      value={status.usedLastMinute}
+      max={status.limit}
+      color="indigo"
+      label={`Google Cloud quota (per minute): ${status.usedLastMinute.toLocaleString()} / ${status.limit.toLocaleString()}`}
+    />
+  );
+}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchDailyQuotaLimit, fetchDailyQuotaUsage, type FetchLike } from "./monitoring-client";
+import { fetchDailyQuotaLimit, fetchDailyQuotaUsage, fetchLatestMinuteUsage, fetchPerMinuteQuotaLimit, type FetchLike } from "./monitoring-client";
 
 // Fixture shapes below are copied from the REAL Cloud Monitoring API responses captured during a
 // live spike against a real, connected Google Cloud project (2026-09-22) -- not invented, and not
@@ -127,6 +127,96 @@ test("fetchDailyQuotaUsage: no time series at all -> 0, not an error (genuinely 
     accessToken: "fake-token",
     projectNumber: "131970858038",
     service: "youtube.googleapis.com",
+    fetchImpl,
+  });
+
+  assert.equal(used, 0);
+});
+
+// Real confirmed shape from a follow-up live spike (2026-09-22): Cloud Monitoring API's own
+// per-minute limit for this project is QueryRequestsPerMinutePerProject = 6000.
+test("fetchPerMinuteQuotaLimit: parses the real quota/limit response shape, returns the QueryRequestsPerMinutePerProject value", async () => {
+  const fetchImpl = fakeFetch([
+    {
+      status: 200,
+      body: {
+        timeSeries: [
+          {
+            metric: { labels: { limit_name: "QueryRequestsPerMinutePerProject", quota_metric: "monitoring.googleapis.com/query_requests" } },
+            points: [{ interval: { endTime: "2026-09-22T16:56:25Z" }, value: { int64Value: "6000" } }],
+          },
+        ],
+      },
+    },
+  ]);
+
+  const limit = await fetchPerMinuteQuotaLimit({
+    accessToken: "fake-token",
+    projectNumber: "131970858038",
+    service: "monitoring.googleapis.com",
+    fetchImpl,
+  });
+
+  assert.equal(limit, 6000);
+});
+
+test("fetchPerMinuteQuotaLimit: no matching time series -> null, never a fabricated number", async () => {
+  const fetchImpl = fakeFetch([{ status: 200, body: {} }]);
+
+  const limit = await fetchPerMinuteQuotaLimit({
+    accessToken: "fake-token",
+    projectNumber: "131970858038",
+    service: "youtube.googleapis.com",
+    fetchImpl,
+  });
+
+  assert.equal(limit, null);
+});
+
+// Real confirmed shape: multiple series can report into the SAME quota pool (different `method`
+// labels), each with its own most-recent point. This must sum only the points sharing the single
+// latest `endTime` found -- never every point returned, which would double an older minute's
+// usage into the total, and never a wider window like `fetchDailyQuotaUsage` does.
+test("fetchLatestMinuteUsage: sums only the points sharing the single most recent endTime across series", async () => {
+  const fetchImpl = fakeFetch([
+    {
+      status: 200,
+      body: {
+        timeSeries: [
+          {
+            points: [
+              { interval: { endTime: "2026-09-22T16:50:00Z" }, value: { int64Value: "20" } },
+              { interval: { endTime: "2026-09-22T16:49:00Z" }, value: { int64Value: "12" } },
+            ],
+          },
+          {
+            points: [{ interval: { endTime: "2026-09-22T16:50:00Z" }, value: { int64Value: "5" } }],
+          },
+        ],
+      },
+    },
+  ]);
+
+  const used = await fetchLatestMinuteUsage({
+    accessToken: "fake-token",
+    projectNumber: "131970858038",
+    service: "monitoring.googleapis.com",
+    quotaMetric: "monitoring.googleapis.com/query_requests",
+    fetchImpl,
+  });
+
+  // 20 (series 1's latest point) + 5 (series 2's latest point) = 25 -- the older 12 is excluded.
+  assert.equal(used, 25);
+});
+
+test("fetchLatestMinuteUsage: no time series at all -> 0, not an error (genuinely zero usage in the window is valid)", async () => {
+  const fetchImpl = fakeFetch([{ status: 200, body: {} }]);
+
+  const used = await fetchLatestMinuteUsage({
+    accessToken: "fake-token",
+    projectNumber: "131970858038",
+    service: "monitoring.googleapis.com",
+    quotaMetric: "monitoring.googleapis.com/query_requests",
     fetchImpl,
   });
 

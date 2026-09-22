@@ -1017,24 +1017,38 @@ is scoped to the full URL, not the bare host name, because `QuotaService`
 `"monitoring.googleapis.com"` string as a parameter value (identifying which service's quota to
 ask about) without themselves ever constructing a request URL.
 
-### 16.9 A third quota card: Cloud Monitoring's own limit/usage
+### 16.9 A third quota card: Cloud Monitoring's own limit/usage, per-minute not per-day
 
 Same day, once told checking the other two services' quota is itself a real (separately quota'd)
 API call, the owner noticed an inconsistency: *"Не вижу прогресс бара у Google Cloud connection"*
 -- the other three gateway cards each show both a traffic count and a real quota progress bar, but
-the Cloud connection card only had the former. `getQuotaStatus()`'s `CloudQuotaStatus` gained a
-third field, `monitoring`, fetched exactly like `dataApi`/`analytics` but for
-`monitoring.googleapis.com` itself (the same `quota/limit`/`quota/rate/net_usage` metrics exist for
-every Google Cloud service, including Cloud Monitoring's own). Rendered via the same
-`CloudQuotaProgress` component in the "Google Cloud connection" Settings card, alongside its
-`cloud_monitoring_reads` traffic count from §16.8.
+the Cloud connection card only had the former.
 
-**Verified live: `monitoring` genuinely comes back `null` for this project, not a bug.** A
-follow-up probe (same temporary-route pattern, removed after use) found Cloud Monitoring API's own
-quota here is modeled entirely per-MINUTE, not per-day: `DefaultRequestsPerMinutePerUser`
-(effectively unlimited, `9223372036854775807`) and `QueryRequestsPerMinutePerProject` (a real
-6000/min cap) -- there is no `defaultPerDayPerProject` entry to match against, unlike the other two
-services. `fetchDailyQuotaLimit` correctly returns `null` (no fabricated number) rather than
-inventing a daily figure from a per-minute one. The Cloud connection card simply shows no progress
-bar for this one service as a result -- an honest "no comparable daily quota exists here," not a
-failed query, and not worth forcing a mismatched per-minute-vs-24h comparison to avoid.
+A first attempt reused `dataApi`/`analytics`'s own `defaultPerDayPerProject`-based fetch for
+`monitoring.googleapis.com` and got `null` back. A follow-up live probe (same temporary-route
+pattern, removed after use) found why: Cloud Monitoring API's own quota in this project is modeled
+entirely per-MINUTE, not per-day -- `DefaultRequestsPerMinutePerUser` (effectively unlimited,
+`9223372036854775807`) and `QueryRequestsPerMinutePerProject` (a real 6000/min cap) -- there is no
+`defaultPerDayPerProject` entry to match against at all, unlike the other two services.
+`fetchDailyQuotaLimit` correctly returned `null` (no fabricated number) rather than inventing a
+daily figure from a per-minute one.
+
+**Fixed by adding a genuinely separate per-minute code path, not by reusing the daily one:**
+`fetchPerMinuteQuotaLimit` (filters `limit_name="QueryRequestsPerMinutePerProject"` instead of
+`defaultPerDayPerProject`) and `fetchLatestMinuteUsage` (the single most recent 1-minute DELTA
+point, scoped to the matching `quota_metric` -- usage has no `limit_name` label of its own, only
+`quota_metric`, confirmed against real data -- and summed only across points sharing that one
+most-recent `endTime`, since more than one series, e.g. per `method`, can report into the same
+quota pool). Deliberately never sums across a 24h window the way `fetchDailyQuotaUsage` does: each
+point already represents one minute's usage, so summing several minutes would compare multiple
+minutes' worth of usage against a single-minute limit, always reading as "over."
+
+`CloudQuotaStatus.monitoring` is typed `PerMinuteQuotaStatus` (`{ limit, usedLastMinute }`), a
+distinct shape from `ServiceQuotaStatus`'s `usedLast24h` -- the two are not interchangeable, and
+mixing them up would silently misrepresent the window a number describes. Rendered via a
+dedicated `CloudQuotaProgressPerMinute` component (not the shared `CloudQuotaProgress`), with its
+own label ("per minute," not "24h") and its own accent color -- indigo, matching the "Connect
+Google Cloud"/"Save / Apply" buttons (owner instruction: "можем и цвет ему дать фиолетовый, так же
+как у кнопки соединения с Cloud"), so it reads as structurally different from the other three red
+24h bars at a glance, not a fourth copy of the same thing. `ProgressBar` itself gained an optional
+`color` prop (`"red" | "indigo"`, default `"red"`) to support this without forking the component.
