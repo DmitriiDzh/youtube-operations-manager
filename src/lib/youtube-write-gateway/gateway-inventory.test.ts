@@ -107,18 +107,23 @@ test("youtube-write-gateway inventory: no file outside this module imports its w
 // verb-agnostic and notation-agnostic in a way no call-shape regex can be: any *production* file
 // (never a `.test.ts`, which legitimately imports `youtube_v3` as a type to build fakes/mocks,
 // never a real client) that imports a runtime (non-`type`-only) value from `googleapis` at all is
-// either this gateway, the read-only `youtube.ts`, or the OAuth client factory in `auth.ts` --
-// confirmed to be the complete, small, stable current set by inspection (2026-09-21). A
-// `import type { youtube_v3 } from "googleapis"` line is exempt everywhere -- TypeScript erases
-// it at compile time, so it can never construct a client or call a method at runtime (see
-// `src/lib/batches/adapters/write-executor.youtube.ts`, which type-only-imports `youtube_v3`
+// either this gateway, the read-only `youtube.ts`, the read-only `youtube-analytics.ts` (Phase 8,
+// BL-052 -- a distinct Google API product/client namespace, `google.youtubeAnalytics`, with no
+// mutating method on this surface at all, so nothing here for this gateway to ever own), or the
+// OAuth client factory in `auth.ts` -- confirmed to be the complete, small, stable current set by
+// inspection (2026-09-22, updated from 2026-09-21's three-file set when `youtube-analytics.ts`
+// was added). A `import type { youtube_v3 } from "googleapis"` line is exempt everywhere --
+// TypeScript erases it at compile time, so it can never construct a client or call a method at
+// runtime (see `src/lib/batches/adapters/write-executor.youtube.ts`, which type-only-imports
+// `youtube_v3`
 // purely to type its mockable `MinimalYoutubeWriteClient` boundary).
 const GOOGLEAPIS_IMPORT_ALLOWLIST = new Set([
   path.join("src", "lib", "youtube.ts"),
+  path.join("src", "lib", "youtube-analytics.ts"),
   path.join("src", "lib", "auth.ts"),
 ]);
 
-test("youtube-write-gateway inventory: no production file outside this module, youtube.ts, or auth.ts has a runtime import from googleapis", async () => {
+test("youtube-write-gateway inventory: no production file outside this module, youtube.ts, youtube-analytics.ts, or auth.ts has a runtime import from googleapis", async () => {
   const allFiles = await listTsFilesRecursively(path.join(REPO_ROOT, "src"));
   const offenders: string[] = [];
 
