@@ -107,8 +107,8 @@ export type SafeLocalizationsPayload = {
 
 /**
  * RISK-11 fix (2026-09-18, extended repository-wide 2026-09-18): re-exported from
- * `src/lib/youtube.ts`, the single canonical source, so every write path (this module,
- * `src/lib/video-metadata/services.ts`) shares one definition instead of three
+ * `src/lib/youtube-write-gateway/index.ts`, the single canonical source, so every write path
+ * (this module, `src/lib/video-metadata/services.ts`) shares one definition instead of three
  * independently-drifting copies. See that module's doc comment for the full rationale.
  */
 export { WRITABLE_SNIPPET_FIELDS, pickWritableSnippetFields } from "@/lib/youtube-write-gateway";

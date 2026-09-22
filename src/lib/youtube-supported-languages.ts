@@ -2,8 +2,9 @@
  * The hard, fixed allowlist for the Languages tab's "Add language column" feature
  * (owner instruction, Telegram 2026-09-21: "Пользователь не может добавить язык, которого не
  * будет в этом списке"). Captured from a real, live call to YouTube Data API v3's
- * `i18nLanguages.list` (part=snippet, hl=en) on 2026-09-21 -- see `src/lib/youtube.ts`'s
- * `listSupportedLanguages`, which produced this exact list and remains the way to regenerate it
+ * `i18nLanguages.list` (part=snippet, hl=en) on 2026-09-21 -- see
+ * `src/lib/youtube-read-gateway/data-api.ts`'s `listSupportedLanguages`, which produced this
+ * exact list and remains the way to regenerate it
  * later if YouTube's own set changes (call it with a real authenticated client and replace the
  * array below with its output).
  *

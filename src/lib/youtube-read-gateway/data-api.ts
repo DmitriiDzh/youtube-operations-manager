@@ -1,7 +1,7 @@
 import { google } from "googleapis";
 import type { youtube_v3 } from "googleapis";
-import { createGoogleOAuthClient } from "./auth";
-import { getUserOAuthTokens, saveUserOAuthTokens } from "./db";
+import { createGoogleOAuthClient } from "../auth";
+import { getUserOAuthTokens, saveUserOAuthTokens } from "../db";
 
 export function createYoutubeClient(
   auth: youtube_v3.Options["auth"]

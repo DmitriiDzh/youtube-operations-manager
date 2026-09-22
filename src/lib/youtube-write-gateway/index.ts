@@ -4,7 +4,7 @@ import {
   mapPlaylistMetadata,
   type PlaylistMetadata,
   type PlaylistPrivacyStatus,
-} from "@/lib/youtube";
+} from "@/lib/youtube-read-gateway";
 import { DomainError, type LocaleMetadata } from "./contracts";
 
 // ---------------------------------------------------------------------------
