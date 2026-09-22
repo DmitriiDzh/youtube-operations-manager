@@ -122,6 +122,24 @@ test("video_metrics_daily: distinct metric names for the same video/date coexist
     );
   }));
 
+// Phase 8 (docs/roadmap/plans/PHASE_8_PLAN.md §10 item 2): metric_value is REAL, not INTEGER,
+// specifically to hold fractional Analytics metrics (e.g. averageViewPercentage) exactly.
+test("video_metrics_daily: a fractional metricValue round-trips exactly through REAL storage", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannelAndVideo(isolatedDb, "UC_TEST", "vid1");
+
+    await upsertVideoMetric(
+      { channelId: "UC_TEST", videoId: "vid1", metricDate: "2026-09-20", metricName: "averageViewPercentage", metricValue: 63.75 },
+      isolatedDb
+    );
+
+    const rows = await listVideoMetricsByVideo("vid1", isolatedDb);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].metricValue, 63.75);
+  }));
+
 test("video_metrics_daily: a videoId with no matching videos row is rejected by its foreign key", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);

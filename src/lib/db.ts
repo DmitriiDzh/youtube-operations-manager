@@ -3,7 +3,7 @@ import { readFile } from "fs/promises";
 import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
 import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
-import { sqliteTable, text, integer, primaryKey, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, primaryKey, index } from "drizzle-orm/sqlite-core";
 import path from "path";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
@@ -508,6 +508,16 @@ export const appSettings = sqliteTable("app_settings", {
  * Composite primary key `(videoId, metricDate, metricName)` mirrors the plan's own DDL exactly:
  * one row per video/day/metric, so re-collecting an already-collected date is a natural upsert,
  * not a duplicate-row bug (see `upsertVideoMetric` below).
+ *
+ * **`metricValue` is `REAL`, not `INTEGER`** (owner decision 2026-09-22, `PHASE_8_PLAN.md` §10
+ * item 2 -- collect every metric `yt-analytics.readonly` covers, not `views` alone). Several of
+ * those metrics are inherently fractional (e.g. `averageViewPercentage`,
+ * `annotationClickThroughRate`) while others are integer counts (`views`, `likes`) -- `REAL`
+ * represents both exactly (SQLite/JS doubles are exact for integers well beyond any realistic
+ * view count) without a second, metric-type-dependent column. Changed here, before this table
+ * ever merged to `dev` or shipped to a real database -- a genuinely non-additive column-type
+ * change after that point would need its own ADR per
+ * `docs/decisions/0001-additive-idempotent-schema-strategy.md`.
  */
 export const videoMetricsDaily = sqliteTable(
   "video_metrics_daily",
@@ -518,7 +528,7 @@ export const videoMetricsDaily = sqliteTable(
       .references(() => videos.id),
     metricDate: text("metric_date").notNull(), // ISO date (YYYY-MM-DD), the Analytics API's own reporting-day granularity
     metricName: text("metric_name").notNull(), // e.g. "views" -- never a bag of untyped columns
-    metricValue: integer("metric_value").notNull(),
+    metricValue: real("metric_value").notNull(),
     collectedAt: integer("collected_at", { mode: "timestamp" })
       .notNull()
       .$defaultFn(() => new Date()),
@@ -653,7 +663,7 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "video_id TEXT NOT NULL REFERENCES videos(id), " +
           "metric_date TEXT NOT NULL, " +
           "metric_name TEXT NOT NULL, " +
-          "metric_value INTEGER NOT NULL, " +
+          "metric_value REAL NOT NULL, " +
           "collected_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
           "PRIMARY KEY (video_id, metric_date, metric_name))"
       );

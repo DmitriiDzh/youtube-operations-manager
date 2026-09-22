@@ -550,19 +550,22 @@ just the instant of the file copy.
 
 Assigned 2026-09-22 (Telegram, project owner: "Приступить к полной реализации фазы 8"), on
 `feature/phase-8-intelligence-foundation` (not yet merged to `dev` without the owner's separate,
-explicit consent for that branch specifically). Only `docs/roadmap/plans/PHASE_8_PLAN.md` §6
-slice 2 (the additive `video_metrics_daily` table + tests) is implemented so far. Slices 1
-(Analytics OAuth scope re-consent) and 3-4 (the Analytics adapter, manual "collect now" trigger,
-Web UI) remain **not started** — slice 1 needs the project owner's own explicit decision on
-requesting a new OAuth scope (a user-facing re-consent change) and on which metric to collect
-first, neither of which blocks the table itself (`metricName` as a column, not a fixed set of
-typed columns, is precisely what makes the metric choice non-structural — see §14.2).
+explicit consent for that branch specifically). `docs/roadmap/plans/PHASE_8_PLAN.md` §6 slice 2
+(the additive `video_metrics_daily` table + tests) is implemented and reviewed. The owner answered
+§8's two required decisions on 2026-09-22 (Telegram msg 356, recorded verbatim in the plan's §10):
+OAuth scope approved, and metric scope widened to every metric `yt-analytics.readonly` covers (not
+`views` alone) — see §14.2 below for the schema consequence. Slices 1 (OAuth scope + re-consent),
+3 (Analytics adapter), and 4 (manual "collect now" trigger, Web UI) are **assigned, not yet
+implemented** (`docs/roadmap/BACKLOG.md` BL-051/BL-052/BL-053); a fourth item, BL-054 (daily
+staleness-based auto-collection + a configurable local sync-time/timezone setting), was also
+authorized the same day, superseding the plan's original "no scheduling" boundary (plan §10 items
+3-4).
 
 ### 14.2 Schema (additive, `SCHEMA_MIGRATIONS` version 8)
 
 ```text
 video_metrics_daily (new) — channelId, videoId, metricDate (ISO date), metricName (e.g. "views"),
-                             metricValue, collectedAt
+                             metricValue (REAL), collectedAt
                              PRIMARY KEY (videoId, metricDate, metricName)
                              + index on channelId
 ```
@@ -604,16 +607,19 @@ Wrapping these in a store adapter follows the normal §6.2 pattern once that mod
 
 No Analytics API client, no OAuth scope request, no route, no UI — this slice is the persistence
 primitive only, exactly `PHASE_8_PLAN.md` §6 slice 2's scope, deliberately not a vertical slice
-end-to-end. See `docs/roadmap/BACKLOG.md` BL-050 for the current blocking status of the remaining
-slices (not yet in `docs/ROADMAP_STATUS.md` — that file records only what has actually merged/
-completed, per the `roadmap-backlog` skill's own convention).
+end-to-end. See `docs/roadmap/BACKLOG.md` BL-051/BL-052/BL-053/BL-054 for the current status of
+the remaining slices.
 
-`metricValue` is `INTEGER NOT NULL`, matching the plan's own DDL and correct for `views` (an
-integer count) — but `docs/PROJECT_SPEC.md` §33's own metric list also includes non-integer
-metrics (e.g. "average view duration," "CTR where available"). Storing one of those under the
-current column type is not solved here and would need its own explicit type decision — a
-non-additive change to this table under `docs/decisions/0001-additive-idempotent-schema-strategy.md`
-— before slice 3 picks a metric other than `views`.
+`metricValue` is `REAL NOT NULL` (changed 2026-09-22, before this table ever merged to `dev` —
+`docs/roadmap/plans/PHASE_8_PLAN.md` §10 item 2). The plan's original DDL had it as `INTEGER`,
+correct for `views` alone; once the owner authorized collecting every metric
+`yt-analytics.readonly` covers, several of those (e.g. `averageViewPercentage`,
+`annotationClickThroughRate`) are inherently fractional, so the column was widened to `REAL`
+(exact for both integer counts and fractional rates) rather than adding a second,
+metric-type-dependent column. Because this happened before the table shipped anywhere, no ADR was
+needed (`docs/decisions/0001-additive-idempotent-schema-strategy.md`'s "non-additive change" gate
+applies to a change against an already-released schema, not an in-progress, unmerged one) — any
+*future* change to this column's type would need one.
 
 `video_metrics_daily` is **deliberately not added to `SNAPSHOT_TRANSFERRED_TABLES`**
 (`src/lib/snapshot/contracts.ts`) in this slice — collected metrics stay device-local and do not
