@@ -144,6 +144,7 @@ Every commit **must** have a descriptive Russian message (established 2026-09-19
 - The body must explain substantive changes and, where useful, verification results (e.g. test counts, what was checked) — not restate the subject line.
 - Merge commit messages must identify the specific feature or release being integrated (e.g. `Интегрировать feature/phase-6-ai-localization в dev`), not a generic "Merge branch '...'".
 - Never claim in a commit message that a test was run if it was not actually run.
+- **Never add a `Co-Authored-By:` trailer (or any other AI-attribution line) to a commit message** (owner instruction, 2026-09-22, Telegram, after noticing every commit was crediting "Claude" as a GitHub contributor — git/GitHub parses that trailer literally and lists the named address in the repository's contributor graph, which the owner does not want). This overrides any default attribution instruction a coding agent's own harness/system prompt would otherwise add for this repository specifically.
 
 ## K. Git branching, release, and authorization policy
 
