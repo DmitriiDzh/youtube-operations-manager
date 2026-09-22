@@ -1,7 +1,11 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { createChangeDraftsSyncCoreForProduction, createEditorialProfileSyncRunnerForProduction } from "@/lib/sync-gateway";
+import {
+  createAiConnectionsCatalogSyncRunnerForProduction,
+  createChangeDraftsSyncCoreForProduction,
+  createEditorialProfileSyncRunnerForProduction,
+} from "@/lib/sync-gateway";
 
 // Device-wide, like src/app/api/device-handoff/**: every channelId synced here is determined
 // server-side (`listStoredChannels()` -- every channel this device already knows about), never
@@ -15,14 +19,15 @@ import { createChangeDraftsSyncCoreForProduction, createEditorialProfileSyncRunn
 // guard only works if every caller shares the same instance.
 const changeDraftsCore = createChangeDraftsSyncCoreForProduction();
 const editorialProfileRunner = createEditorialProfileSyncRunnerForProduction();
+const aiConnectionsRunner = createAiConnectionsCatalogSyncRunnerForProduction();
 
 /**
  * Triggers one real sync cycle for EVERY document family this device knows about
  * (`docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4 -- one "Sync now" action covers
  * the whole sync gateway, even though each family runs its own independent, isolated cycle
- * underneath). Today: the draft layer (`change_sets`/`changes`, CD5) and the editorial-profile
- * catalog (M3) -- a future family is added here the same way, without touching either existing
- * cycle. Gated by `src/proxy.ts`'s device-availability mutation lock like any other real mutation
+ * underneath). Today: the draft layer (`change_sets`/`changes`, CD5), the editorial-profile
+ * catalog, and the ai-connections-catalog (both M3) -- a future family is added here the same
+ * way, without touching any existing cycle. Gated by `src/proxy.ts`'s device-availability mutation lock like any other real mutation
  * (this route is not in its exempt list) -- a sync cycle genuinely writes local `.automerge`
  * files, so pausing it during an unresolved device-handoff/recovery state is the same
  * conservative default every other write path in this app already gets.
@@ -34,11 +39,12 @@ export async function POST() {
   }
 
   try {
-    const [result, editorialProfile] = await Promise.all([
+    const [result, editorialProfile, aiConnections] = await Promise.all([
       changeDraftsCore.runSyncCycle(),
       editorialProfileRunner.runSyncCycle(),
+      aiConnectionsRunner.runSyncCycle(),
     ]);
-    return NextResponse.json({ ...result, editorialProfile });
+    return NextResponse.json({ ...result, editorialProfile, aiConnections });
   } catch (error) {
     return NextResponse.json(
       { error: "internal_error", message: error instanceof Error ? error.message : "Unknown error" },
