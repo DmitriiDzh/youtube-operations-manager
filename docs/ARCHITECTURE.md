@@ -1028,3 +1028,13 @@ third field, `monitoring`, fetched exactly like `dataApi`/`analytics` but for
 every Google Cloud service, including Cloud Monitoring's own). Rendered via the same
 `CloudQuotaProgress` component in the "Google Cloud connection" Settings card, alongside its
 `cloud_monitoring_reads` traffic count from §16.8.
+
+**Verified live: `monitoring` genuinely comes back `null` for this project, not a bug.** A
+follow-up probe (same temporary-route pattern, removed after use) found Cloud Monitoring API's own
+quota here is modeled entirely per-MINUTE, not per-day: `DefaultRequestsPerMinutePerUser`
+(effectively unlimited, `9223372036854775807`) and `QueryRequestsPerMinutePerProject` (a real
+6000/min cap) -- there is no `defaultPerDayPerProject` entry to match against, unlike the other two
+services. `fetchDailyQuotaLimit` correctly returns `null` (no fabricated number) rather than
+inventing a daily figure from a per-minute one. The Cloud connection card simply shows no progress
+bar for this one service as a result -- an honest "no comparable daily quota exists here," not a
+failed query, and not worth forcing a mismatched per-minute-vs-24h comparison to avoid.

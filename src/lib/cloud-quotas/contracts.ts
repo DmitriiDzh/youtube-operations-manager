@@ -39,6 +39,14 @@ export type CloudQuotaStatus = {
   /** Cloud Monitoring API's own quota -- the same real numbers shown next to its own
    * `cloud_monitoring_reads` traffic counter (owner instruction, 2026-09-22: "Не вижу прогресс
    * бара у Google Cloud connection" -- the other three gateways get both a traffic count AND a
-   * real quota bar; this one is no different a Google API than the others). */
+   * real quota bar; this one is no different a Google API than the others).
+   *
+   * **Verified live to genuinely be `null` for this project, not a bug:** unlike
+   * `youtube.googleapis.com`/`youtubeanalytics.googleapis.com` (both have a
+   * `defaultPerDayPerProject` limit), Cloud Monitoring API's own quota in this project is
+   * modeled entirely per-MINUTE (`DefaultRequestsPerMinutePerUser`, effectively unlimited;
+   * `QueryRequestsPerMinutePerProject`, 6000/min) -- there is no daily limit metric to match
+   * `fetchDailyQuotaLimit`'s `defaultPerDayPerProject` filter against. `null` here honestly
+   * reflects "this service has no comparable daily quota to show," not a failed query. */
   monitoring: ServiceQuotaStatus;
 };
