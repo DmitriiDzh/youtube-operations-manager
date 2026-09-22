@@ -21,6 +21,15 @@ export type { SqlExecutor };
  *   - `cloud_connection` (`docs/decisions/0008-cloud-connection.md`) -- device-local encrypted
  *     Google Cloud OAuth grant, same reasoning as `users`/`ai_connection_credentials`: never
  *     handed off, re-established per device via its own Connect flow.
+ *   - `rules` (auto-add-to-playlist rules, upstream TubeMaster baseline) -- this feature's own
+ *     Drizzle definition/UI/API routes were already removed 2026-09-20 (see `src/lib/db.ts`'s
+ *     `initializeDatabase` comment); the `CREATE TABLE IF NOT EXISTS rules` statement is
+ *     deliberately kept rather than dropped (a subtractive schema change needs its own ADR per
+ *     `docs/decisions/0001-additive-idempotent-schema-strategy.md`), but it should never have
+ *     kept traveling in a snapshot for a feature that no longer exists -- removed from this list
+ *     2026-09-22 (owner instruction, "Правила авто-добавления в плейлисты — можно удалить"),
+ *     which also closes RISK-33's `rules.user_id REFERENCES users(id)` scrub hazard
+ *     (`docs/TECHNICAL_DEBT.md`).
  *
  * `schema_meta` IS included -- the receiving device needs to know what schema version the
  * snapshot's data.db is actually at in order to safely apply migrations to the staged copy
@@ -39,7 +48,6 @@ export const SNAPSHOT_TRANSFERRED_TABLES = [
   "batch_ledger_rows",
   "batch_attempts",
   "audit_events",
-  "rules",
 ] as const;
 
 /**

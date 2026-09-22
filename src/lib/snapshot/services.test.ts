@@ -418,50 +418,6 @@ test("applySnapshotToDatabase: succeeds when the receiving device already has lo
     receiving.close();
   }));
 
-// RISK-33 (docs/TECHNICAL_DEBT.md): `users` is deliberately never transferred in a snapshot (it
-// is device-local OAuth identity, contracts.ts), but `rules.user_id` is a NOT NULL FK to
-// `users.id`. A `rules` row exported from one account must still import cleanly on a device that
-// has never signed in with that exact account -- the row travels for continuity even though its
-// owning user only re-establishes itself locally via a later sign-in.
-test("applySnapshotToDatabase: imports a rules row whose user_id has no matching local user (RISK-33)", () =>
-  withTempDir(async (dir) => {
-    const source = await makeClient(dir, "source.db");
-    await seedUser(source, "user-on-source-only", "source-token");
-    await source.execute({
-      sql: "INSERT INTO rules (user_id, name, match_field, match_type, match_value, playlist_id, playlist_title) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      args: ["user-on-source-only", "Rule A", "title", "contains", "x", "pl-1", "Playlist 1"],
-    });
-
-    const manifest = await exportSnapshot({
-      client: source,
-      snapshotsDir: path.join(dir, "snapshots"),
-      deviceId: "device-a",
-      schemaVersion: 3,
-    });
-    const snapshotDir = path.join(dir, "snapshots", manifest.snapshotId);
-
-    const receiving = await makeClient(dir, "receiving.db");
-    await seedUser(receiving, "receiving-user", "receiving-token");
-
-    const workingCopyPath = path.join(dir, "working-copy.db");
-    await copyDatabaseConsistently(
-      createClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
-      workingCopyPath
-    );
-    await migrateStagedCopy(workingCopyPath);
-
-    await applySnapshotToDatabase(receiving, workingCopyPath);
-
-    const rules = await receiving.execute("SELECT user_id, name FROM rules");
-    assert.deepEqual(
-      rules.rows.map((r) => r.user_id),
-      ["user-on-source-only"]
-    );
-
-    source.close();
-    receiving.close();
-  }));
-
 // RISK-29 (docs/TECHNICAL_DEBT.md): the merge previously used `SELECT *`, which is purely
 // positional. Two devices whose table has a genuinely different physical column order for the
 // identical logical schema (e.g. one built fresh from the current baseline CREATE TABLE, one
