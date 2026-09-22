@@ -48,6 +48,17 @@ export type AppPaths = {
    * reasoning `migrationBackupsDir` above already uses for its own whole-database backups).
    */
   changeDraftsDiscardedBackupsDir: string;
+  /** Directory holding the per-channel editorial-profile Automerge documents
+   * (`src/lib/sync-gateway/editorial-profile/`, added 2026-09-22, `docs/roadmap/plans/
+   * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3 -- its own document family, separate from
+   * `changeDraftsDir` above, per the owner's "отдельными документами" decision). */
+  editorialProfileDraftsDir: string;
+  /** Local-only fallback exchange directory for the editorial-profile sync runner, mirroring
+   * `changeDraftsSyncFallbackDir`'s identical reasoning. */
+  editorialProfileSyncFallbackDir: string;
+  /** Pre-discard backups of a channel's local editorial-profile document, mirroring
+   * `changeDraftsDiscardedBackupsDir`'s identical reasoning. */
+  editorialProfileDiscardedBackupsDir: string;
   /** Path to the device-local bootstrap config JSON file. */
   bootstrapConfigPath: string;
   /** Path to the CLI/MCP active-user auth-context JSON file. */

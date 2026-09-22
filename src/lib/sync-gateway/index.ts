@@ -6,22 +6,24 @@
 // syncthing." -- mirrors this project's existing single-gateway pattern
 // (`docs/decisions/0005-youtube-write-gateway.md`, `0007-youtube-read-gateway.md`).
 //
-// Three responsibilities, two children today (see
+// Three responsibilities, each document family reusing the same generic engine
+// (`./automerge-core`, `AGENTS.md` §M -- shared logic extracted to its own module rather than
+// copy-pasted per family) for change tracking, cataloging, and transport dispatch (see
 // `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4 for the full rationale):
 //
-//   1. Change tracking + 2. Cataloging -- `./change-drafts` (the per-channel Automerge
-//      document: create/update/approve, conflict detection via `Automerge.getConflicts`,
-//      the SQL read-projection). Formerly its own top-level module
-//      (`docs/decisions/0006-automerge-for-draft-layer.md`, CD1-CD7); moved here 2026-09-22
-//      as a pure relocation -- no logic changed, see the M1 commit for the before/after
-//      test-suite comparison proving this.
-//   3. Transport dispatch -- `./change-drafts-sync` (the sync-cycle runner) plus its own
-//      `./change-drafts-sync/adapters/filesystem-transport.ts` (today's one
-//      `ChangeDraftsSyncTransportAdapter` implementation: each device writes only its own
-//      `<deviceId>.automerge` file into an operator-configured Syncthing folder). This is
-//      the one piece meant to be swappable -- a future non-Syncthing transport becomes a
-//      second adapter behind the same interface, with change tracking/cataloging above
-//      needing no change for that swap.
+//   - `./change-drafts` + `./change-drafts-sync` -- the original draft-layer document (per
+//     channel: change_sets/changes). Formerly its own top-level module
+//     (`docs/decisions/0006-automerge-for-draft-layer.md`, CD1-CD7); moved here 2026-09-22 as a
+//     pure relocation -- no logic changed, its own child modules and sync cycle untouched
+//     (`AGENTS.md` §D -- already-shipped, safety-adjacent code is not refactored just to share
+//     the new generic engine retroactively).
+//   - `./editorial-profile` + `./editorial-profile-sync` -- a channel's editorial profile
+//     (`channel_editorial_profiles`), added 2026-09-22 per the owner's "отдельными документами"
+//     decision: its own document, its own independent sync cycle (own Syncthing subfolder), so a
+//     bug in one family's sync never blocks the other's.
+//   - `./automerge-core` -- the shared engine both families above build on (generic per-key
+//     document store, merge-safety logic, filesystem transport, sync-cycle runner). Owns no
+//     document shape or business logic itself.
 //
 // Every caller outside this directory imports only from this barrel, never a child
 // directly -- enforced mechanically by `sync-gateway-inventory.test.ts`, the same way the
@@ -32,3 +34,7 @@ export { createChangeDraftsCoreForProduction } from "./change-drafts";
 export { createChangeDraftsSyncCoreForProduction } from "./change-drafts-sync";
 export { DomainError, isDomainError } from "./change-drafts/contracts";
 export type { FieldConflict } from "./change-drafts/contracts";
+
+export { createEditorialProfileCoreForProduction } from "./editorial-profile";
+export type { EditorialProfileDocument, FieldConflict as EditorialProfileFieldConflict } from "./editorial-profile";
+export { createEditorialProfileSyncRunnerForProduction } from "./editorial-profile-sync";

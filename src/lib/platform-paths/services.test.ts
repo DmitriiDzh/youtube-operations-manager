@@ -21,6 +21,9 @@ test("resolveAppPaths: Windows resolves under APPDATA", () => {
   assert.equal(result.changeDraftsDir, path.join(result.appDataDir, "change-drafts"));
   assert.equal(result.changeDraftsSyncFallbackDir, path.join(result.appDataDir, "change-drafts-sync-local"));
   assert.equal(result.changeDraftsDiscardedBackupsDir, path.join(result.appDataDir, "change-drafts-discarded-backups"));
+  assert.equal(result.editorialProfileDraftsDir, path.join(result.appDataDir, "editorial-profile-drafts"));
+  assert.equal(result.editorialProfileSyncFallbackDir, path.join(result.appDataDir, "editorial-profile-sync-local"));
+  assert.equal(result.editorialProfileDiscardedBackupsDir, path.join(result.appDataDir, "editorial-profile-discarded-backups"));
   assert.equal(result.bootstrapConfigPath, path.join(result.appDataDir, "bootstrap-config.json"));
 });
 

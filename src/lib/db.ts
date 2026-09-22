@@ -2176,6 +2176,42 @@ export async function upsertStoredEditorialProfile(input: {
   return { channelId: input.channelId, version: nextVersion, ...merged, updatedAt: now };
 }
 
+/**
+ * Raw overwrite upsert -- unlike `upsertStoredEditorialProfile` above, this does NOT compute
+ * `version` or merge `undefined`-vs-`null` semantics itself; it writes exactly the row it is
+ * given. Used only as the SQL read-projection target for `src/lib/sync-gateway/editorial-
+ * profile/` (2026-09-22, `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3) --
+ * the Automerge document is the source of truth for versioning once that module owns writes,
+ * mirroring `upsertStoredChangeSet`/`upsertStoredChange`'s identical raw-overwrite shape for the
+ * draft layer.
+ */
+export async function setStoredEditorialProfileRow(record: StoredEditorialProfile): Promise<void> {
+  await db
+    .insert(channelEditorialProfiles)
+    .values({
+      channelId: record.channelId,
+      version: record.version,
+      targetAudience: record.targetAudience,
+      toneNotes: record.toneNotes,
+      terminologyNotes: record.terminologyNotes,
+      titleConstraints: record.titleConstraints,
+      descriptionConstraints: record.descriptionConstraints,
+      updatedAt: record.updatedAt,
+    })
+    .onConflictDoUpdate({
+      target: channelEditorialProfiles.channelId,
+      set: {
+        version: record.version,
+        targetAudience: record.targetAudience,
+        toneNotes: record.toneNotes,
+        terminologyNotes: record.terminologyNotes,
+        titleConstraints: record.titleConstraints,
+        descriptionConstraints: record.descriptionConstraints,
+        updatedAt: record.updatedAt,
+      },
+    });
+}
+
 export type StoredGenerationProvenance = {
   id: string;
   changeSetId: string;

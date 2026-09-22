@@ -2,13 +2,23 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as Automerge from "@automerge/automerge";
 import { DomainError } from "@/lib/video-metadata/contracts";
-import { createAutomergeCore } from "./engine";
+import { createAutomergeCore, type ConflictLike } from "./engine";
 import type { DiscardedDocumentBackupStore, DocumentByteStore } from "./store";
 
 type TestDoc = { key: string; note: string };
 
 function emptyTestDoc(key: string): TestDoc {
   return { key, note: "" };
+}
+
+/** Scans the one mutable field ("note") for a concurrent-write conflict -- the minimal
+ * `scanConflicts` a caller must supply to `mergeIncoming`. */
+function scanNoteConflicts(doc: Automerge.Doc<TestDoc>): ConflictLike[] {
+  const valuesByActor = Automerge.getConflicts(doc, "note");
+  if (valuesByActor && Object.keys(valuesByActor).length > 1) {
+    return [{ key: "note", valuesByActor }];
+  }
+  return [];
 }
 
 function fakeStore(): DocumentByteStore {
@@ -72,8 +82,9 @@ test("mergeIncoming: a device with no local document adopts the incoming one dir
   });
   const incomingBytes = Automerge.save(peerDoc);
 
-  const { merged } = await core.mergeIncoming("chan-1", incomingBytes);
+  const { merged, newConflicts } = await core.mergeIncoming("chan-1", incomingBytes, scanNoteConflicts);
   assert.equal(merged.note, "from peer");
+  assert.deepEqual(newConflicts, []);
 });
 
 test("mergeIncoming: two documents with real shared history merge concurrent edits to different fields", async () => {
@@ -81,7 +92,8 @@ test("mergeIncoming: two documents with real shared history merge concurrent edi
 
   // Establish real shared history: adopt an initial document first.
   const origin = Automerge.from<TestDoc>({ key: "chan-1", note: "origin" });
-  await core.mergeIncoming("chan-1", Automerge.save(origin)).then(({ merged }) => core.save("chan-1", merged));
+  const adopted = await core.mergeIncoming("chan-1", Automerge.save(origin), scanNoteConflicts);
+  await core.save("chan-1", adopted.merged);
 
   const local = await core.loadOrCreate("chan-1");
   const localNext = Automerge.change(local, "local edit", (d) => {
@@ -89,14 +101,73 @@ test("mergeIncoming: two documents with real shared history merge concurrent edi
   });
   await core.save("chan-1", localNext);
 
-  const peerNext = Automerge.change(Automerge.clone(origin), "peer edit", (d) => {
+  const peerNext = Automerge.change(Automerge.clone(adopted.merged), "peer edit", (d) => {
     d.key = "chan-1-peer-marker";
   });
 
-  const { merged } = await core.mergeIncoming("chan-1", Automerge.save(peerNext));
-  // Local's field change and peer's field change are on different properties -- both survive.
+  const { merged, newConflicts } = await core.mergeIncoming("chan-1", Automerge.save(peerNext), scanNoteConflicts);
+  // Local's field change and peer's field change are on different properties -- both survive,
+  // and neither is a "note" conflict.
   assert.equal(merged.note, "local-changed");
   assert.equal(merged.key, "chan-1-peer-marker");
+  assert.deepEqual(newConflicts, []);
+});
+
+// Regression for a real bug found live while building the first module on top of this engine
+// (editorial-profile): `Automerge.merge(before, incoming)` mutates `before`'s underlying
+// document state in place. Scanning `before` for conflicts AFTER calling merge (rather than
+// before) would see the ALREADY-merged state and wrongly treat a genuinely new conflict as
+// "already known," silently dropping it. `mergeIncoming` must call `scanConflicts` on the
+// pre-merge state before ever calling `Automerge.merge`.
+test("mergeIncoming: two devices concurrently editing the SAME field are reported as a new conflict", async () => {
+  const store = fakeStore();
+  const core = createAutomergeCore<TestDoc>({ store, discardedBackupStore: fakeBackupStore(), emptyDocument: emptyTestDoc });
+
+  const origin = Automerge.from<TestDoc>({ key: "chan-1", note: "" });
+  const adopted = await core.mergeIncoming("chan-1", Automerge.save(origin), scanNoteConflicts);
+  await core.save("chan-1", adopted.merged);
+
+  const local = await core.loadOrCreate("chan-1");
+  const localNext = Automerge.change(local, "local edit", (d) => {
+    d.note = "local note";
+  });
+  await core.save("chan-1", localNext);
+
+  const peerNext = Automerge.change(Automerge.clone(adopted.merged), "peer edit same field", (d) => {
+    d.note = "peer note";
+  });
+
+  const { newConflicts } = await core.mergeIncoming("chan-1", Automerge.save(peerNext), scanNoteConflicts);
+  assert.equal(newConflicts.length, 1);
+  assert.equal(newConflicts[0].key, "note");
+  assert.deepEqual(new Set(Object.values(newConflicts[0].valuesByActor)), new Set(["local note", "peer note"]));
+});
+
+test("mergeIncoming: an already-known conflict is not reported again as new on a repeated merge of the same bytes", async () => {
+  const store = fakeStore();
+  const core = createAutomergeCore<TestDoc>({ store, discardedBackupStore: fakeBackupStore(), emptyDocument: emptyTestDoc });
+
+  const origin = Automerge.from<TestDoc>({ key: "chan-1", note: "" });
+  const adopted = await core.mergeIncoming("chan-1", Automerge.save(origin), scanNoteConflicts);
+  await core.save("chan-1", adopted.merged);
+
+  const local = await core.loadOrCreate("chan-1");
+  const localNext = Automerge.change(local, "local edit", (d) => {
+    d.note = "local note";
+  });
+  await core.save("chan-1", localNext);
+
+  const peerNext = Automerge.change(Automerge.clone(adopted.merged), "peer edit", (d) => {
+    d.note = "peer note";
+  });
+  const peerBytes = Automerge.save(peerNext);
+
+  const first = await core.mergeIncoming("chan-1", peerBytes, scanNoteConflicts);
+  await core.save("chan-1", first.merged);
+  assert.equal(first.newConflicts.length, 1);
+
+  const second = await core.mergeIncoming("chan-1", peerBytes, scanNoteConflicts);
+  assert.deepEqual(second.newConflicts, []);
 });
 
 // The empirically-found deterministic (100/100) data loss bug: two documents with genuinely
@@ -110,7 +181,7 @@ test("mergeIncoming: refuses with divergent_document_lineage when local and inco
   const independentPeer = Automerge.from<TestDoc>({ key: "chan-1", note: "independent peer origin" });
 
   await assert.rejects(
-    () => core.mergeIncoming("chan-1", Automerge.save(independentPeer)),
+    () => core.mergeIncoming("chan-1", Automerge.save(independentPeer), scanNoteConflicts),
     (error: unknown) => error instanceof DomainError && error.code === "divergent_document_lineage"
   );
 });

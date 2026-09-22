@@ -21,9 +21,17 @@ export type AutomergeCoreDeps<T extends Record<string, unknown>> = {
   emptyDocument: (key: string) => T;
 };
 
-export type MergeOutcome<T extends Record<string, unknown>> = {
-  before: Automerge.Doc<T>;
+/** A caller's own conflict shape must at least identify WHICH thing conflicted (`key`, e.g. a
+ * field name, or `${changeId}.${field}` for a document keyed by many entities) and WHO wrote
+ * which value (`valuesByActor`, straight from `Automerge.getConflicts`). */
+export type ConflictLike = {
+  key: string;
+  valuesByActor: Record<string, unknown>;
+};
+
+export type MergeOutcome<T extends Record<string, unknown>, C extends ConflictLike> = {
   merged: Automerge.Doc<T>;
+  newConflicts: C[];
 };
 
 export type DiscardAndAdoptOutcome<T extends Record<string, unknown>> = {
@@ -72,13 +80,33 @@ export function createAutomergeCore<T extends Record<string, unknown>>(deps: Aut
    *     deterministically loses one whole side -- refuse with `divergent_document_lineage` rather
    *     than silently corrupt local state, mirroring `src/lib/snapshot/`'s own divergent-lineage
    *     handling.
+   *
+   * `scanConflicts` is called TWICE: once on the pre-merge local document, once on the merged
+   * result -- the diff is what makes `newConflicts` "newly introduced by this merge," not
+   * "everything currently conflicted." **Must be called before `Automerge.merge()`, never after**
+   * -- found empirically while extracting this engine: `Automerge.merge(before, incoming)` js
+   * documented to mutate its first argument's underlying document state in place, so scanning
+   * `before` for conflicts AFTER the merge call silently sees the ALREADY-merged state (every
+   * genuinely-new conflict then looks "already known" and is filtered out as not-new). This is
+   * why the diffing lives inside this engine rather than being left to the caller to sequence
+   * correctly -- the mutation-order hazard is a property of `Automerge.merge` itself, not of any
+   * particular document shape, so it belongs here once, not in every caller.
+   *
    * Does NOT save the result -- the caller re-projects to SQL and saves via its own `save` call,
    * since only the caller knows how to project its own document shape.
    */
-  async function mergeIncoming(key: string, incomingBytes: Uint8Array): Promise<MergeOutcome<T>> {
+  async function mergeIncoming<C extends ConflictLike>(
+    key: string,
+    incomingBytes: Uint8Array,
+    scanConflicts: (doc: Automerge.Doc<T>) => C[]
+  ): Promise<MergeOutcome<T, C>> {
     const existingBytes = await deps.store.loadDocumentBytes(key);
     const before = existingBytes ? Automerge.load<T>(existingBytes) : Automerge.from<T>(deps.emptyDocument(key));
     const incoming = Automerge.load<T>(incomingBytes);
+
+    const beforeConflicts = scanConflicts(before);
+    const beforeActors = new Map<string, Set<string>>();
+    for (const c of beforeConflicts) beforeActors.set(c.key, new Set(Object.keys(c.valuesByActor)));
 
     if (existingBytes && genesisChangeHash(before) !== genesisChangeHash(incoming)) {
       throw new DomainError({
@@ -90,7 +118,15 @@ export function createAutomergeCore<T extends Record<string, unknown>>(deps: Aut
     }
 
     const merged = existingBytes ? Automerge.merge(before, incoming) : incoming;
-    return { before, merged };
+
+    const afterConflicts = scanConflicts(merged);
+    const newConflicts = afterConflicts.filter((c) => {
+      const known = beforeActors.get(c.key);
+      if (!known) return true;
+      return Object.keys(c.valuesByActor).some((actor) => !known.has(actor));
+    });
+
+    return { merged, newConflicts };
   }
 
   /**
