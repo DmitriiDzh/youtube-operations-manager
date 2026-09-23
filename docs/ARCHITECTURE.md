@@ -978,6 +978,85 @@ reads (never a live YouTube call), read-only, ungated, following the same patter
 `analytics_list`/`analytics_data_quality` (unlike `analytics_overview`, which is a live, gated
 Analytics API read -- see §14.8).
 
+### 14.11 Weekly analytics reports (`runWeeklyReportIfDue`/`listWeeklyReports`/`getWeeklyReport`) — Phase 8 follow-up, slice 4 of 4
+
+`docs/roadmap/FUTURE_PHASES.md` §4's "analytical reports and weekly channel reviews" line item --
+the last of Phase 8's four follow-up slices. A frozen, reproducible snapshot per channel per
+Monday-Sunday week, computed entirely from already-collected local `video_metrics_daily` rows --
+**never a live YouTube API call**, matching the deliverable's own wording ("reproducible analytical
+reports from stored historical data").
+
+**Trigger (owner instruction, 2026-09-23): "Давай завяжемся на то же время что мы выбираем в
+настройках -- 12-05 сейчас по понедельникам."** Reuses the exact `localTime`/`timezone` pair the
+daily auto-collection boundary already reads from Settings (§14.6) -- no separate weekly-report
+setting. `computeDueReportWeek` (`src/lib/analytics/weekly-report.ts`, pure, no I/O) determines the
+single most recently completed week whose Monday-`localTime` boundary has passed, using the same
+zoned-string-comparison technique `staleness.ts`'s `isAnalyticsCollectionStale` already uses (DST-
+correct with no manual offset code). Missed weeks are never backfilled -- a long-dormant app only
+ever gets the single most recently due week on its next dashboard load, the same "no backfill"
+philosophy §14.10 already established for comparable-age comparisons.
+
+**`status: "final"` vs `"provisional"` (advisor review, 2026-09-23):** the trigger boundary (Monday
+12:05, the operator's own local clock) does not line up with the Analytics API's own reporting lag
+(§14.8's 1-2 day lag) or with `video_metrics_daily`'s Pacific-Time day-numbering (§14.10) -- for an
+operator outside Pacific Time, the just-completed week's own last day or two may genuinely not be
+collected yet at the moment the trigger fires. Rather than freeze an undercounted snapshot forever,
+a report is `"provisional"` whenever any date in ITS OWN week is still uncovered or too-recent
+(`computeDataQualityReport`, §14.9, run against the report's own week); the next dashboard load's
+trigger check regenerates (replaces) a provisional report for the same week once it clears, and
+never touches an already-`"final"` row. `runWeeklyReportIfDue` (`services.ts`) does a cheap
+read-before-write early exit, but the actual "never overwrite a final row" guarantee is enforced at
+the DB layer, inside `db.ts`'s `upsertWeeklyReport` itself (a conditional `ON CONFLICT ... DO
+UPDATE ... WHERE status != 'final'`) -- the service's own check-then-act is not atomic across two
+concurrent callers (e.g. two open dashboard tabs both triggering the generate-if-due route near the
+same moment), a real race an independent review found (2026-09-23) and this DB-level guard closes.
+
+**Week-over-week `percentChange` is `null` (the whole object, not per-field) unless BOTH the
+current and previous week are fully covered** -- comparing a real week against a mostly-uncollected
+previous week (the exact situation the real "Tropico Jazz" channel is in today, per §14.9) would
+measure collection coverage, not real change, which `FUTURE_PHASES.md` §4's own "avoid unsupported
+conclusions from small samples" constraint forbids. Each week's own `currentWeekDataQuality`/
+`previousWeekDataQuality` (the full `computeDataQualityReport` shape) is embedded in the stored
+snapshot, so a reader can see exactly why a comparison is or isn't present.
+
+**`syncedVideoTotals`, not "channel totals" (advisor review, 2026-09-23):** named and documented
+(via `SYNCED_VIDEO_TOTALS_METRIC_DEFINITIONS`, embedded in every stored report) as a sum over
+currently-synced videos' own `video_metrics_daily` rows -- the same undercounting caveat §14.8
+already documents for any per-video-summed total (excludes deleted videos, and for subscriber
+metrics, excludes activity not attributable to a specific video). Never presented as, or confused
+with, YouTube Studio's own channel-wide subscriber count.
+
+**Provenance, per `FUTURE_PHASES.md` §4's "clear provenance and documented metric definitions"
+requirement:** every stored report embeds `reportFormatVersion`, `generatedAt`, `source` (a fixed
+string stating the local-only origin), and `metricDefinitions` -- and is re-validated through
+`weeklyReportContentSchema` (a strict zod schema mirroring `WeeklyReportContent` field-for-field) on
+every READ, not just on write, so a corrupted or malformed stored row fails loudly
+(`validation_failed`) rather than silently serving a partial report.
+
+**Schema:** `analytics_weekly_reports` (`SCHEMA_MIGRATIONS` version 14) -- one row per
+`(channel_id, week_start_date)` (`UNIQUE` index), `report_json` holding the full serialized
+`WeeklyReportContent`. Deliberately kept out of `SNAPSHOT_TRANSFERRED_TABLES`, the same reasoning as
+`video_metrics_daily`/`analytics_collection_runs` (§14.7/§14.9): derived, re-computable data that
+never needs to travel with a device handoff.
+
+**Trigger wiring:** `POST .../analytics/weekly-reports/generate-if-due`, called once per dashboard
+mount (`src/app/dashboard/page.tsx`) chained via `.finally()` AFTER the existing auto-collect
+trigger resolves -- so a Monday dashboard load's weekly snapshot sees whatever that same load's own
+auto-collect just refreshed, not last week's data. Gated by `src/proxy.ts` like any other mutating
+POST (a real local-persistence mutation when it decides a new/replacement snapshot is due).
+
+**Read surfaces, all read-only, ungated, no generate-on-demand tool exposed to agents (same
+exclusion reasoning as `collectMetrics`/`runAutoCollectionIfStale`, §14.5/§14.6):** `GET
+.../analytics/weekly-reports` (list, newest week first), `GET
+.../analytics/weekly-reports/[weekStartDate]` (one report, `{ report: null }` if none exists yet),
+MCP `analytics_weekly_reports_list`/`analytics_weekly_report_get`, CLI `analytics weekly-reports`/
+`analytics weekly-report-get`.
+
+**Known, tracked duplication (`docs/TECHNICAL_DEBT.md` RISK-50):** the report's own `topContent`
+ranking (group `views` by video, sum, sort, top 5) is a second implementation of the same
+aggregation `channel-overview-panel.tsx`'s client-side `fetchTopContent` already does for the
+Analytics "Overview" tab -- not unified in this slice (see RISK-50 for why).
+
 ## 15. Cloud connection (`src/lib/cloud-connection/`) — slice 1 of 3, not yet in `dev`
 
 ### 15.1 Status and scope

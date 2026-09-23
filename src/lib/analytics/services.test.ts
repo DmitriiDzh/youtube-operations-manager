@@ -154,6 +154,34 @@ function createServicesFixture(opts: {
     },
   };
 
+  const weeklyReports: Array<{
+    channelId: string;
+    weekStartDate: string;
+    weekEndDate: string;
+    status: string;
+    reportJson: string;
+    generatedAt: Date;
+  }> = [];
+  const weeklyReportStore = {
+    async getByWeek(channelId: string, weekStartDate: string) {
+      return weeklyReports.find((r) => r.channelId === channelId && r.weekStartDate === weekStartDate) ?? null;
+    },
+    async upsert(
+      args: { channelId: string; weekStartDate: string; weekEndDate: string; status: string; reportJson: string },
+      generatedAt: Date
+    ) {
+      const index = weeklyReports.findIndex((r) => r.channelId === args.channelId && r.weekStartDate === args.weekStartDate);
+      const row = { ...args, generatedAt };
+      if (index === -1) weeklyReports.push(row);
+      else weeklyReports[index] = row;
+    },
+    async listByChannel(channelId: string) {
+      return weeklyReports
+        .filter((r) => r.channelId === channelId)
+        .sort((a, b) => (a.weekStartDate < b.weekStartDate ? 1 : -1));
+    },
+  };
+
   const clock = { now: () => currentNow };
 
   const services = createAnalyticsServices({
@@ -164,6 +192,7 @@ function createServicesFixture(opts: {
     channelStore,
     settingsStore,
     collectionRunStore,
+    weeklyReportStore,
     clock,
     channelAccess,
     logger,
@@ -178,6 +207,7 @@ function createServicesFixture(opts: {
     metricRowsByKey,
     lastAutoCollectedAtByChannel,
     collectionRuns,
+    weeklyReports,
     setNow: (date: Date) => {
       currentNow = date;
     },
@@ -521,6 +551,7 @@ test("collectMetrics defaults to the full ANALYTICS_METRIC_NAMES list when metri
       async getAnalyticsSyncSettings() { return { localTime: "12:00", timezone: "UTC" }; },
     },
     collectionRunStore: { async record() {}, async listByChannel() { return []; } },
+    weeklyReportStore: { async getByWeek() { return null; }, async upsert() {}, async listByChannel() { return []; } },
     clock: { now: () => new Date("2026-09-22T15:00:00Z") },
     channelAccess,
     logger: { info() {}, error() {} },
@@ -1126,6 +1157,134 @@ test("getComparableAgeComparison rejects fewer than 2 videoIds as validation_fai
         credentialRef: { userId: "user-1" },
         channelId: "UC_A",
         videoIds: ["v1"],
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+test("runWeeklyReportIfDue fails closed when the requested channel is not the caller's active channel", async () => {
+  const { services } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+
+  await assert.rejects(
+    () => services.runWeeklyReportIfDue({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }),
+    (error: unknown) => error instanceof DomainError && error.code === "CHANNEL_NOT_ACTIVE"
+  );
+});
+
+test("runWeeklyReportIfDue generates and stores a report for the currently due week", async () => {
+  const { services, channelAccess, upsertedRows, weeklyReports } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    videoDetailsByChannel: { UC_A: [{ videoId: "v1", title: "Video 1", publishedAt: "2026-09-01T00:00:00Z" }] },
+    now: new Date("2026-09-21T13:00:00Z"), // Monday, past the default 12:00 UTC boundary
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  upsertedRows.push({ channelId: "UC_A", videoId: "v1", metricDate: "2026-09-14", metricName: "views", metricValue: 42 });
+
+  const result = await services.runWeeklyReportIfDue({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+
+  assert.equal(result.generated, true);
+  if (result.generated) {
+    assert.equal(result.report.weekStartDate, "2026-09-14");
+    assert.equal(result.report.weekEndDate, "2026-09-20");
+    assert.equal(result.report.report.syncedVideoTotals.views, 42);
+  }
+  assert.equal(weeklyReports.length, 1);
+});
+
+test("runWeeklyReportIfDue does not regenerate an already-final report for the same due week", async () => {
+  const { services, channelAccess, weeklyReports } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    videoDetailsByChannel: { UC_A: [] },
+    now: new Date("2026-09-21T13:00:00Z"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const first = await services.runWeeklyReportIfDue({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+  assert.equal(first.generated, true);
+  // The fixture has no collection runs at all for this week, so the freshly-generated report is
+  // "provisional" (uncovered) -- force it to "final" directly, as if it had later been
+  // regenerated once data cleared, to isolate this test's own claim (a FINAL report is untouched).
+  weeklyReports[0].status = "final";
+
+  const second = await services.runWeeklyReportIfDue({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+  assert.equal(second.generated, false);
+  assert.equal(weeklyReports.length, 1);
+  assert.equal(weeklyReports[0].status, "final");
+});
+
+test("runWeeklyReportIfDue DOES regenerate (replace) an existing provisional report for the same due week", async () => {
+  const { services, channelAccess, weeklyReports, upsertedRows } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    videoDetailsByChannel: { UC_A: [{ videoId: "v1", title: "Video 1", publishedAt: "2026-09-01T00:00:00Z" }] },
+    now: new Date("2026-09-21T13:00:00Z"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const first = await services.runWeeklyReportIfDue({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+  assert.equal(first.generated, true);
+  assert.equal(weeklyReports[0].status, "provisional"); // no collection runs recorded -> uncovered
+
+  upsertedRows.push({ channelId: "UC_A", videoId: "v1", metricDate: "2026-09-14", metricName: "views", metricValue: 99 });
+  const second = await services.runWeeklyReportIfDue({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+  assert.equal(second.generated, true);
+  assert.equal(weeklyReports.length, 1, "must replace the row, never create a second one for the same week");
+  if (second.generated) {
+    assert.equal(second.report.report.syncedVideoTotals.views, 99);
+  }
+});
+
+test("listWeeklyReports returns stored reports parsed back from JSON, newest week first", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    videoDetailsByChannel: { UC_A: [] },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await services.runWeeklyReportIfDue({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+  });
+
+  const result = await services.listWeeklyReports({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+  assert.equal(result.channelId, "UC_A");
+  assert.equal(result.reports.length, 1);
+  assert.equal(result.reports[0].report.reportFormatVersion, 1);
+});
+
+test("getWeeklyReport returns null when no report exists for that week, without throwing", async () => {
+  const { services, channelAccess } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const result = await services.getWeeklyReport({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    weekStartDate: "2026-09-14",
+  });
+  assert.equal(result.report, null);
+});
+
+test("getWeeklyReport rejects a corrupted stored reportJson as validation_failed rather than crashing or serving garbage", async () => {
+  const { services, channelAccess, weeklyReports } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  weeklyReports.push({
+    channelId: "UC_A",
+    weekStartDate: "2026-09-14",
+    weekEndDate: "2026-09-20",
+    status: "final",
+    reportJson: "{not valid json",
+    generatedAt: new Date("2026-09-21T12:00:00Z"),
+  });
+
+  await assert.rejects(
+    () =>
+      services.getWeeklyReport({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        weekStartDate: "2026-09-14",
       }),
     (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
   );

@@ -1,12 +1,15 @@
 import {
   getAnalyticsSyncSettings,
   getStoredChannel,
+  getWeeklyReportByWeek,
   listAnalyticsCollectionRunsByChannel,
   listStoredVideosByChannel,
   listVideoMetricsByChannel,
+  listWeeklyReportsByChannel,
   markAnalyticsAutoCollected,
   recordAnalyticsCollectionRun,
   upsertVideoMetric,
+  upsertWeeklyReport,
 } from "@/lib/db";
 
 // Deliberately thin: only wraps the db.ts functions this module actually needs
@@ -57,6 +60,12 @@ export function createAnalyticsStoreAdapter() {
     collectionRunStore: {
       record: recordAnalyticsCollectionRun,
       listByChannel: listAnalyticsCollectionRunsByChannel,
+    },
+    // Phase 8 follow-up, slice 4 (weekly reports) -- read/write of the frozen snapshot table.
+    weeklyReportStore: {
+      getByWeek: getWeeklyReportByWeek,
+      upsert: upsertWeeklyReport,
+      listByChannel: listWeeklyReportsByChannel,
     },
   };
 }

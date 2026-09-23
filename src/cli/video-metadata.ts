@@ -33,7 +33,12 @@ type ChannelSyncCliCoreSubset = Pick<ChannelSyncCore, "syncChannel" | "listChann
 // analytics for operational agents" follow-up, docs/roadmap/BACKLOG.md).
 type AnalyticsCliCoreSubset = Pick<
   AnalyticsCore,
-  "listMetrics" | "getChannelOverview" | "getDataQualityReport" | "getComparableAgeComparison"
+  | "listMetrics"
+  | "getChannelOverview"
+  | "getDataQualityReport"
+  | "getComparableAgeComparison"
+  | "listWeeklyReports"
+  | "getWeeklyReport"
 >;
 
 loadEnvConfig(process.cwd());
@@ -77,7 +82,9 @@ export type ParsedArgs = {
     | "video-list"
     | "overview"
     | "data-quality"
-    | "comparable-age";
+    | "comparable-age"
+    | "weekly-reports"
+    | "weekly-report-get";
   flags: Record<string, string | boolean>;
 };
 
@@ -101,7 +108,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     changeset: ["list", "get", "preview", "import"],
     batch: ["list", "get"],
     channel: ["sync", "list", "video-list"],
-    analytics: ["list", "overview", "data-quality", "comparable-age"],
+    analytics: ["list", "overview", "data-quality", "comparable-age", "weekly-reports", "weekly-report-get"],
   };
   const validMetadataCommands = ["list", "transcript", "preview", "apply"];
   const validCommands = hasExplicitNamespace
@@ -287,10 +294,14 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   // Analytics API read, but mutates nothing anywhere -- same read-only classification as
   // playlist_list's own live YouTube read in the MCP server) / analytics data-quality (local
   // read over analytics_collection_runs) / analytics comparable-age (local read over
-  // video_metrics_daily, aligned by days-since-publish).
+  // video_metrics_daily, aligned by days-since-publish) / analytics weekly-reports,
+  // weekly-report-get (local reads over analytics_weekly_reports -- generation stays
+  // Web-UI-triggered only, no CLI/MCP command creates a snapshot).
   "overview",
   "data-quality",
   "comparable-age",
+  "weekly-reports",
+  "weekly-report-get",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -596,6 +607,22 @@ export async function runCliCommand(args: {
           videoIds: parseVideoIdsFlag(parsedArgs.flags),
           metricName,
           maxDays: maxDaysFlag !== undefined ? Number(maxDaysFlag) : undefined,
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "weekly-reports") {
+        const result = await analyticsCore.listWeeklyReports({ credentialRef, channelId });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "weekly-report-get") {
+        const result = await analyticsCore.getWeeklyReport({
+          credentialRef,
+          channelId,
+          weekStartDate: requiredStringFlag(parsedArgs.flags, "weekStartDate"),
         });
         writeStdout(serializeSuccess(result));
         return 0;

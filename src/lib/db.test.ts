@@ -16,10 +16,12 @@ import {
   getDataApiReadsEnabled,
   getGatewayTrafficLast24h,
   getStoredCloudConnection,
+  getWeeklyReportByWeek,
   initializeDatabaseSchema,
   listAnalyticsCollectionRunsByChannel,
   listVideoMetricsByChannel,
   listVideoMetricsByVideo,
+  listWeeklyReportsByChannel,
   getSyncFamilyStatuses,
   markAnalyticsAutoCollected,
   recordAnalyticsCollectionRun,
@@ -34,6 +36,7 @@ import {
   type AppDb,
   upsertStoredCloudConnection,
   upsertVideoMetric,
+  upsertWeeklyReport,
   videos,
 } from "./db";
 import { readSchemaVersion } from "@/lib/schema-versioning";
@@ -104,6 +107,7 @@ test("initializeDatabaseSchema: a fresh database ends stamped at SCHEMA_CURRENT_
     assert.equal(await tableExists(client, "app_operation_locks"), true);
     assert.equal(await tableExists(client, "video_metrics_daily"), true);
     assert.equal(await tableExists(client, "analytics_collection_runs"), true);
+    assert.equal(await tableExists(client, "analytics_weekly_reports"), true);
   }));
 
 // Phase 8 follow-up, slice 2 (docs/roadmap/FUTURE_PHASES.md §4, data-quality diagnostics).
@@ -191,6 +195,121 @@ test("analytics_collection_runs: multiple runs for the same channel all accumula
 
     const runs = await listAnalyticsCollectionRunsByChannel("UC_A", isolatedDb);
     assert.equal(runs.length, 2);
+  }));
+
+// Phase 8 follow-up, slice 4 (docs/roadmap/FUTURE_PHASES.md §4, weekly reports).
+test("analytics_weekly_reports: upsertWeeklyReport writes a row, getWeeklyReportByWeek reads it back", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const generatedAt = new Date("2026-09-21T12:05:00Z");
+
+    await upsertWeeklyReport(
+      {
+        channelId: "UC_A",
+        weekStartDate: "2026-09-14",
+        weekEndDate: "2026-09-20",
+        status: "final",
+        reportJson: JSON.stringify({ ok: true }),
+      },
+      generatedAt,
+      isolatedDb
+    );
+
+    const report = await getWeeklyReportByWeek("UC_A", "2026-09-14", isolatedDb);
+    assert.ok(report);
+    assert.equal(report!.channelId, "UC_A");
+    assert.equal(report!.weekStartDate, "2026-09-14");
+    assert.equal(report!.weekEndDate, "2026-09-20");
+    assert.equal(report!.status, "final");
+    assert.equal(report!.reportJson, JSON.stringify({ ok: true }));
+    assert.equal(report!.generatedAt.getTime(), generatedAt.getTime());
+  }));
+
+test("analytics_weekly_reports: getWeeklyReportByWeek returns null when no report exists for that channel/week", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    const report = await getWeeklyReportByWeek("UC_A", "2026-09-14", isolatedDb);
+    assert.equal(report, null);
+  }));
+
+test("analytics_weekly_reports: upsertWeeklyReport for the same (channelId, weekStartDate) replaces the row, never duplicates it", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await upsertWeeklyReport(
+      { channelId: "UC_A", weekStartDate: "2026-09-14", weekEndDate: "2026-09-20", status: "provisional", reportJson: "{}" },
+      new Date("2026-09-21T12:05:00Z"),
+      isolatedDb
+    );
+    await upsertWeeklyReport(
+      { channelId: "UC_A", weekStartDate: "2026-09-14", weekEndDate: "2026-09-20", status: "final", reportJson: "{\"v\":2}" },
+      new Date("2026-09-22T12:05:00Z"),
+      isolatedDb
+    );
+
+    const reports = await listWeeklyReportsByChannel("UC_A", isolatedDb);
+    assert.equal(reports.length, 1, "the second upsert must replace, not duplicate, the same week's row");
+    assert.equal(reports[0].status, "final");
+    assert.equal(reports[0].reportJson, "{\"v\":2}");
+  }));
+
+// Independent review, 2026-09-23: `runWeeklyReportIfDue`'s own read-then-write check is not
+// atomic across two concurrent callers -- this DB-layer guard is what actually makes "a final
+// report is never overwritten" true regardless of the caller's own timing.
+test("analytics_weekly_reports: upsertWeeklyReport NEVER overwrites an existing 'final' row, even when called directly with a conflicting write", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await upsertWeeklyReport(
+      { channelId: "UC_A", weekStartDate: "2026-09-14", weekEndDate: "2026-09-20", status: "final", reportJson: "{\"v\":1}" },
+      new Date("2026-09-21T12:05:00Z"),
+      isolatedDb
+    );
+    // Simulates a second, concurrent caller that read stale (pre-completion) data and is now
+    // attempting to write a "provisional" row over the same week -- this must be a silent no-op.
+    await upsertWeeklyReport(
+      { channelId: "UC_A", weekStartDate: "2026-09-14", weekEndDate: "2026-09-20", status: "provisional", reportJson: "{\"v\":2}" },
+      new Date("2026-09-21T12:06:00Z"),
+      isolatedDb
+    );
+
+    const report = await getWeeklyReportByWeek("UC_A", "2026-09-14", isolatedDb);
+    assert.equal(report!.status, "final", "an already-final row must never be regressed to provisional");
+    assert.equal(report!.reportJson, "{\"v\":1}", "an already-final row's content must never change");
+  }));
+
+test("analytics_weekly_reports: listWeeklyReportsByChannel never returns another channel's reports, and orders newest week first", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await upsertWeeklyReport(
+      { channelId: "UC_A", weekStartDate: "2026-09-07", weekEndDate: "2026-09-13", status: "final", reportJson: "{}" },
+      new Date("2026-09-14T12:05:00Z"),
+      isolatedDb
+    );
+    await upsertWeeklyReport(
+      { channelId: "UC_A", weekStartDate: "2026-09-14", weekEndDate: "2026-09-20", status: "final", reportJson: "{}" },
+      new Date("2026-09-21T12:05:00Z"),
+      isolatedDb
+    );
+    await upsertWeeklyReport(
+      { channelId: "UC_B", weekStartDate: "2026-09-14", weekEndDate: "2026-09-20", status: "final", reportJson: "{}" },
+      new Date("2026-09-21T12:05:00Z"),
+      isolatedDb
+    );
+
+    const reports = await listWeeklyReportsByChannel("UC_A", isolatedDb);
+    assert.deepEqual(
+      reports.map((r) => r.weekStartDate),
+      ["2026-09-14", "2026-09-07"]
+    );
+    assert.ok(!reports.some((r) => r.channelId === "UC_B"), "must never include a different channel's report");
   }));
 
 // Phase 8 (docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 2, §7 acceptance criteria).
@@ -584,6 +703,11 @@ test("initializeDatabaseSchema: an existing pre-versioning database (baseline ta
       await tableExists(client, "analytics_collection_runs"),
       true,
       "a later migration (v13) must still apply correctly on the pre-versioning re-apply path"
+    );
+    assert.equal(
+      await tableExists(client, "analytics_weekly_reports"),
+      true,
+      "a later migration (v14) must still apply correctly on the pre-versioning re-apply path"
     );
   }));
 

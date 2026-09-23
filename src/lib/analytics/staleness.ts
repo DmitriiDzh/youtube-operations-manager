@@ -34,7 +34,9 @@ export function isValidIanaTimezone(timezone: string): boolean {
   }
 }
 
-function formatZonedDateAndTime(date: Date, timezone: string): { localDate: string; localTime: string } {
+/** Exported for reuse by `weekly-report.ts`'s own zoned-string boundary comparison (same
+ * technique, different cadence) -- one implementation, not a second copy (AGENTS.md §D). */
+export function formatZonedDateAndTime(date: Date, timezone: string): { localDate: string; localTime: string } {
   const formatter = new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,
     year: "numeric",

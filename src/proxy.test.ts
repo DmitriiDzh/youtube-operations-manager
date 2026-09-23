@@ -117,3 +117,16 @@ test("proxy gates the analytics auto-collect route like any other real mutation"
     await releaseOperationLock(rawSqlClient);
   }
 });
+
+// Phase 8 follow-up, slice 4 (weekly reports): the generate-if-due trigger is a POST that MAY
+// perform a real local-persistence mutation (a new/replacement snapshot row) -- gated the same
+// way, never exempted, even though it often no-ops (same reasoning as auto-collect above).
+test("proxy gates the analytics weekly-reports generate-if-due route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/channels/chan-1/analytics/weekly-reports/generate-if-due"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});

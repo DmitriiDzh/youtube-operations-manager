@@ -126,9 +126,22 @@ export default function Dashboard() {
   useEffect(() => {
     if (!channel?.id || autoCollectTriggeredRef.current) return;
     autoCollectTriggeredRef.current = true;
-    fetch(`/api/channels/${encodeURIComponent(channel.id)}/analytics/auto-collect`, { method: "POST" }).catch(() => {
-      // Non-fatal -- the staleness check means the next dashboard load simply tries again.
-    });
+    const channelId = channel.id;
+    // Phase 8 follow-up, slice 4 (weekly reports) -- chained via .finally() AFTER auto-collect
+    // resolves (success or failure), never fired in parallel, so a Monday dashboard load's weekly
+    // snapshot sees whatever that same load's own auto-collect just refreshed (advisor review,
+    // 2026-09-23; src/lib/analytics/weekly-report.ts's own doc comment has the full trigger design).
+    fetch(`/api/channels/${encodeURIComponent(channelId)}/analytics/auto-collect`, { method: "POST" })
+      .catch(() => {
+        // Non-fatal -- the staleness check means the next dashboard load simply tries again.
+      })
+      .finally(() => {
+        fetch(`/api/channels/${encodeURIComponent(channelId)}/analytics/weekly-reports/generate-if-due`, {
+          method: "POST",
+        }).catch(() => {
+          // Non-fatal -- the due-week check means the next dashboard load simply tries again.
+        });
+      });
   }, [channel]);
 
   const refreshConflictSummary = useCallback(async () => {

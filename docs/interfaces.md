@@ -119,14 +119,19 @@ npm run cli:video-metadata -- analytics list --channelId <UC...> [--startDate <Y
 npm run cli:video-metadata -- analytics overview --channelId <UC...> --startDate <YYYY-MM-DD> --endDate <YYYY-MM-DD>
 npm run cli:video-metadata -- analytics data-quality --channelId <UC...> --startDate <YYYY-MM-DD> --endDate <YYYY-MM-DD>
 npm run cli:video-metadata -- analytics comparable-age --channelId <UC...> --videoIds <id1,id2,...> [--metricName views] [--maxDays 30]
+npm run cli:video-metadata -- analytics weekly-reports --channelId <UC...>
+npm run cli:video-metadata -- analytics weekly-report-get --channelId <UC...> --weekStartDate <YYYY-MM-DD>
 ```
 
-All four are read-only. `analytics list` reads already-collected `video_metrics_daily` rows
+All six are read-only. `analytics list` reads already-collected `video_metrics_daily` rows
 locally; `analytics overview` is a live Analytics API read (channel-level totals + deltas, counts
 against quota); `analytics data-quality` is a local read over `analytics_collection_runs` (see
 `docs/ARCHITECTURE.md` §14.9); `analytics comparable-age` is a local read that aligns 2-10 videos'
-already-collected rows by days-since-publish (see `docs/ARCHITECTURE.md` §14.10). Mirrors the
-equivalent MCP tools exactly -- see below.
+already-collected rows by days-since-publish (see `docs/ARCHITECTURE.md` §14.10); `analytics
+weekly-reports`/`analytics weekly-report-get` read already-generated weekly snapshot rows (see
+`docs/ARCHITECTURE.md` §14.11) -- there is no CLI/MCP command to generate one on demand, only the
+Web UI's own dashboard-mount trigger does that. Mirrors the equivalent MCP tools exactly -- see
+below.
 
 ---
 
@@ -205,10 +210,18 @@ Key MCP tools:
     `docs/ARCHITECTURE.md` §14.10 for the day-alignment math and the real data-coverage caveat
     (videos older than ~1-2 weeks before regular collection started typically have no early-life
     data).
-  - All four are read-only (no local mutation, no YouTube write) — deliberately excludes
-    `collectMetrics`/`runAutoCollectionIfStale` (real local-persistence mutations that spend
-    Analytics API quota; only the Web UI's "Collect now" button and the daily auto-collect
-    trigger can start a new collection run).
+  - `analytics_weekly_reports_list` — `{ channelId, credentialRef? }` → every stored weekly
+    report snapshot for the channel, newest week first. Local read only.
+  - `analytics_weekly_report_get` — `{ channelId, weekStartDate, credentialRef? }` → one stored
+    snapshot, or `{ report: null }` if none exists yet for that week. Local read only. See
+    `docs/ARCHITECTURE.md` §14.11 for the snapshot's own content shape (`status: "final"` vs.
+    `"provisional"`, `syncedVideoTotals`, `percentChange`, `topContent`, embedded provenance) and
+    why there is no MCP/CLI tool to generate one on demand -- only the Web UI's own dashboard-mount
+    trigger (`runWeeklyReportIfDue`) ever creates or replaces a snapshot.
+  - All six are read-only (no local mutation, no YouTube write) — deliberately excludes
+    `collectMetrics`/`runAutoCollectionIfStale`/`runWeeklyReportIfDue` (real local-persistence
+    mutations; only the Web UI's own "Collect now" button and dashboard-mount triggers can start a
+    new collection run or generate/replace a weekly report).
 
 Most tools accept optional `credentialRef`; if omitted, server falls back to active local auth context.
 
@@ -274,6 +287,9 @@ All routes are App Router handlers and require authenticated session user.
 - `GET /api/channels/[channelId]/analytics/overview?startDate=&endDate=` — live channel-level (no video filter) Analytics API read: daily series + current/previous-period totals for the Analytics "Overview" tab and Home's "Channel analytics" card; **never persisted**, not subject to the collection routes' freshness gate (see `docs/ARCHITECTURE.md` §14.8)
 - `GET /api/channels/[channelId]/analytics/data-quality?startDate=&endDate=` — local read over `analytics_collection_runs`: covered/uncovered/too-recent dates plus videos with a recorded collection failure (read-only, no YouTube call; see `docs/ARCHITECTURE.md` §14.9) -- previously missing from this list, added here per `AGENTS.md` §H
 - `GET /api/channels/[channelId]/analytics/comparable-age?videoIds=a,b,c&metricName=&maxDays=` — local read aligning 2-10 videos' already-collected rows by days-since-publish (`metricName`/`maxDays` optional, default `views`/30; read-only, no YouTube call; see `docs/ARCHITECTURE.md` §14.10)
+- `GET /api/channels/[channelId]/analytics/weekly-reports` — every stored weekly report snapshot for the channel, newest week first (read-only, no YouTube call; see `docs/ARCHITECTURE.md` §14.11)
+- `GET /api/channels/[channelId]/analytics/weekly-reports/[weekStartDate]` — one stored snapshot by its Monday start date, or `{ report: null }` if none exists yet (read-only, no YouTube call)
+- `POST /api/channels/[channelId]/analytics/weekly-reports/generate-if-due` — generates/replaces the current due week's snapshot if one isn't already `"final"`; real local-persistence mutation, gated by `src/proxy.ts` like `analytics/auto-collect`; triggered once per dashboard mount, chained after auto-collect
 
 ### Localization API (read-only)
 

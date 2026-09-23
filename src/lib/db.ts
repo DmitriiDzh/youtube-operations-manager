@@ -3,9 +3,9 @@ import { readFile } from "fs/promises";
 import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
 import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
-import { sqliteTable, text, integer, real, primaryKey, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import path from "path";
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
 import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
@@ -661,6 +661,40 @@ export const analyticsCollectionRuns = sqliteTable(
   (table) => [index("analytics_collection_runs_channel_id_idx").on(table.channelId)]
 );
 
+/**
+ * SCHEMA_MIGRATIONS version 14 -- Phase 8 follow-up, slice 4 (docs/roadmap/FUTURE_PHASES.md §4's
+ * "analytical reports and weekly channel reviews"). One row per channel per Monday-Sunday week --
+ * `reportJson` holds the full `WeeklyReportContent` (`src/lib/analytics/weekly-report.ts`), a
+ * frozen, reproducible snapshot computed entirely from already-collected local data, never a live
+ * YouTube call. `UNIQUE(channel_id, week_start_date)` prevents two concurrent dashboard-mount
+ * triggers (e.g. two open tabs) from ever creating two rows for the same week; the application
+ * layer (`runWeeklyReportIfDue`), not this table, enforces that a `status: "final"` row is never
+ * overwritten by a later `upsertWeeklyReport` call for the same week.
+ *
+ * **Deliberately NOT added to `SNAPSHOT_TRANSFERRED_TABLES`** -- derived, re-computable data, the
+ * same reasoning as `video_metrics_daily`/`analytics_collection_runs` above (docs/ARCHITECTURE.md
+ * §14.7/§14.9): a snapshot report can always be regenerated locally from the data that IS
+ * transferred, so it does not need to travel with a device handoff.
+ */
+export const analyticsWeeklyReports = sqliteTable(
+  "analytics_weekly_reports",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    channelId: text("channel_id").notNull(),
+    weekStartDate: text("week_start_date").notNull(),
+    weekEndDate: text("week_end_date").notNull(),
+    status: text("status").notNull(), // "final" | "provisional"
+    reportJson: text("report_json").notNull(),
+    generatedAt: integer("generated_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    uniqueIndex("analytics_weekly_reports_channel_week_idx").on(table.channelId, table.weekStartDate),
+    index("analytics_weekly_reports_channel_id_idx").on(table.channelId),
+  ]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -874,6 +908,29 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
       await client.execute(
         "CREATE INDEX IF NOT EXISTS analytics_collection_runs_channel_id_idx ON analytics_collection_runs(channel_id)"
+      );
+    },
+  },
+  {
+    version: 14,
+    description:
+      "analytics_weekly_reports -- reproducible weekly analytics snapshots, Phase 8 follow-up slice 4 (docs/roadmap/FUTURE_PHASES.md §4)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS analytics_weekly_reports (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "channel_id TEXT NOT NULL, " +
+          "week_start_date TEXT NOT NULL, " +
+          "week_end_date TEXT NOT NULL, " +
+          "status TEXT NOT NULL, " +
+          "report_json TEXT NOT NULL, " +
+          "generated_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS analytics_weekly_reports_channel_week_idx ON analytics_weekly_reports(channel_id, week_start_date)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS analytics_weekly_reports_channel_id_idx ON analytics_weekly_reports(channel_id)"
       );
     },
   },
@@ -3315,6 +3372,87 @@ export async function listAnalyticsCollectionRunsByChannel(
     })(),
     ranAt: row.ranAt,
   }));
+}
+
+export type StoredWeeklyReport = {
+  id: number;
+  channelId: string;
+  weekStartDate: string;
+  weekEndDate: string;
+  status: string;
+  reportJson: string;
+  generatedAt: Date;
+};
+
+/**
+ * Phase 8 follow-up, slice 4. `runWeeklyReportIfDue` (`src/lib/analytics/services.ts`) already
+ * reads the existing row first and only calls this function when there either isn't one yet or
+ * the existing one is still "provisional" -- but that check-then-act is NOT itself atomic across
+ * two concurrent callers (e.g. two open dashboard tabs both triggering `generate-if-due` near the
+ * same moment), so this function ALSO enforces "never overwrite an existing 'final' row" at the
+ * DB layer via `setWhere` -- SQLite's `ON CONFLICT ... DO UPDATE SET ... WHERE <cond>` applies the
+ * update only when `<cond>` is true; otherwise the conflicting insert is silently a no-op and the
+ * existing row is left untouched. This closes the real race an independent review found
+ * (2026-09-23): without this guard, a concurrent caller reading stale (pre-completion) data could
+ * write a "provisional" row over an already-"final" one written by the other caller in between the
+ * first caller's own read and write.
+ */
+export async function upsertWeeklyReport(
+  input: {
+    channelId: string;
+    weekStartDate: string;
+    weekEndDate: string;
+    status: string;
+    reportJson: string;
+  },
+  generatedAt: Date,
+  database: AppDb = db
+): Promise<void> {
+  const values = {
+    channelId: input.channelId,
+    weekStartDate: input.weekStartDate,
+    weekEndDate: input.weekEndDate,
+    status: input.status,
+    reportJson: input.reportJson,
+    generatedAt,
+  };
+
+  await database
+    .insert(analyticsWeeklyReports)
+    .values(values)
+    .onConflictDoUpdate({
+      target: [analyticsWeeklyReports.channelId, analyticsWeeklyReports.weekStartDate],
+      set: values,
+      // Only overwrite an existing row when it is NOT already "final" -- see this function's own
+      // doc comment above. `analyticsWeeklyReports.status` here refers to the EXISTING row's value
+      // (standard SQLite ON CONFLICT semantics), never the new value being inserted.
+      setWhere: ne(analyticsWeeklyReports.status, "final"),
+    });
+}
+
+export async function getWeeklyReportByWeek(
+  channelId: string,
+  weekStartDate: string,
+  database: AppDb = db
+): Promise<StoredWeeklyReport | null> {
+  const rows = await database
+    .select()
+    .from(analyticsWeeklyReports)
+    .where(and(eq(analyticsWeeklyReports.channelId, channelId), eq(analyticsWeeklyReports.weekStartDate, weekStartDate)))
+    .limit(1);
+
+  return rows[0] ?? null;
+}
+
+export async function listWeeklyReportsByChannel(
+  channelId: string,
+  database: AppDb = db
+): Promise<StoredWeeklyReport[]> {
+  return database
+    .select()
+    .from(analyticsWeeklyReports)
+    .where(eq(analyticsWeeklyReports.channelId, channelId))
+    .orderBy(desc(analyticsWeeklyReports.weekStartDate));
 }
 
 // The one and only row this table ever holds -- see `cloudConnection`'s own doc comment above.

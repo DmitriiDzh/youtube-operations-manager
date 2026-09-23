@@ -6,6 +6,7 @@ import {
   type DomainErrorShape,
   type ResolvedCredentials,
 } from "@/lib/video-metadata/contracts";
+import type { WeeklyReportContent } from "./weekly-report";
 
 export type { CredentialRef, DomainErrorCode, DomainErrorShape, ResolvedCredentials };
 export { DomainError, isDomainError };
@@ -180,3 +181,26 @@ export type GetComparableAgeComparisonResult = {
   maxDays: number;
   videos: ComparableAgeVideoSeries[];
 };
+
+export type WeeklyReportSummary = {
+  channelId: string;
+  weekStartDate: string;
+  weekEndDate: string;
+  status: string;
+  generatedAt: string;
+  report: WeeklyReportContent;
+};
+
+export type ListWeeklyReportsResult = {
+  channelId: string;
+  reports: WeeklyReportSummary[];
+};
+
+export type GetWeeklyReportResult = {
+  channelId: string;
+  report: WeeklyReportSummary | null;
+};
+
+export type RunWeeklyReportIfDueResult =
+  | { generated: false }
+  | { generated: true; report: WeeklyReportSummary };
