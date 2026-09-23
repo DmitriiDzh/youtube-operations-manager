@@ -483,15 +483,20 @@ table is excluded by default unless a reviewer deliberately adds it to the allow
 
 Import never replaces the live database file. It ATTACHes a migrated, verified, private working
 copy of the snapshot's `data.db` to the live connection and, in one transaction, fully replaces
-every table on `SNAPSHOT_REPLACE_ON_IMPORT_TABLES`. As of M6 (2026-09-23,
-`docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md`) that list is deliberately
-narrow: `schema_meta` plus the four Category D write-pipeline tables (`batches`,
-`batch_ledger_rows`, `batch_attempts`, `audit_events`) — everything this mechanism used to also
-carry (`channels`/`videos`, `rules`, `change_sets`/`changes`, `channel_editorial_profiles`,
-`ai_localization_generation_provenance`, `ai_connections`) has since moved to either an
-independent per-device resync (channels/videos, `channels`/`videos`/`rules`) or continuous
-`src/lib/sync-gateway/` propagation (the rest) — see §13.7 below. `ai_connections`' own
-upsert-by-id special case (`INSERT OR REPLACE ... SELECT`, kept because `INSERT ... SELECT ...
+every table on `SNAPSHOT_REPLACE_ON_IMPORT_TABLES` — as of M6 (2026-09-23,
+`docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md`), the four Category D
+write-pipeline tables (`batches`, `batch_ledger_rows`, `batch_attempts`, `audit_events`) only.
+`SNAPSHOT_TRANSFERRED_TABLES` (the snapshot *file's* own contents, §13.3) additionally includes
+`schema_meta` — never touched by this replace loop, only read by `migrateStagedCopy` to migrate
+the *staged* copy before merging. Everything this mechanism used to also carry (`channels`/
+`videos`, `change_sets`/`changes`, `channel_editorial_profiles`,
+`ai_localization_generation_provenance`, `ai_connections`) has since moved away: `channels`/
+`videos` to an independent per-device resync from the real YouTube API (§2 Category A of the
+migration plan — there is no local-only write path for either, so nothing to transfer); `rules`
+was dropped outright, not resynced anywhere, since its own feature (UI/API/Drizzle definition)
+was already removed 2026-09-20 and there is nothing left to carry; the remaining five tables now
+propagate continuously via `src/lib/sync-gateway/` instead — see §13.5 below. `ai_connections`'
+own upsert-by-id special case (`INSERT OR REPLACE ... SELECT`, kept because `INSERT ... SELECT ...
 ON CONFLICT DO UPDATE` was found unsupported by this `@libsql/client` build's SQLite) was removed
 along with it; every remaining transferred table now goes through the same plain replace path.
 `users` and `ai_connection_credentials` are never referenced by this code path at all — there is

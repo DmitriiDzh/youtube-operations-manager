@@ -145,26 +145,27 @@ Category D is migrating, so the existing informal one-device-at-a-time conventio
 *execution*, and the real compare-and-set locks underneath it, are entirely unchanged by this
 plan.
 
-## 3. The old whole-DB Device-Handoff mechanism: retirement reopened by §2's Category D correction
+## 3. The old whole-DB Device-Handoff mechanism: retirement reopened by §2's Category D correction, then resolved (M6)
 
 Owner, 2026-09-22: *"с. Да, старый механизм я бы удалил."* — decision 4(c) from the first draft
 was resolved on the premise that *every* category above moves off whole-DB transfer. §2's
-Category D correction breaks that premise: **all four** tables (`batches`, `batch_ledger_rows`,
-`batch_attempts`, `audit_events`) are not migrating, so something must still decide whether they
+Category D correction broke that premise: **all four** tables (`batches`, `batch_ledger_rows`,
+`batch_attempts`, `audit_events`) are not migrating, so something had to still decide whether they
 retain any cross-device continuity at all, and that decision determines whether
 `src/lib/device-handoff/`/`src/lib/snapshot/` can truly be deleted outright or only mostly
 retired.
 
 **This grew from three tables to four while scoping M5** -- worth stating plainly rather than
 letting the owner answer a narrower question than the one that now exists. Under option (a)
-below, "no cross-device continuity" now also means the *audit trail itself* stops transferring
-between devices, not just in-flight execution state. Losing visibility into what a batch actually
-did on another device is a materially different thing to accept than losing continuity for
-in-progress execution state (which arguably was never a coherent handoff scenario to begin with,
-per recovery-mode's own local-device-only design) -- the audit-trail half is the part most worth
-thinking about before choosing.
+below, "no cross-device continuity" would also have meant the *audit trail itself* stops
+transferring between devices, not just in-flight execution state. Losing visibility into what a
+batch actually did on another device is a materially different thing to accept than losing
+continuity for in-progress execution state (which arguably was never a coherent handoff scenario
+to begin with, per recovery-mode's own local-device-only design) -- the audit-trail half was the
+part most worth thinking about before choosing.
 
-**Two live options, needing the owner's explicit choice (not decided by this plan):**
+**Two live options were presented to the owner (2026-09-23, after a web-research pass on
+industry precedent for this exact problem -- see §5's M6 entry):**
 
 - **(a) These four tables get no cross-device continuity going forward.** A batch is created,
   executed, and audited on one device. Accept this as a documented limitation, and
@@ -179,8 +180,13 @@ thinking about before choosing.
   point only `batches`/`batch_ledger_rows`/`batch_attempts` would remain under whichever of
   (a)/(b) is chosen today.
 
-Whichever is chosen, `schema_meta`'s cross-device role only disappears entirely under option (a).
-See M6 in §5 for how this gates that slice.
+**Resolved: the owner chose option (b).** Telegram, 2026-09-23, after the research pass found
+this is the industry-standard shape for a single-writer subsystem that must still move between
+machines (LiteFS/Litestream-style explicit primary handoff, distributed job schedulers' lease-based
+worker handoff -- never a live CRDT merge): *"'CRDT для драфтов/настроек + явная передача владения
+для конвейера записи' ок, тогда так и делай."* `schema_meta`'s cross-device role survives as a
+result (it only would have disappeared entirely under option (a)) -- see M6 in §5 for the
+delivered implementation.
 
 ## 4. New: one module — the Sync Gateway — owns all of this
 

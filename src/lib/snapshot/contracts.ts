@@ -42,7 +42,7 @@ export type { SqlExecutor };
  *   - `change_sets` / `changes` / `channel_editorial_profiles` /
  *     `ai_localization_generation_provenance` / `ai_connections` -- removed from this list
  *     2026-09-23 (M6, `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §2 Categories
- *     B/C). All four now propagate continuously via `src/lib/sync-gateway/` (M1/M3/M4) instead of
+ *     B/C). All five now propagate continuously via `src/lib/sync-gateway/` (M1/M3/M4) instead of
  *     through an occasional whole-DB snapshot -- keeping them here too would mean two disagreeing
  *     transfer mechanisms for the same data. `ai_connections`' credential half
  *     (`ai_connection_credentials`) was never transferred either way, per the entry above.
