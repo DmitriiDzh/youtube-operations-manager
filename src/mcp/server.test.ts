@@ -1940,7 +1940,10 @@ test("MCP changeset_create_from_import is rejected while the operation lock is h
 // analytics_overview a live Analytics API call), so neither is wrapped by the device-availability
 // mutation gate, mirroring channel_list/channel_video_list above.
 
-function makeAnalyticsCoreStub(): Pick<AnalyticsCore, "listMetrics" | "getChannelOverview" | "getDataQualityReport"> {
+function makeAnalyticsCoreStub(): Pick<
+  AnalyticsCore,
+  "listMetrics" | "getChannelOverview" | "getDataQualityReport" | "getComparableAgeComparison"
+> {
   return {
     listMetrics: async () => ({
       channelId: "UC_1",
@@ -1964,6 +1967,21 @@ function makeAnalyticsCoreStub(): Pick<AnalyticsCore, "listMetrics" | "getChanne
       uncoveredDates: ["2026-09-03", "2026-09-04", "2026-09-05"],
       tooRecentDates: [],
       videosWithSkips: [{ videoId: "v1", skipCount: 1, lastSkippedAt: "2026-09-05T00:00:00.000Z" }],
+    }),
+    getComparableAgeComparison: async () => ({
+      channelId: "UC_1",
+      metricName: "views",
+      maxDays: 30,
+      videos: [
+        {
+          videoId: "v1",
+          title: "Video 1",
+          publishedAt: "2026-09-01T00:00:00.000Z",
+          publishDatePacific: "2026-08-31",
+          points: [{ dayOffset: 0, value: 10 }],
+          cumulativePoints: [{ dayOffset: 0, cumulativeValue: 10 }],
+        },
+      ],
     }),
   };
 }
@@ -2153,6 +2171,12 @@ test("MCP analytics_list/analytics_overview are never blocked by the operation l
       endDate: "2026-09-05",
     });
     assert.notEqual(dataQualityResult.isError, true);
+
+    const comparableAgeResult = await handlers.analyticsComparableAge({
+      channelId: "UC_1",
+      videoIds: ["v1", "v2"],
+    });
+    assert.notEqual(comparableAgeResult.isError, true);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }
@@ -2225,6 +2249,84 @@ test("MCP analytics_data_quality rejects a missing channelId", async () => {
     makeAnalyticsCoreStub()
   );
   const result = await handlers.analyticsDataQuality({ startDate: "2026-09-01", endDate: "2026-09-05" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP analytics_comparable_age returns per-video day-since-publish series for a channel", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    makeAnalyticsCoreStub()
+  );
+  const result = await handlers.analyticsComparableAge({ channelId: "UC_1", videoIds: ["v1", "v2"] });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.metricName, "views");
+  assert.deepEqual(payload.videos[0].points, [{ dayOffset: 0, value: 10 }]);
+});
+
+test("MCP analytics_comparable_age forwards the resolved credentialRef when omitted", async () => {
+  const seenArgs: unknown[] = [];
+  const analyticsCore = makeAnalyticsCoreStub();
+  analyticsCore.getComparableAgeComparison = async (input: unknown) => {
+    seenArgs.push(input);
+    return { channelId: "UC_1", metricName: "views", maxDays: 30, videos: [] };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    analyticsCore
+  );
+  await handlers.analyticsComparableAge({ channelId: "UC_1", videoIds: ["v1", "v2"] });
+
+  assert.deepEqual(seenArgs, [
+    {
+      channelId: "UC_1",
+      videoIds: ["v1", "v2"],
+      metricName: "views",
+      maxDays: 30,
+      credentialRef: { userId: "active-user" },
+    },
+  ]);
+});
+
+test("MCP analytics_comparable_age rejects a missing channelId", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    makeAnalyticsCoreStub()
+  );
+  const result = await handlers.analyticsComparableAge({ videoIds: ["v1", "v2"] });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP analytics_comparable_age rejects fewer than 2 videoIds", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    makeAnalyticsCoreStub()
+  );
+  const result = await handlers.analyticsComparableAge({ channelId: "UC_1", videoIds: ["v1"] });
 
   assert.equal(result.isError, true);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");

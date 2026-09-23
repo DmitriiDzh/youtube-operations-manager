@@ -1,5 +1,6 @@
 import { z, ZodError } from "zod";
 import { credentialRefSchema } from "@/lib/video-metadata/schemas";
+import { CUMULATIVE_COMPARISON_METRIC_NAMES } from "./comparable-age";
 import { DomainError } from "./contracts";
 
 export function formatZodError(error: ZodError) {
@@ -172,3 +173,55 @@ export const getDataQualityReportOutputSchema = z
 
 export type GetDataQualityReportInput = z.infer<typeof getDataQualityReportInputSchema>;
 export type GetDataQualityReportOutput = z.infer<typeof getDataQualityReportOutputSchema>;
+
+// Phase 8 follow-up, slice 3 (docs/roadmap/FUTURE_PHASES.md §4, "comparing videos at comparable
+// ages"). videoIds capped at 10 -- a per-video Analytics-day arithmetic pass plus a chart with
+// this many overlaid series is already a lot for a caller (human or agent) to make sense of; a
+// genuinely larger comparison is a different, aggregate-style report, not this one. maxDays capped
+// at 365 -- a bound on response size, not a claim that a full year of data actually exists.
+export const getComparableAgeComparisonInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+    videoIds: z.array(z.string().min(1)).min(2).max(10),
+    metricName: z.enum(CUMULATIVE_COMPARISON_METRIC_NAMES).default("views"),
+    maxDays: z.number().int().positive().max(365).default(30),
+  })
+  .strict();
+
+const comparableAgeDailyPointSchema = z
+  .object({
+    dayOffset: z.number().int().nonnegative(),
+    value: z.number(),
+  })
+  .strict();
+
+const comparableAgeCumulativePointSchema = z
+  .object({
+    dayOffset: z.number().int().nonnegative(),
+    cumulativeValue: z.number(),
+  })
+  .strict();
+
+const comparableAgeVideoSeriesSchema = z
+  .object({
+    videoId: z.string().min(1),
+    title: z.string(),
+    publishedAt: z.string(),
+    publishDatePacific: z.string(),
+    points: z.array(comparableAgeDailyPointSchema),
+    cumulativePoints: z.array(comparableAgeCumulativePointSchema),
+  })
+  .strict();
+
+export const getComparableAgeComparisonOutputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    metricName: z.string(),
+    maxDays: z.number().int().positive(),
+    videos: z.array(comparableAgeVideoSeriesSchema),
+  })
+  .strict();
+
+export type GetComparableAgeComparisonInput = z.infer<typeof getComparableAgeComparisonInputSchema>;
+export type GetComparableAgeComparisonOutput = z.infer<typeof getComparableAgeComparisonOutputSchema>;

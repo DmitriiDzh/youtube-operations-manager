@@ -31,7 +31,10 @@ type BatchCliCoreSubset = Pick<BatchCore, "listBatchesByChannel" | "requireBatch
 type ChannelSyncCliCoreSubset = Pick<ChannelSyncCore, "syncChannel" | "listChannels" | "listSyncedVideos">;
 // CLI parity for the MCP analytics_list/analytics_overview tools (same "machine-readable
 // analytics for operational agents" follow-up, docs/roadmap/BACKLOG.md).
-type AnalyticsCliCoreSubset = Pick<AnalyticsCore, "listMetrics" | "getChannelOverview" | "getDataQualityReport">;
+type AnalyticsCliCoreSubset = Pick<
+  AnalyticsCore,
+  "listMetrics" | "getChannelOverview" | "getDataQualityReport" | "getComparableAgeComparison"
+>;
 
 loadEnvConfig(process.cwd());
 
@@ -73,7 +76,8 @@ export type ParsedArgs = {
     | "sync"
     | "video-list"
     | "overview"
-    | "data-quality";
+    | "data-quality"
+    | "comparable-age";
   flags: Record<string, string | boolean>;
 };
 
@@ -97,7 +101,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     changeset: ["list", "get", "preview", "import"],
     batch: ["list", "get"],
     channel: ["sync", "list", "video-list"],
-    analytics: ["list", "overview", "data-quality"],
+    analytics: ["list", "overview", "data-quality", "comparable-age"],
   };
   const validMetadataCommands = ["list", "transcript", "preview", "apply"];
   const validCommands = hasExplicitNamespace
@@ -282,9 +286,11 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   // analytics list (local read of already-collected rows) / analytics overview (a live
   // Analytics API read, but mutates nothing anywhere -- same read-only classification as
   // playlist_list's own live YouTube read in the MCP server) / analytics data-quality (local
-  // read over analytics_collection_runs).
+  // read over analytics_collection_runs) / analytics comparable-age (local read over
+  // video_metrics_daily, aligned by days-since-publish).
   "overview",
   "data-quality",
+  "comparable-age",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -576,6 +582,20 @@ export async function runCliCommand(args: {
           channelId,
           startDate: requiredStringFlag(parsedArgs.flags, "startDate"),
           endDate: requiredStringFlag(parsedArgs.flags, "endDate"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "comparable-age") {
+        const metricName = optionalStringFlag(parsedArgs.flags, "metricName");
+        const maxDaysFlag = optionalStringFlag(parsedArgs.flags, "maxDays");
+        const result = await analyticsCore.getComparableAgeComparison({
+          credentialRef,
+          channelId,
+          videoIds: parseVideoIdsFlag(parsedArgs.flags),
+          metricName,
+          maxDays: maxDaysFlag !== undefined ? Number(maxDaysFlag) : undefined,
         });
         writeStdout(serializeSuccess(result));
         return 0;
