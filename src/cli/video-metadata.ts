@@ -47,7 +47,10 @@ type AnalyticsCliCoreSubset = Pick<
 // own ai-localization routes already call, never a parallel implementation.
 type AiLocalizationCliCoreSubset = Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration">;
 // Phase 7 (Agent Operations Interface) -- CLI parity for the MCP agent_get_capabilities tool.
-type AgentOperationsCliCoreSubset = Pick<AgentOperationsCore, "getSystemCapabilities">;
+type AgentOperationsCliCoreSubset = Pick<
+  AgentOperationsCore,
+  "getSystemCapabilities" | "getChannelContext" | "getVideoContext"
+>;
 
 loadEnvConfig(process.cwd());
 
@@ -95,7 +98,9 @@ export type ParsedArgs = {
     | "weekly-report-get"
     | "generate"
     | "create-change-set"
-    | "capabilities";
+    | "capabilities"
+    | "channel-context"
+    | "video-context";
   flags: Record<string, string | boolean>;
 };
 
@@ -121,7 +126,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     channel: ["sync", "list", "video-list"],
     analytics: ["list", "overview", "data-quality", "comparable-age", "weekly-reports", "weekly-report-get"],
     "ai-localization": ["generate", "create-change-set"],
-    agent: ["capabilities"],
+    agent: ["capabilities", "channel-context", "video-context"],
   };
   const validMetadataCommands = ["list", "transcript", "preview", "apply"];
   const validCommands = hasExplicitNamespace
@@ -321,7 +326,11 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   // "create-change-set" is deliberately NOT here -- it persists a new Change Set.
   "generate",
   // agent capabilities: a pure local read (instance metadata + a static capability list).
+  // agent channel-context/video-context (slice B): both read only already-synced local data,
+  // mutate nothing -- same classification as "get"/"video-list" above.
   "capabilities",
+  "channel-context",
+  "video-context",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -628,10 +637,48 @@ export async function runCliCommand(args: {
       return 0;
     }
 
-    // Phase 7 (Agent Operations Interface) -- instance-level information, no channel/credential
-    // resolution needed at all, unlike every namespace above.
+    // Phase 7 (Agent Operations Interface). "capabilities" is instance-level information, no
+    // channel/credential resolution needed at all. "channel-context"/"video-context" (slice B)
+    // are channel-scoped reads whose service functions do no active-channel checking themselves
+    // (same convention as ai-localization/changeset/batch above) -- so this CLI namespace
+    // resolves the local active-user identity and checks it against the requested channelId
+    // explicitly, mirroring the ai-localization dispatch block above, not the simpler
+    // "capabilities" case.
     if (parsedArgs.namespace === "agent") {
-      const result = await agentOperationsCore.getSystemCapabilities({});
+      if (parsedArgs.command === "capabilities") {
+        const result = await agentOperationsCore.getSystemCapabilities({});
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
+      const agentCredentialRef = await auth.resolveEffectiveCredentialRef({
+        explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+      });
+      await channelAccessCore.assertActiveChannel({
+        userId: "userId" in agentCredentialRef ? agentCredentialRef.userId : null,
+        channelId,
+      });
+
+      if (parsedArgs.command === "channel-context") {
+        const result = await agentOperationsCore.getChannelContext({ channelId });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // "video-context" -- --include takes a comma-separated subset of metadata,localizations
+      // (same convention as --videoIds/--targetLanguages above); omitted means "both sections",
+      // exactly as agentOperationsCore.getVideoContext's own default already handles.
+      const videoId = requiredStringFlag(parsedArgs.flags, "videoId");
+      const includeFlag = optionalStringFlag(parsedArgs.flags, "include");
+      const include = includeFlag
+        ? includeFlag.split(",").map((entry) => entry.trim()).filter(Boolean)
+        : undefined;
+      const result = await agentOperationsCore.getVideoContext({
+        channelId,
+        videoId,
+        ...(include ? { include } : {}),
+      });
       writeStdout(serializeSuccess(result));
       return 0;
     }

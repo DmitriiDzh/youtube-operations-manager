@@ -91,6 +91,38 @@ MCP tool. An agent should call this first, before assuming any other tool exists
 `CAPABILITY_NOT_AVAILABLE` (§7 below) to distinguish "not built yet, but a real, named extension
 point" (`plannedFutureCapabilities`) from a hallucinated/typo'd capability id.
 
+## 4a. Channel/video context (owner spec §7/§8) -- IMPLEMENTED (slice B)
+
+`get_channel_context` / MCP `agent_get_channel_context` and `get_video_context` / MCP
+`agent_get_video_context` (`src/lib/agent-operations/services.ts`, one implementation, two
+transports -- no HTTP route yet, `AGENTS.md` §D). Both read only already-synced local data
+(`createChangeSetChannelStoreAdapter`, the same channel/video store `changesets`/`ai-localization`
+already read) -- neither ever makes a live YouTube call.
+
+`getChannelContext({ channelId })` returns `{ channelId, title, lastSyncedAt (ISO string, or
+`null` if the channel has never been synced -- never fabricated), syncedVideoCount,
+editorialProfile (the channel's saved editorial profile via `ai-localization`'s own
+`getEditorialProfile`, or `null` if none was ever saved), trackedLanguages }`. Throws
+`DATA_NOT_SYNCED` if `channelId` has no local record at all.
+
+`getVideoContext({ channelId, videoId, include? })` returns `{ videoId, channelId,
+includedSections, metadata?, localizations? }`. `include` selects which of `"metadata"` /
+`"localizations"` to compute and return -- omitted, both sections are returned; a section not in
+`include` is left `undefined` on the response object entirely (owner spec §23's token-efficiency
+requirement), not returned as an empty placeholder. Throws `DATA_NOT_SYNCED` if `videoId` does not
+belong to `channelId`'s synced video list (protects against a cross-channel `videoId` or a typo).
+
+**Deliberate deviation from the owner spec's literal `get_video_context(videoId, options)`
+signature:** this implementation requires an explicit `channelId` parameter too, so the channel-
+scoping check below has something to check against without an extra lookup. Both MCP tools
+resolve the caller's local active-user identity and call `channelAccessCore.assertActiveChannel`
+against the requested `channelId` **before** calling into `agent-operations` at all (`src/mcp/
+server.ts`'s `agentGetChannelContext`/`agentGetVideoContext` handlers) -- the service functions
+themselves do no such check, mirroring the `ai-localization`/`changesets` convention already used
+elsewhere in this codebase (schemas carry no `credentialRef`; the MCP/CLI layer enforces scoping).
+CLI parity: `agent channel-context --channelId <UC...>` / `agent video-context --channelId <UC...>
+--videoId <VIDEO_ID> [--include metadata,localizations]` (`docs/interfaces.md`).
+
 ## 5. Context model (owner spec §6) -- design settled, mostly not yet implemented
 
 Every context object this interface returns is meant to carry: entity identity, source, data
@@ -102,10 +134,15 @@ meaningful -- and to keep six classes of information visibly distinct rather tha
 `ACTION` (an operation actually performed) / `OUTCOME` (a measured result).
 
 Slice A's own `SystemCapabilities` shape is deliberately simple (instance metadata, not
-channel/video data) and does not yet need this classification. Slices B (channel/video context)
-and C (analytics) are where this model is actually exercised -- **not yet implemented**; this
-section records the design constraint so those slices are built against it from the start rather
-than retrofitted.
+channel/video data) and does not yet need this classification. Slice B (channel/video context,
+IMPLEMENTED -- see §7) exposes only `FACT`-class data (directly observed, already-synced local
+rows: title, sync timestamps, existing localizations, tracked languages, the saved editorial
+profile) -- every field is either a raw stored value or a `null` standing for "never observed",
+never a computed/interpreted one, so slice B's response shape does not yet need an explicit
+per-field classification tag to keep those classes visibly distinct from each other. Slice C
+(analytics) is the first slice that will actually mix `FACT` and `DERIVED METRIC` data in one
+response, and is where this section's tagging design gets exercised for the first time --
+**not yet implemented**.
 
 ## 6. Error vocabulary (owner spec §27) -- IMPLEMENTED
 
@@ -131,7 +168,7 @@ second error-code enum:
 | Slice | Scope | Status |
 |---|---|---|
 | A | Contracts + capability/version discovery | **IMPLEMENTED** -- `src/lib/agent-operations/`, MCP `agent_get_capabilities`, CLI `agent capabilities`, `GET /api/agent-operations/capabilities` |
-| B | Read-only channel/video context | PLANNED |
+| B | Read-only channel/video context | **IMPLEMENTED** -- see §4a; MCP `agent_get_channel_context`/`agent_get_video_context`, CLI `agent channel-context`/`agent video-context`. No HTTP route yet. |
 | C | Analytics interface (agent-oriented wrapper over `src/lib/analytics/`) | PLANNED |
 | D | Asset catalog/context (new subsystem -- nothing to reuse) | PLANNED |
 | E | Agent draft/proposal provenance | PLANNED |

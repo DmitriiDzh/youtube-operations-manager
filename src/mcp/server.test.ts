@@ -12,6 +12,7 @@ import type { ChannelSyncCore } from "@/lib/channel-sync";
 import type { ChannelAccessCore } from "@/lib/channel-access";
 import type { AnalyticsCore } from "@/lib/analytics";
 import type { AiLocalizationCore } from "@/lib/ai-localization";
+import type { AgentOperationsCore } from "@/lib/agent-operations";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { createMcpServer, createMcpToolHandlers } from "./server";
@@ -2698,6 +2699,174 @@ test("MCP agent_get_capabilities is never blocked by the operation lock (read-on
     );
     const result = await handlers.agentGetCapabilities({});
     assert.notEqual(result.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+function makeAgentOperationsCoreStub(): Pick<AgentOperationsCore, "getSystemCapabilities" | "getChannelContext" | "getVideoContext"> {
+  return {
+    getSystemCapabilities: async () => ({
+      productVersion: "9.9.9",
+      agentApiVersion: "0.1.0",
+      capabilities: [],
+      dataDomains: [],
+      actionClasses: ["READ", "DRAFT", "APPROVE", "EXECUTE"],
+      grantedPermissions: ["READ", "DRAFT"],
+      plannedFutureCapabilities: ["query_market_intelligence", "query_competitors", "create_experiment_proposal"],
+      schemaVersions: { app: 14 },
+    }),
+    getChannelContext: async () => ({
+      channelId: "UC_1",
+      title: "Test Channel",
+      lastSyncedAt: "2026-09-20T00:00:00.000Z",
+      syncedVideoCount: 5,
+      editorialProfile: null,
+      trackedLanguages: ["es"],
+    }),
+    getVideoContext: async () => ({
+      videoId: "v1",
+      channelId: "UC_1",
+      includedSections: ["metadata", "localizations"],
+      metadata: {
+        videoId: "v1",
+        channelId: "UC_1",
+        title: "Title",
+        description: "Description",
+        publishedAt: "2026-09-01T00:00:00Z",
+        privacyStatus: "public",
+        defaultLanguage: "en",
+        defaultAudioLanguage: "en",
+        lastSyncedAt: "2026-09-20T00:00:00.000Z",
+      },
+      localizations: [],
+    }),
+  };
+}
+
+test("MCP agent_get_channel_context forwards input and checks active-channel access", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    makeAgentOperationsCoreStub()
+  );
+  const result = await handlers.agentGetChannelContext({ channelId: "UC_1" });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.channelId, "UC_1");
+  assert.equal(payload.syncedVideoCount, 5);
+});
+
+test("MCP agent_get_channel_context rejects a channelId that is not the caller's active channel", async () => {
+  const restrictiveChannelAccess = {
+    async assertActiveChannel() {
+      throw new DomainError({ code: "CHANNEL_NOT_ACTIVE", message: "not active" });
+    },
+    async getActiveChannelId() {
+      return null;
+    },
+    filterToActiveChannel<T>(items: readonly T[]) {
+      return [...items];
+    },
+    async activateChannel() {},
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    restrictiveChannelAccess,
+    undefined,
+    undefined,
+    makeAgentOperationsCoreStub()
+  );
+  const result = await handlers.agentGetChannelContext({ channelId: "UC_OTHER" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_get_video_context forwards input including optional `include`, checks active-channel access", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.getVideoContext = async (input: unknown) => {
+    captured = input;
+    return {
+      videoId: "v1",
+      channelId: "UC_1",
+      includedSections: ["metadata"],
+      metadata: {
+        videoId: "v1",
+        channelId: "UC_1",
+        title: "Title",
+        description: "Description",
+        publishedAt: "2026-09-01T00:00:00Z",
+        privacyStatus: "public",
+        defaultLanguage: "en",
+        defaultAudioLanguage: "en",
+        lastSyncedAt: "2026-09-20T00:00:00.000Z",
+      },
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  await handlers.agentGetVideoContext({ channelId: "UC_1", videoId: "v1", include: ["metadata"] });
+
+  assert.deepEqual(captured, { channelId: "UC_1", videoId: "v1", include: ["metadata"] });
+});
+
+test("MCP agent_get_video_context rejects a missing videoId", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    makeAgentOperationsCoreStub()
+  );
+  const result = await handlers.agentGetVideoContext({ channelId: "UC_1" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP agent_get_channel_context/agent_get_video_context are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      makeAgentOperationsCoreStub()
+    );
+    const channelResult = await handlers.agentGetChannelContext({ channelId: "UC_1" });
+    assert.notEqual(channelResult.isError, true);
+    const videoResult = await handlers.agentGetVideoContext({ channelId: "UC_1", videoId: "v1" });
+    assert.notEqual(videoResult.isError, true);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }

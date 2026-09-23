@@ -38,7 +38,11 @@ import {
   generateProposalsInputSchema,
 } from "@/lib/ai-localization/schemas";
 import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent-operations";
-import { getSystemCapabilitiesInputSchema } from "@/lib/agent-operations/schemas";
+import {
+  getChannelContextInputSchema,
+  getSystemCapabilitiesInputSchema,
+  getVideoContextInputSchema,
+} from "@/lib/agent-operations/schemas";
 import {
   getChannelOverviewInputSchema,
   getComparableAgeComparisonInputSchema,
@@ -111,8 +115,11 @@ type AnalyticsCoreSubset = Pick<
 // approve/reject/apply path -- "AI may propose, human approves" (AGENTS.md §G) is untouched.
 type AiLocalizationCoreSubset = Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration">;
 
-// Phase 7 (Agent Operations Interface, docs/AGENT_OPERATIONS_INTERFACE.md) -- slice A.
-type AgentOperationsCoreSubset = Pick<AgentOperationsCore, "getSystemCapabilities">;
+// Phase 7 (Agent Operations Interface, docs/AGENT_OPERATIONS_INTERFACE.md) -- slices A + B.
+type AgentOperationsCoreSubset = Pick<
+  AgentOperationsCore,
+  "getSystemCapabilities" | "getChannelContext" | "getVideoContext"
+>;
 
 type ToolResponse = {
   content: Array<{ type: "text"; text: string }>;
@@ -154,6 +161,8 @@ type McpToolHandlers = {
   aiLocalizationGenerate: (input: unknown) => Promise<ToolResponse>;
   aiLocalizationCreateChangeSet: (input: unknown) => Promise<ToolResponse>;
   agentGetCapabilities: (input: unknown) => Promise<ToolResponse>;
+  agentGetChannelContext: (input: unknown) => Promise<ToolResponse>;
+  agentGetVideoContext: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -989,6 +998,50 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    /**
+     * Phase 7 slice B. Channel-scoping is checked explicitly here, mirroring `ai_localization_*`'s
+     * own pattern -- `agent-operations`' own service functions carry no `credentialRef` and do no
+     * such check themselves (see that module's own `getChannelContext` doc comment).
+     */
+    async agentGetChannelContext(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getChannelContextInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.getChannelContext(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** Phase 7 slice B. Same explicit channel-scoping note as `agentGetChannelContext` above. */
+    async agentGetVideoContext(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getVideoContextInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.getVideoContext(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -1083,6 +1136,9 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
       (await assertMcpDeviceAvailable()) ?? handlers.aiLocalizationCreateChangeSet(input),
     // Pure local read (instance metadata + a static capability list) -- ungated.
     agentGetCapabilities: handlers.agentGetCapabilities,
+    // Pure local reads over the existing sync mirror -- ungated, same as changeset_list above.
+    agentGetChannelContext: handlers.agentGetChannelContext,
+    agentGetVideoContext: handlers.agentGetVideoContext,
   };
 }
 
@@ -1469,6 +1525,26 @@ export function createMcpServer(
       inputSchema: getSystemCapabilitiesInputSchema,
     },
     (args) => handlers.agentGetCapabilities(args)
+  );
+
+  registerTool(
+    "agent_get_channel_context",
+    {
+      description:
+        "Read-only channel context for an operational agent: channel title, last local sync time (null if never synced), synced video count, the channel's editorial profile (null if none was ever saved -- never a default/invented one), and its explicitly tracked languages. Requires channelId to be the caller's currently-active channel. Reads only already-synced local data -- never a live YouTube call.",
+      inputSchema: getChannelContextInputSchema,
+    },
+    (args) => handlers.agentGetChannelContext(args)
+  );
+
+  registerTool(
+    "agent_get_video_context",
+    {
+      description:
+        "Task-oriented, section-selectable context for one video: 'metadata' (title, description, publish date, privacy status, default language, last sync time) and/or 'localizations' (every existing per-language title/description already synced locally). Omit `include` to get both sections; pass e.g. `include: [\"metadata\"]` to fetch only what you need. Requires channelId to be the caller's currently-active channel, and videoId to actually belong to it. Reads only already-synced local data -- never a live YouTube call. Does not include analytics (see the separate analytics tools), comparable videos, experiment history, or creative assets -- those are separate, later capabilities, not yet implemented for some of them.",
+      inputSchema: getVideoContextInputSchema,
+    },
+    (args) => handlers.agentGetVideoContext(args)
   );
 
   return server;

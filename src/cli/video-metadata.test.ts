@@ -14,6 +14,7 @@ import type { ChannelSyncCore } from "@/lib/channel-sync";
 import type { ChannelAccessCore } from "@/lib/channel-access";
 import type { AnalyticsCore } from "@/lib/analytics";
 import type { AiLocalizationCore } from "@/lib/ai-localization";
+import type { VideoContextSection } from "@/lib/agent-operations";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { runCliCommand, getCredentialRef } from "./video-metadata";
@@ -2783,6 +2784,8 @@ test("CLI agent capabilities returns version/capabilities with no auth/channel r
       plannedFutureCapabilities: ["query_market_intelligence", "query_competitors", "create_experiment_proposal"] as const,
       schemaVersions: { app: 14 },
     }),
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -2814,6 +2817,8 @@ test("CLI agent capabilities is never blocked by the operation lock (read-only)"
         plannedFutureCapabilities: [] as const,
         schemaVersions: { app: 14 },
       }),
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
     };
 
     const exitCode = await runCliCommand({
@@ -2824,6 +2829,177 @@ test("CLI agent capabilities is never blocked by the operation lock (read-only)"
       writeStdout: () => {},
     });
     assert.equal(exitCode, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent channel-context forwards channelId after checking it against the caller's active channel", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async (input: unknown) => {
+      captured = input;
+      return {
+        channelId: "UC_1",
+        title: "Channel 1",
+        lastSyncedAt: "2026-09-20T12:00:00.000Z",
+        syncedVideoCount: 2,
+        editorialProfile: null,
+        trackedLanguages: ["es"],
+      };
+    },
+    getVideoContext: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "channel-context", "--channelId", "UC_1", "--userId", "u1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1" });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.title, "Channel 1");
+});
+
+test("CLI agent channel-context rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "channel-context", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("must not be called"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI agent video-context forwards channelId/videoId and parses --include into an array", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async (input: unknown) => {
+      captured = input;
+      return {
+        videoId: "v1",
+        channelId: "UC_1",
+        includedSections: ["metadata"] as VideoContextSection[],
+        metadata: {
+          videoId: "v1",
+          channelId: "UC_1",
+          title: "T",
+          description: "D",
+          publishedAt: "2026-09-01T00:00:00Z",
+          privacyStatus: "public",
+          defaultLanguage: null,
+          defaultAudioLanguage: null,
+          lastSyncedAt: "2026-09-20T00:00:00.000Z",
+        },
+      };
+    },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "video-context", "--channelId", "UC_1", "--userId", "u1", "--videoId", "v1", "--include", "metadata"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1", videoId: "v1", include: ["metadata"] });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.deepEqual(envelope.data.includedSections, ["metadata"]);
+});
+
+test("CLI agent video-context omits `include` entirely when --include is not passed (default: both sections)", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async (input: unknown) => {
+      captured = input;
+      return { videoId: "v1", channelId: "UC_1", includedSections: ["metadata", "localizations"] as VideoContextSection[] };
+    },
+  };
+
+  const exitCode = await runCliCommand({
+    argv: ["agent", "video-context", "--channelId", "UC_1", "--userId", "u1", "--videoId", "v1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: () => {},
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1", videoId: "v1" });
+});
+
+test("CLI agent channel-context/video-context are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => ({
+        channelId: "UC_1",
+        title: "Channel 1",
+        lastSyncedAt: null,
+        syncedVideoCount: 0,
+        editorialProfile: null,
+        trackedLanguages: [],
+      }),
+      getVideoContext: async () => ({ videoId: "v1", channelId: "UC_1", includedSections: ["metadata", "localizations"] as VideoContextSection[] }),
+    };
+
+    const channelContextExit = await runCliCommand({
+      argv: ["agent", "channel-context", "--channelId", "UC_1", "--userId", "u1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(channelContextExit, 0);
+
+    const videoContextExit = await runCliCommand({
+      argv: ["agent", "video-context", "--channelId", "UC_1", "--userId", "u1", "--videoId", "v1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(videoContextExit, 0);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }

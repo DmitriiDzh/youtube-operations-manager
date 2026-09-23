@@ -134,17 +134,27 @@ Sets above; there is also no CLI/MCP command for the channel editorial profile o
 provenance reads (see `docs/ARCHITECTURE.md` §11's BL-075/BL-078 entry for what this slice
 deliberately left out).
 
-### Agent Operations commands (CLI parity for the MCP `agent_*` tools, Phase 7 slice A)
+### Agent Operations commands (CLI parity for the MCP `agent_*` tools, Phase 7 slices A-B)
 
 ```bash
 npm run cli:video-metadata -- agent capabilities
+npm run cli:video-metadata -- agent channel-context --channelId <UC...>
+npm run cli:video-metadata -- agent video-context --channelId <UC...> --videoId <VIDEO_ID> [--include metadata,localizations]
 ```
 
-Read-only, no channel/credential resolution at all (instance-level information, not channel-
-scoped). Returns product version, this interface's own version, the capabilities actually
-reachable right now, the full permission-class vocabulary and what's actually granted (always
-`READ`+`DRAFT`), named future extension points, and the local schema version. See
-`docs/AGENT_OPERATIONS_INTERFACE.md` for the full design.
+`agent capabilities` is read-only with no channel/credential resolution at all (instance-level
+information, not channel-scoped). Returns product version, this interface's own version, the
+capabilities actually reachable right now, the full permission-class vocabulary and what's
+actually granted (always `READ`+`DRAFT`), named future extension points, and the local schema
+version.
+
+`agent channel-context`/`agent video-context` (slice B) are channel-scoped reads: like
+`ai-localization`/`changeset`/`batch` above, this CLI namespace resolves the local active-user
+identity and explicitly checks it against the requested `--channelId` before calling the
+underlying service (the service functions themselves do no such checking). Both are read-only —
+they read only already-synced local data, never a live YouTube call. `--include` on
+`video-context` takes a comma-separated subset of `metadata,localizations`; omitted, both
+sections are returned. See `docs/AGENT_OPERATIONS_INTERFACE.md` for the full design.
 
 ### Analytics commands (CLI parity for the MCP `analytics_*` tools, Phase 8 follow-up)
 
@@ -241,12 +251,30 @@ Key MCP tools:
   Deliberately **not** included in this slice: `getEditorialProfile`/`saveEditorialProfile`/
   `getGenerationProvenance` (no MCP/CLI tool for any of the three), and any approve/reject/apply
   path for a Change Set regardless of its source — same Gate-B-blocked gap RISK-04 already tracks.
-- Agent Operations Interface tools (Phase 7 slice A, `docs/AGENT_OPERATIONS_INTERFACE.md`):
+- Agent Operations Interface tools (Phase 7 slices A-B, `docs/AGENT_OPERATIONS_INTERFACE.md`):
   - `agent_get_capabilities` — `{}` (no parameters) → `SystemCapabilities` (product/agent-API
     version, implemented capabilities, data domains, the full permission vocabulary, what's
     actually granted today — always `["READ","DRAFT"]` — named future extension points, and the
     local schema version). Read-only, no channel scoping (instance-level information). Call this
     first, before assuming any other Agent Operations tool exists.
+  - `agent_get_channel_context` — `{ channelId }` → `ChannelContext` (title, `lastSyncedAt`
+    — `null` if never synced, never fabricated — synced video count, the channel's editorial
+    profile or `null` if none was ever saved, and its explicitly tracked languages). Requires
+    `channelId` to be the caller's currently-active channel (checked explicitly by the MCP/CLI
+    layer, same convention as `ai_localization_*` above — the service function itself does no
+    such check). Local read only.
+  - `agent_get_video_context` — `{ channelId, videoId, include? }` → `VideoContext`, section-
+    selectable: `"metadata"` (title, description, publish date, privacy status, default
+    language, last sync time) and/or `"localizations"` (every existing per-language
+    title/description already synced locally). Omitting `include` returns both sections; an
+    omitted section is left entirely absent from the response (`undefined`), not an empty
+    placeholder, for token efficiency. Requires `channelId` to be the caller's active channel and
+    `videoId` to actually belong to it (`DATA_NOT_SYNCED` otherwise — protects against a
+    cross-channel `videoId` or a typo). Local read only.
+
+  Deliberately **not** included yet: analytics context, comparable videos, creative-asset
+  context, experiment history, or any draft/proposal/content-planning capability — those are
+  later slices (C-G) of this same phase, not yet implemented.
 - Analytics read tools (`docs/roadmap/BACKLOG.md`, "machine-readable analytics for operational
   agents to consume" — `docs/roadmap/FUTURE_PHASES.md` §4 / `docs/PROJECT_SPEC.md` §33):
   - `analytics_list` — `{ channelId, startDate?, endDate?, videoId?, metricNames?, credentialRef? }`

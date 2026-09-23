@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { SCHEMA_CURRENT_VERSION } from "@/lib/db";
+import { getChannelTargetLanguages, SCHEMA_CURRENT_VERSION } from "@/lib/db";
+import { createChangeSetChannelStoreAdapter } from "@/lib/changesets/adapters/store";
+import { createAiLocalizationCore } from "@/lib/ai-localization";
 import { createAgentOperationsServices } from "./services";
 
 /**
@@ -23,9 +25,21 @@ function readProductVersion(): string {
 }
 
 export function createAgentOperationsCore() {
+  // Reused unchanged (AGENTS.md §D): the same channel/video store adapter `ai-localization`/
+  // `changesets` already use, and `ai-localization`'s own `getEditorialProfile` service function
+  // -- this module never re-reads `channel_editorial_profiles` or the video-sync tables itself.
+  const channelStore = createChangeSetChannelStoreAdapter();
+  const aiLocalizationCore = createAiLocalizationCore();
+
   return createAgentOperationsServices({
     getProductVersion: readProductVersion,
     getSchemaVersion: () => SCHEMA_CURRENT_VERSION,
+    channelStore,
+    // `aiLocalizationCore.getEditorialProfile` takes `{ channelId }` (validated via its own
+    // zod schema), not a bare string -- wrapped here rather than changing this module's own,
+    // simpler `(channelId: string)` dependency shape.
+    getEditorialProfile: (channelId: string) => aiLocalizationCore.getEditorialProfile({ channelId }),
+    getTrackedLanguages: getChannelTargetLanguages,
   });
 }
 
@@ -40,7 +54,13 @@ export type {
   AgentCapabilityDescriptor,
   AgentCapabilityDomain,
   AgentDataDomain,
+  AgentEditorialProfileContext,
+  AgentLocalizationEntry,
+  ChannelContext,
   PermissionClass,
   PlannedFutureCapability,
   SystemCapabilities,
+  VideoContext,
+  VideoContextSection,
+  VideoMetadataContext,
 } from "./contracts";

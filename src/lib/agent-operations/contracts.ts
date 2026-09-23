@@ -120,3 +120,74 @@ export type SystemCapabilities = {
     app: number;
   };
 };
+
+// ---------------------------------------------------------------------------
+// Slice B -- read-only channel/video context (owner spec §7/§8). Wraps `changesets`' own
+// channel/video store (the same local-sync mirror `ai-localization`/`changesets` already read)
+// and `ai-localization`'s editorial-profile read -- introduces no new data, no new table, no new
+// YouTube call. Analytics, comparable videos, experiment history, and creative assets are
+// DELIBERATELY absent from these shapes (owner spec §8: "Allow the caller to request context
+// sections instead of always returning everything") -- analytics is its own dedicated slice C
+// wrapper; experiments/assets don't exist as subsystems yet (Phase 10 / slice D respectively).
+// Never claim a section exists with empty/fabricated content -- omit the field entirely instead.
+// ---------------------------------------------------------------------------
+
+export type AgentEditorialProfileContext = {
+  version: number;
+  targetAudience: string | null;
+  toneNotes: string | null;
+  terminologyNotes: string | null;
+  titleConstraints: string | null;
+  descriptionConstraints: string | null;
+  updatedAt: string;
+};
+
+export type ChannelContext = {
+  channelId: string;
+  title: string;
+  /** ISO instant of the channel's last full sync (`channels.lastSyncedAt`), or `null` if it has
+   * never been synced -- never fabricated as "now" or omitted silently. */
+  lastSyncedAt: string | null;
+  syncedVideoCount: number;
+  /** `null` when the channel has never had one saved -- never a default/invented profile
+   * (`AGENTS.md` §B: this repository never authors channel-specific editorial content). */
+  editorialProfile: AgentEditorialProfileContext | null;
+  /** The channel's own explicitly-tracked language list (`channels.target_languages_json`) --
+   * NOT the union with languages that merely have real data (that richer view belongs to the
+   * Web UI's own Languages tab, `src/lib/localization/`); this is the raw tracked-language
+   * intent, kept simple for an agent-context payload. */
+  trackedLanguages: string[];
+};
+
+export type AgentLocalizationEntry = {
+  language: string;
+  title: string;
+  description: string;
+};
+
+export type VideoContextSection = "metadata" | "localizations";
+
+export type VideoMetadataContext = {
+  videoId: string;
+  channelId: string;
+  title: string;
+  description: string;
+  publishedAt: string;
+  privacyStatus: string;
+  defaultLanguage: string | null;
+  defaultAudioLanguage: string | null;
+  /** ISO instant of this video's own last sync -- see `ChannelContext.lastSyncedAt`'s own note on
+   * why this is never fabricated. */
+  lastSyncedAt: string;
+};
+
+export type VideoContext = {
+  videoId: string;
+  channelId: string;
+  /** Which sections were actually included, echoing the caller's own (possibly narrowed)
+   * request back -- lets a caller confirm it got what it asked for, not a silently-different
+   * default set. */
+  includedSections: VideoContextSection[];
+  metadata?: VideoMetadataContext;
+  localizations?: AgentLocalizationEntry[];
+};
