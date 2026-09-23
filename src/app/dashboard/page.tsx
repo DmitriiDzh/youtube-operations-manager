@@ -14,6 +14,7 @@ import { LiveWritesSettings } from "@/components/live-writes-settings";
 import { McpConnectionSettings } from "@/components/mcp-connection-settings";
 import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
+import { ChannelConnectionsSettings } from "@/components/channel-connections-settings";
 import { SyncFolderSettings } from "@/components/sync-folder-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
 import { EditorialProfilePanel } from "@/components/editorial-profile-panel";
@@ -77,6 +78,7 @@ type Tab = (typeof NAV_ITEMS)[number]["value"];
 // the owner's own explicit choice after this distinction was raised and confirmed understood.
 const SETTINGS_SUB_TABS = [
   { value: "api", label: "API" },
+  { value: "channels", label: "Channels" },
   { value: "ai-agent", label: "AI Agent" },
   { value: "sync", label: "Sync" },
   { value: "about", label: "About" },
@@ -298,6 +300,10 @@ export default function Dashboard() {
           <ReadGatewaySettings />
           <CloudConnectionSettings />
           <AnalyticsCollectionSettings />
+        </div>
+
+        <div className={settingsSubTab === "channels" ? "space-y-6" : "hidden"}>
+          <ChannelConnectionsSettings />
         </div>
 
         <div className={settingsSubTab === "ai-agent" ? "space-y-6" : "hidden"}>

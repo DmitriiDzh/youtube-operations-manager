@@ -1,8 +1,13 @@
 import type { NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
+import CredentialsProvider from "next-auth/providers/credentials";
+import { getToken } from "next-auth/jwt";
 import { google } from "googleapis";
 import { createHash, randomBytes } from "node:crypto";
 import { upsertUserOAuthOnSignIn } from "./db";
+// `channel-connections/index.ts` imports `revokeGoogleToken` from this very file, so importing it
+// statically here would create a module-init circular dependency -- loaded lazily instead, inside
+// the Credentials provider's `authorize()` below, via a dynamic `import()`.
 
 export const YOUTUBE_READ_SCOPE =
   "https://www.googleapis.com/auth/youtube.readonly";
@@ -336,10 +341,53 @@ export const authOptions: NextAuthOptions = {
         },
       },
     }),
+    // `docs/decisions/0010-persistent-channel-connections.md` -- reactivates an already-connected
+    // channel's stored identity (its tokens already live in `users`, never deleted between
+    // sessions) without a Google round-trip. Never rendered on any sign-in page (this app's login
+    // page, `src/app/page.tsx`, calls `signIn("google")` directly rather than NextAuth's default
+    // multi-provider chooser) -- only the Settings "Channels" section's "Activate" button invokes
+    // this provider by id, explicitly.
+    CredentialsProvider({
+      id: "channel-connections",
+      name: "Stored channel",
+      credentials: { channelId: { label: "Channel ID", type: "text" } },
+      async authorize(credentials, req) {
+        // Requires an already-valid existing session before activating a stored channel -- this
+        // is a privileged action gated on already being signed into this app somehow, exactly
+        // like every Cloud connection route requires an active session (ADR 0008). Never an
+        // independent, unauthenticated way to assume any locally-known identity.
+        const existingToken = await getToken({
+          req: req as unknown as Parameters<typeof getToken>[0]["req"],
+          secret: process.env.NEXTAUTH_SECRET,
+        });
+        if (!existingToken) return null;
+
+        const channelId = credentials?.channelId;
+        if (!channelId) return null;
+
+        const { createChannelConnectionsCore, isDomainError } = await import("./channel-connections");
+
+        try {
+          const identity = await createChannelConnectionsCore().resolveChannelIdentityForActivation(channelId);
+          return { id: identity.userId, email: identity.email, name: identity.name, image: identity.image };
+        } catch (err) {
+          if (isDomainError(err)) return null;
+          throw err;
+        }
+      },
+    }),
   ],
   callbacks: {
     async signIn({ user, account }) {
       if (!account) return false;
+
+      // A "channel-connections" sign-in reactivates an already-stored identity -- its `users` row
+      // already has the real, correctly-scoped tokens. Its synthetic `account` carries no real
+      // OAuth tokens, so running the upsert below unconditionally would silently null out that
+      // identity's perfectly good, already-stored tokens.
+      if (account.provider === "channel-connections") {
+        return true;
+      }
 
       await upsertUserOAuthOnSignIn({
         userId: user.id,
