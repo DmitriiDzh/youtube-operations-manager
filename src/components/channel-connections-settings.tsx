@@ -1,82 +1,37 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
-
-type ConnectedChannel = {
-  channelId: string;
-  title: string;
-  thumbnailUrl: string | null;
-  connectedEmail: string;
-  connectedAt: string;
-  isActive: boolean;
-};
+import { activateStoredChannel, useConnectedChannels, type ConnectedChannel } from "./use-connected-channels";
 
 /**
  * Settings-tab card for persistent channel connections (`docs/decisions/0010-persistent-channel-connections.md`,
  * owner instruction, 2026-09-23): connect any number of channels once, then switch between them
- * without re-consenting to Google every time. Distinct from the topbar's "Switch channel" button
- * (still always goes through Google's own account picker, unchanged) -- "Activate" here reuses an
- * already-stored identity instead.
+ * without re-consenting to Google every time, plus manage (disconnect) them. The topbar's
+ * `channel-switcher.tsx` is the quick-switch counterpart, sharing this same
+ * `useConnectedChannels`/`activateStoredChannel` logic (owner instruction, 2026-09-23:
+ * "Функционал максимально должен использовать тот что уже есть сейчас") -- this card additionally
+ * owns Disconnect, which the topbar dropdown deliberately doesn't expose.
  */
 export function ChannelConnectionsSettings() {
-  const [channels, setChannels] = useState<ConnectedChannel[] | null>(null);
+  const { channels, refetch } = useConnectedChannels();
   const [error, setError] = useState<string | null>(null);
   const [activatingChannelId, setActivatingChannelId] = useState<string | null>(null);
   const [pendingDisconnect, setPendingDisconnect] = useState<ConnectedChannel | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
 
-  const fetchChannels = useCallback(async () => {
-    try {
-      const res = await fetch("/api/channel-connections");
-      if (!res.ok) return;
-      const data = (await res.json()) as { channels: ConnectedChannel[] };
-      setChannels(data.channels);
-    } catch {
-      // Non-fatal -- the card just keeps showing its last known list.
-    }
-  }, []);
-
-  useEffect(() => {
-    // A channel only gets linked into `channels.connectedUserId` (the field `listConnectedChannels`
-    // filters on) by `channel-sync`'s own "mine" resolution -- `GET /api/youtube/channel-info`
-    // (fetched automatically on every dashboard load) only ever updates `users.selectedChannelId`
-    // (ADR 0004), never that link. Before this fix, a channel connected via "Connect a new
-    // channel" (a plain Google sign-in) never appeared here at all unless the operator separately
-    // visited the Content/Languages tab, which happens to also trigger this same sync -- found by
-    // the project owner live-testing this exact flow. Calling it here too (mine-path, no
-    // `channelId`) makes this card self-contained; it runs once per dashboard session, the same
-    // cost tradeoff already accepted for this Settings tab's other cards that fetch on load.
-    async function syncThenFetch() {
-      try {
-        await fetch("/api/channels/sync", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({}),
-        });
-      } catch {
-        // Non-fatal -- a pre-existing connection still lists correctly either way; this only
-        // affects whether a *just-connected* channel shows up immediately.
-      }
-      await fetchChannels();
-    }
-    void syncThenFetch();
-  }, [fetchChannels]);
-
   async function handleActivate(channelId: string) {
     setActivatingChannelId(channelId);
     setError(null);
     try {
-      const result = await signIn("channel-connections", { channelId, redirect: false });
-      if (result?.error) {
-        setError("Could not activate this channel. It may need to be reconnected.");
+      const { ok } = await activateStoredChannel(channelId);
+      if (ok) {
+        await refetch();
       } else {
-        await fetchChannels();
+        setError("Could not activate this channel. It may need to be reconnected.");
       }
-    } catch {
-      setError("Could not activate this channel. It may need to be reconnected.");
     } finally {
       setActivatingChannelId(null);
     }
@@ -102,7 +57,7 @@ export function ChannelConnectionsSettings() {
         await signOut();
         return;
       }
-      await fetchChannels();
+      await refetch();
     } catch {
       setError("Disconnect failed");
     } finally {
@@ -116,9 +71,9 @@ export function ChannelConnectionsSettings() {
         Channels
         <InfoTooltip>
           Every channel you connect here stays connected until you explicitly disconnect it --
-          switching between them never requires signing in to Google again. Connecting a new
-          channel still goes through Google&rsquo;s own consent screen once; the topbar&rsquo;s
-          &ldquo;Switch channel&rdquo; button is unchanged and always asks Google directly.
+          switching between them (here, or from the topbar&rsquo;s &ldquo;Switch channel&rdquo;
+          dropdown) never requires signing in to Google again. Connecting a new channel still goes
+          through Google&rsquo;s own consent screen once.
         </InfoTooltip>
       </h3>
 

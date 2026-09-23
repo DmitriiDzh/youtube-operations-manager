@@ -158,7 +158,33 @@ review, round 2).
 (the client calls `signOut()` once the disconnect route reports it disconnected the active
 identity) — an explicit, owner-visible action, not a silent background effect.
 
-**Not built in this slice:** the topbar's existing "Switch channel" button still always calls
-`signIn("google")` unchanged — the owner asked for a new Settings section, not a change to that
-button's existing behavior. Wiring it to prefer the new stored-channel path is a natural, low-risk
-follow-up but is out of scope here unless separately assigned.
+**Addendum, 2026-09-23 (same day, owner follow-up instruction): the topbar "Switch channel" button
+reworked into a quick-switch dropdown.** Originally left unchanged in this ADR's first version
+("the owner asked for a new Settings section, not a change to that button's existing behavior").
+The owner then explicitly asked for exactly that follow-up: *"перерабатываем кнопку Switch Channel,
+она должна предлагать список из уже подключеных каналов и внизу кнопку добавить новый... Функционал
+максимально должен использовать тот что уже есть сейчас, мы просто создаем дополнительную
+визуальную обертку."*
+
+- The list-fetching (with the mine-path sync fix below) and activation logic were extracted from
+  `channel-connections-settings.tsx` into a shared `src/components/use-connected-channels.ts`
+  hook (`useConnectedChannels`, `activateStoredChannel`) — no new fetch or activation mechanism,
+  exactly the same `GET /api/channel-connections` and `signIn("channel-connections", ...)` calls,
+  now used from two independent call sites instead of duplicated.
+- New `src/components/channel-switcher.tsx` replaces the topbar's plain button with a small
+  dropdown: each connected channel (thumbnail, title, an "Active" label on the current one,
+  clicking any other one calls `activateStoredChannel` — no Google round-trip), and a
+  "+ Connect a new channel" row at the bottom that still calls `signIn("google")` unchanged.
+  Deliberately omits Disconnect (a destructive action stays confined to the Settings card, which
+  already has it behind `ConfirmDialog`) — this dropdown is a quick-switch surface, not a second
+  management UI.
+- `app-shell.tsx`'s `onSwitchChannel` prop was removed entirely (no longer meaningful — the new
+  component manages its own state and calls `signIn` directly, the same self-contained shape
+  `channel-connections-settings.tsx` already used).
+- **Found live testing this exact addendum:** `signIn("google")` alone never links the freshly
+  authenticated identity into `channels.connectedUserId` (that link is set only by `channel-sync`'s
+  "mine" resolution, previously triggered only from Content/Languages) — a channel connected via
+  "Connect a new channel" silently never appeared in either list. Fixed inside
+  `useConnectedChannels` itself (not per-caller) by calling `POST /api/channels/sync` (mine-path)
+  before every fetch; reproduced by resetting a real, valid channel's `connectedUserId` directly
+  and confirming it reappears on the next mount without visiting Content/Languages.

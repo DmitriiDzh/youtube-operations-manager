@@ -6,6 +6,7 @@
 // every existing tab's own content component is rendered completely unchanged inside it.
 import type { ComponentType, ReactNode, SVGProps } from "react";
 import type { ChannelInfo } from "@/app/dashboard/page";
+import { ChannelSwitcher } from "./channel-switcher";
 
 export type NavItem<T extends string> = {
   value: T;
@@ -22,7 +23,6 @@ export function AppShell<T extends string>(props: {
   onTabChange: (tab: T) => void;
   channel: Pick<ChannelInfo, "title" | "thumbnail" | "videoCount"> | null;
   userName?: string | null;
-  onSwitchChannel: () => void;
   onSignOut: () => void;
   children: ReactNode;
 }) {
@@ -83,12 +83,7 @@ export function AppShell<T extends string>(props: {
                 )}
               </p>
             </div>
-            <button
-              onClick={props.onSwitchChannel}
-              className="ml-2 rounded-full border border-border px-3 py-1 text-xs font-medium text-muted transition-colors hover:border-accent hover:text-white"
-            >
-              Switch channel
-            </button>
+            <ChannelSwitcher />
           </div>
           <div className="flex items-center gap-3">
             {props.userName && <span className="text-sm text-muted">{props.userName}</span>}
