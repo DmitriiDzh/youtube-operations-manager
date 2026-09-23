@@ -244,8 +244,9 @@ implemented during Phases 7-10 unless separately approved:
   real limit/usage numbers surfaced in Settings under a reusable progress-bar component (done,
   `docs/ARCHITECTURE.md` §16) — a live spike found the Cloud Quotas API unnecessary, since the
   already-connected Cloud Monitoring API supplies both the limit and the usage numbers on its own.
-  All three slices are complete on `feature/gateway-traffic-counters`, not yet merged to `dev`
-  pending the owner's separate merge approval.
+  All three slices are complete and merged into `dev` (`4be1f29`, 2026-09-22, owner approval "ок,
+  можно мерджить в дев") — see `docs/ROADMAP_STATUS.md`'s BL-061/062/063 row. This bullet is kept
+  here as a historical record of the original ask; it does not describe outstanding work.
 - **Replace XLSX as the localization Change Set interface with the same JSON/MCP-based pattern
   used by the new Analytics diagnostics tools** (recorded 2026-09-23, owner request via Telegram,
   following the same-day architecture decision for Phase 8's analytics-diagnostics storage —
