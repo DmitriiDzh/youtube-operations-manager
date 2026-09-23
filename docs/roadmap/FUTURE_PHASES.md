@@ -246,6 +246,23 @@ implemented during Phases 7-10 unless separately approved:
   already-connected Cloud Monitoring API supplies both the limit and the usage numbers on its own.
   All three slices are complete on `feature/gateway-traffic-counters`, not yet merged to `dev`
   pending the owner's separate merge approval.
+- **Replace XLSX as the localization Change Set interface with the same JSON/MCP-based pattern
+  used by the new Analytics diagnostics tools** (recorded 2026-09-23, owner request via Telegram,
+  following the same-day architecture decision for Phase 8's analytics-diagnostics storage —
+  a plain new SQLite table via Drizzle, exposed as JSON over MCP/API, no new database technology —
+  after live 2026 web research confirmed that scope is right for this app's actual workload).
+  Owner's stated reasoning, verbatim: "эксель нам тоже не нужен и надо на такую же систему для
+  локализации завезти, т.к. перевод делать должен агент, а не человек" (XLSX isn't needed for
+  localization either, and the same system should be brought there too, because translation is
+  meant to be done by an agent, not a human). This is a future direction only, not approved
+  implementation work, and not yet scoped: the Change Set/localization pipeline is one of this
+  repo's most safety-critical, heavily-tested subsystems (`docs/PROJECT_SPEC.md` §21, AGENTS.md §F),
+  so any real design pass needs the full AGENTS.md §A architectural documentation read before a
+  single line of implementation, plus its own explicit future assignment per §C. Open question for
+  whoever picks this up, deliberately left unresolved here: XLSX import/export is currently this
+  pipeline's primary *human*-editing interface — even if agent-driven generation no longer needs a
+  spreadsheet intermediary, XLSX (or some other human-facing view) may still carry real value for a
+  human reviewer/editor path, and this bullet does not decide whether or how that path is kept.
 
 ## 8. How to use this roadmap in future sessions
 
