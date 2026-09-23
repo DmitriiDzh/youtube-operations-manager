@@ -71,6 +71,10 @@ export async function GET() {
       title: channel.snippet?.title,
       thumbnail: channel.snippet?.thumbnails?.default?.url,
       videoCount: channel.statistics?.videoCount,
+      // Studio-Parity S4 (docs/roadmap/plans/STUDIO_PARITY_PLAN.md §4) -- Home's "Channel
+      // analytics" card's "Current subscribers" number. Already present on this same response's
+      // `statistics` part (requested above); additive field, no new API call.
+      subscriberCount: channel.statistics?.subscriberCount,
     },
   });
 }

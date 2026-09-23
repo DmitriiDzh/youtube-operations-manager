@@ -816,6 +816,61 @@ letting it repeat as an unstated gap — revisit whether this table should join
 `SNAPSHOT_TRANSFERRED_TABLES` once real collection (slice 3+) makes the data worth carrying
 across devices.
 
+### 14.8 Channel-level Analytics reads for Studio-Parity S6b (`getChannelOverview`) — not yet in `dev`
+
+Every read documented above (§14.1-§14.7) is per-video: one `reports.query` call per synced
+video, `filters=video==<id>`. Studio's own Analytics "Overview" tab (BL-072,
+`docs/roadmap/plans/STUDIO_PARITY_PLAN.md` §4 Slice S6b) needs channel-level totals instead —
+summing per-video rows would silently miss any activity not attributable to a currently-synced
+video (a deleted video, or subscribers gained from the channel page itself), the same class of
+undercounting problem RISK-33-style orphan rows already illustrate elsewhere in this document.
+
+A throwaway diagnostic route (never committed, same technique BL-057 used) confirmed live against
+a real channel that dropping `filters=video==...` entirely — `ids=channel==<id>`,
+`dimensions=day`, no filter — is accepted by the real API and returns genuine per-day channel
+totals. This is a *different* report shape from the one BL-057 already ruled out (a bulk
+`dimensions=video,day` query across every video with no filter, which the API rejects outright) —
+dropping the dimension, not just the filter, is what makes the difference. `queryChannelAnalyticsReport`
+(`youtube-read-gateway/analytics-api.ts`) is this second report shape; both it and the existing
+per-video report now share one response parser (`parseDayDimensionReport`) rather than duplicating
+the name-based column-lookup logic.
+
+`getChannelOverview` (`src/lib/analytics/services.ts`) is deliberately a **live read, never
+persisted** — unlike `collectMetrics`, it writes nothing to `video_metrics_daily` or any new
+table, and so is not subject to `collectMetrics`'s own once-a-day freshness gate (§14.6); it is
+already gated by the existing per-category "Analytics reads enabled" toggle every
+`createYoutubeAnalyticsClient` call goes through. It issues exactly two calls — the requested
+period and the immediately-preceding period of the same length (`analytics/period.ts`'s pure
+`computePreviousPeriod`) — and sums each into totals itself, rather than a third "totals only, no
+dimensions" call; one report shape, two date ranges. A day the API omits from its response
+contributes `0` to that sum, which is a true fact about the sum (no rows means no reported
+activity), not the same "silently defaulted a missing per-day-per-metric value to 0" case
+`collectMetrics`'s own doc comment warns against for raw per-row display.
+
+Also confirmed live and worth recording here since it corrects §7 of `contracts.ts`'s own
+provenance note: `impressions`/`impressionClickThroughRate` (Studio's thumbnail-impressions/CTR
+widgets, both on Home and on Analytics' Content sub-tab) are rejected by the real API as unknown
+metric identifiers. These are not the same as the `annotation*`/`card*` legacy metrics already in
+`ANALYTICS_METRIC_NAMES` (dead since 2019, always zero) — they are a structurally different,
+genuinely unavailable-via-public-API capability. No code path in this repository requests them.
+
+**Totals will not exactly match Studio's own displayed numbers for the same nominal date range,
+and this is expected, not a bug.** Cross-checked live 2026-09-23 against the real "Rural Japan
+Music" channel for the identical "Aug 26 - Sep 22" window Studio itself showed earlier the same
+session: Studio displayed 2,052 views / 379.7 watch-time hours / +18 net subscribers; this
+endpoint returned 1,966 / 364.1 hours / +17 for the exact same request. Inspecting the raw
+response showed why: the API's `daily` rows stopped at `2026-09-20` -- no row at all for
+`2026-09-21`/`2026-09-22`, even though both were inside the requested range. This is the same
+reporting lag `PHASE_8_PLAN.md` §10 item 4 already documents for the per-video report (the API
+does not yet report the most recent day(s) of any range) -- Studio's own internal dashboard
+evidently draws from a less-lagged data source than the public Analytics API `reports.query`
+exposes. Nothing here should try to "fix" this by guessing or interpolating the missing days;
+`getChannelOverview` correctly sums exactly what the API has processed as of query time, and the
+chart's `zeroFillDailySeries` correctly stops at the last date actually present rather than
+padding through `endDate` with fabricated zeros (see its own doc comment). A future slice
+re-querying a completed period after the lag has cleared would show a different, larger total for
+the same historical dates -- this is inherent to using the public API, not a caching bug to chase.
+
 ## 15. Cloud connection (`src/lib/cloud-connection/`) — slice 1 of 3, not yet in `dev`
 
 ### 15.1 Status and scope

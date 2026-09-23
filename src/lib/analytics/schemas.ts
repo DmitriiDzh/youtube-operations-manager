@@ -93,3 +93,41 @@ export const runAutoCollectionOutputSchema = z.discriminatedUnion("ranCollection
 ]);
 
 export type RunAutoCollectionOutput = z.infer<typeof runAutoCollectionOutputSchema>;
+
+export const getChannelOverviewInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+    startDate: isoDateSchema,
+    endDate: isoDateSchema,
+  })
+  .strict();
+
+const channelOverviewTotalsSchema = z
+  .object({
+    views: z.number(),
+    estimatedMinutesWatched: z.number(),
+    subscribersGained: z.number(),
+    subscribersLost: z.number(),
+  })
+  .strict();
+
+const channelOverviewDailyRowSchema = channelOverviewTotalsSchema.extend({
+  date: z.string(),
+});
+
+export const getChannelOverviewOutputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    startDate: z.string(),
+    endDate: z.string(),
+    previousStartDate: z.string(),
+    previousEndDate: z.string(),
+    daily: z.array(channelOverviewDailyRowSchema),
+    currentTotals: channelOverviewTotalsSchema,
+    previousTotals: channelOverviewTotalsSchema,
+  })
+  .strict();
+
+export type GetChannelOverviewInput = z.infer<typeof getChannelOverviewInputSchema>;
+export type GetChannelOverviewOutput = z.infer<typeof getChannelOverviewOutputSchema>;

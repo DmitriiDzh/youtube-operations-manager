@@ -4,7 +4,8 @@ import { useSession, signOut } from "next-auth/react";
 import { redirect } from "next/navigation";
 import { useEffect, useState, useCallback, useRef } from "react";
 import type { ComponentType, SVGProps } from "react";
-import { AnalyticsManager } from "@/components/analytics-manager";
+import { AnalyticsTab } from "@/components/analytics-tab";
+import { HomeDashboardPanel } from "@/components/home-dashboard-panel";
 import { ContentManager } from "@/components/content-manager";
 import { LanguagesManager } from "@/components/languages-manager";
 import { BatchManager } from "@/components/batch-manager";
@@ -36,6 +37,7 @@ export type ChannelInfo = {
   title: string;
   thumbnail?: string;
   videoCount?: string;
+  subscriberCount?: string;
 };
 
 // Tab is derived from NAV_ITEMS (not declared independently) so the two can never drift apart --
@@ -209,13 +211,17 @@ export default function Dashboard() {
         // `channelId` prop; each resolves "the active channel" itself, once, on its own mount
         // (server-side, via the session's `selectedChannelId`) -- remounting is what makes that
         // mount-time resolution re-run, without changing any of the five components themselves.
-        <div key={channel?.id ?? "no-channel"} className="max-w-3xl space-y-6">
-          <p className="text-sm text-zinc-400">
-            Channel dashboard (docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slice S4). Recent-video
-            and comment/subscriber cards are planned for a later pass — this tab starts with the
-            editorial profile, since it applies everywhere AI localization happens.
+        <div key={channel?.id ?? "no-channel"} className="space-y-6">
+          <p className="max-w-3xl text-sm text-zinc-400">
+            Channel dashboard (docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slices S4/S6b). Comments
+            and Recent-subscribers feeds are still open questions (public-API feasibility
+            unconfirmed) — everything else Studio&apos;s own Home shows from already-available
+            data is below.
           </p>
-          <EditorialProfilePanel />
+          <HomeDashboardPanel subscriberCount={channel?.subscriberCount} onViewAllContent={() => setTab("content")} />
+          <div className="max-w-3xl">
+            <EditorialProfilePanel />
+          </div>
         </div>
       )}
 
@@ -232,11 +238,12 @@ export default function Dashboard() {
       {tab === "analytics" && (
         <div key={channel?.id ?? "no-channel"}>
           <p className="mb-4 text-sm text-zinc-400">
-            Manual collection for now (BL-059&apos;s daily auto-collection is a separate,
-            not-yet-built follow-up) &mdash; facts only, no comparisons or recommendations yet
-            (Phase 10&apos;s own scope).
+            Overview cards/chart are a live read from the Analytics API; the raw table below is
+            still fed by manual/daily-auto collection (BL-058/BL-059). Percentages here are
+            computed facts (period-over-period deltas from real numbers, same as Studio&apos;s own
+            cards) &mdash; AI-generated recommendations remain Phase 10&apos;s own, separate scope.
           </p>
-          <AnalyticsManager />
+          <AnalyticsTab subscriberCount={channel?.subscriberCount} />
         </div>
       )}
 

@@ -27,11 +27,15 @@ export function createAnalyticsCore() {
 }
 
 export type AnalyticsCore = ReturnType<typeof createAnalyticsCore>;
-export { ANALYTICS_METRIC_NAMES, AUTO_COLLECTION_RANGE_DAYS } from "./contracts";
+export { ANALYTICS_METRIC_NAMES, AUTO_COLLECTION_RANGE_DAYS, CHANNEL_OVERVIEW_METRIC_NAMES } from "./contracts";
 export type {
   AnalyticsMetricName,
   AutoCollectResult,
+  ChannelOverviewDailyRow,
+  ChannelOverviewMetricName,
+  ChannelOverviewTotals,
   CollectMetricsResult,
+  GetChannelOverviewResult,
   ListMetricsResult,
   StoredVideoMetricRow,
 } from "./contracts";
