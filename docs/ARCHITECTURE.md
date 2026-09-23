@@ -1323,17 +1323,17 @@ Google Cloud"/"Save / Apply" buttons (owner instruction: "можем и цвет
 24h bars at a glance, not a fourth copy of the same thing. `ProgressBar` itself gained an optional
 `color` prop (`"red" | "indigo"`, default `"red"`) to support this without forking the component.
 
-## 17. Agent Operations Interface (`src/lib/agent-operations/`) — Phase 7, slices A-B of J landed on this branch, not yet in `dev`
+## 17. Agent Operations Interface (`src/lib/agent-operations/`) — Phase 7, in progress, not yet in `dev`
 
 Owner instruction, Telegram 2026-09-23: a full 34-section spec ("Phase 7 — Agent Operations
 Interface for Codex") authorizing design and incremental implementation of a versioned interface
 external operational agents consume, without per-slice approval (only the final `dev` merge needs
 explicit sign-off). **The full technical design, permission model, error vocabulary, and
-per-slice implementation status live in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table --
-consult that table for which slice is implemented, not the number in this heading** (this section
-is a pointer, not a duplicate, per `AGENTS.md` §H's "avoid competing sources of truth"; a prior
-version of this heading named a specific slice and went stale the moment the next slice landed
-without touching this file -- found by independent review, 2026-09-24).
+per-slice implementation status live exclusively in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's
+status table -- this heading deliberately never names which slice is implemented**, because two
+earlier versions of this heading and its body each named a specific slice as done/pending and both
+went stale the moment the next slice landed without this file being touched (found by independent
+review, 2026-09-24, rounds 1-3) -- consult §7 of that document instead, every time.
 
 In one sentence: this application remains the sole source of truth for owned-channel data,
 analytics, and the write-safety pipeline; the agent is a reasoning/proposal layer that must
