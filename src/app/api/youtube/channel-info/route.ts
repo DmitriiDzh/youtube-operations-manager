@@ -30,11 +30,18 @@ export async function GET() {
     // (AGENTS.md §F) -- whatever exception type actually reaches this catch in the future (a
     // library internal, a misconfigured client, not just this scenario's `invalid_grant`), the
     // client only ever sees this one fixed, generic message.
-    console.error(JSON.stringify({
-      level: "error",
-      event: "youtube.channel_info.unavailable",
-      context: { userId: session.user.id, error: error instanceof Error ? error.message : String(error) },
-    }));
+    try {
+      console.error(JSON.stringify({
+        level: "error",
+        event: "youtube.channel_info.unavailable",
+        context: { userId: session.user.id, error: error instanceof Error ? error.message : String(error) },
+      }));
+    } catch {
+      // A structured log is a nice-to-have, not a requirement -- if it somehow can't be
+      // serialized, fall back to a plain log rather than let that itself reproduce the exact
+      // "unhandled throw escapes this catch" failure this whole block exists to prevent.
+      console.error("youtube.channel_info.unavailable", error);
+    }
     return NextResponse.json(
       {
         error: "channel_info_unavailable",

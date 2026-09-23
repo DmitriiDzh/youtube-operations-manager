@@ -330,6 +330,12 @@ export async function fetchGoogleIdentity(args: {
  * on the same origin (an ad/analytics cookie, another app, a stale malformed value) with invalid
  * percent-encoding must never be able to abort parsing before the loop reaches the actual session
  * cookie -- that cookie is simply skipped instead of throwing out of the whole function.
+ *
+ * On a duplicate cookie name (a browser can legitimately send the same name scoped to two
+ * different paths in one header), the FIRST occurrence wins, matching the `cookie` npm package's
+ * own `parse()` behavior (verified against `node_modules/cookie`) -- this is the same convention
+ * `getServerSession()`'s own cookie parsing already follows elsewhere in this app, so this
+ * function resolves the same identity `getServerSession()` would for the same request.
  */
 export function parseCookieHeader(rawCookieHeader: string): Map<string, string> {
   const cookies = new Map<string, string>();
@@ -338,7 +344,7 @@ export function parseCookieHeader(rawCookieHeader: string): Map<string, string> 
     if (separatorIndex === -1) continue;
     const name = part.slice(0, separatorIndex).trim();
     const value = part.slice(separatorIndex + 1).trim();
-    if (!name) continue;
+    if (!name || cookies.has(name)) continue;
     try {
       cookies.set(name, decodeURIComponent(value));
     } catch {

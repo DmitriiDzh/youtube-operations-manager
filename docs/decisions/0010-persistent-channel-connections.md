@@ -75,7 +75,7 @@ NextAuth session point at an **already-stored** identity, bypassing Google's con
   - `resolveChannelIdentityForActivation(channelId)` — described above.
   - `disconnectChannel(channelId)` — revokes the stored token with Google (best-effort, same
     finally-clear pattern as `cloud-connection`'s `disconnect()`), **clears** (does not delete) the
-    `users` row's token columns via the existing `saveUserOAuthTokens`, and sets
+    `users` row's token columns via the existing `clearUserOAuthTokens`, and sets
     `channels.connectedUserId = NULL`. Returns which `userId` was disconnected so the calling route
     can compare it to the live session and signal the client to sign out if it just disconnected
     itself. Clearing tokens rather than deleting the `users` row avoids the legacy (removed-from-UI
@@ -130,8 +130,18 @@ new "Channels" list automatically, marked active, with no reconnect step require
 §27) runs exactly as before against whichever session is active, regardless of whether that session
 was established via Google or via this new provider — write-safety's guarantee is unchanged because
 it was never based on *how* the session came to exist, only on what it resolves to *right now*.
-RISC-39 (`syncChannel`'s explicit-`channelId` path has no ownership check) is neither fixed nor
+RISK-39 (`syncChannel`'s explicit-`channelId` path has no ownership check) is neither fixed nor
 widened by this change — this feature never calls `syncChannel`.
+
+**New, deliberate exception to RISK-02's read-scoping precedent, tracked as RISK-49
+(`docs/TECHNICAL_DEBT.md`):** unlike every other channel-scoped surface in this app, `GET
+/api/channel-connections` and `POST /api/channel-connections/disconnect` are intentionally NOT
+scoped to the caller's own active channel — the whole point of this feature is to see and manage
+connections other than the one currently active. This is a real, larger blast radius than RISK-02's
+fix established elsewhere (a valid session can list/revoke every connected channel, not just its
+own), accepted here because narrowing it would defeat the feature, and recorded per `AGENTS.md` §F
+rather than left as a silent, undocumented gap (found and flagged by this branch's own independent
+review, round 2).
 
 **New operational note:** disconnecting the channel matching the live session ends that session
 (the client calls `signOut()` once the disconnect route reports it disconnected the active
