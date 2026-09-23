@@ -950,9 +950,12 @@ not attempted here.
 **Real-data caveat, confirmed by directly querying two real channels' `video_metrics_daily` before
 designing this feature's response shape:** the daily auto-collection window only covers the most
 recent ~7 calendar days per run (§14.6), not "the video's first 7 days since publish." For a video
-published more than about a week before regular collection started for its channel, `points`/
-`cumulativePoints` for low day-offsets (0-7) will typically be empty -- not a bug, a genuine,
-expected data-coverage gap. On the two real channels used to validate this feature ("Rural Japan
+published more than about a week before regular collection started for its channel, `points` will
+typically have no entries for low day-offsets (0-7) specifically, and `cumulativePoints` will
+typically be empty entirely (it always starts from day 0, so a missing day 0 halts it before it
+starts) -- not a bug, a genuine, expected data-coverage gap. `points` for that same video may still
+be non-empty overall if the rolling collection window happened to cover some LATER day-offset --
+an empty `cumulativePoints` does not imply an empty `points`. On the two real channels used to validate this feature ("Rural Japan
 Music", "Tropico Jazz"), this happens to be a much smaller problem than it first appears, because
 both channels upload frequently enough that the rolling 7-day window naturally overlaps most recent
 videos' own early days -- but a video from more than ~1-2 weeks ago will still show sparse or empty
@@ -971,8 +974,9 @@ Every requested `videoId` is checked against `videoStore.listVideoDetailsByChann
 back as `validation_failed` with the offending id(s) in `details`, never silently dropped from the
 comparison. Exposed via `GET .../analytics/comparable-age`, the MCP tool
 `analytics_comparable_age`, and the CLI's `analytics comparable-age` command -- all three pure local
-reads, read-only, ungated, following the same pattern as `analytics_list`/`analytics_overview`/
-`analytics_data_quality`.
+reads (never a live YouTube call), read-only, ungated, following the same pattern as
+`analytics_list`/`analytics_data_quality` (unlike `analytics_overview`, which is a live, gated
+Analytics API read -- see §14.8).
 
 ## 15. Cloud connection (`src/lib/cloud-connection/`) — slice 1 of 3, not yet in `dev`
 

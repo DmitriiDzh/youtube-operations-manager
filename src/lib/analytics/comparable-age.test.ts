@@ -126,6 +126,42 @@ test("computeComparableAgeSeries: uses the video's own Pacific-Time publish day,
   assert.deepEqual(result.points, [{ dayOffset: 0, value: 7 }]);
 });
 
+test("computeComparableAgeSeries: a row at exactly dayOffset === maxDays is included, not excluded", () => {
+  const result = computeComparableAgeSeries({
+    publishedAt: "2026-09-20T17:00:00Z",
+    metricRows: [{ metricDate: "2026-09-30", metricValue: 5 }], // day offset 10
+    maxDays: 10,
+  });
+
+  assert.deepEqual(result.points, [{ dayOffset: 10, value: 5 }]);
+});
+
+test("computeComparableAgeSeries: a row at exactly dayOffset === maxDays + 1 is excluded", () => {
+  const result = computeComparableAgeSeries({
+    publishedAt: "2026-09-20T17:00:00Z",
+    metricRows: [{ metricDate: "2026-10-01", metricValue: 5 }], // day offset 11
+    maxDays: 10,
+  });
+
+  assert.deepEqual(result.points, []);
+});
+
+test("computeComparableAgeSeries: a contiguous series through maxDays includes maxDays in cumulativePoints", () => {
+  const result = computeComparableAgeSeries({
+    publishedAt: "2026-09-20T17:00:00Z",
+    metricRows: [
+      { metricDate: "2026-09-20", metricValue: 1 },
+      { metricDate: "2026-09-21", metricValue: 1 },
+    ],
+    maxDays: 1,
+  });
+
+  assert.deepEqual(result.cumulativePoints, [
+    { dayOffset: 0, cumulativeValue: 1 },
+    { dayOffset: 1, cumulativeValue: 2 },
+  ]);
+});
+
 test("computeComparableAgeSeries: multiple rows landing on the same day offset are summed", () => {
   const result = computeComparableAgeSeries({
     publishedAt: "2026-09-20T17:00:00Z",

@@ -650,23 +650,39 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           }
         }
 
-        const videos = parsedInput.videoIds.map((videoId) => {
-          const details = videoDetailsById.get(videoId)!;
-          const series = computeComparableAgeSeries({
-            publishedAt: details.publishedAt,
-            metricRows: rowsByVideoId.get(videoId) ?? [],
-            maxDays: parsedInput.maxDays,
-          });
+        // `computeComparableAgeSeries` throws a plain `Error` (never a `DomainError`) on an
+        // unparseable `publishedAt` -- extremely unlikely in practice (`videos.published_at` is a
+        // `NOT NULL` column populated from a real Data API v3 response), but caught and remapped
+        // to `validation_failed` here rather than falling into the generic
+        // `mapUnknownError(error, "unauthorized")` below, which would otherwise surface this as a
+        // misleading 401 for what is actually a data-shape problem -- the same bug class
+        // `getChannelOverview`'s own doc comment already documents fixing once (found by
+        // independent review, 2026-09-23).
+        let videos: GetComparableAgeComparisonResult["videos"];
+        try {
+          videos = parsedInput.videoIds.map((videoId) => {
+            const details = videoDetailsById.get(videoId)!;
+            const series = computeComparableAgeSeries({
+              publishedAt: details.publishedAt,
+              metricRows: rowsByVideoId.get(videoId) ?? [],
+              maxDays: parsedInput.maxDays,
+            });
 
-          return {
-            videoId,
-            title: details.title,
-            publishedAt: details.publishedAt,
-            publishDatePacific: series.publishDatePacific,
-            points: series.points,
-            cumulativePoints: series.cumulativePoints,
-          };
-        });
+            return {
+              videoId,
+              title: details.title,
+              publishedAt: details.publishedAt,
+              publishDatePacific: series.publishDatePacific,
+              points: series.points,
+              cumulativePoints: series.cumulativePoints,
+            };
+          });
+        } catch (error) {
+          throw new DomainError({
+            code: "validation_failed",
+            message: error instanceof Error ? error.message : "Invalid video publish date",
+          });
+        }
 
         const output = {
           channelId: parsedInput.channelId,

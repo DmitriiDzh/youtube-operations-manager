@@ -1037,6 +1037,81 @@ test("getComparableAgeComparison rejects a non-additive metric name (e.g. averag
   );
 });
 
+test("getComparableAgeComparison rejects more than 10 videoIds as validation_failed", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    videoDetailsByChannel: {
+      UC_A: Array.from({ length: 11 }, (_, i) => ({
+        videoId: `v${i}`,
+        title: `Video ${i}`,
+        publishedAt: "2026-09-01T00:00:00Z",
+      })),
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getComparableAgeComparison({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        videoIds: Array.from({ length: 11 }, (_, i) => `v${i}`),
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+test("getComparableAgeComparison maps an unparseable publishedAt to validation_failed, not a misleading unauthorized", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    videoDetailsByChannel: {
+      UC_A: [
+        { videoId: "v1", title: "Video 1", publishedAt: "not-a-real-timestamp" },
+        { videoId: "v2", title: "Video 2", publishedAt: "2026-09-05T00:00:00Z" },
+      ],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getComparableAgeComparison({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        videoIds: ["v1", "v2"],
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+// Documents current, accepted behavior (independent review, 2026-09-23): a duplicate videoId is
+// not rejected -- it satisfies the >=2 minimum and simply produces two identical series in the
+// response. Harmless (never crashes, never double-counts anything since each entry is computed
+// independently from the same source rows), just not specially detected -- not worth a dedicated
+// validation for this slice.
+test("getComparableAgeComparison allows a duplicate videoId, producing two identical series", async () => {
+  const { services, channelAccess, upsertedRows } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    videoDetailsByChannel: {
+      UC_A: [{ videoId: "v1", title: "Video 1", publishedAt: "2026-09-01T00:00:00Z" }],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  upsertedRows.push({ channelId: "UC_A", videoId: "v1", metricDate: "2026-09-01", metricName: "views", metricValue: 5 });
+
+  const result = await services.getComparableAgeComparison({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    videoIds: ["v1", "v1"],
+  });
+
+  assert.equal(result.videos.length, 2);
+  assert.deepEqual(result.videos[0].points, result.videos[1].points);
+});
+
 test("getComparableAgeComparison rejects fewer than 2 videoIds as validation_failed", async () => {
   const { services, channelAccess } = createServicesFixture({
     videosByChannel: {},
