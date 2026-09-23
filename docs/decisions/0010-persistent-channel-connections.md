@@ -88,6 +88,17 @@ NextAuth session point at an **already-stored** identity, bypassing Google's con
   "Disconnect" button per row behind the existing `ConfirmDialog` convention (irreversible,
   BL-043), and a "Connect a new channel" action that reuses the existing `signIn("google")` call
   unchanged (first-time connection is not a new mechanism — it is exactly today's login).
+  **Found live by the project owner testing this exact flow (2026-09-23):** `signIn("google")`
+  alone does not link the newly-authenticated identity into `channels.connectedUserId` — that link
+  is set only by `channel-sync`'s "mine" resolution (`src/lib/channel-sync/services.ts`), a
+  separate action the existing app only ever triggers from the Content/Languages tabs.
+  `GET /api/youtube/channel-info` (fetched automatically on every dashboard load) only updates
+  `users.selectedChannelId` (ADR 0004), never that link. Without a fix, a channel connected via
+  "Connect a new channel" silently never appeared in this list until the operator separately
+  visited Content/Languages. Fixed by having this card's own mount effect call
+  `POST /api/channels/sync` (mine-path, no explicit `channelId`) before fetching the connections
+  list — self-contained, runs once per dashboard session like every other Settings card, and
+  reuses the exact same, already-tested sync path `content-manager.tsx` already relies on.
 - **No schema change.** `channels`/`users` already carry every field this needs.
 - **Shared-logic extraction, per the owner's explicit instruction this session:** `ai-connections/crypto.ts`
   and `cloud-connection/crypto.ts` were byte-for-byte identical AES-256-GCM implementations

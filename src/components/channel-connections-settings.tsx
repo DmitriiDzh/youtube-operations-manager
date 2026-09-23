@@ -40,7 +40,29 @@ export function ChannelConnectionsSettings() {
   }, []);
 
   useEffect(() => {
-    void fetchChannels();
+    // A channel only gets linked into `channels.connectedUserId` (the field `listConnectedChannels`
+    // filters on) by `channel-sync`'s own "mine" resolution -- `GET /api/youtube/channel-info`
+    // (fetched automatically on every dashboard load) only ever updates `users.selectedChannelId`
+    // (ADR 0004), never that link. Before this fix, a channel connected via "Connect a new
+    // channel" (a plain Google sign-in) never appeared here at all unless the operator separately
+    // visited the Content/Languages tab, which happens to also trigger this same sync -- found by
+    // the project owner live-testing this exact flow. Calling it here too (mine-path, no
+    // `channelId`) makes this card self-contained; it runs once per dashboard session, the same
+    // cost tradeoff already accepted for this Settings tab's other cards that fetch on load.
+    async function syncThenFetch() {
+      try {
+        await fetch("/api/channels/sync", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({}),
+        });
+      } catch {
+        // Non-fatal -- a pre-existing connection still lists correctly either way; this only
+        // affects whether a *just-connected* channel shows up immediately.
+      }
+      await fetchChannels();
+    }
+    void syncThenFetch();
   }, [fetchChannels]);
 
   async function handleActivate(channelId: string) {
