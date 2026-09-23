@@ -2052,6 +2052,43 @@ test("MCP analytics_overview returns channel-level cards/chart data for a date r
   assert.equal(payload.previousStartDate, "2026-07-29");
 });
 
+test("MCP analytics_overview forwards the resolved credentialRef when omitted", async () => {
+  const seenArgs: unknown[] = [];
+  const analyticsCore = makeAnalyticsCoreStub();
+  analyticsCore.getChannelOverview = async (input: unknown) => {
+    seenArgs.push(input);
+    return {
+      channelId: "UC_1",
+      startDate: "2026-08-26",
+      endDate: "2026-09-22",
+      previousStartDate: "2026-07-29",
+      previousEndDate: "2026-08-25",
+      daily: [],
+      currentTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+      previousTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    analyticsCore
+  );
+  await handlers.analyticsOverview({ channelId: "UC_1", startDate: "2026-08-26", endDate: "2026-09-22" });
+
+  assert.deepEqual(seenArgs, [
+    {
+      channelId: "UC_1",
+      startDate: "2026-08-26",
+      endDate: "2026-09-22",
+      credentialRef: { userId: "active-user" },
+    },
+  ]);
+});
+
 test("MCP analytics_overview propagates a validation_failed DomainError unchanged (e.g. an inverted date range)", async () => {
   const analyticsCore = makeAnalyticsCoreStub();
   analyticsCore.getChannelOverview = async () => {

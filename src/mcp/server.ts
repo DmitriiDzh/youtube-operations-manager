@@ -879,8 +879,10 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     channelSync: async (input) => (await assertMcpDeviceAvailable()) ?? handlers.channelSync(input),
     channelList: handlers.channelList,
     channelVideoList: handlers.channelVideoList,
-    // Live Analytics API reads, never a mutation anywhere -- ungated, like playlistList above
-    // (also a live YouTube read with no local-mutation counterpart to gate).
+    // Neither mutates anything anywhere -- ungated. analyticsList is a local-only read;
+    // analyticsOverview is a live Analytics API read, like playlistList's own live YouTube read
+    // above (a live read is still "read-only" per docs/DEVELOPMENT_PLAYBOOK.md §6.7's
+    // classification -- it's the absence of any mutation that matters, not where the data lives).
     analyticsList: handlers.analyticsList,
     analyticsOverview: handlers.analyticsOverview,
   };
