@@ -32,6 +32,11 @@ import {
   syncChannelInputSchema,
 } from "@/lib/channel-sync/schemas";
 import { createAnalyticsCore, type AnalyticsCore } from "@/lib/analytics";
+import { createAiLocalizationCore, type AiLocalizationCore } from "@/lib/ai-localization";
+import {
+  createChangeSetFromGenerationInputSchema,
+  generateProposalsInputSchema,
+} from "@/lib/ai-localization/schemas";
 import {
   getChannelOverviewInputSchema,
   getComparableAgeComparisonInputSchema,
@@ -95,6 +100,15 @@ type AnalyticsCoreSubset = Pick<
   | "getWeeklyReport"
 >;
 
+// BL-075/BL-078 (docs/roadmap/BACKLOG.md): the same "generate proposals" -> "create Change Set"
+// two-step workflow the Web UI's own ai-localization routes already expose, now reachable by an
+// agent over MCP/CLI too -- no new validation, persistence, or approval logic; both handlers call
+// exactly these two existing, already-tested service functions unchanged. Deliberately excludes
+// `getEditorialProfile`/`saveEditorialProfile`/`getGenerationProvenance` (out of this slice's
+// scope) and, like every other Change-Set-adjacent tool in this file, never exposes an
+// approve/reject/apply path -- "AI may propose, human approves" (AGENTS.md §G) is untouched.
+type AiLocalizationCoreSubset = Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration">;
+
 type ToolResponse = {
   content: Array<{ type: "text"; text: string }>;
   structuredContent?: Record<string, unknown>;
@@ -132,6 +146,8 @@ type McpToolHandlers = {
   analyticsComparableAge: (input: unknown) => Promise<ToolResponse>;
   analyticsWeeklyReportsList: (input: unknown) => Promise<ToolResponse>;
   analyticsWeeklyReportGet: (input: unknown) => Promise<ToolResponse>;
+  aiLocalizationGenerate: (input: unknown) => Promise<ToolResponse>;
+  aiLocalizationCreateChangeSet: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -346,7 +362,8 @@ export function createMcpToolHandlers(
   },
   channelSyncCore: ChannelSyncCoreSubset = createChannelSyncCore(),
   channelAccessCore: ChannelAccessCore = createChannelAccessCore(),
-  analyticsCore: AnalyticsCoreSubset = createAnalyticsCore()
+  analyticsCore: AnalyticsCoreSubset = createAnalyticsCore(),
+  aiLocalizationCore: AiLocalizationCoreSubset = createAiLocalizationCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -893,6 +910,60 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    /**
+     * BL-075/BL-078: "generate proposals" step of the AI Localization workflow. Persists
+     * nothing (mirrors `localizationImportPreview`'s own "preview only" classification) --
+     * the mock provider makes no network call at all, and a real-connection call
+     * (`connectionId` set) is gated by the service's own internal `assertDeviceAvailable`
+     * check (RISK-30, `docs/TECHNICAL_DEBT.md`), not by this wrapper.
+     */
+    async aiLocalizationGenerate(input: unknown): Promise<ToolResponse> {
+      const parsedInput = generateProposalsInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await aiLocalizationCore.generateProposals(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * BL-075/BL-078: "create Change Set" step -- hands the (possibly human-edited) reviewed
+     * proposals to the exact same `createChangeSetFromGeneration` the Web UI's own
+     * `POST .../ai-localization/change-sets` route calls. A real local-persistence mutation
+     * (a new Change Set, `source: "ai_localization"`), so this handler is gated by
+     * `assertMcpDeviceAvailable` like `changesetCreateFromImport` above. Approval, conflict
+     * revalidation, Batch creation, and the live-write barrier are all completely untouched --
+     * the resulting Change Set starts `pending`, exactly like every other source.
+     */
+    async aiLocalizationCreateChangeSet(input: unknown): Promise<ToolResponse> {
+      const parsedInput = createChangeSetFromGenerationInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await aiLocalizationCore.createChangeSetFromGeneration(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -977,6 +1048,14 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // collectMetrics/runAutoCollectionIfStale above.
     analyticsWeeklyReportsList: handlers.analyticsWeeklyReportsList,
     analyticsWeeklyReportGet: handlers.analyticsWeeklyReportGet,
+    // Persists nothing (mock provider: no network call at all; a real connection is gated by
+    // its own internal device-availability check, RISK-30) -- ungated, like
+    // localizationImportPreview above.
+    aiLocalizationGenerate: handlers.aiLocalizationGenerate,
+    // A real local-persistence mutation (a new Change Set) -- gated, like
+    // changesetCreateFromImport above.
+    aiLocalizationCreateChangeSet: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.aiLocalizationCreateChangeSet(input),
   };
 }
 
@@ -1333,6 +1412,26 @@ export function createMcpServer(
       inputSchema: getWeeklyReportInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.analyticsWeeklyReportGet(args)
+  );
+
+  registerTool(
+    "ai_localization_generate",
+    {
+      description:
+        "Generate AI localization proposals (title/description) for (videoId, targetLanguage) pairs on a channel, using the same provider/validation logic as the Web UI's 'Generate with AI' step. Persists nothing -- the caller (human or agent) reviews/edits the returned proposals, then calls ai_localization_create_change_set to persist the reviewed set. Omitting both providerName and connectionId uses the deterministic mock provider (no network call, no cost). Passing connectionId routes through a real, user-configured AI Connection and makes a genuine outbound network call to that provider -- this can incur real cost and is capped at 50 (video, language) targets per call, well below the plain schema limit. Requires channelId to be the caller's currently-active channel. No credentialRef parameter -- always uses the active local auth context, matching changeset_list/changeset_get's own convention in this server.",
+      inputSchema: generateProposalsInputSchema,
+    },
+    (args) => handlers.aiLocalizationGenerate(args)
+  );
+
+  registerTool(
+    "ai_localization_create_change_set",
+    {
+      description:
+        "Persist a reviewed (optionally edited) set of AI localization proposals as a new Change Set, source 'ai_localization' -- the exact same persistence path createChangeSetFromImport (XLSX) already uses, so approval, conflict revalidation, Batch creation, and the live-write barrier are completely unchanged. The resulting Change Set and every Change on it always start 'pending' -- there is no code path, here or anywhere else, that can mark an AI-authored proposal already-approved; a human must still approve it via the Web UI before it can ever be included in a Batch. Optionally echo back the generationContext a prior ai_localization_generate call returned as `provenance`, to have it durably recorded against the resulting Change Set. Mutates local application state (never YouTube directly), so this tool is gated by the same device-availability/recovery-mode check as changeset_create_from_import. No credentialRef parameter -- always uses the active local auth context.",
+      inputSchema: createChangeSetFromGenerationInputSchema,
+    },
+    (args) => handlers.aiLocalizationCreateChangeSet(args)
   );
 
   return server;
