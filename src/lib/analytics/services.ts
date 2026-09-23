@@ -382,6 +382,28 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
     async getChannelOverview(input: unknown): Promise<GetChannelOverviewResult> {
       const parsedInput = parseWithSchema(getChannelOverviewInputSchema, input, "get channel overview input");
 
+      // `isoDateSchema` only checks digit shape (`\d{4}-\d{2}-\d{2}`), not that `startDate` is
+      // actually on/before `endDate` or that either is a real calendar date -- `computePreviousPeriod`
+      // is where that's actually checked, and it throws a plain `Error`, not a `DomainError`. Doing
+      // this BEFORE the try block below (and before touching channel access/credentials at all)
+      // matters: without it, this plain `Error` would fall into that block's generic
+      // `mapUnknownError(error, "unauthorized")` fallback and come back as a misleading 401
+      // "Unauthorized" for what is actually a 400 input-validation problem (found by independent
+      // review, 2026-09-23, before this was ever exposed to a real caller).
+      let previousStartDate: string;
+      let previousEndDate: string;
+      try {
+        ({ previousStartDate, previousEndDate } = computePreviousPeriod(
+          parsedInput.startDate,
+          parsedInput.endDate
+        ));
+      } catch (error) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: error instanceof Error ? error.message : "Invalid date range",
+        });
+      }
+
       try {
         const userId = getCredentialUserId(parsedInput.credentialRef);
         await deps.channelAccess.assertActiveChannel({
@@ -393,11 +415,6 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           credentialRef: parsedInput.credentialRef,
           requiredScopes: [YOUTUBE_ANALYTICS_READ_SCOPE],
         });
-
-        const { previousStartDate, previousEndDate } = computePreviousPeriod(
-          parsedInput.startDate,
-          parsedInput.endDate
-        );
 
         const [currentRows, previousRows] = await Promise.all([
           deps.youtubeApi.queryChannelAnalyticsReport({

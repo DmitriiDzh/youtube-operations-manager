@@ -32,6 +32,20 @@ test("computePreviousPeriod rejects an endDate before startDate", () => {
   assert.throws(() => computePreviousPeriod("2026-09-22", "2026-08-26"));
 });
 
+// Found by independent review, 2026-09-23: `Date.parse` does not reject a calendar-invalid
+// day-of-month -- it silently rolls over to a different, real date instead (e.g. "2026-02-30"
+// parses as 2026-03-02). Without an explicit round-trip check, a caller passing a malformed date
+// would get a silently-shifted date range rather than a clear rejection.
+test("computePreviousPeriod rejects a calendar-invalid day-of-month (rolled-over date), not silently shifting it", () => {
+  assert.throws(() => computePreviousPeriod("2026-02-30", "2026-02-30"));
+  assert.throws(() => computePreviousPeriod("2026-04-31", "2026-04-31"));
+});
+
+test("computePreviousPeriod rejects Feb 29 on a non-leap year but accepts it on a leap year", () => {
+  assert.throws(() => computePreviousPeriod("2025-02-29", "2025-02-29"), "2025 is not a leap year");
+  assert.doesNotThrow(() => computePreviousPeriod("2024-02-29", "2024-02-29"), "2024 is a leap year");
+});
+
 test("computePercentChange computes a rounded whole-percent increase", () => {
   // Hand-computed: (1031 - 100) / 100 * 100 = 931.
   assert.equal(computePercentChange(1031, 100), 931);

@@ -17,7 +17,14 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function parseIsoDateUtc(date: string): number {
   const parsed = Date.parse(`${date}T00:00:00.000Z`);
-  if (Number.isNaN(parsed)) {
+  // `Date.parse` does not reject a calendar-invalid day-of-month -- it silently rolls over
+  // instead (e.g. "2026-02-30" parses as 2026-03-02, "2026-04-31" as 2026-05-01). Re-formatting
+  // the parsed instant and comparing it back to the original string catches this: a rolled-over
+  // date can never format back to the exact string that was parsed. Found by independent review,
+  // 2026-09-23, after fixing the separate inverted-range case -- this is a distinct gap: an
+  // inverted range throws (already handled), but a calendar-invalid single date never did,
+  // letting `getChannelOverview` silently query the wrong days for a caller who can't tell.
+  if (Number.isNaN(parsed) || formatIsoDateUtc(parsed) !== date) {
     throw new Error(`period: invalid ISO date "${date}"`);
   }
   return parsed;

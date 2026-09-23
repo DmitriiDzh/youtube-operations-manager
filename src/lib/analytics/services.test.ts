@@ -523,6 +523,28 @@ test("getChannelOverview fails closed when the requested channel is not the call
   );
 });
 
+// Found by independent review, 2026-09-23: `isoDateSchema` only checks digit shape, so an
+// inverted range (endDate before startDate) reaches `computePreviousPeriod`, which throws a plain
+// `Error`, not a `DomainError` -- without this check, `getChannelOverview`'s own catch block would
+// map it to a misleading `unauthorized` (401) via its generic fallback, even for a caller whose
+// channel access and credentials are perfectly fine. Must be `validation_failed`, and must never
+// even reach `assertActiveChannel`/`authResolver.resolve`.
+test("getChannelOverview rejects an inverted date range as validation_failed, not unauthorized", async () => {
+  const { services, channelAccess } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getChannelOverview({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-09-22",
+        endDate: "2026-08-26",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
 test("getChannelOverview queries the requested period and the immediately-preceding period of the same length", async () => {
   const { services, channelAccess, channelAnalyticsCalls } = createServicesFixture({
     videosByChannel: {},
