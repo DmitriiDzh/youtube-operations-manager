@@ -79,10 +79,12 @@ reinstated in full, now with stronger, code-verified evidence than 0006 itself h
 the disproven "append-only, lower-risk-than-drafts" reasoning that briefly reopened it.
 
 `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md`'s M5 slice is cancelled as a result.
-This does not, by itself, change M6 (the whole-DB Device-Handoff/snapshot mechanism's own
-retirement) — see that plan's §3 for the resulting open question the project owner still needs to
-resolve (whether these four tables get any cross-device continuity going forward at all, and if
-so, through what mechanism).
+This did not, by itself, decide M6 (the whole-DB Device-Handoff/snapshot mechanism's own
+retirement) — that plan's §3 records the resulting question this decision left open (whether
+these four tables get any cross-device continuity going forward at all, and if so, through what
+mechanism) and its resolution: the project owner chose to keep a small, scoped-down transfer for
+exactly these four tables rather than deleting the mechanism outright (2026-09-23, see that
+plan's §3/§5 M6 entry).
 
 ## Named follow-up (not part of this decision, not authorized by it)
 
