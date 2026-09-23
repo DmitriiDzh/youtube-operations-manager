@@ -168,6 +168,11 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     // Reset first, not just on success (found by independent review, 2026-09-23): without this,
     // a failed request after a channel/period switch left the PREVIOUS channel's/period's warning
     // banner showing indefinitely, since the old code only ever set state on the success path.
+    // Accepted tradeoff (round 2 of that same review): this also means the banner briefly
+    // disappears and reappears on every period switch even when the new data is identical -- a
+    // visible flicker, but this is a nice-to-have annotation (see this component's own doc
+    // comment on `fetchDataQuality`), not something worth a separate "don't flicker on an
+    // unchanged result" cache layer for.
     setDataQuality(null);
     try {
       const { startDate, endDate } = computeDefaultPeriodRange(days);

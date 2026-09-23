@@ -123,6 +123,11 @@ export function computeDataQualityReport(args: {
   // that failed once and succeeded on every later rolling-window run would still show as "having a
   // collection failure" for as long as any query window overlapped that one old run -- up to ~4
   // weeks with the default 7-day auto-collect window.
+  // Strict `>` means an exact `ranAt` tie keeps whichever run the reduce saw first (this
+  // channel's own insertion/list order, effectively earliest-inserted) -- noted by independent
+  // review, round 2: two `collectMetrics` runs for the same channel completing at the identical
+  // millisecond is negligible in practice (the same-day freshness gate already prevents two real
+  // runs from being this close together), so this is an accepted, understood edge case, not a bug.
   const latestOverlappingRun = overlappingRuns.reduce<CollectionRunSummary | null>(
     (latest, run) => (!latest || run.ranAt > latest.ranAt ? run : latest),
     null
