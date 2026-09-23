@@ -1,7 +1,7 @@
 import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import type { ChannelAccessService } from "@/lib/channel-access";
 import { computeDefaultAutoCollectionRange, computeNextRefreshAt, isAnalyticsCollectionStale } from "./staleness";
-import { computePreviousPeriod, zeroFillDailySeries } from "./period";
+import { assertValidDateRange, assertValidIsoDate, computePreviousPeriod, zeroFillDailySeries } from "./period";
 import {
   ANALYTICS_METRIC_NAMES,
   AUTO_COLLECTION_RANGE_DAYS,
@@ -278,6 +278,25 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
     async listMetrics(input: unknown): Promise<ListMetricsResult> {
       const parsedInput = parseWithSchema(listMetricsInputSchema, input, "list metrics input");
 
+      // Found by independent review (2026-09-23): `isoDateSchema` only checks digit shape, so an
+      // inverted or calendar-invalid startDate/endDate filter used to silently filter every row
+      // out (an empty, misleadingly "successful" result) instead of failing loudly -- the same bug
+      // class `getChannelOverview`'s own `computePreviousPeriod` call already guards against.
+      try {
+        if (parsedInput.startDate && parsedInput.endDate) {
+          assertValidDateRange(parsedInput.startDate, parsedInput.endDate);
+        } else if (parsedInput.startDate) {
+          assertValidIsoDate(parsedInput.startDate);
+        } else if (parsedInput.endDate) {
+          assertValidIsoDate(parsedInput.endDate);
+        }
+      } catch (error) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: error instanceof Error ? error.message : "Invalid date range",
+        });
+      }
+
       try {
         const userId = getCredentialUserId(parsedInput.credentialRef);
         await deps.channelAccess.assertActiveChannel({
@@ -286,12 +305,17 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         });
 
         const records = await deps.metricStore.listMetricsByChannel(parsedInput.channelId);
-        const rows = records.map((record) => ({
-          videoId: record.videoId,
-          metricDate: record.metricDate,
-          metricName: record.metricName,
-          metricValue: record.metricValue,
-        }));
+        const rows = records
+          .map((record) => ({
+            videoId: record.videoId,
+            metricDate: record.metricDate,
+            metricName: record.metricName,
+            metricValue: record.metricValue,
+          }))
+          .filter((row) => !parsedInput.startDate || row.metricDate >= parsedInput.startDate)
+          .filter((row) => !parsedInput.endDate || row.metricDate <= parsedInput.endDate)
+          .filter((row) => !parsedInput.videoId || row.videoId === parsedInput.videoId)
+          .filter((row) => !parsedInput.metricNames || parsedInput.metricNames.includes(row.metricName));
 
         return parseWithSchema(
           listMetricsOutputSchema,

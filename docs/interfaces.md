@@ -165,6 +165,20 @@ Key MCP tools:
   - `channel_list` — `{ credentialRef? }` → `{ channels: SyncedChannel[] }`. Read-only.
   - `channel_video_list` — `{ channelId, credentialRef? }` → `{ channelId, videos: SyncedVideo[] }`.
     Read-only.
+- Analytics read tools (`docs/roadmap/BACKLOG.md`, "machine-readable analytics for operational
+  agents to consume" — `docs/roadmap/FUTURE_PHASES.md` §4 / `docs/PROJECT_SPEC.md` §33):
+  - `analytics_list` — `{ channelId, startDate?, endDate?, videoId?, metricNames?, credentialRef? }`
+    → `{ channelId, rows: StoredVideoMetricRow[] }`. Local read only (never a live YouTube call) —
+    every filter is optional; omitting all of them returns every collected row for the channel.
+  - `analytics_overview` — `{ channelId, startDate, endDate, credentialRef? }` → channel-level
+    daily series plus current/previous-period totals, the same shape `GET .../analytics/overview`
+    returns. **A live Analytics API read** (counts against that quota, unlike `analytics_list`) —
+    its own totals lag YouTube Studio's displayed numbers by 1-2 days, see
+    `docs/ARCHITECTURE.md` §14.8.
+  - Both are read-only (no local mutation, no YouTube write) — deliberately excludes
+    `collectMetrics`/`runAutoCollectionIfStale` (real local-persistence mutations that spend
+    Analytics API quota; only the Web UI's "Collect now" button and the daily auto-collect
+    trigger can start a new collection run).
 
 Most tools accept optional `credentialRef`; if omitted, server falls back to active local auth context.
 

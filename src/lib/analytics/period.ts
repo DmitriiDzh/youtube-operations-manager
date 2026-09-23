@@ -35,6 +35,36 @@ function formatIsoDateUtc(epochMs: number): string {
 }
 
 /**
+ * Throws unless `date` is a real, existing calendar date (not merely digit-shaped) -- reuses
+ * `parseIsoDateUtc`'s own round-trip check. Exported so callers with an optional single date
+ * (e.g. `listMetrics`'s filters, which don't necessarily come as a startDate/endDate pair) can
+ * validate it without needing a full range.
+ */
+export function assertValidIsoDate(date: string): void {
+  parseIsoDateUtc(date);
+}
+
+function assertValidRange(startDate: string, endDate: string): { startMs: number; endMs: number } {
+  const startMs = parseIsoDateUtc(startDate);
+  const endMs = parseIsoDateUtc(endDate);
+  if (endMs < startMs) {
+    throw new Error(`period: endDate (${endDate}) is before startDate (${startDate})`);
+  }
+  return { startMs, endMs };
+}
+
+/**
+ * Throws unless `startDate`/`endDate` are both real calendar dates with `startDate <= endDate`.
+ * Found by independent review (2026-09-23) that `listMetrics`'s own optional `startDate`/`endDate`
+ * filters had no equivalent check -- an inverted or calendar-invalid range silently filtered every
+ * row out (an empty, misleadingly "successful" result) rather than the `validation_failed` error
+ * `getChannelOverview` already gives for the identical bug class via `computePreviousPeriod` below.
+ */
+export function assertValidDateRange(startDate: string, endDate: string): void {
+  assertValidRange(startDate, endDate);
+}
+
+/**
  * The immediately-preceding period of the same length, with no gap and no overlap:
  * `[startDate, endDate]` is `N` days long, so the previous period is the `N` days ending the day
  * before `startDate`. Matches Studio's own "vs previous 28 days" semantics (verified live,
@@ -45,11 +75,7 @@ export function computePreviousPeriod(startDate: string, endDate: string): {
   previousStartDate: string;
   previousEndDate: string;
 } {
-  const startMs = parseIsoDateUtc(startDate);
-  const endMs = parseIsoDateUtc(endDate);
-  if (endMs < startMs) {
-    throw new Error(`period: endDate (${endDate}) is before startDate (${startDate})`);
-  }
+  const { startMs, endMs } = assertValidRange(startDate, endDate);
 
   const dayCount = Math.round((endMs - startMs) / MS_PER_DAY) + 1;
   const previousEndMs = startMs - MS_PER_DAY;

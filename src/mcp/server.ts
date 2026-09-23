@@ -31,6 +31,8 @@ import {
   listSyncedVideosInputSchema,
   syncChannelInputSchema,
 } from "@/lib/channel-sync/schemas";
+import { createAnalyticsCore, type AnalyticsCore } from "@/lib/analytics";
+import { getChannelOverviewInputSchema, listMetricsInputSchema } from "@/lib/analytics/schemas";
 
 loadEnvConfig(process.cwd());
 
@@ -64,6 +66,16 @@ type BatchCoreSubset = Pick<BatchCore, "listBatchesByChannel" | "requireBatchFor
 // so it IS gated by assertMcpDeviceAvailable below, unlike the read-only pair.
 type ChannelSyncCoreSubset = Pick<ChannelSyncCore, "syncChannel" | "listChannels" | "listSyncedVideos">;
 
+// Phase 8 follow-up (docs/roadmap/BACKLOG.md, "machine-readable analytics for operational agents
+// to consume" -- docs/roadmap/FUTURE_PHASES.md §4 / docs/PROJECT_SPEC.md §33): read-only, exactly
+// the same two operations the Web UI's own `.../analytics` and `.../analytics/overview` routes
+// already call -- no new domain logic, no parallel implementation. Deliberately excludes
+// `collectMetrics`/`runAutoCollectionIfStale`: those are local-persistence mutations that spend
+// real Analytics API quota, not something an agent should be able to trigger freely (the Web UI's
+// own "Collect now" button plus the once-a-day dashboard-mount auto-trigger remain the only ways
+// to actually collect new data).
+type AnalyticsCoreSubset = Pick<AnalyticsCore, "listMetrics" | "getChannelOverview">;
+
 type ToolResponse = {
   content: Array<{ type: "text"; text: string }>;
   structuredContent?: Record<string, unknown>;
@@ -95,6 +107,8 @@ type McpToolHandlers = {
   channelSync: (input: unknown) => Promise<ToolResponse>;
   channelList: (input: unknown) => Promise<ToolResponse>;
   channelVideoList: (input: unknown) => Promise<ToolResponse>;
+  analyticsList: (input: unknown) => Promise<ToolResponse>;
+  analyticsOverview: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -308,7 +322,8 @@ export function createMcpToolHandlers(
     ...createBatchCore(),
   },
   channelSyncCore: ChannelSyncCoreSubset = createChannelSyncCore(),
-  channelAccessCore: ChannelAccessCore = createChannelAccessCore()
+  channelAccessCore: ChannelAccessCore = createChannelAccessCore(),
+  analyticsCore: AnalyticsCoreSubset = createAnalyticsCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -765,6 +780,36 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    async analyticsList(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listMetricsInputSchema.partial({ credentialRef: true }).safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await analyticsCore.listMetrics({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async analyticsOverview(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getChannelOverviewInputSchema.partial({ credentialRef: true }).safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await analyticsCore.getChannelOverview({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -834,6 +879,12 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     channelSync: async (input) => (await assertMcpDeviceAvailable()) ?? handlers.channelSync(input),
     channelList: handlers.channelList,
     channelVideoList: handlers.channelVideoList,
+    // Neither mutates anything anywhere -- ungated. analyticsList is a local-only read;
+    // analyticsOverview is a live Analytics API read, like playlistList's own live YouTube read
+    // above (a live read is still "read-only" per docs/DEVELOPMENT_PLAYBOOK.md §6.7's
+    // classification -- it's the absence of any mutation that matters, not where the data lives).
+    analyticsList: handlers.analyticsList,
+    analyticsOverview: handlers.analyticsOverview,
   };
 }
 
@@ -1130,6 +1181,26 @@ export function createMcpServer(
       inputSchema: listSyncedVideosInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.channelVideoList(args)
+  );
+
+  registerTool(
+    "analytics_list",
+    {
+      description:
+        "List every YouTube Analytics metric row already collected locally for a channel (per video, per day, per metric name) -- a local read, never a live YouTube API call. Optional startDate/endDate/videoId/metricNames filters bound the response size; omitting all of them returns every collected row. credentialRef is OPTIONAL and falls back to active local auth context. Data reflects whatever the last manual/scheduled collection run fetched -- it is not necessarily current.",
+      inputSchema: listMetricsInputSchema.partial({ credentialRef: true }),
+    },
+    (args) => handlers.analyticsList(args)
+  );
+
+  registerTool(
+    "analytics_overview",
+    {
+      description:
+        "Live channel-level YouTube Analytics read (views, watch-time minutes, subscribers gained/lost) for a date range, plus the same totals for the immediately-preceding period of equal length. This is a real Analytics API call and counts against that quota, unlike analytics_list. The API's own daily rows typically lag `endDate` by 1-2 days, so totals reflect what has been processed as of the call, not necessarily what YouTube Studio's own dashboard already shows for the same nominal range. credentialRef is OPTIONAL and falls back to active local auth context.",
+      inputSchema: getChannelOverviewInputSchema.partial({ credentialRef: true }),
+    },
+    (args) => handlers.analyticsOverview(args)
   );
 
   return server;

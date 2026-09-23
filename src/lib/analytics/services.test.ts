@@ -443,6 +443,100 @@ test("listMetrics returns every previously-collected row for the channel, shaped
   ]);
 });
 
+// MCP/CLI analytics read tools (2026-09-23): optional filters keep a real channel's response
+// payload bounded instead of always returning every collected row.
+test("listMetrics applies optional startDate/endDate/videoId/metricNames filters", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }, { videoId: "v2", channelId: "UC_A" }] },
+    analyticsResponses: {
+      v1: [
+        { date: "2026-09-01", metrics: { views: 100, likes: 5 } },
+        { date: "2026-09-02", metrics: { views: 150, likes: 7 } },
+      ],
+      v2: [{ date: "2026-09-01", metrics: { views: 20 } }],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  await services.collectMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-01",
+    endDate: "2026-09-02",
+  });
+
+  const byDate = await services.listMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-02",
+  });
+  assert.deepEqual(
+    byDate.rows.map((r) => r.metricDate),
+    ["2026-09-02", "2026-09-02"]
+  );
+
+  const byVideo = await services.listMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    videoId: "v2",
+  });
+  assert.ok(byVideo.rows.every((r) => r.videoId === "v2"));
+  assert.equal(byVideo.rows.length, 1);
+
+  const byMetric = await services.listMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    metricNames: ["likes"],
+  });
+  assert.ok(byMetric.rows.every((r) => r.metricName === "likes"));
+  assert.equal(byMetric.rows.length, 2);
+});
+
+// Found by independent review, 2026-09-23: an inverted or calendar-invalid startDate/endDate
+// filter used to silently filter every row out (an empty, misleadingly "successful" result)
+// instead of failing with validation_failed, unlike getChannelOverview's identical guard.
+test("listMetrics rejects an inverted date-range filter as validation_failed, not an empty success", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  await services.collectMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-01",
+    endDate: "2026-09-01",
+  });
+
+  await assert.rejects(
+    () =>
+      services.listMetrics({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-09-20",
+        endDate: "2026-09-01",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+test("listMetrics rejects a calendar-invalid single date filter (e.g. 2026-02-30)", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: {},
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.listMetrics({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-02-30",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
 test("runAutoCollectionIfStale fails closed when the requested channel is not the caller's active channel", async () => {
   const { services } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
 
