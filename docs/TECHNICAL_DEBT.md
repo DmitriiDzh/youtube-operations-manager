@@ -797,6 +797,17 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Approval required from:** none -- routine cleanup, whenever it's next touched.
 - **Status:** OPEN — tracked, not yet consolidated.
 
+## RISK-51 — CLI `ai-localization generate` has no `--editorialBrief` flag (MCP tool has the equivalent) — OPEN, 2026-09-23 (independent review), owner wants to revisit
+
+- **Affected components:** `src/cli/video-metadata.ts`'s `ai-localization generate` command (BL-078); the sibling MCP tool `ai_localization_generate` (`src/mcp/server.ts`).
+- **Current behavior:** the MCP tool's `inputSchema` is `generateProposalsInputSchema` directly (`src/lib/ai-localization/schemas.ts`), which includes the optional `editorialBrief` object (targetAudience/toneNotes/terminologyNotes/titleConstraints/descriptionConstraints) as a per-call override on top of the channel's persisted Editorial Profile. The CLI command builds its own call from individual flags (`--channelId`, `--videoIds`, `--targetLanguages`, `--providerName`, `--connectionId`) and has no flag for `editorialBrief` at all -- a CLI caller can only rely on the channel's already-saved profile, never override it per-call the way an MCP caller can.
+- **Why not fixed in BL-078:** deliberately scoped out to keep that slice a purely additive, minimal-risk wrapper (owner's own words when assigning it: the two-tool slice described in that backlog row) -- `editorialBrief` is a nested object with no natural flat-flag shape, and every other JSON-shaped CLI input in this codebase (`--proposalsJson`/`--provenanceJson`, added in this same slice) uses a JSON-string-flag convention that could be extended here too (e.g. `--editorialBriefJson`), but doing so wasn't part of the approved scope.
+- **Actual risk:** low -- purely a feature-parity gap, not a safety or correctness issue. A CLI-driven agent that needs a per-call editorial override currently has no way to supply one (it would need to go through the MCP tool instead, or rely on the channel's persisted profile).
+- **Required remediation:** add an `--editorialBriefJson <json>` flag to `ai-localization generate`, parsed the same way `--proposalsJson`/`--provenanceJson` already are (`JSON.parse` in a try/catch → `validation_failed` on malformed input), then pass it through as `editorialBrief` to `generateProposals` unchanged (`generationContextSchema` already validates its shape inside the service call).
+- **Gate(s):** none blocking.
+- **Approval required from:** none technically required (routine CLI parity addition), but the project owner explicitly asked to revisit this personally (Telegram, 2026-09-23: "Запиши вопрос про флаг в технический долг и я вернусь к нему позже") rather than have it picked up automatically.
+- **Status:** OPEN — owner will decide when to return to it.
+
 ---
 
 ## Summary table
@@ -853,5 +864,6 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-48 | Cloud connection encryption key has no rotation/backup procedure | DEFERRED | OPEN |
 | RISK-49 | Channel-connections list/disconnect have no per-caller channel-ownership check (deliberate, feature's actual purpose) | none blocking | OPEN |
 | RISK-50 | Top-content-by-views ranking duplicated (client-side Overview tab vs. server-side weekly report) | none blocking | OPEN |
+| RISK-51 | CLI `ai-localization generate` has no `--editorialBrief` flag (MCP tool has the equivalent) | none blocking | OPEN, owner will revisit |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
