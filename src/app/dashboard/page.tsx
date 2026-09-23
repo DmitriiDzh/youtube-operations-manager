@@ -1,6 +1,6 @@
 "use client";
 
-import { useSession, signOut, signIn } from "next-auth/react";
+import { useSession, signOut } from "next-auth/react";
 import { redirect } from "next/navigation";
 import { useEffect, useState, useCallback, useRef } from "react";
 import type { ComponentType, SVGProps } from "react";
@@ -14,6 +14,7 @@ import { LiveWritesSettings } from "@/components/live-writes-settings";
 import { McpConnectionSettings } from "@/components/mcp-connection-settings";
 import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
+import { ChannelConnectionsSettings } from "@/components/channel-connections-settings";
 import { SyncFolderSettings } from "@/components/sync-folder-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
 import { EditorialProfilePanel } from "@/components/editorial-profile-panel";
@@ -77,6 +78,7 @@ type Tab = (typeof NAV_ITEMS)[number]["value"];
 // the owner's own explicit choice after this distinction was raised and confirmed understood.
 const SETTINGS_SUB_TABS = [
   { value: "api", label: "API" },
+  { value: "channels", label: "Channels" },
   { value: "ai-agent", label: "AI Agent" },
   { value: "sync", label: "Sync" },
   { value: "about", label: "About" },
@@ -91,9 +93,17 @@ export default function Dashboard() {
   const [conflictCount, setConflictCount] = useState(0);
 
   const fetchChannel = useCallback(async () => {
-    const res = await fetch("/api/youtube/channel-info");
-    const data = await res.json();
-    setChannel(data.channel);
+    try {
+      const res = await fetch("/api/youtube/channel-info");
+      if (!res.ok) return;
+      const data = await res.json();
+      setChannel(data.channel);
+    } catch {
+      // Non-fatal -- can genuinely fail transiently right as the session cookie is swapping (e.g.
+      // right after activating a different stored channel connection, docs/decisions/0010), since
+      // that no longer reloads the page the way the old signIn("google")-only flow always did.
+      // This effect re-runs the moment `session` settles on its new value, so it self-heals.
+    }
   }, []);
 
   useEffect(() => {
@@ -172,16 +182,6 @@ export default function Dashboard() {
     item.value === "merge" ? { ...item, badge: conflictCount } : item
   );
 
-  async function handleSwitchChannel() {
-    // Found via operator testing feedback: signing out first (the old behavior) cleared the
-    // session before signIn's redirect could take over, so the user briefly saw this app's own
-    // login screen instead of going straight to Google. The Google provider's own
-    // authorization params (src/lib/auth.ts) already carry `prompt: "select_account consent"`,
-    // which forces Google to show its account/channel chooser on every signIn call regardless
-    // of whether an existing session exists here -- no signOut is needed to get that prompt.
-    await signIn("google");
-  }
-
   if (status === "loading") {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -200,12 +200,16 @@ export default function Dashboard() {
       activeTab={tab}
       onTabChange={setTab}
       channel={channel}
-      userName={session.user?.name}
-      onSwitchChannel={handleSwitchChannel}
       onSignOut={() => signOut()}
     >
       {tab === "home" && (
-        <div className="max-w-3xl space-y-6">
+        // `key` forces a clean remount whenever the active channel changes (owner instruction,
+        // 2026-09-23: switching channel -- via the topbar dropdown or Settings -- must signal
+        // every tab to refresh to the new one). None of these manager components take a
+        // `channelId` prop; each resolves "the active channel" itself, once, on its own mount
+        // (server-side, via the session's `selectedChannelId`) -- remounting is what makes that
+        // mount-time resolution re-run, without changing any of the five components themselves.
+        <div key={channel?.id ?? "no-channel"} className="max-w-3xl space-y-6">
           <p className="text-sm text-zinc-400">
             Channel dashboard (docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slice S4). Recent-video
             and comment/subscriber cards are planned for a later pass — this tab starts with the
@@ -216,7 +220,7 @@ export default function Dashboard() {
       )}
 
       {tab === "content" && (
-        <div>
+        <div key={channel?.id ?? "no-channel"}>
           <p className="mb-4 text-sm text-zinc-400">
             Your synchronized videos, Studio-style. Read-only: no metadata is written to
             YouTube from this tab.
@@ -226,7 +230,7 @@ export default function Dashboard() {
       )}
 
       {tab === "analytics" && (
-        <div>
+        <div key={channel?.id ?? "no-channel"}>
           <p className="mb-4 text-sm text-zinc-400">
             Manual collection for now (BL-059&apos;s daily auto-collection is a separate,
             not-yet-built follow-up) &mdash; facts only, no comparisons or recommendations yet
@@ -237,7 +241,7 @@ export default function Dashboard() {
       )}
 
       {tab === "languages" && (
-        <div>
+        <div key={channel?.id ?? "no-channel"}>
           <p className="mb-4 text-sm text-zinc-400">
             Generating with AI is the primary way to add a language &mdash; review and edit
             the agent&rsquo;s proposals before creating a Change Set. Importing an edited XLSX
@@ -256,7 +260,7 @@ export default function Dashboard() {
             non-dry-run write is only possible when &ldquo;Live writes&rdquo; is turned on
             in Settings &mdash; off by default every session.
           </p>
-          <BatchManager />
+          <BatchManager channelId={channel?.id ?? null} channelTitle={channel?.title ?? null} />
         </div>
       )}
 
@@ -298,6 +302,10 @@ export default function Dashboard() {
           <ReadGatewaySettings />
           <CloudConnectionSettings />
           <AnalyticsCollectionSettings />
+        </div>
+
+        <div className={settingsSubTab === "channels" ? "space-y-6" : "hidden"}>
+          <ChannelConnectionsSettings />
         </div>
 
         <div className={settingsSubTab === "ai-agent" ? "space-y-6" : "hidden"}>

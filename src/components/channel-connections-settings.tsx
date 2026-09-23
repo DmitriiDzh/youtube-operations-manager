@@ -1,0 +1,153 @@
+"use client";
+
+import { useState } from "react";
+import { signIn, signOut } from "next-auth/react";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { InfoTooltip } from "./info-tooltip";
+import { activateStoredChannel, useConnectedChannels, type ConnectedChannel } from "./use-connected-channels";
+
+/**
+ * Settings-tab card for persistent channel connections (`docs/decisions/0010-persistent-channel-connections.md`,
+ * owner instruction, 2026-09-23): connect any number of channels once, then switch between them
+ * without re-consenting to Google every time, plus manage (disconnect) them. The topbar's
+ * `channel-switcher.tsx` is the quick-switch counterpart, sharing this same
+ * `useConnectedChannels`/`activateStoredChannel` logic (owner instruction, 2026-09-23:
+ * "Функционал максимально должен использовать тот что уже есть сейчас") -- this card additionally
+ * owns Disconnect, which the topbar dropdown deliberately doesn't expose.
+ */
+export function ChannelConnectionsSettings() {
+  const { channels, refetch } = useConnectedChannels();
+  const [error, setError] = useState<string | null>(null);
+  const [activatingChannelId, setActivatingChannelId] = useState<string | null>(null);
+  const [pendingDisconnect, setPendingDisconnect] = useState<ConnectedChannel | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
+
+  async function handleActivate(channelId: string) {
+    setActivatingChannelId(channelId);
+    setError(null);
+    try {
+      const { ok } = await activateStoredChannel(channelId);
+      if (ok) {
+        await refetch();
+      } else {
+        setError("Could not activate this channel. It may need to be reconnected.");
+      }
+    } finally {
+      setActivatingChannelId(null);
+    }
+  }
+
+  async function handleConfirmDisconnect() {
+    if (!pendingDisconnect) return;
+    setDisconnecting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/channel-connections/disconnect", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ channelId: pendingDisconnect.channelId }),
+      });
+      const data = (await res.json()) as { forceSignOut?: boolean; message?: string };
+      if (!res.ok) {
+        setError(data.message ?? "Disconnect failed");
+        return;
+      }
+      setPendingDisconnect(null);
+      if (data.forceSignOut) {
+        await signOut();
+        return;
+      }
+      await refetch();
+    } catch {
+      setError("Disconnect failed");
+    } finally {
+      setDisconnecting(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+      <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
+        Channels
+        <InfoTooltip>
+          Every channel you connect here stays connected until you explicitly disconnect it --
+          switching between them (here, or from the topbar&rsquo;s &ldquo;Switch channel&rdquo;
+          dropdown) never requires signing in to Google again. Connecting a new channel still goes
+          through Google&rsquo;s own consent screen once.
+        </InfoTooltip>
+      </h3>
+
+      {channels === null ? (
+        <p className="text-xs text-zinc-500">Loading...</p>
+      ) : channels.length === 0 ? (
+        <p className="text-xs text-zinc-500">No channels connected yet.</p>
+      ) : (
+        <ul className="space-y-2">
+          {channels.map((c) => {
+            const isActive = c.isActive;
+            return (
+              <li
+                key={c.channelId}
+                className="flex items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3"
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  {c.thumbnailUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={c.thumbnailUrl} alt="" className="h-8 w-8 shrink-0 rounded-full" />
+                  ) : (
+                    <div className="h-8 w-8 shrink-0 rounded-full bg-zinc-700" />
+                  )}
+                  <div className="min-w-0">
+                    <p className="truncate text-sm text-zinc-200">{c.title}</p>
+                    <p className="truncate text-xs text-zinc-500">{c.connectedEmail}</p>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {isActive ? (
+                    <span className="rounded-full bg-emerald-950/60 px-2.5 py-1 text-xs font-medium text-emerald-400">
+                      Active now
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => handleActivate(c.channelId)}
+                      disabled={activatingChannelId === c.channelId}
+                      className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+                    >
+                      {activatingChannelId === c.channelId ? "Activating..." : "Activate"}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setPendingDisconnect(c)}
+                    className="rounded-md border border-red-900 bg-red-950/50 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-950"
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      <button
+        onClick={() => signIn("google")}
+        className="rounded-md border border-zinc-700 px-4 py-1.5 text-sm font-medium text-zinc-200 hover:border-zinc-500 hover:bg-zinc-800"
+      >
+        Connect a new channel
+      </button>
+
+      {error && <p className="text-xs text-red-400">{error}</p>}
+
+      {pendingDisconnect && (
+        <ConfirmDialog
+          title={`Disconnect "${pendingDisconnect.title}"?`}
+          description="This revokes its stored Google access. You'll need to sign in again with Google to reconnect it."
+          confirmLabel={disconnecting ? "Disconnecting..." : "Disconnect"}
+          confirmVariant="danger"
+          onCancel={() => setPendingDisconnect(null)}
+          onConfirm={handleConfirmDisconnect}
+        />
+      )}
+    </div>
+  );
+}

@@ -12,11 +12,44 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const youtube = await getAuthenticatedYoutube(session.user.id);
-  const res = await youtube.channels.list({
-    part: ["snippet", "statistics"],
-    mine: true,
-  });
+  let res;
+  try {
+    const youtube = await getAuthenticatedYoutube(session.user.id);
+    res = await youtube.channels.list({
+      part: ["snippet", "statistics"],
+      mine: true,
+    });
+  } catch (error) {
+    // Reachable in practice since `docs/decisions/0010-persistent-channel-connections.md` made
+    // reactivating an older stored connection a first-class action -- its refresh token can have
+    // genuinely gone stale with Google (e.g. testing-mode 7-day expiry) since it was last used.
+    // Without this, the underlying `invalid_grant` propagated as an unhandled exception, which
+    // Next.js turned into a non-JSON error response the client's `res.json()` then crashed on.
+    //
+    // The real error is logged server-side only, never forwarded to the client verbatim
+    // (AGENTS.md §F) -- whatever exception type actually reaches this catch in the future (a
+    // library internal, a misconfigured client, not just this scenario's `invalid_grant`), the
+    // client only ever sees this one fixed, generic message.
+    try {
+      console.error(JSON.stringify({
+        level: "error",
+        event: "youtube.channel_info.unavailable",
+        context: { userId: session.user.id, error: error instanceof Error ? error.message : String(error) },
+      }));
+    } catch {
+      // A structured log is a nice-to-have, not a requirement -- if it somehow can't be
+      // serialized, fall back to a plain log rather than let that itself reproduce the exact
+      // "unhandled throw escapes this catch" failure this whole block exists to prevent.
+      console.error("youtube.channel_info.unavailable", error);
+    }
+    return NextResponse.json(
+      {
+        error: "channel_info_unavailable",
+        message: "Could not load the active channel. It may need to be reconnected.",
+      },
+      { status: 502 }
+    );
+  }
 
   const channel = res.data.items?.[0];
   if (!channel) {

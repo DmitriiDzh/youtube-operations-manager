@@ -1400,6 +1400,32 @@ export async function getOAuthUserSummary(
   };
 }
 
+// `docs/decisions/0010-persistent-channel-connections.md` -- narrow, single-purpose read for the
+// new channel-connections module (AGENTS.md §D: doesn't reuse `OAuthUserSummary`, which is a CLI
+// concept lacking `image` and never needing an "is there a usable access token" flag).
+export type UserProfileForActivation = {
+  userId: string;
+  email: string;
+  name: string | null;
+  image: string | null;
+  hasAccessToken: boolean;
+};
+
+export async function getUserProfileForActivation(
+  userId: string
+): Promise<UserProfileForActivation | null> {
+  const [row] = await db.select().from(users).where(eq(users.id, userId));
+  if (!row) return null;
+
+  return {
+    userId: row.id,
+    email: row.email,
+    name: row.name,
+    image: row.image,
+    hasAccessToken: !!row.accessToken,
+  };
+}
+
 export async function clearUserOAuthTokens(userId: string) {
   await db
     .update(users)
@@ -1533,6 +1559,16 @@ export async function upsertChannel(input: {
 
 export async function markChannelSynced(channelId: string, syncedAt: Date): Promise<void> {
   await db.update(channels).set({ lastSyncedAt: syncedAt }).where(eq(channels.id, channelId));
+}
+
+// `docs/decisions/0010-persistent-channel-connections.md` -- disconnecting a channel connection
+// clears the link without touching the channel's own cached metadata (title/thumbnail/etc.),
+// which stays visible to the rest of the app even after disconnecting its OAuth identity.
+export async function setChannelConnectedUserId(
+  channelId: string,
+  connectedUserId: string | null
+): Promise<void> {
+  await db.update(channels).set({ connectedUserId }).where(eq(channels.id, channelId));
 }
 
 // BL-059 -- written BEFORE a collection run starts (mark-then-run), not after, so two concurrent

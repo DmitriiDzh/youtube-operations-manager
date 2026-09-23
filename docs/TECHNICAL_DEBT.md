@@ -773,6 +773,20 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 ---
 
+## RISK-49 — Channel-connections list/disconnect have no per-caller channel-ownership check — OPEN, 2026-09-23 (independent review, round 2)
+
+- **Affected components:** `GET /api/channel-connections`, `POST /api/channel-connections/disconnect` (`src/app/api/channel-connections/*`), `src/lib/channel-connections/services.ts` (`listConnectedChannels`, `disconnectChannel`).
+- **Current behavior:** Both routes require only *some* valid authenticated session (`getServerSession`) -- neither checks that the channel being listed/disconnected belongs to, or was ever used by, the caller's own currently-active identity. `listConnectedChannels` returns every locally-connected channel's title/email to any authenticated caller; `disconnectChannel` accepts any `channelId` and revokes/clears that connection regardless of which channel the caller is actually signed in as.
+- **This is almost certainly the correct behavior for what the feature is actually for** (`docs/decisions/0010-persistent-channel-connections.md`): the whole point of the Settings "Channels" section is to let the operator see and manage connections *other than* their current one, from a single local-operator app. It is not being proposed as a bug to fix by adding `assertActiveChannel` here, which would defeat the feature.
+- **Actual risk:** This is a real, larger blast radius than the precedent `docs/decisions/0004-active-channel-read-scoping.md` (RISK-02) established for every other channel-scoped surface in this app -- RISK-02's fix (and RISK-39's tracked write-side exception to it) were built specifically so a caller's reach is bounded by their own active channel. Any caller with a valid session -- including one obtained via an unrelated vulnerability elsewhere in this local-operator app (e.g. a hypothetical XSS reading the session cookie) -- can enumerate every connected channel's Google account email and revoke *every* stored channel's Google grant in one sweep, not just the one channel that session happens to be "in." In the accepted single-local-operator threat model (`docs/PROJECT_SPEC.md` §37) this is a narrow, low-likelihood exposure, but it is a real widening of what a compromised session can reach, and per `AGENTS.md` §F a new channel-scoping gap must never be carried forward silently -- this entry is that required, explicit record, mirroring RISK-39's own format for exactly this kind of "known, accepted, on-purpose exception."
+- **Existing mitigation:** Never exposes a token in either route's response (`ConnectedChannel`'s public shape omits it entirely); this is a local-operator, single-machine app with no per-user ownership boundary anywhere else either (RISK-02's own accepted baseline before its fix, and the general model `docs/PROJECT_SPEC.md` §37 describes).
+- **Required remediation:** None proposed -- restricting this to "only the caller's own active channel" would remove the feature's actual purpose. If this app ever moves beyond a single local operator (tracked generally as a `BLOCKS_NETWORK_DEPLOYMENT`-class concern elsewhere, e.g. RISK-02's own original framing), this surface would need its own explicit multi-operator design at that time, not a narrow patch now.
+- **Gate(s):** none blocking -- consistent with the already-accepted single-operator model this whole app is built for.
+- **Approval required from:** project owner, only if the deployment model ever changes from single local operator.
+- **Status:** OPEN — deliberate, accepted scope of the feature as designed; documented per `AGENTS.md` §F rather than left unrecorded.
+
+---
+
 ## Summary table
 
 | ID | Title | Gates | Status |
@@ -825,5 +839,6 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-46 | Divergent-lineage resolution path built (option b); structural prevention (option a) still open | DEFERRED_WITH_DOCUMENTED_REASON now; BLOCKS_OPERATIONS_RELEASE once multi-device use is real | PARTIALLY FIXED, 2026-09-22 |
 | RISK-47 | Approving a Change doesn't check for an open CRDT field conflict on it (CD6) | none (fixed) | FIXED, 2026-09-21 |
 | RISK-48 | Cloud connection encryption key has no rotation/backup procedure | DEFERRED | OPEN |
+| RISK-49 | Channel-connections list/disconnect have no per-caller channel-ownership check (deliberate, feature's actual purpose) | none blocking | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

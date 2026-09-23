@@ -1,14 +1,18 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import {
+  decryptSecret as sharedDecryptSecret,
+  encryptSecret as sharedEncryptSecret,
+  resolveEncryptionKeyFromEnv as sharedResolveEncryptionKeyFromEnv,
+  type EncryptedPayload,
+} from "../shared-crypto";
 import { DomainError } from "./contracts";
 
-// AES-256-GCM. Key resolution is injectable (never a module-level singleton reading
-// process.env directly) so tests can exercise "no key configured" (AC-CONN-03)
-// without mutating global environment state.
-const ALGORITHM = "aes-256-gcm";
-const KEY_BYTES = 32;
-const IV_BYTES = 12;
+// AES-256-GCM implementation lives in `src/lib/shared-crypto/` (AGENTS.md §M -- extracted after
+// this file and `cloud-connection/crypto.ts` were found to be byte-for-byte identical). Key
+// resolution is injectable (never a module-level singleton reading process.env directly) so tests
+// can exercise "no key configured" (AC-CONN-03) without mutating global environment state.
 
 export type ResolveEncryptionKey = () => Buffer | null;
+export type { EncryptedPayload };
 
 /**
  * Default key resolver: reads `AI_CONNECTIONS_ENCRYPTION_KEY` from the environment
@@ -18,43 +22,15 @@ export type ResolveEncryptionKey = () => Buffer | null;
  * as "encryption unavailable," never silently falling back to plaintext.
  */
 export function resolveEncryptionKeyFromEnv(): Buffer | null {
-  const raw = process.env.AI_CONNECTIONS_ENCRYPTION_KEY;
-  if (!raw) return null;
-  try {
-    const key = Buffer.from(raw, "base64");
-    return key.length === KEY_BYTES ? key : null;
-  } catch {
-    return null;
-  }
+  return sharedResolveEncryptionKeyFromEnv("AI_CONNECTIONS_ENCRYPTION_KEY");
 }
 
-export type EncryptedPayload = {
-  ciphertext: string; // base64
-  iv: string; // base64
-  authTag: string; // base64
-};
-
 export function encryptSecret(plaintext: string, key: Buffer): EncryptedPayload {
-  const iv = randomBytes(IV_BYTES);
-  const cipher = createCipheriv(ALGORITHM, key, iv);
-  const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-  const authTag = cipher.getAuthTag();
-
-  return {
-    ciphertext: ciphertext.toString("base64"),
-    iv: iv.toString("base64"),
-    authTag: authTag.toString("base64"),
-  };
+  return sharedEncryptSecret(plaintext, key);
 }
 
 export function decryptSecret(payload: EncryptedPayload, key: Buffer): string {
-  const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(payload.iv, "base64"));
-  decipher.setAuthTag(Buffer.from(payload.authTag, "base64"));
-  const plaintext = Buffer.concat([
-    decipher.update(Buffer.from(payload.ciphertext, "base64")),
-    decipher.final(),
-  ]);
-  return plaintext.toString("utf8");
+  return sharedDecryptSecret(payload, key);
 }
 
 /** Throws `encryption_key_not_configured` -- the fail-closed behavior AC-CONN-03

@@ -54,7 +54,8 @@ export type DomainErrorCode =
   | "video_details_conflict"
   | "deletion_targets_default_language"
   | "divergent_document_lineage"
-  | "crdt_conflict_open";
+  | "crdt_conflict_open"
+  | "channel_not_connected";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

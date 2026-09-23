@@ -1,8 +1,13 @@
 import type { NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
+import CredentialsProvider from "next-auth/providers/credentials";
+import { getToken } from "next-auth/jwt";
 import { google } from "googleapis";
 import { createHash, randomBytes } from "node:crypto";
 import { upsertUserOAuthOnSignIn } from "./db";
+// `channel-connections/index.ts` imports `revokeGoogleToken` from this very file, so importing it
+// statically here would create a module-init circular dependency -- loaded lazily instead, inside
+// the Credentials provider's `authorize()` below, via a dynamic `import()`.
 
 export const YOUTUBE_READ_SCOPE =
   "https://www.googleapis.com/auth/youtube.readonly";
@@ -311,6 +316,60 @@ export async function fetchGoogleIdentity(args: {
   };
 }
 
+/**
+ * NextAuth's own `SessionStore` (node_modules/next-auth/core/lib/cookie.js) reads only
+ * `req.cookies` -- never `req.headers.cookie` as a raw string -- but the `req` the
+ * "channel-connections" Credentials provider's `authorize()` receives (App Router adapter,
+ * next-auth v4.24) has `headers` but no parsed `cookies`, so `getToken({req})` would otherwise
+ * silently see no cookies at all and always return null. This parses the raw header into the
+ * `Map` shape `SessionStore`'s constructor already special-cases (also correctly reassembling a
+ * JWT split across `next-auth.session-token.0`/`.1`/... chunks, the same way it would from a real
+ * parsed `cookies` object).
+ *
+ * `decodeURIComponent` is wrapped per-cookie, not once for the whole header: an unrelated cookie
+ * on the same origin (an ad/analytics cookie, another app, a stale malformed value) with invalid
+ * percent-encoding must never be able to abort parsing before the loop reaches the actual session
+ * cookie -- that cookie is simply skipped instead of throwing out of the whole function.
+ *
+ * On a duplicate cookie name (a browser can legitimately send the same name scoped to two
+ * different paths in one header), the FIRST occurrence wins, matching the `cookie` npm package's
+ * own `parse()` behavior (verified against `node_modules/cookie`) -- this is the same convention
+ * `getServerSession()`'s own cookie parsing already follows elsewhere in this app, so this
+ * function resolves the same identity `getServerSession()` would for the same request.
+ */
+export function parseCookieHeader(rawCookieHeader: string): Map<string, string> {
+  const cookies = new Map<string, string>();
+  for (const part of rawCookieHeader.split(";")) {
+    const separatorIndex = part.indexOf("=");
+    if (separatorIndex === -1) continue;
+    const name = part.slice(0, separatorIndex).trim();
+    const value = part.slice(separatorIndex + 1).trim();
+    if (!name || cookies.has(name)) continue;
+    try {
+      cookies.set(name, decodeURIComponent(value));
+    } catch {
+      continue;
+    }
+  }
+  return cookies;
+}
+
+/** Resolves the already-existing session token (if any) from a raw, unparsed request -- see
+ * `parseCookieHeader`'s doc comment for why this can't just delegate to `getToken({req})`
+ * directly. Does not itself weaken any verification `getToken`/`decode` perform: the returned
+ * token is only ever non-null for a cookie value that decrypts and verifies successfully against
+ * `NEXTAUTH_SECRET` (AEAD-encrypted JWE, `next-auth/jwt`'s own `decode`) -- this function only
+ * fixes *finding* the cookie, never bypasses checking it. */
+export async function resolveExistingSessionToken(
+  req: { headers?: Record<string, string> } | undefined
+) {
+  const cookies = parseCookieHeader(req?.headers?.cookie ?? "");
+  return getToken({
+    req: { headers: req?.headers, cookies } as unknown as Parameters<typeof getToken>[0]["req"],
+    secret: process.env.NEXTAUTH_SECRET,
+  });
+}
+
 export async function revokeGoogleToken(token: string): Promise<void> {
   const response = await fetch("https://oauth2.googleapis.com/revoke", {
     method: "POST",
@@ -336,10 +395,52 @@ export const authOptions: NextAuthOptions = {
         },
       },
     }),
+    // `docs/decisions/0010-persistent-channel-connections.md` -- reactivates an already-connected
+    // channel's stored identity (its tokens already live in `users`, never deleted between
+    // sessions) without a Google round-trip. Never rendered on any sign-in page (this app's login
+    // page, `src/app/page.tsx`, calls `signIn("google")` directly rather than NextAuth's default
+    // multi-provider chooser) -- only the Settings "Channels" section's "Activate" button invokes
+    // this provider by id, explicitly.
+    CredentialsProvider({
+      id: "channel-connections",
+      name: "Stored channel",
+      credentials: { channelId: { label: "Channel ID", type: "text" } },
+      async authorize(credentials, req) {
+        // Requires an already-valid existing session before activating a stored channel -- this
+        // is a privileged action gated on already being signed into this app somehow, exactly
+        // like every Cloud connection route requires an active session (ADR 0008). Never an
+        // independent, unauthenticated way to assume any locally-known identity.
+        const existingToken = await resolveExistingSessionToken(
+          req as { headers?: Record<string, string> } | undefined
+        );
+        if (!existingToken) return null;
+
+        const channelId = credentials?.channelId;
+        if (!channelId) return null;
+
+        const { createChannelConnectionsCore, isDomainError } = await import("./channel-connections");
+
+        try {
+          const identity = await createChannelConnectionsCore().resolveChannelIdentityForActivation(channelId);
+          return { id: identity.userId, email: identity.email, name: identity.name, image: identity.image };
+        } catch (err) {
+          if (isDomainError(err)) return null;
+          throw err;
+        }
+      },
+    }),
   ],
   callbacks: {
     async signIn({ user, account }) {
       if (!account) return false;
+
+      // A "channel-connections" sign-in reactivates an already-stored identity -- its `users` row
+      // already has the real, correctly-scoped tokens. Its synthetic `account` carries no real
+      // OAuth tokens, so running the upsert below unconditionally would silently null out that
+      // identity's perfectly good, already-stored tokens.
+      if (account.provider === "channel-connections") {
+        return true;
+      }
 
       await upsertUserOAuthOnSignIn({
         userId: user.id,
