@@ -182,46 +182,57 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
   }, []);
 
   const refreshConflicts = useCallback(async () => {
+    // Only change-drafts/editorial-profile are per-channel -- ai-connections is device-wide
+    // (`ai_connections` has no `channel_id` at all, `GET /api/ai-connections/conflicts`'s own
+    // doc comment), so it must be fetched regardless of whether a channel is active. Found by
+    // independent review: an earlier version of this function gated ALL THREE families behind
+    // `!channelId`, which silently hid real, unresolved ai-connections conflicts (and kept
+    // re-wiping them via every post-resolve/adopt refresh) whenever channelId was momentarily
+    // null -- channel-info still loading, no channel linked yet, or Data API reads disabled.
     if (!channelId) {
       setChangeDraftConflicts([]);
       setEditorialProfileConflicts([]);
-      setAiConnectionConflicts([]);
-      return;
-    }
-    try {
-      const [changeDrafts, editorialProfile, aiConnections] = await Promise.all([
-        fetchJson<{ conflicts: Array<{ changeId: string; field: string; valuesByActor: Record<string, unknown> }> }>(
-          `/api/channels/${channelId}/change-drafts/conflicts`
-        ),
-        fetchJson<{ conflicts: Array<{ field: string; valuesByActor: Record<string, unknown> }> }>(
-          `/api/channels/${channelId}/editorial-profile/conflicts`
-        ),
-        fetchJson<{ conflicts: Array<{ connectionId: string; field: string; valuesByActor: Record<string, unknown> }> }>(
-          "/api/ai-connections/conflicts"
-        ),
-      ]);
+    } else {
+      try {
+        const [changeDrafts, editorialProfile] = await Promise.all([
+          fetchJson<{ conflicts: Array<{ changeId: string; field: string; valuesByActor: Record<string, unknown> }> }>(
+            `/api/channels/${channelId}/change-drafts/conflicts`
+          ),
+          fetchJson<{ conflicts: Array<{ field: string; valuesByActor: Record<string, unknown> }> }>(
+            `/api/channels/${channelId}/editorial-profile/conflicts`
+          ),
+        ]);
 
-      setChangeDraftConflicts(
-        changeDrafts.conflicts.map((c) => ({
-          family: "change_drafts",
-          key: `change_drafts.${c.changeId}.${c.field}`,
-          subject: `change ${c.changeId}`,
-          field: c.field,
-          changeId: c.changeId,
-          valuesByActor: c.valuesByActor,
-          resolvable: RESOLVABLE_CHANGE_DRAFT_FIELDS.has(c.field),
-        }))
-      );
-      setEditorialProfileConflicts(
-        editorialProfile.conflicts.map((c) => ({
-          family: "editorial_profile",
-          key: `editorial_profile.${c.field}`,
-          subject: "editorial profile",
-          field: c.field,
-          valuesByActor: c.valuesByActor,
-          resolvable: true,
-        }))
-      );
+        setChangeDraftConflicts(
+          changeDrafts.conflicts.map((c) => ({
+            family: "change_drafts",
+            key: `change_drafts.${c.changeId}.${c.field}`,
+            subject: `change ${c.changeId}`,
+            field: c.field,
+            changeId: c.changeId,
+            valuesByActor: c.valuesByActor,
+            resolvable: RESOLVABLE_CHANGE_DRAFT_FIELDS.has(c.field),
+          }))
+        );
+        setEditorialProfileConflicts(
+          editorialProfile.conflicts.map((c) => ({
+            family: "editorial_profile",
+            key: `editorial_profile.${c.field}`,
+            subject: "editorial profile",
+            field: c.field,
+            valuesByActor: c.valuesByActor,
+            resolvable: true,
+          }))
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load conflicts");
+      }
+    }
+
+    try {
+      const aiConnections = await fetchJson<{
+        conflicts: Array<{ connectionId: string; field: string; valuesByActor: Record<string, unknown> }>;
+      }>("/api/ai-connections/conflicts");
       setAiConnectionConflicts(
         aiConnections.conflicts.map((c) => ({
           family: "ai_connections",
@@ -234,7 +245,7 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
         }))
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load conflicts");
+      setError(err instanceof Error ? err.message : "Failed to load AI-connection conflicts");
     }
   }, [channelId]);
 
@@ -671,7 +682,9 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
             ))}
           </ul>
         ) : (
-          !!channelId && <p className="text-sm text-zinc-500">No unresolved conflicts for this channel.</p>
+          <p className="text-sm text-zinc-500">
+            {channelId ? "No unresolved conflicts for this channel or your AI connections." : "No unresolved AI-connection conflicts."}
+          </p>
         )}
       </div>
 
