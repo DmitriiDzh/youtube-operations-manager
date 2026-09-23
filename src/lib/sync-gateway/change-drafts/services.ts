@@ -640,16 +640,25 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
           }
         };
 
+        // Provenance is diffed independently by its OWN key set, exactly like `changes` below --
+        // NOT derived from which change sets are being removed (found by independent review: a
+        // change set that SURVIVES the discard, because the adopted peer's document also has it,
+        // can still have carried a provenance entry only the discarded document knew about -- the
+        // peer's own version of that change set may simply have no provenance recorded for it.
+        // Scoping cleanup to "only when the parent change set is removed" misses exactly that
+        // case and leaves a real orphan row). Run BEFORE the change-set loop below: provenance has
+        // a NOT NULL, un-cascaded FK to change_sets, so if the same change set is also being
+        // removed, its provenance row must be gone first or `deleteChangeSet` fails a real
+        // constraint.
+        for (const provenanceId of Object.keys(discardedDoc.provenance ?? {})) {
+          if (provenanceId in (adopted.provenance ?? {})) continue;
+          const changeSetId = discardedDoc.provenance![provenanceId]!.changeSetId;
+          await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { provenanceId, changeSetId }, () =>
+            deps.projection.deleteProvenanceForChangeSet(changeSetId)
+          );
+        }
         for (const changeSetId of Object.keys(discardedDoc.changeSets)) {
           if (changeSetId in adopted.changeSets) continue;
-          // Provenance has a NOT NULL, un-cascaded FK to change_sets -- must be removed before
-          // the change set it references, or `deleteChangeSet` below fails a real constraint.
-          for (const provenance of Object.values(discardedDoc.provenance ?? {})) {
-            if (provenance.changeSetId !== changeSetId) continue;
-            await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { changeSetId, provenanceId: provenance.id }, () =>
-              deps.projection.deleteProvenanceForChangeSet(changeSetId)
-            );
-          }
           await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { changeSetId }, () =>
             deps.projection.deleteChangeSet(changeSetId)
           );

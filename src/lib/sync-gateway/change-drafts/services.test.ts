@@ -541,7 +541,7 @@ test("discardLocalAndAdoptPeer removes SQL projection rows for change sets/chang
 // `ai_localization_generation_provenance.change_set_id` is a NOT NULL, un-cascaded FK to
 // `change_sets(id)`. A discarded change set with a provenance row must have that provenance row
 // removed FIRST, or the real `deleteStoredChangeSet` would throw a foreign-key-constraint error.
-test("discardLocalAndAdoptPeer removes a discarded change set's provenance row before the change set itself, and keeps an unrelated change set's provenance intact", async () => {
+test("discardLocalAndAdoptPeer removes provenance for a fully-discarded change set, AND for a change set that survives but whose adopted (peer) version has no provenance recorded", async () => {
   const projection = fakeProjection();
   const local = createChangeDraftsCore(makeDeps({ store: fakeStore(), projection }));
   await local.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-local-only", source: "ai_localization" });
@@ -566,6 +566,13 @@ test("discardLocalAndAdoptPeer removes a discarded change set's provenance row b
     projection.projectedProvenance.has("prov-local-only"),
     false,
     "the discarded change set's provenance row must be removed too, not left as a phantom pointing at a deleted change set"
+  );
+  assert.ok(projection.projectedChangeSets.has("cs-shared"), "cs-shared survives -- the peer's document also has it");
+  assert.equal(
+    projection.projectedProvenance.has("prov-shared"),
+    false,
+    "cs-shared's own provenance must ALSO be removed: the peer's (adopted) version of cs-shared carries no provenance at all, so " +
+      "scoping cleanup to \"only when the parent change set itself is removed\" would leave this row as a real, undetected orphan"
   );
 });
 
