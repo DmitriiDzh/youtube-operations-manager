@@ -3,11 +3,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "./confirm-dialog";
 
-type SyncedChannel = {
-  channelId: string;
-  title: string;
-};
-
 type ChangeSetSummary = {
   id: string;
   channelId: string;
@@ -70,10 +65,22 @@ type ApiError = { error: string; message: string };
  * created here is still forced dry-run by the API route regardless of what this UI sends
  * (see src/app/api/channels/[channelId]/batches/route.ts), and Execute is hidden
  * entirely, exactly as before this change.
+ *
+ * `channelId`/`channelTitle` come from the parent (`dashboard/page.tsx`'s own active-channel
+ * state, the same one the topbar's channel switcher drives) -- owner instruction, 2026-09-23:
+ * "на закладке batches есть дроп даун выбора каналов, который не нужен и не выполняет никакую
+ * функцию, у нас теперь есть общий дроп даун сверху". The removed dropdown let an operator pick
+ * any locally-known channel independent of the session's real active one, but every API call
+ * below is enforced server-side against the active channel (`docs/decisions/0004-active-channel-read-scoping.md`)
+ * -- picking anything else here could only ever fail with `CHANNEL_NOT_ACTIVE`, never do anything.
  */
-export function BatchManager() {
-  const [channels, setChannels] = useState<SyncedChannel[]>([]);
-  const [channelId, setChannelId] = useState("");
+export function BatchManager({
+  channelId,
+  channelTitle,
+}: {
+  channelId: string | null;
+  channelTitle: string | null;
+}) {
   const [error, setError] = useState<string | null>(null);
 
   const [changeSets, setChangeSets] = useState<ChangeSetSummary[]>([]);
@@ -102,14 +109,6 @@ export function BatchManager() {
     })();
   }, []);
 
-  const fetchChannels = useCallback(async () => {
-    const res = await fetch("/api/channels");
-    const data = await res.json();
-    setChannels(data.channels ?? []);
-    if (!channelId && data.channels?.[0]) setChannelId(data.channels[0].channelId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const fetchChangeSets = useCallback(async (id: string) => {
     const res = await fetch(`/api/channels/${encodeURIComponent(id)}/change-sets`);
     const data = await res.json();
@@ -123,10 +122,6 @@ export function BatchManager() {
   }, []);
 
   useEffect(() => {
-    void fetchChannels();
-  }, [fetchChannels]);
-
-  useEffect(() => {
     if (!channelId) return;
     void fetchChangeSets(channelId);
     void fetchBatches(channelId);
@@ -137,6 +132,7 @@ export function BatchManager() {
   }, [channelId, fetchChangeSets, fetchBatches]);
 
   async function openChangeSet(changeSetId: string) {
+    if (!channelId) return;
     setSelectedChangeSetId(changeSetId);
     setSelectedChangeIds(new Set());
     const res = await fetch(
@@ -156,7 +152,7 @@ export function BatchManager() {
   }
 
   async function createBatch() {
-    if (selectedChangeIds.size === 0) return;
+    if (!channelId || selectedChangeIds.size === 0) return;
     setCreatingBatch(true);
     setError(null);
     try {
@@ -194,6 +190,7 @@ export function BatchManager() {
   }
 
   async function executeBatch(batchId: string) {
+    if (!channelId) return;
     setExecuting(true);
     setError(null);
     try {
@@ -215,6 +212,7 @@ export function BatchManager() {
   }
 
   async function openBatch(batchId: string) {
+    if (!channelId) return;
     setSelectedBatchId(batchId);
     setError(null);
     const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/batches/${encodeURIComponent(batchId)}`);
@@ -232,6 +230,7 @@ export function BatchManager() {
   }
 
   async function runDryRun(batchId: string) {
+    if (!channelId) return;
     setPreparing(true);
     setError(null);
     try {
@@ -256,8 +255,11 @@ export function BatchManager() {
   );
 
   const selectedBatch = batches.find((b) => b.id === selectedBatchId) ?? null;
-  const selectedChannelTitle = channels.find((c) => c.channelId === channelId)?.title ?? channelId;
   const totalFieldCount = ledgerRows.reduce((sum, row) => sum + row.changeIds.length, 0);
+
+  if (!channelId) {
+    return <p className="text-sm text-zinc-500">No active channel.</p>;
+  }
 
   return (
     <div className="space-y-8">
@@ -274,21 +276,6 @@ export function BatchManager() {
           mode only &mdash; nothing is ever written to YouTube from this tab.
         </div>
       )}
-
-      <div>
-        <label className="mb-1 block text-xs text-zinc-500">Channel</label>
-        <select
-          value={channelId}
-          onChange={(e) => setChannelId(e.target.value)}
-          className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm"
-        >
-          {channels.map((c) => (
-            <option key={c.channelId} value={c.channelId}>
-              {c.title}
-            </option>
-          ))}
-        </select>
-      </div>
 
       {error && <p className="text-sm text-red-400">{error}</p>}
 
@@ -450,7 +437,7 @@ export function BatchManager() {
         <ConfirmDialog
           title="Send this batch to YouTube for real?"
           description={
-            `Channel: ${selectedChannelTitle}. ${ledgerRows.length} video${ledgerRows.length === 1 ? "" : "s"}, ` +
+            `Channel: ${channelTitle ?? channelId}. ${ledgerRows.length} video${ledgerRows.length === 1 ? "" : "s"}, ` +
             `${totalFieldCount} field${totalFieldCount === 1 ? "" : "s"} total. This is a real, non-dry-run write -- ` +
             `each video still goes through identity check, a fresh conflict check, and an automatic backup before ` +
             `being written, and the result will show here per video. This cannot be undone by this app.`

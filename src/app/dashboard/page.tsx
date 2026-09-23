@@ -254,13 +254,13 @@ export default function Dashboard() {
       )}
 
       {tab === "batches" && (
-        <div key={channel?.id ?? "no-channel"}>
+        <div>
           <p className="mb-4 text-sm text-zinc-400">
             Select approved changes into a Batch and preview it in dry-run mode. A real,
             non-dry-run write is only possible when &ldquo;Live writes&rdquo; is turned on
             in Settings &mdash; off by default every session.
           </p>
-          <BatchManager />
+          <BatchManager channelId={channel?.id ?? null} channelTitle={channel?.title ?? null} />
         </div>
       )}
 
