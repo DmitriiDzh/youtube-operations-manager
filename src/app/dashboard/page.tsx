@@ -9,10 +9,12 @@ import { ContentManager } from "@/components/content-manager";
 import { LanguagesManager } from "@/components/languages-manager";
 import { BatchManager } from "@/components/batch-manager";
 import { AiConnectionsManager } from "@/components/ai-connections-manager";
-import { AnalyticsSyncSettings } from "@/components/analytics-sync-settings";
+import { AnalyticsCollectionSettings } from "@/components/analytics-collection-settings";
 import { LiveWritesSettings } from "@/components/live-writes-settings";
+import { McpConnectionSettings } from "@/components/mcp-connection-settings";
 import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
+import { SyncFolderSettings } from "@/components/sync-folder-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
 import { EditorialProfilePanel } from "@/components/editorial-profile-panel";
 import { DeviceHandoffPanel } from "@/components/device-handoff-panel";
@@ -68,9 +70,23 @@ const SYNC_CYCLE_POLL_MS = 60_000;
 
 type Tab = (typeof NAV_ITEMS)[number]["value"];
 
+// Settings sub-tabs (owner instruction, 2026-09-23: "давай в настройках сделаем 4 категории
+// закладок"). "AI Agent" deliberately groups two technically unrelated mechanisms -- the MCP
+// connection toggle (how an external AI agent like Codex/Claude connects TO this app) and AI
+// provider connections (how this app connects OUT to an AI provider for AI Localization) -- per
+// the owner's own explicit choice after this distinction was raised and confirmed understood.
+const SETTINGS_SUB_TABS = [
+  { value: "api", label: "API" },
+  { value: "ai-agent", label: "AI Agent" },
+  { value: "sync", label: "Sync" },
+  { value: "about", label: "About" },
+] as const;
+type SettingsSubTab = (typeof SETTINGS_SUB_TABS)[number]["value"];
+
 export default function Dashboard() {
   const { data: session, status } = useSession();
   const [tab, setTab] = useState<Tab>("home");
+  const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>("api");
   const [channel, setChannel] = useState<ChannelInfo | null>(null);
   const [conflictCount, setConflictCount] = useState(0);
 
@@ -245,25 +261,62 @@ export default function Dashboard() {
       )}
 
       {tab === "settings" && (
-        <div className="max-w-3xl space-y-6">
-          <AppVersionInfo />
-          <LiveWritesSettings />
-          <ReadGatewaySettings />
-          <CloudConnectionSettings />
-          <AnalyticsSyncSettings />
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-            <h3 className="mb-4 flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-              AI provider connections
-              <InfoTooltip>
-                Configure AI provider connections for AI Localization. No specific vendor is
-                built into this app &mdash; every connection is a Base URL, model id, and
-                optional credential you supply. Credentials are encrypted at rest and never
-                shown again once saved. Testing a connection is an explicit action and may
-                incur cost for a real (non-mock) connection.
-              </InfoTooltip>
-            </h3>
-            <AiConnectionsManager />
+        <div className="max-w-3xl">
+          <div className="mb-6 flex gap-1 rounded-lg bg-zinc-950 p-1">
+            {SETTINGS_SUB_TABS.map((t) => (
+              <button
+                key={t.value}
+                onClick={() => setSettingsSubTab(t.value)}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  settingsSubTab === t.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
           </div>
+
+          {settingsSubTab === "api" && (
+            <div className="space-y-6">
+              <LiveWritesSettings />
+              <ReadGatewaySettings />
+              <CloudConnectionSettings />
+              <AnalyticsCollectionSettings />
+            </div>
+          )}
+
+          {settingsSubTab === "ai-agent" && (
+            <div className="space-y-6">
+              <McpConnectionSettings />
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+                <h3 className="mb-4 flex items-center gap-1.5 text-base font-semibold text-zinc-100">
+                  AI provider connections
+                  <InfoTooltip>
+                    Configure AI provider connections for AI Localization. No specific vendor is
+                    built into this app &mdash; every connection is a Base URL, model id, and
+                    optional credential you supply. Credentials are encrypted at rest and never
+                    shown again once saved. Testing a connection is an explicit action and may
+                    incur cost for a real (non-mock) connection. Unrelated to the MCP connection
+                    above (that&rsquo;s an external agent connecting TO this app; this is this app
+                    connecting OUT to an AI provider) &mdash; grouped here for convenience.
+                  </InfoTooltip>
+                </h3>
+                <AiConnectionsManager />
+              </div>
+            </div>
+          )}
+
+          {settingsSubTab === "sync" && (
+            <div className="space-y-6">
+              <SyncFolderSettings />
+            </div>
+          )}
+
+          {settingsSubTab === "about" && (
+            <div className="space-y-6">
+              <AppVersionInfo />
+            </div>
+          )}
         </div>
       )}
 

@@ -57,7 +57,6 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) {
   const [status, setStatus] = useState<StatusResponse | null>(null);
-  const [syncthingRootPath, setSyncthingRootPath] = useState("");
   const [snapshots, setSnapshots] = useState<SnapshotSummary[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -93,17 +92,6 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
     }
   }, []);
 
-  const refreshConfig = useCallback(async () => {
-    try {
-      const data = await fetchJson<{ syncthingRootPath: string | null }>(
-        "/api/device-handoff/bootstrap-config"
-      );
-      setSyncthingRootPath(data.syncthingRootPath ?? "");
-    } catch {
-      // non-fatal -- first-run config may not exist yet
-    }
-  }, []);
-
   const refreshSnapshots = useCallback(async () => {
     try {
       const data = await fetchJson<{ snapshots: SnapshotSummary[] }>("/api/device-handoff/snapshots");
@@ -130,9 +118,8 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
 
   useEffect(() => {
     void refreshStatus();
-    void refreshConfig();
     void refreshSnapshots();
-  }, [refreshStatus, refreshConfig, refreshSnapshots]);
+  }, [refreshStatus, refreshSnapshots]);
 
   useEffect(() => {
     void refreshConflicts();
@@ -223,23 +210,6 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
     } finally {
       adoptInFlight.current = false;
       setAdoptBusy(false);
-    }
-  }
-
-  async function handleSaveConfig() {
-    setBusy("config");
-    setError(null);
-    try {
-      await fetchJson("/api/device-handoff/bootstrap-config", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ syncthingRootPath: syncthingRootPath || null }),
-      });
-      await refreshSnapshots();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save folder");
-    } finally {
-      setBusy(null);
     }
   }
 
@@ -357,34 +327,10 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
       )}
 
       <div>
-        <h2 className="mb-2 text-lg font-semibold">Syncthing folder</h2>
-        <p className="mb-3 text-sm text-zinc-400">
-          The local directory Syncthing shares with the other device. Snapshots are published
-          here on export and read from here on import. Leave empty to work local-only (nothing
-          leaves this device).
-        </p>
-        <div className="flex gap-2">
-          <input
-            value={syncthingRootPath}
-            onChange={(e) => setSyncthingRootPath(e.target.value)}
-            placeholder="e.g. D:\\Sync\\yt-ops-manager"
-            className="flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
-          />
-          <button
-            onClick={handleSaveConfig}
-            disabled={busy === "config"}
-            className="rounded-md border border-zinc-700 px-3 py-2 text-sm font-medium text-zinc-300 hover:border-zinc-500 disabled:opacity-50"
-          >
-            {busy === "config" ? "Saving..." : "Save"}
-          </button>
-        </div>
-      </div>
-
-      <div>
         <h2 className="mb-2 text-lg font-semibold">Change drafts sync</h2>
         <p className="mb-3 text-sm text-zinc-400">
           Change Sets and their proposed changes sync continuously in the background between
-          devices sharing the folder above (checked automatically every minute while this app is
+          devices sharing the configured Syncthing folder (Settings &rarr; Sync; checked automatically every minute while this app is
           open) &mdash; this button just runs one cycle immediately. A conflict below means two
           devices edited the same field while offline; nothing is ever picked automatically &mdash;
           choose which version to keep below when one appears.
@@ -410,7 +356,7 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
             </ul>
             <p className="mt-2 text-xs text-amber-300">
               Nothing local was lost &mdash; this device&rsquo;s changes just weren&rsquo;t published this
-              cycle. Check that the Syncthing folder above is actually mounted/reachable.
+              cycle. Check that the Syncthing folder (Settings &rarr; Sync) is actually mounted/reachable.
             </p>
           </div>
         )}
@@ -525,7 +471,7 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
         <h2 className="mb-2 text-lg font-semibold">Finish work on this device</h2>
         <p className="mb-3 text-sm text-zinc-400">
           Exports a scrubbed snapshot (never includes OAuth tokens or AI connection
-          credentials) into the Syncthing folder above. This records that export finished here
+          credentials) into the configured Syncthing folder (Settings &rarr; Sync). This records that export finished here
           &mdash; it does not and cannot confirm any other device has stopped.
         </p>
         <button
