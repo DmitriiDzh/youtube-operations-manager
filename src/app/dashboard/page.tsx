@@ -262,7 +262,7 @@ export default function Dashboard() {
 
       {tab === "settings" && (
         <div className="max-w-3xl">
-          <div className="mb-6 flex gap-1 rounded-lg bg-zinc-950 p-1">
+          <div className="mb-6 inline-flex gap-1 rounded-lg bg-zinc-950 p-1">
             {SETTINGS_SUB_TABS.map((t) => (
               <button
                 key={t.value}
