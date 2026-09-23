@@ -100,6 +100,7 @@ type ServiceDependencies = {
       Array<{
         requestedStartDate: string;
         requestedEndDate: string;
+        videoCount: number;
         skippedVideoIds: string[];
         ranAt: Date;
       }>

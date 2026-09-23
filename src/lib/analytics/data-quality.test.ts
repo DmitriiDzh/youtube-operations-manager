@@ -25,7 +25,7 @@ test("computeDataQualityReport: a run covering the whole range marks every date 
     startDate: "2026-09-01",
     endDate: "2026-09-03",
     runs: [
-      { requestedStartDate: "2026-09-01", requestedEndDate: "2026-09-03", skippedVideoIds: [], ranAt: new Date("2026-09-04T00:00:00Z") },
+      { requestedStartDate: "2026-09-01", requestedEndDate: "2026-09-03", videoCount: 5, skippedVideoIds: [], ranAt: new Date("2026-09-04T00:00:00Z") },
     ],
     now: FAR_FUTURE_NOW,
   });
@@ -39,13 +39,30 @@ test("computeDataQualityReport: a run covering only part of the range leaves the
     startDate: "2026-09-01",
     endDate: "2026-09-05",
     runs: [
-      { requestedStartDate: "2026-09-01", requestedEndDate: "2026-09-02", skippedVideoIds: [], ranAt: new Date("2026-09-03T00:00:00Z") },
+      { requestedStartDate: "2026-09-01", requestedEndDate: "2026-09-02", videoCount: 5, skippedVideoIds: [], ranAt: new Date("2026-09-03T00:00:00Z") },
     ],
     now: FAR_FUTURE_NOW,
   });
 
   assert.deepEqual(report.coveredDates, ["2026-09-01", "2026-09-02"]);
   assert.deepEqual(report.uncoveredDates, ["2026-09-03", "2026-09-04", "2026-09-05"]);
+});
+
+// Found by independent review, 2026-09-23: a run with zero videos attempted (e.g. collection
+// fired before channel sync ever populated `videos`) proves nothing about coverage -- without this
+// guard, every date in its range would show "covered" forever, hiding a real problem.
+test("computeDataQualityReport: a run with zero videos attempted never counts as coverage", () => {
+  const report = computeDataQualityReport({
+    startDate: "2026-09-01",
+    endDate: "2026-09-02",
+    runs: [
+      { requestedStartDate: "2026-09-01", requestedEndDate: "2026-09-02", videoCount: 0, skippedVideoIds: [], ranAt: new Date("2026-09-03T00:00:00Z") },
+    ],
+    now: FAR_FUTURE_NOW,
+  });
+
+  assert.deepEqual(report.coveredDates, []);
+  assert.deepEqual(report.uncoveredDates, ["2026-09-01", "2026-09-02"]);
 });
 
 // Hand-computed: now = 2026-09-10, lag = 2 days -> cutoff = 2026-09-08. Dates > cutoff
@@ -85,8 +102,8 @@ test("computeDataQualityReport: aggregates repeated skips for the same video, ke
     startDate: "2026-09-01",
     endDate: "2026-09-10",
     runs: [
-      { requestedStartDate: "2026-09-01", requestedEndDate: "2026-09-05", skippedVideoIds: ["v1"], ranAt: new Date("2026-09-06T00:00:00Z") },
-      { requestedStartDate: "2026-09-06", requestedEndDate: "2026-09-10", skippedVideoIds: ["v1", "v2"], ranAt: new Date("2026-09-11T00:00:00Z") },
+      { requestedStartDate: "2026-09-01", requestedEndDate: "2026-09-05", videoCount: 5, skippedVideoIds: ["v1"], ranAt: new Date("2026-09-06T00:00:00Z") },
+      { requestedStartDate: "2026-09-06", requestedEndDate: "2026-09-10", videoCount: 5, skippedVideoIds: ["v1", "v2"], ranAt: new Date("2026-09-11T00:00:00Z") },
     ],
     now: FAR_FUTURE_NOW,
   });
@@ -102,7 +119,7 @@ test("computeDataQualityReport: a skip from a run entirely outside the requested
     startDate: "2026-09-01",
     endDate: "2026-09-05",
     runs: [
-      { requestedStartDate: "2026-08-01", requestedEndDate: "2026-08-05", skippedVideoIds: ["v1"], ranAt: new Date("2026-08-06T00:00:00Z") },
+      { requestedStartDate: "2026-08-01", requestedEndDate: "2026-08-05", videoCount: 5, skippedVideoIds: ["v1"], ranAt: new Date("2026-08-06T00:00:00Z") },
     ],
     now: FAR_FUTURE_NOW,
   });
@@ -115,10 +132,47 @@ test("computeDataQualityReport: a run overlapping only the edge of the requested
     startDate: "2026-09-01",
     endDate: "2026-09-05",
     runs: [
-      { requestedStartDate: "2026-09-05", requestedEndDate: "2026-09-10", skippedVideoIds: ["v1"], ranAt: new Date("2026-09-11T00:00:00Z") },
+      { requestedStartDate: "2026-09-05", requestedEndDate: "2026-09-10", videoCount: 5, skippedVideoIds: ["v1"], ranAt: new Date("2026-09-11T00:00:00Z") },
     ],
     now: FAR_FUTURE_NOW,
   });
 
   assert.deepEqual(report.videosWithSkips, [{ videoId: "v1", skipCount: 1, lastSkippedAt: "2026-09-11T00:00:00.000Z" }]);
+});
+
+// Found by independent review, 2026-09-23: every real collection run attempts every
+// currently-synced video, so a video absent from the LATEST overlapping run's own skippedVideoIds
+// must have succeeded in that latest attempt -- self-healing, not a permanent scar. Without this,
+// a video that failed once and later succeeded would still show as failing for as long as any
+// query window overlapped the old failed run.
+test("computeDataQualityReport: a video that succeeded in the latest overlapping run is no longer reported, even though an older run skipped it", () => {
+  const report = computeDataQualityReport({
+    startDate: "2026-09-01",
+    endDate: "2026-09-10",
+    runs: [
+      { requestedStartDate: "2026-09-01", requestedEndDate: "2026-09-05", videoCount: 5, skippedVideoIds: ["v1"], ranAt: new Date("2026-09-06T00:00:00Z") },
+      // Later run, same video no longer skipped -- v1 must disappear from the report entirely.
+      { requestedStartDate: "2026-09-06", requestedEndDate: "2026-09-10", videoCount: 5, skippedVideoIds: [], ranAt: new Date("2026-09-11T00:00:00Z") },
+    ],
+    now: FAR_FUTURE_NOW,
+  });
+
+  assert.deepEqual(report.videosWithSkips, []);
+});
+
+test("computeDataQualityReport: skipCount reflects total historical skips, even though only videos in the latest run are reported at all", () => {
+  const report = computeDataQualityReport({
+    startDate: "2026-09-01",
+    endDate: "2026-09-15",
+    runs: [
+      { requestedStartDate: "2026-09-01", requestedEndDate: "2026-09-05", videoCount: 5, skippedVideoIds: ["v1"], ranAt: new Date("2026-09-06T00:00:00Z") },
+      { requestedStartDate: "2026-09-06", requestedEndDate: "2026-09-10", videoCount: 5, skippedVideoIds: ["v1"], ranAt: new Date("2026-09-11T00:00:00Z") },
+      { requestedStartDate: "2026-09-11", requestedEndDate: "2026-09-15", videoCount: 5, skippedVideoIds: ["v1"], ranAt: new Date("2026-09-16T00:00:00Z") },
+    ],
+    now: FAR_FUTURE_NOW,
+  });
+
+  assert.deepEqual(report.videosWithSkips, [
+    { videoId: "v1", skipCount: 3, lastSkippedAt: "2026-09-16T00:00:00.000Z" },
+  ]);
 });

@@ -165,6 +165,10 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
   // (dataQuality stays null) -- this is a nice-to-have annotation, not load-bearing for the rest
   // of the panel.
   const fetchDataQuality = useCallback(async (channelId: string, days: number) => {
+    // Reset first, not just on success (found by independent review, 2026-09-23): without this,
+    // a failed request after a channel/period switch left the PREVIOUS channel's/period's warning
+    // banner showing indefinitely, since the old code only ever set state on the success path.
+    setDataQuality(null);
     try {
       const { startDate, endDate } = computeDefaultPeriodRange(days);
       const res = await fetch(
@@ -173,7 +177,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
       const data = await res.json();
       if (res.ok) setDataQuality(data as DataQualityReport);
     } catch {
-      // Non-fatal, see doc comment above.
+      // Non-fatal (see doc comment above) -- dataQuality already reset to null above.
     }
   }, []);
 
@@ -312,14 +316,15 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
               {dataQuality.uncoveredDates.length > 0 && (
                 <p className="text-amber-200/90">
                   {dataQuality.uncoveredDates.length} day{dataQuality.uncoveredDates.length === 1 ? "" : "s"} in this
-                  period {dataQuality.uncoveredDates.length === 1 ? "was" : "were"} never collected — the totals
-                  above may be incomplete.
+                  period {dataQuality.uncoveredDates.length === 1 ? "was" : "were"} never collected — &ldquo;Top
+                  content&rdquo; above (from locally-collected data) may be incomplete for this period. The Views
+                  and Watch time cards are a live API read, unaffected by this.
                 </p>
               )}
               {dataQuality.videosWithSkips.length > 0 && (
                 <p className="mt-1 text-amber-200/90">
                   {dataQuality.videosWithSkips.length} video{dataQuality.videosWithSkips.length === 1 ? "" : "s"} had
-                  a collection failure recorded in this period.
+                  a collection failure in the most recent collection run covering this period.
                 </p>
               )}
             </div>

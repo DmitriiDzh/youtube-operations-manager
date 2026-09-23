@@ -27,12 +27,16 @@ export const ANALYTICS_REPORTING_LAG_DAYS = 2;
 export type CollectionRunSummary = {
   requestedStartDate: string;
   requestedEndDate: string;
+  videoCount: number;
   skippedVideoIds: string[];
   ranAt: Date;
 };
 
 export type VideoSkipSummary = {
   videoId: string;
+  /** How many overlapping runs skipped this video -- historical context; presence in this list at
+   * all already means the LATEST overlapping run also skipped it (see `computeDataQualityReport`'s
+   * "latest run wins" doc comment). */
   skipCount: number;
   lastSkippedAt: string;
 };
@@ -88,9 +92,16 @@ export function computeDataQualityReport(args: {
       tooRecentDates.push(date);
       continue;
     }
+    // A run with zero videos attempted (e.g. collection fired before channel sync ever populated
+    // `videos`, or a channel genuinely has none) proves nothing about coverage -- found by
+    // independent review, 2026-09-23: without this guard, such a run would mark every date in its
+    // range "covered" forever (the same-day freshness gate blocks a retry), with zero skip
+    // evidence to reveal anything went wrong. Exactly the false "all clear" this diagnostic exists
+    // to prevent.
     const isCovered =
-      args.runs.some((run) => date >= run.requestedStartDate && date <= run.requestedEndDate) ||
-      datesWithAnyMetricRow.has(date);
+      args.runs.some(
+        (run) => run.videoCount > 0 && date >= run.requestedStartDate && date <= run.requestedEndDate
+      ) || datesWithAnyMetricRow.has(date);
     if (isCovered) {
       coveredDates.push(date);
     } else {
@@ -105,24 +116,32 @@ export function computeDataQualityReport(args: {
     (run) => run.requestedStartDate <= args.endDate && run.requestedEndDate >= args.startDate
   );
 
-  const skipsByVideo = new Map<string, { count: number; lastSkippedAt: Date }>();
+  // Every real collection run attempts every currently-synced video (collectMetrics iterates
+  // videoStore.listVideosByChannel), so a video absent from the MOST RECENT overlapping run's own
+  // skippedVideoIds must have succeeded in that latest attempt -- self-healing, not a permanent
+  // scar. Without this "latest run wins" rule (found by independent review, 2026-09-23), a video
+  // that failed once and succeeded on every later rolling-window run would still show as "having a
+  // collection failure" for as long as any query window overlapped that one old run -- up to ~4
+  // weeks with the default 7-day auto-collect window.
+  const latestOverlappingRun = overlappingRuns.reduce<CollectionRunSummary | null>(
+    (latest, run) => (!latest || run.ranAt > latest.ranAt ? run : latest),
+    null
+  );
+
+  const totalSkipCounts = new Map<string, number>();
   for (const run of overlappingRuns) {
     for (const videoId of run.skippedVideoIds) {
-      const existing = skipsByVideo.get(videoId);
-      if (!existing) {
-        skipsByVideo.set(videoId, { count: 1, lastSkippedAt: run.ranAt });
-      } else {
-        existing.count += 1;
-        if (run.ranAt > existing.lastSkippedAt) existing.lastSkippedAt = run.ranAt;
-      }
+      totalSkipCounts.set(videoId, (totalSkipCounts.get(videoId) ?? 0) + 1);
     }
   }
 
-  const videosWithSkips: VideoSkipSummary[] = [...skipsByVideo.entries()]
-    .map(([videoId, entry]) => ({
+  const videosWithSkips: VideoSkipSummary[] = (latestOverlappingRun?.skippedVideoIds ?? [])
+    .map((videoId) => ({
       videoId,
-      skipCount: entry.count,
-      lastSkippedAt: entry.lastSkippedAt.toISOString(),
+      // Historical count across every overlapping run, for context -- but presence in this list
+      // at all already means the LATEST attempt failed (see rule above).
+      skipCount: totalSkipCounts.get(videoId) ?? 1,
+      lastSkippedAt: latestOverlappingRun!.ranAt.toISOString(),
     }))
     .sort((a, b) => b.skipCount - a.skipCount);
 

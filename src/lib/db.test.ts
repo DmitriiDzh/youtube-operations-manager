@@ -580,6 +580,11 @@ test("initializeDatabaseSchema: an existing pre-versioning database (baseline ta
     const users = await client.execute("SELECT id, email FROM users WHERE id = 'legacy-user'");
     assert.equal(users.rows.length, 1, "pre-existing row must survive re-initialization untouched");
     assert.equal(await readSchemaVersion(client), SCHEMA_CURRENT_VERSION);
+    assert.equal(
+      await tableExists(client, "analytics_collection_runs"),
+      true,
+      "a later migration (v13) must still apply correctly on the pre-versioning re-apply path"
+    );
   }));
 
 // AC-SCHEMA-04
