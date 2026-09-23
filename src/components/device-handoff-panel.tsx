@@ -347,7 +347,9 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
       // instead of a dead end.
       if ((pendingResolution.family === "change_drafts" || pendingResolution.family === "editorial_profile") && !channelId) {
         setPendingResolution(null);
-        throw new Error(`No active channel -- can't resolve a ${FAMILY_LABELS[pendingResolution.family].toLowerCase()} conflict without one.`);
+        throw new Error(
+          `No active channel -- can't resolve this ${pendingResolution.family === "change_drafts" ? "change-drafts" : "editorial-profile"} conflict without one.`
+        );
       }
       if (pendingResolution.family === "change_drafts") {
         await fetchJson(`/api/channels/${channelId}/change-drafts/conflicts`, {
