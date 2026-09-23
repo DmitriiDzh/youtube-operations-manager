@@ -831,6 +831,14 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           videoTitlesById: new Map(videoDetails.map((video) => [video.videoId, video.title])),
         });
 
+        // Accepted, low-impact gap (independent review round 2, 2026-09-23): this response is
+        // always built from the locally-computed `content`, never re-read from the store, so under
+        // the exact concurrent-caller race db.ts's `upsertWeeklyReport` guards against, the LOSING
+        // caller here would report "generated: true" with content that doesn't match what actually
+        // ended up persisted (the DB integrity guarantee still holds -- only this response/log
+        // would be describing a write that was silently dropped). Not fixed: the only caller
+        // (src/app/dashboard/page.tsx) fires this via `fetch(...).catch(() => {})` and never reads
+        // the response body, and no MCP/CLI surface exposes this generate path at all.
         const reportJson = JSON.stringify(content);
         await deps.weeklyReportStore.upsert(
           {
