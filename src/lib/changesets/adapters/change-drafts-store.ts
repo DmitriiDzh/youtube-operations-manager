@@ -4,7 +4,7 @@ import {
   listStoredChangesByChangeSet,
   listStoredChangeSetsByChannel,
 } from "@/lib/db";
-import { createChangeDraftsCoreForProduction } from "@/lib/change-drafts";
+import { createChangeDraftsCoreForProduction } from "@/lib/sync-gateway";
 import { DomainError } from "../contracts";
 
 /**

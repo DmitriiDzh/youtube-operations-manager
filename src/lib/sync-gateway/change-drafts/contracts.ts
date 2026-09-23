@@ -63,16 +63,42 @@ export type DraftChangeSet = {
 };
 
 /**
+ * AI-generation provenance for one change set -- write-once (never updated or deleted through
+ * this module's own API), folded into this document 2026-09-22
+ * (`docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M4, Category C) rather than
+ * given its own document family, since it is already intrinsically per-channel (via its parent
+ * change set) and purely additive to a change set's own existence. 1:1 with
+ * `src/lib/db.ts`'s `ai_localization_generation_provenance` columns.
+ */
+export type DraftProvenance = {
+  id: string;
+  changeSetId: string;
+  channelId: string;
+  profileVersion: number | null;
+  effectiveContextJson: string | null;
+  createdAt: string;
+};
+
+/**
  * The Automerge document shape for exactly one channel's drafts
  * (`AUTOMERGE_MIGRATION_PLAN.md` §5 -- "one Automerge document per channel," the natural
  * sync/conflict boundary this codebase already uses for write-safety, `write-context`).
  * `channelId` here is a data-partitioning convenience only -- never an access-control decision;
  * `write-context.assertWriteChannel` remains the sole identity authority (AC-CRDT-06).
+ *
+ * `provenance` was added 2026-09-22 (M4), AFTER real documents already existed on real devices
+ * without it -- Automerge has no schema-migration mechanism, so a document saved before this
+ * field existed simply lacks the key entirely. `provenance` is therefore typed optional here,
+ * and every read of it in `services.ts` defaults to `{}` rather than assuming it is present
+ * (mirrors this project's own additive-schema philosophy for SQL,
+ * `docs/decisions/0001-additive-idempotent-schema-strategy.md`, applied here to an Automerge
+ * document instead of a SQL table).
  */
 export type ChannelDraftDocument = {
   channelId: string;
   changeSets: Record<string, DraftChangeSet>;
   changes: Record<string, DraftChange>;
+  provenance?: Record<string, DraftProvenance>;
 };
 
 /**

@@ -75,44 +75,118 @@ This is the one category ADR 0006 explicitly excluded:
 > exactly as \[it is] today: relational SQLite... the part of the system with the least tolerance
 > for a new failure mode... stays outside the blast radius of this migration entirely."
 
-**Reopened and confirmed by the owner 2026-09-22** (see §4) on the strength of three findings that
-change the risk picture from when 0006 was decided:
+**Reopening confirmed by the owner 2026-09-22** on the strength of three findings in the plan's
+first draft — but **finding #1 below was wrong, corrected 2026-09-22 after a dedicated research
+pass immediately before implementing M5** (`AGENTS.md` §L: derive expected behavior from the
+actual code, not from an assumption written down before reading it):
 
-1. **These tables are structurally append-only and immutable once written, uniquely keyed by a
-   generated UUID.** A device only ever creates *new* rows for its own batch/attempt/audit entry —
-   it never edits a row another device wrote. Automerge's field-level conflict machinery exists for
-   *repeatedly revised* values (a title two people both edit); there is no realistic scenario where
-   two devices write the *same* id with *different* content here. In CRDT terms this is a **lower-
-   risk shape** than what's already shipped for `change_sets`, not a harder one.
-2. **No cross-device concurrency guard exists today, for anything.** `assertDeviceAvailableForMutation`
-   (`src/lib/device-handoff/services.ts`) only checks this device's own operation lock and its own
-   recovery-mode state — it never reads another device's status. "One active device at a time" is an
-   **operator convention**, not an enforced distributed lock, and was already true before this plan.
-3. **An independent, non-CRDT-enthusiasm motivation.** `docs/TECHNICAL_DEBT.md`'s RISK-29 (fixed)
-   and RISK-33 (partially fixed) are both about real, already-hit fragility in the *current*
-   whole-table-replace-on-import mechanism specifically striking `batch_ledger_rows` (positional-
-   column corruption across schema versions; `FOREIGN KEY` failures needing `PRAGMA
-   foreign_keys=OFF` bracketing). This fragility class disappears entirely once these tables move
-   off whole-table SQL replace-on-import.
+1. **~~These tables are structurally append-only~~ -- FALSE for three of the four.** Only
+   `audit_events` is genuinely insert-only (`src/lib/db.ts`'s own comment: "Never updated or
+   deleted"). `batches` (`PENDING → RUNNING → COMPLETED/ABORTED`), `batch_ledger_rows` (`status`
+   and `active_attempt_id`, mutated repeatedly per video across
+   `PENDING → APPLYING → SUCCESS/FAILED/CONFLICT/UNKNOWN`), and `batch_attempts` (`phase`,
+   `INTENDED → RESULT_RECORDED`) are real state machines, each row UPDATEd in place multiple times
+   during one video's processing — not a shape where "two devices only ever create new ids" holds.
+2. **The load-bearing safety mechanism has no Automerge equivalent.** `docs/acceptance/
+   PHASE_5_ACCEPTANCE.md`'s AC-CONCURRENCY-01/02/03 and AC-RESUME-01/AC-CRASH-01 (bounded
+   concurrency, no double-apply, no two batches racing the same video, crash-safe resume) are
+   enforced by **guarded compare-and-set UPDATEs** (`db.ts`'s `beginAttemptIntent`/
+   `transitionLedgerRowStatus`: `UPDATE ... WHERE status = 'PENDING'` etc., paired with
+   `.returning()` to detect a zero-rows-affected precondition failure) and a real UNIQUE-constraint
+   claim (`acquireVideoExecutionLock`'s `onConflictDoNothing`) -- deliberately chosen over
+   `db.transaction(...)` after that was found to deadlock/serialize more aggressively across libSQL
+   connections (`db.ts`'s own comment on `beginAttemptIntent`). **Automerge has no compare-and-set
+   or mutual-exclusion primitive** -- a merge always accepts both sides' writes and resolves via
+   LWW/conflict-recording; it cannot *refuse* a write the way `WHERE status = 'PENDING'` refusing to
+   match a row can. This is a structural incompatibility, not an engineering inconvenience to work
+   around.
+3. **The recovery-mode gate reads live SQL directly, not a projection.**
+   `scanForUnresolvedExecutionState` (`src/lib/snapshot/services.ts`) runs
+   `SELECT ... FROM batch_ledger_rows WHERE status IN ('APPLYING','UNKNOWN')` against the *current*
+   connection, and `isDeviceInRecoveryMode`/`assertNotInRecoveryMode` use it as a real-time,
+   fail-closed safety gate before handoff and at other choke points. Every other family in this
+   plan (editorial-profile, ai-connections-catalog) deliberately lets its SQL projection **lag**
+   on a transient write failure (logged, never rethrown -- a stale projection is an acceptable,
+   recoverable degradation for those). Reused verbatim here, that same lag would make the recovery
+   gate **fail open**: a real unresolved `APPLYING`/`UNKNOWN` row could stop being visible to SQL
+   the moment a projection write happened to fail, and `assertDeviceAvailableForMutation` would
+   then wrongly allow a mutation exactly when it must not.
 
-**On the distributed-execution-claim question (§4(b) of the first draft):** the owner's answer —
-*"Если нет конфликтов то не страшно"* ("if there are no conflicts, it's not a problem") — accepts
-finding #1's reasoning and does **not** ask for a new `executingDeviceId`/lease mechanism. The
-existing informal one-device-at-a-time convention for batch *execution* is carried forward
-unchanged; this plan only changes how the *record* of a batch/attempt/audit event propagates
-between devices, never the execution-time safety story, which stays exactly as it is today.
+(The original finding #2 -- "no cross-device concurrency guard exists today, for anything,
+'one device at a time' is a convention not a lock" -- and finding #3 -- RISK-29/RISK-33's
+whole-table-replace fragility -- were confirmed accurate and still stand.)
 
-## 3. Confirmed: the old whole-DB Device-Handoff mechanism is retired, not kept in parallel
+**A fourth finding, discovered while scoping `audit_events` as the one seemingly-safe survivor,
+rules it out too:** `audit_events.id` is a SQLite `AUTOINCREMENT` rowid, and its own schema
+comment states this is deliberate -- it is what makes a ledger row's full event sequence
+reconstructable in *exact* order (AC-AUDIT-01/04), never `occurred_at` (`unixepoch()`, second
+granularity, against 14+ audit inserts per video during real execution -- same-second collisions
+are the norm, not an edge case). An Automerge document has no rowid-equivalent ordering primitive:
+keying entries by a generated UUID and letting the SQL projection assign a fresh `AUTOINCREMENT`
+id on insert makes the projected order equal to *local insertion order*, which is wrong the moment
+a peer's events are merged in after later local ones -- exactly the scenario cross-device sync
+exists to handle. Recovering true order needs an explicit, origin-assigned ordering key (e.g. a
+per-ledger-row monotonic sequence plus an actor tiebreak) threaded through `audit/services.ts`'s
+`listForLedgerRow`/`listForBatch`, and AC-AUDIT-01/04 re-derived against that new ordering
+contract -- a real, separately-scoped design task with its own `AGENTS.md` §L pass, not something
+to land at the tail of this plan.
 
-Owner, 2026-09-22: *"с. Да, старый механизм я бы удалил."* — decision 4(c) from the first draft is
-resolved: once every category above is off it, `src/lib/device-handoff/` and `src/lib/snapshot/`
-(whole-SQLite-copy export/import, checksum/lineage verification, the exclusive app-wide lock +
-`VACUUM`) are deleted outright, not kept running as a parallel backup. `schema_meta`'s only reason
-to travel cross-device (letting a snapshot importer apply the sender's migrations) disappears with
-it. This **fully resolves `BL-027`** (the periodic-auto-export cost/interval question) by
-eliminating the need for periodic export altogether, rather than by answering its interval
-question — there is nothing left to export that the sync gateway (§4) doesn't already propagate
-continuously and far more cheaply.
+**Decision, 2026-09-22, following both corrections: all four Category D tables stay in
+relational SQLite, unmigrated.** ADR 0006's original exclusion of the write pipeline is
+reinstated for `batches`/`batch_ledger_rows`/`batch_attempts` (compare-and-set/UNIQUE-constraint
+primitives with no CRDT equivalent, plus the recovery-gate fail-open risk) and now also for
+`audit_events` (rowid-derived ordering with no CRDT equivalent). See
+`docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md` for the durable record of
+this reversal and its one named follow-up (the audit-ordering design). See §5 for what this means
+for M5/M6.
+
+**On the distributed-execution-claim question (§4(b) of the first draft):** moot -- nothing in
+Category D is migrating, so the existing informal one-device-at-a-time convention for batch
+*execution*, and the real compare-and-set locks underneath it, are entirely unchanged by this
+plan.
+
+## 3. The old whole-DB Device-Handoff mechanism: retirement reopened by §2's Category D correction, then resolved (M6)
+
+Owner, 2026-09-22: *"с. Да, старый механизм я бы удалил."* — decision 4(c) from the first draft
+was resolved on the premise that *every* category above moves off whole-DB transfer. §2's
+Category D correction broke that premise: **all four** tables (`batches`, `batch_ledger_rows`,
+`batch_attempts`, `audit_events`) are not migrating, so something had to still decide whether they
+retain any cross-device continuity at all, and that decision determines whether
+`src/lib/device-handoff/`/`src/lib/snapshot/` can truly be deleted outright or only mostly
+retired.
+
+**This grew from three tables to four while scoping M5** -- worth stating plainly rather than
+letting the owner answer a narrower question than the one that now exists. Under option (a)
+below, "no cross-device continuity" would also have meant the *audit trail itself* stops
+transferring between devices, not just in-flight execution state. Losing visibility into what a
+batch actually did on another device is a materially different thing to accept than losing
+continuity for in-progress execution state (which arguably was never a coherent handoff scenario
+to begin with, per recovery-mode's own local-device-only design) -- the audit-trail half was the
+part most worth thinking about before choosing.
+
+**Two live options were presented to the owner (2026-09-23, after a web-research pass on
+industry precedent for this exact problem -- see §5's M6 entry):**
+
+- **(a) These four tables get no cross-device continuity going forward.** A batch is created,
+  executed, and audited on one device. Accept this as a documented limitation, and
+  `device-handoff`/`snapshot` are deleted in full, exactly as originally planned.
+- **(b) Keep a small, scoped-down whole-table transfer just for these four tables** (not the
+  general-purpose snapshot/handoff machinery, which has no other job left) -- e.g. reusing
+  `src/lib/snapshot/`'s existing scrub/verify/merge primitives against a four-table allowlist,
+  or a simpler dedicated mechanism. `BL-027`'s periodic-export cost question would then partially
+  re-apply, scoped to a much smaller allowlist than today's.
+- Separately, and not mutually exclusive with either option: the audit-ordering design work
+  named in §2's fourth finding could later make `audit_events` migratable on its own, at which
+  point only `batches`/`batch_ledger_rows`/`batch_attempts` would remain under whichever of
+  (a)/(b) is chosen today.
+
+**Resolved: the owner chose option (b).** Telegram, 2026-09-23, after the research pass found
+this is the industry-standard shape for a single-writer subsystem that must still move between
+machines (LiteFS/Litestream-style explicit primary handoff, distributed job schedulers' lease-based
+worker handoff -- never a live CRDT merge): *"'CRDT для драфтов/настроек + явная передача владения
+для конвейера записи' ок, тогда так и делай."* `schema_meta`'s cross-device role survives as a
+result (it only would have disappeared entirely under option (a)) -- see M6 in §5 for the
+delivered implementation.
 
 ## 4. New: one module — the Sync Gateway — owns all of this
 
@@ -180,15 +254,31 @@ any branch is opened.
   gateway (Category B), reusing the moved CD1/CD2 pattern.
 - **M4 — catalog `ai_localization_generation_provenance`** alongside `change_sets`/`changes`
   (Category C).
-- **M5 — catalog `batches`/`batch_ledger_rows`/`batch_attempts`/`audit_events`** as an append-only
-  replicated log through the gateway (Category D) — execution-time safety is unchanged (§2).
-- **M6 — delete `src/lib/device-handoff/` and `src/lib/snapshot/`** once M2-M5 are live and proven
-  (§3); this is where `BL-027` closes as moot rather than merely answered.
+- **M5 — CANCELLED, 2026-09-22 (Category D deferred in full).** Neither `batches`/
+  `batch_ledger_rows`/`batch_attempts` (compare-and-set/UNIQUE-constraint primitives, no Automerge
+  equivalent) nor `audit_events` (rowid-derived ordering, no Automerge equivalent) migrate. See
+  `docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md`. The audit-ordering design
+  work that could later make `audit_events` alone migratable is its own separate, future task,
+  not part of this plan.
+- **M6 — DONE, 2026-09-23. Owner chose option (b)** (Telegram: after a web-research pass found
+  that the industry-standard answer for a single-writer subsystem that must still move between
+  machines is an explicit, atomic ownership handoff -- never a live CRDT merge -- exactly LiteFS/
+  Litestream's primary-failover shape and distributed job schedulers' lease-based worker handoff,
+  the owner confirmed: *"'CRDT для драфтов/настроек + явная передача владения для конвейера
+  записи' ок, тогда так и делай"*). `src/lib/device-handoff/`/`src/lib/snapshot/` are NOT deleted
+  -- `SNAPSHOT_TRANSFERRED_TABLES` (`src/lib/snapshot/contracts.ts`) is narrowed to exactly
+  `schema_meta` plus the four Category D tables (`batches`/`batch_ledger_rows`/`batch_attempts`/
+  `audit_events`); `change_sets`/`changes`/`channel_editorial_profiles`/
+  `ai_localization_generation_provenance`/`ai_connections` are removed from it (all five now
+  propagate continuously via `sync-gateway` instead). `ai_connections`' own upsert-by-id special
+  case in `applySnapshotToDatabase` (`src/lib/snapshot/services.ts`) is deleted along with it --
+  the plain table-replace path now handles every remaining transferred table uniformly. Tests
+  across `src/lib/snapshot/services.test.ts` and `src/lib/device-handoff/services.test.ts` that
+  used `change_sets`/`ai_connections` as their "some application-state table" example were
+  rewritten against `batches`/`batch_ledger_rows` instead (same shape: `id` + `channel_id` FK).
 
 M1 gates everything else and should be assigned first. M2-M4 have no unresolved open design
-questions once M1 lands. M5 is the most safety-sensitive slice and should get its own acceptance-
-test pass per `AGENTS.md` §L before merging, mirroring Phase 5's own acceptance discipline. M6 is
-only safe once M2-M5 are each independently verified live.
+questions once M1 lands, and are the plan's actual remaining implementation surface.
 
 ## 6. What doesn't change, under any slice above
 

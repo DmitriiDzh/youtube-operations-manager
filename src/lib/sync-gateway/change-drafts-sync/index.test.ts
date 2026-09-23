@@ -3,8 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createChangeDraftsCore } from "@/lib/change-drafts";
-import { createFilesystemChangeDraftsStore } from "@/lib/change-drafts/adapters/automerge-store";
+import { createChangeDraftsCore } from "../change-drafts";
+import { createFilesystemChangeDraftsStore } from "../change-drafts/adapters/automerge-store";
 import { createFilesystemTransportAdapter } from "./adapters/filesystem-transport";
 import { createChangeDraftsSyncCoreForProduction } from "./index";
 import { createChangeDraftsSyncCore } from "./services";
@@ -42,13 +42,13 @@ test("two devices, each with a real filesystem store, sync through the real shar
         const changeDraftsA = createChangeDraftsCore({
           store: createFilesystemChangeDraftsStore(deviceAStoreDir),
           sqlSource: { async listChangeSetsForChannel() { return []; }, async listChangesForChangeSet() { return []; } },
-          projection: { async upsertChangeSet() {}, async upsertChange() {}, async deleteChangeSet() {}, async deleteChange() {} },
+          projection: { async upsertChangeSet() {}, async upsertChange() {}, async deleteChangeSet() {}, async deleteChange() {}, async upsertProvenance() {}, async deleteProvenanceForChangeSet() {} },
           discardedBackupStore: { async backup(channelId: string) { return { path: `/fake/${channelId}.automerge`, capturedAt: new Date().toISOString() }; } },
         });
         const changeDraftsB = createChangeDraftsCore({
           store: createFilesystemChangeDraftsStore(deviceBStoreDir),
           sqlSource: { async listChangeSetsForChannel() { return []; }, async listChangesForChangeSet() { return []; } },
-          projection: { async upsertChangeSet() {}, async upsertChange() {}, async deleteChangeSet() {}, async deleteChange() {} },
+          projection: { async upsertChangeSet() {}, async upsertChange() {}, async deleteChangeSet() {}, async deleteChange() {}, async upsertProvenance() {}, async deleteProvenanceForChangeSet() {} },
           discardedBackupStore: { async backup(channelId: string) { return { path: `/fake/${channelId}.automerge`, capturedAt: new Date().toISOString() }; } },
         });
 

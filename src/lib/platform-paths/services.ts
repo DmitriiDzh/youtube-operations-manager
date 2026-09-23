@@ -44,6 +44,12 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     changeDraftsDir: path.join(appDataDir, "change-drafts"),
     changeDraftsSyncFallbackDir: path.join(appDataDir, "change-drafts-sync-local"),
     changeDraftsDiscardedBackupsDir: path.join(appDataDir, "change-drafts-discarded-backups"),
+    editorialProfileDraftsDir: path.join(appDataDir, "editorial-profile-drafts"),
+    editorialProfileSyncFallbackDir: path.join(appDataDir, "editorial-profile-sync-local"),
+    editorialProfileDiscardedBackupsDir: path.join(appDataDir, "editorial-profile-discarded-backups"),
+    aiConnectionsCatalogDraftsDir: path.join(appDataDir, "ai-connections-catalog-drafts"),
+    aiConnectionsCatalogSyncFallbackDir: path.join(appDataDir, "ai-connections-catalog-sync-local"),
+    aiConnectionsCatalogDiscardedBackupsDir: path.join(appDataDir, "ai-connections-catalog-discarded-backups"),
     bootstrapConfigPath: path.join(appDataDir, "bootstrap-config.json"),
     authContextPath: path.join(appDataDir, "auth-context.json"),
   };

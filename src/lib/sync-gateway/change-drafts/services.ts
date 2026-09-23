@@ -4,6 +4,7 @@ import {
   type ChannelDraftDocument,
   type DraftChange,
   type DraftChangeSet,
+  type DraftProvenance,
   type FieldConflict,
   type MergeResult,
 } from "./contracts";
@@ -13,6 +14,7 @@ import {
   channelIdInputSchema,
   createChangeSetInputSchema,
   createChangeSetWithChangesInputSchema,
+  createProvenanceInputSchema,
   discardLocalAndAdoptPeerInputSchema,
   mergeIncomingInputSchema,
   parseWithSchema,
@@ -65,6 +67,7 @@ function emptyDocument(channelId: string): Automerge.Doc<ChannelDraftDocument> {
     channelId,
     changeSets: {},
     changes: {},
+    provenance: {},
   });
 }
 
@@ -144,6 +147,11 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
     }
     for (const change of Object.values(doc.changes)) {
       await deps.projection.upsertChange(change);
+    }
+    // `provenance` may be entirely absent on a document saved before M4 added this field
+    // (`contracts.ts`'s own doc comment) -- never assume it exists.
+    for (const provenance of Object.values(doc.provenance ?? {})) {
+      await deps.projection.upsertProvenance(provenance);
     }
   }
 
@@ -364,6 +372,46 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
     },
 
     /**
+     * M4 (`docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4, Category C): write-once
+     * AI-generation provenance for a change set, folded into this same per-channel document.
+     * Never updated or deleted through this API -- a duplicate `id` is rejected the same way
+     * `createChangeSet`/`addChange` reject a duplicate id above. Pre-existing provenance rows
+     * created in SQL before this cutover are NOT retroactively backfilled into any channel's
+     * document (accepted limitation, same reasoning as `video_metrics_daily` staying device-local
+     * -- this is audit/debug data, not a user-facing setting a cutover must not appear to lose).
+     */
+    async createProvenance(input: unknown): Promise<DraftProvenance> {
+      const parsed = parseWithSchema(createProvenanceInputSchema, input, "createProvenance input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+
+      if (doc.provenance?.[parsed.id]) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "Provenance with this id already exists",
+          details: { id: parsed.id },
+        });
+      }
+
+      const provenance: DraftProvenance = {
+        id: parsed.id,
+        changeSetId: parsed.changeSetId,
+        channelId: parsed.channelId,
+        profileVersion: parsed.profileVersion,
+        effectiveContextJson: parsed.effectiveContextJson,
+        createdAt: new Date().toISOString(),
+      };
+
+      const next = Automerge.change(doc, `create provenance ${parsed.id}`, (draft) => {
+        // Defensive init -- a document saved before M4 has no `provenance` key at all
+        // (`contracts.ts`'s own doc comment), and Automerge has no schema migration.
+        if (!draft.provenance) draft.provenance = {};
+        draft.provenance[parsed.id] = provenance;
+      });
+      await saveDocument(parsed.channelId, next);
+      return provenance;
+    },
+
+    /**
      * Patches multiple changes (approve-all/reject-all/revalidation's dirty-write) in ONE
      * `Automerge.change` + one `saveDocument` call, for the same all-or-nothing reason as
      * `createChangeSetWithChanges` above -- the old direct-SQL adapter's `bulkUpdateStoredChanges`
@@ -573,26 +621,51 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       // document remained forever visible via `listChangeSets`/`getChangeSet` yet threw
       // `not_found` the instant anything (approve/reject) tried to act on it, since the Automerge
       // document -- the actual source of truth -- no longer has it. Deletes are scoped to exactly
-      // the ids that disappeared, isolated in their own try/catch so a transient DB error here
-      // never fails the discard itself (the document write, the part that matters most, already
-      // succeeded) -- same reasoning as `saveDocument`'s own projection isolation above.
+      // the ids that disappeared. Each individual deletion gets its OWN try/catch (found live, by
+      // independent review: a single try/catch around every loop meant one row's failure aborted
+      // cleanup of every other row too -- reintroducing the exact phantom-row problem this cleanup
+      // exists to fix, for the whole discard, not just the one row that failed) so a transient DB
+      // error on one row never blocks cleanup of the rest, and never fails the discard itself (the
+      // document write, the part that matters most, already succeeded) -- same reasoning as
+      // `saveDocument`'s own projection isolation above.
       if (discardedDoc) {
-        try {
-          for (const changeSetId of Object.keys(discardedDoc.changeSets)) {
-            if (!(changeSetId in adopted.changeSets)) {
-              await deps.projection.deleteChangeSet(changeSetId);
-            }
+        const deleteRowSafely = async (event: string, context: Record<string, string>, op: () => Promise<void>) => {
+          try {
+            await op();
+          } catch (error) {
+            (deps.logger ?? createDefaultLogger()).error({
+              event,
+              context: { channelId: parsed.channelId, ...context, cause: error instanceof Error ? error.message : String(error) },
+            });
           }
-          for (const changeId of Object.keys(discardedDoc.changes)) {
-            if (!(changeId in adopted.changes)) {
-              await deps.projection.deleteChange(changeId);
-            }
-          }
-        } catch (error) {
-          (deps.logger ?? createDefaultLogger()).error({
-            event: "change_drafts.discard_projection_cleanup_failed",
-            context: { channelId: parsed.channelId, cause: error instanceof Error ? error.message : String(error) },
-          });
+        };
+
+        // Provenance is diffed independently by its OWN key set, exactly like `changes` below --
+        // NOT derived from which change sets are being removed (found by independent review: a
+        // change set that SURVIVES the discard, because the adopted peer's document also has it,
+        // can still have carried a provenance entry only the discarded document knew about -- the
+        // peer's own version of that change set may simply have no provenance recorded for it.
+        // Scoping cleanup to "only when the parent change set is removed" misses exactly that
+        // case and leaves a real orphan row). Run BEFORE the change-set loop below: provenance has
+        // a NOT NULL, un-cascaded FK to change_sets, so if the same change set is also being
+        // removed, its provenance row must be gone first or `deleteChangeSet` fails a real
+        // constraint.
+        for (const provenanceId of Object.keys(discardedDoc.provenance ?? {})) {
+          if (provenanceId in (adopted.provenance ?? {})) continue;
+          const changeSetId = discardedDoc.provenance![provenanceId]!.changeSetId;
+          await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { provenanceId, changeSetId }, () =>
+            deps.projection.deleteProvenanceForChangeSet(changeSetId)
+          );
+        }
+        for (const changeSetId of Object.keys(discardedDoc.changeSets)) {
+          if (changeSetId in adopted.changeSets) continue;
+          await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { changeSetId }, () =>
+            deps.projection.deleteChangeSet(changeSetId)
+          );
+        }
+        for (const changeId of Object.keys(discardedDoc.changes)) {
+          if (changeId in adopted.changes) continue;
+          await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { changeId }, () => deps.projection.deleteChange(changeId));
         }
       }
 

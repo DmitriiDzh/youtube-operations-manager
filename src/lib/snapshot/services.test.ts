@@ -46,10 +46,17 @@ async function seedChannel(client: Client, channelId: string) {
   });
 }
 
-async function seedVideo(client: Client, videoId: string, channelId: string) {
+async function seedBatch(client: Client, batchId: string, channelId: string, status = "RUNNING") {
   await client.execute({
-    sql: "INSERT INTO videos (id, channel_id, title, description, published_at, privacy_status, thumbnails_json, localizations_json) VALUES (?, ?, ?, ?, ?, ?, '{}', '{}')",
-    args: [videoId, channelId, "Video " + videoId, "desc", "2024-01-01T00:00:00Z", "public"],
+    sql: "INSERT INTO batches (id, channel_id, status) VALUES (?, ?, ?)",
+    args: [batchId, channelId, status],
+  });
+}
+
+async function seedLedgerRow(client: Client, ledgerRowId: string, batchId: string, status = "PENDING") {
+  await client.execute({
+    sql: "INSERT INTO batch_ledger_rows (id, batch_id, video_id, change_ids_json, status) VALUES (?, ?, ?, ?, ?)",
+    args: [ledgerRowId, batchId, "video-1", "[]", status],
   });
 }
 
@@ -86,8 +93,12 @@ test("exportSnapshot: the published data.db contains zero users rows and zero to
     client.close();
   }));
 
-// AC-CONN-01
-test("exportSnapshot: the published data.db contains zero ai_connection_credentials rows/table", () =>
+// AC-CONN-01. `ai_connections` metadata itself was removed from the transferred-tables
+// allowlist in M6 (2026-09-23, `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §2
+// Category C) -- `src/lib/sync-gateway/ai-connections-catalog/` now propagates it continuously
+// instead, so neither `ai_connections` nor `ai_connection_credentials` should exist at all in a
+// scrubbed snapshot copy any more (same treatment as `users`, tested above).
+test("exportSnapshot: the published data.db contains neither ai_connections nor ai_connection_credentials", () =>
   withTempDir(async (dir) => {
     const client = await makeClient(dir, "source.db");
     await client.execute({
@@ -108,12 +119,13 @@ test("exportSnapshot: the published data.db contains zero ai_connection_credenti
 
     const dbPath = path.join(dir, "snapshots", manifest.snapshotId, "data.db");
     const scrubbedClient = createClient({ url: `file:${dbPath}` });
-    const credTable = await scrubbedClient.execute(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ai_connection_credentials'"
-    );
-    assert.equal(credTable.rows.length, 0);
-    const connections = await scrubbedClient.execute("SELECT id FROM ai_connections");
-    assert.equal(connections.rows.length, 1, "ai_connections metadata itself must still travel");
+    for (const table of ["ai_connection_credentials", "ai_connections"]) {
+      const result = await scrubbedClient.execute({
+        sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        args: [table],
+      });
+      assert.equal(result.rows.length, 0, `${table} must not exist in the scrubbed copy`);
+    }
     scrubbedClient.close();
     client.close();
   }));
@@ -287,16 +299,22 @@ test("publishing never overwrites an existing snapshot id", () =>
     );
   }));
 
-// AC-SURVIVE-01 / AC-CONN-03 -- the full export -> verify -> migrate -> merge pipeline
-test("applySnapshotToDatabase: replaces application-state tables and upserts ai_connections while never touching users/credentials", () =>
+// AC-SURVIVE-01 / AC-CONN-03 -- the full export -> verify -> migrate -> merge pipeline.
+// `ai_connections`' own upsert-by-id special case was removed in M6 (2026-09-23) along with
+// `ai_connections` itself from the transferred-tables allowlist -- `batches` is now the plain
+// replace-style example table (M6 narrowed the allowlist to just `schema_meta` plus the four
+// Category D write-pipeline tables, `docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md`).
+test("applySnapshotToDatabase: replaces application-state tables while never touching users/credentials/ai_connections", () =>
   withTempDir(async (dir) => {
     const source = await makeClient(dir, "source.db");
     await seedUser(source, "source-user", "source-secret-token");
+    // `channels` itself is no longer transferred (2026-09-22, both devices sync it independently
+    // from the real YouTube API instead, `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md`
+    // §2 Category A) -- seeded here only so `batches.channel_id`'s FK is satisfiable, exactly
+    // as it would be in reality (both devices manage the same real channel, each having synced it
+    // locally under the same id).
     await seedChannel(source, "chan-1");
-    await source.execute({
-      sql: "INSERT INTO ai_connections (id, display_name, adapter_type, model_id, capabilities_json) VALUES (?, ?, ?, ?, ?)",
-      args: ["conn-shared", "From Source", "mock", "model-1", "{}"],
-    });
+    await seedBatch(source, "batch-1", "chan-1");
     await source.execute({
       sql: "INSERT INTO ai_connections (id, display_name, adapter_type, model_id, capabilities_json) VALUES (?, ?, ?, ?, ?)",
       args: ["conn-source-only", "Source Only", "mock", "model-1", "{}"],
@@ -310,20 +328,19 @@ test("applySnapshotToDatabase: replaces application-state tables and upserts ai_
     });
     const snapshotDir = path.join(dir, "snapshots", manifest.snapshotId);
 
-    // Receiving device: its own OAuth session + its own local AI connection + credential.
+    // Receiving device: its own OAuth session + its own local AI connection + credential, plus
+    // its own independently-synced copy of the same real channel (never received from the
+    // snapshot itself -- see the comment on the source side above).
     const receiving = await makeClient(dir, "receiving.db");
     await seedUser(receiving, "receiving-user", "receiving-secret-token");
-    await receiving.execute({
-      sql: "INSERT INTO ai_connections (id, display_name, adapter_type, model_id, capabilities_json) VALUES (?, ?, ?, ?, ?)",
-      args: ["conn-shared", "Local Name Before Import", "mock", "model-1", "{}"],
-    });
-    await receiving.execute({
-      sql: "INSERT INTO ai_connection_credentials (connection_id, ciphertext, iv, auth_tag) VALUES (?, ?, ?, ?)",
-      args: ["conn-shared", "local-ciphertext", "local-iv", "local-tag"],
-    });
+    await seedChannel(receiving, "chan-1");
     await receiving.execute({
       sql: "INSERT INTO ai_connections (id, display_name, adapter_type, model_id, capabilities_json) VALUES (?, ?, ?, ?, ?)",
       args: ["conn-receiving-only", "Receiving Only", "mock", "model-1", "{}"],
+    });
+    await receiving.execute({
+      sql: "INSERT INTO ai_connection_credentials (connection_id, ciphertext, iv, auth_tag) VALUES (?, ?, ?, ?)",
+      args: ["conn-receiving-only", "local-ciphertext", "local-iv", "local-tag"],
     });
 
     // Step 1: verify (already covered above) -- proceed directly to migrate + merge.
@@ -344,22 +361,21 @@ test("applySnapshotToDatabase: replaces application-state tables and upserts ai_
     );
     assert.equal(users.rows[0].access_token, "receiving-secret-token");
 
-    // channels replaced from snapshot.
-    const channels = await receiving.execute("SELECT id FROM channels");
-    assert.deepEqual(channels.rows.map((r) => r.id), ["chan-1"]);
+    // batches replaced from snapshot -- the still-transferred, plain replace-style table.
+    const batches = await receiving.execute("SELECT id FROM batches");
+    assert.deepEqual(batches.rows.map((r) => r.id), ["batch-1"]);
 
-    // ai_connections: shared connection's metadata updated from snapshot, receiving-only
-    // connection preserved, source-only connection added.
+    // ai_connections is no longer part of this mechanism at all -- the receiving device's own
+    // connection and credential must survive completely untouched, and the source-only
+    // connection must NOT have arrived.
     const connections = await receiving.execute("SELECT id, display_name FROM ai_connections ORDER BY id");
-    const byId = Object.fromEntries(connections.rows.map((r) => [r.id, r.display_name]));
-    assert.equal(byId["conn-shared"], "From Source");
-    assert.equal(byId["conn-receiving-only"], "Receiving Only");
-    assert.equal(byId["conn-source-only"], "Source Only");
-
-    // The receiving device's own credential for conn-shared must survive untouched.
+    assert.deepEqual(
+      connections.rows.map((r) => r.id),
+      ["conn-receiving-only"]
+    );
     const cred = await receiving.execute({
       sql: "SELECT ciphertext FROM ai_connection_credentials WHERE connection_id = ?",
-      args: ["conn-shared"],
+      args: ["conn-receiving-only"],
     });
     assert.equal(cred.rows.length, 1);
     assert.equal(cred.rows[0].ciphertext, "local-ciphertext");
@@ -369,17 +385,23 @@ test("applySnapshotToDatabase: replaces application-state tables and upserts ai_
   }));
 
 // RISK-33 (docs/TECHNICAL_DEBT.md): reproduces the real-world crash reported by a user importing
-// into a device that had already synced its own channel/video data. `@libsql/client` defaults
+// into a device that had already synced its own data. `@libsql/client` defaults
 // `PRAGMA foreign_keys=ON` for every connection (unlike stock better-sqlite3, which the rest of
-// this codebase implicitly assumed FK enforcement matched) -- so `DELETE FROM "channels"` fails
-// immediately with SQLITE_CONSTRAINT the moment the receiving device still has a local video row
-// referencing an existing channel that hasn't been deleted yet. Every device that has ever
-// synced at least one channel with videos hits this on its very next import.
+// this codebase implicitly assumed FK enforcement matched) -- so `DELETE FROM "<table>"` fails
+// immediately with SQLITE_CONSTRAINT the moment the receiving device still has a local child row
+// referencing an existing parent row that hasn't been deleted yet. Every device that has ever
+// synced at least one batch with ledger rows hits this on its very next import. Uses
+// `batches`/`batch_ledger_rows` as the example pair (M6, 2026-09-23: `change_sets`/`changes`,
+// this test's prior example, are no longer transferred at all either -- `docs/roadmap/plans/
+// FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §2 Category B/C) -- `channels` is still seeded locally
+// on both sides purely to satisfy `batches.channel_id`'s FK, exactly as it would in reality
+// (both devices independently sync the same real channel).
 test("applySnapshotToDatabase: succeeds when the receiving device already has local rows whose foreign keys point at tables being replaced (RISK-33)", () =>
   withTempDir(async (dir) => {
     const source = await makeClient(dir, "source.db");
-    await seedChannel(source, "chan-new");
-    await seedVideo(source, "video-new", "chan-new");
+    await seedChannel(source, "chan-1");
+    await seedBatch(source, "batch-new", "chan-1");
+    await seedLedgerRow(source, "ledger-new", "batch-new");
 
     const manifest = await exportSnapshot({
       client: source,
@@ -389,11 +411,13 @@ test("applySnapshotToDatabase: succeeds when the receiving device already has lo
     });
     const snapshotDir = path.join(dir, "snapshots", manifest.snapshotId);
 
-    // Receiving device: already has its own previously-synced channel and video, exactly like a
-    // real returning device performing a routine (not first-ever) import.
+    // Receiving device: already has its own previously-synced channel plus its own previous
+    // batch/ledger row, exactly like a real returning device performing a routine (not
+    // first-ever) import.
     const receiving = await makeClient(dir, "receiving.db");
-    await seedChannel(receiving, "chan-old");
-    await seedVideo(receiving, "video-old", "chan-old");
+    await seedChannel(receiving, "chan-1");
+    await seedBatch(receiving, "batch-old", "chan-1");
+    await seedLedgerRow(receiving, "ledger-old", "batch-old");
 
     const workingCopyPath = path.join(dir, "working-copy.db");
     await copyDatabaseConsistently(
@@ -404,10 +428,10 @@ test("applySnapshotToDatabase: succeeds when the receiving device already has lo
 
     await applySnapshotToDatabase(receiving, workingCopyPath);
 
-    const channels = await receiving.execute("SELECT id FROM channels");
-    assert.deepEqual(channels.rows.map((r) => r.id), ["chan-new"]);
-    const videos = await receiving.execute("SELECT id, channel_id FROM videos");
-    assert.deepEqual(videos.rows.map((r) => r.id), ["video-new"]);
+    const batches = await receiving.execute("SELECT id FROM batches");
+    assert.deepEqual(batches.rows.map((r) => r.id), ["batch-new"]);
+    const ledgerRows = await receiving.execute("SELECT id, batch_id FROM batch_ledger_rows");
+    assert.deepEqual(ledgerRows.rows.map((r) => r.id), ["ledger-new"]);
 
     // FK enforcement must be restored afterward -- this is a shared connection, and a later,
     // unrelated write must not silently run with foreign keys disabled.
@@ -418,79 +442,42 @@ test("applySnapshotToDatabase: succeeds when the receiving device already has lo
     receiving.close();
   }));
 
-// RISK-33 (docs/TECHNICAL_DEBT.md): `users` is deliberately never transferred in a snapshot (it
-// is device-local OAuth identity, contracts.ts), but `rules.user_id` is a NOT NULL FK to
-// `users.id`. A `rules` row exported from one account must still import cleanly on a device that
-// has never signed in with that exact account -- the row travels for continuity even though its
-// owning user only re-establishes itself locally via a later sign-in.
-test("applySnapshotToDatabase: imports a rules row whose user_id has no matching local user (RISK-33)", () =>
-  withTempDir(async (dir) => {
-    const source = await makeClient(dir, "source.db");
-    await seedUser(source, "user-on-source-only", "source-token");
-    await source.execute({
-      sql: "INSERT INTO rules (user_id, name, match_field, match_type, match_value, playlist_id, playlist_title) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      args: ["user-on-source-only", "Rule A", "title", "contains", "x", "pl-1", "Playlist 1"],
-    });
-
-    const manifest = await exportSnapshot({
-      client: source,
-      snapshotsDir: path.join(dir, "snapshots"),
-      deviceId: "device-a",
-      schemaVersion: 3,
-    });
-    const snapshotDir = path.join(dir, "snapshots", manifest.snapshotId);
-
-    const receiving = await makeClient(dir, "receiving.db");
-    await seedUser(receiving, "receiving-user", "receiving-token");
-
-    const workingCopyPath = path.join(dir, "working-copy.db");
-    await copyDatabaseConsistently(
-      createClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
-      workingCopyPath
-    );
-    await migrateStagedCopy(workingCopyPath);
-
-    await applySnapshotToDatabase(receiving, workingCopyPath);
-
-    const rules = await receiving.execute("SELECT user_id, name FROM rules");
-    assert.deepEqual(
-      rules.rows.map((r) => r.user_id),
-      ["user-on-source-only"]
-    );
-
-    source.close();
-    receiving.close();
-  }));
-
 // RISK-29 (docs/TECHNICAL_DEBT.md): the merge previously used `SELECT *`, which is purely
 // positional. Two devices whose table has a genuinely different physical column order for the
 // identical logical schema (e.g. one built fresh from the current baseline CREATE TABLE, one
 // upgraded via a later ALTER TABLE ADD COLUMN, which SQLite always appends at the physical end)
-// would get their columns silently swapped on import. This test manually reorders `channels`'
+// would get their columns silently swapped on import. This test manually reorders `batches`'
 // physical columns on the source side (standing in for that real-world divergence) and asserts
-// the merge still lands every value in the receiving device's correctly-named column.
+// the merge still lands every value in the receiving device's correctly-named column. Uses
+// `batches` rather than this test's original `channels` example (2026-09-22: `channels` is no
+// longer transferred at all; M6, 2026-09-23: `change_sets`, the example used in between, isn't
+// either -- `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §2) -- `channels` is
+// still seeded locally on the source side purely to satisfy `batches.channel_id`'s FK at insert
+// time (FK enforcement is OFF for the entire import itself, per this same file's RISK-33 fix, so
+// the receiving side needs no matching local row).
 test("applySnapshotToDatabase: merges by column name, not physical position (RISK-29)", () =>
   withTempDir(async (dir) => {
     const source = await makeClient(dir, "source.db");
+    await seedChannel(source, "chan-1");
     await source.execute(`
-      CREATE TABLE channels_reordered (
+      CREATE TABLE batches_reordered (
         id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        connected_user_id TEXT,
-        thumbnail_url TEXT,
-        uploads_playlist_id TEXT NOT NULL,
-        connected_at INTEGER NOT NULL DEFAULT (unixepoch()),
-        last_synced_at INTEGER,
-        target_languages_json TEXT,
-        analytics_last_auto_collected_at INTEGER
+        status TEXT NOT NULL,
+        channel_id TEXT NOT NULL REFERENCES channels(id),
+        concurrency INTEGER NOT NULL DEFAULT 1,
+        dry_run INTEGER NOT NULL DEFAULT 1,
+        run_id TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        started_at INTEGER,
+        completed_at INTEGER
       )
     `);
     await source.execute({
-      sql: "INSERT INTO channels_reordered (id, title, connected_user_id, uploads_playlist_id) VALUES (?, ?, ?, ?)",
-      args: ["chan-1", "Channel chan-1", "user-x", "UUchan-1"],
+      sql: "INSERT INTO batches_reordered (id, channel_id, status) VALUES (?, ?, ?)",
+      args: ["batch-1", "chan-1", "RUNNING"],
     });
-    await source.execute("DROP TABLE channels");
-    await source.execute("ALTER TABLE channels_reordered RENAME TO channels");
+    await source.execute("DROP TABLE batches");
+    await source.execute("ALTER TABLE batches_reordered RENAME TO batches");
 
     const manifest = await exportSnapshot({
       client: source,
@@ -512,13 +499,12 @@ test("applySnapshotToDatabase: merges by column name, not physical position (RIS
     await applySnapshotToDatabase(receiving, workingCopyPath);
 
     const result = await receiving.execute({
-      sql: "SELECT title, connected_user_id, uploads_playlist_id FROM channels WHERE id = ?",
-      args: ["chan-1"],
+      sql: "SELECT status, channel_id FROM batches WHERE id = ?",
+      args: ["batch-1"],
     });
     assert.equal(result.rows.length, 1);
-    assert.equal(result.rows[0].title, "Channel chan-1");
-    assert.equal(result.rows[0].connected_user_id, "user-x");
-    assert.equal(result.rows[0].uploads_playlist_id, "UUchan-1");
+    assert.equal(result.rows[0].status, "RUNNING");
+    assert.equal(result.rows[0].channel_id, "chan-1");
 
     source.close();
     receiving.close();

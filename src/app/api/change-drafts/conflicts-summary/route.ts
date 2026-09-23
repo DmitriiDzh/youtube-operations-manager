@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { createChangeDraftsCoreForProduction, isDomainError } from "@/lib/change-drafts";
+import { createChangeDraftsCoreForProduction, isDomainError } from "@/lib/sync-gateway";
 import { listStoredChannels } from "@/lib/db";
 
 const changeDrafts = createChangeDraftsCoreForProduction();

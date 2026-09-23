@@ -44,6 +44,16 @@ type SyncCycleResponse = {
     newConflicts: FieldConflictView[];
   }>;
   totalNewConflicts: number;
+  /** Each catalog's own, independent sync cycle (`docs/roadmap/plans/
+   * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3) -- same "Sync now" click, separate cycles. */
+  editorialProfile: {
+    channels: Array<{ channelId: string; pushed: boolean }>;
+    totalNewConflicts: number;
+  };
+  aiConnections: {
+    channels: Array<{ channelId: string; pushed: boolean }>;
+    totalNewConflicts: number;
+  };
 };
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -145,9 +155,13 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
       const result = await fetchJson<SyncCycleResponse>("/api/change-drafts/sync", { method: "POST" });
       const channelsPushed = result.channels.filter((c) => c.pushed).length;
       const peersSeen = new Set(result.channels.flatMap((c) => c.peersMerged)).size;
+      const profilesPushed = result.editorialProfile.channels.filter((c) => c.pushed).length;
+      const connectionsPushed = result.aiConnections.channels.filter((c) => c.pushed).length;
       setLastSyncSummary(
         `Synced ${result.channels.length} channel(s): ${channelsPushed} pushed, merged from ` +
-          `${peersSeen} other device(s), ${result.totalNewConflicts} new conflict(s) this cycle.`
+          `${peersSeen} other device(s), ${result.totalNewConflicts} new conflict(s) this cycle. ` +
+          `Editorial profiles: ${profilesPushed} pushed, ${result.editorialProfile.totalNewConflicts} new conflict(s). ` +
+          `AI connections: ${connectionsPushed ? "pushed" : "nothing to push"}, ${result.aiConnections.totalNewConflicts} new conflict(s).`
       );
       setSyncPushErrors(
         result.channels

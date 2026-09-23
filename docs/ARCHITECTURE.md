@@ -482,20 +482,45 @@ table is excluded by default unless a reviewer deliberately adds it to the allow
 ### 13.4 Import: per-table merge, not a whole-file swap
 
 Import never replaces the live database file. It ATTACHes a migrated, verified, private working
-copy of the snapshot's `data.db` to the live connection and, in one transaction: fully replaces
-every "application state" table (`channels`, `videos`, `change_sets`, `changes`, `batches`,
-`batch_ledger_rows`, `batch_attempts`, `audit_events`, `channel_editorial_profiles`,
-`ai_localization_generation_provenance`, `rules`), and upserts `ai_connections` by `id` (`INSERT
-OR REPLACE ... SELECT` — an `INSERT ... SELECT ... ON CONFLICT DO UPDATE` was tried first and
-found unsupported by this `@libsql/client` build's SQLite, verified directly). `users` and
-`ai_connection_credentials` are never referenced by this code path at all — there is no
-"exclude" branch to bypass, because no code path here can reach them structurally. `users.id` was
-confirmed, by reading `src/lib/auth.ts`'s `session()` callback and `src/lib/db.ts`'s
+copy of the snapshot's `data.db` to the live connection and, in one transaction, fully replaces
+every table on `SNAPSHOT_REPLACE_ON_IMPORT_TABLES` — as of M6 (2026-09-23,
+`docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md`), the four Category D
+write-pipeline tables (`batches`, `batch_ledger_rows`, `batch_attempts`, `audit_events`) only.
+`SNAPSHOT_TRANSFERRED_TABLES` (the snapshot *file's* own contents, §13.3) additionally includes
+`schema_meta` — never touched by this replace loop, only read by `migrateStagedCopy` to migrate
+the *staged* copy before merging. Everything this mechanism used to also carry, beyond today's
+four, has since moved away by one of three routes: `channels`/`videos` to an independent
+per-device resync from the real YouTube API (§2 Category A of the migration plan — there is no
+local-only write path for either, so nothing to transfer); `rules` dropped outright, not resynced
+anywhere, since its own feature (UI/API/Drizzle definition) was already removed 2026-09-20 and
+there is nothing left to carry; and `change_sets`/`changes`/`channel_editorial_profiles`/
+`ai_localization_generation_provenance`/`ai_connections` now propagate continuously via
+`src/lib/sync-gateway/` instead — see §13.5 below. `ai_connections`'
+own upsert-by-id special case (`INSERT OR REPLACE ... SELECT`, kept because `INSERT ... SELECT ...
+ON CONFLICT DO UPDATE` was found unsupported by this `@libsql/client` build's SQLite) was removed
+along with it; every remaining transferred table now goes through the same plain replace path.
+`users` and `ai_connection_credentials` are never referenced by this code path at all — there is
+no "exclude" branch to bypass, because no code path here can reach them structurally. `users.id`
+was confirmed, by reading `src/lib/auth.ts`'s `session()` callback and `src/lib/db.ts`'s
 `upsertUserOAuthOnSignIn`, to be the Google OAuth `sub` claim — a stable, provider-issued
 identity, not a locally-generated artifact — which is why no identifier remapping is ever needed
 for `channels.connectedUserId`/`rules.userId` across devices.
 
-### 13.5 Restricted recovery mode is computed, never cached
+### 13.5 Why this mechanism still exists after `sync-gateway`: a narrow, explicit ownership handoff
+
+Every table this mechanism used to carry that COULD move to `sync-gateway`'s continuous CRDT
+propagation has (`docs/SYSTEM_MAP.md` §2.9h/§2.9m); this mechanism's remaining four tables physically cannot
+(`docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md`: no CRDT equivalent for SQL
+compare-and-set/UNIQUE-constraint concurrency guards or for `AUTOINCREMENT`-derived audit
+ordering). Rather than deleting cross-device continuity for them outright, the owner chose (after
+a web-research pass on 2026-09-23 confirming this shape is the industry-standard answer, not an
+ad-hoc compromise — SQLite single-writer replication tools like LiteFS/Litestream use exactly this
+"explicit, atomic primary handoff, never a live merge" pattern for primary failover, as do
+distributed job schedulers for lease-based worker handoff) to keep this mechanism alive, scoped
+down to exactly these four tables: an explicit, human-triggered, atomic whole-copy transfer of
+write-pipeline ownership between devices, never a background/automatic sync.
+
+### 13.6 Restricted recovery mode is computed, never cached
 
 If the imported (migrated, merged) data contains any `batch_ledger_rows` row whose status is
 `APPLYING` or `UNKNOWN` (a real YouTube write may have been sent with an uncertain outcome), the
@@ -512,7 +537,7 @@ builds no new recovery/reconciliation algorithm — the gate only lifts when Pha
 unmodified mechanism (RISK-09 §0.F) resolves the underlying rows to a terminal state, which
 currently has no in-app trigger (`docs/TECHNICAL_DEBT.md` RISK-16, tracked, not fixed here).
 
-### 13.6 One gate, three call sites
+### 13.7 One gate, three call sites
 
 `src/lib/device-handoff/services.ts`'s `assertDeviceAvailableForMutation` (operation-lock check,
 then recovery-mode check) is the single implementation; it is called from three independent
@@ -527,7 +552,7 @@ actually enforces it, across any connection/process to the same file) — the th
 give the broader "no new work starts" product behavior for the whole export/import window, not
 just the instant of the file copy.
 
-### 13.7 Known limitations
+### 13.8 Known limitations
 
 - No macOS runtime validation — path-resolution logic is unit-tested for both platforms via
   injection; only Windows has actually been run (`docs/TECHNICAL_DEBT.md` RISK-17).

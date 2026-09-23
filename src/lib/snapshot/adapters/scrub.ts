@@ -22,11 +22,15 @@ export async function scrubDatabaseCopy(client: SqlExecutor, dbPath: string): Pr
   await client.execute({ sql: "ATTACH DATABASE ? AS scrub_target", args: [dbPath] });
   try {
     // RISK-33 (docs/TECHNICAL_DEBT.md): with FK enforcement on (this @libsql/client build
-    // defaults `foreign_keys=ON`), `DROP TABLE` performs an implicit delete of every row first,
-    // which fails here as soon as a device has at least one `rules` row -- `rules.user_id`
-    // still references the `users` table being dropped. Disabling enforcement for this
-    // same-connection scrub is safe: `scrub_target` is a throwaway copy about to be published
-    // (or discarded on error) and is never queried again after this function returns.
+    // defaults `foreign_keys=ON`), `DROP TABLE` performs an implicit delete of every row first --
+    // originally found because a device with at least one `rules` row (`rules.user_id`
+    // referencing the `users` table also being dropped) could fail here. `rules` itself is now
+    // one of the tables this loop drops (removed from the transfer allowlist 2026-09-22 -- the
+    // feature no longer exists), but the general hazard the fix addresses is unchanged: any
+    // not-yet-dropped allowlisted/non-allowlisted table with a FK into an already-dropped one
+    // would hit the same failure. Disabling enforcement for this same-connection scrub is safe:
+    // `scrub_target` is a throwaway copy about to be published (or discarded on error) and is
+    // never queried again after this function returns.
     await client.execute("PRAGMA foreign_keys = OFF");
     try {
       const tables = (await client.execute(

@@ -220,15 +220,20 @@ implemented during Phases 7-10 unless separately approved:
   pattern (`docs/decisions/0005`/`0007`). Beyond the already-migrated draft layer (`change_sets`/
   `changes`, CD1-CD7), it also catalogs: pure external caches needing no CRDT work at all
   (`channels`/`videos` — dropped from cross-device transfer, always re-derivable via "Sync now");
-  operator-authored config (`channel_editorial_profiles`, `ai_connections` config fields);
-  append-only draft provenance (`ai_localization_generation_provenance`); and the safety-critical
-  write pipeline (`batches`/`batch_ledger_rows`/`batch_attempts`/`audit_events`) — ADR 0006's
-  original exclusion of that last group is now reopened and confirmed (execution-time safety is
-  unchanged; only how the *record* propagates changes). Once everything moves off it,
-  `src/lib/device-handoff/`/`src/lib/snapshot/` are deleted outright (not kept as a parallel
-  backup), which also makes `BL-027`'s cost question moot rather than merely answering it. See
-  `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` for the full breakdown and slice
-  order (M0-M6).
+  operator-authored config (`channel_editorial_profiles`, `ai_connections` config fields); and
+  append-only draft provenance (`ai_localization_generation_provenance`). The safety-critical
+  write pipeline (`batches`/`batch_ledger_rows`/`batch_attempts`/`audit_events`) does **not**
+  migrate — final scope, 2026-09-22, `docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md`
+  — after research (done before writing any of that slice's code) found two independent,
+  structural blockers: three of the four tables depend on SQL compare-and-set/UNIQUE-constraint
+  primitives with no Automerge equivalent (Phase 5's AC-CONCURRENCY-01/02/03/AC-RESUME-01), and
+  the fourth (`audit_events`, genuinely insert-only) depends on its SQLite `AUTOINCREMENT` rowid
+  for the exact event ordering AC-AUDIT-01/04 requires, which a CRDT document has no equivalent
+  for either. ADR 0006's original write-pipeline exclusion is reinstated in full for all four
+  tables. Whether `src/lib/device-handoff/`/`src/lib/snapshot/` can still be deleted outright, or
+  must keep a small scoped-down transfer just for these four tables, is now an open decision for
+  the owner (not yet resolved) — see `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md`
+  for the full breakdown and slice order (M0-M6).
 - **Real Google Cloud Quotas/Monitoring numbers for the gateway traffic counters** (recorded
   2026-09-22, owner request via Telegram: "Можем ли мы собирать статистику?... сколько наши
   лимиты"). The gateway traffic counters (rolling 24h attempts/succeeded per category,

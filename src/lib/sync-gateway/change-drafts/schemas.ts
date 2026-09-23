@@ -41,6 +41,16 @@ export const createChangeSetInputSchema = z
   })
   .strict();
 
+export const createProvenanceInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    id: z.string().min(1),
+    changeSetId: z.string().min(1),
+    profileVersion: z.number().nullable(),
+    effectiveContextJson: z.string().nullable(),
+  })
+  .strict();
+
 export const addChangeInputSchema = z
   .object({
     channelId: z.string().min(1),

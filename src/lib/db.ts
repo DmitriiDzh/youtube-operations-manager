@@ -2131,49 +2131,41 @@ export async function getStoredEditorialProfile(channelId: string): Promise<Stor
 }
 
 /**
- * Upserts a channel's editorial profile, incrementing `version` on every save
- * (including the very first save, which starts at 1) so a later generation can record
- * exactly which version it used (docs/acceptance/PHASE_6_ACCEPTANCE.md AC-PROFILE-04).
- * A field explicitly submitted as `null` clears that field; a field left `undefined`
- * leaves its stored value unchanged (services.ts is responsible for this distinction --
- * this function trusts whatever it is given).
+ * Raw overwrite upsert -- writes exactly the row it is given, no `version` computation or
+ * `undefined`-vs-`null` merge semantics of its own. Used only as the SQL read-projection target
+ * for `src/lib/sync-gateway/editorial-profile/` (2026-09-22, `docs/roadmap/plans/
+ * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3) -- that module's Automerge document is now the
+ * source of truth for versioning, mirroring `upsertStoredChangeSet`/`upsertStoredChange`'s
+ * identical raw-overwrite shape for the draft layer. The old direct-SQL
+ * `upsertStoredEditorialProfile`, which computed `version` itself, was deleted the same day once
+ * its only caller was repointed at that module -- confirmed zero remaining callers anywhere in
+ * `src/`, mirroring CD7's identical dead-code check for `createChangeSetStoreAdapter`.
  */
-export async function upsertStoredEditorialProfile(input: {
-  channelId: string;
-  targetAudience?: string | null;
-  toneNotes?: string | null;
-  terminologyNotes?: string | null;
-  titleConstraints?: string | null;
-  descriptionConstraints?: string | null;
-}): Promise<StoredEditorialProfile> {
-  const existing = await getStoredEditorialProfile(input.channelId);
-  const nextVersion = existing ? existing.version + 1 : 1;
-  const now = new Date();
-
-  const merged = {
-    targetAudience: input.targetAudience !== undefined ? input.targetAudience : (existing?.targetAudience ?? null),
-    toneNotes: input.toneNotes !== undefined ? input.toneNotes : (existing?.toneNotes ?? null),
-    terminologyNotes: input.terminologyNotes !== undefined ? input.terminologyNotes : (existing?.terminologyNotes ?? null),
-    titleConstraints: input.titleConstraints !== undefined ? input.titleConstraints : (existing?.titleConstraints ?? null),
-    descriptionConstraints:
-      input.descriptionConstraints !== undefined ? input.descriptionConstraints : (existing?.descriptionConstraints ?? null),
-  };
-
-  if (existing) {
-    await db
-      .update(channelEditorialProfiles)
-      .set({ ...merged, version: nextVersion, updatedAt: now })
-      .where(eq(channelEditorialProfiles.channelId, input.channelId));
-  } else {
-    await db.insert(channelEditorialProfiles).values({
-      channelId: input.channelId,
-      version: nextVersion,
-      ...merged,
-      updatedAt: now,
+export async function setStoredEditorialProfileRow(record: StoredEditorialProfile): Promise<void> {
+  await db
+    .insert(channelEditorialProfiles)
+    .values({
+      channelId: record.channelId,
+      version: record.version,
+      targetAudience: record.targetAudience,
+      toneNotes: record.toneNotes,
+      terminologyNotes: record.terminologyNotes,
+      titleConstraints: record.titleConstraints,
+      descriptionConstraints: record.descriptionConstraints,
+      updatedAt: record.updatedAt,
+    })
+    .onConflictDoUpdate({
+      target: channelEditorialProfiles.channelId,
+      set: {
+        version: record.version,
+        targetAudience: record.targetAudience,
+        toneNotes: record.toneNotes,
+        terminologyNotes: record.terminologyNotes,
+        titleConstraints: record.titleConstraints,
+        descriptionConstraints: record.descriptionConstraints,
+        updatedAt: record.updatedAt,
+      },
     });
-  }
-
-  return { channelId: input.channelId, version: nextVersion, ...merged, updatedAt: now };
 }
 
 export type StoredGenerationProvenance = {
@@ -2198,16 +2190,6 @@ function mapStoredGenerationProvenance(
   };
 }
 
-export async function createGenerationProvenance(input: {
-  id: string;
-  changeSetId: string;
-  channelId: string;
-  profileVersion: number | null;
-  effectiveContextJson: string | null;
-}): Promise<void> {
-  await db.insert(aiLocalizationGenerationProvenance).values(input);
-}
-
 export async function getGenerationProvenanceByChangeSetId(
   changeSetId: string
 ): Promise<StoredGenerationProvenance | null> {
@@ -2216,6 +2198,42 @@ export async function getGenerationProvenanceByChangeSetId(
     .from(aiLocalizationGenerationProvenance)
     .where(eq(aiLocalizationGenerationProvenance.changeSetId, changeSetId));
   return row ? mapStoredGenerationProvenance(row) : null;
+}
+
+/**
+ * Raw write-once insert -- writes exactly the row it is given (including `createdAt`, preserving
+ * the moment it was actually created, which may be on another device). No-ops on a duplicate `id`
+ * rather than throwing, since a `mergeIncoming`/re-projection can legitimately re-project an
+ * already-projected provenance entry. Used only as the SQL read-projection target for
+ * `src/lib/sync-gateway/change-drafts/` (2026-09-22, `docs/roadmap/plans/
+ * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M4) -- that module's per-channel Automerge document
+ * is now the source of truth for provenance. The old direct-SQL `createGenerationProvenance` was
+ * deleted the same day once its only caller was repointed at that module -- confirmed zero
+ * remaining callers anywhere in `src/`.
+ */
+export async function setStoredGenerationProvenanceRow(input: {
+  id: string;
+  changeSetId: string;
+  channelId: string;
+  profileVersion: number | null;
+  effectiveContextJson: string | null;
+  createdAt: Date;
+}): Promise<void> {
+  await db.insert(aiLocalizationGenerationProvenance).values(input).onConflictDoNothing();
+}
+
+/**
+ * `ai_localization_generation_provenance.change_set_id` is `NOT NULL UNIQUE REFERENCES
+ * change_sets(id)` with no `ON DELETE` clause, and this connection runs with `foreign_keys=ON`
+ * (see `src/lib/snapshot/adapters/scrub.ts` for another call site that has to work around the
+ * same default). `deleteStoredChangeSet` above has no FK-aware fallback, so any caller that might
+ * delete a change set with a provenance row must delete this row first -- found live via
+ * `src/lib/sync-gateway/change-drafts/services.ts`'s `discardLocalAndAdoptPeer`, which discards a
+ * whole document (including any provenance entries it holds) and previously had no equivalent
+ * cleanup for provenance at all.
+ */
+export async function deleteStoredGenerationProvenanceForChangeSet(changeSetId: string): Promise<void> {
+  await db.delete(aiLocalizationGenerationProvenance).where(eq(aiLocalizationGenerationProvenance.changeSetId, changeSetId));
 }
 
 // ---------------------------------------------------------------------------
@@ -2263,41 +2281,6 @@ function mapStoredAiConnection(row: typeof aiConnections.$inferSelect): StoredAi
   };
 }
 
-export async function createStoredAiConnection(input: {
-  id: string;
-  displayName: string;
-  adapterType: string;
-  baseUrl: string | null;
-  modelId: string;
-  localInferenceMode: boolean;
-  enabled: boolean;
-  capabilitiesJson: string;
-  assignedTasksJson: string;
-  pricingJson: string | null;
-}): Promise<StoredAiConnection> {
-  const now = new Date();
-  await db.insert(aiConnections).values({
-    id: input.id,
-    displayName: input.displayName,
-    adapterType: input.adapterType,
-    baseUrl: input.baseUrl,
-    modelId: input.modelId,
-    localInferenceMode: input.localInferenceMode,
-    enabled: input.enabled,
-    status: "unknown",
-    statusMessage: null,
-    statusCheckedAt: null,
-    capabilitiesJson: input.capabilitiesJson,
-    assignedTasksJson: input.assignedTasksJson,
-    pricingJson: input.pricingJson,
-    createdAt: now,
-    updatedAt: now,
-  });
-  const stored = await getStoredAiConnection(input.id);
-  if (!stored) throw new Error("Connection disappeared immediately after creation");
-  return stored;
-}
-
 export async function listStoredAiConnections(): Promise<StoredAiConnection[]> {
   const rows = await db.select().from(aiConnections).orderBy(desc(aiConnections.createdAt));
   return rows.map(mapStoredAiConnection);
@@ -2308,34 +2291,59 @@ export async function getStoredAiConnection(connectionId: string): Promise<Store
   return row ? mapStoredAiConnection(row) : null;
 }
 
-export async function updateStoredAiConnection(
-  connectionId: string,
-  patch: Partial<{
-    displayName: string;
-    baseUrl: string | null;
-    modelId: string;
-    localInferenceMode: boolean;
-    enabled: boolean;
-    status: string;
-    statusMessage: string | null;
-    statusCheckedAt: Date | null;
-    capabilitiesJson: string;
-    assignedTasksJson: string;
-    pricingJson: string | null;
-  }>
-): Promise<StoredAiConnection | null> {
-  await db
-    .update(aiConnections)
-    .set({ ...patch, updatedAt: new Date() })
-    .where(eq(aiConnections.id, connectionId));
-  return getStoredAiConnection(connectionId);
-}
-
 export async function deleteStoredAiConnection(connectionId: string): Promise<void> {
   await db.transaction(async (tx) => {
     await tx.delete(aiConnectionCredentials).where(eq(aiConnectionCredentials.connectionId, connectionId));
     await tx.delete(aiConnections).where(eq(aiConnections.id, connectionId));
   });
+}
+
+/**
+ * Raw overwrite upsert -- writes exactly the row it is given, no defaulting or patch-merge logic
+ * of its own. Used only as the SQL read-projection target for
+ * `src/lib/sync-gateway/ai-connections-catalog/` (2026-09-22, `docs/roadmap/plans/
+ * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3) -- that module's single global Automerge document
+ * is now the source of truth for every connection's non-secret config; `deleteStoredAiConnection`
+ * above (unchanged) remains the target for a connection removed from the document entirely.
+ */
+export async function setStoredAiConnectionRow(record: StoredAiConnection): Promise<void> {
+  await db
+    .insert(aiConnections)
+    .values({
+      id: record.id,
+      displayName: record.displayName,
+      adapterType: record.adapterType,
+      baseUrl: record.baseUrl,
+      modelId: record.modelId,
+      localInferenceMode: record.localInferenceMode,
+      enabled: record.enabled,
+      status: record.status,
+      statusMessage: record.statusMessage,
+      statusCheckedAt: record.statusCheckedAt,
+      capabilitiesJson: record.capabilitiesJson,
+      assignedTasksJson: record.assignedTasksJson,
+      pricingJson: record.pricingJson,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    })
+    .onConflictDoUpdate({
+      target: aiConnections.id,
+      set: {
+        displayName: record.displayName,
+        adapterType: record.adapterType,
+        baseUrl: record.baseUrl,
+        modelId: record.modelId,
+        localInferenceMode: record.localInferenceMode,
+        enabled: record.enabled,
+        status: record.status,
+        statusMessage: record.statusMessage,
+        statusCheckedAt: record.statusCheckedAt,
+        capabilitiesJson: record.capabilitiesJson,
+        assignedTasksJson: record.assignedTasksJson,
+        pricingJson: record.pricingJson,
+        updatedAt: record.updatedAt,
+      },
+    });
 }
 
 export type StoredAiConnectionCredential = {
