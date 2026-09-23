@@ -139,8 +139,19 @@ export function createAiConnectionsCatalogCore(deps: ServiceDependencies) {
     },
 
     async mergeIncoming(incomingBytes: Uint8Array): Promise<MergeResult> {
+      // Regression (found by advisor review, same bug class as change-drafts' own RISK-46 orphan-
+      // row fix): a connection deleted by a PEER (present locally before this merge, absent from
+      // `merged`) must still be included in the projection pass so `deleteConnection` actually
+      // runs for it -- `Object.keys(merged.connections)` alone only ever grows the projection,
+      // never shrinks it. The pre-merge key set is read BEFORE calling the generic engine's
+      // `mergeIncoming` (which may mutate the underlying document in place, per
+      // `automerge-core/engine.ts`'s own mutation-order warning) -- never derived from it after.
+      const beforeBytes = await deps.store.loadDocumentBytes(GLOBAL_DOCUMENT_KEY);
+      const beforeIds = beforeBytes ? Object.keys(Automerge.load<AiConnectionsDocument>(beforeBytes).connections) : [];
+
       const { merged, newConflicts: genericConflicts } = await deps.core.mergeIncoming(GLOBAL_DOCUMENT_KEY, incomingBytes, scanConflictsGeneric);
-      await projectAndSave(merged, Object.keys(merged.connections));
+      const touchedIds = new Set([...beforeIds, ...Object.keys(merged.connections)]);
+      await projectAndSave(merged, [...touchedIds]);
 
       const newConflicts: FieldConflict[] = genericConflicts.map((c) => {
         const [connectionId, field] = c.key.split(/\.(.+)/);

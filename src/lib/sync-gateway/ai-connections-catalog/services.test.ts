@@ -156,6 +156,31 @@ test("mergeIncoming: two devices concurrently editing the SAME connection field 
   assert.equal(newConflicts[0].field, "displayName");
 });
 
+// Regression (advisor review): a connection deleted by a PEER must be cleaned up from the local
+// SQL projection too -- it disappears from `merged.connections`, so a touched-ids computation
+// that only looks at the post-merge key set never calls `deleteConnection` for it, leaving a
+// phantom row visible via `listConnections` even though the document (source of truth) no
+// longer has it. Same bug class as change-drafts' own RISK-46 orphan-row fix.
+test("mergeIncoming: a connection deleted by a peer is removed from the local SQL projection too", async () => {
+  const store = fakeStore();
+  const projection = fakeProjection();
+  const core = createAiConnectionsCatalogCore(makeDeps({ projection }, store));
+  await core.createConnection(BASE_INPUT);
+  await core.createConnection({ ...BASE_INPUT, id: "conn-2" });
+  assert.ok(projection.rows.has("conn-1"));
+
+  const localBytes = await core.exportBytes();
+  const localDoc = Automerge.load<AiConnectionsDocument>(localBytes);
+  const peerNext = Automerge.change(Automerge.clone(localDoc), "peer deletes conn-1", (d) => {
+    delete d.connections["conn-1"];
+  });
+
+  await core.mergeIncoming(Automerge.save(peerNext));
+
+  assert.equal(projection.rows.has("conn-1"), false, "deleted-by-peer connection must be removed from the projection");
+  assert.ok(projection.rows.has("conn-2"), "an untouched connection must survive the same merge");
+});
+
 test("discardLocalAndAdoptPeer: adopts the peer's connections and re-projects them, removing ones only the discarded doc had", async () => {
   const projection = fakeProjection();
   const core = createAiConnectionsCatalogCore(makeDeps({ projection }));
