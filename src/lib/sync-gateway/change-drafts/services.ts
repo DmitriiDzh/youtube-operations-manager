@@ -621,26 +621,42 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       // document remained forever visible via `listChangeSets`/`getChangeSet` yet threw
       // `not_found` the instant anything (approve/reject) tried to act on it, since the Automerge
       // document -- the actual source of truth -- no longer has it. Deletes are scoped to exactly
-      // the ids that disappeared, isolated in their own try/catch so a transient DB error here
-      // never fails the discard itself (the document write, the part that matters most, already
-      // succeeded) -- same reasoning as `saveDocument`'s own projection isolation above.
+      // the ids that disappeared. Each individual deletion gets its OWN try/catch (found live, by
+      // independent review: a single try/catch around every loop meant one row's failure aborted
+      // cleanup of every other row too -- reintroducing the exact phantom-row problem this cleanup
+      // exists to fix, for the whole discard, not just the one row that failed) so a transient DB
+      // error on one row never blocks cleanup of the rest, and never fails the discard itself (the
+      // document write, the part that matters most, already succeeded) -- same reasoning as
+      // `saveDocument`'s own projection isolation above.
       if (discardedDoc) {
-        try {
-          for (const changeSetId of Object.keys(discardedDoc.changeSets)) {
-            if (!(changeSetId in adopted.changeSets)) {
-              await deps.projection.deleteChangeSet(changeSetId);
-            }
+        const deleteRowSafely = async (event: string, context: Record<string, string>, op: () => Promise<void>) => {
+          try {
+            await op();
+          } catch (error) {
+            (deps.logger ?? createDefaultLogger()).error({
+              event,
+              context: { channelId: parsed.channelId, ...context, cause: error instanceof Error ? error.message : String(error) },
+            });
           }
-          for (const changeId of Object.keys(discardedDoc.changes)) {
-            if (!(changeId in adopted.changes)) {
-              await deps.projection.deleteChange(changeId);
-            }
+        };
+
+        for (const changeSetId of Object.keys(discardedDoc.changeSets)) {
+          if (changeSetId in adopted.changeSets) continue;
+          // Provenance has a NOT NULL, un-cascaded FK to change_sets -- must be removed before
+          // the change set it references, or `deleteChangeSet` below fails a real constraint.
+          for (const provenance of Object.values(discardedDoc.provenance ?? {})) {
+            if (provenance.changeSetId !== changeSetId) continue;
+            await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { changeSetId, provenanceId: provenance.id }, () =>
+              deps.projection.deleteProvenanceForChangeSet(changeSetId)
+            );
           }
-        } catch (error) {
-          (deps.logger ?? createDefaultLogger()).error({
-            event: "change_drafts.discard_projection_cleanup_failed",
-            context: { channelId: parsed.channelId, cause: error instanceof Error ? error.message : String(error) },
-          });
+          await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { changeSetId }, () =>
+            deps.projection.deleteChangeSet(changeSetId)
+          );
+        }
+        for (const changeId of Object.keys(discardedDoc.changes)) {
+          if (changeId in adopted.changes) continue;
+          await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { changeId }, () => deps.projection.deleteChange(changeId));
         }
       }
 

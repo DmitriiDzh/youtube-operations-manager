@@ -42,13 +42,13 @@ test("two devices, each with a real filesystem store, sync through the real shar
         const changeDraftsA = createChangeDraftsCore({
           store: createFilesystemChangeDraftsStore(deviceAStoreDir),
           sqlSource: { async listChangeSetsForChannel() { return []; }, async listChangesForChangeSet() { return []; } },
-          projection: { async upsertChangeSet() {}, async upsertChange() {}, async deleteChangeSet() {}, async deleteChange() {}, async upsertProvenance() {} },
+          projection: { async upsertChangeSet() {}, async upsertChange() {}, async deleteChangeSet() {}, async deleteChange() {}, async upsertProvenance() {}, async deleteProvenanceForChangeSet() {} },
           discardedBackupStore: { async backup(channelId: string) { return { path: `/fake/${channelId}.automerge`, capturedAt: new Date().toISOString() }; } },
         });
         const changeDraftsB = createChangeDraftsCore({
           store: createFilesystemChangeDraftsStore(deviceBStoreDir),
           sqlSource: { async listChangeSetsForChannel() { return []; }, async listChangesForChangeSet() { return []; } },
-          projection: { async upsertChangeSet() {}, async upsertChange() {}, async deleteChangeSet() {}, async deleteChange() {}, async upsertProvenance() {} },
+          projection: { async upsertChangeSet() {}, async upsertChange() {}, async deleteChangeSet() {}, async deleteChange() {}, async upsertProvenance() {}, async deleteProvenanceForChangeSet() {} },
           discardedBackupStore: { async backup(channelId: string) { return { path: `/fake/${channelId}.automerge`, capturedAt: new Date().toISOString() }; } },
         });
 

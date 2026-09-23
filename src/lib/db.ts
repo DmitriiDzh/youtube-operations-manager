@@ -2222,6 +2222,20 @@ export async function setStoredGenerationProvenanceRow(input: {
   await db.insert(aiLocalizationGenerationProvenance).values(input).onConflictDoNothing();
 }
 
+/**
+ * `ai_localization_generation_provenance.change_set_id` is `NOT NULL UNIQUE REFERENCES
+ * change_sets(id)` with no `ON DELETE` clause, and this connection runs with `foreign_keys=ON`
+ * (see `src/lib/snapshot/adapters/scrub.ts` for another call site that has to work around the
+ * same default). `deleteStoredChangeSet` above has no FK-aware fallback, so any caller that might
+ * delete a change set with a provenance row must delete this row first -- found live via
+ * `src/lib/sync-gateway/change-drafts/services.ts`'s `discardLocalAndAdoptPeer`, which discards a
+ * whole document (including any provenance entries it holds) and previously had no equivalent
+ * cleanup for provenance at all.
+ */
+export async function deleteStoredGenerationProvenanceForChangeSet(changeSetId: string): Promise<void> {
+  await db.delete(aiLocalizationGenerationProvenance).where(eq(aiLocalizationGenerationProvenance.changeSetId, changeSetId));
+}
+
 // ---------------------------------------------------------------------------
 // Phase 6 -- AI Connections persistence. This file never encrypts/decrypts anything
 // itself (src/lib/ai-connections/crypto.ts owns that) -- it only stores/retrieves

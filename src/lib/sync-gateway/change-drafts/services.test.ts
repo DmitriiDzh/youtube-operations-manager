@@ -64,6 +64,11 @@ function fakeProjection(): SqlProjectionAdapter & {
     async upsertProvenance(provenance) {
       projectedProvenance.set(provenance.id, provenance);
     },
+    async deleteProvenanceForChangeSet(changeSetId) {
+      for (const [id, provenance] of projectedProvenance) {
+        if (provenance.changeSetId === changeSetId) projectedProvenance.delete(id);
+      }
+    },
   };
 }
 
@@ -532,6 +537,69 @@ test("discardLocalAndAdoptPeer removes SQL projection rows for change sets/chang
   assert.ok(projection.projectedChanges.has("c-peer-only"), "the adopted change must still be projected");
 });
 
+// Regression (independent review, found before any FK exception was ever actually hit live):
+// `ai_localization_generation_provenance.change_set_id` is a NOT NULL, un-cascaded FK to
+// `change_sets(id)`. A discarded change set with a provenance row must have that provenance row
+// removed FIRST, or the real `deleteStoredChangeSet` would throw a foreign-key-constraint error.
+test("discardLocalAndAdoptPeer removes a discarded change set's provenance row before the change set itself, and keeps an unrelated change set's provenance intact", async () => {
+  const projection = fakeProjection();
+  const local = createChangeDraftsCore(makeDeps({ store: fakeStore(), projection }));
+  await local.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-local-only", source: "ai_localization" });
+  await local.createProvenance({
+    channelId: CHANNEL, id: "prov-local-only", changeSetId: "cs-local-only", profileVersion: 1, effectiveContextJson: null,
+  });
+  await local.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-shared", source: "ai_localization" });
+  await local.createProvenance({
+    channelId: CHANNEL, id: "prov-shared", changeSetId: "cs-shared", profileVersion: 1, effectiveContextJson: null,
+  });
+  assert.ok(projection.projectedProvenance.has("prov-local-only"));
+  assert.ok(projection.projectedProvenance.has("prov-shared"));
+
+  const peer = createChangeDraftsCore(makeDeps());
+  await peer.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-shared", source: "ai_localization" });
+  const peerBytes = await peer.exportBytes({ channelId: CHANNEL });
+
+  await local.discardLocalAndAdoptPeer({ channelId: CHANNEL, incomingBytes: peerBytes });
+
+  assert.equal(projection.projectedChangeSets.has("cs-local-only"), false, "the discarded change set must be removed");
+  assert.equal(
+    projection.projectedProvenance.has("prov-local-only"),
+    false,
+    "the discarded change set's provenance row must be removed too, not left as a phantom pointing at a deleted change set"
+  );
+});
+
+// Regression (independent review): the cleanup loop previously wrapped ALL deletions in ONE
+// try/catch, so a single row's failure silently aborted cleanup of every other row too --
+// reintroducing the exact phantom-row problem this cleanup exists to fix, for the whole discard.
+test("discardLocalAndAdoptPeer isolates each row's cleanup -- one failing deletion does not block the others", async () => {
+  const projection = fakeProjection();
+  const failingDeleteChangeSet: SqlProjectionAdapter = {
+    ...projection,
+    async deleteChangeSet(changeSetId) {
+      if (changeSetId === "cs-fails") throw new Error("simulated FK failure");
+      await projection.deleteChangeSet(changeSetId);
+    },
+  };
+  const local = createChangeDraftsCore(makeDeps({ store: fakeStore(), projection: failingDeleteChangeSet }));
+  await local.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-fails", source: "ai_localization" });
+  await local.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-also-discarded", source: "ai_localization" });
+  assert.ok(projection.projectedChangeSets.has("cs-also-discarded"));
+
+  const peer = createChangeDraftsCore(makeDeps());
+  await peer.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-peer", source: "ai_localization" });
+  const peerBytes = await peer.exportBytes({ channelId: CHANNEL });
+
+  // Must not throw -- the document write itself succeeds regardless of projection cleanup issues.
+  await local.discardLocalAndAdoptPeer({ channelId: CHANNEL, incomingBytes: peerBytes });
+
+  assert.equal(
+    projection.projectedChangeSets.has("cs-also-discarded"),
+    false,
+    "a later row's cleanup must still run even though an earlier row's deletion failed"
+  );
+});
+
 test("getDocument/exportBytes/listConflicts reject a channel that was never saved, rather than silently returning an empty document", async () => {
   const core = createChangeDraftsCore(makeDeps({ store: fakeStore() }));
 
@@ -769,6 +837,9 @@ test("a throwing projection does not fail createChangeSet/addChange/mergeIncomin
       throw new Error("simulated DB failure");
     },
     async upsertProvenance() {
+      throw new Error("simulated DB failure");
+    },
+    async deleteProvenanceForChangeSet() {
       throw new Error("simulated DB failure");
     },
   };

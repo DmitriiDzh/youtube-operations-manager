@@ -1,6 +1,7 @@
 import {
   deleteStoredChange,
   deleteStoredChangeSet,
+  deleteStoredGenerationProvenanceForChangeSet,
   setStoredGenerationProvenanceRow,
   upsertStoredChange,
   upsertStoredChangeSet,
@@ -24,9 +25,15 @@ export type SqlProjectionAdapter = {
   upsertChange(change: DraftChange): Promise<void>;
   deleteChangeSet(changeSetId: string): Promise<void>;
   deleteChange(changeId: string): Promise<void>;
-  /** Write-once (M4) -- there is no `deleteProvenance`, since nothing in this module's API ever
-   * removes a provenance entry from a document. */
   upsertProvenance(provenance: DraftProvenance): Promise<void>;
+  /**
+   * The only provenance deletion this module ever performs -- not because provenance itself is
+   * mutable (it isn't, write-once, M4), but because `discardLocalAndAdoptPeer` can discard a
+   * whole document, including whatever provenance entries it held, and `deleteChangeSet` fails
+   * a real FK constraint (`ai_localization_generation_provenance.change_set_id REFERENCES
+   * change_sets(id)`, no `ON DELETE`) if a referencing provenance row isn't removed first.
+   */
+  deleteProvenanceForChangeSet(changeSetId: string): Promise<void>;
 };
 
 export function createSqlProjectionAdapter(): SqlProjectionAdapter {
@@ -82,6 +89,10 @@ export function createSqlProjectionAdapter(): SqlProjectionAdapter {
         effectiveContextJson: provenance.effectiveContextJson,
         createdAt: new Date(provenance.createdAt),
       });
+    },
+
+    async deleteProvenanceForChangeSet(changeSetId: string): Promise<void> {
+      await deleteStoredGenerationProvenanceForChangeSet(changeSetId);
     },
   };
 }
