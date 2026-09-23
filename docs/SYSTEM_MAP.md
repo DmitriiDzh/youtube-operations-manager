@@ -321,7 +321,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Никаких рейтингов/"outperforming"-формулировок/итогового вердикта** — только сырые факты (`docs/roadmap/FUTURE_PHASES.md` §4).
 - **Файлы:** `src/lib/analytics/comparable-age.ts` (пурая арифметика + allowlist, свои тесты), `getComparableAgeComparison` (`services.ts`), `GET .../analytics/comparable-age`, MCP-инструмент `analytics_comparable_age`, CLI `analytics comparable-age` — все read-only, не гейтятся, тот же паттерн что `analytics_data_quality`.
 
-### 2.9q Phase 8 follow-up, слайс 4/4: еженедельные аналитические отчёты (`runWeeklyReportIfDue`/`listWeeklyReports`/`getWeeklyReport`) — **IMPLEMENTED**, не в `dev`
+### 2.9q Phase 8 follow-up, слайс 4/4: еженедельные аналитические отчёты (`runWeeklyReportIfDue`/`listWeeklyReports`/`getWeeklyReport`) — **IMPLEMENTED**, в `dev`
 
 - **Статус:** та же ветка задания, что §2.9o/§2.9p («Ок, доделай эти функции»), `docs/roadmap/BACKLOG.md` BL-077. Последний из 4 слайсов Phase 8 follow-up, `docs/roadmap/FUTURE_PHASES.md` §4 ("analytical reports and weekly channel reviews").
 - **Что делает:** замороженный, воспроизводимый снапшот по каналу за каждую неделю (понедельник-воскресенье), полностью посчитанный из уже собранных локальных `video_metrics_daily` — никогда живой запрос к YouTube.
