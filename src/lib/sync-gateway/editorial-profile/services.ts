@@ -1,6 +1,7 @@
 import * as Automerge from "@automerge/automerge";
 import type { AutomergeCore, ConflictLike } from "../automerge-core";
 import {
+  DomainError,
   EDITORIAL_PROFILE_CONFLICT_FIELDS,
   type EditorialProfileDocument,
   type FieldConflict,
@@ -164,6 +165,44 @@ export function createEditorialProfileCore(deps: ServiceDependencies) {
     async listConflicts(channelId: string): Promise<FieldConflict[]> {
       const doc = await deps.core.loadOrThrow(channelId);
       return scanForConflicts(doc);
+    },
+
+    /**
+     * Mirrors `change-drafts/services.ts`'s own `resolveConflict` exactly: takes `winningActorId`,
+     * never a raw value, so the value actually written is re-derived here from Automerge's own
+     * recorded conflict -- this can never write something that wasn't already one of the values a
+     * device produced through this module's own validated `saveProfile` path. Every field in
+     * `EDITORIAL_PROFILE_CONFLICT_FIELDS` shares the same `string | null` type, so (unlike
+     * change-drafts' mixed-type `DraftChange`) no per-field switch is needed to stay type-safe.
+     */
+    async resolveConflict(input: { channelId: string; field: FieldConflict["field"]; winningActorId: string }): Promise<EditorialProfileDocument> {
+      const doc = await deps.core.loadOrThrow(input.channelId);
+      const conflicts = Automerge.getConflicts(doc, input.field);
+      if (!conflicts || !(input.winningActorId in conflicts)) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "No such conflicting value to resolve -- it may have already been resolved",
+          details: { channelId: input.channelId, field: input.field, winningActorId: input.winningActorId },
+        });
+      }
+      const winningValue = conflicts[input.winningActorId] as string | null;
+
+      const next = Automerge.change(doc, `resolve conflict on ${input.field}`, (draft) => {
+        draft[input.field] = winningValue;
+        draft.updatedAt = new Date().toISOString();
+      });
+
+      await projectAndSave(input.channelId, next);
+      return {
+        channelId: next.channelId,
+        version: next.version,
+        targetAudience: next.targetAudience,
+        toneNotes: next.toneNotes,
+        terminologyNotes: next.terminologyNotes,
+        titleConstraints: next.titleConstraints,
+        descriptionConstraints: next.descriptionConstraints,
+        updatedAt: next.updatedAt,
+      };
     },
   };
 }

@@ -47,4 +47,5 @@ export { createEditorialProfileSyncRunnerForProduction } from "./editorial-profi
 
 export { createAiConnectionsCatalogCoreForProduction } from "./ai-connections-catalog";
 export type { AiConnectionEntry, FieldConflict as AiConnectionFieldConflict } from "./ai-connections-catalog";
+export { GLOBAL_DOCUMENT_KEY as AI_CONNECTIONS_GLOBAL_DOCUMENT_KEY } from "./ai-connections-catalog";
 export { createAiConnectionsCatalogSyncRunnerForProduction } from "./ai-connections-catalog-sync";

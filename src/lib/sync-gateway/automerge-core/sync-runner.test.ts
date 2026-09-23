@@ -27,6 +27,9 @@ function fakeFamily(overrides: Partial<DocumentFamilyForSync> = {}): DocumentFam
     async mergeIncoming() {
       return { newConflictsCount: 0 };
     },
+    async discardLocalAndAdoptPeer() {
+      return { backupPath: null };
+    },
     ...overrides,
   };
 }
@@ -202,4 +205,100 @@ test("runSyncCycle is single-flight: an overlapping call gets the SAME in-flight
   const [a, b] = await Promise.all([runner.runSyncCycle(), runner.runSyncCycle()]);
   assert.equal(calls, 1);
   assert.equal(a, b);
+});
+
+// Generalized 2026-09-23 from change-drafts-sync/services.ts's own bespoke adoptDivergentPeer --
+// editorial-profile and ai-connections-catalog gained the same capability via this shared runner
+// instead of a third copy-paste (AGENTS.md §M).
+test("adoptDivergentPeer re-reads the peer's CURRENT file and delegates to the family's discardLocalAndAdoptPeer", async () => {
+  const peerBytes = new Uint8Array([9, 9, 9]);
+  let received: { channelId: string; incomingBytes: Uint8Array } | null = null;
+  const runner = createSyncRunner(
+    makeDeps({
+      transport: fakeTransport({
+        async listPeerFiles() {
+          return [{ deviceId: "device-b", bytes: peerBytes }];
+        },
+      }),
+      family: fakeFamily({
+        async discardLocalAndAdoptPeer(channelId, incomingBytes) {
+          received = { channelId, incomingBytes };
+          return { backupPath: "/fake/backup.automerge" };
+        },
+      }),
+    })
+  );
+
+  const result = await runner.adoptDivergentPeer({ channelId: "UC_1", peerDeviceId: "device-b" });
+  assert.equal(result.backupPath, "/fake/backup.automerge");
+  assert.deepEqual(received, { channelId: "UC_1", incomingBytes: peerBytes });
+});
+
+test("adoptDivergentPeer throws when the named peer has no file in the sync folder", async () => {
+  const runner = createSyncRunner(makeDeps({ transport: fakeTransport({ async listPeerFiles() { return []; } }) }));
+
+  await assert.rejects(
+    () => runner.adoptDivergentPeer({ channelId: "UC_1", peerDeviceId: "device-b" }),
+    /no file for "UC_1"/
+  );
+});
+
+test("adoptDivergentPeer and runSyncCycle are mutually exclusive: an overlapping adopt call while a cycle runs waits for it, and vice versa", async () => {
+  let adoptCalls = 0;
+  const runner = createSyncRunner(
+    makeDeps({
+      listChannelIds: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return ["UC_1"];
+      },
+      transport: fakeTransport({
+        async listPeerFiles() {
+          return [{ deviceId: "device-b", bytes: new Uint8Array([1]) }];
+        },
+      }),
+      family: fakeFamily({
+        async discardLocalAndAdoptPeer() {
+          adoptCalls += 1;
+          return { backupPath: null };
+        },
+      }),
+    })
+  );
+
+  const [, adoptResult] = await Promise.all([
+    runner.runSyncCycle(),
+    runner.adoptDivergentPeer({ channelId: "UC_1", peerDeviceId: "device-b" }),
+  ]);
+  assert.equal(adoptCalls, 1);
+  assert.equal(adoptResult.backupPath, null);
+});
+
+test("adoptDivergentPeer rejects a second overlapping call outright rather than coalescing (a different peer/channel must never receive the wrong result)", async () => {
+  let resolveFirst: (() => void) | undefined;
+  const firstGate = new Promise<void>((resolve) => {
+    resolveFirst = resolve;
+  });
+  const runner = createSyncRunner(
+    makeDeps({
+      transport: fakeTransport({
+        async listPeerFiles() {
+          return [{ deviceId: "device-b", bytes: new Uint8Array([1]) }];
+        },
+      }),
+      family: fakeFamily({
+        async discardLocalAndAdoptPeer() {
+          await firstGate;
+          return { backupPath: null };
+        },
+      }),
+    })
+  );
+
+  const first = runner.adoptDivergentPeer({ channelId: "UC_1", peerDeviceId: "device-b" });
+  await assert.rejects(
+    () => runner.adoptDivergentPeer({ channelId: "UC_2", peerDeviceId: "device-c" }),
+    /already in progress/
+  );
+  resolveFirst!();
+  await first;
 });

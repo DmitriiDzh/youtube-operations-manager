@@ -19,8 +19,10 @@ import {
   initializeDatabaseSchema,
   listVideoMetricsByChannel,
   listVideoMetricsByVideo,
+  getSyncFamilyStatuses,
   markAnalyticsAutoCollected,
   recordGatewayCallOutcome,
+  recordSyncFamilyResult,
   SCHEMA_BASELINE_VERSION,
   SCHEMA_CURRENT_VERSION,
   SCHEMA_MIGRATIONS,
@@ -385,6 +387,69 @@ test("recordGatewayCallOutcome: prunes events older than the retention window on
     const remaining = await isolatedDb.select().from(gatewayCallEvents);
     assert.equal(remaining.length, 1, "the 8-day-old row must be pruned; only the fresh insert remains");
     assert.ok(remaining[0].occurredAt > eightDaysAgo);
+  }));
+
+// sync_family_status (2026-09-23, Merge-tab redesign) -- persistent per-family last-sync outcome,
+// upserted (one row per family), unlike gateway_call_events' own append-only rolling window above.
+test("getSyncFamilyStatuses: all three families report a never-synced row before any cycle completes", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    const statuses = await getSyncFamilyStatuses(isolatedDb);
+
+    assert.deepEqual(
+      statuses.map((s) => s.family).sort(),
+      ["ai_connections", "change_drafts", "editorial_profile"]
+    );
+    for (const s of statuses) {
+      assert.equal(s.lastSyncedAt, null);
+      assert.equal(s.lastSyncOk, null);
+      assert.equal(s.lastError, null);
+    }
+  }));
+
+test("recordSyncFamilyResult: a successful cycle records lastSyncOk true and clears any prior error", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await recordSyncFamilyResult("change_drafts", { ok: false, error: "sync folder unreachable" }, isolatedDb);
+    await recordSyncFamilyResult("change_drafts", { ok: true, error: null }, isolatedDb);
+
+    const statuses = await getSyncFamilyStatuses(isolatedDb);
+    const changeDrafts = statuses.find((s) => s.family === "change_drafts");
+    assert.equal(changeDrafts?.lastSyncOk, true);
+    assert.equal(changeDrafts?.lastError, null);
+    assert.ok(changeDrafts?.lastSyncedAt instanceof Date, "a successful cycle still records when it finished");
+  }));
+
+test("recordSyncFamilyResult: a failed cycle is distinguishable from never having synced -- lastSyncedAt is still set", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await recordSyncFamilyResult("editorial_profile", { ok: false, error: "bootstrap config unreadable" }, isolatedDb);
+
+    const statuses = await getSyncFamilyStatuses(isolatedDb);
+    const editorialProfile = statuses.find((s) => s.family === "editorial_profile");
+    assert.equal(editorialProfile?.lastSyncOk, false);
+    assert.equal(editorialProfile?.lastError, "bootstrap config unreadable");
+    assert.ok(editorialProfile?.lastSyncedAt instanceof Date, "a failed attempt still finished at some point, distinct from never-synced (null)");
+  }));
+
+test("recordSyncFamilyResult: each family's status is independent of the others", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await recordSyncFamilyResult("ai_connections", { ok: true, error: null }, isolatedDb);
+
+    const statuses = await getSyncFamilyStatuses(isolatedDb);
+    const changeDrafts = statuses.find((s) => s.family === "change_drafts");
+    const editorialProfile = statuses.find((s) => s.family === "editorial_profile");
+    assert.equal(changeDrafts?.lastSyncedAt, null, "an unrelated family's write must not affect this one");
+    assert.equal(editorialProfile?.lastSyncedAt, null);
   }));
 
 test("video_metrics_daily: a videoId with no matching videos row is rejected by its foreign key", () =>

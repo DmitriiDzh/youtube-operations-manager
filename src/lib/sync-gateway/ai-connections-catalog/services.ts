@@ -172,6 +172,74 @@ export function createAiConnectionsCatalogCore(deps: ServiceDependencies) {
       const doc = await deps.core.loadOrThrow(GLOBAL_DOCUMENT_KEY);
       return scanForConflicts(doc);
     },
+
+    /**
+     * Mirrors `change-drafts/services.ts`'s own `resolveConflict`: takes `winningActorId`, never
+     * a raw value -- the value actually written is re-derived here from Automerge's own recorded
+     * conflict. `AI_CONNECTION_MUTABLE_FIELDS` is heterogeneously typed (unlike editorial-profile's
+     * uniform `string | null`), so a per-field switch keeps the write type-safe, same reasoning as
+     * change-drafts' own `DraftChange` fields.
+     */
+    async resolveConflict(input: { connectionId: string; field: FieldConflict["field"]; winningActorId: string }): Promise<AiConnectionEntry> {
+      const doc = await deps.core.loadOrThrow(GLOBAL_DOCUMENT_KEY);
+      const connection = doc.connections[input.connectionId];
+      if (!connection) {
+        throw new DomainError({ code: "not_found", message: "Connection not found", details: { connectionId: input.connectionId } });
+      }
+
+      const conflicts = Automerge.getConflicts(connection, input.field);
+      if (!conflicts || !(input.winningActorId in conflicts)) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "No such conflicting value to resolve -- it may have already been resolved",
+          details: { connectionId: input.connectionId, field: input.field, winningActorId: input.winningActorId },
+        });
+      }
+      const winningValue = conflicts[input.winningActorId];
+
+      const next = Automerge.change(doc, `resolve conflict on ${input.connectionId}.${input.field}`, (draft) => {
+        const target = draft.connections[input.connectionId];
+        switch (input.field) {
+          case "displayName":
+            target.displayName = winningValue as string;
+            break;
+          case "baseUrl":
+            target.baseUrl = winningValue as string | null;
+            break;
+          case "modelId":
+            target.modelId = winningValue as string;
+            break;
+          case "localInferenceMode":
+            target.localInferenceMode = winningValue as boolean;
+            break;
+          case "enabled":
+            target.enabled = winningValue as boolean;
+            break;
+          case "status":
+            target.status = winningValue as string;
+            break;
+          case "statusMessage":
+            target.statusMessage = winningValue as string | null;
+            break;
+          case "statusCheckedAt":
+            target.statusCheckedAt = winningValue as string | null;
+            break;
+          case "capabilitiesJson":
+            target.capabilitiesJson = winningValue as string;
+            break;
+          case "assignedTasksJson":
+            target.assignedTasksJson = winningValue as string;
+            break;
+          case "pricingJson":
+            target.pricingJson = winningValue as string | null;
+            break;
+        }
+        target.updatedAt = new Date().toISOString();
+      });
+
+      await projectAndSave(next, [input.connectionId]);
+      return next.connections[input.connectionId];
+    },
   };
 }
 

@@ -6,6 +6,7 @@ import {
   createChangeDraftsSyncCoreForProduction,
   createEditorialProfileSyncRunnerForProduction,
 } from "@/lib/sync-gateway";
+import { recordSyncFamilyResult, type SyncFamily } from "@/lib/db";
 
 // Device-wide, like src/app/api/device-handoff/**: every channelId synced here is determined
 // server-side (`listStoredChannels()` -- every channel this device already knows about), never
@@ -32,23 +33,48 @@ const aiConnectionsRunner = createAiConnectionsCatalogSyncRunnerForProduction();
  * files, so pausing it during an unresolved device-handoff/recovery state is the same
  * conservative default every other write path in this app already gets.
  */
+/** Runs one family's cycle and unconditionally records its outcome to `sync_family_status`
+ * (2026-09-23, Merge-tab redesign) -- regardless of whether it resolved or threw, so the
+ * persistent status the Merge tab reads never goes stale just because one family had a bad
+ * cycle. Isolates a thrown error to this one family: a bootstrap-config read failure in the
+ * editorial-profile runner, say, must never prevent change-drafts or ai-connections from
+ * syncing and having their own outcome recorded. */
+async function runAndRecord<T>(
+  family: SyncFamily,
+  run: () => Promise<T>
+): Promise<{ ok: true; result: T } | { ok: false; error: string }> {
+  try {
+    const result = await run();
+    await recordSyncFamilyResult(family, { ok: true, error: null });
+    return { ok: true, result };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    await recordSyncFamilyResult(family, { ok: false, error: message });
+    return { ok: false, error: message };
+  }
+}
+
 export async function POST() {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  try {
-    const [result, editorialProfile, aiConnections] = await Promise.all([
-      changeDraftsCore.runSyncCycle(),
-      editorialProfileRunner.runSyncCycle(),
-      aiConnectionsRunner.runSyncCycle(),
-    ]);
-    return NextResponse.json({ ...result, editorialProfile, aiConnections });
-  } catch (error) {
-    return NextResponse.json(
-      { error: "internal_error", message: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500 }
-    );
-  }
+  const [changeDrafts, editorialProfile, aiConnections] = await Promise.all([
+    runAndRecord("change_drafts", () => changeDraftsCore.runSyncCycle()),
+    runAndRecord("editorial_profile", () => editorialProfileRunner.runSyncCycle()),
+    runAndRecord("ai_connections", () => aiConnectionsRunner.runSyncCycle()),
+  ]);
+
+  const body = {
+    ...(changeDrafts.ok ? changeDrafts.result : { error: changeDrafts.error }),
+    editorialProfile: editorialProfile.ok ? editorialProfile.result : { error: editorialProfile.error },
+    aiConnections: aiConnections.ok ? aiConnections.result : { error: aiConnections.error },
+  };
+
+  // 207 (Multi-Status) when at least one family's cycle threw outright -- distinct from a
+  // per-channel pushError/peersSkipped inside an otherwise-successful cycle, which stays a 200
+  // exactly as before (those are already isolated and surfaced in the cycle's own result).
+  const anyFailed = !changeDrafts.ok || !editorialProfile.ok || !aiConnections.ok;
+  return NextResponse.json(body, { status: anyFailed ? 207 : 200 });
 }
