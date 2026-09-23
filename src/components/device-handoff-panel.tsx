@@ -189,6 +189,13 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
     // `!channelId`, which silently hid real, unresolved ai-connections conflicts (and kept
     // re-wiping them via every post-resolve/adopt refresh) whenever channelId was momentarily
     // null -- channel-info still loading, no channel linked yet, or Data API reads disabled.
+    // Two independent try/catch blocks below (per-channel families vs. the device-wide
+    // ai-connections one) means either can fail without the other -- accumulated into one array
+    // and joined, rather than a plain `setError` in each catch, so a failure in one never
+    // silently clobbers a more relevant message already set by the other in the same refresh
+    // (found by independent review: the naive version let whichever block's catch ran LAST win).
+    const refreshErrors: string[] = [];
+
     if (!channelId) {
       setChangeDraftConflicts([]);
       setEditorialProfileConflicts([]);
@@ -225,7 +232,7 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
           }))
         );
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load conflicts");
+        refreshErrors.push(err instanceof Error ? err.message : "Failed to load conflicts");
       }
     }
 
@@ -245,8 +252,10 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
         }))
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load AI-connection conflicts");
+      refreshErrors.push(err instanceof Error ? err.message : "Failed to load AI-connection conflicts");
     }
+
+    if (refreshErrors.length > 0) setError(refreshErrors.join(" "));
   }, [channelId]);
 
   useEffect(() => {
