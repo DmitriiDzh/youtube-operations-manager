@@ -569,13 +569,16 @@ just the instant of the file copy.
   `git pull` actually take effect on the next launch, rather than silently continuing to serve a
   build from before that pull (`docs/FIRST_LOCAL_TEST_BUILD.md` §3/§4).
 
-## 14. Phase 8 (Intelligence Foundation) — schema-only first sub-slice
+## 14. Phase 8 (Intelligence Foundation) — foundation + 4 follow-up slices, all merged
 
 ### 14.1 Status
 
-Assigned 2026-09-22 (Telegram, project owner: "Приступить к полной реализации фазы 8"), on
-`feature/phase-8-intelligence-foundation` (not yet merged to `dev` without the owner's separate,
-explicit consent for that branch specifically). `docs/roadmap/plans/PHASE_8_PLAN.md` §6 slice 2
+Assigned 2026-09-22 (Telegram, project owner: "Приступить к полной реализации фазы 8"). The
+original foundation work landed on `feature/phase-8-intelligence-foundation`, merged into `dev` in
+`6f75ccf` (owner approval per `AGENTS.md` §K.2) — see `docs/ROADMAP_STATUS.md`'s BL-055..BL-059
+rows for the full merge history; this subsection's own wording below predates that merge and is
+kept for its historical detail, not as a claim about current branch state. `docs/roadmap/plans/PHASE_8_PLAN.md`
+§6 slice 2
 (the additive `video_metrics_daily` table + tests) is implemented and reviewed. The owner answered
 §8's two required decisions on 2026-09-22 (Telegram msg 356, recorded verbatim in the plan's §10):
 OAuth scope approved, and metric scope widened to every metric `yt-analytics.readonly` covers (not
