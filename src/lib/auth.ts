@@ -356,8 +356,25 @@ export const authOptions: NextAuthOptions = {
         // is a privileged action gated on already being signed into this app somehow, exactly
         // like every Cloud connection route requires an active session (ADR 0008). Never an
         // independent, unauthenticated way to assume any locally-known identity.
+        //
+        // NextAuth's own `SessionStore` (node_modules/next-auth/core/lib/cookie.js) reads only
+        // `req.cookies` -- never `req.headers.cookie` as a raw string -- and the `req` this
+        // CredentialsProvider's `authorize()` receives (App Router adapter, next-auth v4.24) has
+        // `headers` but no parsed `cookies`, so `getToken({req})` would otherwise silently see no
+        // cookies at all and always return null. Parsed here explicitly rather than relying on
+        // `getToken` to do it.
+        const rawCookieHeader = (req as { headers?: Record<string, string> } | undefined)?.headers?.cookie ?? "";
+        const cookies = new Map<string, string>();
+        for (const part of rawCookieHeader.split(";")) {
+          const separatorIndex = part.indexOf("=");
+          if (separatorIndex === -1) continue;
+          const name = part.slice(0, separatorIndex).trim();
+          const value = part.slice(separatorIndex + 1).trim();
+          if (name) cookies.set(name, decodeURIComponent(value));
+        }
+
         const existingToken = await getToken({
-          req: req as unknown as Parameters<typeof getToken>[0]["req"],
+          req: { headers: (req as { headers?: Record<string, string> })?.headers, cookies } as unknown as Parameters<typeof getToken>[0]["req"],
           secret: process.env.NEXTAUTH_SECRET,
         });
         if (!existingToken) return null;

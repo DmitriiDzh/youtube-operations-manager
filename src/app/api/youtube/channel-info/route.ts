@@ -12,11 +12,30 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const youtube = await getAuthenticatedYoutube(session.user.id);
-  const res = await youtube.channels.list({
-    part: ["snippet", "statistics"],
-    mine: true,
-  });
+  let res;
+  try {
+    const youtube = await getAuthenticatedYoutube(session.user.id);
+    res = await youtube.channels.list({
+      part: ["snippet", "statistics"],
+      mine: true,
+    });
+  } catch (error) {
+    // Reachable in practice since `docs/decisions/0010-persistent-channel-connections.md` made
+    // reactivating an older stored connection a first-class action -- its refresh token can have
+    // genuinely gone stale with Google (e.g. testing-mode 7-day expiry) since it was last used.
+    // Without this, the underlying `invalid_grant` propagated as an unhandled exception, which
+    // Next.js turned into a non-JSON error response the client's `res.json()` then crashed on.
+    return NextResponse.json(
+      {
+        error: "channel_info_unavailable",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Could not load the active channel. It may need to be reconnected.",
+      },
+      { status: 502 }
+    );
+  }
 
   const channel = res.data.items?.[0];
   if (!channel) {

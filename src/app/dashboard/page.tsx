@@ -93,9 +93,17 @@ export default function Dashboard() {
   const [conflictCount, setConflictCount] = useState(0);
 
   const fetchChannel = useCallback(async () => {
-    const res = await fetch("/api/youtube/channel-info");
-    const data = await res.json();
-    setChannel(data.channel);
+    try {
+      const res = await fetch("/api/youtube/channel-info");
+      if (!res.ok) return;
+      const data = await res.json();
+      setChannel(data.channel);
+    } catch {
+      // Non-fatal -- can genuinely fail transiently right as the session cookie is swapping (e.g.
+      // right after activating a different stored channel connection, docs/decisions/0010), since
+      // that no longer reloads the page the way the old signIn("google")-only flow always did.
+      // This effect re-runs the moment `session` settles on its new value, so it self-heals.
+    }
   }, []);
 
   useEffect(() => {
