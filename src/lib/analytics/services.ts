@@ -788,9 +788,12 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
      * setting, per the owner's own explicit instruction.
      *
      * A `status: "final"` row is never overwritten -- only regenerated when the currently-stored
-     * row for the due week is missing or still `"provisional"`. This is the one and only place
-     * that decision is made; `db.ts`'s `upsertWeeklyReport` itself has no such guard (see that
-     * function's own doc comment).
+     * row for the due week is missing or still `"provisional"`. This own read-then-write check is
+     * a cheap early-exit (skip the read/compute work entirely when nothing needs to happen), but
+     * it is NOT itself atomic across two concurrent callers (e.g. two open dashboard tabs) -- the
+     * actual guarantee that a final row is never overwritten is enforced at the DB layer, inside
+     * `db.ts`'s `upsertWeeklyReport` itself (a conditional `ON CONFLICT ... WHERE`), which is
+     * immune to this function's own race (found by independent review, 2026-09-23).
      */
     async runWeeklyReportIfDue(input: unknown): Promise<RunWeeklyReportIfDueResult> {
       const parsedInput = parseWithSchema(runWeeklyReportIfDueInputSchema, input, "run weekly report if due input");

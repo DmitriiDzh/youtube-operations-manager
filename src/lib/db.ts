@@ -5,7 +5,7 @@ import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import path from "path";
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
 import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
@@ -3385,12 +3385,17 @@ export type StoredWeeklyReport = {
 };
 
 /**
- * Phase 8 follow-up, slice 4 -- always an insert-or-replace, never a conditional SQL upsert. The
- * "never overwrite a final report" rule is enforced by the CALLER (`runWeeklyReportIfDue`,
- * `src/lib/analytics/services.ts`), which reads the existing row first and only calls this
- * function when there either isn't one yet or the existing one is still "provisional" -- the same
- * read-then-write discipline this codebase already uses for `collectMetrics`'s own freshness gate,
- * rather than a database-level conditional `ON CONFLICT ... WHERE`.
+ * Phase 8 follow-up, slice 4. `runWeeklyReportIfDue` (`src/lib/analytics/services.ts`) already
+ * reads the existing row first and only calls this function when there either isn't one yet or
+ * the existing one is still "provisional" -- but that check-then-act is NOT itself atomic across
+ * two concurrent callers (e.g. two open dashboard tabs both triggering `generate-if-due` near the
+ * same moment), so this function ALSO enforces "never overwrite an existing 'final' row" at the
+ * DB layer via `setWhere` -- SQLite's `ON CONFLICT ... DO UPDATE SET ... WHERE <cond>` applies the
+ * update only when `<cond>` is true; otherwise the conflicting insert is silently a no-op and the
+ * existing row is left untouched. This closes the real race an independent review found
+ * (2026-09-23): without this guard, a concurrent caller reading stale (pre-completion) data could
+ * write a "provisional" row over an already-"final" one written by the other caller in between the
+ * first caller's own read and write.
  */
 export async function upsertWeeklyReport(
   input: {
@@ -3418,6 +3423,10 @@ export async function upsertWeeklyReport(
     .onConflictDoUpdate({
       target: [analyticsWeeklyReports.channelId, analyticsWeeklyReports.weekStartDate],
       set: values,
+      // Only overwrite an existing row when it is NOT already "final" -- see this function's own
+      // doc comment above. `analyticsWeeklyReports.status` here refers to the EXISTING row's value
+      // (standard SQLite ON CONFLICT semantics), never the new value being inserted.
+      setWhere: ne(analyticsWeeklyReports.status, "final"),
     });
 }
 

@@ -1004,9 +1004,12 @@ collected yet at the moment the trigger fires. Rather than freeze an undercounte
 a report is `"provisional"` whenever any date in ITS OWN week is still uncovered or too-recent
 (`computeDataQualityReport`, §14.9, run against the report's own week); the next dashboard load's
 trigger check regenerates (replaces) a provisional report for the same week once it clears, and
-never touches an already-`"final"` row. `runWeeklyReportIfDue` (`services.ts`) is the one place that
-decision is made -- `db.ts`'s `upsertWeeklyReport` itself has no conditional logic, matching this
-codebase's existing "gate lives in the service, not the DB" convention (§14.6's own freshness gate).
+never touches an already-`"final"` row. `runWeeklyReportIfDue` (`services.ts`) does a cheap
+read-before-write early exit, but the actual "never overwrite a final row" guarantee is enforced at
+the DB layer, inside `db.ts`'s `upsertWeeklyReport` itself (a conditional `ON CONFLICT ... DO
+UPDATE ... WHERE status != 'final'`) -- the service's own check-then-act is not atomic across two
+concurrent callers (e.g. two open dashboard tabs both triggering the generate-if-due route near the
+same moment), a real race an independent review found (2026-09-23) and this DB-level guard closes.
 
 **Week-over-week `percentChange` is `null` (the whole object, not per-field) unless BOTH the
 current and previous week are fully covered** -- comparing a real week against a mostly-uncollected

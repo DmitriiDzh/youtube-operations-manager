@@ -1,5 +1,6 @@
 import { computeDataQualityReport, type CollectionRunSummary, type DataQualityReport } from "./data-quality";
 import { computePercentChange } from "./period";
+import { formatZonedDateAndTime } from "./staleness";
 
 /**
  * Phase 8 follow-up, slice 4 of 4 (docs/roadmap/FUTURE_PHASES.md §4, "analytical reports and
@@ -57,23 +58,6 @@ function mondayOnOrBefore(date: string): string {
   const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay(); // 0=Sun,1=Mon,...,6=Sat
   const daysSinceMonday = (weekday + 6) % 7; // Mon->0, Tue->1, ..., Sun->6
   return addDaysToDateString(date, -daysSinceMonday);
-}
-
-function formatZonedDateAndTime(date: Date, timezone: string): { localDate: string; localTime: string } {
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  });
-  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
-  return {
-    localDate: `${parts.year}-${parts.month}-${parts.day}`,
-    localTime: `${parts.hour}:${parts.minute}`,
-  };
 }
 
 /**
@@ -139,7 +123,9 @@ export type WeeklyReportContent = {
    * recent) -- "provisional" otherwise. A provisional report is replaced (never a new row) the
    * next time `runWeeklyReportIfDue` re-checks the same due week and finds it now fully covered.
    * A "final" report is never touched again, even if later re-collection would change its numbers
-   * (this is a frozen historical snapshot, per the owner's own "reproducible reports" requirement).
+   * (this is a frozen historical snapshot, per the owner's own "reproducible reports" requirement)
+   * -- enforced at the DB layer (`db.ts`'s `upsertWeeklyReport`), not merely by this service's own
+   * read-before-write check, which alone would not be safe against two concurrent callers.
    */
   status: "final" | "provisional";
   /** Always the literal `WEEKLY_REPORT_SOURCE_DESCRIPTION` below -- `string`, not a literal type,
