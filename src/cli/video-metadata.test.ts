@@ -12,6 +12,9 @@ import type { BatchCore } from "@/lib/batches";
 import type { Batch } from "@/lib/batches/contracts";
 import type { ChannelSyncCore } from "@/lib/channel-sync";
 import type { ChannelAccessCore } from "@/lib/channel-access";
+import type { AnalyticsCore } from "@/lib/analytics";
+import { rawSqlClient } from "@/lib/db";
+import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { runCliCommand, getCredentialRef } from "./video-metadata";
 
 function makeCoreStub(): Pick<
@@ -2133,4 +2136,184 @@ test("CLI channel video-list requires channelId", async () => {
   const envelope = JSON.parse(stderr[0] ?? "{}");
   assert.equal(envelope.error.code, "validation_failed");
   assert.match(envelope.error.message, /channelId/);
+});
+
+// CLI parity for MCP's analytics_list/analytics_overview (docs/roadmap/BACKLOG.md,
+// "machine-readable analytics for operational agents to consume").
+
+function makeAnalyticsCliCoreStub(): Pick<AnalyticsCore, "listMetrics" | "getChannelOverview"> {
+  return {
+    listMetrics: async () => ({
+      channelId: "UC_1",
+      rows: [{ videoId: "v1", metricDate: "2026-09-01", metricName: "views", metricValue: 100 }],
+    }),
+    getChannelOverview: async () => ({
+      channelId: "UC_1",
+      startDate: "2026-08-26",
+      endDate: "2026-09-22",
+      previousStartDate: "2026-07-29",
+      previousEndDate: "2026-08-25",
+      daily: [],
+      currentTotals: { views: 10, estimatedMinutesWatched: 20, subscribersGained: 1, subscribersLost: 0 },
+      previousTotals: { views: 5, estimatedMinutesWatched: 10, subscribersGained: 0, subscribersLost: 0 },
+    }),
+  };
+}
+
+test("CLI analytics list forwards resolved credentialRef and optional filters", async () => {
+  const analyticsCore = makeAnalyticsCliCoreStub();
+  let captured: unknown;
+  analyticsCore.listMetrics = async (input: unknown) => {
+    captured = input;
+    return { channelId: "UC_1", rows: [] };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "analytics",
+      "list",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--startDate",
+      "2026-09-01",
+      "--endDate",
+      "2026-09-20",
+      "--videoId",
+      "v1",
+      "--metricNames",
+      "views,likes",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    credentialRef: { userId: "u1" },
+    channelId: "UC_1",
+    startDate: "2026-09-01",
+    endDate: "2026-09-20",
+    videoId: "v1",
+    metricNames: ["views", "likes"],
+  });
+});
+
+test("CLI analytics list requires channelId", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["analytics", "list"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore: makeAnalyticsCliCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /channelId/);
+});
+
+test("CLI analytics overview forwards resolved credentialRef and requires startDate/endDate", async () => {
+  const analyticsCore = makeAnalyticsCliCoreStub();
+  let captured: unknown;
+  analyticsCore.getChannelOverview = async (input: unknown) => {
+    captured = input;
+    return {
+      channelId: "UC_1",
+      startDate: "2026-08-26",
+      endDate: "2026-09-22",
+      previousStartDate: "2026-07-29",
+      previousEndDate: "2026-08-25",
+      daily: [],
+      currentTotals: { views: 10, estimatedMinutesWatched: 20, subscribersGained: 1, subscribersLost: 0 },
+      previousTotals: { views: 5, estimatedMinutesWatched: 10, subscribersGained: 0, subscribersLost: 0 },
+    };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "analytics",
+      "overview",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--startDate",
+      "2026-08-26",
+      "--endDate",
+      "2026-09-22",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    credentialRef: { userId: "u1" },
+    channelId: "UC_1",
+    startDate: "2026-08-26",
+    endDate: "2026-09-22",
+  });
+});
+
+test("CLI analytics overview requires startDate and endDate", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["analytics", "overview", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore: makeAnalyticsCliCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /startDate/);
+});
+
+test("CLI analytics list/overview are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const stdout: string[] = [];
+    const listExit = await runCliCommand({
+      argv: ["analytics", "list", "--channelId", "UC_1", "--userId", "u1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      analyticsCore: makeAnalyticsCliCoreStub(),
+      writeStdout: (line) => stdout.push(line),
+    });
+    assert.equal(listExit, 0);
+
+    const overviewExit = await runCliCommand({
+      argv: [
+        "analytics",
+        "overview",
+        "--channelId",
+        "UC_1",
+        "--userId",
+        "u1",
+        "--startDate",
+        "2026-08-26",
+        "--endDate",
+        "2026-09-22",
+      ],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      analyticsCore: makeAnalyticsCliCoreStub(),
+      writeStdout: (line) => stdout.push(line),
+    });
+    assert.equal(overviewExit, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
 });

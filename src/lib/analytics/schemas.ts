@@ -56,6 +56,15 @@ export const listMetricsInputSchema = z
   .object({
     credentialRef: credentialRefSchema,
     channelId: z.string().min(1),
+    // Optional filters, additive (2026-09-23, MCP/CLI analytics read tools) -- an unfiltered call
+    // returns every collected row for the channel (3,700+ on a real, months-old channel), which is
+    // fine for the Web UI's own always-local read but too large a default payload for an MCP tool
+    // response. Applied in services.ts, in-memory, after the same single local store read every
+    // caller already does -- no new store method, no query-shape change.
+    startDate: isoDateSchema.optional(),
+    endDate: isoDateSchema.optional(),
+    videoId: z.string().min(1).optional(),
+    metricNames: z.array(z.string().min(1)).min(1).optional(),
   })
   .strict();
 

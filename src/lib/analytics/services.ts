@@ -286,12 +286,17 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         });
 
         const records = await deps.metricStore.listMetricsByChannel(parsedInput.channelId);
-        const rows = records.map((record) => ({
-          videoId: record.videoId,
-          metricDate: record.metricDate,
-          metricName: record.metricName,
-          metricValue: record.metricValue,
-        }));
+        const rows = records
+          .map((record) => ({
+            videoId: record.videoId,
+            metricDate: record.metricDate,
+            metricName: record.metricName,
+            metricValue: record.metricValue,
+          }))
+          .filter((row) => !parsedInput.startDate || row.metricDate >= parsedInput.startDate)
+          .filter((row) => !parsedInput.endDate || row.metricDate <= parsedInput.endDate)
+          .filter((row) => !parsedInput.videoId || row.videoId === parsedInput.videoId)
+          .filter((row) => !parsedInput.metricNames || parsedInput.metricNames.includes(row.metricName));
 
         return parseWithSchema(
           listMetricsOutputSchema,

@@ -18,6 +18,7 @@ import { createChangeSetCore, type ChangeSetCore } from "@/lib/changesets";
 import { createBatchCore, type BatchCore } from "@/lib/batches";
 import { createChannelSyncCore, type ChannelSyncCore } from "@/lib/channel-sync";
 import { createChannelAccessCore, type ChannelAccessCore } from "@/lib/channel-access";
+import { createAnalyticsCore, type AnalyticsCore } from "@/lib/analytics";
 
 // CLI parity for the read/propose/create MCP tools (docs/roadmap/plans/PHASE_7_PLAN.md,
 // docs/TECHNICAL_DEBT.md RISK-04) -- same core factories, same "smallest safe slice" as
@@ -28,6 +29,9 @@ type ChangesetCliCoreSubset = Pick<
 >;
 type BatchCliCoreSubset = Pick<BatchCore, "listBatchesByChannel" | "requireBatchForChannel" | "listLedgerRows">;
 type ChannelSyncCliCoreSubset = Pick<ChannelSyncCore, "syncChannel" | "listChannels" | "listSyncedVideos">;
+// CLI parity for the MCP analytics_list/analytics_overview tools (same "machine-readable
+// analytics for operational agents" follow-up, docs/roadmap/BACKLOG.md).
+type AnalyticsCliCoreSubset = Pick<AnalyticsCore, "listMetrics" | "getChannelOverview">;
 
 loadEnvConfig(process.cwd());
 
@@ -45,7 +49,7 @@ type CliAuthAdapter = {
 };
 
 export type ParsedArgs = {
-  namespace: "metadata" | "auth" | "playlist" | "changeset" | "batch" | "channel";
+  namespace: "metadata" | "auth" | "playlist" | "changeset" | "batch" | "channel" | "analytics";
   command:
     | "list"
     | "transcript"
@@ -67,11 +71,12 @@ export type ParsedArgs = {
     | "get"
     | "import"
     | "sync"
-    | "video-list";
+    | "video-list"
+    | "overview";
   flags: Record<string, string | boolean>;
 };
 
-const EXPLICIT_NAMESPACES = ["auth", "playlist", "changeset", "batch", "channel"] as const;
+const EXPLICIT_NAMESPACES = ["auth", "playlist", "changeset", "batch", "channel", "analytics"] as const;
 type ExplicitNamespace = (typeof EXPLICIT_NAMESPACES)[number];
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -91,6 +96,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     changeset: ["list", "get", "preview", "import"],
     batch: ["list", "get"],
     channel: ["sync", "list", "video-list"],
+    analytics: ["list", "overview"],
   };
   const validMetadataCommands = ["list", "transcript", "preview", "apply"];
   const validCommands = hasExplicitNamespace
@@ -272,6 +278,10 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   // (anything not explicitly listed here or in AUTH_SESSION_EXEMPT_CLI_COMMANDS is gated).
   "get",
   "video-list",
+  // analytics list (local read of already-collected rows) / analytics overview (a live
+  // Analytics API read, but mutates nothing anywhere -- same read-only classification as
+  // playlist_list's own live YouTube read in the MCP server).
+  "overview",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -347,6 +357,7 @@ export async function runCliCommand(args: {
   operationsCore?: ChangesetCliCoreSubset & BatchCliCoreSubset;
   channelSyncCore?: ChannelSyncCliCoreSubset;
   channelAccessCore?: ChannelAccessCore;
+  analyticsCore?: AnalyticsCliCoreSubset;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
 }): Promise<number> {
@@ -358,6 +369,7 @@ export async function runCliCommand(args: {
   const operationsCore = args.operationsCore ?? { ...createChangeSetCore(), ...createBatchCore() };
   const channelSyncCore = args.channelSyncCore ?? createChannelSyncCore();
   const channelAccessCore = args.channelAccessCore ?? createChannelAccessCore();
+  const analyticsCore = args.analyticsCore ?? createAnalyticsCore();
   const writeStdout =
     args.writeStdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const writeStderr =
@@ -536,6 +548,37 @@ export async function runCliCommand(args: {
       const result = await channelSyncCore.listSyncedVideos({
         credentialRef,
         channelId: requiredStringFlag(parsedArgs.flags, "channelId"),
+      });
+      writeStdout(serializeSuccess(result));
+      return 0;
+    }
+
+    if (parsedArgs.namespace === "analytics") {
+      const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
+
+      if (parsedArgs.command === "overview") {
+        const result = await analyticsCore.getChannelOverview({
+          credentialRef,
+          channelId,
+          startDate: requiredStringFlag(parsedArgs.flags, "startDate"),
+          endDate: requiredStringFlag(parsedArgs.flags, "endDate"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // "list" -- local read of already-collected rows, optional filters (mirrors
+      // analytics_list's own optional filters in src/mcp/server.ts).
+      const metricNamesFlag = optionalStringFlag(parsedArgs.flags, "metricNames");
+      const result = await analyticsCore.listMetrics({
+        credentialRef,
+        channelId,
+        startDate: optionalStringFlag(parsedArgs.flags, "startDate"),
+        endDate: optionalStringFlag(parsedArgs.flags, "endDate"),
+        videoId: optionalStringFlag(parsedArgs.flags, "videoId"),
+        metricNames: metricNamesFlag
+          ? metricNamesFlag.split(",").map((entry) => entry.trim()).filter(Boolean)
+          : undefined,
       });
       writeStdout(serializeSuccess(result));
       return 0;

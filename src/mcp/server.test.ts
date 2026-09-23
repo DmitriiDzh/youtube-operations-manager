@@ -10,6 +10,7 @@ import type { ChangeSetCore } from "@/lib/changesets";
 import type { BatchCore } from "@/lib/batches";
 import type { ChannelSyncCore } from "@/lib/channel-sync";
 import type { ChannelAccessCore } from "@/lib/channel-access";
+import type { AnalyticsCore } from "@/lib/analytics";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { createMcpServer, createMcpToolHandlers } from "./server";
@@ -353,6 +354,8 @@ test("MCP server (connectionEnabled: false) registers zero tools, including ever
     "channel_sync",
     "channel_list",
     "channel_video_list",
+    "analytics_list",
+    "analytics_overview",
     "apply",
     "playlist_create",
     "write_channel_select",
@@ -380,6 +383,8 @@ test("MCP server (connectionEnabled: true) registers every tool, including write
     "channel_sync",
     "channel_list",
     "channel_video_list",
+    "analytics_list",
+    "analytics_overview",
     "apply",
     "playlist_create",
     "playlist_update",
@@ -1923,6 +1928,176 @@ test("MCP changeset_create_from_import is rejected while the operation lock is h
 
     const listResult = await handlers.changesetList({ channelId: "UC_1" });
     assert.notEqual(listResult.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// Phase 8 follow-up (docs/roadmap/BACKLOG.md, "machine-readable analytics for operational agents
+// to consume") -- analytics_list/analytics_overview. Both are pure reads (analytics_list local,
+// analytics_overview a live Analytics API call), so neither is wrapped by the device-availability
+// mutation gate, mirroring channel_list/channel_video_list above.
+
+function makeAnalyticsCoreStub(): Pick<AnalyticsCore, "listMetrics" | "getChannelOverview"> {
+  return {
+    listMetrics: async () => ({
+      channelId: "UC_1",
+      rows: [{ videoId: "v1", metricDate: "2026-09-01", metricName: "views", metricValue: 100 }],
+    }),
+    getChannelOverview: async () => ({
+      channelId: "UC_1",
+      startDate: "2026-08-26",
+      endDate: "2026-09-22",
+      previousStartDate: "2026-07-29",
+      previousEndDate: "2026-08-25",
+      daily: [{ date: "2026-08-26", views: 10, estimatedMinutesWatched: 20, subscribersGained: 1, subscribersLost: 0 }],
+      currentTotals: { views: 10, estimatedMinutesWatched: 20, subscribersGained: 1, subscribersLost: 0 },
+      previousTotals: { views: 5, estimatedMinutesWatched: 10, subscribersGained: 0, subscribersLost: 0 },
+    }),
+  };
+}
+
+test("MCP analytics_list forwards the resolved credentialRef and returns locally-collected rows", async () => {
+  const seenArgs: unknown[] = [];
+  const analyticsCore = makeAnalyticsCoreStub();
+  analyticsCore.listMetrics = async (input: unknown) => {
+    seenArgs.push(input);
+    return { channelId: "UC_1", rows: [] };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    analyticsCore
+  );
+  const result = await handlers.analyticsList({ channelId: "UC_1" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(seenArgs, [{ channelId: "UC_1", credentialRef: { userId: "active-user" } }]);
+});
+
+test("MCP analytics_list forwards optional startDate/endDate/videoId/metricNames filters unchanged", async () => {
+  const seenArgs: unknown[] = [];
+  const analyticsCore = makeAnalyticsCoreStub();
+  analyticsCore.listMetrics = async (input: unknown) => {
+    seenArgs.push(input);
+    return { channelId: "UC_1", rows: [] };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    analyticsCore
+  );
+  await handlers.analyticsList({
+    channelId: "UC_1",
+    startDate: "2026-09-01",
+    endDate: "2026-09-20",
+    videoId: "v1",
+    metricNames: ["views"],
+  });
+
+  assert.deepEqual(seenArgs, [
+    {
+      channelId: "UC_1",
+      startDate: "2026-09-01",
+      endDate: "2026-09-20",
+      videoId: "v1",
+      metricNames: ["views"],
+      credentialRef: { userId: "active-user" },
+    },
+  ]);
+});
+
+test("MCP analytics_list rejects a missing channelId", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    makeAnalyticsCoreStub()
+  );
+  const result = await handlers.analyticsList({});
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP analytics_overview returns channel-level cards/chart data for a date range", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    makeAnalyticsCoreStub()
+  );
+  const result = await handlers.analyticsOverview({
+    channelId: "UC_1",
+    startDate: "2026-08-26",
+    endDate: "2026-09-22",
+  });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.currentTotals.views, 10);
+  assert.equal(payload.previousStartDate, "2026-07-29");
+});
+
+test("MCP analytics_overview propagates a validation_failed DomainError unchanged (e.g. an inverted date range)", async () => {
+  const analyticsCore = makeAnalyticsCoreStub();
+  analyticsCore.getChannelOverview = async () => {
+    throw new DomainError({ code: "validation_failed", message: "period: endDate is before startDate" });
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    analyticsCore
+  );
+  const result = await handlers.analyticsOverview({
+    channelId: "UC_1",
+    startDate: "2026-09-22",
+    endDate: "2026-08-26",
+  });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP analytics_list/analytics_overview are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      makeAnalyticsCoreStub()
+    );
+
+    const listResult = await handlers.analyticsList({ channelId: "UC_1" });
+    assert.notEqual(listResult.isError, true);
+
+    const overviewResult = await handlers.analyticsOverview({
+      channelId: "UC_1",
+      startDate: "2026-08-26",
+      endDate: "2026-09-22",
+    });
+    assert.notEqual(overviewResult.isError, true);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }
