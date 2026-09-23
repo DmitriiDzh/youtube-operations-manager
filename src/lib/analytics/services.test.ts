@@ -545,6 +545,31 @@ test("getChannelOverview rejects an inverted date range as validation_failed, no
   );
 });
 
+// Found by independent review, 2026-09-23: this specific failure path (credential resolution
+// rejecting, e.g. a missing/insufficient OAuth scope) was already tested for `collectMetrics` but
+// had no equivalent test for the new `getChannelOverview`, despite sharing the same
+// `authResolver.resolve` call and the same `mapUnknownError(error, "unauthorized")` fallback.
+test("getChannelOverview propagates a credential-resolution failure (e.g. missing OAuth scope) as a DomainError", async () => {
+  const { services, channelAccess, channelAnalyticsCalls } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    authResolverError: new Error("Credentials are missing required OAuth scopes"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getChannelOverview({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-08-26",
+        endDate: "2026-09-22",
+      }),
+    (error: unknown) => error instanceof DomainError
+  );
+  assert.equal(channelAnalyticsCalls.length, 0, "no real Analytics API call was made once credentials failed to resolve");
+});
+
 test("getChannelOverview queries the requested period and the immediately-preceding period of the same length", async () => {
   const { services, channelAccess, channelAnalyticsCalls } = createServicesFixture({
     videosByChannel: {},

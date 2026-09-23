@@ -100,6 +100,49 @@ export function computePercentChange(current: number, previous: number): number 
  * "last reported date" to fill up to, and the caller already renders a dedicated empty state for
  * an empty array.
  */
+/**
+ * The default `[startDate, endDate]` window for a UI period picker (e.g. "Last 28 days") --
+ * shared by `channel-overview-panel.tsx` and `home-dashboard-panel.tsx` (found duplicated
+ * near-verbatim in both by independent review, 2026-09-23; factored out per `AGENTS.md` §D).
+ * Ends yesterday, never today: the Analytics API's own documented behavior is that a
+ * `day`-dimension query never returns rows for the most recent day(s) yet (see
+ * `docs/roadmap/plans/PHASE_8_PLAN.md` §10 item 4), so defaulting to "today" would make every
+ * fresh page load look like it has less data than it actually will once it reports.
+ *
+ * `now` is injectable (defaults to the real wall clock) so callers -- and this function's own
+ * tests -- never depend on the actual calendar date, the same pattern `staleness.ts` already uses
+ * elsewhere in this module for the same reason.
+ */
+export function computeDefaultPeriodRange(periodDays: number, now: Date = new Date()): {
+  startDate: string;
+  endDate: string;
+} {
+  const end = new Date(now);
+  end.setDate(end.getDate() - 1);
+  const start = new Date(end);
+  start.setDate(start.getDate() - (periodDays - 1));
+  return { startDate: formatLocalCalendarDate(start), endDate: formatLocalCalendarDate(end) };
+}
+
+/**
+ * The operator's own local calendar date (NOT `toISOString()`, which is UTC and can land on the
+ * wrong day depending on the operator's timezone/time of day) -- deliberately distinct from
+ * `formatIsoDateUtc` above, which formats a fixed UTC instant for internal period arithmetic, not
+ * "what day is it where the operator actually is right now."
+ */
+function formatLocalCalendarDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+/** Watch-time hours, formatted to one decimal place -- shared display helper (same duplication
+ * finding as `computeDefaultPeriodRange` above). */
+export function formatWatchTimeHours(minutes: number): string {
+  return (minutes / 60).toLocaleString(undefined, { maximumFractionDigits: 1 });
+}
+
 export function zeroFillDailySeries<T extends { date: string }>(
   rows: T[],
   startDate: string,

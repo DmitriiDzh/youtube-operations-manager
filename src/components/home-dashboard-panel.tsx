@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { computeDefaultPeriodRange, formatWatchTimeHours } from "@/lib/analytics/period";
 
 type SyncedChannel = {
   channelId: string;
@@ -59,23 +60,10 @@ function formatAverageDuration(seconds: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-function formatHours(minutes: number): string {
-  return (minutes / 60).toLocaleString(undefined, { maximumFractionDigits: 1 });
-}
-
 // Fixed at 28 days, matching real Studio's own Home "Channel analytics" card (live-verified
 // 2026-09-23: "Summary, Last 28 days") -- unlike the Analytics tab's own adjustable period
 // picker, Home's summary is not user-configurable in Studio either.
 const HOME_SUMMARY_PERIOD_DAYS = 28;
-
-function computeRange(days: number): { startDate: string; endDate: string } {
-  const end = new Date();
-  end.setDate(end.getDate() - 1);
-  const start = new Date(end);
-  start.setDate(start.getDate() - (days - 1));
-  const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  return { startDate: fmt(start), endDate: fmt(end) };
-}
 
 export function HomeDashboardPanel({
   subscriberCount,
@@ -112,7 +100,7 @@ export function HomeDashboardPanel({
   const fetchOverview = useCallback(async (channelId: string) => {
     setLoadingOverview(true);
     try {
-      const { startDate, endDate } = computeRange(HOME_SUMMARY_PERIOD_DAYS);
+      const { startDate, endDate } = computeDefaultPeriodRange(HOME_SUMMARY_PERIOD_DAYS);
       const overviewRes = await fetch(
         `/api/channels/${encodeURIComponent(channelId)}/analytics/overview?startDate=${startDate}&endDate=${endDate}`
       );
@@ -311,7 +299,7 @@ export function HomeDashboardPanel({
             </div>
             <div>
               <div className="text-xs text-zinc-500">Watch time (hours), last 28 days</div>
-              <div className="font-medium text-zinc-100">{formatHours(overview.currentTotals.estimatedMinutesWatched)}</div>
+              <div className="font-medium text-zinc-100">{formatWatchTimeHours(overview.currentTotals.estimatedMinutesWatched)}</div>
             </div>
           </div>
         ) : loadingOverview ? (

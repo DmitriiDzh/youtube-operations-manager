@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { computePercentChange } from "@/lib/analytics/period";
+import { computeDefaultPeriodRange, computePercentChange, formatWatchTimeHours } from "@/lib/analytics/period";
 import { AnalyticsLineChart } from "./analytics-line-chart";
 import { MetricDelta } from "./metric-delta";
 
@@ -57,27 +57,6 @@ const PERIOD_OPTIONS = [
   { days: 365, label: "Last 365 days" },
 ] as const;
 
-function formatLocalDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-// Ends yesterday, matching analytics-manager.tsx's own default range -- the Analytics API's
-// day-dimension reports never include the most recent day(s) yet.
-function computeRange(periodDays: number): { startDate: string; endDate: string } {
-  const end = new Date();
-  end.setDate(end.getDate() - 1);
-  const start = new Date(end);
-  start.setDate(start.getDate() - (periodDays - 1));
-  return { startDate: formatLocalDate(start), endDate: formatLocalDate(end) };
-}
-
-function formatHours(minutes: number): string {
-  return (minutes / 60).toLocaleString(undefined, { maximumFractionDigits: 1 });
-}
-
 export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: string }) {
   const [channel, setChannel] = useState<SyncedChannel | null>(null);
   const [loadingChannel, setLoadingChannel] = useState(true);
@@ -113,7 +92,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     setLoadingOverview(true);
     setOverviewError(null);
     try {
-      const { startDate, endDate } = computeRange(days);
+      const { startDate, endDate } = computeDefaultPeriodRange(days);
       const res = await fetch(
         `/api/channels/${encodeURIComponent(channelId)}/analytics/overview?startDate=${startDate}&endDate=${endDate}`
       );
@@ -135,7 +114,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
   const fetchTopContent = useCallback(async (channelId: string, days: number) => {
     setLoadingTopContent(true);
     try {
-      const { startDate, endDate } = computeRange(days);
+      const { startDate, endDate } = computeDefaultPeriodRange(days);
       const [metricsRes, videosRes] = await Promise.all([
         fetch(`/api/channels/${encodeURIComponent(channelId)}/analytics`),
         fetch(`/api/channels/${encodeURIComponent(channelId)}/videos`),
@@ -235,7 +214,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
             <div className="space-y-1 bg-zinc-900 p-4">
               <div className="text-xs text-zinc-500">Watch time (hours)</div>
               <div className="text-2xl font-semibold text-zinc-100">
-                {formatHours(overview.currentTotals.estimatedMinutesWatched)}
+                {formatWatchTimeHours(overview.currentTotals.estimatedMinutesWatched)}
               </div>
               <MetricDelta
                 percent={computePercentChange(
