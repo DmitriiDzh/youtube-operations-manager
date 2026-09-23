@@ -2141,7 +2141,10 @@ test("CLI channel video-list requires channelId", async () => {
 // CLI parity for MCP's analytics_list/analytics_overview (docs/roadmap/BACKLOG.md,
 // "machine-readable analytics for operational agents to consume").
 
-function makeAnalyticsCliCoreStub(): Pick<AnalyticsCore, "listMetrics" | "getChannelOverview" | "getDataQualityReport"> {
+function makeAnalyticsCliCoreStub(): Pick<
+  AnalyticsCore,
+  "listMetrics" | "getChannelOverview" | "getDataQualityReport" | "getComparableAgeComparison"
+> {
   return {
     listMetrics: async () => ({
       channelId: "UC_1",
@@ -2165,6 +2168,12 @@ function makeAnalyticsCliCoreStub(): Pick<AnalyticsCore, "listMetrics" | "getCha
       uncoveredDates: ["2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05"],
       tooRecentDates: [],
       videosWithSkips: [],
+    }),
+    getComparableAgeComparison: async () => ({
+      channelId: "UC_1",
+      metricName: "views",
+      maxDays: 30,
+      videos: [],
     }),
   };
 }
@@ -2342,6 +2351,15 @@ test("CLI analytics list/overview are never blocked by the operation lock (read-
       writeStdout: (line) => stdout.push(line),
     });
     assert.equal(dataQualityExit, 0);
+
+    const comparableAgeExit = await runCliCommand({
+      argv: ["analytics", "comparable-age", "--channelId", "UC_1", "--userId", "u1", "--videoIds", "v1,v2"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      analyticsCore: makeAnalyticsCliCoreStub(),
+      writeStdout: (line) => stdout.push(line),
+    });
+    assert.equal(comparableAgeExit, 0);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }
@@ -2406,4 +2424,60 @@ test("CLI analytics data-quality requires startDate and endDate", async () => {
   const envelope = JSON.parse(stderr[0] ?? "{}");
   assert.equal(envelope.error.code, "validation_failed");
   assert.match(envelope.error.message, /startDate/);
+});
+
+test("CLI analytics comparable-age forwards resolved credentialRef, parsed --videoIds, and optional --metricName/--maxDays", async () => {
+  const analyticsCore = makeAnalyticsCliCoreStub();
+  let captured: unknown;
+  analyticsCore.getComparableAgeComparison = async (input: unknown) => {
+    captured = input;
+    return { channelId: "UC_1", metricName: "likes", maxDays: 14, videos: [] };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "analytics",
+      "comparable-age",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--videoIds",
+      "v1, v2 ,v3",
+      "--metricName",
+      "likes",
+      "--maxDays",
+      "14",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    credentialRef: { userId: "u1" },
+    channelId: "UC_1",
+    videoIds: ["v1", "v2", "v3"],
+    metricName: "likes",
+    maxDays: 14,
+  });
+});
+
+test("CLI analytics comparable-age requires --videoIds", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["analytics", "comparable-age", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore: makeAnalyticsCliCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /videoIds/);
 });

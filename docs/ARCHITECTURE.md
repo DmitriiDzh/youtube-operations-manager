@@ -816,7 +816,7 @@ letting it repeat as an unstated gap — revisit whether this table should join
 `SNAPSHOT_TRANSFERRED_TABLES` once real collection (slice 3+) makes the data worth carrying
 across devices.
 
-### 14.8 Channel-level Analytics reads for Studio-Parity S6b (`getChannelOverview`) — not yet in `dev`
+### 14.8 Channel-level Analytics reads for Studio-Parity S6b (`getChannelOverview`) — **IMPLEMENTED**
 
 Every read documented above (§14.1-§14.7) is per-video: one `reports.query` call per synced
 video, `filters=video==<id>`. Studio's own Analytics "Overview" tab (BL-072,
@@ -905,6 +905,78 @@ Exposed via `GET .../analytics/data-quality`, the MCP tool `analytics_data_quali
 `analytics_list`/`analytics_overview` (BL-073). `analytics_collection_runs` is deliberately kept
 out of `SNAPSHOT_TRANSFERRED_TABLES`, the same as `video_metrics_daily` itself (§14.7) -- a
 re-derivable, device-local history, not data that needs to survive a device handoff.
+
+### 14.10 Comparable-age video comparison (`getComparableAgeComparison`) — Phase 8 follow-up, slice 3 of 4
+
+`docs/roadmap/FUTURE_PHASES.md` §4's "comparing videos at comparable ages" line item. Given 2-10
+`videoIds` on the same channel, aligns each video's already-collected `video_metrics_daily` rows by
+**days since publish** rather than calendar date, so videos published on different dates can be
+compared at the same point in their own lifecycle (mirroring YouTube Studio's own "Compare videos"
+growth-curve feature).
+
+**Pacific-Time day alignment (`src/lib/analytics/comparable-age.ts`, pure, no I/O):**
+`video_metrics_daily.metricDate` is the Analytics API's own `day` dimension, a Pacific-Time
+calendar day (§14.7/`youtube-read-gateway/analytics-api.ts`). `videos.publishedAt` is a UTC instant
+from the Data API. Day 0 of a video's life is therefore its **Pacific-Time** calendar date of
+`publishedAt` (`toPacificCalendarDate`, via `Intl.DateTimeFormat` with `timeZone:
+"America/Los_Angeles"`), never the UTC calendar date -- a video published shortly after UTC
+midnight can otherwise land a full day off relative to every other video it's compared against. Day
+offsets are a pure calendar-day diff of two `YYYY-MM-DD` strings via `Date.UTC` (`diffCalendarDays`,
+mirroring `period.ts`'s own DST-safe convention), never a raw millisecond subtraction. Day 0 is
+necessarily a **partial day** (the hours before publication aren't part of the video's life, but
+the Analytics API only reports whole-day totals) -- the same approximation Studio's own feature
+makes.
+
+**Only additive metrics are offered for comparison.** `CUMULATIVE_COMPARISON_METRIC_NAMES` is an
+explicit allowlist (views, likes, estimatedMinutesWatched, subscribersGained, etc.) excluding every
+ratio/average entry in `ANALYTICS_METRIC_NAMES` (`averageViewDuration`,
+`annotationClickThroughRate`, etc.) -- summing a ratio across days produces a meaningless number.
+Requesting a non-additive metric is rejected as `validation_failed`.
+
+**A missing day is "unknown," never a fabricated zero, and this slice deliberately does NOT reuse
+`analytics_collection_runs`'s channel-level coverage to infer "known zero."** §14.9 already
+established that `analytics_collection_runs` records which channel-wide date *ranges* were
+attempted, not which specific videos a given past run actually queried -- a video published after
+an older run's own snapshot of `videos` was never attempted by it, and there is no historical record
+of channel membership to check against. Given that unresolved ambiguity, a real `video_metrics_daily`
+row is the only fact this module treats as "known"; every other day-offset is "unknown." This means:
+raw `points` never include a fabricated zero, and the running `cumulativePoints` total stops dead at
+the last contiguous known day from day 0 (never skips a gap and keeps summing past it). This is the
+same "a materially larger data model than this diagnostic's actual purpose justifies as a first
+slice" tradeoff §14.9 already accepted for its own, narrower scope -- a more precise model would need
+an additive `analytics_collection_runs.queriedVideoIdsJson` column and is left as a future follow-up,
+not attempted here.
+
+**Real-data caveat, confirmed by directly querying two real channels' `video_metrics_daily` before
+designing this feature's response shape:** the daily auto-collection window only covers the most
+recent ~7 calendar days per run (§14.6), not "the video's first 7 days since publish." For a video
+published more than about a week before regular collection started for its channel, `points` will
+typically have no entries for low day-offsets (0-7) specifically, and `cumulativePoints` will
+typically be empty entirely (it always starts from day 0, so a missing day 0 halts it before it
+starts) -- not a bug, a genuine, expected data-coverage gap. `points` for that same video may still
+be non-empty overall if the rolling collection window happened to cover some LATER day-offset --
+an empty `cumulativePoints` does not imply an empty `points`. On the two real channels used to validate this feature ("Rural Japan
+Music", "Tropico Jazz"), this happens to be a much smaller problem than it first appears, because
+both channels upload frequently enough that the rolling 7-day window naturally overlaps most recent
+videos' own early days -- but a video from more than ~1-2 weeks ago will still show sparse or empty
+low-day-offset data until a manual historical backfill is run for it specifically. No backfill
+mechanism was added by this slice -- widening `AUTO_COLLECTION_RANGE_DAYS` or adding a backfill path
+was explicitly out of scope: the once-a-day freshness gate (§14.6) is the owner's own explicit rule
+("ни человеку, ни агенту, ни каким-то скриптам") and is not something this slice may work around.
+
+**No ranking, no "outperforming" language, no headline verdict** -- `docs/roadmap/FUTURE_PHASES.md`
+§4's own constraint ("distinguish observed facts from interpretations... avoid unsupported
+conclusions from small samples"). The response is the same raw per-video series for every caller,
+human or agent, to draw its own conclusion from.
+
+Every requested `videoId` is checked against `videoStore.listVideoDetailsByChannel(channelId)`
+(`docs/DEVELOPMENT_PLAYBOOK.md` §6.6) -- an id that doesn't resolve to the given channel is reported
+back as `validation_failed` with the offending id(s) in `details`, never silently dropped from the
+comparison. Exposed via `GET .../analytics/comparable-age`, the MCP tool
+`analytics_comparable_age`, and the CLI's `analytics comparable-age` command -- all three pure local
+reads (never a live YouTube call), read-only, ungated, following the same pattern as
+`analytics_list`/`analytics_data_quality` (unlike `analytics_overview`, which is a live, gated
+Analytics API read -- see §14.8).
 
 ## 15. Cloud connection (`src/lib/cloud-connection/`) — slice 1 of 3, not yet in `dev`
 

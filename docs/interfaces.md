@@ -118,12 +118,15 @@ that remains Web-UI-only, same as the equivalent MCP tools.
 npm run cli:video-metadata -- analytics list --channelId <UC...> [--startDate <YYYY-MM-DD>] [--endDate <YYYY-MM-DD>] [--videoId <VIDEO_ID>] [--metricNames views,likes,...]
 npm run cli:video-metadata -- analytics overview --channelId <UC...> --startDate <YYYY-MM-DD> --endDate <YYYY-MM-DD>
 npm run cli:video-metadata -- analytics data-quality --channelId <UC...> --startDate <YYYY-MM-DD> --endDate <YYYY-MM-DD>
+npm run cli:video-metadata -- analytics comparable-age --channelId <UC...> --videoIds <id1,id2,...> [--metricName views] [--maxDays 30]
 ```
 
-All three are read-only. `analytics list` reads already-collected `video_metrics_daily` rows
+All four are read-only. `analytics list` reads already-collected `video_metrics_daily` rows
 locally; `analytics overview` is a live Analytics API read (channel-level totals + deltas, counts
 against quota); `analytics data-quality` is a local read over `analytics_collection_runs` (see
-`docs/ARCHITECTURE.md` §14.9). Mirrors the equivalent MCP tools exactly -- see below.
+`docs/ARCHITECTURE.md` §14.9); `analytics comparable-age` is a local read that aligns 2-10 videos'
+already-collected rows by days-since-publish (see `docs/ARCHITECTURE.md` §14.10). Mirrors the
+equivalent MCP tools exactly -- see below.
 
 ---
 
@@ -193,7 +196,16 @@ Key MCP tools:
     the API to have reported yet, plus which videos had a recorded collection failure. Local read
     only (reads `analytics_collection_runs`, never calls YouTube) — see
     `docs/ARCHITECTURE.md` §14.9.
-  - All three are read-only (no local mutation, no YouTube write) — deliberately excludes
+  - `analytics_comparable_age` — `{ channelId, videoIds (2-10), metricName? (default "views",
+    additive metrics only), maxDays? (default 30), credentialRef? }` → per-video raw daily points
+    and a running cumulative total, aligned by each video's own days-since-publish (Pacific-Time
+    day 0) rather than calendar date. Local read only (reads already-collected
+    `video_metrics_daily`, never calls YouTube). A day with no collected row is never fabricated as
+    zero — the cumulative series stops at the last contiguous known day. See
+    `docs/ARCHITECTURE.md` §14.10 for the day-alignment math and the real data-coverage caveat
+    (videos older than ~1-2 weeks before regular collection started typically have no early-life
+    data).
+  - All four are read-only (no local mutation, no YouTube write) — deliberately excludes
     `collectMetrics`/`runAutoCollectionIfStale` (real local-persistence mutations that spend
     Analytics API quota; only the Web UI's "Collect now" button and the daily auto-collect
     trigger can start a new collection run).
@@ -260,6 +272,8 @@ All routes are App Router handlers and require authenticated session user.
 - `POST /api/channels/[channelId]/analytics/collect` — `{ startDate, endDate }`; manual per-video collection via the YouTube Analytics API, real local-persistence mutation, gated by the once-a-day freshness gate (`analytics_data_current`)
 - `POST /api/channels/[channelId]/analytics/auto-collect` — same collection, triggered once per dashboard mount if stale; no request body
 - `GET /api/channels/[channelId]/analytics/overview?startDate=&endDate=` — live channel-level (no video filter) Analytics API read: daily series + current/previous-period totals for the Analytics "Overview" tab and Home's "Channel analytics" card; **never persisted**, not subject to the collection routes' freshness gate (see `docs/ARCHITECTURE.md` §14.8)
+- `GET /api/channels/[channelId]/analytics/data-quality?startDate=&endDate=` — local read over `analytics_collection_runs`: covered/uncovered/too-recent dates plus videos with a recorded collection failure (read-only, no YouTube call; see `docs/ARCHITECTURE.md` §14.9) -- previously missing from this list, added here per `AGENTS.md` §H
+- `GET /api/channels/[channelId]/analytics/comparable-age?videoIds=a,b,c&metricName=&maxDays=` — local read aligning 2-10 videos' already-collected rows by days-since-publish (`metricName`/`maxDays` optional, default `views`/30; read-only, no YouTube call; see `docs/ARCHITECTURE.md` §14.10)
 
 ### Localization API (read-only)
 

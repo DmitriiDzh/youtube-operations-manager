@@ -29,6 +29,8 @@ export function createAnalyticsCore() {
 
 export type AnalyticsCore = ReturnType<typeof createAnalyticsCore>;
 export { ANALYTICS_METRIC_NAMES, AUTO_COLLECTION_RANGE_DAYS, CHANNEL_OVERVIEW_METRIC_NAMES } from "./contracts";
+export { CUMULATIVE_COMPARISON_METRIC_NAMES } from "./comparable-age";
+export type { CumulativeComparisonMetricName } from "./comparable-age";
 export type {
   AnalyticsMetricName,
   AutoCollectResult,
@@ -36,8 +38,10 @@ export type {
   ChannelOverviewMetricName,
   ChannelOverviewTotals,
   CollectMetricsResult,
+  ComparableAgeVideoSeries,
   DataQualityReportResult,
   GetChannelOverviewResult,
+  GetComparableAgeComparisonResult,
   ListMetricsResult,
   StoredVideoMetricRow,
 } from "./contracts";

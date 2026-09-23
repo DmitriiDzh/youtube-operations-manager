@@ -164,3 +164,19 @@ export type DataQualityReportResult = {
   tooRecentDates: string[];
   videosWithSkips: DataQualityVideoSkip[];
 };
+
+export type ComparableAgeVideoSeries = {
+  videoId: string;
+  title: string;
+  publishedAt: string;
+  publishDatePacific: string;
+  points: Array<{ dayOffset: number; value: number }>;
+  cumulativePoints: Array<{ dayOffset: number; cumulativeValue: number }>;
+};
+
+export type GetComparableAgeComparisonResult = {
+  channelId: string;
+  metricName: string;
+  maxDays: number;
+  videos: ComparableAgeVideoSeries[];
+};

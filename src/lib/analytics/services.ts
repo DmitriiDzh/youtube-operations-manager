@@ -2,6 +2,7 @@ import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import type { ChannelAccessService } from "@/lib/channel-access";
 import { computeDefaultAutoCollectionRange, computeNextRefreshAt, isAnalyticsCollectionStale } from "./staleness";
 import { assertValidDateRange, assertValidIsoDate, computePreviousPeriod, zeroFillDailySeries } from "./period";
+import { computeComparableAgeSeries } from "./comparable-age";
 import { computeDataQualityReport } from "./data-quality";
 import {
   ANALYTICS_METRIC_NAMES,
@@ -14,6 +15,7 @@ import {
   type CollectMetricsResult,
   type DataQualityReportResult,
   type GetChannelOverviewResult,
+  type GetComparableAgeComparisonResult,
   type ListMetricsResult,
   type ResolvedCredentials,
   type StoredVideoMetricRow,
@@ -23,6 +25,8 @@ import {
   collectMetricsOutputSchema,
   getChannelOverviewInputSchema,
   getChannelOverviewOutputSchema,
+  getComparableAgeComparisonInputSchema,
+  getComparableAgeComparisonOutputSchema,
   getDataQualityReportInputSchema,
   getDataQualityReportOutputSchema,
   listMetricsInputSchema,
@@ -63,6 +67,9 @@ type ServiceDependencies = {
   };
   videoStore: {
     listVideosByChannel(channelId: string): Promise<StoredVideoRef[]>;
+    // Phase 8 follow-up, slice 3 (comparable-age comparison) -- needs each requested video's own
+    // publishedAt/title, which listVideosByChannel's bare {videoId, channelId} pair doesn't carry.
+    listVideoDetailsByChannel(channelId: string): Promise<Array<{ videoId: string; title: string; publishedAt: string }>>;
   };
   metricStore: {
     upsertMetric(args: {
@@ -580,6 +587,114 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             ...report,
           },
           "get data quality report output"
+        );
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
+      }
+    },
+
+    /**
+     * Phase 8 follow-up, slice 3 (docs/roadmap/FUTURE_PHASES.md §4, "comparing videos at
+     * comparable ages"). A pure local read -- no YouTube call, no `authResolver` -- over already
+     * collected `video_metrics_daily` rows, aligned by each video's own days-since-publish (see
+     * `comparable-age.ts` for the Pacific-Time day math and the "never fabricate a gap" rule).
+     *
+     * Every requested `videoId` must belong to `channelId` (`docs/DEVELOPMENT_PLAYBOOK.md` §6.6) --
+     * checked against `videoStore.listVideoDetailsByChannel`, never assumed from the caller's own
+     * input. An id that doesn't resolve is reported back explicitly (`validation_failed`, with the
+     * offending ids in `details`), never silently dropped from the comparison.
+     *
+     * Deliberately produces no ranking, no "outperforming"/"underperforming" language, and no
+     * headline verdict -- `docs/roadmap/FUTURE_PHASES.md` §4's own constraint ("distinguish
+     * observed facts from interpretations... avoid unsupported conclusions from small samples").
+     * The caller (human or agent) sees the same raw per-video series and draws its own conclusion.
+     */
+    async getComparableAgeComparison(input: unknown): Promise<GetComparableAgeComparisonResult> {
+      const parsedInput = parseWithSchema(
+        getComparableAgeComparisonInputSchema,
+        input,
+        "get comparable age comparison input"
+      );
+
+      try {
+        const userId = getCredentialUserId(parsedInput.credentialRef);
+        await deps.channelAccess.assertActiveChannel({
+          userId,
+          channelId: parsedInput.channelId,
+        });
+
+        const [videoDetails, metricRecords] = await Promise.all([
+          deps.videoStore.listVideoDetailsByChannel(parsedInput.channelId),
+          deps.metricStore.listMetricsByChannel(parsedInput.channelId),
+        ]);
+
+        const videoDetailsById = new Map(videoDetails.map((video) => [video.videoId, video]));
+        const unknownVideoIds = parsedInput.videoIds.filter((videoId) => !videoDetailsById.has(videoId));
+        if (unknownVideoIds.length > 0) {
+          throw new DomainError({
+            code: "validation_failed",
+            message: `The following videoIds do not belong to channel ${parsedInput.channelId}: ${unknownVideoIds.join(", ")}`,
+            details: { unknownVideoIds },
+          });
+        }
+
+        const rowsByVideoId = new Map<string, Array<{ metricDate: string; metricValue: number }>>();
+        for (const record of metricRecords) {
+          if (record.metricName !== parsedInput.metricName) continue;
+          const list = rowsByVideoId.get(record.videoId);
+          const row = { metricDate: record.metricDate, metricValue: record.metricValue };
+          if (list) {
+            list.push(row);
+          } else {
+            rowsByVideoId.set(record.videoId, [row]);
+          }
+        }
+
+        // `computeComparableAgeSeries` throws a plain `Error` (never a `DomainError`) on an
+        // unparseable `publishedAt` -- extremely unlikely in practice (`videos.published_at` is a
+        // `NOT NULL` column populated from a real Data API v3 response), but caught and remapped
+        // to `validation_failed` here rather than falling into the generic
+        // `mapUnknownError(error, "unauthorized")` below, which would otherwise surface this as a
+        // misleading 401 for what is actually a data-shape problem -- the same bug class
+        // `getChannelOverview`'s own doc comment already documents fixing once (found by
+        // independent review, 2026-09-23).
+        let videos: GetComparableAgeComparisonResult["videos"];
+        try {
+          videos = parsedInput.videoIds.map((videoId) => {
+            const details = videoDetailsById.get(videoId)!;
+            const series = computeComparableAgeSeries({
+              publishedAt: details.publishedAt,
+              metricRows: rowsByVideoId.get(videoId) ?? [],
+              maxDays: parsedInput.maxDays,
+            });
+
+            return {
+              videoId,
+              title: details.title,
+              publishedAt: details.publishedAt,
+              publishDatePacific: series.publishDatePacific,
+              points: series.points,
+              cumulativePoints: series.cumulativePoints,
+            };
+          });
+        } catch (error) {
+          throw new DomainError({
+            code: "validation_failed",
+            message: error instanceof Error ? error.message : "Invalid video publish date",
+          });
+        }
+
+        const output = {
+          channelId: parsedInput.channelId,
+          metricName: parsedInput.metricName,
+          maxDays: parsedInput.maxDays,
+          videos,
+        };
+
+        return parseWithSchema(
+          getComparableAgeComparisonOutputSchema,
+          output,
+          "get comparable age comparison output"
         );
       } catch (error) {
         throw mapUnknownError(error, "unauthorized");

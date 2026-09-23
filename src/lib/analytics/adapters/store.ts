@@ -24,6 +24,17 @@ export function createAnalyticsStoreAdapter() {
         const records = await listStoredVideosByChannel(channelId);
         return records.map((record) => ({ videoId: record.videoId, channelId: record.channelId }));
       },
+      // Phase 8 follow-up, slice 3 (comparable-age comparison) -- needs each video's own
+      // publishedAt/title, unlike listVideosByChannel's bare id pair above. Reuses the same
+      // already-synced-videos read, never a parallel query.
+      async listVideoDetailsByChannel(channelId: string) {
+        const records = await listStoredVideosByChannel(channelId);
+        return records.map((record) => ({
+          videoId: record.videoId,
+          title: record.title,
+          publishedAt: record.publishedAt,
+        }));
+      },
     },
     metricStore: {
       upsertMetric: upsertVideoMetric,

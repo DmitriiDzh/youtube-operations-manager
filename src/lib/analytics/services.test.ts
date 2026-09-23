@@ -19,12 +19,14 @@ function createFakeChannelAccess() {
 }
 
 type FakeVideo = { videoId: string; channelId: string };
+type FakeVideoDetail = { videoId: string; title: string; publishedAt: string };
 type FakeAnalyticsRow = { date: string; metrics: Record<string, number> };
 
 function createServicesFixture(opts: {
   videosByChannel: Record<string, FakeVideo[]>;
   analyticsResponses: Record<string, FakeAnalyticsRow[] | Error>;
   channelAnalyticsResponses?: Record<string, FakeAnalyticsRow[] | Error>;
+  videoDetailsByChannel?: Record<string, FakeVideoDetail[]>;
   syncSettings?: { localTime: string; timezone: string };
   now?: Date;
   authResolverError?: Error;
@@ -73,6 +75,9 @@ function createServicesFixture(opts: {
   const videoStore = {
     async listVideosByChannel(channelId: string) {
       return opts.videosByChannel[channelId] ?? [];
+    },
+    async listVideoDetailsByChannel(channelId: string) {
+      return opts.videoDetailsByChannel?.[channelId] ?? [];
     },
   };
 
@@ -503,6 +508,9 @@ test("collectMetrics defaults to the full ANALYTICS_METRIC_NAMES list when metri
       async listVideosByChannel() {
         return [{ videoId: "v1", channelId: "UC_A" }];
       },
+      async listVideoDetailsByChannel() {
+        return [{ videoId: "v1", title: "Video 1", publishedAt: "2026-09-01T00:00:00Z" }];
+      },
     },
     metricStore: { async upsertMetric() {}, async listMetricsByChannel() { return []; } },
     channelStore: {
@@ -879,4 +887,246 @@ test("getChannelOverview zero-fills an interior gap in the daily series but neve
     ["2026-09-01", "2026-09-02", "2026-09-03"]
   );
   assert.equal(result.daily[1].views, 0, "the interior gap (09-02) must be filled with a real zero row");
+});
+
+test("getComparableAgeComparison fails closed when the requested channel is not the caller's active channel", async () => {
+  const { services } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+
+  await assert.rejects(
+    () =>
+      services.getComparableAgeComparison({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        videoIds: ["v1", "v2"],
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "CHANNEL_NOT_ACTIVE"
+  );
+});
+
+test("getComparableAgeComparison rejects a videoId that does not belong to the channel, without dropping it silently", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    videoDetailsByChannel: {
+      UC_A: [
+        { videoId: "v1", title: "Video 1", publishedAt: "2026-09-01T00:00:00Z" },
+        { videoId: "v2", title: "Video 2", publishedAt: "2026-09-05T00:00:00Z" },
+      ],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getComparableAgeComparison({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        videoIds: ["v1", "v-not-on-channel"],
+      }),
+    (error: unknown) =>
+      error instanceof DomainError &&
+      error.code === "validation_failed" &&
+      (error.details as { unknownVideoIds?: string[] })?.unknownVideoIds?.includes("v-not-on-channel") === true
+  );
+});
+
+test("getComparableAgeComparison aligns each video's own metric rows by days-since-publish and computes an honest cumulative series", async () => {
+  const { services, channelAccess, upsertedRows } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    videoDetailsByChannel: {
+      UC_A: [
+        { videoId: "v1", title: "Video 1", publishedAt: "2026-09-01T17:00:00Z" },
+        { videoId: "v2", title: "Video 2", publishedAt: "2026-09-10T17:00:00Z" },
+      ],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  // v1: contiguous days 0-2. v2: day 0 present, day 1 missing (gap), day 2 present -- and an
+  // unrelated metric name that must never be folded into the "views" comparison.
+  upsertedRows.push(
+    { channelId: "UC_A", videoId: "v1", metricDate: "2026-09-01", metricName: "views", metricValue: 100 },
+    { channelId: "UC_A", videoId: "v1", metricDate: "2026-09-02", metricName: "views", metricValue: 50 },
+    { channelId: "UC_A", videoId: "v1", metricDate: "2026-09-03", metricName: "views", metricValue: 20 },
+    { channelId: "UC_A", videoId: "v2", metricDate: "2026-09-10", metricName: "views", metricValue: 40 },
+    { channelId: "UC_A", videoId: "v2", metricDate: "2026-09-12", metricName: "views", metricValue: 15 },
+    { channelId: "UC_A", videoId: "v2", metricDate: "2026-09-10", metricName: "likes", metricValue: 999 }
+  );
+
+  const result = await services.getComparableAgeComparison({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    videoIds: ["v1", "v2"],
+    metricName: "views",
+    maxDays: 30,
+  });
+
+  assert.equal(result.metricName, "views");
+  assert.equal(result.maxDays, 30);
+
+  const v1 = result.videos.find((v) => v.videoId === "v1")!;
+  assert.equal(v1.publishDatePacific, "2026-09-01");
+  assert.deepEqual(v1.points, [
+    { dayOffset: 0, value: 100 },
+    { dayOffset: 1, value: 50 },
+    { dayOffset: 2, value: 20 },
+  ]);
+  assert.deepEqual(v1.cumulativePoints, [
+    { dayOffset: 0, cumulativeValue: 100 },
+    { dayOffset: 1, cumulativeValue: 150 },
+    { dayOffset: 2, cumulativeValue: 170 },
+  ]);
+
+  const v2 = result.videos.find((v) => v.videoId === "v2")!;
+  assert.deepEqual(v2.points, [
+    { dayOffset: 0, value: 40 },
+    { dayOffset: 2, value: 15 },
+  ]);
+  // Day 1 is genuinely unknown (no row, and this slice never infers a zero) -- cumulative stops
+  // at day 0, it never skips the gap and keeps summing day 2's real value into it.
+  assert.deepEqual(v2.cumulativePoints, [{ dayOffset: 0, cumulativeValue: 40 }]);
+});
+
+test("getComparableAgeComparison defaults to metricName 'views' and maxDays 30 when omitted", async () => {
+  const { services, channelAccess, upsertedRows } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    videoDetailsByChannel: {
+      UC_A: [
+        { videoId: "v1", title: "Video 1", publishedAt: "2026-09-01T00:00:00Z" },
+        { videoId: "v2", title: "Video 2", publishedAt: "2026-09-05T00:00:00Z" },
+      ],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  upsertedRows.push({ channelId: "UC_A", videoId: "v1", metricDate: "2026-09-01", metricName: "views", metricValue: 5 });
+
+  const result = await services.getComparableAgeComparison({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    videoIds: ["v1", "v2"],
+  });
+
+  assert.equal(result.metricName, "views");
+  assert.equal(result.maxDays, 30);
+});
+
+test("getComparableAgeComparison rejects a non-additive metric name (e.g. averageViewDuration) as validation_failed", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    videoDetailsByChannel: {
+      UC_A: [
+        { videoId: "v1", title: "Video 1", publishedAt: "2026-09-01T00:00:00Z" },
+        { videoId: "v2", title: "Video 2", publishedAt: "2026-09-05T00:00:00Z" },
+      ],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getComparableAgeComparison({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        videoIds: ["v1", "v2"],
+        metricName: "averageViewDuration",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+test("getComparableAgeComparison rejects more than 10 videoIds as validation_failed", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    videoDetailsByChannel: {
+      UC_A: Array.from({ length: 11 }, (_, i) => ({
+        videoId: `v${i}`,
+        title: `Video ${i}`,
+        publishedAt: "2026-09-01T00:00:00Z",
+      })),
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getComparableAgeComparison({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        videoIds: Array.from({ length: 11 }, (_, i) => `v${i}`),
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+test("getComparableAgeComparison maps an unparseable publishedAt to validation_failed, not a misleading unauthorized", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    videoDetailsByChannel: {
+      UC_A: [
+        { videoId: "v1", title: "Video 1", publishedAt: "not-a-real-timestamp" },
+        { videoId: "v2", title: "Video 2", publishedAt: "2026-09-05T00:00:00Z" },
+      ],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getComparableAgeComparison({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        videoIds: ["v1", "v2"],
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+// Documents current, accepted behavior (independent review, 2026-09-23): a duplicate videoId is
+// not rejected -- it satisfies the >=2 minimum and simply produces two identical series in the
+// response. Harmless (never crashes, never double-counts anything since each entry is computed
+// independently from the same source rows), just not specially detected -- not worth a dedicated
+// validation for this slice.
+test("getComparableAgeComparison allows a duplicate videoId, producing two identical series", async () => {
+  const { services, channelAccess, upsertedRows } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    videoDetailsByChannel: {
+      UC_A: [{ videoId: "v1", title: "Video 1", publishedAt: "2026-09-01T00:00:00Z" }],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  upsertedRows.push({ channelId: "UC_A", videoId: "v1", metricDate: "2026-09-01", metricName: "views", metricValue: 5 });
+
+  const result = await services.getComparableAgeComparison({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    videoIds: ["v1", "v1"],
+  });
+
+  assert.equal(result.videos.length, 2);
+  assert.deepEqual(result.videos[0].points, result.videos[1].points);
+});
+
+test("getComparableAgeComparison rejects fewer than 2 videoIds as validation_failed", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    videoDetailsByChannel: { UC_A: [{ videoId: "v1", title: "Video 1", publishedAt: "2026-09-01T00:00:00Z" }] },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getComparableAgeComparison({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        videoIds: ["v1"],
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
 });

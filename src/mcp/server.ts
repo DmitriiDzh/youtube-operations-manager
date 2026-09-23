@@ -34,6 +34,7 @@ import {
 import { createAnalyticsCore, type AnalyticsCore } from "@/lib/analytics";
 import {
   getChannelOverviewInputSchema,
+  getComparableAgeComparisonInputSchema,
   getDataQualityReportInputSchema,
   listMetricsInputSchema,
 } from "@/lib/analytics/schemas";
@@ -78,7 +79,10 @@ type ChannelSyncCoreSubset = Pick<ChannelSyncCore, "syncChannel" | "listChannels
 // real Analytics API quota, not something an agent should be able to trigger freely (the Web UI's
 // own "Collect now" button plus the once-a-day dashboard-mount auto-trigger remain the only ways
 // to actually collect new data).
-type AnalyticsCoreSubset = Pick<AnalyticsCore, "listMetrics" | "getChannelOverview" | "getDataQualityReport">;
+type AnalyticsCoreSubset = Pick<
+  AnalyticsCore,
+  "listMetrics" | "getChannelOverview" | "getDataQualityReport" | "getComparableAgeComparison"
+>;
 
 type ToolResponse = {
   content: Array<{ type: "text"; text: string }>;
@@ -114,6 +118,7 @@ type McpToolHandlers = {
   analyticsList: (input: unknown) => Promise<ToolResponse>;
   analyticsOverview: (input: unknown) => Promise<ToolResponse>;
   analyticsDataQuality: (input: unknown) => Promise<ToolResponse>;
+  analyticsComparableAge: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -830,6 +835,21 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    async analyticsComparableAge(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getComparableAgeComparisonInputSchema.partial({ credentialRef: true }).safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await analyticsCore.getComparableAgeComparison({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -907,6 +927,8 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     analyticsOverview: handlers.analyticsOverview,
     // Pure local read over analytics_collection_runs -- same classification as analyticsList.
     analyticsDataQuality: handlers.analyticsDataQuality,
+    // Pure local read over already-collected video_metrics_daily rows -- same classification.
+    analyticsComparableAge: handlers.analyticsComparableAge,
   };
 }
 
@@ -1233,6 +1255,16 @@ export function createMcpServer(
       inputSchema: getDataQualityReportInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.analyticsDataQuality(args)
+  );
+
+  registerTool(
+    "analytics_comparable_age",
+    {
+      description:
+        "Compare 2-10 videos (all belonging to the same channel) by days-since-publish rather than calendar date, using already-collected local Analytics data -- a local read, never a live YouTube call. Each video's own days-since-publish are computed from its Pacific-Time publish date (matching the Analytics API's own day-dimension convention). Returns raw per-day values (never zero-filled) plus a running cumulative total that stops at the first day with no collected data, rather than fabricating a value across a gap. Only additive metrics (e.g. views, likes, estimatedMinutesWatched) are accepted -- a ratio/average metric like averageViewDuration is rejected. Given the auto-collection window only covers the most recent ~7 calendar days per run, a video published more than about a week before regular collection started for this channel will typically have NO data at low day-offsets (day 0-7) -- this is a genuine data-coverage limitation, not a bug. Concretely: `cumulativePoints` will be empty for that video (it always starts from day 0, so any missing day 0 halts it before it starts), but `points` may still contain later, unrelated day-offsets the auto-collection window did happen to cover -- an empty `points` array is NOT implied by missing early-life data alone. Returns raw facts only -- no ranking, no 'outperforming' language, no headline verdict. credentialRef is OPTIONAL and falls back to active local auth context.",
+      inputSchema: getComparableAgeComparisonInputSchema.partial({ credentialRef: true }),
+    },
+    (args) => handlers.analyticsComparableAge(args)
   );
 
   return server;
