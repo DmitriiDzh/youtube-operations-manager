@@ -4,6 +4,7 @@ import { computeDefaultAutoCollectionRange, computeNextRefreshAt, isAnalyticsCol
 import { assertValidDateRange, assertValidIsoDate, computePreviousPeriod, zeroFillDailySeries } from "./period";
 import { computeComparableAgeSeries } from "./comparable-age";
 import { computeDataQualityReport } from "./data-quality";
+import { computeDueReportWeek, computeWeeklyReportContent } from "./weekly-report";
 import {
   ANALYTICS_METRIC_NAMES,
   AUTO_COLLECTION_RANGE_DAYS,
@@ -16,9 +17,13 @@ import {
   type DataQualityReportResult,
   type GetChannelOverviewResult,
   type GetComparableAgeComparisonResult,
+  type GetWeeklyReportResult,
   type ListMetricsResult,
+  type ListWeeklyReportsResult,
   type ResolvedCredentials,
+  type RunWeeklyReportIfDueResult,
   type StoredVideoMetricRow,
+  type WeeklyReportSummary,
 } from "./contracts";
 import {
   collectMetricsInputSchema,
@@ -29,11 +34,18 @@ import {
   getComparableAgeComparisonOutputSchema,
   getDataQualityReportInputSchema,
   getDataQualityReportOutputSchema,
+  getWeeklyReportInputSchema,
+  getWeeklyReportOutputSchema,
   listMetricsInputSchema,
   listMetricsOutputSchema,
+  listWeeklyReportsInputSchema,
+  listWeeklyReportsOutputSchema,
   parseWithSchema,
   runAutoCollectionInputSchema,
   runAutoCollectionOutputSchema,
+  runWeeklyReportIfDueInputSchema,
+  runWeeklyReportIfDueOutputSchema,
+  weeklyReportContentSchema,
 } from "./schemas";
 
 export type StoredVideoRef = {
@@ -113,6 +125,31 @@ type ServiceDependencies = {
       }>
     >;
   };
+  // Phase 8 follow-up, slice 4 (weekly reports) -- read/write of the frozen snapshot table.
+  weeklyReportStore: {
+    getByWeek(channelId: string, weekStartDate: string): Promise<{
+      channelId: string;
+      weekStartDate: string;
+      weekEndDate: string;
+      status: string;
+      reportJson: string;
+      generatedAt: Date;
+    } | null>;
+    upsert(
+      args: { channelId: string; weekStartDate: string; weekEndDate: string; status: string; reportJson: string },
+      generatedAt: Date
+    ): Promise<void>;
+    listByChannel(channelId: string): Promise<
+      Array<{
+        channelId: string;
+        weekStartDate: string;
+        weekEndDate: string;
+        status: string;
+        reportJson: string;
+        generatedAt: Date;
+      }>
+    >;
+  };
   /** Injectable so staleness tests never depend on the real wall clock. */
   clock: {
     now(): Date;
@@ -139,6 +176,42 @@ function mapUnknownError(error: unknown, fallbackCode: DomainError["code"]) {
     code: fallbackCode,
     message: error instanceof Error ? error.message : "Unknown error",
   });
+}
+
+/**
+ * Parses a stored row's `reportJson` through `weeklyReportContentSchema` -- a row this app itself
+ * wrote should always be valid, but a malformed or corrupted one must fail loudly
+ * (`validation_failed`, never a raw `JSON.parse` crash or a silently-wrong partial object) rather
+ * than serve a report a caller could mistake for a real one (advisor review, 2026-09-23).
+ */
+function mapStoredWeeklyReport(row: {
+  channelId: string;
+  weekStartDate: string;
+  weekEndDate: string;
+  status: string;
+  reportJson: string;
+  generatedAt: Date;
+}): WeeklyReportSummary {
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(row.reportJson);
+  } catch {
+    throw new DomainError({
+      code: "validation_failed",
+      message: `Stored weekly report for ${row.channelId}/${row.weekStartDate} is not valid JSON`,
+    });
+  }
+
+  const report = parseWithSchema(weeklyReportContentSchema, parsedJson, "stored weekly report content");
+
+  return {
+    channelId: row.channelId,
+    weekStartDate: row.weekStartDate,
+    weekEndDate: row.weekEndDate,
+    status: row.status,
+    generatedAt: row.generatedAt.toISOString(),
+    report,
+  };
 }
 
 export function createAnalyticsServices(deps: ServiceDependencies) {
@@ -695,6 +768,146 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           getComparableAgeComparisonOutputSchema,
           output,
           "get comparable age comparison output"
+        );
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
+      }
+    },
+
+    /**
+     * Phase 8 follow-up, slice 4 (docs/roadmap/FUTURE_PHASES.md §4, "analytical reports and
+     * weekly channel reviews"). A pure local read/compute -- no YouTube call, no `authResolver` --
+     * meant to be called once per dashboard mount (`src/app/dashboard/page.tsx`), the same
+     * "on entering the dashboard" trigger point BL-059's daily auto-collection already uses,
+     * chained AFTER that trigger resolves so a Monday load sees Monday's own freshly-collected
+     * data (see `weekly-report.ts`'s own doc comment for the full trigger design and its
+     * documented local-trigger-time-vs-Pacific-Time-data skew).
+     *
+     * Reuses the SAME `localTime`/`timezone` Settings pair the daily auto-collection boundary
+     * already reads (`settingsStore.getAnalyticsSyncSettings`) -- no separate weekly-report
+     * setting, per the owner's own explicit instruction.
+     *
+     * A `status: "final"` row is never overwritten -- only regenerated when the currently-stored
+     * row for the due week is missing or still `"provisional"`. This is the one and only place
+     * that decision is made; `db.ts`'s `upsertWeeklyReport` itself has no such guard (see that
+     * function's own doc comment).
+     */
+    async runWeeklyReportIfDue(input: unknown): Promise<RunWeeklyReportIfDueResult> {
+      const parsedInput = parseWithSchema(runWeeklyReportIfDueInputSchema, input, "run weekly report if due input");
+
+      try {
+        const userId = getCredentialUserId(parsedInput.credentialRef);
+        await deps.channelAccess.assertActiveChannel({
+          userId,
+          channelId: parsedInput.channelId,
+        });
+
+        const now = deps.clock.now();
+        const { localTime, timezone } = await deps.settingsStore.getAnalyticsSyncSettings();
+        const dueWeek = computeDueReportWeek({ now, timezone, localTime });
+
+        const existing = await deps.weeklyReportStore.getByWeek(parsedInput.channelId, dueWeek.weekStartDate);
+        if (existing && existing.status === "final") {
+          return parseWithSchema(runWeeklyReportIfDueOutputSchema, { generated: false }, "run weekly report if due output");
+        }
+
+        const [videoDetails, metricRecords, runs] = await Promise.all([
+          deps.videoStore.listVideoDetailsByChannel(parsedInput.channelId),
+          deps.metricStore.listMetricsByChannel(parsedInput.channelId),
+          deps.collectionRunStore.listByChannel(parsedInput.channelId),
+        ]);
+
+        const content = computeWeeklyReportContent({
+          channelId: parsedInput.channelId,
+          weekStartDate: dueWeek.weekStartDate,
+          weekEndDate: dueWeek.weekEndDate,
+          now,
+          runs,
+          datesWithAnyMetricRow: new Set(metricRecords.map((record) => record.metricDate)),
+          metricRecords,
+          videoTitlesById: new Map(videoDetails.map((video) => [video.videoId, video.title])),
+        });
+
+        const reportJson = JSON.stringify(content);
+        await deps.weeklyReportStore.upsert(
+          {
+            channelId: parsedInput.channelId,
+            weekStartDate: dueWeek.weekStartDate,
+            weekEndDate: dueWeek.weekEndDate,
+            status: content.status,
+            reportJson,
+          },
+          now
+        );
+
+        deps.logger.info({
+          event: "analytics.weekly_report.generated",
+          context: { channelId: parsedInput.channelId, weekStartDate: dueWeek.weekStartDate, status: content.status },
+        });
+
+        const report: WeeklyReportSummary = {
+          channelId: parsedInput.channelId,
+          weekStartDate: dueWeek.weekStartDate,
+          weekEndDate: dueWeek.weekEndDate,
+          status: content.status,
+          generatedAt: now.toISOString(),
+          report: content,
+        };
+
+        return parseWithSchema(
+          runWeeklyReportIfDueOutputSchema,
+          { generated: true, report },
+          "run weekly report if due output"
+        );
+      } catch (error) {
+        const mapped = mapUnknownError(error, "unauthorized");
+        deps.logger.error({ event: "analytics.weekly_report.error", context: { code: mapped.code } });
+        throw mapped;
+      }
+    },
+
+    /** Read-only list of every stored weekly report snapshot for the channel, newest week first. */
+    async listWeeklyReports(input: unknown): Promise<ListWeeklyReportsResult> {
+      const parsedInput = parseWithSchema(listWeeklyReportsInputSchema, input, "list weekly reports input");
+
+      try {
+        const userId = getCredentialUserId(parsedInput.credentialRef);
+        await deps.channelAccess.assertActiveChannel({
+          userId,
+          channelId: parsedInput.channelId,
+        });
+
+        const rows = await deps.weeklyReportStore.listByChannel(parsedInput.channelId);
+        const reports = rows.map(mapStoredWeeklyReport);
+
+        return parseWithSchema(
+          listWeeklyReportsOutputSchema,
+          { channelId: parsedInput.channelId, reports },
+          "list weekly reports output"
+        );
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
+      }
+    },
+
+    /** Read-only fetch of one stored weekly report snapshot by its week's start date. */
+    async getWeeklyReport(input: unknown): Promise<GetWeeklyReportResult> {
+      const parsedInput = parseWithSchema(getWeeklyReportInputSchema, input, "get weekly report input");
+
+      try {
+        const userId = getCredentialUserId(parsedInput.credentialRef);
+        await deps.channelAccess.assertActiveChannel({
+          userId,
+          channelId: parsedInput.channelId,
+        });
+
+        const row = await deps.weeklyReportStore.getByWeek(parsedInput.channelId, parsedInput.weekStartDate);
+        const report = row ? mapStoredWeeklyReport(row) : null;
+
+        return parseWithSchema(
+          getWeeklyReportOutputSchema,
+          { channelId: parsedInput.channelId, report },
+          "get weekly report output"
         );
       } catch (error) {
         throw mapUnknownError(error, "unauthorized");

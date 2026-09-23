@@ -21,6 +21,7 @@ export function createAnalyticsCore() {
     channelStore: store.channelStore,
     settingsStore: store.settingsStore,
     collectionRunStore: store.collectionRunStore,
+    weeklyReportStore: store.weeklyReportStore,
     clock: { now: () => new Date() },
     logger: createDefaultLogger(),
     channelAccess: createChannelAccessCore(),
@@ -31,6 +32,8 @@ export type AnalyticsCore = ReturnType<typeof createAnalyticsCore>;
 export { ANALYTICS_METRIC_NAMES, AUTO_COLLECTION_RANGE_DAYS, CHANNEL_OVERVIEW_METRIC_NAMES } from "./contracts";
 export { CUMULATIVE_COMPARISON_METRIC_NAMES } from "./comparable-age";
 export type { CumulativeComparisonMetricName } from "./comparable-age";
+export { WEEKLY_REPORT_FORMAT_VERSION } from "./weekly-report";
+export type { WeeklyReportContent } from "./weekly-report";
 export type {
   AnalyticsMetricName,
   AutoCollectResult,
@@ -42,6 +45,10 @@ export type {
   DataQualityReportResult,
   GetChannelOverviewResult,
   GetComparableAgeComparisonResult,
+  GetWeeklyReportResult,
   ListMetricsResult,
+  ListWeeklyReportsResult,
+  RunWeeklyReportIfDueResult,
   StoredVideoMetricRow,
+  WeeklyReportSummary,
 } from "./contracts";

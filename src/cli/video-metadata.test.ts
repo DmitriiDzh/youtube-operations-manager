@@ -2143,7 +2143,12 @@ test("CLI channel video-list requires channelId", async () => {
 
 function makeAnalyticsCliCoreStub(): Pick<
   AnalyticsCore,
-  "listMetrics" | "getChannelOverview" | "getDataQualityReport" | "getComparableAgeComparison"
+  | "listMetrics"
+  | "getChannelOverview"
+  | "getDataQualityReport"
+  | "getComparableAgeComparison"
+  | "listWeeklyReports"
+  | "getWeeklyReport"
 > {
   return {
     listMetrics: async () => ({
@@ -2175,6 +2180,8 @@ function makeAnalyticsCliCoreStub(): Pick<
       maxDays: 30,
       videos: [],
     }),
+    listWeeklyReports: async () => ({ channelId: "UC_1", reports: [] }),
+    getWeeklyReport: async () => ({ channelId: "UC_1", report: null }),
   };
 }
 
@@ -2360,6 +2367,24 @@ test("CLI analytics list/overview are never blocked by the operation lock (read-
       writeStdout: (line) => stdout.push(line),
     });
     assert.equal(comparableAgeExit, 0);
+
+    const weeklyReportsExit = await runCliCommand({
+      argv: ["analytics", "weekly-reports", "--channelId", "UC_1", "--userId", "u1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      analyticsCore: makeAnalyticsCliCoreStub(),
+      writeStdout: (line) => stdout.push(line),
+    });
+    assert.equal(weeklyReportsExit, 0);
+
+    const weeklyReportGetExit = await runCliCommand({
+      argv: ["analytics", "weekly-report-get", "--channelId", "UC_1", "--userId", "u1", "--weekStartDate", "2026-09-14"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      analyticsCore: makeAnalyticsCliCoreStub(),
+      writeStdout: (line) => stdout.push(line),
+    });
+    assert.equal(weeklyReportGetExit, 0);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }
@@ -2480,4 +2505,62 @@ test("CLI analytics comparable-age requires --videoIds", async () => {
   const envelope = JSON.parse(stderr[0] ?? "{}");
   assert.equal(envelope.error.code, "validation_failed");
   assert.match(envelope.error.message, /videoIds/);
+});
+
+test("CLI analytics weekly-reports forwards resolved credentialRef and channelId", async () => {
+  const analyticsCore = makeAnalyticsCliCoreStub();
+  let captured: unknown;
+  analyticsCore.listWeeklyReports = async (input: unknown) => {
+    captured = input;
+    return { channelId: "UC_1", reports: [] };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["analytics", "weekly-reports", "--channelId", "UC_1", "--userId", "u1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { credentialRef: { userId: "u1" }, channelId: "UC_1" });
+});
+
+test("CLI analytics weekly-report-get forwards resolved credentialRef and --weekStartDate", async () => {
+  const analyticsCore = makeAnalyticsCliCoreStub();
+  let captured: unknown;
+  analyticsCore.getWeeklyReport = async (input: unknown) => {
+    captured = input;
+    return { channelId: "UC_1", report: null };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["analytics", "weekly-report-get", "--channelId", "UC_1", "--userId", "u1", "--weekStartDate", "2026-09-14"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { credentialRef: { userId: "u1" }, channelId: "UC_1", weekStartDate: "2026-09-14" });
+});
+
+test("CLI analytics weekly-report-get requires --weekStartDate", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["analytics", "weekly-report-get", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore: makeAnalyticsCliCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /weekStartDate/);
 });

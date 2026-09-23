@@ -785,6 +785,16 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Approval required from:** project owner, only if the deployment model ever changes from single local operator.
 - **Status:** OPEN — deliberate, accepted scope of the feature as designed; documented per `AGENTS.md` §F rather than left unrecorded.
 
+## RISK-50 — Top-content-by-views ranking is implemented twice (client-side and server-side) — OPEN, 2026-09-23 (advisor review)
+
+- **Affected components:** `src/components/channel-overview-panel.tsx`'s `fetchTopContent` (client-side, computed from `GET .../analytics` + `GET .../videos` responses, powers the Analytics "Overview" tab's own top-content card) and `src/lib/analytics/weekly-report.ts`'s `computeWeeklyReportContent` (server-side, powers the weekly report snapshot's own `topContent` field, Phase 8 follow-up slice 4).
+- **Current behavior:** Both independently group `video_metrics_daily` `views` rows by `videoId`, sum them over a date range, sort descending, and take the top N -- the same core aggregation, written twice in two different languages/layers (a `useCallback` in a React component vs. a pure function in `src/lib/analytics/`), not sharing one implementation.
+- **Why not fixed now:** the client-side version aggregates client-fetched JSON already shaped for the Overview tab's own display needs (thumbnails, `topContent` cap of 5); the server-side version aggregates raw DB rows for a JSON snapshot. Unifying them would mean either moving the Overview tab's aggregation to the server (a larger refactor of an already-shipped, independently-reviewed feature, out of scope for this slice per `AGENTS.md` §C) or exporting the pure ranking step in a shape both call sites can share without forcing an unrelated API/UI change on the Overview tab. Recorded here per `AGENTS.md` §M's "shared logic should have one owner" principle, rather than fixed incidentally as part of an unrelated slice.
+- **Required remediation:** if a third caller ever needs the same ranking (e.g. a future Phase 9/10 report), extract the pure summing/sorting step into one shared function in `src/lib/analytics/` and have both existing call sites adopt it, rather than adding a third copy.
+- **Gate(s):** none blocking -- a duplicated small pure computation, not a correctness or safety issue.
+- **Approval required from:** none -- routine cleanup, whenever it's next touched.
+- **Status:** OPEN — tracked, not yet consolidated.
+
 ---
 
 ## Summary table
@@ -840,5 +850,6 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-47 | Approving a Change doesn't check for an open CRDT field conflict on it (CD6) | none (fixed) | FIXED, 2026-09-21 |
 | RISK-48 | Cloud connection encryption key has no rotation/backup procedure | DEFERRED | OPEN |
 | RISK-49 | Channel-connections list/disconnect have no per-caller channel-ownership check (deliberate, feature's actual purpose) | none blocking | OPEN |
+| RISK-50 | Top-content-by-views ranking duplicated (client-side Overview tab vs. server-side weekly report) | none blocking | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

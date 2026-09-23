@@ -159,15 +159,22 @@ const dataQualityVideoSkipSchema = z
   })
   .strict();
 
-export const getDataQualityReportOutputSchema = z
+// Factored out so `getWeeklyReportOutputSchema` below can embed the same shape (twice, current +
+// previous week) without duplicating it -- both are `computeDataQualityReport`'s own return shape.
+const dataQualityReportShapeSchema = z
   .object({
-    channelId: z.string().min(1),
-    startDate: z.string(),
-    endDate: z.string(),
     coveredDates: z.array(z.string()),
     uncoveredDates: z.array(z.string()),
     tooRecentDates: z.array(z.string()),
     videosWithSkips: z.array(dataQualityVideoSkipSchema),
+  })
+  .strict();
+
+export const getDataQualityReportOutputSchema = dataQualityReportShapeSchema
+  .extend({
+    channelId: z.string().min(1),
+    startDate: z.string(),
+    endDate: z.string(),
   })
   .strict();
 
@@ -225,3 +232,109 @@ export const getComparableAgeComparisonOutputSchema = z
 
 export type GetComparableAgeComparisonInput = z.infer<typeof getComparableAgeComparisonInputSchema>;
 export type GetComparableAgeComparisonOutput = z.infer<typeof getComparableAgeComparisonOutputSchema>;
+
+// Phase 8 follow-up, slice 4 (docs/roadmap/FUTURE_PHASES.md §4, "analytical reports and weekly
+// channel reviews"). `weeklyReportContentSchema` mirrors `WeeklyReportContent`
+// (`weekly-report.ts`) field-for-field -- parsed on every READ of a stored `reportJson`, not just
+// on write, so a malformed/corrupted row fails loudly (`validation_failed`) instead of silently
+// serving a partial or garbled report (advisor review, 2026-09-23).
+const weeklyReportMetricTotalsSchema = z
+  .object({
+    views: z.number(),
+    estimatedMinutesWatched: z.number(),
+    subscribersGained: z.number(),
+    subscribersLost: z.number(),
+  })
+  .strict();
+
+const weeklyReportPercentChangeSchema = z
+  .object({
+    views: z.number().nullable(),
+    estimatedMinutesWatched: z.number().nullable(),
+    subscribersGained: z.number().nullable(),
+    subscribersLost: z.number().nullable(),
+  })
+  .strict();
+
+const weeklyReportTopContentEntrySchema = z
+  .object({
+    videoId: z.string().min(1),
+    title: z.string(),
+    views: z.number(),
+  })
+  .strict();
+
+export const weeklyReportContentSchema = z
+  .object({
+    reportFormatVersion: z.number().int().positive(),
+    channelId: z.string().min(1),
+    weekStartDate: z.string(),
+    weekEndDate: z.string(),
+    generatedAt: z.string(),
+    status: z.enum(["final", "provisional"]),
+    source: z.string(),
+    metricDefinitions: z.record(z.string(), z.string()),
+    syncedVideoTotals: weeklyReportMetricTotalsSchema,
+    previousWeekTotals: weeklyReportMetricTotalsSchema,
+    percentChange: weeklyReportPercentChangeSchema.nullable(),
+    currentWeekDataQuality: dataQualityReportShapeSchema,
+    previousWeekDataQuality: dataQualityReportShapeSchema,
+    topContent: z.array(weeklyReportTopContentEntrySchema),
+  })
+  .strict();
+
+const weeklyReportSummarySchema = z
+  .object({
+    channelId: z.string().min(1),
+    weekStartDate: z.string(),
+    weekEndDate: z.string(),
+    status: z.string(),
+    generatedAt: z.string(),
+    report: weeklyReportContentSchema,
+  })
+  .strict();
+
+export const listWeeklyReportsInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+  })
+  .strict();
+
+export const listWeeklyReportsOutputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    reports: z.array(weeklyReportSummarySchema),
+  })
+  .strict();
+
+export const getWeeklyReportInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+    weekStartDate: isoDateSchema,
+  })
+  .strict();
+
+export const getWeeklyReportOutputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    report: weeklyReportSummarySchema.nullable(),
+  })
+  .strict();
+
+export const runWeeklyReportIfDueInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+  })
+  .strict();
+
+export const runWeeklyReportIfDueOutputSchema = z.discriminatedUnion("generated", [
+  z.object({ generated: z.literal(false) }).strict(),
+  z.object({ generated: z.literal(true), report: weeklyReportSummarySchema }).strict(),
+]);
+
+export type ListWeeklyReportsInput = z.infer<typeof listWeeklyReportsInputSchema>;
+export type GetWeeklyReportInput = z.infer<typeof getWeeklyReportInputSchema>;
+export type RunWeeklyReportIfDueInput = z.infer<typeof runWeeklyReportIfDueInputSchema>;

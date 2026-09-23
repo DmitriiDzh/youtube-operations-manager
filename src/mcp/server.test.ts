@@ -1940,9 +1940,40 @@ test("MCP changeset_create_from_import is rejected while the operation lock is h
 // analytics_overview a live Analytics API call), so neither is wrapped by the device-availability
 // mutation gate, mirroring channel_list/channel_video_list above.
 
+function makeWeeklyReportSummaryFixture() {
+  return {
+    channelId: "UC_1",
+    weekStartDate: "2026-09-14",
+    weekEndDate: "2026-09-20",
+    status: "final",
+    generatedAt: "2026-09-21T12:05:00.000Z",
+    report: {
+      reportFormatVersion: 1,
+      channelId: "UC_1",
+      weekStartDate: "2026-09-14",
+      weekEndDate: "2026-09-20",
+      generatedAt: "2026-09-21T12:05:00.000Z",
+      status: "final" as const,
+      source: "local video_metrics_daily rows for currently-synced videos -- no live YouTube API call" as const,
+      metricDefinitions: { views: "Sum of views." },
+      syncedVideoTotals: { views: 100, estimatedMinutesWatched: 200, subscribersGained: 3, subscribersLost: 1 },
+      previousWeekTotals: { views: 50, estimatedMinutesWatched: 100, subscribersGained: 1, subscribersLost: 0 },
+      percentChange: { views: 100, estimatedMinutesWatched: 100, subscribersGained: 200, subscribersLost: null },
+      currentWeekDataQuality: { coveredDates: ["2026-09-14"], uncoveredDates: [], tooRecentDates: [], videosWithSkips: [] },
+      previousWeekDataQuality: { coveredDates: ["2026-09-07"], uncoveredDates: [], tooRecentDates: [], videosWithSkips: [] },
+      topContent: [{ videoId: "v1", title: "Video 1", views: 100 }],
+    },
+  };
+}
+
 function makeAnalyticsCoreStub(): Pick<
   AnalyticsCore,
-  "listMetrics" | "getChannelOverview" | "getDataQualityReport" | "getComparableAgeComparison"
+  | "listMetrics"
+  | "getChannelOverview"
+  | "getDataQualityReport"
+  | "getComparableAgeComparison"
+  | "listWeeklyReports"
+  | "getWeeklyReport"
 > {
   return {
     listMetrics: async () => ({
@@ -1983,6 +2014,8 @@ function makeAnalyticsCoreStub(): Pick<
         },
       ],
     }),
+    listWeeklyReports: async () => ({ channelId: "UC_1", reports: [makeWeeklyReportSummaryFixture()] }),
+    getWeeklyReport: async () => ({ channelId: "UC_1", report: makeWeeklyReportSummaryFixture() }),
   };
 }
 
@@ -2177,6 +2210,15 @@ test("MCP analytics_list/analytics_overview are never blocked by the operation l
       videoIds: ["v1", "v2"],
     });
     assert.notEqual(comparableAgeResult.isError, true);
+
+    const weeklyReportsListResult = await handlers.analyticsWeeklyReportsList({ channelId: "UC_1" });
+    assert.notEqual(weeklyReportsListResult.isError, true);
+
+    const weeklyReportGetResult = await handlers.analyticsWeeklyReportGet({
+      channelId: "UC_1",
+      weekStartDate: "2026-09-14",
+    });
+    assert.notEqual(weeklyReportGetResult.isError, true);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }
@@ -2327,6 +2369,95 @@ test("MCP analytics_comparable_age rejects fewer than 2 videoIds", async () => {
     makeAnalyticsCoreStub()
   );
   const result = await handlers.analyticsComparableAge({ channelId: "UC_1", videoIds: ["v1"] });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP analytics_weekly_reports_list returns stored snapshot summaries for a channel", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    makeAnalyticsCoreStub()
+  );
+  const result = await handlers.analyticsWeeklyReportsList({ channelId: "UC_1" });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.reports[0].weekStartDate, "2026-09-14");
+  assert.equal(payload.reports[0].status, "final");
+});
+
+test("MCP analytics_weekly_reports_list forwards the resolved credentialRef when omitted", async () => {
+  const seenArgs: unknown[] = [];
+  const analyticsCore = makeAnalyticsCoreStub();
+  analyticsCore.listWeeklyReports = async (input: unknown) => {
+    seenArgs.push(input);
+    return { channelId: "UC_1", reports: [] };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    analyticsCore
+  );
+  await handlers.analyticsWeeklyReportsList({ channelId: "UC_1" });
+
+  assert.deepEqual(seenArgs, [{ channelId: "UC_1", credentialRef: { userId: "active-user" } }]);
+});
+
+test("MCP analytics_weekly_reports_list rejects a missing channelId", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    makeAnalyticsCoreStub()
+  );
+  const result = await handlers.analyticsWeeklyReportsList({});
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP analytics_weekly_report_get returns null report when none exists for the requested week", async () => {
+  const analyticsCore = makeAnalyticsCoreStub();
+  analyticsCore.getWeeklyReport = async () => ({ channelId: "UC_1", report: null });
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    analyticsCore
+  );
+  const result = await handlers.analyticsWeeklyReportGet({ channelId: "UC_1", weekStartDate: "2026-09-14" });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.report, null);
+});
+
+test("MCP analytics_weekly_report_get rejects a missing weekStartDate", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    makeAnalyticsCoreStub()
+  );
+  const result = await handlers.analyticsWeeklyReportGet({ channelId: "UC_1" });
 
   assert.equal(result.isError, true);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
