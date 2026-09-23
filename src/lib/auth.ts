@@ -316,6 +316,54 @@ export async function fetchGoogleIdentity(args: {
   };
 }
 
+/**
+ * NextAuth's own `SessionStore` (node_modules/next-auth/core/lib/cookie.js) reads only
+ * `req.cookies` -- never `req.headers.cookie` as a raw string -- but the `req` the
+ * "channel-connections" Credentials provider's `authorize()` receives (App Router adapter,
+ * next-auth v4.24) has `headers` but no parsed `cookies`, so `getToken({req})` would otherwise
+ * silently see no cookies at all and always return null. This parses the raw header into the
+ * `Map` shape `SessionStore`'s constructor already special-cases (also correctly reassembling a
+ * JWT split across `next-auth.session-token.0`/`.1`/... chunks, the same way it would from a real
+ * parsed `cookies` object).
+ *
+ * `decodeURIComponent` is wrapped per-cookie, not once for the whole header: an unrelated cookie
+ * on the same origin (an ad/analytics cookie, another app, a stale malformed value) with invalid
+ * percent-encoding must never be able to abort parsing before the loop reaches the actual session
+ * cookie -- that cookie is simply skipped instead of throwing out of the whole function.
+ */
+export function parseCookieHeader(rawCookieHeader: string): Map<string, string> {
+  const cookies = new Map<string, string>();
+  for (const part of rawCookieHeader.split(";")) {
+    const separatorIndex = part.indexOf("=");
+    if (separatorIndex === -1) continue;
+    const name = part.slice(0, separatorIndex).trim();
+    const value = part.slice(separatorIndex + 1).trim();
+    if (!name) continue;
+    try {
+      cookies.set(name, decodeURIComponent(value));
+    } catch {
+      continue;
+    }
+  }
+  return cookies;
+}
+
+/** Resolves the already-existing session token (if any) from a raw, unparsed request -- see
+ * `parseCookieHeader`'s doc comment for why this can't just delegate to `getToken({req})`
+ * directly. Does not itself weaken any verification `getToken`/`decode` perform: the returned
+ * token is only ever non-null for a cookie value that decrypts and verifies successfully against
+ * `NEXTAUTH_SECRET` (AEAD-encrypted JWE, `next-auth/jwt`'s own `decode`) -- this function only
+ * fixes *finding* the cookie, never bypasses checking it. */
+export async function resolveExistingSessionToken(
+  req: { headers?: Record<string, string> } | undefined
+) {
+  const cookies = parseCookieHeader(req?.headers?.cookie ?? "");
+  return getToken({
+    req: { headers: req?.headers, cookies } as unknown as Parameters<typeof getToken>[0]["req"],
+    secret: process.env.NEXTAUTH_SECRET,
+  });
+}
+
 export async function revokeGoogleToken(token: string): Promise<void> {
   const response = await fetch("https://oauth2.googleapis.com/revoke", {
     method: "POST",
@@ -356,27 +404,9 @@ export const authOptions: NextAuthOptions = {
         // is a privileged action gated on already being signed into this app somehow, exactly
         // like every Cloud connection route requires an active session (ADR 0008). Never an
         // independent, unauthenticated way to assume any locally-known identity.
-        //
-        // NextAuth's own `SessionStore` (node_modules/next-auth/core/lib/cookie.js) reads only
-        // `req.cookies` -- never `req.headers.cookie` as a raw string -- and the `req` this
-        // CredentialsProvider's `authorize()` receives (App Router adapter, next-auth v4.24) has
-        // `headers` but no parsed `cookies`, so `getToken({req})` would otherwise silently see no
-        // cookies at all and always return null. Parsed here explicitly rather than relying on
-        // `getToken` to do it.
-        const rawCookieHeader = (req as { headers?: Record<string, string> } | undefined)?.headers?.cookie ?? "";
-        const cookies = new Map<string, string>();
-        for (const part of rawCookieHeader.split(";")) {
-          const separatorIndex = part.indexOf("=");
-          if (separatorIndex === -1) continue;
-          const name = part.slice(0, separatorIndex).trim();
-          const value = part.slice(separatorIndex + 1).trim();
-          if (name) cookies.set(name, decodeURIComponent(value));
-        }
-
-        const existingToken = await getToken({
-          req: { headers: (req as { headers?: Record<string, string> })?.headers, cookies } as unknown as Parameters<typeof getToken>[0]["req"],
-          secret: process.env.NEXTAUTH_SECRET,
-        });
+        const existingToken = await resolveExistingSessionToken(
+          req as { headers?: Record<string, string> } | undefined
+        );
         if (!existingToken) return null;
 
         const channelId = credentials?.channelId;

@@ -25,13 +25,20 @@ export async function GET() {
     // genuinely gone stale with Google (e.g. testing-mode 7-day expiry) since it was last used.
     // Without this, the underlying `invalid_grant` propagated as an unhandled exception, which
     // Next.js turned into a non-JSON error response the client's `res.json()` then crashed on.
+    //
+    // The real error is logged server-side only, never forwarded to the client verbatim
+    // (AGENTS.md §F) -- whatever exception type actually reaches this catch in the future (a
+    // library internal, a misconfigured client, not just this scenario's `invalid_grant`), the
+    // client only ever sees this one fixed, generic message.
+    console.error(JSON.stringify({
+      level: "error",
+      event: "youtube.channel_info.unavailable",
+      context: { userId: session.user.id, error: error instanceof Error ? error.message : String(error) },
+    }));
     return NextResponse.json(
       {
         error: "channel_info_unavailable",
-        message:
-          error instanceof Error
-            ? error.message
-            : "Could not load the active channel. It may need to be reconnected.",
+        message: "Could not load the active channel. It may need to be reconnected.",
       },
       { status: 502 }
     );
