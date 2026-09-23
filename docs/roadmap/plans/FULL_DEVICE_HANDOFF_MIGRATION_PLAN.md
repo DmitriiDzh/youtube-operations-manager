@@ -254,17 +254,25 @@ any branch is opened.
   `docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md`. The audit-ordering design
   work that could later make `audit_events` alone migratable is its own separate, future task,
   not part of this plan.
-- **M6 — delete `src/lib/device-handoff/` and `src/lib/snapshot/`**, gated on the owner's choice
-  in §3 (now over all four Category D tables, not three): under option (a), this proceeds once
-  M2-M4 are live and proven, fully resolving `BL-027` as moot; under option (b), this slice
-  instead scopes `snapshot`'s existing allowlist down to just `batches`/`batch_ledger_rows`/
-  `batch_attempts`/`audit_events` (plus `schema_meta`) rather than deleting it, and `BL-027`'s
-  cost question re-applies to that smaller allowlist.
+- **M6 — DONE, 2026-09-23. Owner chose option (b)** (Telegram: after a web-research pass found
+  that the industry-standard answer for a single-writer subsystem that must still move between
+  machines is an explicit, atomic ownership handoff -- never a live CRDT merge -- exactly LiteFS/
+  Litestream's primary-failover shape and distributed job schedulers' lease-based worker handoff,
+  the owner confirmed: *"'CRDT для драфтов/настроек + явная передача владения для конвейера
+  записи' ок, тогда так и делай"*). `src/lib/device-handoff/`/`src/lib/snapshot/` are NOT deleted
+  -- `SNAPSHOT_TRANSFERRED_TABLES` (`src/lib/snapshot/contracts.ts`) is narrowed to exactly
+  `schema_meta` plus the four Category D tables (`batches`/`batch_ledger_rows`/`batch_attempts`/
+  `audit_events`); `change_sets`/`changes`/`channel_editorial_profiles`/
+  `ai_localization_generation_provenance`/`ai_connections` are removed from it (all five now
+  propagate continuously via `sync-gateway` instead). `ai_connections`' own upsert-by-id special
+  case in `applySnapshotToDatabase` (`src/lib/snapshot/services.ts`) is deleted along with it --
+  the plain table-replace path now handles every remaining transferred table uniformly. Tests
+  across `src/lib/snapshot/services.test.ts` and `src/lib/device-handoff/services.test.ts` that
+  used `change_sets`/`ai_connections` as their "some application-state table" example were
+  rewritten against `batches`/`batch_ledger_rows` instead (same shape: `id` + `channel_id` FK).
 
 M1 gates everything else and should be assigned first. M2-M4 have no unresolved open design
-questions once M1 lands, and are the plan's actual remaining implementation surface. M6 is only
-safe once M2-M4 are each independently verified live, AND needs §3's option (a)/(b) decision
-before it can be scoped precisely.
+questions once M1 lands, and are the plan's actual remaining implementation surface.
 
 ## 6. What doesn't change, under any slice above
 

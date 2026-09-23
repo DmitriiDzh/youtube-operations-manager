@@ -39,6 +39,26 @@ export type { SqlExecutor };
  *     signing in and clicking "Sync now" instead of receiving a copy of it -- functionally
  *     identical to refreshing a stale cache, at the cost of one API round-trip nobody was
  *     avoiding anyway. No CRDT/sync-gateway work needed for either table.
+ *   - `change_sets` / `changes` / `channel_editorial_profiles` /
+ *     `ai_localization_generation_provenance` / `ai_connections` -- removed from this list
+ *     2026-09-23 (M6, `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §2 Categories
+ *     B/C). All four now propagate continuously via `src/lib/sync-gateway/` (M1/M3/M4) instead of
+ *     through an occasional whole-DB snapshot -- keeping them here too would mean two disagreeing
+ *     transfer mechanisms for the same data. `ai_connections`' credential half
+ *     (`ai_connection_credentials`) was never transferred either way, per the entry above.
+ *
+ * What remains here after M6 is deliberately narrow: only `schema_meta` (see below) plus the
+ * four Category D write-pipeline tables (`batches`/`batch_ledger_rows`/`batch_attempts`/
+ * `audit_events`), which CANNOT move to `sync-gateway` -- `docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md`
+ * found they depend on SQL compare-and-set/UNIQUE-constraint primitives (concurrency safety) and
+ * an `AUTOINCREMENT` rowid (exact audit ordering), neither of which has a CRDT equivalent. This
+ * mechanism's own "explicit, human-decided, atomic whole-copy handoff" shape -- never a live
+ * merge -- is exactly the industry-standard answer for a single-writer subsystem that must still
+ * move between machines (the same shape LiteFS/Litestream use for SQLite primary failover, and
+ * that distributed job schedulers use for lease-based worker handoff): ownership transfers
+ * explicitly and atomically, it is never concurrently written from two places at once. Kept
+ * deliberately, not by inertia -- see `docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md`'s
+ * follow-up note.
  *
  * `schema_meta` IS included -- the receiving device needs to know what schema version the
  * snapshot's data.db is actually at in order to safely apply migrations to the staged copy
@@ -46,11 +66,6 @@ export type { SqlExecutor };
  */
 export const SNAPSHOT_TRANSFERRED_TABLES = [
   "schema_meta",
-  "change_sets",
-  "changes",
-  "channel_editorial_profiles",
-  "ai_localization_generation_provenance",
-  "ai_connections",
   "batches",
   "batch_ledger_rows",
   "batch_attempts",
@@ -60,12 +75,8 @@ export const SNAPSHOT_TRANSFERRED_TABLES = [
 /**
  * Of the transferred tables, these import as a table-level replace (the incoming snapshot is
  * authoritative for application state under Variant A's single-active-device model).
- * `ai_connections` is handled separately (upsert by id, see services.ts) so that a locally
- * stored credential keyed by the same connection id survives untouched.
  */
-export const SNAPSHOT_REPLACE_ON_IMPORT_TABLES = SNAPSHOT_TRANSFERRED_TABLES.filter(
-  (table) => table !== "ai_connections" && table !== "schema_meta"
-);
+export const SNAPSHOT_REPLACE_ON_IMPORT_TABLES = SNAPSHOT_TRANSFERRED_TABLES.filter((table) => table !== "schema_meta");
 
 export type SnapshotFileEntry = {
   path: string;

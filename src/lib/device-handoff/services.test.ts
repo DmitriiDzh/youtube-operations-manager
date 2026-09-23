@@ -47,12 +47,15 @@ async function seedChannel(client: Client, channelId: string) {
 
 // `channels` itself is no longer transferred by a snapshot (2026-09-22, both devices sync it
 // independently from the real YouTube API instead, `docs/roadmap/plans/
-// FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §2 Category A) -- `change_sets` is used below wherever a
-// test needs to prove SOME application-state table actually transferred.
-async function seedChangeSet(client: Client, changeSetId: string, channelId: string) {
+// FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §2 Category A). `change_sets`, this file's example table
+// in between, isn't transferred any more either (M6, 2026-09-23, same plan §2 Categories B/C) --
+// `batches` is used below wherever a test needs to prove SOME application-state table actually
+// transferred, since it's one of the four Category D write-pipeline tables this mechanism still
+// carries (`docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md`).
+async function seedBatch(client: Client, batchId: string, channelId: string, status = "RUNNING") {
   await client.execute({
-    sql: "INSERT INTO change_sets (id, channel_id, source, status) VALUES (?, ?, ?, ?)",
-    args: [changeSetId, channelId, "ai_generated", "in_review"],
+    sql: "INSERT INTO batches (id, channel_id, status) VALUES (?, ?, ?)",
+    args: [batchId, channelId, status],
   });
 }
 
@@ -68,7 +71,7 @@ test("importHandoff activates normal mutation capability when the snapshot has n
   withTempDir(async (dir) => {
     const source = await makeClient(dir, "source.db");
     await seedChannel(source, "chan-1");
-    await seedChangeSet(source, "cs-1", "chan-1");
+    await seedBatch(source, "batch-1", "chan-1");
     const exportResult = await exportHandoff({
       client: source,
       snapshotsDir: path.join(dir, "snapshots"),
@@ -91,8 +94,8 @@ test("importHandoff activates normal mutation capability when the snapshot has n
     assert.equal(await isDeviceInRecoveryMode(receiving), false);
     await assert.doesNotReject(() => assertNotInRecoveryMode(receiving));
 
-    const changeSets = await receiving.execute("SELECT id FROM change_sets");
-    assert.deepEqual(changeSets.rows.map((r) => r.id), ["cs-1"]);
+    const batches = await receiving.execute("SELECT id FROM batches");
+    assert.deepEqual(batches.rows.map((r) => r.id), ["batch-1"]);
 
     // RISK-27 (docs/TECHNICAL_DEBT.md): a *successful* import did mutate the live DB, so its
     // pre-import backup is a genuine recovery point and must survive -- confirms the RISK-27
@@ -264,7 +267,7 @@ test("importHandoff is a safe no-op for a duplicate-of-current snapshot", () =>
   withTempDir(async (dir) => {
     const source = await makeClient(dir, "source.db");
     await seedChannel(source, "chan-1");
-    await seedChangeSet(source, "cs-1", "chan-1");
+    await seedBatch(source, "batch-1", "chan-1");
     const exportResult = await exportHandoff({
       client: source,
       snapshotsDir: path.join(dir, "snapshots"),
@@ -293,8 +296,8 @@ test("importHandoff is a safe no-op for a duplicate-of-current snapshot", () =>
     });
     assert.equal(second.status, "duplicate_noop");
 
-    const changeSets = await receiving.execute("SELECT id FROM change_sets");
-    assert.equal(changeSets.rows.length, 1, "no duplicate rows from a repeated import");
+    const batches = await receiving.execute("SELECT id FROM batches");
+    assert.equal(batches.rows.length, 1, "no duplicate rows from a repeated import");
 
     source.close();
     receiving.close();

@@ -208,12 +208,14 @@ export async function scanFileForUnresolvedExecutionState(
 
 /**
  * The per-table merge (decision 2a): every SNAPSHOT_REPLACE_ON_IMPORT_TABLES table is
- * replaced wholesale from the (already migrated, verified) staged copy; `ai_connections`
- * upserts by id so a locally stored credential's connection row survives; `users`,
- * `ai_connection_credentials`, `video_execution_locks`, `app_operation_locks`, and this
- * device's own `handoff_log`/`recovery_acknowledgements`/`schema_meta`/`snapshot_lineage` are
- * never referenced here at all -- there is structurally no code path in this function that
- * can touch them.
+ * replaced wholesale from the (already migrated, verified) staged copy. `ai_connections` no
+ * longer needs its own upsert-by-id special case here (M6, 2026-09-23) -- it isn't transferred
+ * by this mechanism at all any more, `src/lib/sync-gateway/ai-connections-catalog/` owns it
+ * continuously instead. `users`, `ai_connection_credentials`, `video_execution_locks`,
+ * `app_operation_locks`, and this device's own
+ * `handoff_log`/`recovery_acknowledgements`/`schema_meta`/`snapshot_lineage` are never
+ * referenced here at all -- there is structurally no code path in this function that can touch
+ * them.
  */
 // RISK-29 (docs/TECHNICAL_DEBT.md): `PRAGMA table_info` reports columns in physical storage
 // order (`cid`) -- the same order `SELECT *` would return them in. Two devices whose table was
@@ -264,34 +266,6 @@ export async function applySnapshotToDatabase(
           );
         }
 
-        const aiConnectionColumns = [
-          "id",
-          "display_name",
-          "adapter_type",
-          "base_url",
-          "model_id",
-          "local_inference_mode",
-          "enabled",
-          "status",
-          "status_message",
-          "status_checked_at",
-          "capabilities_json",
-          "assigned_tasks_json",
-          "pricing_json",
-          "created_at",
-          "updated_at",
-        ];
-        // `INSERT ... SELECT ... ON CONFLICT DO UPDATE` is not accepted by this SQLite build
-        // (verified directly: "near DO: syntax error" for the SELECT form, while the same
-        // clause works fine for an INSERT ... VALUES). `INSERT OR REPLACE ... SELECT` is
-        // semantically equivalent to the intended upsert here because every column is always
-        // included in the SELECT (a full-row replace on a primary-key conflict, keeping the
-        // same `id`) -- it is not "replace the row with defaults", it is "replace the row with
-        // exactly these values".
-        await liveClient.execute(
-          `INSERT OR REPLACE INTO ai_connections (${aiConnectionColumns.join(", ")}) ` +
-            `SELECT ${aiConnectionColumns.join(", ")} FROM staged.ai_connections`
-        );
         await liveClient.execute("COMMIT");
       } catch (error) {
         await liveClient.execute("ROLLBACK");
