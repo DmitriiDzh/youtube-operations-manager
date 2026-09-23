@@ -203,7 +203,13 @@ export default function Dashboard() {
       onSignOut={() => signOut()}
     >
       {tab === "home" && (
-        <div className="max-w-3xl space-y-6">
+        // `key` forces a clean remount whenever the active channel changes (owner instruction,
+        // 2026-09-23: switching channel -- via the topbar dropdown or Settings -- must signal
+        // every tab to refresh to the new one). None of these manager components take a
+        // `channelId` prop; each resolves "the active channel" itself, once, on its own mount
+        // (server-side, via the session's `selectedChannelId`) -- remounting is what makes that
+        // mount-time resolution re-run, without changing any of the five components themselves.
+        <div key={channel?.id ?? "no-channel"} className="max-w-3xl space-y-6">
           <p className="text-sm text-zinc-400">
             Channel dashboard (docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slice S4). Recent-video
             and comment/subscriber cards are planned for a later pass — this tab starts with the
@@ -214,7 +220,7 @@ export default function Dashboard() {
       )}
 
       {tab === "content" && (
-        <div>
+        <div key={channel?.id ?? "no-channel"}>
           <p className="mb-4 text-sm text-zinc-400">
             Your synchronized videos, Studio-style. Read-only: no metadata is written to
             YouTube from this tab.
@@ -224,7 +230,7 @@ export default function Dashboard() {
       )}
 
       {tab === "analytics" && (
-        <div>
+        <div key={channel?.id ?? "no-channel"}>
           <p className="mb-4 text-sm text-zinc-400">
             Manual collection for now (BL-059&apos;s daily auto-collection is a separate,
             not-yet-built follow-up) &mdash; facts only, no comparisons or recommendations yet
@@ -235,7 +241,7 @@ export default function Dashboard() {
       )}
 
       {tab === "languages" && (
-        <div>
+        <div key={channel?.id ?? "no-channel"}>
           <p className="mb-4 text-sm text-zinc-400">
             Generating with AI is the primary way to add a language &mdash; review and edit
             the agent&rsquo;s proposals before creating a Change Set. Importing an edited XLSX
@@ -248,7 +254,7 @@ export default function Dashboard() {
       )}
 
       {tab === "batches" && (
-        <div>
+        <div key={channel?.id ?? "no-channel"}>
           <p className="mb-4 text-sm text-zinc-400">
             Select approved changes into a Batch and preview it in dry-run mode. A real,
             non-dry-run write is only possible when &ldquo;Live writes&rdquo; is turned on
