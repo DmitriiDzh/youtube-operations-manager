@@ -148,3 +148,19 @@ export type GetChannelOverviewResult = {
   currentTotals: ChannelOverviewTotals;
   previousTotals: ChannelOverviewTotals;
 };
+
+export type DataQualityVideoSkip = {
+  videoId: string;
+  skipCount: number;
+  lastSkippedAt: string;
+};
+
+export type DataQualityReportResult = {
+  channelId: string;
+  startDate: string;
+  endDate: string;
+  coveredDates: string[];
+  uncoveredDates: string[];
+  tooRecentDates: string[];
+  videosWithSkips: DataQualityVideoSkip[];
+};

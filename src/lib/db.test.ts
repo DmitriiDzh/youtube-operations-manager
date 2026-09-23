@@ -17,10 +17,12 @@ import {
   getGatewayTrafficLast24h,
   getStoredCloudConnection,
   initializeDatabaseSchema,
+  listAnalyticsCollectionRunsByChannel,
   listVideoMetricsByChannel,
   listVideoMetricsByVideo,
   getSyncFamilyStatuses,
   markAnalyticsAutoCollected,
+  recordAnalyticsCollectionRun,
   recordGatewayCallOutcome,
   recordSyncFamilyResult,
   SCHEMA_BASELINE_VERSION,
@@ -101,6 +103,94 @@ test("initializeDatabaseSchema: a fresh database ends stamped at SCHEMA_CURRENT_
     assert.equal(await tableExists(client, "users"), true);
     assert.equal(await tableExists(client, "app_operation_locks"), true);
     assert.equal(await tableExists(client, "video_metrics_daily"), true);
+    assert.equal(await tableExists(client, "analytics_collection_runs"), true);
+  }));
+
+// Phase 8 follow-up, slice 2 (docs/roadmap/FUTURE_PHASES.md §4, data-quality diagnostics).
+test("analytics_collection_runs: records a run and reads it back with skippedVideoIds decoded from JSON", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await recordAnalyticsCollectionRun(
+      {
+        channelId: "UC_A",
+        requestedStartDate: "2026-09-01",
+        requestedEndDate: "2026-09-07",
+        videoCount: 3,
+        upsertsIssued: 50,
+        skippedVideoIds: ["v2"],
+      },
+      isolatedDb
+    );
+
+    const runs = await listAnalyticsCollectionRunsByChannel("UC_A", isolatedDb);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].channelId, "UC_A");
+    assert.equal(runs[0].requestedStartDate, "2026-09-01");
+    assert.equal(runs[0].requestedEndDate, "2026-09-07");
+    assert.equal(runs[0].videoCount, 3);
+    assert.equal(runs[0].upsertsIssued, 50);
+    assert.deepEqual(runs[0].skippedVideoIds, ["v2"]);
+    assert.ok(runs[0].ranAt instanceof Date);
+  }));
+
+test("analytics_collection_runs: a run with no skipped videos round-trips as an empty array, not null/undefined", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await recordAnalyticsCollectionRun(
+      {
+        channelId: "UC_A",
+        requestedStartDate: "2026-09-01",
+        requestedEndDate: "2026-09-01",
+        videoCount: 1,
+        upsertsIssued: 20,
+        skippedVideoIds: [],
+      },
+      isolatedDb
+    );
+
+    const runs = await listAnalyticsCollectionRunsByChannel("UC_A", isolatedDb);
+    assert.deepEqual(runs[0].skippedVideoIds, []);
+  }));
+
+test("analytics_collection_runs: listAnalyticsCollectionRunsByChannel never returns another channel's runs", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await recordAnalyticsCollectionRun(
+      { channelId: "UC_A", requestedStartDate: "2026-09-01", requestedEndDate: "2026-09-01", videoCount: 1, upsertsIssued: 1, skippedVideoIds: [] },
+      isolatedDb
+    );
+    await recordAnalyticsCollectionRun(
+      { channelId: "UC_B", requestedStartDate: "2026-09-01", requestedEndDate: "2026-09-01", videoCount: 1, upsertsIssued: 1, skippedVideoIds: [] },
+      isolatedDb
+    );
+
+    const runsA = await listAnalyticsCollectionRunsByChannel("UC_A", isolatedDb);
+    assert.equal(runsA.length, 1);
+    assert.ok(!runsA.some((r) => r.channelId === "UC_B"), "must never include a different channel's run");
+  }));
+
+test("analytics_collection_runs: multiple runs for the same channel all accumulate (append-only, never overwritten)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await recordAnalyticsCollectionRun(
+      { channelId: "UC_A", requestedStartDate: "2026-09-01", requestedEndDate: "2026-09-01", videoCount: 1, upsertsIssued: 1, skippedVideoIds: [] },
+      isolatedDb
+    );
+    await recordAnalyticsCollectionRun(
+      { channelId: "UC_A", requestedStartDate: "2026-09-02", requestedEndDate: "2026-09-02", videoCount: 1, upsertsIssued: 1, skippedVideoIds: [] },
+      isolatedDb
+    );
+
+    const runs = await listAnalyticsCollectionRunsByChannel("UC_A", isolatedDb);
+    assert.equal(runs.length, 2);
   }));
 
 // Phase 8 (docs/roadmap/plans/PHASE_8_PLAN.md §6 slice 2, §7 acceptance criteria).
@@ -490,6 +580,11 @@ test("initializeDatabaseSchema: an existing pre-versioning database (baseline ta
     const users = await client.execute("SELECT id, email FROM users WHERE id = 'legacy-user'");
     assert.equal(users.rows.length, 1, "pre-existing row must survive re-initialization untouched");
     assert.equal(await readSchemaVersion(client), SCHEMA_CURRENT_VERSION);
+    assert.equal(
+      await tableExists(client, "analytics_collection_runs"),
+      true,
+      "a later migration (v13) must still apply correctly on the pre-versioning re-apply path"
+    );
   }));
 
 // AC-SCHEMA-04

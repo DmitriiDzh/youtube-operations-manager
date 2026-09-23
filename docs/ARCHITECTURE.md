@@ -871,6 +871,41 @@ padding through `endDate` with fabricated zeros (see its own doc comment). A fut
 re-querying a completed period after the lag has cleared would show a different, larger total for
 the same historical dates -- this is inherent to using the public API, not a caching bug to chase.
 
+### 14.9 Data-quality diagnostics (`getDataQualityReport`) — Phase 8 follow-up, slice 2 of 4
+
+`docs/roadmap/FUTURE_PHASES.md` §4's "data-quality/missing-data diagnostics" line item. New
+additive table `analytics_collection_runs` (`SCHEMA_MIGRATIONS` version 13) -- one append-only row
+per `collectMetrics` invocation, recording the requested date range, video count, upserts issued,
+and which video IDs were skipped due to a per-video failure.
+
+**Why a separate history table is needed, not just a scan of `video_metrics_daily`:** live-verified
+2026-09-23 against a real low-traffic video that the Analytics API silently OMITS a day from its
+`reports.query` response when that video had zero activity that day -- it is never returned as a
+zero-value row. An absent `video_metrics_daily` row is therefore ambiguous between "never
+collected" and "collected, zero activity" without an independent record of which ranges collection
+actually attempted.
+
+`computeDataQualityReport` (`src/lib/analytics/data-quality.ts`, pure, no I/O) classifies each date
+in the requested range as covered (a recorded run's own range includes it, OR at least one real
+`video_metrics_daily` row exists for that date -- the latter fallback exists specifically for data
+collected *before* this table existed, which would otherwise show as "never collected" purely
+because the tracking mechanism postdates it), uncovered (a genuine gap), or too-recent (within
+`ANALYTICS_REPORTING_LAG_DAYS` = 2 days of "now" -- the same reporting lag §14.8 documents, which
+means even a requested collection wouldn't have data yet, so this is never flagged as a real gap).
+Skipped-video aggregation only counts runs whose own range overlaps the requested range.
+
+Live-verified against the real "Tropico Jazz" channel: a 28-day report correctly found only 6 of
+28 days actually covered (the channel's real collected history is a narrow 6-day band, `2026-09-15`
+through `2026-09-20` -- confirmed directly against `video_metrics_daily`'s own distinct dates), a
+genuine, previously-invisible data gap this feature exists to surface, not a bug in the check
+itself.
+
+Exposed via `GET .../analytics/data-quality`, the MCP tool `analytics_data_quality`, and the CLI's
+`analytics data-quality` command -- all three read-only, ungated, following the same pattern as
+`analytics_list`/`analytics_overview` (BL-073). `analytics_collection_runs` is deliberately kept
+out of `SNAPSHOT_TRANSFERRED_TABLES`, the same as `video_metrics_daily` itself (§14.7) -- a
+re-derivable, device-local history, not data that needs to survive a device handoff.
+
 ## 15. Cloud connection (`src/lib/cloud-connection/`) — slice 1 of 3, not yet in `dev`
 
 ### 15.1 Status and scope

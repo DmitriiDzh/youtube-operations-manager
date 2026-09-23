@@ -1,9 +1,11 @@
 import {
   getAnalyticsSyncSettings,
   getStoredChannel,
+  listAnalyticsCollectionRunsByChannel,
   listStoredVideosByChannel,
   listVideoMetricsByChannel,
   markAnalyticsAutoCollected,
+  recordAnalyticsCollectionRun,
   upsertVideoMetric,
 } from "@/lib/db";
 
@@ -36,6 +38,14 @@ export function createAnalyticsStoreAdapter() {
     },
     settingsStore: {
       getAnalyticsSyncSettings,
+    },
+    // Phase 8 follow-up, slice 2 (data-quality diagnostics) -- append-only history of each
+    // collectMetrics run, the ground truth `getDataQualityReport` reads (video_metrics_daily
+    // alone can't distinguish "never collected" from "collected, zero activity", since the
+    // Analytics API silently omits zero-activity days from its own response).
+    collectionRunStore: {
+      record: recordAnalyticsCollectionRun,
+      listByChannel: listAnalyticsCollectionRunsByChannel,
     },
   };
 }

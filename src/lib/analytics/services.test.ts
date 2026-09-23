@@ -123,7 +123,32 @@ function createServicesFixture(opts: {
     },
   };
 
+  const collectionRuns: Array<{
+    channelId: string;
+    requestedStartDate: string;
+    requestedEndDate: string;
+    videoCount: number;
+    upsertsIssued: number;
+    skippedVideoIds: string[];
+    ranAt: Date;
+  }> = [];
   let currentNow = opts.now ?? new Date("2026-09-22T15:00:00Z");
+  const collectionRunStore = {
+    async record(args: {
+      channelId: string;
+      requestedStartDate: string;
+      requestedEndDate: string;
+      videoCount: number;
+      upsertsIssued: number;
+      skippedVideoIds: string[];
+    }) {
+      collectionRuns.push({ ...args, ranAt: currentNow });
+    },
+    async listByChannel(channelId: string) {
+      return collectionRuns.filter((run) => run.channelId === channelId);
+    },
+  };
+
   const clock = { now: () => currentNow };
 
   const services = createAnalyticsServices({
@@ -133,6 +158,7 @@ function createServicesFixture(opts: {
     metricStore,
     channelStore,
     settingsStore,
+    collectionRunStore,
     clock,
     channelAccess,
     logger,
@@ -146,6 +172,7 @@ function createServicesFixture(opts: {
     upsertedRows,
     metricRowsByKey,
     lastAutoCollectedAtByChannel,
+    collectionRuns,
     setNow: (date: Date) => {
       currentNow = date;
     },
@@ -357,6 +384,97 @@ test("collectMetrics isolates a per-video failure into skippedVideoIds, other vi
   assert.equal(upsertedRows[0]?.videoId, "v2");
 });
 
+// Phase 8 follow-up, slice 2 (data-quality diagnostics) -- collectMetrics must record its own
+// run, including which videos it skipped, since video_metrics_daily alone can't later
+// distinguish "never collected" from "collected, zero activity" (the Analytics API silently
+// omits zero-activity days from its response, live-verified 2026-09-23).
+test("collectMetrics records a collection run, including skipped videos, even when every video was skipped", async () => {
+  const { services, channelAccess, collectionRuns } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: new Error("simulated failure") },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const result = await services.collectMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-01",
+    endDate: "2026-09-05",
+  });
+
+  assert.deepEqual(result.skippedVideoIds, ["v1"]);
+  assert.equal(collectionRuns.length, 1, "a run must be recorded even when every video in it was skipped");
+  assert.equal(collectionRuns[0].channelId, "UC_A");
+  assert.equal(collectionRuns[0].requestedStartDate, "2026-09-01");
+  assert.equal(collectionRuns[0].requestedEndDate, "2026-09-05");
+  assert.deepEqual(collectionRuns[0].skippedVideoIds, ["v1"]);
+});
+
+test("getDataQualityReport fails closed when the requested channel is not the caller's active channel", async () => {
+  const { services } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+
+  await assert.rejects(
+    () =>
+      services.getDataQualityReport({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-09-01",
+        endDate: "2026-09-05",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "CHANNEL_NOT_ACTIVE"
+  );
+});
+
+test("getDataQualityReport rejects an inverted date range as validation_failed", async () => {
+  const { services, channelAccess } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getDataQualityReport({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-09-05",
+        endDate: "2026-09-01",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+test("getDataQualityReport reflects real collectMetrics runs: covered/uncovered dates and skipped videos", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: {
+      UC_A: [
+        { videoId: "v1", channelId: "UC_A" },
+        { videoId: "v2", channelId: "UC_A" },
+      ],
+    },
+    analyticsResponses: {
+      v1: [{ date: "2026-09-01", metrics: { views: 10 } }],
+      v2: new Error("simulated failure"),
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await services.collectMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-01",
+    endDate: "2026-09-02",
+  });
+
+  const report = await services.getDataQualityReport({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-08-30",
+    endDate: "2026-09-02",
+  });
+
+  assert.deepEqual(report.coveredDates, ["2026-09-01", "2026-09-02"]);
+  assert.deepEqual(report.uncoveredDates, ["2026-08-30", "2026-08-31"]);
+  assert.deepEqual(report.videosWithSkips.map((s) => s.videoId), ["v2"]);
+});
+
 test("collectMetrics defaults to the full ANALYTICS_METRIC_NAMES list when metricNames is omitted", async () => {
   let requestedMetricNames: readonly string[] | undefined;
   const { channelAccess } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
@@ -394,6 +512,7 @@ test("collectMetrics defaults to the full ANALYTICS_METRIC_NAMES list when metri
     settingsStore: {
       async getAnalyticsSyncSettings() { return { localTime: "12:00", timezone: "UTC" }; },
     },
+    collectionRunStore: { async record() {}, async listByChannel() { return []; } },
     clock: { now: () => new Date("2026-09-22T15:00:00Z") },
     channelAccess,
     logger: { info() {}, error() {} },

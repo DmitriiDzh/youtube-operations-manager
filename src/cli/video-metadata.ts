@@ -31,7 +31,7 @@ type BatchCliCoreSubset = Pick<BatchCore, "listBatchesByChannel" | "requireBatch
 type ChannelSyncCliCoreSubset = Pick<ChannelSyncCore, "syncChannel" | "listChannels" | "listSyncedVideos">;
 // CLI parity for the MCP analytics_list/analytics_overview tools (same "machine-readable
 // analytics for operational agents" follow-up, docs/roadmap/BACKLOG.md).
-type AnalyticsCliCoreSubset = Pick<AnalyticsCore, "listMetrics" | "getChannelOverview">;
+type AnalyticsCliCoreSubset = Pick<AnalyticsCore, "listMetrics" | "getChannelOverview" | "getDataQualityReport">;
 
 loadEnvConfig(process.cwd());
 
@@ -72,7 +72,8 @@ export type ParsedArgs = {
     | "import"
     | "sync"
     | "video-list"
-    | "overview";
+    | "overview"
+    | "data-quality";
   flags: Record<string, string | boolean>;
 };
 
@@ -96,7 +97,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     changeset: ["list", "get", "preview", "import"],
     batch: ["list", "get"],
     channel: ["sync", "list", "video-list"],
-    analytics: ["list", "overview"],
+    analytics: ["list", "overview", "data-quality"],
   };
   const validMetadataCommands = ["list", "transcript", "preview", "apply"];
   const validCommands = hasExplicitNamespace
@@ -280,8 +281,10 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   "video-list",
   // analytics list (local read of already-collected rows) / analytics overview (a live
   // Analytics API read, but mutates nothing anywhere -- same read-only classification as
-  // playlist_list's own live YouTube read in the MCP server).
+  // playlist_list's own live YouTube read in the MCP server) / analytics data-quality (local
+  // read over analytics_collection_runs).
   "overview",
+  "data-quality",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -558,6 +561,17 @@ export async function runCliCommand(args: {
 
       if (parsedArgs.command === "overview") {
         const result = await analyticsCore.getChannelOverview({
+          credentialRef,
+          channelId,
+          startDate: requiredStringFlag(parsedArgs.flags, "startDate"),
+          endDate: requiredStringFlag(parsedArgs.flags, "endDate"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "data-quality") {
+        const result = await analyticsCore.getDataQualityReport({
           credentialRef,
           channelId,
           startDate: requiredStringFlag(parsedArgs.flags, "startDate"),

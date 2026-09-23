@@ -88,6 +88,21 @@ export function computePreviousPeriod(startDate: string, endDate: string): {
 }
 
 /**
+ * Every calendar date in `[startDate, endDate]`, inclusive, as an ordered array -- e.g. for
+ * `getDataQualityReport` (`services.ts`) to check each date's own coverage individually. Throws
+ * the same way `computePreviousPeriod` does for an inverted or calendar-invalid range (shares its
+ * validation via `assertValidRange`).
+ */
+export function enumerateDates(startDate: string, endDate: string): string[] {
+  const { startMs, endMs } = assertValidRange(startDate, endDate);
+  const dates: string[] = [];
+  for (let ms = startMs; ms <= endMs; ms += MS_PER_DAY) {
+    dates.push(formatIsoDateUtc(ms));
+  }
+  return dates;
+}
+
+/**
  * Percentage change from `previous` to `current`, matching Studio's own display convention:
  * `null` when `previous` is `0` (a "N% more than previous period" claim is meaningless with no
  * baseline -- never fabricated as `Infinity` or `0`), otherwise rounded to the nearest whole

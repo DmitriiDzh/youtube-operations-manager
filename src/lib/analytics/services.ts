@@ -2,6 +2,7 @@ import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import type { ChannelAccessService } from "@/lib/channel-access";
 import { computeDefaultAutoCollectionRange, computeNextRefreshAt, isAnalyticsCollectionStale } from "./staleness";
 import { assertValidDateRange, assertValidIsoDate, computePreviousPeriod, zeroFillDailySeries } from "./period";
+import { computeDataQualityReport } from "./data-quality";
 import {
   ANALYTICS_METRIC_NAMES,
   AUTO_COLLECTION_RANGE_DAYS,
@@ -11,6 +12,7 @@ import {
   type AutoCollectResult,
   type ChannelOverviewTotals,
   type CollectMetricsResult,
+  type DataQualityReportResult,
   type GetChannelOverviewResult,
   type ListMetricsResult,
   type ResolvedCredentials,
@@ -21,6 +23,8 @@ import {
   collectMetricsOutputSchema,
   getChannelOverviewInputSchema,
   getChannelOverviewOutputSchema,
+  getDataQualityReportInputSchema,
+  getDataQualityReportOutputSchema,
   listMetricsInputSchema,
   listMetricsOutputSchema,
   parseWithSchema,
@@ -80,6 +84,27 @@ type ServiceDependencies = {
   };
   settingsStore: {
     getAnalyticsSyncSettings(): Promise<{ localTime: string; timezone: string }>;
+  };
+  // Phase 8 follow-up, slice 2 (data-quality diagnostics) -- append-only history of each
+  // collectMetrics run, read by getDataQualityReport.
+  collectionRunStore: {
+    record(args: {
+      channelId: string;
+      requestedStartDate: string;
+      requestedEndDate: string;
+      videoCount: number;
+      upsertsIssued: number;
+      skippedVideoIds: string[];
+    }): Promise<void>;
+    listByChannel(channelId: string): Promise<
+      Array<{
+        requestedStartDate: string;
+        requestedEndDate: string;
+        videoCount: number;
+        skippedVideoIds: string[];
+        ranAt: Date;
+      }>
+    >;
   };
   /** Injectable so staleness tests never depend on the real wall clock. */
   clock: {
@@ -254,6 +279,18 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           upsertsIssued,
           skippedVideoIds,
         };
+
+        // Phase 8 follow-up, slice 2 (data-quality diagnostics) -- the ground truth
+        // `getDataQualityReport` reads. Recorded even when every video was skipped (an all-skip
+        // run is itself a real, reportable fact, not something to hide by omitting the row).
+        await deps.collectionRunStore.record({
+          channelId: output.channelId,
+          requestedStartDate: output.startDate,
+          requestedEndDate: output.endDate,
+          videoCount: output.videoCount,
+          upsertsIssued: output.upsertsIssued,
+          skippedVideoIds: output.skippedVideoIds,
+        });
 
         deps.logger.info({
           event: "analytics.collect_metrics.success",
@@ -490,6 +527,60 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         };
 
         return parseWithSchema(getChannelOverviewOutputSchema, output, "get channel overview output");
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
+      }
+    },
+
+    /**
+     * Phase 8 follow-up, slice 2 (docs/roadmap/FUTURE_PHASES.md §4, "data-quality/missing-data
+     * diagnostics"). A pure local read -- no YouTube call, no `authResolver` needed, same as
+     * `listMetrics` -- over `collectionRunStore`'s history for the channel. See
+     * `data-quality.ts`'s `computeDataQualityReport` for the actual computation and why
+     * `video_metrics_daily` alone can't answer this.
+     */
+    async getDataQualityReport(input: unknown): Promise<DataQualityReportResult> {
+      const parsedInput = parseWithSchema(getDataQualityReportInputSchema, input, "get data quality report input");
+
+      try {
+        assertValidDateRange(parsedInput.startDate, parsedInput.endDate);
+      } catch (error) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: error instanceof Error ? error.message : "Invalid date range",
+        });
+      }
+
+      try {
+        const userId = getCredentialUserId(parsedInput.credentialRef);
+        await deps.channelAccess.assertActiveChannel({
+          userId,
+          channelId: parsedInput.channelId,
+        });
+
+        const [runs, metricRecords] = await Promise.all([
+          deps.collectionRunStore.listByChannel(parsedInput.channelId),
+          deps.metricStore.listMetricsByChannel(parsedInput.channelId),
+        ]);
+        const datesWithAnyMetricRow = new Set(metricRecords.map((record) => record.metricDate));
+        const report = computeDataQualityReport({
+          startDate: parsedInput.startDate,
+          endDate: parsedInput.endDate,
+          runs,
+          datesWithAnyMetricRow,
+          now: deps.clock.now(),
+        });
+
+        return parseWithSchema(
+          getDataQualityReportOutputSchema,
+          {
+            channelId: parsedInput.channelId,
+            startDate: parsedInput.startDate,
+            endDate: parsedInput.endDate,
+            ...report,
+          },
+          "get data quality report output"
+        );
       } catch (error) {
         throw mapUnknownError(error, "unauthorized");
       }

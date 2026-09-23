@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { computePercentChange, computePreviousPeriod, zeroFillDailySeries } from "./period";
+import { computePercentChange, computePreviousPeriod, enumerateDates, zeroFillDailySeries } from "./period";
 
 test("computePreviousPeriod computes the immediately-preceding period of the same length (28 days, live-observed range)", () => {
   // Studio itself showed "Aug 26 - Sep 22, 2026" for "Last 28 days" (live-verified 2026-09-23).
@@ -44,6 +44,27 @@ test("computePreviousPeriod rejects a calendar-invalid day-of-month (rolled-over
 test("computePreviousPeriod rejects Feb 29 on a non-leap year but accepts it on a leap year", () => {
   assert.throws(() => computePreviousPeriod("2025-02-29", "2025-02-29"), "2025 is not a leap year");
   assert.doesNotThrow(() => computePreviousPeriod("2024-02-29", "2024-02-29"), "2024 is a leap year");
+});
+
+test("enumerateDates returns every calendar date inclusive, in order", () => {
+  assert.deepEqual(enumerateDates("2026-09-01", "2026-09-04"), [
+    "2026-09-01",
+    "2026-09-02",
+    "2026-09-03",
+    "2026-09-04",
+  ]);
+});
+
+test("enumerateDates returns a single-element array for a one-day range", () => {
+  assert.deepEqual(enumerateDates("2026-09-01", "2026-09-01"), ["2026-09-01"]);
+});
+
+test("enumerateDates crosses a month boundary correctly", () => {
+  assert.deepEqual(enumerateDates("2026-08-30", "2026-09-01"), ["2026-08-30", "2026-08-31", "2026-09-01"]);
+});
+
+test("enumerateDates rejects an inverted range", () => {
+  assert.throws(() => enumerateDates("2026-09-04", "2026-09-01"));
 });
 
 test("computePercentChange computes a rounded whole-percent increase", () => {
