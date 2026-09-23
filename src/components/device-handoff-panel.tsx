@@ -314,6 +314,15 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
       setSyncPushErrors(pushErrors);
       setSyncPeersSkipped(peersSkipped);
 
+      // Known, deliberately-accepted limitation (independent review): if both of these fail in
+      // the same call, whichever's own internal `setError` runs second silently wins the shared
+      // `error` banner -- the same last-writer-wins class `refreshConflicts` itself was just
+      // fixed for internally. Not fixed here: doing so properly means changing what
+      // `refreshConflicts`/`refreshSyncStatuses` return to every other caller (the mount effect
+      // also calls them), a bigger, riskier change than this one call site's benefit justifies.
+      // Lower severity than the `refreshConflicts` case: `syncStatuses`' own per-row `lastError`
+      // (rendered below) still shows each family's real status either way, so a lost banner
+      // message here is not a total loss of signal.
       await Promise.all([refreshConflicts(), refreshSyncStatuses()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sync failed");
@@ -328,8 +337,19 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
     setResolveBusy(true);
     setError(null);
     try {
+      // A bare `return` for the two per-channel families here (found by independent review)
+      // would leave the confirm dialog open with a "Use this version" button that silently does
+      // nothing -- `channelId` can flip to null between the dialog opening and this click
+      // (channel-info still loading, channel unlinked, Data API reads disabled). Throwing routes
+      // it through the same catch below (which itself already closes... no -- explicitly closing
+      // the dialog here too, since the conflict genuinely can't be resolved without a channel and
+      // leaving it open invites another dead click) gives the operator an actual explanation
+      // instead of a dead end.
+      if ((pendingResolution.family === "change_drafts" || pendingResolution.family === "editorial_profile") && !channelId) {
+        setPendingResolution(null);
+        throw new Error(`No active channel -- can't resolve a ${FAMILY_LABELS[pendingResolution.family].toLowerCase()} conflict without one.`);
+      }
       if (pendingResolution.family === "change_drafts") {
-        if (!channelId) return;
         await fetchJson(`/api/channels/${channelId}/change-drafts/conflicts`, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -340,7 +360,6 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
           }),
         });
       } else if (pendingResolution.family === "editorial_profile") {
-        if (!channelId) return;
         await fetchJson(`/api/channels/${channelId}/editorial-profile/conflicts`, {
           method: "POST",
           headers: { "content-type": "application/json" },
