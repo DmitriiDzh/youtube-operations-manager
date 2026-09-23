@@ -64,27 +64,36 @@ const RESOLVABLE_CHANGE_DRAFT_FIELDS = new Set(["proposedValue", "approvalStatus
 
 type PeerSkipped = { family: SyncFamily; channelId: string | null; deviceId: string; reason: string };
 
-type SyncCycleResponse = {
-  deviceId: string;
-  channels: Array<{
-    channelId: string;
-    pushed: boolean;
-    pushError: string | null;
-    peersMerged: string[];
-    peersSkipped: Array<{ deviceId: string; reason: string }>;
-    newConflicts: Array<{ changeId: string; field: string; valuesByActor: Record<string, unknown> }>;
-  }>;
-  totalNewConflicts: number;
+type OtherFamilyCycle =
+  | { channels: Array<{ channelId: string; pushed: boolean; pushError: string | null; peersSkipped: Array<{ deviceId: string; reason: string }> }>; totalNewConflicts: number }
+  | { error: string };
+
+/** `POST /api/change-drafts/sync`'s own `runAndRecord` isolates each of the 3 families' cycles
+ * independently -- ANY of the three, including `change_drafts` at the top level, can come back
+ * as `{error: string}` instead of its normal shape if that family's whole cycle threw (found by
+ * independent review: an earlier version of this type only modeled that possibility for
+ * `editorialProfile`/`aiConnections`, not for the top-level fields, which let a change-drafts
+ * cycle failure crash `handleSyncNow` on `result.channels.filter(...)` instead of being handled
+ * the same way the other two families already were). */
+type SyncCycleResponse = (
+  | {
+      deviceId: string;
+      channels: Array<{
+        channelId: string;
+        pushed: boolean;
+        pushError: string | null;
+        peersMerged: string[];
+        peersSkipped: Array<{ deviceId: string; reason: string }>;
+        newConflicts: Array<{ changeId: string; field: string; valuesByActor: Record<string, unknown> }>;
+      }>;
+      totalNewConflicts: number;
+    }
+  | { error: string }
+) & {
   /** Each catalog's own, independent sync cycle (`docs/roadmap/plans/
-   * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3) -- same "Sync now" click, separate cycles. An
-   * `error` field (no `channels`) means that family's whole cycle threw -- isolated from the
-   * other two families, per `POST /api/change-drafts/sync`'s own `runAndRecord`. */
-  editorialProfile:
-    | { channels: Array<{ channelId: string; pushed: boolean; pushError: string | null; peersSkipped: Array<{ deviceId: string; reason: string }> }>; totalNewConflicts: number }
-    | { error: string };
-  aiConnections:
-    | { channels: Array<{ channelId: string; pushed: boolean; pushError: string | null; peersSkipped: Array<{ deviceId: string; reason: string }> }>; totalNewConflicts: number }
-    | { error: string };
+   * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3) -- same "Sync now" click, separate cycles. */
+  editorialProfile: OtherFamilyCycle;
+  aiConnections: OtherFamilyCycle;
 };
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -245,34 +254,42 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
     try {
       const result = await fetchJson<SyncCycleResponse>("/api/change-drafts/sync", { method: "POST" });
       const { editorialProfile, aiConnections } = result;
-      const channelsPushed = result.channels.filter((c) => c.pushed).length;
-      const peersSeen = new Set(result.channels.flatMap((c) => c.peersMerged)).size;
+      const changeDraftsOk = "channels" in result;
+      const channelsPushed = changeDraftsOk ? result.channels.filter((c) => c.pushed).length : 0;
+      const peersSeen = changeDraftsOk ? new Set(result.channels.flatMap((c) => c.peersMerged)).size : 0;
       const profilesPushed = "channels" in editorialProfile ? editorialProfile.channels.filter((c) => c.pushed).length : 0;
       const connectionsPushed = "channels" in aiConnections ? aiConnections.channels.some((c) => c.pushed) : false;
       setLastSyncSummary(
-        `Change drafts: ${channelsPushed}/${result.channels.length} channel(s) pushed, merged from ` +
-          `${peersSeen} other device(s), ${result.totalNewConflicts} new conflict(s). ` +
+        `Change drafts: ${changeDraftsOk ? `${channelsPushed}/${result.channels.length} channel(s) pushed, merged from ${peersSeen} other device(s), ${result.totalNewConflicts} new conflict(s)` : `failed (${result.error})`}. ` +
           `Editorial profiles: ${"channels" in editorialProfile ? `${profilesPushed} pushed, ${editorialProfile.totalNewConflicts} new conflict(s)` : `failed (${editorialProfile.error})`}. ` +
           `AI connections: ${"channels" in aiConnections ? `${connectionsPushed ? "pushed" : "nothing to push"}, ${aiConnections.totalNewConflicts} new conflict(s)` : `failed (${aiConnections.error})`}.`
       );
 
       const pushErrors: Array<{ family: SyncFamily; channelId: string | null; reason: string }> = [];
       const peersSkipped: PeerSkipped[] = [];
-      for (const c of result.channels) {
-        if (c.pushError) pushErrors.push({ family: "change_drafts", channelId: c.channelId, reason: c.pushError });
-        for (const p of c.peersSkipped) peersSkipped.push({ family: "change_drafts", channelId: c.channelId, ...p });
+      if (changeDraftsOk) {
+        for (const c of result.channels) {
+          if (c.pushError) pushErrors.push({ family: "change_drafts", channelId: c.channelId, reason: c.pushError });
+          for (const p of c.peersSkipped) peersSkipped.push({ family: "change_drafts", channelId: c.channelId, ...p });
+        }
+      } else {
+        pushErrors.push({ family: "change_drafts", channelId: null, reason: result.error });
       }
       if ("channels" in editorialProfile) {
         for (const c of editorialProfile.channels) {
           if (c.pushError) pushErrors.push({ family: "editorial_profile", channelId: c.channelId, reason: c.pushError });
           for (const p of c.peersSkipped) peersSkipped.push({ family: "editorial_profile", channelId: c.channelId, ...p });
         }
+      } else {
+        pushErrors.push({ family: "editorial_profile", channelId: null, reason: editorialProfile.error });
       }
       if ("channels" in aiConnections) {
         for (const c of aiConnections.channels) {
           if (c.pushError) pushErrors.push({ family: "ai_connections", channelId: null, reason: c.pushError });
           for (const p of c.peersSkipped) peersSkipped.push({ family: "ai_connections", channelId: null, ...p });
         }
+      } else {
+        pushErrors.push({ family: "ai_connections", channelId: null, reason: aiConnections.error });
       }
       setSyncPushErrors(pushErrors);
       setSyncPeersSkipped(peersSkipped);
