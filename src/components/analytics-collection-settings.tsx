@@ -18,7 +18,7 @@ type SyncSettings = {
  * concern (which the underlying IANA-zone-aware check already handles automatically; this field
  * is only for picking the zone itself, never a manual seasonal offset).
  */
-export function AnalyticsSyncSettings() {
+export function AnalyticsCollectionSettings() {
   const [settings, setSettings] = useState<SyncSettings | null>(null);
   const [draft, setDraft] = useState<SyncSettings | null>(null);
   const [saving, setSaving] = useState(false);
