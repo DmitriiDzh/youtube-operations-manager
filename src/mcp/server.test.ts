@@ -2647,3 +2647,58 @@ test("MCP ai_localization_create_change_set rejects an empty proposals array", a
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
   assert.equal(payload.error.code, "validation_failed");
 });
+
+test("MCP agent_get_capabilities returns version/capabilities/permission-model with no channel scoping required", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined
+  );
+  const result = await handlers.agentGetCapabilities({});
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.agentApiVersion, "0.1.0");
+  assert.deepEqual(payload.grantedPermissions, ["READ", "DRAFT"]);
+  assert.ok(payload.capabilities.some((c: { id: string }) => c.id === "system.get_capabilities"));
+});
+
+test("MCP agent_get_capabilities rejects an unexpected input field", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined
+  );
+  const result = await handlers.agentGetCapabilities({ unexpected: true });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP agent_get_capabilities is never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined
+    );
+    const result = await handlers.agentGetCapabilities({});
+    assert.notEqual(result.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});

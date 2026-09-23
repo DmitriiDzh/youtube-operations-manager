@@ -2770,3 +2770,61 @@ test("CLI ai-localization generate is never blocked by the operation lock (read-
     await releaseOperationLock(rawSqlClient);
   }
 });
+
+test("CLI agent capabilities returns version/capabilities with no auth/channel resolution required", async () => {
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => ({
+      productVersion: "9.9.9",
+      agentApiVersion: "0.1.0",
+      capabilities: [{ id: "system.get_capabilities", domain: "system" as const, permission: "READ" as const, description: "..." }],
+      dataDomains: [],
+      actionClasses: ["READ", "DRAFT", "APPROVE", "EXECUTE"] as const,
+      grantedPermissions: ["READ", "DRAFT"] as const,
+      plannedFutureCapabilities: ["query_market_intelligence", "query_competitors", "create_experiment_proposal"] as const,
+      schemaVersions: { app: 14 },
+    }),
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "capabilities"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.agentApiVersion, "0.1.0");
+  assert.deepEqual(envelope.data.grantedPermissions, ["READ", "DRAFT"]);
+});
+
+test("CLI agent capabilities is never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => ({
+        productVersion: "9.9.9",
+        agentApiVersion: "0.1.0",
+        capabilities: [],
+        dataDomains: [],
+        actionClasses: ["READ", "DRAFT", "APPROVE", "EXECUTE"] as const,
+        grantedPermissions: ["READ", "DRAFT"] as const,
+        plannedFutureCapabilities: [] as const,
+        schemaVersions: { app: 14 },
+      }),
+    };
+
+    const exitCode = await runCliCommand({
+      argv: ["agent", "capabilities"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(exitCode, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});

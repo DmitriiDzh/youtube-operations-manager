@@ -49,6 +49,17 @@ const DOMAIN_ERROR_STATUS = {
   divergent_document_lineage: 409,
   crdt_conflict_open: 409,
   channel_not_connected: 404,
+  // Phase 7 (Agent Operations Interface) -- see that error code union's own doc comment in
+  // src/lib/video-metadata/contracts.ts.
+  CAPABILITY_NOT_AVAILABLE: 501,
+  DATA_NOT_SYNCED: 409,
+  ANALYTICS_STALE: 409,
+  CHANNEL_NOT_AUTHORIZED: 403,
+  ASSET_NOT_AVAILABLE: 404,
+  INVALID_CONTEXT_REQUEST: 400,
+  DRAFT_VALIDATION_FAILED: 422,
+  APPROVAL_REQUIRED: 403,
+  EXECUTION_NOT_AUTHORIZED: 403,
 } as const satisfies Partial<Record<DomainErrorCode, number>>;
 
 export function getVideoMetadataErrorStatus(code: DomainErrorCode) {

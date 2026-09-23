@@ -20,6 +20,7 @@ import { createChannelSyncCore, type ChannelSyncCore } from "@/lib/channel-sync"
 import { createChannelAccessCore, type ChannelAccessCore } from "@/lib/channel-access";
 import { createAnalyticsCore, type AnalyticsCore } from "@/lib/analytics";
 import { createAiLocalizationCore, type AiLocalizationCore } from "@/lib/ai-localization";
+import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent-operations";
 
 // CLI parity for the read/propose/create MCP tools (docs/roadmap/plans/PHASE_7_PLAN.md,
 // docs/TECHNICAL_DEBT.md RISK-04) -- same core factories, same "smallest safe slice" as
@@ -45,6 +46,8 @@ type AnalyticsCliCoreSubset = Pick<
 // (BL-075/BL-078, docs/roadmap/BACKLOG.md) -- same two existing service functions the Web UI's
 // own ai-localization routes already call, never a parallel implementation.
 type AiLocalizationCliCoreSubset = Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration">;
+// Phase 7 (Agent Operations Interface) -- CLI parity for the MCP agent_get_capabilities tool.
+type AgentOperationsCliCoreSubset = Pick<AgentOperationsCore, "getSystemCapabilities">;
 
 loadEnvConfig(process.cwd());
 
@@ -62,7 +65,7 @@ type CliAuthAdapter = {
 };
 
 export type ParsedArgs = {
-  namespace: "metadata" | "auth" | "playlist" | "changeset" | "batch" | "channel" | "analytics" | "ai-localization";
+  namespace: "metadata" | "auth" | "playlist" | "changeset" | "batch" | "channel" | "analytics" | "ai-localization" | "agent";
   command:
     | "list"
     | "transcript"
@@ -91,11 +94,12 @@ export type ParsedArgs = {
     | "weekly-reports"
     | "weekly-report-get"
     | "generate"
-    | "create-change-set";
+    | "create-change-set"
+    | "capabilities";
   flags: Record<string, string | boolean>;
 };
 
-const EXPLICIT_NAMESPACES = ["auth", "playlist", "changeset", "batch", "channel", "analytics", "ai-localization"] as const;
+const EXPLICIT_NAMESPACES = ["auth", "playlist", "changeset", "batch", "channel", "analytics", "ai-localization", "agent"] as const;
 type ExplicitNamespace = (typeof EXPLICIT_NAMESPACES)[number];
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -117,6 +121,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     channel: ["sync", "list", "video-list"],
     analytics: ["list", "overview", "data-quality", "comparable-age", "weekly-reports", "weekly-report-get"],
     "ai-localization": ["generate", "create-change-set"],
+    agent: ["capabilities"],
   };
   const validMetadataCommands = ["list", "transcript", "preview", "apply"];
   const validCommands = hasExplicitNamespace
@@ -315,6 +320,8 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   // service's own internal device-availability check, RISK-30, not by this CLI gate).
   // "create-change-set" is deliberately NOT here -- it persists a new Change Set.
   "generate",
+  // agent capabilities: a pure local read (instance metadata + a static capability list).
+  "capabilities",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -392,6 +399,7 @@ export async function runCliCommand(args: {
   channelAccessCore?: ChannelAccessCore;
   analyticsCore?: AnalyticsCliCoreSubset;
   aiLocalizationCore?: AiLocalizationCliCoreSubset;
+  agentOperationsCore?: AgentOperationsCliCoreSubset;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
 }): Promise<number> {
@@ -405,6 +413,7 @@ export async function runCliCommand(args: {
   const channelAccessCore = args.channelAccessCore ?? createChannelAccessCore();
   const analyticsCore = args.analyticsCore ?? createAnalyticsCore();
   const aiLocalizationCore = args.aiLocalizationCore ?? createAiLocalizationCore();
+  const agentOperationsCore = args.agentOperationsCore ?? createAgentOperationsCore();
   const writeStdout =
     args.writeStdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const writeStderr =
@@ -615,6 +624,14 @@ export async function runCliCommand(args: {
         proposals,
         provenance,
       });
+      writeStdout(serializeSuccess(result));
+      return 0;
+    }
+
+    // Phase 7 (Agent Operations Interface) -- instance-level information, no channel/credential
+    // resolution needed at all, unlike every namespace above.
+    if (parsedArgs.namespace === "agent") {
+      const result = await agentOperationsCore.getSystemCapabilities({});
       writeStdout(serializeSuccess(result));
       return 0;
     }

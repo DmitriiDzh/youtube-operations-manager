@@ -134,6 +134,18 @@ Sets above; there is also no CLI/MCP command for the channel editorial profile o
 provenance reads (see `docs/ARCHITECTURE.md` §11's BL-075/BL-078 entry for what this slice
 deliberately left out).
 
+### Agent Operations commands (CLI parity for the MCP `agent_*` tools, Phase 7 slice A)
+
+```bash
+npm run cli:video-metadata -- agent capabilities
+```
+
+Read-only, no channel/credential resolution at all (instance-level information, not channel-
+scoped). Returns product version, this interface's own version, the capabilities actually
+reachable right now, the full permission-class vocabulary and what's actually granted (always
+`READ`+`DRAFT`), named future extension points, and the local schema version. See
+`docs/AGENT_OPERATIONS_INTERFACE.md` for the full design.
+
 ### Analytics commands (CLI parity for the MCP `analytics_*` tools, Phase 8 follow-up)
 
 ```bash
@@ -229,6 +241,12 @@ Key MCP tools:
   Deliberately **not** included in this slice: `getEditorialProfile`/`saveEditorialProfile`/
   `getGenerationProvenance` (no MCP/CLI tool for any of the three), and any approve/reject/apply
   path for a Change Set regardless of its source — same Gate-B-blocked gap RISK-04 already tracks.
+- Agent Operations Interface tools (Phase 7 slice A, `docs/AGENT_OPERATIONS_INTERFACE.md`):
+  - `agent_get_capabilities` — `{}` (no parameters) → `SystemCapabilities` (product/agent-API
+    version, implemented capabilities, data domains, the full permission vocabulary, what's
+    actually granted today — always `["READ","DRAFT"]` — named future extension points, and the
+    local schema version). Read-only, no channel scoping (instance-level information). Call this
+    first, before assuming any other Agent Operations tool exists.
 - Analytics read tools (`docs/roadmap/BACKLOG.md`, "machine-readable analytics for operational
   agents to consume" — `docs/roadmap/FUTURE_PHASES.md` §4 / `docs/PROJECT_SPEC.md` §33):
   - `analytics_list` — `{ channelId, startDate?, endDate?, videoId?, metricNames?, credentialRef? }`
@@ -321,6 +339,12 @@ All routes are App Router handlers and require authenticated session user.
 - `POST /api/channels/sync` — synchronize a channel (`{ "channelId"?: "UC..." }`; omitted = the
   authenticated account's own channel)
 - `GET /api/channels/[channelId]/videos` — list synchronized videos + existing localization languages
+
+### Agent Operations API (Phase 7 slice A)
+
+- `GET /api/agent-operations/capabilities` — same shape/underlying function as the MCP tool
+  `agent_get_capabilities` above (see `docs/AGENT_OPERATIONS_INTERFACE.md`). Read-only, gated by
+  the same NextAuth session check as every other route in this app; not channel-scoped.
 
 ### Analytics API (Phase 8 + Studio-Parity S6b, BL-055..059/BL-072 — previously undocumented here)
 

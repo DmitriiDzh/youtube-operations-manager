@@ -1322,3 +1322,22 @@ Google Cloud"/"Save / Apply" buttons (owner instruction: "можем и цвет
 как у кнопки соединения с Cloud"), so it reads as structurally different from the other three red
 24h bars at a glance, not a fourth copy of the same thing. `ProgressBar` itself gained an optional
 `color` prop (`"red" | "indigo"`, default `"red"`) to support this without forking the component.
+
+## 17. Agent Operations Interface (`src/lib/agent-operations/`) — Phase 7, slice A of J, not yet in `dev`
+
+Owner instruction, Telegram 2026-09-23: a full 34-section spec ("Phase 7 — Agent Operations
+Interface for Codex") authorizing design and incremental implementation of a versioned interface
+external operational agents consume, without per-slice approval (only the final `dev` merge needs
+explicit sign-off). **The full technical design, permission model, error vocabulary, and
+per-slice implementation status live in `docs/AGENT_OPERATIONS_INTERFACE.md`** -- this section is
+a pointer, not a duplicate, per `AGENTS.md` §H's "avoid competing sources of truth."
+
+In one sentence: this application remains the sole source of truth for owned-channel data,
+analytics, and the write-safety pipeline; the agent is a reasoning/proposal layer that must
+re-request context rather than cache a private copy, and can only ever hold `READ`+`DRAFT`
+permissions (never `APPROVE`/`EXECUTE`) until a future, separate, explicit owner decision widens
+that. Slice A (contracts + `get_capabilities`, exposed via MCP/CLI/HTTP, one shared
+implementation) is implemented; slices B-J (channel/video context, an analytics wrapper, a new
+creative-asset catalog, draft provenance, bulk-localization integration, content-proposal/
+artifact registration, the Codex operations-workspace template, and independent review) are
+tracked slice-by-slice in the dedicated document.

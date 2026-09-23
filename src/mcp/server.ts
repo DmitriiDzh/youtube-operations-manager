@@ -37,6 +37,8 @@ import {
   createChangeSetFromGenerationInputSchema,
   generateProposalsInputSchema,
 } from "@/lib/ai-localization/schemas";
+import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent-operations";
+import { getSystemCapabilitiesInputSchema } from "@/lib/agent-operations/schemas";
 import {
   getChannelOverviewInputSchema,
   getComparableAgeComparisonInputSchema,
@@ -109,6 +111,9 @@ type AnalyticsCoreSubset = Pick<
 // approve/reject/apply path -- "AI may propose, human approves" (AGENTS.md §G) is untouched.
 type AiLocalizationCoreSubset = Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration">;
 
+// Phase 7 (Agent Operations Interface, docs/AGENT_OPERATIONS_INTERFACE.md) -- slice A.
+type AgentOperationsCoreSubset = Pick<AgentOperationsCore, "getSystemCapabilities">;
+
 type ToolResponse = {
   content: Array<{ type: "text"; text: string }>;
   structuredContent?: Record<string, unknown>;
@@ -148,6 +153,7 @@ type McpToolHandlers = {
   analyticsWeeklyReportGet: (input: unknown) => Promise<ToolResponse>;
   aiLocalizationGenerate: (input: unknown) => Promise<ToolResponse>;
   aiLocalizationCreateChangeSet: (input: unknown) => Promise<ToolResponse>;
+  agentGetCapabilities: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -363,7 +369,8 @@ export function createMcpToolHandlers(
   channelSyncCore: ChannelSyncCoreSubset = createChannelSyncCore(),
   channelAccessCore: ChannelAccessCore = createChannelAccessCore(),
   analyticsCore: AnalyticsCoreSubset = createAnalyticsCore(),
-  aiLocalizationCore: AiLocalizationCoreSubset = createAiLocalizationCore()
+  aiLocalizationCore: AiLocalizationCoreSubset = createAiLocalizationCore(),
+  agentOperationsCore: AgentOperationsCoreSubset = createAgentOperationsCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -964,6 +971,24 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    /**
+     * Phase 7 (Agent Operations Interface) slice A. Pure local read -- no channel scoping (this
+     * is instance-level, not channel-level, information), no YouTube call, no credentialRef.
+     */
+    async agentGetCapabilities(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getSystemCapabilitiesInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const result = await agentOperationsCore.getSystemCapabilities(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -1056,6 +1081,8 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // changesetCreateFromImport above.
     aiLocalizationCreateChangeSet: async (input) =>
       (await assertMcpDeviceAvailable()) ?? handlers.aiLocalizationCreateChangeSet(input),
+    // Pure local read (instance metadata + a static capability list) -- ungated.
+    agentGetCapabilities: handlers.agentGetCapabilities,
   };
 }
 
@@ -1432,6 +1459,16 @@ export function createMcpServer(
       inputSchema: createChangeSetFromGenerationInputSchema,
     },
     (args) => handlers.aiLocalizationCreateChangeSet(args)
+  );
+
+  registerTool(
+    "agent_get_capabilities",
+    {
+      description:
+        "Report this running instance's product version, Agent API version, the capabilities actually implemented and reachable right now, the data domains they cover, the full permission-class vocabulary (READ/DRAFT/APPROVE/EXECUTE), the permissions actually GRANTED to this caller today (currently always READ+DRAFT -- never APPROVE/EXECUTE, since no proposal an agent creates is ever auto-approved), the future capabilities named in the Agent Operations Interface design that are not implemented yet (so an unavailable-capability error can be told apart from a typo or a hallucinated tool name), and the local database schema version. Call this first, before assuming any other Agent Operations tool exists -- this list only ever contains what is actually callable in this instance. A local read only, no channel scoping (this is instance-level information), no YouTube call.",
+      inputSchema: getSystemCapabilitiesInputSchema,
+    },
+    (args) => handlers.agentGetCapabilities(args)
   );
 
   return server;
