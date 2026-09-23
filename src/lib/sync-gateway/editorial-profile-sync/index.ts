@@ -30,6 +30,8 @@ export function createEditorialProfileSyncRunnerForProduction(): SyncRunner {
           const { newConflicts } = await editorialProfile.mergeIncoming({ channelId, incomingBytes });
           return { newConflictsCount: newConflicts.length };
         },
+        discardLocalAndAdoptPeer: (channelId, incomingBytes) =>
+          editorialProfile.discardLocalAndAdoptPeer({ channelId, incomingBytes }),
       },
       transport: createPerChannelFilesystemTransport(),
       logger: createDefaultLogger(),

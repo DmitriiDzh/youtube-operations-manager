@@ -156,6 +156,67 @@ test("mergeIncoming: two devices concurrently editing the SAME connection field 
   assert.equal(newConflicts[0].field, "displayName");
 });
 
+test("resolveConflict writes the chosen competing value and clears the conflict, verified independently via listConflicts", async () => {
+  const store = fakeStore();
+  const core = createAiConnectionsCatalogCore(makeDeps({}, store));
+  await core.createConnection(BASE_INPUT);
+
+  const localBytes = await core.exportBytes();
+  await core.updateConnection("conn-1", { displayName: "Local name" });
+  const localDoc = Automerge.load<AiConnectionsDocument>(localBytes);
+  const peerNext = Automerge.change(Automerge.clone(localDoc), "peer edit same field", (d) => {
+    d.connections["conn-1"].displayName = "Peer name";
+  });
+  const { newConflicts } = await core.mergeIncoming(Automerge.save(peerNext));
+  const [winningActorId, winningValue] = Object.entries(newConflicts[0].valuesByActor).find(([, v]) => v === "Peer name")!;
+
+  const resolved = await core.resolveConflict({ connectionId: "conn-1", field: "displayName", winningActorId });
+  assert.equal(resolved.displayName, winningValue);
+
+  const remaining = await core.listConflicts();
+  assert.equal(remaining.length, 0, "the conflict must actually be cleared, not merely reported as resolved");
+});
+
+test("resolveConflict rejects an unknown winningActorId rather than silently writing something", async () => {
+  const store = fakeStore();
+  const core = createAiConnectionsCatalogCore(makeDeps({}, store));
+  await core.createConnection(BASE_INPUT);
+
+  const localBytes = await core.exportBytes();
+  await core.updateConnection("conn-1", { displayName: "Local name" });
+  const localDoc = Automerge.load<AiConnectionsDocument>(localBytes);
+  const peerNext = Automerge.change(Automerge.clone(localDoc), "peer edit same field", (d) => {
+    d.connections["conn-1"].displayName = "Peer name";
+  });
+  await core.mergeIncoming(Automerge.save(peerNext));
+
+  await assert.rejects(
+    () => core.resolveConflict({ connectionId: "conn-1", field: "displayName", winningActorId: "not-a-real-actor-id" }),
+    (error: unknown) => error instanceof Error && "code" in error && (error as { code: string }).code === "validation_failed"
+  );
+
+  const remaining = await core.listConflicts();
+  assert.equal(remaining.length, 1, "nothing must have changed -- the conflict is still exactly as it was");
+});
+
+test("resolveConflict rejects a field with no actual conflict, rather than performing a no-op write", async () => {
+  const core = createAiConnectionsCatalogCore(makeDeps());
+  await core.createConnection(BASE_INPUT);
+
+  await assert.rejects(
+    () => core.resolveConflict({ connectionId: "conn-1", field: "displayName", winningActorId: "anything" }),
+    (error: unknown) => error instanceof Error && "code" in error && (error as { code: string }).code === "validation_failed"
+  );
+});
+
+test("resolveConflict rejects an unknown connectionId", async () => {
+  const core = createAiConnectionsCatalogCore(makeDeps());
+  await assert.rejects(
+    () => core.resolveConflict({ connectionId: "does-not-exist", field: "displayName", winningActorId: "anything" }),
+    (error: unknown) => error instanceof Error && "code" in error && (error as { code: string }).code === "not_found"
+  );
+});
+
 // Regression (advisor review): a connection deleted by a PEER must be cleaned up from the local
 // SQL projection too -- it disappears from `merged.connections`, so a touched-ids computation
 // that only looks at the post-merge key set never calls `deleteConnection` for it, leaving a

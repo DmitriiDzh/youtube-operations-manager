@@ -33,6 +33,12 @@ export type DocumentFamilyForSync = {
   exportBytes(channelId: string): Promise<Uint8Array>;
   /** Throws a DomainError with code "not_found" when there is nothing local to push yet. */
   mergeIncoming(channelId: string, incomingBytes: Uint8Array): Promise<{ newConflictsCount: number }>;
+  /** The explicit, human-triggered "discard my local copy, adopt this peer's version instead"
+   * resolution for a divergent lineage (`peersSkipped`'s `divergent_document_lineage` reason) --
+   * generalized here (2026-09-23) from `change-drafts-sync/services.ts`'s own bespoke
+   * `adoptDivergentPeer`, which predates this generic runner and is left untouched (`AGENTS.md`
+   * §D) rather than migrated onto this shared implementation. */
+  discardLocalAndAdoptPeer(channelId: string, incomingBytes: Uint8Array): Promise<{ backupPath: string | null }>;
 };
 
 export type SyncRunnerDeps = {
@@ -137,18 +143,57 @@ export function createSyncRunner(deps: SyncRunnerDeps) {
     return { deviceId: config.deviceId, syncRoot: config.root, startedAt, finishedAt: new Date().toISOString(), channels, totalNewConflicts };
   }
 
+  /** Mirrors `change-drafts-sync/services.ts`'s own `adoptDivergentPeerNow` exactly: re-reads
+   * the peer's CURRENT file from the sync folder rather than trusting bytes cached from an
+   * earlier cycle -- the file, or the whole sync root, may no longer be reachable by the time the
+   * operator acts on a `peersSkipped` warning. */
+  async function adoptDivergentPeerNow(input: { channelId: string; peerDeviceId: string }): Promise<{ backupPath: string | null }> {
+    const config = await resolveConfigAndRoot();
+    if (config.syncthingRootPath) {
+      await deps.transport.checkRootAvailable(config.syncthingRootPath);
+    }
+
+    const peerFiles = await deps.transport.listPeerFiles(config.root, input.channelId, config.deviceId);
+    const peer = peerFiles.find((p) => p.deviceId === input.peerDeviceId);
+    if (!peer) {
+      throw new Error(
+        `Peer device "${input.peerDeviceId}" has no file for "${input.channelId}" in the sync folder -- it may have already resynced, or the file is temporarily unavailable`
+      );
+    }
+
+    return deps.family.discardLocalAndAdoptPeer(input.channelId, peer.bytes);
+  }
+
   // Single-flight guard -- same reasoning as change-drafts-sync/services.ts's own runSyncCycle:
   // several overlapping triggers must never run two cycles concurrently against the same files.
+  // `adoptDivergentPeer` shares this exclusion with `runSyncCycle` (each waits on the other's
+  // in-flight promise before starting) for the identical reason that module documents: they are
+  // different operations, so a caller of one while the other runs gets its OWN result, never the
+  // other's.
   let cycleInFlight: Promise<SyncCycleResult> | null = null;
+  let adoptInFlight: Promise<{ backupPath: string | null }> | null = null;
 
   return {
     async runSyncCycle(): Promise<SyncCycleResult> {
       if (cycleInFlight) return cycleInFlight;
+      if (adoptInFlight) await adoptInFlight.catch(() => {});
       const cycle = runCycle().finally(() => {
         if (cycleInFlight === cycle) cycleInFlight = null;
       });
       cycleInFlight = cycle;
       return cycle;
+    },
+
+    async adoptDivergentPeer(input: { channelId: string; peerDeviceId: string }): Promise<{ backupPath: string | null }> {
+      if (adoptInFlight) {
+        throw new Error("Another divergent-lineage adoption is already in progress -- try again shortly");
+      }
+      if (cycleInFlight) await cycleInFlight.catch(() => {});
+      const op = adoptDivergentPeerNow(input).finally(() => {
+        if (adoptInFlight === op) adoptInFlight = null;
+      });
+      adoptInFlight = op;
+      return op;
     },
   };
 }

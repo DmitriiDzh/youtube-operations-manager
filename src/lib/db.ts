@@ -509,6 +509,26 @@ export const gatewayCallEvents = sqliteTable("gateway_call_events", {
 });
 
 /**
+ * SCHEMA_MIGRATIONS version 12 -- one row per sync-gateway document family
+ * (`docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4), recording the outcome of its
+ * most recent sync cycle. Added for the Merge-tab redesign (owner instruction, 2026-09-23,
+ * after a web-research pass on sync-status UX patterns: a one-off toast-style summary that
+ * disappears on reload can't distinguish "synced moments ago" from "unreachable for days" --
+ * exactly the failure mode that research found common). Always upserted (one row per family,
+ * `family` is the primary key), never appended -- unlike `gateway_call_events` above, this is
+ * current status, not a rolling-window log.
+ */
+export const syncFamilyStatus = sqliteTable("sync_family_status", {
+  family: text("family").primaryKey(),
+  lastSyncedAt: integer("last_synced_at"),
+  lastSyncOk: integer("last_sync_ok", { mode: "boolean" }),
+  lastError: text("last_error"),
+  updatedAt: integer("updated_at")
+    .notNull()
+    .$defaultFn(() => Math.floor(Date.now() / 1000)),
+});
+
+/**
  * SCHEMA_MIGRATIONS version 11. A single, device-persistent Google Cloud OAuth grant, entirely
  * decoupled from the per-channel YouTube login in `users` (owner instruction, 2026-09-22,
  * Telegram: "право получать эту информацию не должно отзываться при смене аккаунта / логина...
@@ -789,6 +809,21 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "iv TEXT, " +
           "auth_tag TEXT, " +
           "connected_at INTEGER, " +
+          "updated_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+    },
+  },
+  {
+    version: 12,
+    description:
+      "sync_family_status -- persistent last-sync-outcome per sync-gateway document family, Merge-tab redesign (owner instruction, 2026-09-23)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS sync_family_status (" +
+          "family TEXT PRIMARY KEY, " +
+          "last_synced_at INTEGER, " +
+          "last_sync_ok INTEGER, " +
+          "last_error TEXT, " +
           "updated_at INTEGER NOT NULL DEFAULT (unixepoch()))"
       );
     },
@@ -1729,6 +1764,62 @@ export async function getGatewayTrafficLast24h(
     totalAttempts: totals.get(category)?.totalAttempts ?? 0,
     succeeded: totals.get(category)?.succeeded ?? 0,
   }));
+}
+
+export type SyncFamily = "change_drafts" | "editorial_profile" | "ai_connections";
+
+const SYNC_FAMILIES: readonly SyncFamily[] = ["change_drafts", "editorial_profile", "ai_connections"];
+
+export type SyncFamilyStatusRow = {
+  family: SyncFamily;
+  /** `null` means this family has never completed a sync cycle on this device at all --
+   * distinct from a cycle that ran and failed (`lastSyncOk: false`, `lastSyncedAt` still set to
+   * when that failed attempt finished). */
+  lastSyncedAt: Date | null;
+  lastSyncOk: boolean | null;
+  lastError: string | null;
+};
+
+/**
+ * Upserts the outcome of one just-finished sync cycle for a family (`docs/roadmap/plans/
+ * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4's three families). Called once per family per
+ * `POST /api/change-drafts/sync` cycle, regardless of whether that cycle's own per-channel
+ * results included a push/merge failure -- `ok`/`error` here reflect whether the family's sync
+ * runner completed at all, not whether every individual channel within it succeeded (that
+ * detail stays in the cycle's own per-channel `pushError`/`peersSkipped`, already surfaced
+ * separately in the Merge tab).
+ */
+export async function recordSyncFamilyResult(
+  family: SyncFamily,
+  outcome: { ok: boolean; error: string | null },
+  database: AppDb = db
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await database
+    .insert(syncFamilyStatus)
+    .values({ family, lastSyncedAt: now, lastSyncOk: outcome.ok, lastError: outcome.error, updatedAt: now })
+    .onConflictDoUpdate({
+      target: syncFamilyStatus.family,
+      set: { lastSyncedAt: now, lastSyncOk: outcome.ok, lastError: outcome.error, updatedAt: now },
+    });
+}
+
+/** Returns one row per known family, always -- a family that has never synced yet still gets an
+ * explicit `{lastSyncedAt: null, lastSyncOk: null, lastError: null}` entry rather than being
+ * silently absent (mirrors `getGatewayTrafficLast24h`'s own "always all known categories" shape). */
+export async function getSyncFamilyStatuses(database: AppDb = db): Promise<SyncFamilyStatusRow[]> {
+  const rows = await database.select().from(syncFamilyStatus);
+  const byFamily = new Map(rows.map((row) => [row.family as SyncFamily, row]));
+
+  return SYNC_FAMILIES.map((family) => {
+    const row = byFamily.get(family);
+    return {
+      family,
+      lastSyncedAt: row?.lastSyncedAt ? new Date(row.lastSyncedAt * 1000) : null,
+      lastSyncOk: row?.lastSyncOk ?? null,
+      lastError: row?.lastError ?? null,
+    };
+  });
 }
 
 const ANALYTICS_SYNC_LOCAL_TIME_SETTING_KEY = "analytics_sync_local_time";

@@ -41,7 +41,7 @@ function isInsideDir(file: string, dir: string): boolean {
   return !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
-test("sync-gateway inventory: no production file outside this gateway imports a child module (change-drafts, change-drafts-sync) directly instead of the barrel", async () => {
+test("sync-gateway inventory: no production file outside this gateway imports a child module (change-drafts, change-drafts-sync, editorial-profile, editorial-profile-sync, ai-connections-catalog, ai-connections-catalog-sync, automerge-core) directly instead of the barrel", async () => {
   const allFiles = await listTsFilesRecursively(path.join(REPO_ROOT, "src"));
   const offenders: string[] = [];
   const directChildImportPattern = /from\s+["']@\/lib\/sync-gateway\/[a-zA-Z0-9_-]+["']/;

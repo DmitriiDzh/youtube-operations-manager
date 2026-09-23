@@ -157,6 +157,69 @@ test("mergeIncoming: concurrent edits to the SAME field on two devices are repor
   assert.equal(newConflicts[0].field, "toneNotes");
 });
 
+test("resolveConflict writes the chosen competing value and clears the conflict, verified independently via listConflicts", async () => {
+  const store = fakeStore();
+  const core = createEditorialProfileCore(makeDeps({}, store));
+
+  const origin = Automerge.from<EditorialProfileDocument>(emptyProfile("UC_1"));
+  const { merged: adopted } = await createAutomergeCore<EditorialProfileDocument>({
+    store,
+    discardedBackupStore: fakeBackupStore(),
+    emptyDocument: emptyProfile,
+  }).mergeIncoming("UC_1", Automerge.save(origin), () => []);
+  await store.saveDocumentBytes("UC_1", Automerge.save(adopted));
+
+  await core.saveProfile({ channelId: "UC_1", toneNotes: "Local tone" });
+  const peerNext = Automerge.change(Automerge.clone(adopted), "peer edit same field", (d) => {
+    d.toneNotes = "Peer tone";
+  });
+  const { newConflicts } = await core.mergeIncoming({ channelId: "UC_1", incomingBytes: Automerge.save(peerNext) });
+  const [winningActorId, winningValue] = Object.entries(newConflicts[0].valuesByActor).find(([, v]) => v === "Peer tone")!;
+
+  const resolved = await core.resolveConflict({ channelId: "UC_1", field: "toneNotes", winningActorId });
+  assert.equal(resolved.toneNotes, winningValue);
+
+  const remaining = await core.listConflicts("UC_1");
+  assert.equal(remaining.length, 0, "the conflict must actually be cleared, not merely reported as resolved");
+});
+
+test("resolveConflict rejects an unknown winningActorId rather than silently writing something", async () => {
+  const store = fakeStore();
+  const core = createEditorialProfileCore(makeDeps({}, store));
+
+  const origin = Automerge.from<EditorialProfileDocument>(emptyProfile("UC_1"));
+  const { merged: adopted } = await createAutomergeCore<EditorialProfileDocument>({
+    store,
+    discardedBackupStore: fakeBackupStore(),
+    emptyDocument: emptyProfile,
+  }).mergeIncoming("UC_1", Automerge.save(origin), () => []);
+  await store.saveDocumentBytes("UC_1", Automerge.save(adopted));
+
+  await core.saveProfile({ channelId: "UC_1", toneNotes: "Local tone" });
+  const peerNext = Automerge.change(Automerge.clone(adopted), "peer edit same field", (d) => {
+    d.toneNotes = "Peer tone";
+  });
+  await core.mergeIncoming({ channelId: "UC_1", incomingBytes: Automerge.save(peerNext) });
+
+  await assert.rejects(
+    () => core.resolveConflict({ channelId: "UC_1", field: "toneNotes", winningActorId: "not-a-real-actor-id" }),
+    (error: unknown) => error instanceof Error && "code" in error && (error as { code: string }).code === "validation_failed"
+  );
+
+  const remaining = await core.listConflicts("UC_1");
+  assert.equal(remaining.length, 1, "nothing must have changed -- the conflict is still exactly as it was");
+});
+
+test("resolveConflict rejects a field with no actual conflict, rather than performing a no-op write", async () => {
+  const core = createEditorialProfileCore(makeDeps());
+  await core.saveProfile({ channelId: "UC_1", toneNotes: "Only ever edited here" });
+
+  await assert.rejects(
+    () => core.resolveConflict({ channelId: "UC_1", field: "toneNotes", winningActorId: "anything" }),
+    (error: unknown) => error instanceof Error && "code" in error && (error as { code: string }).code === "validation_failed"
+  );
+});
+
 test("discardLocalAndAdoptPeer: adopts the peer's document and re-projects it to SQL", async () => {
   const projection = fakeProjection();
   const core = createEditorialProfileCore(makeDeps({ projection }));

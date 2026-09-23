@@ -32,6 +32,7 @@ export function createAiConnectionsCatalogSyncRunnerForProduction(): SyncRunner 
           const { newConflicts } = await catalog.mergeIncoming(incomingBytes);
           return { newConflictsCount: newConflicts.length };
         },
+        discardLocalAndAdoptPeer: (_key, incomingBytes) => catalog.discardLocalAndAdoptPeer(incomingBytes),
       },
       transport: createPerChannelFilesystemTransport(),
       logger: createDefaultLogger(),
