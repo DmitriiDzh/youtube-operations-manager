@@ -4,6 +4,7 @@ import {
   type ChannelDraftDocument,
   type DraftChange,
   type DraftChangeSet,
+  type DraftProvenance,
   type FieldConflict,
   type MergeResult,
 } from "./contracts";
@@ -13,6 +14,7 @@ import {
   channelIdInputSchema,
   createChangeSetInputSchema,
   createChangeSetWithChangesInputSchema,
+  createProvenanceInputSchema,
   discardLocalAndAdoptPeerInputSchema,
   mergeIncomingInputSchema,
   parseWithSchema,
@@ -65,6 +67,7 @@ function emptyDocument(channelId: string): Automerge.Doc<ChannelDraftDocument> {
     channelId,
     changeSets: {},
     changes: {},
+    provenance: {},
   });
 }
 
@@ -144,6 +147,11 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
     }
     for (const change of Object.values(doc.changes)) {
       await deps.projection.upsertChange(change);
+    }
+    // `provenance` may be entirely absent on a document saved before M4 added this field
+    // (`contracts.ts`'s own doc comment) -- never assume it exists.
+    for (const provenance of Object.values(doc.provenance ?? {})) {
+      await deps.projection.upsertProvenance(provenance);
     }
   }
 
@@ -361,6 +369,46 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       );
       await saveDocument(parsed.channelId, next);
       return next.changeSets[parsed.changeSetId];
+    },
+
+    /**
+     * M4 (`docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4, Category C): write-once
+     * AI-generation provenance for a change set, folded into this same per-channel document.
+     * Never updated or deleted through this API -- a duplicate `id` is rejected the same way
+     * `createChangeSet`/`addChange` reject a duplicate id above. Pre-existing provenance rows
+     * created in SQL before this cutover are NOT retroactively backfilled into any channel's
+     * document (accepted limitation, same reasoning as `video_metrics_daily` staying device-local
+     * -- this is audit/debug data, not a user-facing setting a cutover must not appear to lose).
+     */
+    async createProvenance(input: unknown): Promise<DraftProvenance> {
+      const parsed = parseWithSchema(createProvenanceInputSchema, input, "createProvenance input");
+      const doc = await loadOrCreateDocument(parsed.channelId);
+
+      if (doc.provenance?.[parsed.id]) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "Provenance with this id already exists",
+          details: { id: parsed.id },
+        });
+      }
+
+      const provenance: DraftProvenance = {
+        id: parsed.id,
+        changeSetId: parsed.changeSetId,
+        channelId: parsed.channelId,
+        profileVersion: parsed.profileVersion,
+        effectiveContextJson: parsed.effectiveContextJson,
+        createdAt: new Date().toISOString(),
+      };
+
+      const next = Automerge.change(doc, `create provenance ${parsed.id}`, (draft) => {
+        // Defensive init -- a document saved before M4 has no `provenance` key at all
+        // (`contracts.ts`'s own doc comment), and Automerge has no schema migration.
+        if (!draft.provenance) draft.provenance = {};
+        draft.provenance[parsed.id] = provenance;
+      });
+      await saveDocument(parsed.channelId, next);
+      return provenance;
     },
 
     /**

@@ -1,5 +1,11 @@
-import { deleteStoredChange, deleteStoredChangeSet, upsertStoredChange, upsertStoredChangeSet } from "@/lib/db";
-import type { DraftChange, DraftChangeSet } from "../contracts";
+import {
+  deleteStoredChange,
+  deleteStoredChangeSet,
+  setStoredGenerationProvenanceRow,
+  upsertStoredChange,
+  upsertStoredChangeSet,
+} from "@/lib/db";
+import type { DraftChange, DraftChangeSet, DraftProvenance } from "../contracts";
 
 /**
  * CD2's SQL read-projection (AUTOMERGE_MIGRATION_PLAN.md §6): writes the Automerge document's
@@ -18,6 +24,9 @@ export type SqlProjectionAdapter = {
   upsertChange(change: DraftChange): Promise<void>;
   deleteChangeSet(changeSetId: string): Promise<void>;
   deleteChange(changeId: string): Promise<void>;
+  /** Write-once (M4) -- there is no `deleteProvenance`, since nothing in this module's API ever
+   * removes a provenance entry from a document. */
+  upsertProvenance(provenance: DraftProvenance): Promise<void>;
 };
 
 export function createSqlProjectionAdapter(): SqlProjectionAdapter {
@@ -62,6 +71,17 @@ export function createSqlProjectionAdapter(): SqlProjectionAdapter {
 
     async deleteChange(changeId: string): Promise<void> {
       await deleteStoredChange(changeId);
+    },
+
+    async upsertProvenance(provenance: DraftProvenance): Promise<void> {
+      await setStoredGenerationProvenanceRow({
+        id: provenance.id,
+        changeSetId: provenance.changeSetId,
+        channelId: provenance.channelId,
+        profileVersion: provenance.profileVersion,
+        effectiveContextJson: provenance.effectiveContextJson,
+        createdAt: new Date(provenance.createdAt),
+      });
     },
   };
 }

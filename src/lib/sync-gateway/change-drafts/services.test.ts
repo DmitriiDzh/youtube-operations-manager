@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as Automerge from "@automerge/automerge";
-import { DomainError, type ChannelDraftDocument, type DraftChange, type DraftChangeSet } from "./contracts";
+import { DomainError, type ChannelDraftDocument, type DraftChange, type DraftChangeSet, type DraftProvenance } from "./contracts";
 import { createChangeDraftsCore, type ServiceDependencies } from "./services";
 import type { ChangeDraftsStoreAdapter } from "./adapters/automerge-store";
 import type { DiscardedDocumentBackupStore } from "./adapters/discarded-backup-store";
@@ -40,12 +40,15 @@ function fakeSqlSource(overrides: Partial<SqlSourceAdapter> = {}): SqlSourceAdap
 function fakeProjection(): SqlProjectionAdapter & {
   projectedChangeSets: Map<string, DraftChangeSet>;
   projectedChanges: Map<string, DraftChange>;
+  projectedProvenance: Map<string, DraftProvenance>;
 } {
   const projectedChangeSets = new Map<string, DraftChangeSet>();
   const projectedChanges = new Map<string, DraftChange>();
+  const projectedProvenance = new Map<string, DraftProvenance>();
   return {
     projectedChangeSets,
     projectedChanges,
+    projectedProvenance,
     async upsertChangeSet(changeSet) {
       projectedChangeSets.set(changeSet.id, changeSet);
     },
@@ -57,6 +60,9 @@ function fakeProjection(): SqlProjectionAdapter & {
     },
     async deleteChange(changeId) {
       projectedChanges.delete(changeId);
+    },
+    async upsertProvenance(provenance) {
+      projectedProvenance.set(provenance.id, provenance);
     },
   };
 }
@@ -109,6 +115,77 @@ test("createChangeSet then addChange persists and is readable back via getDocume
   const doc = await core.getDocument({ channelId: CHANNEL });
   assert.equal(doc.changeSets["cs-1"].source, "ai_localization");
   assert.equal(doc.changes["c-1"].proposedValue, "Original");
+});
+
+// M4 (docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md §4, Category C).
+test("createProvenance: stored alongside the change set and projected to SQL", async () => {
+  const projection = fakeProjection();
+  const core = createChangeDraftsCore(makeDeps({ projection }));
+  await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "ai_localization" });
+
+  const provenance = await core.createProvenance({
+    channelId: CHANNEL,
+    id: "prov-1",
+    changeSetId: "cs-1",
+    profileVersion: 3,
+    effectiveContextJson: '{"tone":"warm"}',
+  });
+
+  assert.equal(provenance.changeSetId, "cs-1");
+  const doc = await core.getDocument({ channelId: CHANNEL });
+  assert.equal(doc.provenance?.["prov-1"]?.profileVersion, 3);
+  assert.equal(projection.projectedProvenance.get("prov-1")?.effectiveContextJson, '{"tone":"warm"}');
+});
+
+test("createProvenance rejects a duplicate id", async () => {
+  const core = createChangeDraftsCore(makeDeps());
+  await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "ai_localization" });
+  await core.createProvenance({ channelId: CHANNEL, id: "prov-1", changeSetId: "cs-1", profileVersion: null, effectiveContextJson: null });
+
+  await assert.rejects(
+    () => core.createProvenance({ channelId: CHANNEL, id: "prov-1", changeSetId: "cs-1", profileVersion: null, effectiveContextJson: null }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+// Regression: a document saved before M4 added the `provenance` field has no such key at all
+// (Automerge has no schema migration, `contracts.ts`'s own doc comment) -- `createProvenance`
+// must initialize it defensively rather than throw on `draft.provenance[id] = ...` against
+// `undefined`.
+test("createProvenance initializes the provenance map on a document saved before this field existed", async () => {
+  const store = fakeStore();
+  // Simulate a pre-M4 document: built and saved via `Automerge.from` with no `provenance` key.
+  const preM4Doc = Automerge.from<Omit<ChannelDraftDocument, "provenance">>({
+    channelId: CHANNEL,
+    changeSets: {
+      "cs-1": {
+        id: "cs-1",
+        channelId: CHANNEL,
+        source: "ai_localization",
+        status: "in_review",
+        importedFilename: null,
+        schemaVersion: null,
+        exportedAt: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    },
+    changes: {},
+  });
+  await store.saveDocumentBytes(CHANNEL, Automerge.save(preM4Doc));
+
+  const core = createChangeDraftsCore(makeDeps({ store }));
+  const provenance = await core.createProvenance({
+    channelId: CHANNEL,
+    id: "prov-1",
+    changeSetId: "cs-1",
+    profileVersion: null,
+    effectiveContextJson: null,
+  });
+
+  assert.equal(provenance.id, "prov-1");
+  const doc = await core.getDocument({ channelId: CHANNEL });
+  assert.ok(doc.provenance?.["prov-1"]);
 });
 
 test("addChange rejects a change referencing a nonexistent change set", async () => {
@@ -689,6 +766,9 @@ test("a throwing projection does not fail createChangeSet/addChange/mergeIncomin
       throw new Error("simulated DB failure");
     },
     async deleteChange() {
+      throw new Error("simulated DB failure");
+    },
+    async upsertProvenance() {
       throw new Error("simulated DB failure");
     },
   };

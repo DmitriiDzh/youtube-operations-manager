@@ -1,5 +1,5 @@
-import { createGenerationProvenance, getGenerationProvenanceByChangeSetId, getStoredEditorialProfile } from "@/lib/db";
-import { createEditorialProfileCoreForProduction } from "@/lib/sync-gateway";
+import { getGenerationProvenanceByChangeSetId, getStoredEditorialProfile } from "@/lib/db";
+import { createChangeDraftsCoreForProduction, createEditorialProfileCoreForProduction } from "@/lib/sync-gateway";
 
 /**
  * Cutover, 2026-09-22 (`docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3, mirrors
@@ -30,9 +30,25 @@ export function createEditorialProfileStoreAdapter() {
   };
 }
 
+/**
+ * Cutover, 2026-09-22 (M4): provenance is now created through `src/lib/sync-gateway/change-
+ * drafts/` (the same per-channel Automerge document as its parent change set) instead of a
+ * direct SQL insert. `getByChangeSetId` stays direct SQL, same reasoning as the editorial-profile
+ * cutover above.
+ */
 export function createGenerationProvenanceStoreAdapter() {
+  const core = createChangeDraftsCoreForProduction();
+
   return {
-    create: createGenerationProvenance,
+    async create(input: {
+      id: string;
+      changeSetId: string;
+      channelId: string;
+      profileVersion: number | null;
+      effectiveContextJson: string | null;
+    }): Promise<void> {
+      await core.createProvenance(input);
+    },
     getByChangeSetId: getGenerationProvenanceByChangeSetId,
   };
 }

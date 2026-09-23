@@ -2190,16 +2190,6 @@ function mapStoredGenerationProvenance(
   };
 }
 
-export async function createGenerationProvenance(input: {
-  id: string;
-  changeSetId: string;
-  channelId: string;
-  profileVersion: number | null;
-  effectiveContextJson: string | null;
-}): Promise<void> {
-  await db.insert(aiLocalizationGenerationProvenance).values(input);
-}
-
 export async function getGenerationProvenanceByChangeSetId(
   changeSetId: string
 ): Promise<StoredGenerationProvenance | null> {
@@ -2208,6 +2198,28 @@ export async function getGenerationProvenanceByChangeSetId(
     .from(aiLocalizationGenerationProvenance)
     .where(eq(aiLocalizationGenerationProvenance.changeSetId, changeSetId));
   return row ? mapStoredGenerationProvenance(row) : null;
+}
+
+/**
+ * Raw write-once insert -- writes exactly the row it is given (including `createdAt`, preserving
+ * the moment it was actually created, which may be on another device). No-ops on a duplicate `id`
+ * rather than throwing, since a `mergeIncoming`/re-projection can legitimately re-project an
+ * already-projected provenance entry. Used only as the SQL read-projection target for
+ * `src/lib/sync-gateway/change-drafts/` (2026-09-22, `docs/roadmap/plans/
+ * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M4) -- that module's per-channel Automerge document
+ * is now the source of truth for provenance. The old direct-SQL `createGenerationProvenance` was
+ * deleted the same day once its only caller was repointed at that module -- confirmed zero
+ * remaining callers anywhere in `src/`.
+ */
+export async function setStoredGenerationProvenanceRow(input: {
+  id: string;
+  changeSetId: string;
+  channelId: string;
+  profileVersion: number | null;
+  effectiveContextJson: string | null;
+  createdAt: Date;
+}): Promise<void> {
+  await db.insert(aiLocalizationGenerationProvenance).values(input).onConflictDoNothing();
 }
 
 // ---------------------------------------------------------------------------
