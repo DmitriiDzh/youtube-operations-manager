@@ -200,7 +200,6 @@ export default function Dashboard() {
       activeTab={tab}
       onTabChange={setTab}
       channel={channel}
-      userName={session.user?.name}
       onSignOut={() => signOut()}
     >
       {tab === "home" && (
