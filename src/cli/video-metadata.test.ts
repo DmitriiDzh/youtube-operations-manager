@@ -2141,7 +2141,7 @@ test("CLI channel video-list requires channelId", async () => {
 // CLI parity for MCP's analytics_list/analytics_overview (docs/roadmap/BACKLOG.md,
 // "machine-readable analytics for operational agents to consume").
 
-function makeAnalyticsCliCoreStub(): Pick<AnalyticsCore, "listMetrics" | "getChannelOverview"> {
+function makeAnalyticsCliCoreStub(): Pick<AnalyticsCore, "listMetrics" | "getChannelOverview" | "getDataQualityReport"> {
   return {
     listMetrics: async () => ({
       channelId: "UC_1",
@@ -2156,6 +2156,15 @@ function makeAnalyticsCliCoreStub(): Pick<AnalyticsCore, "listMetrics" | "getCha
       daily: [],
       currentTotals: { views: 10, estimatedMinutesWatched: 20, subscribersGained: 1, subscribersLost: 0 },
       previousTotals: { views: 5, estimatedMinutesWatched: 10, subscribersGained: 0, subscribersLost: 0 },
+    }),
+    getDataQualityReport: async () => ({
+      channelId: "UC_1",
+      startDate: "2026-09-01",
+      endDate: "2026-09-05",
+      coveredDates: ["2026-09-01"],
+      uncoveredDates: ["2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05"],
+      tooRecentDates: [],
+      videosWithSkips: [],
     }),
   };
 }
@@ -2313,7 +2322,88 @@ test("CLI analytics list/overview are never blocked by the operation lock (read-
       writeStdout: (line) => stdout.push(line),
     });
     assert.equal(overviewExit, 0);
+
+    const dataQualityExit = await runCliCommand({
+      argv: [
+        "analytics",
+        "data-quality",
+        "--channelId",
+        "UC_1",
+        "--userId",
+        "u1",
+        "--startDate",
+        "2026-09-01",
+        "--endDate",
+        "2026-09-05",
+      ],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      analyticsCore: makeAnalyticsCliCoreStub(),
+      writeStdout: (line) => stdout.push(line),
+    });
+    assert.equal(dataQualityExit, 0);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }
+});
+
+test("CLI analytics data-quality forwards resolved credentialRef and requires startDate/endDate", async () => {
+  const analyticsCore = makeAnalyticsCliCoreStub();
+  let captured: unknown;
+  analyticsCore.getDataQualityReport = async (input: unknown) => {
+    captured = input;
+    return {
+      channelId: "UC_1",
+      startDate: "2026-09-01",
+      endDate: "2026-09-05",
+      coveredDates: [],
+      uncoveredDates: [],
+      tooRecentDates: [],
+      videosWithSkips: [],
+    };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "analytics",
+      "data-quality",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--startDate",
+      "2026-09-01",
+      "--endDate",
+      "2026-09-05",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    credentialRef: { userId: "u1" },
+    channelId: "UC_1",
+    startDate: "2026-09-01",
+    endDate: "2026-09-05",
+  });
+});
+
+test("CLI analytics data-quality requires startDate and endDate", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["analytics", "data-quality", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    analyticsCore: makeAnalyticsCliCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /startDate/);
 });

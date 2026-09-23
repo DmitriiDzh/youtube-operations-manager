@@ -50,6 +50,13 @@ type SyncedVideo = {
   thumbnails: Record<string, { url: string }>;
 };
 
+type DataQualityReport = {
+  coveredDates: string[];
+  uncoveredDates: string[];
+  tooRecentDates: string[];
+  videosWithSkips: Array<{ videoId: string; skipCount: number; lastSkippedAt: string }>;
+};
+
 const PERIOD_OPTIONS = [
   { days: 7, label: "Last 7 days" },
   { days: 28, label: "Last 28 days" },
@@ -68,6 +75,8 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
 
   const [topContent, setTopContent] = useState<Array<{ videoId: string; title: string; thumbnail: string | null; views: number }>>([]);
   const [loadingTopContent, setLoadingTopContent] = useState(false);
+
+  const [dataQuality, setDataQuality] = useState<DataQualityReport | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -150,11 +159,30 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     }
   }, []);
 
+  // Read-only diagnostic (Phase 8 follow-up, slice 2) -- scoped to the same range "Top content"
+  // uses (the locally-collected data window), since that's what this is actually answering:
+  // "can I trust the numbers 'Top content' just showed for this period." Failure is silent
+  // (dataQuality stays null) -- this is a nice-to-have annotation, not load-bearing for the rest
+  // of the panel.
+  const fetchDataQuality = useCallback(async (channelId: string, days: number) => {
+    try {
+      const { startDate, endDate } = computeDefaultPeriodRange(days);
+      const res = await fetch(
+        `/api/channels/${encodeURIComponent(channelId)}/analytics/data-quality?startDate=${startDate}&endDate=${endDate}`
+      );
+      const data = await res.json();
+      if (res.ok) setDataQuality(data as DataQualityReport);
+    } catch {
+      // Non-fatal, see doc comment above.
+    }
+  }, []);
+
   useEffect(() => {
     if (!channel) return;
     void fetchOverview(channel.channelId, periodDays);
     void fetchTopContent(channel.channelId, periodDays);
-  }, [channel, periodDays, fetchOverview, fetchTopContent]);
+    void fetchDataQuality(channel.channelId, periodDays);
+  }, [channel, periodDays, fetchOverview, fetchTopContent, fetchDataQuality]);
 
   const chartData = useMemo(
     () => overview?.daily.map((row) => ({ date: row.date, value: row.views })) ?? [],
@@ -277,6 +305,25 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
               </ul>
             )}
           </div>
+
+          {dataQuality && (dataQuality.uncoveredDates.length > 0 || dataQuality.videosWithSkips.length > 0) && (
+            <div className="rounded-xl border border-amber-900/60 bg-amber-950/20 p-4 text-sm">
+              <h4 className="mb-2 font-medium text-amber-300">Data quality</h4>
+              {dataQuality.uncoveredDates.length > 0 && (
+                <p className="text-amber-200/90">
+                  {dataQuality.uncoveredDates.length} day{dataQuality.uncoveredDates.length === 1 ? "" : "s"} in this
+                  period {dataQuality.uncoveredDates.length === 1 ? "was" : "were"} never collected — the totals
+                  above may be incomplete.
+                </p>
+              )}
+              {dataQuality.videosWithSkips.length > 0 && (
+                <p className="mt-1 text-amber-200/90">
+                  {dataQuality.videosWithSkips.length} video{dataQuality.videosWithSkips.length === 1 ? "" : "s"} had
+                  a collection failure recorded in this period.
+                </p>
+              )}
+            </div>
+          )}
         </>
       ) : null}
     </div>

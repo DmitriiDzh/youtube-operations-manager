@@ -32,7 +32,11 @@ import {
   syncChannelInputSchema,
 } from "@/lib/channel-sync/schemas";
 import { createAnalyticsCore, type AnalyticsCore } from "@/lib/analytics";
-import { getChannelOverviewInputSchema, listMetricsInputSchema } from "@/lib/analytics/schemas";
+import {
+  getChannelOverviewInputSchema,
+  getDataQualityReportInputSchema,
+  listMetricsInputSchema,
+} from "@/lib/analytics/schemas";
 
 loadEnvConfig(process.cwd());
 
@@ -74,7 +78,7 @@ type ChannelSyncCoreSubset = Pick<ChannelSyncCore, "syncChannel" | "listChannels
 // real Analytics API quota, not something an agent should be able to trigger freely (the Web UI's
 // own "Collect now" button plus the once-a-day dashboard-mount auto-trigger remain the only ways
 // to actually collect new data).
-type AnalyticsCoreSubset = Pick<AnalyticsCore, "listMetrics" | "getChannelOverview">;
+type AnalyticsCoreSubset = Pick<AnalyticsCore, "listMetrics" | "getChannelOverview" | "getDataQualityReport">;
 
 type ToolResponse = {
   content: Array<{ type: "text"; text: string }>;
@@ -109,6 +113,7 @@ type McpToolHandlers = {
   channelVideoList: (input: unknown) => Promise<ToolResponse>;
   analyticsList: (input: unknown) => Promise<ToolResponse>;
   analyticsOverview: (input: unknown) => Promise<ToolResponse>;
+  analyticsDataQuality: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -810,6 +815,21 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    async analyticsDataQuality(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getDataQualityReportInputSchema.partial({ credentialRef: true }).safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await analyticsCore.getDataQualityReport({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -885,6 +905,8 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // classification -- it's the absence of any mutation that matters, not where the data lives).
     analyticsList: handlers.analyticsList,
     analyticsOverview: handlers.analyticsOverview,
+    // Pure local read over analytics_collection_runs -- same classification as analyticsList.
+    analyticsDataQuality: handlers.analyticsDataQuality,
   };
 }
 
@@ -1201,6 +1223,16 @@ export function createMcpServer(
       inputSchema: getChannelOverviewInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.analyticsOverview(args)
+  );
+
+  registerTool(
+    "analytics_data_quality",
+    {
+      description:
+        "Data-quality diagnostics for a channel's collected Analytics data over a date range: which dates were actually covered by a completed collection run (`collectMetrics`), which were requested but never collected, which are too recent for the Analytics API to have reported yet (its own 1-2 day lag), and which videos had a collection failure recorded against them. A local read only -- never a live YouTube call. Absence of a `video_metrics_daily` row for a date does NOT by itself mean data is missing (the API omits zero-activity days entirely) -- use this tool, not a raw scan of analytics_list's rows, to tell genuine gaps from real zero-activity days. credentialRef is OPTIONAL and falls back to active local auth context.",
+      inputSchema: getDataQualityReportInputSchema.partial({ credentialRef: true }),
+    },
+    (args) => handlers.analyticsDataQuality(args)
   );
 
   return server;

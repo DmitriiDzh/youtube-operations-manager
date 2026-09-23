@@ -112,6 +112,19 @@ verifies the batch belongs to `--channelId` before returning anything (`AGENTS.m
 None of these commands have an apply-class equivalent (approve/execute a Change Set or Batch) --
 that remains Web-UI-only, same as the equivalent MCP tools.
 
+### Analytics commands (CLI parity for the MCP `analytics_*` tools, Phase 8 follow-up)
+
+```bash
+npm run cli:video-metadata -- analytics list --channelId <UC...> [--startDate <YYYY-MM-DD>] [--endDate <YYYY-MM-DD>] [--videoId <VIDEO_ID>] [--metricNames views,likes,...]
+npm run cli:video-metadata -- analytics overview --channelId <UC...> --startDate <YYYY-MM-DD> --endDate <YYYY-MM-DD>
+npm run cli:video-metadata -- analytics data-quality --channelId <UC...> --startDate <YYYY-MM-DD> --endDate <YYYY-MM-DD>
+```
+
+All three are read-only. `analytics list` reads already-collected `video_metrics_daily` rows
+locally; `analytics overview` is a live Analytics API read (channel-level totals + deltas, counts
+against quota); `analytics data-quality` is a local read over `analytics_collection_runs` (see
+`docs/ARCHITECTURE.md` §14.9). Mirrors the equivalent MCP tools exactly -- see below.
+
 ---
 
 ## MCP server (`npm run mcp:video-metadata`)
@@ -175,7 +188,12 @@ Key MCP tools:
     returns. **A live Analytics API read** (counts against that quota, unlike `analytics_list`) —
     its own totals lag YouTube Studio's displayed numbers by 1-2 days, see
     `docs/ARCHITECTURE.md` §14.8.
-  - Both are read-only (no local mutation, no YouTube write) — deliberately excludes
+  - `analytics_data_quality` — `{ channelId, startDate, endDate, credentialRef? }` → which dates
+    in the range were actually covered by a collection run vs. never collected vs. too recent for
+    the API to have reported yet, plus which videos had a recorded collection failure. Local read
+    only (reads `analytics_collection_runs`, never calls YouTube) — see
+    `docs/ARCHITECTURE.md` §14.9.
+  - All three are read-only (no local mutation, no YouTube write) — deliberately excludes
     `collectMetrics`/`runAutoCollectionIfStale` (real local-persistence mutations that spend
     Analytics API quota; only the Web UI's "Collect now" button and the daily auto-collect
     trigger can start a new collection run).

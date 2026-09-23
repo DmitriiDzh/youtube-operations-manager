@@ -356,6 +356,7 @@ test("MCP server (connectionEnabled: false) registers zero tools, including ever
     "channel_video_list",
     "analytics_list",
     "analytics_overview",
+    "analytics_data_quality",
     "apply",
     "playlist_create",
     "write_channel_select",
@@ -385,6 +386,7 @@ test("MCP server (connectionEnabled: true) registers every tool, including write
     "channel_video_list",
     "analytics_list",
     "analytics_overview",
+    "analytics_data_quality",
     "apply",
     "playlist_create",
     "playlist_update",
@@ -1938,7 +1940,7 @@ test("MCP changeset_create_from_import is rejected while the operation lock is h
 // analytics_overview a live Analytics API call), so neither is wrapped by the device-availability
 // mutation gate, mirroring channel_list/channel_video_list above.
 
-function makeAnalyticsCoreStub(): Pick<AnalyticsCore, "listMetrics" | "getChannelOverview"> {
+function makeAnalyticsCoreStub(): Pick<AnalyticsCore, "listMetrics" | "getChannelOverview" | "getDataQualityReport"> {
   return {
     listMetrics: async () => ({
       channelId: "UC_1",
@@ -1953,6 +1955,15 @@ function makeAnalyticsCoreStub(): Pick<AnalyticsCore, "listMetrics" | "getChanne
       daily: [{ date: "2026-08-26", views: 10, estimatedMinutesWatched: 20, subscribersGained: 1, subscribersLost: 0 }],
       currentTotals: { views: 10, estimatedMinutesWatched: 20, subscribersGained: 1, subscribersLost: 0 },
       previousTotals: { views: 5, estimatedMinutesWatched: 10, subscribersGained: 0, subscribersLost: 0 },
+    }),
+    getDataQualityReport: async () => ({
+      channelId: "UC_1",
+      startDate: "2026-09-01",
+      endDate: "2026-09-05",
+      coveredDates: ["2026-09-01", "2026-09-02"],
+      uncoveredDates: ["2026-09-03", "2026-09-04", "2026-09-05"],
+      tooRecentDates: [],
+      videosWithSkips: [{ videoId: "v1", skipCount: 1, lastSkippedAt: "2026-09-05T00:00:00.000Z" }],
     }),
   };
 }
@@ -2135,7 +2146,87 @@ test("MCP analytics_list/analytics_overview are never blocked by the operation l
       endDate: "2026-09-22",
     });
     assert.notEqual(overviewResult.isError, true);
+
+    const dataQualityResult = await handlers.analyticsDataQuality({
+      channelId: "UC_1",
+      startDate: "2026-09-01",
+      endDate: "2026-09-05",
+    });
+    assert.notEqual(dataQualityResult.isError, true);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }
+});
+
+test("MCP analytics_data_quality returns coverage/skip diagnostics for a date range", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    makeAnalyticsCoreStub()
+  );
+  const result = await handlers.analyticsDataQuality({
+    channelId: "UC_1",
+    startDate: "2026-09-01",
+    endDate: "2026-09-05",
+  });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.deepEqual(payload.coveredDates, ["2026-09-01", "2026-09-02"]);
+  assert.deepEqual(payload.videosWithSkips, [{ videoId: "v1", skipCount: 1, lastSkippedAt: "2026-09-05T00:00:00.000Z" }]);
+});
+
+test("MCP analytics_data_quality forwards the resolved credentialRef when omitted", async () => {
+  const seenArgs: unknown[] = [];
+  const analyticsCore = makeAnalyticsCoreStub();
+  analyticsCore.getDataQualityReport = async (input: unknown) => {
+    seenArgs.push(input);
+    return {
+      channelId: "UC_1",
+      startDate: "2026-09-01",
+      endDate: "2026-09-05",
+      coveredDates: [],
+      uncoveredDates: [],
+      tooRecentDates: [],
+      videosWithSkips: [],
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    analyticsCore
+  );
+  await handlers.analyticsDataQuality({ channelId: "UC_1", startDate: "2026-09-01", endDate: "2026-09-05" });
+
+  assert.deepEqual(seenArgs, [
+    {
+      channelId: "UC_1",
+      startDate: "2026-09-01",
+      endDate: "2026-09-05",
+      credentialRef: { userId: "active-user" },
+    },
+  ]);
+});
+
+test("MCP analytics_data_quality rejects a missing channelId", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    makeAnalyticsCoreStub()
+  );
+  const result = await handlers.analyticsDataQuality({ startDate: "2026-09-01", endDate: "2026-09-05" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
 });

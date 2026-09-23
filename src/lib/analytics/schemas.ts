@@ -140,3 +140,35 @@ export const getChannelOverviewOutputSchema = z
 
 export type GetChannelOverviewInput = z.infer<typeof getChannelOverviewInputSchema>;
 export type GetChannelOverviewOutput = z.infer<typeof getChannelOverviewOutputSchema>;
+
+export const getDataQualityReportInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+    startDate: isoDateSchema,
+    endDate: isoDateSchema,
+  })
+  .strict();
+
+const dataQualityVideoSkipSchema = z
+  .object({
+    videoId: z.string().min(1),
+    skipCount: z.number().int().positive(),
+    lastSkippedAt: z.string(),
+  })
+  .strict();
+
+export const getDataQualityReportOutputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    startDate: z.string(),
+    endDate: z.string(),
+    coveredDates: z.array(z.string()),
+    uncoveredDates: z.array(z.string()),
+    tooRecentDates: z.array(z.string()),
+    videosWithSkips: z.array(dataQualityVideoSkipSchema),
+  })
+  .strict();
+
+export type GetDataQualityReportInput = z.infer<typeof getDataQualityReportInputSchema>;
+export type GetDataQualityReportOutput = z.infer<typeof getDataQualityReportOutputSchema>;

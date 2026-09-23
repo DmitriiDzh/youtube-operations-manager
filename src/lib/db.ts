@@ -633,6 +633,34 @@ export const videoMetricsDaily = sqliteTable(
   ]
 );
 
+/**
+ * SCHEMA_MIGRATIONS version 13 -- Phase 8 follow-up, data-quality diagnostics
+ * (docs/roadmap/FUTURE_PHASES.md §4's "data-quality/missing-data diagnostics"). One row per
+ * `collectMetrics` invocation (append-only, like `gatewayCallEvents` above, never updated) --
+ * the ground truth for "was collection actually attempted for this channel/date range" and
+ * "which videos failed," neither of which `video_metrics_daily` alone can answer: the Analytics
+ * API silently OMITS a day with genuinely zero activity from its response (live-verified
+ * 2026-09-23 against a real low-traffic video -- interior zero-view days never appear as rows at
+ * all), so an absent `video_metrics_daily` row is ambiguous between "never collected" and
+ * "collected, zero activity that day" without this table to disambiguate.
+ */
+export const analyticsCollectionRuns = sqliteTable(
+  "analytics_collection_runs",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    channelId: text("channel_id").notNull(),
+    requestedStartDate: text("requested_start_date").notNull(),
+    requestedEndDate: text("requested_end_date").notNull(),
+    videoCount: integer("video_count").notNull(),
+    upsertsIssued: integer("upserts_issued").notNull(),
+    skippedVideoIdsJson: text("skipped_video_ids_json").notNull(),
+    ranAt: integer("ran_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [index("analytics_collection_runs_channel_id_idx").on(table.channelId)]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -825,6 +853,27 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "last_sync_ok INTEGER, " +
           "last_error TEXT, " +
           "updated_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+    },
+  },
+  {
+    version: 13,
+    description:
+      "analytics_collection_runs -- append-only log of each collectMetrics run, for data-quality diagnostics (docs/roadmap/FUTURE_PHASES.md §4)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS analytics_collection_runs (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "channel_id TEXT NOT NULL, " +
+          "requested_start_date TEXT NOT NULL, " +
+          "requested_end_date TEXT NOT NULL, " +
+          "video_count INTEGER NOT NULL, " +
+          "upserts_issued INTEGER NOT NULL, " +
+          "skipped_video_ids_json TEXT NOT NULL, " +
+          "ran_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS analytics_collection_runs_channel_id_idx ON analytics_collection_runs(channel_id)"
       );
     },
   },
@@ -3194,6 +3243,78 @@ export async function listVideoMetricsByChannel(
     .orderBy(videoMetricsDaily.videoId, videoMetricsDaily.metricDate, videoMetricsDaily.metricName);
 
   return rows.map(mapStoredVideoMetric);
+}
+
+export type StoredAnalyticsCollectionRun = {
+  id: number;
+  channelId: string;
+  requestedStartDate: string;
+  requestedEndDate: string;
+  videoCount: number;
+  upsertsIssued: number;
+  skippedVideoIds: string[];
+  ranAt: Date;
+};
+
+/**
+ * Appends one row per `collectMetrics` run -- never updated, never deleted (the same append-only
+ * discipline `gateway_call_events` uses, minus that table's own retention window, since a
+ * collection-run history is small by construction: at most a few rows per channel per day).
+ * `skippedVideoIds` is JSON-encoded since SQLite has no native array column and this table is
+ * never queried by individual skipped video (see `getDataQualityReport` in
+ * `src/lib/analytics/services.ts`, which decodes it after reading every run for a channel).
+ */
+export async function recordAnalyticsCollectionRun(
+  input: {
+    channelId: string;
+    requestedStartDate: string;
+    requestedEndDate: string;
+    videoCount: number;
+    upsertsIssued: number;
+    skippedVideoIds: string[];
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(analyticsCollectionRuns).values({
+    channelId: input.channelId,
+    requestedStartDate: input.requestedStartDate,
+    requestedEndDate: input.requestedEndDate,
+    videoCount: input.videoCount,
+    upsertsIssued: input.upsertsIssued,
+    skippedVideoIdsJson: JSON.stringify(input.skippedVideoIds),
+  });
+}
+
+export async function listAnalyticsCollectionRunsByChannel(
+  channelId: string,
+  database: AppDb = db
+): Promise<StoredAnalyticsCollectionRun[]> {
+  const rows = await database
+    .select()
+    .from(analyticsCollectionRuns)
+    .where(eq(analyticsCollectionRuns.channelId, channelId))
+    .orderBy(analyticsCollectionRuns.ranAt);
+
+  return rows.map((row) => ({
+    id: row.id,
+    channelId: row.channelId,
+    requestedStartDate: row.requestedStartDate,
+    requestedEndDate: row.requestedEndDate,
+    videoCount: row.videoCount,
+    upsertsIssued: row.upsertsIssued,
+    // A row this app itself wrote should always have valid JSON -- if it somehow doesn't
+    // (external tampering, disk corruption), treat it as "no skips recorded" rather than
+    // crashing the whole diagnostics report over one malformed history row.
+    skippedVideoIds: (() => {
+      try {
+        const parsed = JSON.parse(row.skippedVideoIdsJson);
+        return Array.isArray(parsed) ? (parsed as string[]) : [];
+      } catch {
+        return [];
+      }
+    })(),
+    ranAt: row.ranAt,
+  }));
 }
 
 // The one and only row this table ever holds -- see `cloudConnection`'s own doc comment above.

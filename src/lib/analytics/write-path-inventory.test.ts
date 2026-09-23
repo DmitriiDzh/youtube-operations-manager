@@ -88,6 +88,7 @@ test("analytics write-path-inventory: no file in src/lib/analytics references a 
 const ALLOWED_DB_WRITE_IMPORTS = new Set([
   "upsertVideoMetric", // this module's own metric rows
   "markAnalyticsAutoCollected", // this module's own single channels column (BL-059)
+  "recordAnalyticsCollectionRun", // this module's own append-only collection-run history (data-quality diagnostics)
 ]);
 
 test("analytics write-path-inventory: adapters/store.ts imports no db.ts write function beyond its own two", async () => {
