@@ -11,6 +11,7 @@ import type { BatchCore } from "@/lib/batches";
 import type { ChannelSyncCore } from "@/lib/channel-sync";
 import type { ChannelAccessCore } from "@/lib/channel-access";
 import type { AnalyticsCore } from "@/lib/analytics";
+import type { AiLocalizationCore } from "@/lib/ai-localization";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { createMcpServer, createMcpToolHandlers } from "./server";
@@ -2458,6 +2459,189 @@ test("MCP analytics_weekly_report_get rejects a missing weekStartDate", async ()
     makeAnalyticsCoreStub()
   );
   const result = await handlers.analyticsWeeklyReportGet({ channelId: "UC_1" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+function makeAiLocalizationCoreStub(): Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration"> {
+  return {
+    generateProposals: async () => ({
+      results: [
+        {
+          videoId: "v1",
+          language: "es",
+          providerError: null,
+          fields: [
+            {
+              videoId: "v1",
+              language: "es",
+              field: "title",
+              baselineValue: "Old title",
+              proposedValue: "Nuevo titulo",
+              changeType: "modify",
+              validationStatus: "valid",
+              validationError: null,
+            },
+          ],
+          usage: null,
+        },
+      ],
+      errors: [],
+      summary: {
+        targetsRequested: 1,
+        targetsGenerated: 1,
+        targetsFailed: 0,
+        validProposals: 1,
+        invalidProposals: 0,
+        unchangedProposals: 0,
+      },
+      generationContext: { profileVersion: null, effectiveContext: null },
+    }),
+    createChangeSetFromGeneration: async () => makeChangeSet({ source: "ai_localization" }),
+  };
+}
+
+test("MCP ai_localization_generate forwards input and checks active-channel access", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    makeAiLocalizationCoreStub()
+  );
+  const result = await handlers.aiLocalizationGenerate({
+    channelId: "UC_1",
+    videoIds: ["v1"],
+    targetLanguages: ["es"],
+  });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.results[0].videoId, "v1");
+  assert.equal(payload.summary.validProposals, 1);
+});
+
+test("MCP ai_localization_generate rejects a channelId that is not the caller's active channel", async () => {
+  const restrictiveChannelAccess: Pick<
+    ChannelAccessCore,
+    "assertActiveChannel" | "getActiveChannelId" | "filterToActiveChannel" | "activateChannel"
+  > = {
+    async assertActiveChannel() {
+      throw new DomainError({ code: "CHANNEL_NOT_ACTIVE", message: "not active" });
+    },
+    async getActiveChannelId() {
+      return null;
+    },
+    filterToActiveChannel(items) {
+      return [...items];
+    },
+    async activateChannel() {},
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    restrictiveChannelAccess,
+    undefined,
+    makeAiLocalizationCoreStub()
+  );
+  const result = await handlers.aiLocalizationGenerate({
+    channelId: "UC_OTHER",
+    videoIds: ["v1"],
+    targetLanguages: ["es"],
+  });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP ai_localization_generate rejects a missing channelId", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    makeAiLocalizationCoreStub()
+  );
+  const result = await handlers.aiLocalizationGenerate({ videoIds: ["v1"], targetLanguages: ["es"] });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP ai_localization_create_change_set persists via createChangeSetFromGeneration, source ai_localization", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    makeAiLocalizationCoreStub()
+  );
+  const result = await handlers.aiLocalizationCreateChangeSet({
+    channelId: "UC_1",
+    proposals: [{ videoId: "v1", language: "es", title: "Nuevo titulo" }],
+  });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.source, "ai_localization");
+});
+
+test("MCP ai_localization_create_change_set is rejected while the operation lock is held; ai_localization_generate is not", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      makeAiLocalizationCoreStub()
+    );
+
+    const generateResult = await handlers.aiLocalizationGenerate({
+      channelId: "UC_1",
+      videoIds: ["v1"],
+      targetLanguages: ["es"],
+    });
+    assert.equal(generateResult.isError, undefined);
+
+    const createResult = await handlers.aiLocalizationCreateChangeSet({
+      channelId: "UC_1",
+      proposals: [{ videoId: "v1", language: "es", title: "Nuevo titulo" }],
+    });
+    assert.equal(createResult.isError, true);
+    const payload = JSON.parse(createResult.content[0]?.text ?? "{}");
+    assert.equal(payload.error.code, "operation_lock_held");
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("MCP ai_localization_create_change_set rejects an empty proposals array", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    makeAiLocalizationCoreStub()
+  );
+  const result = await handlers.aiLocalizationCreateChangeSet({ channelId: "UC_1", proposals: [] });
 
   assert.equal(result.isError, true);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");

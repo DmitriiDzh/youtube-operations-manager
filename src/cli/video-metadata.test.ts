@@ -13,6 +13,7 @@ import type { Batch } from "@/lib/batches/contracts";
 import type { ChannelSyncCore } from "@/lib/channel-sync";
 import type { ChannelAccessCore } from "@/lib/channel-access";
 import type { AnalyticsCore } from "@/lib/analytics";
+import type { AiLocalizationCore } from "@/lib/ai-localization";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { runCliCommand, getCredentialRef } from "./video-metadata";
@@ -2563,4 +2564,209 @@ test("CLI analytics weekly-report-get requires --weekStartDate", async () => {
   const envelope = JSON.parse(stderr[0] ?? "{}");
   assert.equal(envelope.error.code, "validation_failed");
   assert.match(envelope.error.message, /weekStartDate/);
+});
+
+function makeAiLocalizationCliCoreStub(): Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration"> {
+  return {
+    generateProposals: async () => ({
+      results: [
+        {
+          videoId: "v1",
+          language: "es",
+          providerError: null,
+          fields: [
+            {
+              videoId: "v1",
+              language: "es",
+              field: "title" as const,
+              baselineValue: "Old title",
+              proposedValue: "Nuevo titulo",
+              changeType: "modify" as const,
+              validationStatus: "valid" as const,
+              validationError: null,
+            },
+          ],
+          usage: null,
+        },
+      ],
+      errors: [],
+      summary: {
+        targetsRequested: 1,
+        targetsGenerated: 1,
+        targetsFailed: 0,
+        validProposals: 1,
+        invalidProposals: 0,
+        unchangedProposals: 0,
+      },
+      generationContext: { profileVersion: null, effectiveContext: null },
+    }),
+    createChangeSetFromGeneration: async () => ({ ...makeChangeSetRecord(), source: "ai_localization" as const }),
+  };
+}
+
+test("CLI ai-localization generate forwards channelId, parsed --videoIds/--targetLanguages, and optional provider flags", async () => {
+  const aiLocalizationCore = makeAiLocalizationCliCoreStub();
+  let captured: unknown;
+  aiLocalizationCore.generateProposals = async (input: unknown) => {
+    captured = input;
+    return {
+      results: [],
+      errors: [],
+      summary: { targetsRequested: 0, targetsGenerated: 0, targetsFailed: 0, validProposals: 0, invalidProposals: 0, unchangedProposals: 0 },
+      generationContext: { profileVersion: null, effectiveContext: null },
+    };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "ai-localization",
+      "generate",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--videoIds",
+      "v1, v2",
+      "--targetLanguages",
+      "es, fr",
+      "--connectionId",
+      "conn-1",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    aiLocalizationCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    videoIds: ["v1", "v2"],
+    targetLanguages: ["es", "fr"],
+    providerName: undefined,
+    connectionId: "conn-1",
+  });
+});
+
+test("CLI ai-localization generate rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["ai-localization", "generate", "--channelId", "UC_1", "--videoIds", "v1", "--targetLanguages", "es"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    aiLocalizationCore: makeAiLocalizationCliCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI ai-localization create-change-set parses --proposalsJson/--provenanceJson and persists via createChangeSetFromGeneration", async () => {
+  const aiLocalizationCore = makeAiLocalizationCliCoreStub();
+  let captured: unknown;
+  aiLocalizationCore.createChangeSetFromGeneration = async (input: unknown) => {
+    captured = input;
+    return { ...makeChangeSetRecord(), source: "ai_localization" as const };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "ai-localization",
+      "create-change-set",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--proposalsJson",
+      JSON.stringify([{ videoId: "v1", language: "es", title: "Nuevo titulo" }]),
+      "--provenanceJson",
+      JSON.stringify({ profileVersion: 2, effectiveContext: null }),
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    aiLocalizationCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    proposals: [{ videoId: "v1", language: "es", title: "Nuevo titulo" }],
+    provenance: { profileVersion: 2, effectiveContext: null },
+  });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.source, "ai_localization");
+});
+
+test("CLI ai-localization create-change-set rejects malformed --proposalsJson", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["ai-localization", "create-change-set", "--channelId", "UC_1", "--proposalsJson", "{not valid json"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    aiLocalizationCore: makeAiLocalizationCliCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI ai-localization generate is never blocked by the operation lock (read-only); create-change-set is blocked", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const generateExit = await runCliCommand({
+      argv: ["ai-localization", "generate", "--channelId", "UC_1", "--userId", "u1", "--videoIds", "v1", "--targetLanguages", "es"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      aiLocalizationCore: makeAiLocalizationCliCoreStub(),
+      writeStdout: () => {},
+    });
+    assert.equal(generateExit, 0);
+
+    const stderr: string[] = [];
+    const createExit = await runCliCommand({
+      argv: [
+        "ai-localization",
+        "create-change-set",
+        "--channelId",
+        "UC_1",
+        "--userId",
+        "u1",
+        "--proposalsJson",
+        JSON.stringify([{ videoId: "v1", language: "es", title: "Nuevo titulo" }]),
+      ],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      aiLocalizationCore: makeAiLocalizationCliCoreStub(),
+      writeStderr: (line) => stderr.push(line),
+    });
+    assert.equal(createExit, 1);
+    const envelope = JSON.parse(stderr[0] ?? "{}");
+    assert.equal(envelope.error.code, "operation_lock_held");
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
 });

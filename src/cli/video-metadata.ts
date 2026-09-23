@@ -19,6 +19,7 @@ import { createBatchCore, type BatchCore } from "@/lib/batches";
 import { createChannelSyncCore, type ChannelSyncCore } from "@/lib/channel-sync";
 import { createChannelAccessCore, type ChannelAccessCore } from "@/lib/channel-access";
 import { createAnalyticsCore, type AnalyticsCore } from "@/lib/analytics";
+import { createAiLocalizationCore, type AiLocalizationCore } from "@/lib/ai-localization";
 
 // CLI parity for the read/propose/create MCP tools (docs/roadmap/plans/PHASE_7_PLAN.md,
 // docs/TECHNICAL_DEBT.md RISK-04) -- same core factories, same "smallest safe slice" as
@@ -40,6 +41,10 @@ type AnalyticsCliCoreSubset = Pick<
   | "listWeeklyReports"
   | "getWeeklyReport"
 >;
+// CLI parity for the MCP ai_localization_generate/ai_localization_create_change_set tools
+// (BL-075/BL-078, docs/roadmap/BACKLOG.md) -- same two existing service functions the Web UI's
+// own ai-localization routes already call, never a parallel implementation.
+type AiLocalizationCliCoreSubset = Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration">;
 
 loadEnvConfig(process.cwd());
 
@@ -57,7 +62,7 @@ type CliAuthAdapter = {
 };
 
 export type ParsedArgs = {
-  namespace: "metadata" | "auth" | "playlist" | "changeset" | "batch" | "channel" | "analytics";
+  namespace: "metadata" | "auth" | "playlist" | "changeset" | "batch" | "channel" | "analytics" | "ai-localization";
   command:
     | "list"
     | "transcript"
@@ -84,11 +89,13 @@ export type ParsedArgs = {
     | "data-quality"
     | "comparable-age"
     | "weekly-reports"
-    | "weekly-report-get";
+    | "weekly-report-get"
+    | "generate"
+    | "create-change-set";
   flags: Record<string, string | boolean>;
 };
 
-const EXPLICIT_NAMESPACES = ["auth", "playlist", "changeset", "batch", "channel", "analytics"] as const;
+const EXPLICIT_NAMESPACES = ["auth", "playlist", "changeset", "batch", "channel", "analytics", "ai-localization"] as const;
 type ExplicitNamespace = (typeof EXPLICIT_NAMESPACES)[number];
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -109,6 +116,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     batch: ["list", "get"],
     channel: ["sync", "list", "video-list"],
     analytics: ["list", "overview", "data-quality", "comparable-age", "weekly-reports", "weekly-report-get"],
+    "ai-localization": ["generate", "create-change-set"],
   };
   const validMetadataCommands = ["list", "transcript", "preview", "apply"];
   const validCommands = hasExplicitNamespace
@@ -302,6 +310,11 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   "comparable-age",
   "weekly-reports",
   "weekly-report-get",
+  // ai-localization generate: persists nothing (mirrors "preview"'s own classification above --
+  // the mock provider makes no network call at all; a real-connection call is gated by the
+  // service's own internal device-availability check, RISK-30, not by this CLI gate).
+  // "create-change-set" is deliberately NOT here -- it persists a new Change Set.
+  "generate",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -378,6 +391,7 @@ export async function runCliCommand(args: {
   channelSyncCore?: ChannelSyncCliCoreSubset;
   channelAccessCore?: ChannelAccessCore;
   analyticsCore?: AnalyticsCliCoreSubset;
+  aiLocalizationCore?: AiLocalizationCliCoreSubset;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
 }): Promise<number> {
@@ -390,6 +404,7 @@ export async function runCliCommand(args: {
   const channelSyncCore = args.channelSyncCore ?? createChannelSyncCore();
   const channelAccessCore = args.channelAccessCore ?? createChannelAccessCore();
   const analyticsCore = args.analyticsCore ?? createAnalyticsCore();
+  const aiLocalizationCore = args.aiLocalizationCore ?? createAiLocalizationCore();
   const writeStdout =
     args.writeStdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const writeStderr =
@@ -540,6 +555,67 @@ export async function runCliCommand(args: {
       const batch = await operationsCore.requireBatchForChannel(channelId, batchId);
       const ledgerRows = await operationsCore.listLedgerRows(batchId);
       writeStdout(serializeSuccess({ batch, ledgerRows }));
+      return 0;
+    }
+
+    // ai-localization, like changeset/batch above, has its own service functions that never
+    // check active-channel scoping internally (the Web UI's own routes do it at the route
+    // boundary instead) -- so this CLI namespace does it explicitly here too, same reasoning.
+    if (parsedArgs.namespace === "ai-localization") {
+      const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
+      const aiLocalizationCredentialRef = await auth.resolveEffectiveCredentialRef({
+        explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+      });
+      await channelAccessCore.assertActiveChannel({
+        userId: "userId" in aiLocalizationCredentialRef ? aiLocalizationCredentialRef.userId : null,
+        channelId,
+      });
+
+      if (parsedArgs.command === "generate") {
+        const videoIds = requiredStringFlag(parsedArgs.flags, "videoIds")
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+        const targetLanguages = requiredStringFlag(parsedArgs.flags, "targetLanguages")
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+        const result = await aiLocalizationCore.generateProposals({
+          channelId,
+          videoIds,
+          targetLanguages,
+          providerName: optionalStringFlag(parsedArgs.flags, "providerName"),
+          connectionId: optionalStringFlag(parsedArgs.flags, "connectionId"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // "create-change-set" -- persists a new Change Set (source: "ai_localization"). Never
+      // writes to YouTube; gated above like changeset import (mutates the local database).
+      // --proposalsJson/--provenanceJson take a JSON-encoded value, the same shape
+      // generateProposals's own response already returns for a caller to echo back --
+      // there is no reasonable flat-flag equivalent for an array of {videoId, language,
+      // title?, description?} objects.
+      const proposalsJson = requiredStringFlag(parsedArgs.flags, "proposalsJson");
+      const provenanceJsonFlag = optionalStringFlag(parsedArgs.flags, "provenanceJson");
+      let proposals: unknown;
+      let provenance: unknown;
+      try {
+        proposals = JSON.parse(proposalsJson);
+        provenance = provenanceJsonFlag ? JSON.parse(provenanceJsonFlag) : undefined;
+      } catch {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "--proposalsJson/--provenanceJson must each be valid JSON",
+        });
+      }
+      const result = await aiLocalizationCore.createChangeSetFromGeneration({
+        channelId,
+        proposals,
+        provenance,
+      });
+      writeStdout(serializeSuccess(result));
       return 0;
     }
 

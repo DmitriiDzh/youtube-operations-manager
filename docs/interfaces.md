@@ -112,6 +112,28 @@ verifies the batch belongs to `--channelId` before returning anything (`AGENTS.m
 None of these commands have an apply-class equivalent (approve/execute a Change Set or Batch) --
 that remains Web-UI-only, same as the equivalent MCP tools.
 
+### AI Localization commands (CLI parity for the MCP `ai_localization_*` tools, BL-075/BL-078)
+
+```bash
+npm run cli:video-metadata -- ai-localization generate --channelId <UC...> --videoIds <id1,id2,...> --targetLanguages <lang1,lang2,...> [--providerName mock] [--connectionId <CONNECTION_ID>]
+npm run cli:video-metadata -- ai-localization create-change-set --channelId <UC...> --proposalsJson <json> [--provenanceJson <json>]
+```
+
+`generate` calls the same `generateProposals` function the Web UI's own "Generate with AI" step
+calls -- persists nothing. Omitting both `--providerName` and `--connectionId` uses the
+deterministic mock provider (no network call, no cost); `--connectionId` routes through a real,
+user-configured AI Connection and makes a genuine outbound call to that provider (capped at 50
+(video, language) targets per call). `create-change-set` persists the reviewed (optionally edited)
+proposals as a new Change Set, `source: "ai_localization"` -- the exact same persistence path
+`changeset import` (XLSX) already uses, so approval/conflict-revalidation/Batch/dry-run are
+unaffected; it is gated like `changeset import` above. `--proposalsJson`/`--provenanceJson` take a
+JSON-encoded value (an array of `{videoId, language, title?, description?}` objects, and the
+`generationContext` a prior `generate` call returned, respectively) -- there is no reasonable flat
+CLI-flag equivalent for that shape. Neither command has an apply-class equivalent, same as Change
+Sets above; there is also no CLI/MCP command for the channel editorial profile or generation
+provenance reads (see `docs/ARCHITECTURE.md` §11's BL-075/BL-078 entry for what this slice
+deliberately left out).
+
 ### Analytics commands (CLI parity for the MCP `analytics_*` tools, Phase 8 follow-up)
 
 ```bash
@@ -186,6 +208,27 @@ Key MCP tools:
   - `channel_list` — `{ credentialRef? }` → `{ channels: SyncedChannel[] }`. Read-only.
   - `channel_video_list` — `{ channelId, credentialRef? }` → `{ channelId, videos: SyncedVideo[] }`.
     Read-only.
+- AI Localization tools (BL-075/BL-078, `docs/roadmap/BACKLOG.md`) — wrap the exact same two
+  service functions the Web UI's own `POST .../ai-localization/{generate,change-sets}` routes
+  already call; no new validation/persistence logic. Neither accepts `credentialRef` (mirrors
+  `changeset_list`/`changeset_get`'s own convention — always the active local auth context):
+  - `ai_localization_generate` — `{ channelId, videoIds, targetLanguages, providerName?,
+    connectionId?, editorialBrief? }` → `GenerationResult` (per-target proposals, errors,
+    summary, `generationContext` provenance). **Persists nothing.** Omitting both
+    `providerName`/`connectionId` uses the deterministic mock provider (no network call);
+    `connectionId` makes a real outbound call to a configured AI Connection, capped at 50
+    (video, language) targets per call, gated by its own internal device-availability check
+    (RISK-30) rather than this tool's own mutation gate.
+  - `ai_localization_create_change_set` — `{ channelId, proposals: ReviewedProposal[],
+    provenance? }` → the created `ChangeSet` (`source: "ai_localization"`). **Persists** a new
+    Change Set — mutates local state only, never YouTube, gated by the same device-availability
+    check as `changeset_create_from_import`. Every resulting Change starts `approvalStatus:
+    "pending"` — there is no code path, here or anywhere, that can mark an AI-authored proposal
+    already-approved (`AGENTS.md` §G).
+
+  Deliberately **not** included in this slice: `getEditorialProfile`/`saveEditorialProfile`/
+  `getGenerationProvenance` (no MCP/CLI tool for any of the three), and any approve/reject/apply
+  path for a Change Set regardless of its source — same Gate-B-blocked gap RISK-04 already tracks.
 - Analytics read tools (`docs/roadmap/BACKLOG.md`, "machine-readable analytics for operational
   agents to consume" — `docs/roadmap/FUTURE_PHASES.md` §4 / `docs/PROJECT_SPEC.md` §33):
   - `analytics_list` — `{ channelId, startDate?, endDate?, videoId?, metricNames?, credentialRef? }`
