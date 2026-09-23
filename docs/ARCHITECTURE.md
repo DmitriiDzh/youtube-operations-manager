@@ -1323,21 +1323,27 @@ Google Cloud"/"Save / Apply" buttons (owner instruction: "можем и цвет
 24h bars at a glance, not a fourth copy of the same thing. `ProgressBar` itself gained an optional
 `color` prop (`"red" | "indigo"`, default `"red"`) to support this without forking the component.
 
-## 17. Agent Operations Interface (`src/lib/agent-operations/`) — Phase 7, slice A of J, not yet in `dev`
+## 17. Agent Operations Interface (`src/lib/agent-operations/`) — Phase 7, slices A-B of J landed on this branch, not yet in `dev`
 
 Owner instruction, Telegram 2026-09-23: a full 34-section spec ("Phase 7 — Agent Operations
 Interface for Codex") authorizing design and incremental implementation of a versioned interface
 external operational agents consume, without per-slice approval (only the final `dev` merge needs
 explicit sign-off). **The full technical design, permission model, error vocabulary, and
-per-slice implementation status live in `docs/AGENT_OPERATIONS_INTERFACE.md`** -- this section is
-a pointer, not a duplicate, per `AGENTS.md` §H's "avoid competing sources of truth."
+per-slice implementation status live in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table --
+consult that table for which slice is implemented, not the number in this heading** (this section
+is a pointer, not a duplicate, per `AGENTS.md` §H's "avoid competing sources of truth"; a prior
+version of this heading named a specific slice and went stale the moment the next slice landed
+without touching this file -- found by independent review, 2026-09-24).
 
 In one sentence: this application remains the sole source of truth for owned-channel data,
 analytics, and the write-safety pipeline; the agent is a reasoning/proposal layer that must
 re-request context rather than cache a private copy, and can only ever hold `READ`+`DRAFT`
 permissions (never `APPROVE`/`EXECUTE`) until a future, separate, explicit owner decision widens
-that. Slice A (contracts + `get_capabilities`, exposed via MCP/CLI/HTTP, one shared
-implementation) is implemented; slices B-J (channel/video context, an analytics wrapper, a new
-creative-asset catalog, draft provenance, bulk-localization integration, content-proposal/
-artifact registration, the Codex operations-workspace template, and independent review) are
-tracked slice-by-slice in the dedicated document.
+that. This phase's planned scope spans contracts/capability-discovery, channel/video context, an
+analytics wrapper, a new creative-asset catalog, draft provenance, bulk-localization integration,
+content-proposal/artifact registration, a Codex operations-workspace template, and independent
+review -- **which of these is actually implemented as of any given moment is tracked exclusively
+in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here** (a prior version
+of this sentence named specific slices as implemented/pending and went stale the moment the next
+slice landed without this file being touched -- found by independent review, 2026-09-24; this
+sentence is deliberately worded to never make that same claim again).

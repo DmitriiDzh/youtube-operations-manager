@@ -2763,8 +2763,8 @@ test("MCP agent_get_channel_context forwards input and checks active-channel acc
   assert.equal(payload.syncedVideoCount, 5);
 });
 
-test("MCP agent_get_channel_context rejects a channelId that is not the caller's active channel", async () => {
-  const restrictiveChannelAccess = {
+function makeRestrictiveChannelAccessStub() {
+  return {
     async assertActiveChannel() {
       throw new DomainError({ code: "CHANNEL_NOT_ACTIVE", message: "not active" });
     },
@@ -2776,16 +2776,28 @@ test("MCP agent_get_channel_context rejects a channelId that is not the caller's
     },
     async activateChannel() {},
   };
+}
+
+test("MCP agent_get_channel_context rejects a channelId that is not the caller's active channel", async () => {
+  // Uses a "must not be called" stub, not the ordinary makeAgentOperationsCoreStub(), so this
+  // test proves the service is genuinely never reached on a channel-scoping failure -- not just
+  // that the tool call ends in an error (found by independent review, 2026-09-24).
+  const agentOperationsCore: Pick<AgentOperationsCore, "getSystemCapabilities" | "getChannelContext" | "getVideoContext"> = {
+    ...makeAgentOperationsCoreStub(),
+    getChannelContext: async () => {
+      throw new Error("must not be called");
+    },
+  };
 
   const handlers = createMcpToolHandlers(
     makeCoreStub(),
     makeAuthStub(),
     makeOperationsCoreStub(),
     undefined,
-    restrictiveChannelAccess,
+    makeRestrictiveChannelAccessStub(),
     undefined,
     undefined,
-    makeAgentOperationsCoreStub()
+    agentOperationsCore
   );
   const result = await handlers.agentGetChannelContext({ channelId: "UC_OTHER" });
 
@@ -2830,6 +2842,31 @@ test("MCP agent_get_video_context forwards input including optional `include`, c
   await handlers.agentGetVideoContext({ channelId: "UC_1", videoId: "v1", include: ["metadata"] });
 
   assert.deepEqual(captured, { channelId: "UC_1", videoId: "v1", include: ["metadata"] });
+});
+
+test("MCP agent_get_video_context rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<AgentOperationsCore, "getSystemCapabilities" | "getChannelContext" | "getVideoContext"> = {
+    ...makeAgentOperationsCoreStub(),
+    getVideoContext: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentGetVideoContext({ channelId: "UC_OTHER", videoId: "v1" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
 });
 
 test("MCP agent_get_video_context rejects a missing videoId", async () => {

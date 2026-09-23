@@ -176,7 +176,7 @@ second error-code enum:
 | G | Content Proposal / external artifact registration | PLANNED |
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | IN PROGRESS |
 | I | Codex operations-workspace template | PLANNED -- see `docs/CODEX_OPERATIONS_WORKSPACE.md` once slice I lands |
-| J | Independent security/integration review | ONGOING -- one round already run for slice A (see `docs/roadmap/BACKLOG.md`) |
+| J | Independent security/integration review | ONGOING -- an independent-review cycle for slices A+B is in progress (round 2 as of this writing found real documentation-drift findings, since fixed; the cycle continues until a full round finds zero issues); `docs/roadmap/BACKLOG.md`'s BL-079/BL-080 rows are the authoritative record of when each slice's review cycle actually completed |
 
 Deliberately **not** implemented in this phase (owner spec §14/§29): the competitor/trend
 intelligence module (Phase 9) and the Experiment Engine (Phase 10). `plannedFutureCapabilities`

@@ -2899,6 +2899,37 @@ test("CLI agent channel-context rejects a channelId that is not the caller's act
   assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
 });
 
+test("CLI agent video-context rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "video-context", "--channelId", "UC_1", "--videoId", "v1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("must not be called"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
 test("CLI agent video-context forwards channelId/videoId and parses --include into an array", async () => {
   let captured: unknown;
   const agentOperationsCore = {
