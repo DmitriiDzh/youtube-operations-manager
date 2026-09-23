@@ -102,3 +102,49 @@ export const AUTO_COLLECTION_RANGE_DAYS = 7;
 export type AutoCollectResult =
   | { ranCollection: false }
   | { ranCollection: true; result: CollectMetricsResult };
+
+/**
+ * Studio-Parity S6b (docs/roadmap/plans/STUDIO_PARITY_PLAN.md §4) -- the small, **live-verified**
+ * subset of `ANALYTICS_METRIC_NAMES` a channel-level (no video filter) report actually accepts.
+ * Deliberately its own list, not a slice of `ANALYTICS_METRIC_NAMES` picked by convention: this
+ * one has been confirmed to work at the channel level against a real response (2026-09-23, see
+ * `youtube-read-gateway/analytics-api.ts`'s `queryChannelAnalyticsReport` doc comment), unlike the
+ * rest of that list, whose own doc comment says it was never independently confirmed metric-by-
+ * metric. "impressions"/"impressionClickThroughRate" (Studio's thumbnail-impressions/CTR widgets)
+ * were also live-probed and confirmed **rejected** by the real API ("Unknown identifier") --
+ * genuinely unavailable via the public Analytics API, not merely unimplemented here.
+ */
+export const CHANNEL_OVERVIEW_METRIC_NAMES = [
+  "views",
+  "estimatedMinutesWatched",
+  "subscribersGained",
+  "subscribersLost",
+] as const;
+
+export type ChannelOverviewMetricName = (typeof CHANNEL_OVERVIEW_METRIC_NAMES)[number];
+
+export type ChannelOverviewDailyRow = {
+  date: string;
+  views: number;
+  estimatedMinutesWatched: number;
+  subscribersGained: number;
+  subscribersLost: number;
+};
+
+export type ChannelOverviewTotals = {
+  views: number;
+  estimatedMinutesWatched: number;
+  subscribersGained: number;
+  subscribersLost: number;
+};
+
+export type GetChannelOverviewResult = {
+  channelId: string;
+  startDate: string;
+  endDate: string;
+  previousStartDate: string;
+  previousEndDate: string;
+  daily: ChannelOverviewDailyRow[];
+  currentTotals: ChannelOverviewTotals;
+  previousTotals: ChannelOverviewTotals;
+};

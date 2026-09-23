@@ -24,12 +24,14 @@ type FakeAnalyticsRow = { date: string; metrics: Record<string, number> };
 function createServicesFixture(opts: {
   videosByChannel: Record<string, FakeVideo[]>;
   analyticsResponses: Record<string, FakeAnalyticsRow[] | Error>;
+  channelAnalyticsResponses?: Record<string, FakeAnalyticsRow[] | Error>;
   syncSettings?: { localTime: string; timezone: string };
   now?: Date;
   authResolverError?: Error;
 }) {
   const channelAccess = createFakeChannelAccess();
   const analyticsCalls: Array<{ channelId: string; videoId: string }> = [];
+  const channelAnalyticsCalls: Array<{ channelId: string; startDate: string; endDate: string }> = [];
   const upsertedRows: Array<{
     channelId: string;
     videoId: string;
@@ -50,6 +52,19 @@ function createServicesFixture(opts: {
     }) {
       analyticsCalls.push({ channelId: args.channelId, videoId: args.videoId });
       const response = opts.analyticsResponses[args.videoId];
+      if (response instanceof Error) throw response;
+      return response ?? [];
+    },
+    async queryChannelAnalyticsReport(args: {
+      credentials: ResolvedCredentials;
+      channelId: string;
+      startDate: string;
+      endDate: string;
+      metricNames: readonly string[];
+    }) {
+      channelAnalyticsCalls.push({ channelId: args.channelId, startDate: args.startDate, endDate: args.endDate });
+      const key = `${args.startDate}|${args.endDate}`;
+      const response = (opts.channelAnalyticsResponses ?? {})[key];
       if (response instanceof Error) throw response;
       return response ?? [];
     },
@@ -127,6 +142,7 @@ function createServicesFixture(opts: {
     services,
     channelAccess,
     analyticsCalls,
+    channelAnalyticsCalls,
     upsertedRows,
     metricRowsByKey,
     lastAutoCollectedAtByChannel,
@@ -361,6 +377,9 @@ test("collectMetrics defaults to the full ANALYTICS_METRIC_NAMES list when metri
         requestedMetricNames = args.metricNames;
         return [];
       },
+      async queryChannelAnalyticsReport() {
+        return [];
+      },
     },
     videoStore: {
       async listVideosByChannel() {
@@ -486,4 +505,165 @@ test("runAutoCollectionIfStale: a second call at the same instant sees the first
   assert.equal(first.ranCollection, true);
   assert.deepEqual(second, { ranCollection: false });
   assert.equal(analyticsCalls.length, 1, "the second call must never trigger a second collection run");
+});
+
+// Studio-Parity S6b (docs/roadmap/plans/STUDIO_PARITY_PLAN.md §4) -- getChannelOverview.
+test("getChannelOverview fails closed when the requested channel is not the caller's active channel", async () => {
+  const { services } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+
+  await assert.rejects(
+    () =>
+      services.getChannelOverview({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-08-26",
+        endDate: "2026-09-22",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "CHANNEL_NOT_ACTIVE"
+  );
+});
+
+// Found by independent review, 2026-09-23: `isoDateSchema` only checks digit shape, so an
+// inverted range (endDate before startDate) reaches `computePreviousPeriod`, which throws a plain
+// `Error`, not a `DomainError` -- without this check, `getChannelOverview`'s own catch block would
+// map it to a misleading `unauthorized` (401) via its generic fallback, even for a caller whose
+// channel access and credentials are perfectly fine. Must be `validation_failed`, and must never
+// even reach `assertActiveChannel`/`authResolver.resolve`.
+test("getChannelOverview rejects an inverted date range as validation_failed, not unauthorized", async () => {
+  const { services, channelAccess } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getChannelOverview({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-09-22",
+        endDate: "2026-08-26",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+// Found by independent review, 2026-09-23: this specific failure path (credential resolution
+// rejecting, e.g. a missing/insufficient OAuth scope) was already tested for `collectMetrics` but
+// had no equivalent test for the new `getChannelOverview`, despite sharing the same
+// `authResolver.resolve` call and the same `mapUnknownError(error, "unauthorized")` fallback.
+test("getChannelOverview propagates a credential-resolution failure (e.g. missing OAuth scope) as a DomainError", async () => {
+  const { services, channelAccess, channelAnalyticsCalls } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    authResolverError: new Error("Credentials are missing required OAuth scopes"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getChannelOverview({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-08-26",
+        endDate: "2026-09-22",
+      }),
+    (error: unknown) => error instanceof DomainError
+  );
+  assert.equal(channelAnalyticsCalls.length, 0, "no real Analytics API call was made once credentials failed to resolve");
+});
+
+test("getChannelOverview queries the requested period and the immediately-preceding period of the same length", async () => {
+  const { services, channelAccess, channelAnalyticsCalls } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    channelAnalyticsResponses: {
+      "2026-08-26|2026-09-22": [],
+      "2026-07-29|2026-08-25": [],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const result = await services.getChannelOverview({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-08-26",
+    endDate: "2026-09-22",
+  });
+
+  assert.equal(result.previousStartDate, "2026-07-29");
+  assert.equal(result.previousEndDate, "2026-08-25");
+  assert.deepEqual(
+    channelAnalyticsCalls.map((c) => `${c.startDate}|${c.endDate}`).sort(),
+    ["2026-07-29|2026-08-25", "2026-08-26|2026-09-22"]
+  );
+});
+
+test("getChannelOverview sums daily rows into current/previous totals, treating a day missing from the response as zero", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    channelAnalyticsResponses: {
+      "2026-09-01|2026-09-02": [
+        { date: "2026-09-01", metrics: { views: 100, estimatedMinutesWatched: 200, subscribersGained: 3, subscribersLost: 1 } },
+        // 2026-09-02 is entirely absent from the response (e.g. not yet reported by the API).
+      ],
+      "2026-08-30|2026-08-31": [
+        { date: "2026-08-30", metrics: { views: 10, estimatedMinutesWatched: 20, subscribersGained: 0, subscribersLost: 0 } },
+        { date: "2026-08-31", metrics: { views: 15, estimatedMinutesWatched: 25, subscribersGained: 1, subscribersLost: 0 } },
+      ],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const result = await services.getChannelOverview({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-01",
+    endDate: "2026-09-02",
+  });
+
+  assert.deepEqual(result.currentTotals, {
+    views: 100,
+    estimatedMinutesWatched: 200,
+    subscribersGained: 3,
+    subscribersLost: 1,
+  });
+  assert.deepEqual(result.previousTotals, {
+    views: 25,
+    estimatedMinutesWatched: 45,
+    subscribersGained: 1,
+    subscribersLost: 0,
+  });
+  assert.deepEqual(result.daily, [
+    { date: "2026-09-01", views: 100, estimatedMinutesWatched: 200, subscribersGained: 3, subscribersLost: 1 },
+  ]);
+});
+
+test("getChannelOverview zero-fills an interior gap in the daily series but never pads past the last reported date", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    channelAnalyticsResponses: {
+      // 2026-09-02 is missing entirely (interior gap); 2026-09-04/09-05 are also missing, but
+      // those are trailing days the range asked for that the API simply hasn't reported yet --
+      // the result must stop at 09-03, not fabricate zero rows for 09-04/09-05.
+      "2026-09-01|2026-09-05": [
+        { date: "2026-09-01", metrics: { views: 10, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 } },
+        { date: "2026-09-03", metrics: { views: 30, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 } },
+      ],
+      "2026-08-27|2026-08-31": [],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const result = await services.getChannelOverview({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-01",
+    endDate: "2026-09-05",
+  });
+
+  assert.deepEqual(
+    result.daily.map((row) => row.date),
+    ["2026-09-01", "2026-09-02", "2026-09-03"]
+  );
+  assert.equal(result.daily[1].views, 0, "the interior gap (09-02) must be filled with a real zero row");
 });

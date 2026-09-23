@@ -1,13 +1,17 @@
 import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import type { ChannelAccessService } from "@/lib/channel-access";
 import { computeDefaultAutoCollectionRange, computeNextRefreshAt, isAnalyticsCollectionStale } from "./staleness";
+import { computePreviousPeriod, zeroFillDailySeries } from "./period";
 import {
   ANALYTICS_METRIC_NAMES,
   AUTO_COLLECTION_RANGE_DAYS,
+  CHANNEL_OVERVIEW_METRIC_NAMES,
   DomainError,
   isDomainError,
   type AutoCollectResult,
+  type ChannelOverviewTotals,
   type CollectMetricsResult,
+  type GetChannelOverviewResult,
   type ListMetricsResult,
   type ResolvedCredentials,
   type StoredVideoMetricRow,
@@ -15,6 +19,8 @@ import {
 import {
   collectMetricsInputSchema,
   collectMetricsOutputSchema,
+  getChannelOverviewInputSchema,
+  getChannelOverviewOutputSchema,
   listMetricsInputSchema,
   listMetricsOutputSchema,
   parseWithSchema,
@@ -39,6 +45,13 @@ type ServiceDependencies = {
       credentials: ResolvedCredentials;
       channelId: string;
       videoId: string;
+      startDate: string;
+      endDate: string;
+      metricNames: readonly string[];
+    }): Promise<Array<{ date: string; metrics: Record<string, number> }>>;
+    queryChannelAnalyticsReport(args: {
+      credentials: ResolvedCredentials;
+      channelId: string;
       startDate: string;
       endDate: string;
       metricNames: readonly string[];
@@ -343,6 +356,116 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           { ranCollection: true, result },
           "run auto collection output"
         );
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
+      }
+    },
+
+    /**
+     * Studio-Parity S6b (docs/roadmap/plans/STUDIO_PARITY_PLAN.md §4) -- the Analytics
+     * "Overview" tab's channel-level cards/chart. A live Analytics API read (two
+     * `queryChannelAnalyticsReport` calls: the requested period, and the immediately-preceding
+     * period of the same length for the "+N% vs previous period" deltas Studio itself shows) --
+     * deliberately NOT persisted to `video_metrics_daily` or any new table (unlike
+     * `collectMetrics`): this is a small, on-demand read gated by the existing per-category
+     * "Analytics reads enabled" toggle/traffic counters (`youtube-read-gateway`), not a bulk
+     * per-video collection run, so `collectMetrics`'s own once-a-day freshness gate does not apply
+     * here -- see this function's own doc comment for why a second gate would be the wrong layer.
+     *
+     * Totals are computed by summing the daily rows this function itself fetches, not read back
+     * from a separate no-dimension query -- one report shape, two date ranges, rather than two
+     * report shapes per range. A day missing from the API's response contributes `0` to every
+     * metric's sum, which is a true fact about the sum (no days reported no activity), not the
+     * same "silently defaulted a missing per-day-per-metric value to 0" case `collectMetrics`'s
+     * own doc comment warns against for the raw per-row display.
+     */
+    async getChannelOverview(input: unknown): Promise<GetChannelOverviewResult> {
+      const parsedInput = parseWithSchema(getChannelOverviewInputSchema, input, "get channel overview input");
+
+      // `isoDateSchema` only checks digit shape (`\d{4}-\d{2}-\d{2}`), not that `startDate` is
+      // actually on/before `endDate` or that either is a real calendar date -- `computePreviousPeriod`
+      // is where that's actually checked, and it throws a plain `Error`, not a `DomainError`. Doing
+      // this BEFORE the try block below (and before touching channel access/credentials at all)
+      // matters: without it, this plain `Error` would fall into that block's generic
+      // `mapUnknownError(error, "unauthorized")` fallback and come back as a misleading 401
+      // "Unauthorized" for what is actually a 400 input-validation problem (found by independent
+      // review, 2026-09-23, before this was ever exposed to a real caller).
+      let previousStartDate: string;
+      let previousEndDate: string;
+      try {
+        ({ previousStartDate, previousEndDate } = computePreviousPeriod(
+          parsedInput.startDate,
+          parsedInput.endDate
+        ));
+      } catch (error) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: error instanceof Error ? error.message : "Invalid date range",
+        });
+      }
+
+      try {
+        const userId = getCredentialUserId(parsedInput.credentialRef);
+        await deps.channelAccess.assertActiveChannel({
+          userId,
+          channelId: parsedInput.channelId,
+        });
+
+        const credentials = await deps.authResolver.resolve({
+          credentialRef: parsedInput.credentialRef,
+          requiredScopes: [YOUTUBE_ANALYTICS_READ_SCOPE],
+        });
+
+        const [currentRows, previousRows] = await Promise.all([
+          deps.youtubeApi.queryChannelAnalyticsReport({
+            credentials,
+            channelId: parsedInput.channelId,
+            startDate: parsedInput.startDate,
+            endDate: parsedInput.endDate,
+            metricNames: CHANNEL_OVERVIEW_METRIC_NAMES,
+          }),
+          deps.youtubeApi.queryChannelAnalyticsReport({
+            credentials,
+            channelId: parsedInput.channelId,
+            startDate: previousStartDate,
+            endDate: previousEndDate,
+            metricNames: CHANNEL_OVERVIEW_METRIC_NAMES,
+          }),
+        ]);
+
+        const sumTotals = (rows: Array<{ metrics: Record<string, number> }>): ChannelOverviewTotals =>
+          rows.reduce(
+            (totals, row) => ({
+              views: totals.views + (row.metrics.views ?? 0),
+              estimatedMinutesWatched: totals.estimatedMinutesWatched + (row.metrics.estimatedMinutesWatched ?? 0),
+              subscribersGained: totals.subscribersGained + (row.metrics.subscribersGained ?? 0),
+              subscribersLost: totals.subscribersLost + (row.metrics.subscribersLost ?? 0),
+            }),
+            { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 }
+          );
+
+        const output = {
+          channelId: parsedInput.channelId,
+          startDate: parsedInput.startDate,
+          endDate: parsedInput.endDate,
+          previousStartDate,
+          previousEndDate,
+          daily: zeroFillDailySeries(
+            currentRows.map((row) => ({
+              date: row.date,
+              views: row.metrics.views ?? 0,
+              estimatedMinutesWatched: row.metrics.estimatedMinutesWatched ?? 0,
+              subscribersGained: row.metrics.subscribersGained ?? 0,
+              subscribersLost: row.metrics.subscribersLost ?? 0,
+            })),
+            parsedInput.startDate,
+            (date) => ({ date, views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 })
+          ),
+          currentTotals: sumTotals(currentRows),
+          previousTotals: sumTotals(previousRows),
+        };
+
+        return parseWithSchema(getChannelOverviewOutputSchema, output, "get channel overview output");
       } catch (error) {
         throw mapUnknownError(error, "unauthorized");
       }

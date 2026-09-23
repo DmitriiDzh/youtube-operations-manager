@@ -57,6 +57,47 @@ export type VideoAnalyticsMetricRow = {
 };
 
 /**
+ * Shared response parser for `reports.query`, used by both the per-video report above and the
+ * channel-level report below -- both return the identical `day`-dimension-plus-metrics shape,
+ * name-based column lookup for the same reason `queryVideoAnalyticsReport`'s own doc comment
+ * explains (never trust positional column ordering, even though the API documents it).
+ */
+function parseDayDimensionReport(data: {
+  columnHeaders?: Array<{ name?: string | null; columnType?: string | null }> | null;
+  rows?: unknown[][] | null;
+}): VideoAnalyticsMetricRow[] {
+  const columnHeaders = data.columnHeaders ?? [];
+  const dayColumnIndex = columnHeaders.findIndex(
+    (header) => header.columnType === "DIMENSION" && header.name === "day"
+  );
+  const metricColumns = columnHeaders
+    .map((header, index) => ({ index, name: header.name ?? null }))
+    .filter((entry) => columnHeaders[entry.index]?.columnType === "METRIC" && entry.name !== null);
+
+  const rows = data.rows ?? [];
+  if (rows.length > 0 && dayColumnIndex < 0) {
+    throw new Error(
+      "parseDayDimensionReport: response has rows but no 'day' DIMENSION column in columnHeaders"
+    );
+  }
+
+  return rows.map((row) => {
+    const date = String(row[dayColumnIndex]);
+    const metrics: Record<string, number> = {};
+
+    for (const column of metricColumns) {
+      const raw = row[column.index];
+      const value = typeof raw === "number" ? raw : Number(raw);
+      if (column.name && Number.isFinite(value)) {
+        metrics[column.name] = value;
+      }
+    }
+
+    return { date, metrics };
+  });
+}
+
+/**
  * Fetches daily metrics for a single video over a date range, in one `reports.query` call
  * covering every requested metric name in one response (docs/roadmap/plans/PHASE_8_PLAN.md §10
  * item 5 -- one query per video per collection run, not per video per day per metric). **This
@@ -98,37 +139,41 @@ export async function queryVideoAnalyticsReport(
     filters: `video==${args.videoId}`,
   });
 
-  const columnHeaders = res.data.columnHeaders ?? [];
-  const dayColumnIndex = columnHeaders.findIndex(
-    (header) => header.columnType === "DIMENSION" && header.name === "day"
-  );
-  const metricColumns = columnHeaders
-    .map((header, index) => ({ index, name: header.name ?? null }))
-    .filter((entry) => columnHeaders[entry.index]?.columnType === "METRIC" && entry.name !== null);
+  return parseDayDimensionReport(res.data);
+}
 
-  const rows = res.data.rows ?? [];
-  if (rows.length > 0 && dayColumnIndex < 0) {
-    // A response with data rows but no `day` DIMENSION column means the request/response
-    // contract is not what this function assumes -- fail loudly rather than emit rows with a
-    // blank metric_date (an empty primary-key component is exactly the "blank means something"
-    // failure class AGENTS.md §F treats as a real bug, never a value to silently default).
-    throw new Error(
-      "queryVideoAnalyticsReport: response has rows but no 'day' DIMENSION column in columnHeaders"
-    );
+/**
+ * Fetches daily metrics for the whole channel over a date range -- no `filters=video==...`.
+ * Studio-Parity S6b (docs/roadmap/plans/STUDIO_PARITY_PLAN.md §4, Analytics "Overview" tab):
+ * needed so channel-level totals (views/watch-time/subscribers) don't have to be approximated by
+ * summing `queryVideoAnalyticsReport` over every synced video, which would silently miss any
+ * subscriber/view activity not attributable to a currently-synced video (e.g. a deleted video, or
+ * subscribers gained from the channel page itself).
+ *
+ * **Live-verified 2026-09-23** against a real channel via a throwaway diagnostic route (never
+ * committed), the same technique BL-057 used to settle the per-video-vs-bulk question: a
+ * `dimensions=day` query with `ids=channel==<id>` and no `filters` is accepted by the real API and
+ * returns real per-day channel totals -- confirmed against the "Tropico Jazz" channel's own real
+ * response. This is the channel-level counterpart BL-057 did not test (that round only tried
+ * dropping the video filter from a *multi-video* `dimensions=video,day` query, which the API
+ * rejected; a true channel-level `dimensions=day` report is a different, valid report shape).
+ */
+export async function queryChannelAnalyticsReport(
+  youtubeAnalytics: youtubeAnalytics_v2.Youtubeanalytics,
+  args: {
+    channelId: string;
+    startDate: string;
+    endDate: string;
+    metricNames: readonly string[];
   }
-
-  return rows.map((row) => {
-    const date = String(row[dayColumnIndex]);
-    const metrics: Record<string, number> = {};
-
-    for (const column of metricColumns) {
-      const raw = row[column.index];
-      const value = typeof raw === "number" ? raw : Number(raw);
-      if (column.name && Number.isFinite(value)) {
-        metrics[column.name] = value;
-      }
-    }
-
-    return { date, metrics };
+): Promise<VideoAnalyticsMetricRow[]> {
+  const res = await youtubeAnalytics.reports.query({
+    ids: `channel==${args.channelId}`,
+    startDate: args.startDate,
+    endDate: args.endDate,
+    metrics: args.metricNames.join(","),
+    dimensions: "day",
   });
+
+  return parseDayDimensionReport(res.data);
 }

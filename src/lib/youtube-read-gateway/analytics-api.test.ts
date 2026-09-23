@@ -6,6 +6,7 @@ import { DomainError } from "@/lib/video-metadata/contracts";
 import {
   assertAnalyticsReadsAuthorized,
   createYoutubeAnalyticsClient,
+  queryChannelAnalyticsReport,
   queryVideoAnalyticsReport,
 } from "./analytics-api";
 
@@ -162,4 +163,63 @@ test("queryVideoAnalyticsReport handles a fractional metric value exactly", asyn
   });
 
   assert.deepEqual(rows, [{ date: "2026-09-01", metrics: { averageViewPercentage: 63.75 } }]);
+});
+
+// Studio-Parity S6b -- channel-level report has no `filters=video==...`, unlike the per-video
+// report above. Live-verified 2026-09-23 that the real API accepts this shape (see
+// `queryChannelAnalyticsReport`'s own doc comment); this test only verifies the request is shaped
+// as that live probe confirmed, not the live API itself.
+test("queryChannelAnalyticsReport sends ids/startDate/endDate/metrics/dimensions with no video filter", async () => {
+  let capturedArgs: Record<string, unknown> | undefined;
+
+  const youtubeAnalytics = fakeAnalyticsClient((async (args: Record<string, unknown>) => {
+    capturedArgs = args;
+    return { data: { columnHeaders: [], rows: [] } };
+  }) as unknown as youtubeAnalytics_v2.Resource$Reports["query"]);
+
+  await queryChannelAnalyticsReport(youtubeAnalytics, {
+    channelId: "UC_TEST",
+    startDate: "2026-08-26",
+    endDate: "2026-09-22",
+    metricNames: ["views", "subscribersGained"],
+  });
+
+  assert.equal(capturedArgs?.ids, "channel==UC_TEST");
+  assert.equal(capturedArgs?.startDate, "2026-08-26");
+  assert.equal(capturedArgs?.endDate, "2026-09-22");
+  assert.equal(capturedArgs?.metrics, "views,subscribersGained");
+  assert.equal(capturedArgs?.dimensions, "day");
+  assert.equal("filters" in (capturedArgs ?? {}), false);
+});
+
+test("queryChannelAnalyticsReport maps rows by column name, matching the real live-verified response shape", async () => {
+  const youtubeAnalytics = fakeAnalyticsClient((async () => ({
+    data: {
+      // Exact shape returned by the real API for a channel-level probe against "Tropico Jazz"
+      // (2026-09-23), reordered here the same way the per-video test above does, to prove
+      // name-based mapping.
+      columnHeaders: [
+        { name: "day", columnType: "DIMENSION", dataType: "STRING" },
+        { name: "views", columnType: "METRIC", dataType: "INTEGER" },
+        { name: "estimatedMinutesWatched", columnType: "METRIC", dataType: "INTEGER" },
+        { name: "subscribersGained", columnType: "METRIC", dataType: "INTEGER" },
+        { name: "subscribersLost", columnType: "METRIC", dataType: "INTEGER" },
+      ],
+      rows: [["2026-08-26", 175, 2946, 3, 1]],
+    },
+  })) as unknown as youtubeAnalytics_v2.Resource$Reports["query"]);
+
+  const rows = await queryChannelAnalyticsReport(youtubeAnalytics, {
+    channelId: "UC_TEST",
+    startDate: "2026-08-26",
+    endDate: "2026-08-26",
+    metricNames: ["views", "estimatedMinutesWatched", "subscribersGained", "subscribersLost"],
+  });
+
+  assert.deepEqual(rows, [
+    {
+      date: "2026-08-26",
+      metrics: { views: 175, estimatedMinutesWatched: 2946, subscribersGained: 3, subscribersLost: 1 },
+    },
+  ]);
 });
