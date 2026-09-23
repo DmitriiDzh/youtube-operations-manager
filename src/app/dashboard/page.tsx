@@ -260,64 +260,73 @@ export default function Dashboard() {
         </div>
       )}
 
-      {tab === "settings" && (
-        <div className="max-w-3xl">
-          <div className="mb-6 inline-flex gap-1 rounded-lg bg-zinc-950 p-1">
-            {SETTINGS_SUB_TABS.map((t) => (
-              <button
-                key={t.value}
-                onClick={() => setSettingsSubTab(t.value)}
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                  settingsSubTab === t.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
+      {/* Unlike every other top-level tab (still conditionally mounted -- see AGENTS.md-documented
+          convention that most tabs refetch for free on their own mount/unmount), Settings itself
+          stays mounted from dashboard load onward and is only CSS-hidden when inactive (owner
+          follow-up: "можно какой-то кэш подгружать еще на этапе загрузки приложения?"). Every
+          card below starts its own fetch as soon as the dashboard loads, not only once Settings
+          is first opened -- so by the time an operator actually clicks Settings, most cards
+          already have data. Deliberate cost tradeoff, stated plainly: `CloudConnectionSettings`'s
+          quota numbers are a real, uncached Google Cloud Monitoring API call (`docs/SYSTEM_MAP.md`
+          §2.9l) -- this now fires once per dashboard session regardless of whether Settings is
+          ever opened, not only when it is. Every other card here reads local SQLite, negligible
+          either way. */}
+      <div className={tab === "settings" ? "max-w-3xl" : "hidden"}>
+        <div className="mb-6 inline-flex gap-1 rounded-lg bg-zinc-950 p-1">
+          {SETTINGS_SUB_TABS.map((t) => (
+            <button
+              key={t.value}
+              onClick={() => setSettingsSubTab(t.value)}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                settingsSubTab === t.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
 
-          {/* Every sub-tab's content stays mounted (hidden via CSS, not unmounted) once first
-              shown -- found live (owner: "почему при переключении подкатегорий наполнение
-              вкладки видно не сразу?"): each card below does its own fetch-on-mount, so
-              conditionally unmounting on every switch forced a fresh loading flicker (or a blank
-              `if (!draft) return null` render) every single time, even for a sub-tab already
-              visited this session. Hidden-not-unmounted keeps each card's already-fetched state,
-              so only the FIRST visit to a sub-tab shows a loading moment. */}
-          <div className={settingsSubTab === "api" ? "space-y-6" : "hidden"}>
-            <LiveWritesSettings />
-            <ReadGatewaySettings />
-            <CloudConnectionSettings />
-            <AnalyticsCollectionSettings />
-          </div>
+        {/* Every sub-tab's content stays mounted (hidden via CSS, not unmounted) once first
+            shown -- found live (owner: "почему при переключении подкатегорий наполнение
+            вкладки видно не сразу?"): each card below does its own fetch-on-mount, so
+            conditionally unmounting on every switch forced a fresh loading flicker (or a blank
+            `if (!draft) return null` render) every single time, even for a sub-tab already
+            visited this session. Hidden-not-unmounted keeps each card's already-fetched state,
+            so only the FIRST visit to a sub-tab shows a loading moment. */}
+        <div className={settingsSubTab === "api" ? "space-y-6" : "hidden"}>
+          <LiveWritesSettings />
+          <ReadGatewaySettings />
+          <CloudConnectionSettings />
+          <AnalyticsCollectionSettings />
+        </div>
 
-          <div className={settingsSubTab === "ai-agent" ? "space-y-6" : "hidden"}>
-            <McpConnectionSettings />
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-              <h3 className="mb-4 flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-                AI provider connections
-                <InfoTooltip>
-                  Configure AI provider connections for AI Localization. No specific vendor is
-                  built into this app &mdash; every connection is a Base URL, model id, and
-                  optional credential you supply. Credentials are encrypted at rest and never
-                  shown again once saved. Testing a connection is an explicit action and may
-                  incur cost for a real (non-mock) connection. Unrelated to the MCP connection
-                  above (that&rsquo;s an external agent connecting TO this app; this is this app
-                  connecting OUT to an AI provider) &mdash; grouped here for convenience.
-                </InfoTooltip>
-              </h3>
-              <AiConnectionsManager />
-            </div>
-          </div>
-
-          <div className={settingsSubTab === "sync" ? "space-y-6" : "hidden"}>
-            <SyncFolderSettings />
-          </div>
-
-          <div className={settingsSubTab === "about" ? "space-y-6" : "hidden"}>
-            <AppVersionInfo />
+        <div className={settingsSubTab === "ai-agent" ? "space-y-6" : "hidden"}>
+          <McpConnectionSettings />
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+            <h3 className="mb-4 flex items-center gap-1.5 text-base font-semibold text-zinc-100">
+              AI provider connections
+              <InfoTooltip>
+                Configure AI provider connections for AI Localization. No specific vendor is
+                built into this app &mdash; every connection is a Base URL, model id, and
+                optional credential you supply. Credentials are encrypted at rest and never
+                shown again once saved. Testing a connection is an explicit action and may
+                incur cost for a real (non-mock) connection. Unrelated to the MCP connection
+                above (that&rsquo;s an external agent connecting TO this app; this is this app
+                connecting OUT to an AI provider) &mdash; grouped here for convenience.
+              </InfoTooltip>
+            </h3>
+            <AiConnectionsManager />
           </div>
         </div>
-      )}
+
+        <div className={settingsSubTab === "sync" ? "space-y-6" : "hidden"}>
+          <SyncFolderSettings />
+        </div>
+
+        <div className={settingsSubTab === "about" ? "space-y-6" : "hidden"}>
+          <AppVersionInfo />
+        </div>
+      </div>
 
       {tab === "merge" && (
         <div className="max-w-3xl">
