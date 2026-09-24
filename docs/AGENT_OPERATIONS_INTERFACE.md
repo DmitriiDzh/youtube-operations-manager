@@ -499,9 +499,17 @@ editorial-guideline document of its own.
   capped at 300, reporting `truncated: true` if either cap was hit), returning each entry's
   path (POSIX-normalized, relative to the workspace root -- the absolute base path itself is
   never returned, since it would leak host filesystem layout/username), `isDirectory`, and
-  `sizeBytes` (`null` for directories). Dotfiles/dot-directories are always excluded; files are
-  further filtered to an extension allowlist (`.md`/`.txt`/`.json`/`.yaml`/`.yml`) -- directories
-  are still listed for navigability regardless of what they contain.
+  `sizeBytes` (`null` for directories). Dotfiles/dot-directories are always excluded (checked
+  against every segment of the RESOLVED real path, not just each entry's own basename -- a
+  symlink resolving into the middle of a dotted ancestor, e.g. `docs -> .hidden/sub`, is excluded
+  too, not only a symlink whose own immediate target is itself dotted); files are further
+  filtered to an extension allowlist (`.md`/`.txt`/`.json`/`.yaml`/`.yml`) -- directories are
+  still listed for navigability regardless of what they contain. **The depth/file-count caps are
+  cost bounds on the recursive walk, not an access-control guarantee** -- `getOperationsFile` has
+  no matching depth/count limit of its own (it resolves and validates one exact path directly),
+  so a file beyond `list`'s caps that a caller already knows the exact path to (from a source
+  outside this listing) can still be read by `get`; `truncated: true` honestly signals list's own
+  incompleteness, it does not imply anything is actually hidden from `get`.
 - **`getOperationsFile({ path })`:** returns `{ configured: false }` when unconfigured; otherwise
   requires the given relative path to survive BOTH a cheap syntactic pre-check (no `..` segments,
   not absolute, no control characters) AND the authoritative `realpath`-plus-`path.relative`
@@ -523,7 +531,14 @@ editorial-guideline document of its own.
   symlink actually resolves to. Both `listOperationsFiles` and `getOperationsFile` now also
   re-check the RESOLVED path's own basename/segments after `realpath`, not just the caller-visible
   one. Containment itself was never affected by this (the resolved target still had to be inside
-  the workspace) -- this closed a same-workspace disclosure gap, not an escape.
+  the workspace) -- this closed a same-workspace disclosure gap, not an escape. A LATER review
+  round found `listOperationsFiles`'s own dot-exclusion check was still incomplete even after that
+  fix: it only inspected each resolved entry's immediate basename, not every segment between the
+  workspace root and that entry -- so a symlink resolving into the MIDDLE of a dotted ancestor
+  (e.g. `docs -> .hidden/sub`, whose own basename `sub` isn't itself dotted) still disclosed that
+  dotted directory's filenames/sizes (metadata only -- `getOperationsFile` already correctly
+  rejected reading them, since it checked every segment from the start). Fixed by making
+  `listOperationsFiles` check every segment too, matching `getOperationsFile`'s existing logic.
 - **New agent-operations capabilities:** `operations_workspace.list_files` (READ),
   `operations_workspace.get_file` (READ) -- both READ, since listing/reading never mutates
   anything. MCP `agent_list_operations_files`/`agent_get_operations_file`, CLI

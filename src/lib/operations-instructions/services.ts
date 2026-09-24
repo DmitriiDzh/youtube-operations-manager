@@ -229,12 +229,21 @@ async function walk(
     // extension (e.g. "notes.md") could point at a dotfile/disallowed-extension REAL target
     // (e.g. ".secret-config") still inside the workspace -- the dotfile-exclusion guarantee only
     // ever checked `name`, never what the symlink actually resolves to. Re-check the RESOLVED
-    // basename here too, not just the visible one -- a symlink whose real target is itself
-    // hidden or disallowed is excluded regardless of how it's named.
-    const realBasename = path.basename(realEntryPath);
-    if (isDotEntry(realBasename)) {
+    // path here too, not just the visible one -- a symlink whose real target is itself hidden or
+    // disallowed is excluded regardless of how it's named.
+    //
+    // A LATER review round found that checking only the immediate resolved BASENAME was still
+    // incomplete: a symlink can resolve into the MIDDLE of a dotted ancestor -- e.g. a symlink
+    // named "docs" pointing at ".hidden/sub" -- whose own basename ("sub") isn't a dot-entry even
+    // though it lives inside one. `getOperationsFile` already checked every segment of the
+    // resolved relative path for exactly this reason; `walk()` now does the same, checking ALL
+    // segments between `realBase` and this entry, not just the last one.
+    const realRelativeToBase = path.relative(realBase, realEntryPath);
+    const realSegments = realRelativeToBase.split(path.sep).filter((segment) => segment.length > 0);
+    if (realSegments.some((segment) => isDotEntry(segment))) {
       continue;
     }
+    const realBasename = realSegments[realSegments.length - 1] ?? "";
 
     let entryStat: { isDirectory: boolean; isFile: boolean; sizeBytes: number };
     try {

@@ -311,6 +311,33 @@ test("listOperationsFiles excludes a symlink whose visible name is allowed but w
   });
 });
 
+// Round 3 of independent review found that the round-1 dotfile fix above only checked the
+// IMMEDIATE resolved basename, not every segment of the resolved path -- so a symlink resolving
+// into the MIDDLE of a dotted ancestor (e.g. "docs" -> ".hidden/sub", whose own basename "sub" is
+// not itself a dot-entry) still disclosed the dotted directory's contents (filenames/sizes) via
+// listOperationsFiles, even though getOperationsFile already correctly rejected reading them
+// (which already checked every segment). Metadata-only disclosure, no content ever leaked, but a
+// real gap in the "dotfiles/dot-directories are always excluded" guarantee.
+test("listOperationsFiles excludes a symlink resolving into the middle of a dotted ancestor directory, not just an immediately-dotted entry", async () => {
+  await withTempDirs(async ({ workspace, appData }) => {
+    const hiddenSub = path.join(workspace, ".hidden", "sub");
+    await mkdir(hiddenSub, { recursive: true });
+    await writeFile(path.join(hiddenSub, "file.md"), "hidden content");
+    await symlink(hiddenSub, path.join(workspace, "docs"));
+    await writeFile(path.join(workspace, "safe.md"), "safe");
+
+    const services = createServices(workspace, appData);
+    const result = await services.listOperationsFiles({});
+    assert.equal(result.configured, true);
+    if (result.configured) {
+      assert.deepEqual(
+        result.files.map((f) => f.path),
+        ["safe.md"]
+      );
+    }
+  });
+});
+
 test("getOperationsFile rejects a symlink whose visible name is allowed but whose real target is a dotfile, as OPERATIONS_FILE_NOT_AVAILABLE", async () => {
   await withTempDirs(async ({ workspace, appData }) => {
     await writeFile(path.join(workspace, ".secret-config"), "sensitive-config-content");
