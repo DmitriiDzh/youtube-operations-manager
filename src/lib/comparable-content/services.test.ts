@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createComparableContentServices, type VideoRecordForComparison } from "./services";
 import { DomainError } from "./contracts";
+import { MAX_COMPARABLE_VIDEOS_LIMIT } from "./schemas";
 
 function video(overrides: Partial<VideoRecordForComparison> & { videoId: string }): VideoRecordForComparison {
   return {
@@ -109,6 +110,25 @@ test("durationToleranceSeconds excludes a candidate with no known duration and c
   assert.equal(result.excludedForMissingData.duration, 1);
 });
 
+test("durationToleranceSeconds includes a candidate exactly AT the tolerance boundary (inclusive, \"more than\" excludes, not \"at least\")", async () => {
+  const { services } = createFixture({
+    videos: [
+      video({ videoId: "anchor", durationSeconds: 600 }),
+      video({ videoId: "exactly_at_tolerance", durationSeconds: 660 }), // distance 60, tolerance 60
+      video({ videoId: "just_over_tolerance", durationSeconds: 661 }), // distance 61, tolerance 60
+    ],
+  });
+
+  const result = await services.findComparableVideos({
+    channelId: "UC_A",
+    anchorVideoId: "anchor",
+    durationToleranceSeconds: 60,
+    sort: "publicationProximity",
+  });
+
+  assert.deepEqual(result.candidates.map((c) => c.videoId), ["exactly_at_tolerance"]);
+});
+
 test("durationToleranceSeconds fails the whole request with INVALID_CONTEXT_REQUEST when the anchor itself has no known duration", async () => {
   const { services } = createFixture({
     videos: [video({ videoId: "anchor", durationSeconds: null }), video({ videoId: "v1", durationSeconds: 600 })],
@@ -193,6 +213,77 @@ test("performanceThreshold is evaluated age-aligned against the furthest day the
   assert.deepEqual(listMetricsCalls[0], { credentialRef: { userId: "u1" }, channelId: "UC_A", metricNames: ["views"] });
   assert.deepEqual(result.performanceAlignment, { metricName: "views", dayOffset: 3 });
   assert.equal(result.anchor.performanceMetricValue, 20);
+});
+
+// Distinct from the fixture above: an OLD anchor (published long before "now") whose own day-0/
+// day-1 were never collected (this channel's regular collection started only later) but which DOES
+// have real data at later days -- `analytics_comparable_age`'s own tool description documents this
+// exact situation as a normal, common data-coverage limitation for an existing channel, not an
+// error. `computeComparableAgeSeries`'s "contiguous from day 0" rule means this anchor's later data
+// NEVER contributes a cumulative point, so it degrades to day 0 exactly like a brand-new anchor
+// with zero data -- but `performanceThreshold` is an ABSOLUTE comparison (never relative to the
+// anchor's own value), so a candidate with genuine day-0 coverage can still correctly pass.
+test("an old anchor with real data at later days but no day-0 coverage still lets a candidate with real day-0 data pass an absolute performanceThreshold, even though the anchor's own value is honestly null", async () => {
+  const { services } = createFixture({
+    videos: [
+      video({ videoId: "anchor", publishedAt: "2026-01-01T20:00:00.000Z" }),
+      video({ videoId: "passes", publishedAt: "2026-05-01T20:00:00.000Z" }),
+    ],
+    metricRows: [
+      // Anchor's day 0/day 1 were never collected -- day 2 onward has real data, but that never
+      // contributes a cumulative point without day 0 itself.
+      { videoId: "anchor", metricDate: "2026-01-03", metricName: "views", metricValue: 999 },
+      { videoId: "anchor", metricDate: "2026-01-04", metricName: "views", metricValue: 999 },
+      // "passes" has genuine day-0 coverage (recently published, actively collected channel).
+      { videoId: "passes", metricDate: "2026-05-01", metricName: "views", metricValue: 600 },
+    ],
+    now: new Date("2026-06-01T20:00:00.000Z"),
+  });
+
+  const result = await services.findComparableVideos({
+    channelId: "UC_A",
+    anchorVideoId: "anchor",
+    performanceMetric: "views",
+    performanceThreshold: { operator: ">=", value: 500 },
+    credentialRef: { userId: "u1" },
+    sort: "publicationProximity",
+  });
+
+  assert.deepEqual(result.performanceAlignment, { metricName: "views", dayOffset: 0 });
+  assert.equal(result.anchor.performanceMetricValue, null);
+  assert.deepEqual(result.candidates.map((c) => c.videoId), ["passes"]);
+  assert.equal(result.excludedForMissingData.performance, 0);
+});
+
+test("performanceThreshold operators are inclusive at the exact boundary value (>= and <=, never strict > / <)", async () => {
+  const { services } = createFixture({
+    videos: [
+      video({ videoId: "anchor", publishedAt: "2026-05-01T20:00:00.000Z" }),
+      video({ videoId: "exactly_at_threshold", publishedAt: "2026-05-01T20:00:00.000Z" }),
+    ],
+    metricRows: contiguousDailyRows("exactly_at_threshold", 0, 500), // day 0 cumulative: exactly 500
+    now: new Date("2026-05-01T20:00:00.000Z"),
+  });
+
+  const gte = await services.findComparableVideos({
+    channelId: "UC_A",
+    anchorVideoId: "anchor",
+    performanceMetric: "views",
+    performanceThreshold: { operator: ">=", value: 500 },
+    credentialRef: { userId: "u1" },
+    sort: "publicationProximity",
+  });
+  assert.deepEqual(gte.candidates.map((c) => c.videoId), ["exactly_at_threshold"]);
+
+  const lte = await services.findComparableVideos({
+    channelId: "UC_A",
+    anchorVideoId: "anchor",
+    performanceMetric: "views",
+    performanceThreshold: { operator: "<=", value: 500 },
+    credentialRef: { userId: "u1" },
+    sort: "publicationProximity",
+  });
+  assert.deepEqual(lte.candidates.map((c) => c.videoId), ["exactly_at_threshold"]);
 });
 
 test("degrades to day 0 when the anchor has no collected data at all yet, rather than an arbitrary later day nobody has data for either", async () => {
@@ -328,6 +419,29 @@ test("no truncation when every candidate fits within the limit", async () => {
   assert.equal(result.truncated, false);
 });
 
+// Found by independent review (round 3): a caller-supplied `limit` above MAX_COMPARABLE_VIDEOS_LIMIT
+// used to be REJECTED as validation_failed by the schema -- contradicting this capability's own
+// documented "never an unbounded response, always silently capped with truncated: true" contract
+// (AC-CMP-07). Never a schema-level rejection; always a silent server-side clamp.
+test("a limit above MAX_COMPARABLE_VIDEOS_LIMIT is never rejected -- silently clamped to it, never an unbounded response", async () => {
+  const { services } = createFixture({
+    videos: [
+      video({ videoId: "anchor" }),
+      ...Array.from({ length: MAX_COMPARABLE_VIDEOS_LIMIT + 10 }, (_, i) => video({ videoId: `v${i}` })),
+    ],
+  });
+
+  const result = await services.findComparableVideos({
+    channelId: "UC_A",
+    anchorVideoId: "anchor",
+    sort: "publicationProximity",
+    limit: MAX_COMPARABLE_VIDEOS_LIMIT + 100,
+  });
+
+  assert.equal(result.candidates.length, MAX_COMPARABLE_VIDEOS_LIMIT);
+  assert.equal(result.truncated, true);
+});
+
 // AC-CMP-08. This test alone is NOT sufficient proof (fixtures with no YouTube client would
 // "pass" this even if a live call existed elsewhere in the module) -- the real evidence is
 // architectural: `src/lib/comparable-content/` imports neither `googleapis` nor
@@ -348,6 +462,35 @@ test("performs no live YouTube call -- only the injected local dependencies are 
   });
 
   assert.equal(result.candidates.length, 1);
+});
+
+// Robustness guard (found by independent review, round 3): `videos.published_at` is NOT NULL but
+// not empty-string-constrained, and the sync path can theoretically persist "" if YouTube ever
+// omits `snippet.publishedAt`. Neither case has been observed in real data -- this only proves one
+// bad row can't crash the whole request or poison every other candidate's comparison.
+test("fails the whole request with INVALID_CONTEXT_REQUEST when the anchor itself has a malformed publishedAt", async () => {
+  const { services } = createFixture({
+    videos: [video({ videoId: "anchor", publishedAt: "" }), video({ videoId: "v1" })],
+  });
+
+  await assert.rejects(
+    () => services.findComparableVideos({ channelId: "UC_A", anchorVideoId: "anchor", sort: "publicationProximity" }),
+    (error: unknown) => error instanceof DomainError && error.code === "INVALID_CONTEXT_REQUEST"
+  );
+});
+
+test("excludes a candidate with a malformed publishedAt rather than failing the whole request", async () => {
+  const { services } = createFixture({
+    videos: [
+      video({ videoId: "anchor" }),
+      video({ videoId: "malformed", publishedAt: "" }),
+      video({ videoId: "fine", publishedAt: "2026-01-05T00:00:00.000Z" }),
+    ],
+  });
+
+  const result = await services.findComparableVideos({ channelId: "UC_A", anchorVideoId: "anchor", sort: "publicationProximity" });
+
+  assert.deepEqual(result.candidates.map((c) => c.videoId), ["fine"]);
 });
 
 test("rejects an unexpected input field", async () => {

@@ -80,10 +80,14 @@ export type ComparableVideoCandidate = {
   durationSeconds: number | null;
   /** DERIVED: `|anchor.durationSeconds - durationSeconds|`. `null` if either side is `null`. */
   durationDistanceSeconds: number | null;
-  /** DERIVED, from already-collected local analytics, age-aligned against the furthest day the
-   * anchor's own data actually reaches (see `performanceThreshold`'s own doc comment above --
-   * never the anchor's current wall-clock age). `null` if `performanceMetric` was not requested,
-   * or if this candidate has no analytics coverage at the comparison day (never a fabricated `0`). */
+  /** DERIVED, from already-collected local analytics, age-aligned against the last day of
+   * CONTIGUOUS coverage the anchor's own data reaches (see `performanceThreshold`'s own doc
+   * comment above -- never the anchor's current wall-clock age). `null` if `performanceMetric` was
+   * not requested, or if this candidate has no analytics coverage at the comparison day (never a
+   * fabricated `0`). Note: `performanceThreshold` is an ABSOLUTE `{operator, value}` comparison,
+   * never a comparison against the anchor's own value -- so a candidate can pass or fail the
+   * threshold independently of whatever the anchor's own `performanceMetricValue` turns out to
+   * be. */
   performanceMetricValue: number | null;
   /** DERIVED: title words (case-insensitive, punctuation-stripped, common English stopwords
    * removed) shared with the anchor's own title -- an explicit, inspectable signal, never framed
@@ -97,11 +101,15 @@ export type FindComparableVideosAnchor = {
   title: string;
   publishedAt: string;
   durationSeconds: number | null;
-  /** The anchor's own cumulative metric value at `performanceAlignment.dayOffset` -- the same
-   * age-aligned reference point every candidate's own `performanceMetricValue` is compared
-   * against. `null` if `performanceMetric` was not requested, or if the anchor has no collected
-   * data at all yet (day offset then defaults to 0, and even day 0 has no row) -- never a
-   * fabricated `0`. */
+  /** The anchor's own cumulative metric value at `performanceAlignment.dayOffset` -- informational
+   * context for interpreting each candidate's own value, NOT something candidates are filtered or
+   * scored against (`performanceThreshold` is an absolute `{operator, value}` comparison, never
+   * relative to this field). `null` if `performanceMetric` was not requested, or if the anchor has
+   * no CONTIGUOUS coverage reaching `performanceAlignment.dayOffset` -- which includes both "no
+   * data at all yet" (a brand-new anchor) AND "has real data at later days, but day 0 itself was
+   * never collected" (a common, non-error case for a video published before regular collection
+   * began for its channel, `analytics_comparable_age`'s own tool description documents the same
+   * situation) -- never a fabricated `0` either way. */
   performanceMetricValue: number | null;
 };
 

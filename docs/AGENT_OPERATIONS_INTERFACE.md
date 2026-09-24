@@ -531,8 +531,12 @@ videos by the broader filter set §10 describes. Tracked as `BL-088` (`docs/road
     the comparison day is now the LAST DAY OF CONTIGUOUS COVERAGE the anchor's own data actually
     reaches (from `computeComparableAgeSeries`'s own `cumulativePoints`, run once against the
     anchor's own rows before scoring any candidate), capped at 365 days and at the anchor's real
-    elapsed age as a safety bound -- degrading to day 0 if the anchor has no data at all yet, never
-    to an arbitrary later day nobody has data for either.
+    elapsed age as a safety bound -- degrading to day 0 if the anchor has no CONTIGUOUS coverage
+    reaching day 0 at all (which covers both "no data yet" for a brand-new anchor AND "has real
+    data at later days, but day 0 itself was never collected" for an OLD anchor published before
+    regular collection began for its channel -- `analytics_comparable_age`'s own tool description
+    already documents this same situation as a normal, expected data-coverage limitation, not an
+    error), never an arbitrary later day nobody has data for either.
   - **(bug, medium)** `sort: "durationProximity"` without `durationToleranceSeconds` didn't guard
     against the anchor having an unknown `durationSeconds` -- every candidate's own
     `durationDistanceSeconds ?? Infinity` comparator input became `Infinity - Infinity = NaN`
@@ -557,15 +561,45 @@ videos by the broader filter set §10 describes. Tracked as `BL-088` (`docs/road
   the series collapses the comparison day to before that gap -- `comparable-age.ts`'s own existing,
   documented behavior, not a new bug; and a comment correcting that `Array.prototype.sort` treats a
   `NaN` comparator result as "leave in place," not a shuffle). `npm test` 1320/1320, tsc/lint/build
-  clean through both rounds. **Round 3 is running** -- specifically checking an anchor published
-  before regular collection began for its channel (a realistic, likely common case on an existing
-  channel, distinct from round 1's "recently published anchor" scenario): such an anchor's own
-  `cumulativePoints` can be empty even though its real elapsed age is large, degrading to day 0 with
-  a `null` anchor value and excluding every candidate for `excludedForMissingData.performance` --
-  correct per this capability's own "never fabricate coverage that doesn't exist" rule, but round 3
-  is asked to judge whether the response needs a more explicit signal for this specific case, or
-  whether the capability's own description already covers it adequately, rather than pre-deciding
-  it here.
+  clean through both rounds.
+
+  **Round 3, findings 4, fixed in the same pass (not yet closed -- a round only closes the cycle
+  when it finds zero):** specifically checked an anchor published before regular collection began
+  for its channel (a realistic, likely common case on an existing channel, distinct from round 1's
+  "recently published anchor" scenario). **Verdict: this behavior is CORRECT, no code fix needed.**
+  `performanceThreshold` is an ABSOLUTE `{operator, value}` comparison, never relative to the
+  anchor's own value -- unlike `durationToleranceSeconds` (a *relative*, anchor-distance-based
+  filter, which is why an anchor with unknown `durationSeconds` correctly fails the WHOLE request),
+  a `null` anchor performance value never poisons candidate filtering: each candidate is
+  independently evaluated and its own exclusion, if any, is still honestly counted in
+  `excludedForMissingData.performance`. This is the same accepted, pre-existing limitation
+  `analytics_comparable_age`'s own tool description already documents for this exact situation
+  (AGENTS.md §D: reused, not reimplemented). Round 3 did find 4 real issues elsewhere, all fixed:
+  - **(bug, medium)** A caller-supplied `limit` above `MAX_COMPARABLE_VIDEOS_LIMIT` was REJECTED by
+    the schema as `validation_failed` -- contradicting this capability's own documented "never an
+    unbounded response, always silently capped with `truncated: true`" contract (AC-CMP-07,
+    `contracts.ts`'s own `limit` doc comment). Fixed: the schema no longer bounds `limit` at all;
+    the service clamps it to `MAX_COMPARABLE_VIDEOS_LIMIT` instead of rejecting it.
+  - **(gap, low -- robustness)** `toPacificCalendarDate` throws a plain `Error` on a malformed
+    `publishedAt`; `videos.published_at` is `NOT NULL` but not empty-string-constrained, so a
+    theoretical (never observed) malformed row anywhere on the channel would crash the WHOLE
+    request via a generic, untyped error. Fixed: the anchor's own malformed `publishedAt` now fails
+    with a clear `INVALID_CONTEXT_REQUEST` (it's load-bearing for every comparison); a candidate's
+    own malformed `publishedAt` is silently excluded from the comparison instead (it's not
+    load-bearing for anyone else's).
+  - **(gap, medium -- doc drift, again)** Round 2's own wording fix ("last day of CONTIGUOUS
+    coverage from day 0") hadn't propagated to every doc comment describing the same fallback
+    (`contracts.ts`'s `ComparableVideoCandidate`/`FindComparableVideosAnchor` doc comments still
+    said "no data at all yet," a narrower condition than what actually triggers it -- an OLD anchor
+    can have plenty of real data at LATER days and still hit this exact path). Fixed everywhere
+    this doc comment recurs, plus this section.
+  - **(nit)** `FindComparableVideosAnchor.performanceMetricValue`'s own doc comment said candidates
+    are "compared against" the anchor's value, implying it participates in filter math -- corrected
+    to state plainly it's informational/contextual only (see the absolute-threshold point above).
+  Also added tests for two previously-uncovered boundary/combination scenarios (`durationProximity`
+  with a mix of known/unknown candidate durations; exact-boundary `durationToleranceSeconds`/
+  `performanceThreshold` values) and the two malformed-`publishedAt` scenarios above. `npm test`
+  1326/1326, tsc/lint/build clean.
 
 ## 4h. Performance ↔ asset linkage (owner spec §16) -- ASSIGNED (slice L), not yet implemented
 
@@ -777,7 +811,7 @@ second error-code enum:
 | G | Content Proposal / external artifact registration | **CLOSED** -- see §4f; new `src/lib/content-proposals/` module, `content_proposals`/`content_proposal_artifacts` tables. Proposal create/get/list and external-artifact register/list both implemented. |
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | **VERIFIED, against the recovered verbatim spec, 2026-09-24.** Cross-checked that every `AGENT_CAPABILITIES` entry points at an actually-registered MCP tool and that every `agent_*` MCP tool has CLI parity -- zero drift. The initial capability set (owner spec §25) is fully present. The session's original verbatim spec text (34 numbered sections, sent over Telegram 2026-09-23) is not stored anywhere in this repository -- it was recovered from this session's own pre-compaction transcript to check the sections this document had never previously cited, rather than trusting citation coverage alone. That recheck found two real, previously-untracked gaps outside slice H's own scope -- §4g/§4h below (owner spec §10/§16, `BL-088`/`BL-089`) -- and one process gap, §4i (owner spec §28, no dedicated Phase 7 acceptance-contract document). Every other previously-uncited section (§3, §8, §11, §20, §21, §22, §23, §24, §26, §29-33) was confirmed either already implemented, already tracked as a known gap, or deliberately narrowed/overridden by a later, explicit owner instruction (§3/§30, slice I). |
 | I | Codex operations-workspace path surfacing | **IMPLEMENTED** -- see §4j; owner decision, Telegram 2026-09-24, narrowed this slice to a path-configuration/surfacing mechanism only (never an operations-workspace template or editorial-guideline document committed here, per `AGENTS.md` §B). New `src/lib/operations-instructions/` module, Settings-only `operationsWorkspacePath` setting, MCP `agent_list_operations_files`/`agent_get_operations_file`, CLI `agent list-operations-files`/`agent get-operations-file`. `AGENT_API_VERSION` → `0.8.0`. |
-| K | Comparable-content context (`find_comparable_videos`, owner spec §10) | **IMPLEMENTED, independent-review cycle IN PROGRESS (2 rounds so far, findings 3/4, round 3 running)** -- see §4g; found by the slice-H spec recovery, 2026-09-24, then explicitly assigned into this phase by the owner the same day ("Да, такие находки как BL 88 и 89 тоже включай в список тасков текущей 7 фазы", Telegram). New `src/lib/comparable-content/` module (K1) plus `videos.durationSeconds` sync (K0, schema v19). MCP `agent_find_comparable_videos`, CLI `agent find-comparable-videos`. `AGENT_API_VERSION` → `0.9.0`. `BL-088`. |
+| K | Comparable-content context (`find_comparable_videos`, owner spec §10) | **IMPLEMENTED, independent-review cycle IN PROGRESS (3 rounds so far, findings 3/4/4, round 4 next)** -- see §4g; found by the slice-H spec recovery, 2026-09-24, then explicitly assigned into this phase by the owner the same day ("Да, такие находки как BL 88 и 89 тоже включай в список тасков текущей 7 фазы", Telegram). New `src/lib/comparable-content/` module (K1) plus `videos.durationSeconds` sync (K0, schema v19). MCP `agent_find_comparable_videos`, CLI `agent find-comparable-videos`. `AGENT_API_VERSION` → `0.9.0`. `BL-088`. |
 | L | Performance ↔ asset linkage (owner spec §16) | **ASSIGNED** -- see §4h; found and assigned the same way and same day as slice K. `BL-089`. Not yet implemented. |
 | J | Independent security/integration review | ONGOING per slice -- `docs/roadmap/BACKLOG.md`'s BL-079/BL-080/BL-081 (and later rows, as slices land) are the authoritative record of each slice's own review-cycle status; not restated here as a round tally, since that would just be a second, driftable copy of the same fact. Covers the WHOLE phase, including slices K/L once they land -- deliberately kept last in the recommended order even though K/L were assigned after it was originally listed. |
 

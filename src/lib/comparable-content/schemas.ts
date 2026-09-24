@@ -58,7 +58,12 @@ export const findComparableVideosBaseObjectSchema = z
       .strict()
       .optional(),
     sort: sortModeSchema,
-    limit: z.number().int().positive().max(MAX_COMPARABLE_VIDEOS_LIMIT).optional(),
+    // Deliberately no `.max()` here (found by independent review, round 3): a caller-supplied
+    // `limit` above MAX_COMPARABLE_VIDEOS_LIMIT is silently capped by the service, per this
+    // capability's own contract (`FindComparableVideosInput.limit`'s doc comment, AC-CMP-07) --
+    // rejecting it at the schema layer would contradict "never an unbounded response, always
+    // truncated" by making an oversized limit a validation_failed error instead.
+    limit: z.number().int().positive().optional(),
   })
   .strict();
 

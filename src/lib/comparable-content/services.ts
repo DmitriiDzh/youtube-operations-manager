@@ -5,6 +5,7 @@ import {
   findComparableVideosOutputSchema,
   parseWithSchema,
   DEFAULT_COMPARABLE_VIDEOS_LIMIT,
+  MAX_COMPARABLE_VIDEOS_LIMIT,
 } from "./schemas";
 import { computeComparableAgeSeries, diffCalendarDays, toPacificCalendarDate } from "@/lib/analytics/comparable-age";
 
@@ -88,7 +89,22 @@ export function createComparableContentServices(deps: ServiceDependencies) {
         });
       }
 
-      const anchorPublishedPacific = toPacificCalendarDate(anchor.publishedAt);
+      // The anchor's own `publishedAt` is load-bearing for the whole request (every distance is
+      // computed relative to it) -- a malformed value (found by independent review, round 3, as a
+      // theoretical robustness gap: `videos.published_at` is NOT NULL but not empty-string-
+      // constrained, and `youtube-read-gateway` persists `snippet.publishedAt ?? ""` if YouTube
+      // ever omitted it) fails the whole request with a clear, typed error, never a generic
+      // unhandled exception.
+      let anchorPublishedPacific: string;
+      try {
+        anchorPublishedPacific = toPacificCalendarDate(anchor.publishedAt);
+      } catch {
+        throw new DomainError({
+          code: "INVALID_CONTEXT_REQUEST",
+          message: "anchor video has a malformed publishedAt timestamp and cannot be used for comparison",
+          details: { anchorVideoId: parsedInput.anchorVideoId },
+        });
+      }
 
       // Only fetched when actually needed -- avoids a local-analytics read (and the credentialRef
       // this whole capability otherwise doesn't need) for the common title/date/duration-only case.
@@ -151,7 +167,18 @@ export function createComparableContentServices(deps: ServiceDependencies) {
       for (const video of allVideos) {
         if (video.videoId === anchor.videoId) continue;
 
-        const publicationDistanceDays = Math.abs(diffCalendarDays(anchorPublishedPacific, toPacificCalendarDate(video.publishedAt)));
+        // A single video with a malformed `publishedAt` (see the anchor's own guard above for why
+        // this can theoretically happen) is excluded from the comparison entirely, never allowed
+        // to fail the whole request over one bad row -- unlike the anchor itself, a candidate is
+        // not load-bearing for anyone else's comparison.
+        let candidatePublishedPacific: string;
+        try {
+          candidatePublishedPacific = toPacificCalendarDate(video.publishedAt);
+        } catch {
+          continue;
+        }
+
+        const publicationDistanceDays = Math.abs(diffCalendarDays(anchorPublishedPacific, candidatePublishedPacific));
         if (parsedInput.publicationWindowDays !== undefined && publicationDistanceDays > parsedInput.publicationWindowDays) {
           continue;
         }
@@ -217,7 +244,12 @@ export function createComparableContentServices(deps: ServiceDependencies) {
         }
       });
 
-      const limit = parsedInput.limit ?? DEFAULT_COMPARABLE_VIDEOS_LIMIT;
+      // Clamped, never rejected -- a caller-supplied `limit` above MAX_COMPARABLE_VIDEOS_LIMIT is
+      // silently capped here (found by independent review, round 3: the schema used to reject it
+      // outright as validation_failed, contradicting this capability's own documented "never an
+      // unbounded response, always truncated" contract, AC-CMP-07).
+      const requestedLimit = parsedInput.limit ?? DEFAULT_COMPARABLE_VIDEOS_LIMIT;
+      const limit = Math.min(requestedLimit, MAX_COMPARABLE_VIDEOS_LIMIT);
       const truncated = candidates.length > limit;
       const limited = candidates.slice(0, limit);
 
