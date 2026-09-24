@@ -65,6 +65,7 @@ type AgentOperationsCliCoreSubset = Pick<
   | "listProposalArtifacts"
   | "operationsWorkspaceListFiles"
   | "operationsWorkspaceGetFile"
+  | "findComparableVideos"
 >;
 type AssetCatalogCliCoreSubset = Pick<AssetCatalogCore, "registerAsset">;
 
@@ -129,7 +130,8 @@ export type ParsedArgs = {
     | "register-external-artifact"
     | "list-proposal-artifacts"
     | "list-operations-files"
-    | "get-operations-file";
+    | "get-operations-file"
+    | "find-comparable-videos";
   flags: Record<string, string | boolean>;
 };
 
@@ -171,6 +173,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       "list-proposal-artifacts",
       "list-operations-files",
       "get-operations-file",
+      "find-comparable-videos",
     ],
     asset: ["register"],
   };
@@ -405,6 +408,9 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   // filesystem access).
   "list-operations-files",
   "get-operations-file",
+  // agent find-comparable-videos (slice K, owner spec §10): local reads only (sync mirror +
+  // local analytics rows), never a live YouTube call, never mutates anything.
+  "find-comparable-videos",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -933,6 +939,47 @@ export async function runCliCommand(args: {
         const result = await agentOperationsCore.listProposalArtifacts({
           channelId,
           proposalId: requiredStringFlag(parsedArgs.flags, "proposalId"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Phase 7 slice K (owner spec §10). --performanceMetric/--performanceThresholdOperator/
+      // --performanceThresholdValue/--sort=performanceMetric each require a credentialRef, so this
+      // reuses the same `agentCredentialRef` already resolved above for `assertActiveChannel` --
+      // but only forwards it when a performance metric was actually requested, mirroring
+      // `findComparableVideos`'s own "only resolve/use credentials when actually needed" design.
+      if (parsedArgs.command === "find-comparable-videos") {
+        const performanceMetric = optionalStringFlag(parsedArgs.flags, "performanceMetric");
+        const publicationWindowDaysFlag = optionalStringFlag(parsedArgs.flags, "publicationWindowDays");
+        const durationToleranceSecondsFlag = optionalStringFlag(parsedArgs.flags, "durationToleranceSeconds");
+        const performanceThresholdOperator = optionalStringFlag(parsedArgs.flags, "performanceThresholdOperator");
+        const performanceThresholdValueFlag = optionalStringFlag(parsedArgs.flags, "performanceThresholdValue");
+        const limitFlag = optionalStringFlag(parsedArgs.flags, "limit");
+
+        // Never silently drop half of a threshold request (this codebase's own "never silently
+        // shrink/ignore a request" convention, e.g. excludedForMissingData below) -- giving only
+        // one of the pair is always a typo, not "no threshold requested".
+        if ((performanceThresholdOperator === undefined) !== (performanceThresholdValueFlag === undefined)) {
+          throw new DomainError({
+            code: "validation_failed",
+            message: "--performanceThresholdOperator and --performanceThresholdValue must be given together",
+          });
+        }
+
+        const result = await agentOperationsCore.findComparableVideos({
+          channelId,
+          anchorVideoId: requiredStringFlag(parsedArgs.flags, "anchorVideoId"),
+          credentialRef: performanceMetric ? agentCredentialRef : undefined,
+          publicationWindowDays: publicationWindowDaysFlag === undefined ? undefined : Number(publicationWindowDaysFlag),
+          durationToleranceSeconds: durationToleranceSecondsFlag === undefined ? undefined : Number(durationToleranceSecondsFlag),
+          performanceMetric,
+          performanceThreshold:
+            performanceThresholdOperator !== undefined && performanceThresholdValueFlag !== undefined
+              ? { operator: performanceThresholdOperator, value: Number(performanceThresholdValueFlag) }
+              : undefined,
+          sort: requiredStringFlag(parsedArgs.flags, "sort"),
+          limit: limitFlag === undefined ? undefined : Number(limitFlag),
         });
         writeStdout(serializeSuccess(result));
         return 0;

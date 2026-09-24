@@ -40,6 +40,8 @@ import {
 import { createAgentOperationsCore, type AgentOperationsCore, AGENT_API_VERSION } from "@/lib/agent-operations";
 import {
   createContentProposalInputSchema,
+  findComparableVideosInputSchema,
+  findComparableVideosSdkInputSchema,
   getAssetContextInputSchema,
   getChannelContextInputSchema,
   getContentProposalInputSchema,
@@ -145,6 +147,7 @@ type AgentOperationsCoreSubset = Pick<
   | "listProposalArtifacts"
   | "operationsWorkspaceListFiles"
   | "operationsWorkspaceGetFile"
+  | "findComparableVideos"
 >;
 
 type ToolResponse = {
@@ -201,6 +204,7 @@ type McpToolHandlers = {
   agentListProposalArtifacts: (input: unknown) => Promise<ToolResponse>;
   agentListOperationsFiles: (input: unknown) => Promise<ToolResponse>;
   agentGetOperationsFile: (input: unknown) => Promise<ToolResponse>;
+  agentFindComparableVideos: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -1344,6 +1348,44 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    /**
+     * Phase 7 slice K (owner spec §10). Same explicit channel-scoping pattern as
+     * `agentListAssets` above -- the service function itself does no such check.
+     *
+     * UNLIKE `agentListAssets`, this tool's own domain schema (`findComparableVideosInputSchema`)
+     * requires `credentialRef` whenever `performanceMetric` is requested -- but the caller should
+     * never have to pass one explicitly just to satisfy that refinement (every other
+     * credential-bearing tool in this file, e.g. `agentQueryChannelAnalytics`, resolves a fallback
+     * server-side). So `credentialRef` is resolved from the caller's own value if given, else the
+     * local active identity, BEFORE schema validation -- injected into the object so the schema's
+     * refine sees it regardless of whether the caller supplied one. The same resolved value is
+     * then reused for `assertActiveChannel` and forwarded into the actual call, never resolved
+     * twice with two different results.
+     */
+    async agentFindComparableVideos(input: unknown): Promise<ToolResponse> {
+      try {
+        const rawCredentialRef =
+          typeof input === "object" && input !== null ? (input as { credentialRef?: unknown }).credentialRef : undefined;
+        const credentialRef = await resolveCredentialRef(rawCredentialRef);
+        const inputWithCredentialRef =
+          typeof input === "object" && input !== null ? { ...(input as Record<string, unknown>), credentialRef } : input;
+
+        const parsedInput = findComparableVideosInputSchema.safeParse(inputWithCredentialRef);
+        if (!parsedInput.success) {
+          return mapValidationErrorResult(parsedInput.error);
+        }
+
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.findComparableVideos(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -1468,6 +1510,9 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // never a mutation of any kind -- ungated, like `agentListAssets` above.
     agentListOperationsFiles: handlers.agentListOperationsFiles,
     agentGetOperationsFile: handlers.agentGetOperationsFile,
+    // Slice K -- a pure local read (local sync mirror + local analytics rows, never a live
+    // YouTube call) -- ungated, like `agentListAssets` above.
+    agentFindComparableVideos: handlers.agentFindComparableVideos,
   };
 }
 
@@ -1994,6 +2039,22 @@ export function createMcpServer(
       inputSchema: operationsWorkspaceGetFileInputSchema,
     },
     (args) => handlers.agentGetOperationsFile(args)
+  );
+
+  registerTool(
+    "agent_find_comparable_videos",
+    {
+      description:
+        "Owner spec §10: find already-synced videos on the same channel comparable to an anchor video, by publication proximity, duration proximity, and/or an age-aligned (days-since-publish, capped at 365) already-collected performance metric threshold. Local reads only -- never a live YouTube call. Does NOT support 'same content family', 'similar target audience', or 'similar metadata pattern' matching -- no data source for any of those exists in this application. sharedTitleTokens is a literal lowercase word-overlap set, never topic/semantic similarity, never an embedding model. credentialRef is optional and, if omitted, resolved automatically to the caller's own active identity -- only actually used (for the local analytics read) when performanceMetric is requested. The response's anchor block and performanceAlignment report the exact reference point results were compared against. Videos missing data a requested duration/performance filter needs are counted in excludedForMissingData, never fabricated or silently dropped. Requires channelId to be the caller's currently-active channel and anchorVideoId to actually belong to it.",
+      // SDK-facing schema deliberately relaxes the "performanceMetric requires credentialRef"
+      // cross-field rule (same reasoning as agent_query_channel_analytics's own
+      // .partial({credentialRef: true}) above) -- the handler resolves/injects credentialRef and
+      // re-validates against the FULL findComparableVideosInputSchema before ever calling the
+      // domain service, so this never weakens the actual rule, only defers it past the SDK's own
+      // pre-handler validation.
+      inputSchema: findComparableVideosSdkInputSchema,
+    },
+    (args) => handlers.agentFindComparableVideos(args)
   );
 
   return server;

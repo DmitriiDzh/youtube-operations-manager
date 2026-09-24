@@ -159,6 +159,7 @@ npm run cli:video-metadata -- agent register-external-artifact --channelId <UC..
 npm run cli:video-metadata -- agent list-proposal-artifacts --channelId <UC...> --proposalId <PROPOSAL_ID>
 npm run cli:video-metadata -- agent list-operations-files
 npm run cli:video-metadata -- agent get-operations-file --path <RELATIVE_PATH>
+npm run cli:video-metadata -- agent find-comparable-videos --channelId <UC...> --anchorVideoId <VIDEO_ID> --sort publicationProximity|durationProximity|performanceMetric|titleTokenOverlap [--publicationWindowDays <N>] [--durationToleranceSeconds <N>] [--performanceMetric <name>] [--performanceThresholdOperator '>='|'<='] [--performanceThresholdValue <N>] [--limit <N>]
 ```
 
 `agent capabilities` is read-only with no channel/credential resolution at all (instance-level
@@ -252,6 +253,25 @@ resolving outside it, including into this app's own app-data directory) is rejec
 `OPERATIONS_FILE_NOT_AVAILABLE` error as a genuinely nonexistent file, never distinguishable. Both
 are pure filesystem reads, never gated by the device-availability check. See
 `docs/AGENT_OPERATIONS_INTERFACE.md` §4j for the full design.
+
+`agent find-comparable-videos` (Phase 7 slice K, owner spec §10) is a channel-scoped read
+(`assertActiveChannel`, same pattern as `agent list-assets` above) that finds already-synced
+videos on `--channelId` comparable to `--anchorVideoId`, by publication proximity, duration
+proximity, and/or an age-aligned (days-since-publish, capped at 365) already-collected performance
+metric threshold -- local reads only, never a live YouTube call. It does **not** support "same
+content family," "similar target audience," or "similar metadata pattern" matching -- no data
+source for any of those exists in this application. `--performanceMetric`/
+`--performanceThresholdOperator`+`--performanceThresholdValue`/`--sort performanceMetric` each
+require a resolvable credential (only ever used when a performance metric is actually requested).
+`--performanceThresholdOperator`/`--performanceThresholdValue` must be given together — one without
+the other is rejected as `validation_failed`, never silently treated as "no threshold." Videos
+missing the data a requested `--durationToleranceSeconds`/performance filter needs are counted in
+the response's `excludedForMissingData`, never silently coerced to a fabricated `0` or dropped
+without being counted. `sharedTitleTokens` on each candidate is a literal lowercase word-overlap
+set, never topic/semantic similarity, never produced by an embedding model. The response's `anchor`
+block and `performanceAlignment` report the anchor's own facts and the exact comparison day, so
+each candidate's distance fields are interpretable without a second call. See
+`docs/AGENT_OPERATIONS_INTERFACE.md` §4g for the full design.
 
 ### Analytics commands (CLI parity for the MCP `analytics_*` tools, Phase 8 follow-up)
 
@@ -450,6 +470,35 @@ Key MCP tools:
     an absolute path, or a symlink resolving outside it, including into this app's own app-data
     directory) gets the same `OPERATIONS_FILE_NOT_AVAILABLE` error as a genuinely nonexistent
     file, never distinguishable. Content capped at 200,000 bytes.
+  - `agent_find_comparable_videos` (Phase 7 slice K, owner spec §10) — `{ channelId,
+    anchorVideoId, credentialRef?, publicationWindowDays?, durationToleranceSeconds?,
+    performanceMetric?, performanceThreshold?, sort, limit? }` → `{ anchorVideoId, anchor,
+    performanceAlignment, candidates: ComparableVideoCandidate[], excludedForMissingData: {
+    duration, performance }, truncated, metricDefinitions, freshness }`. `anchor` carries the
+    anchor video's own title/publishedAt/durationSeconds/performanceMetricValue and
+    `performanceAlignment` (`{ metricName, dayOffset } | null`) names the exact day-since-publish
+    every candidate's (and the anchor's own) `performanceMetricValue` was evaluated at.
+    `metricDefinitions`/`freshness` mirror `agent_query_video_analytics`'s own enrichment (owner
+    spec §9) — both `null` unless `performanceMetric` was requested. Same channel-scoping as
+    `agent_list_assets`, except this tool deliberately lets an explicitly caller-supplied
+    `credentialRef` govern which identity's active channel is checked (same convention
+    `agent_query_channel_analytics`/`agent_query_video_analytics` already use), not just forwarding
+    it downstream. Local
+    reads only — never a live YouTube call; the performance-metric path reuses the same
+    age-alignment logic as `agent_query_video_analytics`/`analytics_comparable_age`, never a second
+    implementation. `anchorVideoId` not belonging to (or not found on) `channelId` fails with
+    `DATA_NOT_SYNCED` (the same code `agent_get_video_context` already uses for this shape of
+    not-found). Does **not** support "same content family," "similar target audience," or "similar
+    metadata pattern" matching — no data source for any of those exists in this application, and
+    this capability never approximates them. `sharedTitleTokens` on each candidate is a literal
+    lowercase word-overlap set, never topic/semantic similarity, never an embedding model (owner
+    spec §10 explicitly rules out embeddings for a first implementation).
+    `credentialRef` is optional — if omitted, it is resolved automatically to the caller's own
+    active identity (the same resolution every other channel-scoped tool already performs for its
+    `assertActiveChannel` check) and is only actually used, internally, when `performanceMetric` is
+    requested. Videos missing the data a requested duration/performance filter needs are counted in
+    `excludedForMissingData`, never silently coerced to a fabricated `0` or dropped without being
+    counted.
 
   `get_capabilities` also now registers several already-existing, already-implemented tools it
   previously omitted (`channel_list`, `channel_video_list`, `ai_localization_generate`,

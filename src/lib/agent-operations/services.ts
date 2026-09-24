@@ -39,6 +39,8 @@ import {
   operationsWorkspaceGetFileOutputSchema,
   operationsWorkspaceListFilesInputSchema,
   operationsWorkspaceListFilesOutputSchema,
+  findComparableVideosContextOutputSchema,
+  findComparableVideosInputSchema,
   parseWithSchema,
   queryChannelAnalyticsInputSchema,
   queryVideoAnalyticsInputSchema,
@@ -54,6 +56,8 @@ import type { StoredGenerationProvenance } from "@/lib/ai-localization/contracts
 import type { ContentProposal, ProposalArtifactLink } from "@/lib/content-proposals";
 import type { CreatedVia } from "@/lib/shared-provenance";
 import type { OperationsWorkspaceFileResult, OperationsWorkspaceListResult } from "@/lib/operations-instructions";
+import type { FindComparableVideosResult } from "@/lib/comparable-content";
+import type { FindComparableVideosContext } from "./schemas";
 
 /**
  * One entry per capability actually implemented and reachable today -- either a new function this
@@ -232,6 +236,13 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Read one file's content from the operator-configured operations-workspace directory, by its path as returned from operations_workspace.list_files. Returns { configured: false } if no path is set. A path attempting to escape the configured directory (`..` segments, an absolute path, or a symlink resolving outside it) is rejected with the same OPERATIONS_FILE_NOT_AVAILABLE error as a genuinely nonexistent file -- never distinguishable, to avoid confirming what does or doesn't exist outside the workspace. Content is capped at 200,000 bytes per file, reporting `truncated: true` if the real file is larger.",
   },
+  {
+    id: "comparable_content.find_comparable_videos",
+    domain: "comparable_content",
+    permission: "READ",
+    description:
+      "Owner spec §10: find already-synced videos on the same channel comparable to an anchor video, by publication proximity, duration proximity, and/or an age-aligned (days-since-publish, capped at 365) already-collected performance metric threshold. Local reads only -- never a live YouTube call; the performance-metric path reuses the same age-alignment logic as analytics.query_comparable_age_performance, never a second implementation. Does NOT support 'same content family', 'similar target audience', or 'similar metadata pattern' matching -- no data source for any of those exists in this application, and this capability never approximates them. Title similarity is reported only as `sharedTitleTokens`, a literal lowercase word-overlap set (after a tiny English stopword list) -- never framed as topic/semantic similarity, and never produced by an embedding model (owner spec §10 explicitly rules out embeddings for a first implementation). `credentialRef` is optional and, if omitted, resolved automatically to the caller's own active identity -- it is only actually used (for the local analytics read) when `performanceMetric` is requested. The response's `anchor` block and `performanceAlignment` report the exact reference point (video facts, and the metric name/day-offset every candidate was compared at) so results are interpretable without a second call. Videos missing the data a requested duration/performance filter needs are counted in `excludedForMissingData`, never silently coerced to a fabricated 0 or dropped without being counted. Requires channelId to be the caller's currently-active channel and anchorVideoId to actually belong to it.",
+  },
 ];
 
 
@@ -384,6 +395,10 @@ type ServiceDependencies = {
   // capability is not channel-scoped at all (one global, operator-configured workspace path).
   operationsWorkspaceListFiles(input: unknown): Promise<OperationsWorkspaceListResult>;
   operationsWorkspaceGetFile(input: unknown): Promise<OperationsWorkspaceFileResult>;
+  // Slice K -- delegates to `comparableContentCore`'s own `findComparableVideos` unchanged
+  // (AGENTS.md §D). No credential/channel checking of its own -- mirrors slice B's convention,
+  // same as every delegate above; the MCP/CLI caller checks `assertActiveChannel` first.
+  findComparableVideos(input: unknown): Promise<FindComparableVideosResult>;
 };
 
 export function createAgentOperationsServices(deps: ServiceDependencies) {
@@ -657,6 +672,31 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
       const parsedInput = parseWithSchema(operationsWorkspaceGetFileInputSchema, input, "get operations workspace file input");
       const result = await deps.operationsWorkspaceGetFile(parsedInput);
       return parseWithSchema(operationsWorkspaceGetFileOutputSchema, result, "get operations workspace file output");
+    },
+
+    /**
+     * Slice K, owner spec §10. Channel-scoped -- the MCP/CLI caller checks
+     * `assertActiveChannel` before this is ever invoked, same convention as slice B. Enriches the
+     * raw comparable-content result with `metricDefinitions`/`freshness` -- same convention
+     * `queryVideoAnalytics` above already applies over its own wrapped capability's raw result
+     * (owner spec §9) -- `null` for both unless `performanceMetric` was actually requested.
+     */
+    async findComparableVideos(input: unknown): Promise<FindComparableVideosContext> {
+      const parsedInput = parseWithSchema(findComparableVideosInputSchema, input, "find comparable videos input");
+      const result = await deps.findComparableVideos(parsedInput);
+      const output: FindComparableVideosContext = {
+        ...result,
+        metricDefinitions: result.performanceAlignment ? getMetricDefinitions([result.performanceAlignment.metricName]) : null,
+        freshness: result.performanceAlignment
+          ? {
+              source: "local_collected_data",
+              asOf: deps.now().toISOString(),
+              note:
+                "Reflects whatever was last collected locally (via 'Collect now' or daily auto-collection), not a live read. Call the existing analytics_data_quality tool for exact per-date coverage.",
+            }
+          : null,
+      };
+      return parseWithSchema(findComparableVideosContextOutputSchema, output, "find comparable videos output");
     },
   };
 }

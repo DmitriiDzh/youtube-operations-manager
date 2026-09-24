@@ -58,7 +58,7 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts`) for the current, authoritative
  * list of capabilities.
  */
-export const AGENT_API_VERSION = "0.8.0";
+export const AGENT_API_VERSION = "0.9.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
@@ -78,6 +78,7 @@ export const AGENT_CAPABILITY_DOMAINS = [
   "localization_draft",
   "content_proposal",
   "operations_workspace",
+  "comparable_content",
 ] as const;
 export type AgentCapabilityDomain = (typeof AGENT_CAPABILITY_DOMAINS)[number];
 

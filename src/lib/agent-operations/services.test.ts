@@ -96,6 +96,30 @@ type FakeOperationsWorkspaceFileResult =
   | { configured: false }
   | { configured: true; path: string; content: string; truncated: boolean };
 
+type FakeFindComparableVideosResult = {
+  anchorVideoId: string;
+  anchor: {
+    videoId: string;
+    title: string;
+    publishedAt: string;
+    durationSeconds: number | null;
+    performanceMetricValue: number | null;
+  };
+  performanceAlignment: { metricName: string; dayOffset: number } | null;
+  candidates: Array<{
+    videoId: string;
+    title: string;
+    publishedAt: string;
+    publicationDistanceDays: number;
+    durationSeconds: number | null;
+    durationDistanceSeconds: number | null;
+    performanceMetricValue: number | null;
+    sharedTitleTokens: string[];
+  }>;
+  excludedForMissingData: { duration: number; performance: number };
+  truncated: boolean;
+};
+
 function createFixture(
   overrides: Partial<{
     productVersion: string;
@@ -123,6 +147,7 @@ function createFixture(
     contentProposalListProposalArtifacts: (input: unknown) => Promise<{ artifacts: FakeProposalArtifactLink[] }>;
     operationsWorkspaceListFiles: (input: unknown) => Promise<FakeOperationsWorkspaceListResult>;
     operationsWorkspaceGetFile: (input: unknown) => Promise<FakeOperationsWorkspaceFileResult>;
+    findComparableVideos: (input: unknown) => Promise<FakeFindComparableVideosResult>;
   }> = {}
 ) {
   const services = createAgentOperationsServices({
@@ -163,6 +188,8 @@ function createFixture(
       overrides.operationsWorkspaceListFiles ?? (async () => { throw new Error("operationsWorkspaceListFiles not stubbed"); }),
     operationsWorkspaceGetFile:
       overrides.operationsWorkspaceGetFile ?? (async () => { throw new Error("operationsWorkspaceGetFile not stubbed"); }),
+    findComparableVideos:
+      overrides.findComparableVideos ?? (async () => { throw new Error("findComparableVideos not stubbed"); }),
   });
   return { services };
 }
@@ -175,7 +202,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   const result = await services.getSystemCapabilities({});
 
   assert.equal(result.productVersion, "9.9.9");
-  assert.equal(result.agentApiVersion, "0.8.0");
+  assert.equal(result.agentApiVersion, "0.9.0");
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -472,6 +499,18 @@ test("agent capabilities list registers the two slice I operations-workspace cap
   assert.ok(result.dataDomains.includes("operations_workspace_files"));
 });
 
+// Phase 7 slice K (owner spec §10): READ-only, reuses the existing video_metadata/video_analytics
+// data domains -- no new data domain needed for this capability.
+test("agent capabilities list registers the slice K comparable-content capability with correct domain/permission", async () => {
+  const { services } = createFixture();
+  const result = await services.getSystemCapabilities({});
+
+  const cap = result.capabilities.find((c) => c.id === "comparable_content.find_comparable_videos");
+  assert.ok(cap);
+  assert.equal(cap!.domain, "comparable_content");
+  assert.equal(cap!.permission, "READ");
+});
+
 test("operationsWorkspaceListFiles forwards its input unchanged and returns the result unchanged", async () => {
   let captured: unknown;
   const { services } = createFixture({
@@ -507,6 +546,79 @@ test("operationsWorkspaceGetFile forwards its input unchanged and returns the re
   const result = await services.operationsWorkspaceGetFile({ path: "AGENTS.md" });
   assert.deepEqual(captured, { path: "AGENTS.md" });
   assert.deepEqual(result, { configured: true, path: "AGENTS.md", content: "# hi", truncated: false });
+});
+
+test("findComparableVideos forwards its (schema-validated) input unchanged and enriches the raw result with metricDefinitions/freshness (null, since no performanceMetric was requested)", async () => {
+  let captured: unknown;
+  const fakeResult: FakeFindComparableVideosResult = {
+    anchorVideoId: "vid-anchor",
+    anchor: { videoId: "vid-anchor", title: "Anchor", publishedAt: "2026-05-01T20:00:00.000Z", durationSeconds: 630, performanceMetricValue: null },
+    performanceAlignment: null,
+    candidates: [
+      {
+        videoId: "vid-candidate",
+        title: "Candidate",
+        publishedAt: "2026-05-01T20:00:00.000Z",
+        publicationDistanceDays: 3,
+        durationSeconds: 600,
+        durationDistanceSeconds: 30,
+        performanceMetricValue: null,
+        sharedTitleTokens: ["candidate"],
+      },
+    ],
+    excludedForMissingData: { duration: 0, performance: 0 },
+    truncated: false,
+  };
+  const { services } = createFixture({
+    findComparableVideos: async (input) => {
+      captured = input;
+      return fakeResult;
+    },
+  });
+
+  const input = { channelId: "chan-1", anchorVideoId: "vid-anchor", sort: "publicationProximity" as const };
+  const result = await services.findComparableVideos(input);
+  assert.deepEqual(captured, input);
+  assert.deepEqual(result, { ...fakeResult, metricDefinitions: null, freshness: null });
+});
+
+test("findComparableVideos populates metricDefinitions/freshness when the raw result carries a performanceAlignment", async () => {
+  const fakeResult: FakeFindComparableVideosResult = {
+    anchorVideoId: "vid-anchor",
+    anchor: { videoId: "vid-anchor", title: "Anchor", publishedAt: "2026-05-01T20:00:00.000Z", durationSeconds: 630, performanceMetricValue: 40 },
+    performanceAlignment: { metricName: "views", dayOffset: 3 },
+    candidates: [],
+    excludedForMissingData: { duration: 0, performance: 0 },
+    truncated: false,
+  };
+  const { services } = createFixture({
+    findComparableVideos: async () => fakeResult,
+    now: () => new Date("2026-05-04T20:00:00.000Z"),
+  });
+
+  const result = await services.findComparableVideos({
+    channelId: "chan-1",
+    anchorVideoId: "vid-anchor",
+    performanceMetric: "views",
+    credentialRef: { userId: "u1" },
+    sort: "performanceMetric",
+  });
+
+  assert.ok(result.metricDefinitions);
+  assert.deepEqual(result.metricDefinitions![0]?.name, "views");
+  assert.equal(result.freshness?.source, "local_collected_data");
+  assert.equal(result.freshness?.asOf, "2026-05-04T20:00:00.000Z");
+});
+
+test("findComparableVideos rejects input that fails its own schema (e.g. missing sort) before ever calling the dependency", async () => {
+  const { services } = createFixture({
+    findComparableVideos: async () => { throw new Error("must not be called"); },
+  });
+
+  await assert.rejects(
+    () => services.findComparableVideos({ channelId: "chan-1", anchorVideoId: "vid-anchor" }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
 });
 
 // AC-PROVENANCE-01/02: forwards input unchanged, returns the stored record including the

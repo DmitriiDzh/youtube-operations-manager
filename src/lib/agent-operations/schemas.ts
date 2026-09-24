@@ -35,6 +35,11 @@ import {
   getOperationsFileInputSchema as rawOperationsWorkspaceGetFileInputSchema,
   getOperationsFileOutputSchema as rawOperationsWorkspaceGetFileOutputSchema,
 } from "@/lib/operations-instructions/schemas";
+import {
+  findComparableVideosBaseObjectSchema as rawFindComparableVideosBaseObjectSchema,
+  findComparableVideosInputSchema as rawFindComparableVideosInputSchema,
+  findComparableVideosOutputSchema as rawFindComparableVideosOutputSchema,
+} from "@/lib/comparable-content/schemas";
 
 export { parseWithSchema };
 
@@ -367,3 +372,29 @@ export type OperationsWorkspaceListFilesInput = z.infer<typeof operationsWorkspa
 export type OperationsWorkspaceListFilesOutput = z.infer<typeof operationsWorkspaceListFilesOutputSchema>;
 export type OperationsWorkspaceGetFileInput = z.infer<typeof operationsWorkspaceGetFileInputSchema>;
 export type OperationsWorkspaceGetFileOutput = z.infer<typeof operationsWorkspaceGetFileOutputSchema>;
+
+// ---------------------------------------------------------------------------
+// Slice K -- comparable-content context (owner spec §10). Same reuse discipline.
+// ---------------------------------------------------------------------------
+
+export const findComparableVideosInputSchema = rawFindComparableVideosInputSchema;
+/** SDK-facing only (relaxed `credentialRef` cross-field rule) -- see this schema's own doc
+ * comment in `comparable-content/schemas.ts`. Never used for the handler's or domain service's
+ * own (full, refined) validation. */
+export const findComparableVideosSdkInputSchema = rawFindComparableVideosBaseObjectSchema;
+
+/**
+ * This module's own OUTPUT is the raw comparable-content result PLUS `metricDefinitions`/
+ * `freshness` -- same enrichment `queryVideoAnalytics` already adds over its own wrapped
+ * capability's raw result (owner spec §9: "every result must include metric definitions"). `null`
+ * for both unless `performanceMetric` was actually requested (nothing to describe otherwise).
+ */
+export const findComparableVideosContextOutputSchema = rawFindComparableVideosOutputSchema
+  .extend({
+    metricDefinitions: z.array(metricDefinitionSchema).nullable(),
+    freshness: analyticsFreshnessSchema.nullable(),
+  })
+  .strict();
+
+export type FindComparableVideosInput = z.infer<typeof findComparableVideosInputSchema>;
+export type FindComparableVideosContext = z.infer<typeof findComparableVideosContextOutputSchema>;

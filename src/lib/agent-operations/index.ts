@@ -7,6 +7,7 @@ import { createAnalyticsCore } from "@/lib/analytics";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createContentProposalCore } from "@/lib/content-proposals";
 import { createOperationsInstructionsCore } from "@/lib/operations-instructions";
+import { createComparableContentCore } from "@/lib/comparable-content";
 import { createAgentOperationsServices } from "./services";
 
 /**
@@ -38,6 +39,7 @@ export function createAgentOperationsCore() {
   const assetCatalogCore = createAssetCatalogCore();
   const contentProposalCore = createContentProposalCore();
   const operationsInstructionsCore = createOperationsInstructionsCore();
+  const comparableContentCore = createComparableContentCore();
 
   return createAgentOperationsServices({
     getProductVersion: readProductVersion,
@@ -74,6 +76,9 @@ export function createAgentOperationsCore() {
     // functions (AGENTS.md §D).
     operationsWorkspaceListFiles: operationsInstructionsCore.listOperationsFiles,
     operationsWorkspaceGetFile: operationsInstructionsCore.getOperationsFile,
+    // Slice K -- delegates unchanged to `comparableContentCore`'s own already-tested
+    // `findComparableVideos` (AGENTS.md §D).
+    findComparableVideos: comparableContentCore.findComparableVideos,
   });
 }
 
@@ -110,3 +115,9 @@ export type {
   OperationsWorkspaceFileResult,
   OperationsWorkspaceListResult,
 } from "@/lib/operations-instructions";
+export type {
+  ComparableVideoCandidate,
+  ComparableVideosSortMode,
+  FindComparableVideosResult,
+} from "@/lib/comparable-content";
+export type { FindComparableVideosContext } from "./schemas";

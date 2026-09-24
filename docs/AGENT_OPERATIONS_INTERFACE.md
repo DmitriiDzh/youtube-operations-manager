@@ -411,7 +411,7 @@ asset-insert path); `content-proposals` only owns the link.
   never-independently-verified caveats already documented for slice F; this remains an accepted,
   unchanged limitation, not something slice G2 needed to revisit.
 
-## 4g. Comparable-content context (owner spec §10) -- ASSIGNED (slice K), not yet implemented
+## 4g. Comparable-content context (owner spec §10) -- IMPLEMENTED (slice K)
 
 Found 2026-09-24 when the full 34-section owner spec text was recovered from this session's own
 pre-compaction transcript to independently verify slice H (it had never been re-derived from the
@@ -425,9 +425,95 @@ filters and ranking" is enough). This is distinct from the already-implemented
 equivalent days-since-publish but does not let a caller search for topically/structurally similar
 videos by the broader filter set §10 describes. Tracked as `BL-088` (`docs/roadmap/BACKLOG.md`),
 **assigned into this phase by the owner, Telegram 2026-09-24** ("Да, такие находки как BL 88 и 89
-тоже включай в список тасков текущей 7 фазы"); not yet implemented. The smallest safe first slice
-would likely reuse `youtube-read-gateway`'s already-synced local channel/video mirror plus simple
-metadata-field filtering, no new data source.
+тоже включай в список тасков текущей 7 фазы").
+
+**Split into two commits, per `advisor()`'s explicit guidance:**
+
+- **K0 (duration sync).** Honestly implementing the spec's "similar duration" filter needs each
+  video's actual runtime, which this application never synced before. Added `videos.durationSeconds`
+  (schema v19, nullable, additive -- same `isDuplicateColumnError`-tolerant `ALTER TABLE` pattern as
+  the existing v4 view/comment/like-count columns) and a new `parseIso8601DurationToSeconds` parser
+  in `youtube-read-gateway/data-api.ts` (`videos.list`'s `part` now also requests `contentDetails`).
+  `"P0D"`/`"PT0S"` (YouTube's live-broadcast placeholder) parse to `null`, never a fabricated `0`.
+  `video-details/adapters/store.ts`'s `refreshVideoFields` (a targeted single-field patch that must
+  merge every untouched field forward) was extended to carry `durationSeconds` forward too --
+  otherwise every unrelated metadata edit would have silently clobbered a previously-synced duration
+  back to `null` (caught by `advisor()` before any test found it).
+- **K1 (the query engine).** New module `src/lib/comparable-content/` (`contracts.ts`/`schemas.ts`/
+  `services.ts`/`index.ts`), anchor-based: `{channelId, anchorVideoId, credentialRef?,
+  publicationWindowDays?, durationToleranceSeconds?, performanceMetric?, performanceThreshold?, sort,
+  limit?}` → `{anchorVideoId, candidates[], excludedForMissingData, truncated}`. Reuses, never
+  duplicates (`AGENTS.md` §D): `createChangeSetChannelStoreAdapter().listVideosByChannel` for the
+  local video mirror, `createAnalyticsCore().listMetrics` for local performance rows (only invoked
+  when `performanceMetric` is actually requested, so the common title/date/duration-only case never
+  needs a `credentialRef`), and `computeComparableAgeSeries`/`diffCalendarDays`/
+  `toPacificCalendarDate` from `@/lib/analytics/comparable-age.ts` for age-aligned (days-since-publish,
+  capped at 365) performance comparison -- never a live YouTube call, never a second age-alignment
+  implementation. **Explicitly does NOT support** "same content family," "similar target audience,"
+  or "similar metadata pattern" -- no data source for any of those exists in this application, and
+  this capability states that plainly in its own description rather than silently approximating it.
+  Title similarity is reported only as `sharedTitleTokens` (a literal lowercase word-overlap set
+  after a tiny English stopword list) -- never framed as topic/semantic similarity, never an
+  embedding model (owner spec §10 explicitly rules out embeddings for a first implementation).
+  Wired into `agent-operations` (`comparable_content.find_comparable_videos`, `AGENT_API_VERSION`
+  → `0.9.0`), MCP `agent_find_comparable_videos`, and CLI `agent find-comparable-videos` -- all
+  channel-scoped (`assertActiveChannel`), all read-only/ungated, following the exact same pattern as
+  every earlier slice's own wrapper. `AGENT_CAPABILITY_DOMAINS` gained `comparable_content`; no new
+  `AGENT_DATA_DOMAINS` entry was needed (reuses the existing `video_metadata`/`video_analytics`
+  domains). An anchor that does not belong to the requesting channel (or does not exist) fails with
+  `DATA_NOT_SYNCED` -- the same code slice B's `getVideoContext` already uses for "videoId not found
+  in this channel," not a bespoke code for this one capability.
+
+  **Four fixes made across two rounds of `advisor()` review, before this slice's own
+  independent-review cycle:**
+  - The response also carries an `anchor` block (the anchor's own title/publishedAt/durationSeconds,
+    and its own `performanceMetricValue` at the same comparison day) and `performanceAlignment`
+    (`{ metricName, dayOffset } | null`) -- without these, a caller could see each candidate's
+    *distance* from the anchor but never the anchor's own facts to interpret that distance against,
+    which this slice's own AC-CMP-06 ("report the raw comparison facts") calls for.
+  - The agent-operations WRAPPER (not the `comparable-content` domain module itself, which stays
+    reusable/self-contained) additionally enriches that raw result with `metricDefinitions`/
+    `freshness` -- `null` unless `performanceMetric` was requested -- mirroring exactly how
+    `queryVideoAnalytics` already enriches its own wrapped capability's raw result (owner spec §9:
+    "every result must include metric definitions"). New `findComparableVideosContextOutputSchema`/
+    `FindComparableVideosContext` in `agent-operations/schemas.ts`; the raw, unenriched
+    `FindComparableVideosResult` stays `comparable-content`'s own, unchanged type.
+  - **The MCP SDK, not just this module's own handler, validates a tool call's arguments against
+    whatever `inputSchema` was registered -- before the handler function ever runs**
+    (`McpServer.validateToolInput` → `executeToolHandler`, `@modelcontextprotocol/sdk`'s own
+    `server/mcp.js`). Registering the FULL, refined `findComparableVideosInputSchema` (whose own
+    refinement requires `credentialRef` when `performanceMetric` is set) meant the SDK itself could
+    reject a real call requesting `performanceMetric` without an explicit `credentialRef`, before
+    the handler's own resolve-then-inject logic (below) ever got a chance to run -- undetected by
+    this slice's own handler-level tests, which call the handler function directly and bypass the
+    SDK entirely. Fixed the same way `agent_query_channel_analytics`/`agent_query_video_analytics`
+    already handle their own (unconditionally required) `credentialRef` field: registered a
+    separate, relaxed SDK-facing schema (`findComparableVideosSdkInputSchema`, exported from
+    `comparable-content/schemas.ts` as `findComparableVideosBaseObjectSchema` -- the plain object
+    before the cross-field refinements) for `server.registerTool`'s own `inputSchema`, while the
+    handler and the domain service both still validate against the FULL refined schema -- so no
+    business rule is weakened, only deferred past the SDK's own pre-handler validation. Verified
+    with a test that calls the REAL registered tool's own `inputSchema.safeParse(...)`, not just
+    the handler, to prove the SDK-level gap is actually closed.
+  - `credentialRef` is optional in the domain schema (only actually used when `performanceMetric`
+    is requested), but the MCP handler used to validate the raw caller input directly against the
+    full schema -- so a caller requesting `performanceMetric` without an explicit `credentialRef`
+    would still have hit `validation_failed` inside the handler even once the SDK-level gap above
+    was closed. Fixed: the MCP handler now resolves `credentialRef` (caller-supplied, else the
+    local active identity -- the same cheap, non-network resolution every other channel-scoped
+    handler already does for its own `assertActiveChannel` check) and injects it into the input
+    *before* schema validation, so the schema's own "performanceMetric requires credentialRef"
+    refinement is always satisfiable without the caller having to know or supply one. **This
+    capability deliberately lets an explicitly caller-supplied `credentialRef` govern the
+    `assertActiveChannel` identity check too** (not just downstream forwarding) -- the same
+    convention `agent_query_channel_analytics`/`agent_query_video_analytics` and every CLI
+    `--userId`/`--accessToken` flag already establish for "which locally-stored identity is this
+    call acting as," consistent with this application's own documented no-per-user-ownership-
+    boundary security model (`docs/TECHNICAL_DEBT.md`), not a new escalation. The CLI never had the
+    validation-ordering bug (it already resolves and conditionally forwards `credentialRef` itself,
+    before calling the schema-validating service) but gained its own fix: `--performanceThresholdOperator`/
+    `--performanceThresholdValue` must be given together, rejected as `validation_failed` otherwise
+    (previously silently applied no threshold if only one was given).
 
 ## 4h. Performance ↔ asset linkage (owner spec §16) -- ASSIGNED (slice L), not yet implemented
 
@@ -639,7 +725,7 @@ second error-code enum:
 | G | Content Proposal / external artifact registration | **CLOSED** -- see §4f; new `src/lib/content-proposals/` module, `content_proposals`/`content_proposal_artifacts` tables. Proposal create/get/list and external-artifact register/list both implemented. |
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | **VERIFIED, against the recovered verbatim spec, 2026-09-24.** Cross-checked that every `AGENT_CAPABILITIES` entry points at an actually-registered MCP tool and that every `agent_*` MCP tool has CLI parity -- zero drift. The initial capability set (owner spec §25) is fully present. The session's original verbatim spec text (34 numbered sections, sent over Telegram 2026-09-23) is not stored anywhere in this repository -- it was recovered from this session's own pre-compaction transcript to check the sections this document had never previously cited, rather than trusting citation coverage alone. That recheck found two real, previously-untracked gaps outside slice H's own scope -- §4g/§4h below (owner spec §10/§16, `BL-088`/`BL-089`) -- and one process gap, §4i (owner spec §28, no dedicated Phase 7 acceptance-contract document). Every other previously-uncited section (§3, §8, §11, §20, §21, §22, §23, §24, §26, §29-33) was confirmed either already implemented, already tracked as a known gap, or deliberately narrowed/overridden by a later, explicit owner instruction (§3/§30, slice I). |
 | I | Codex operations-workspace path surfacing | **IMPLEMENTED** -- see §4j; owner decision, Telegram 2026-09-24, narrowed this slice to a path-configuration/surfacing mechanism only (never an operations-workspace template or editorial-guideline document committed here, per `AGENTS.md` §B). New `src/lib/operations-instructions/` module, Settings-only `operationsWorkspacePath` setting, MCP `agent_list_operations_files`/`agent_get_operations_file`, CLI `agent list-operations-files`/`agent get-operations-file`. `AGENT_API_VERSION` → `0.8.0`. |
-| K | Comparable-content context (`find_comparable_videos`, owner spec §10) | **ASSIGNED** -- see §4g; found by the slice-H spec recovery, 2026-09-24, then explicitly assigned into this phase by the owner the same day ("Да, такие находки как BL 88 и 89 тоже включай в список тасков текущей 7 фазы", Telegram). `BL-088`. Not yet implemented. |
+| K | Comparable-content context (`find_comparable_videos`, owner spec §10) | **IMPLEMENTED** -- see §4g; found by the slice-H spec recovery, 2026-09-24, then explicitly assigned into this phase by the owner the same day ("Да, такие находки как BL 88 и 89 тоже включай в список тасков текущей 7 фазы", Telegram). New `src/lib/comparable-content/` module (K1) plus `videos.durationSeconds` sync (K0, schema v19). MCP `agent_find_comparable_videos`, CLI `agent find-comparable-videos`. `AGENT_API_VERSION` → `0.9.0`. `BL-088`. |
 | L | Performance ↔ asset linkage (owner spec §16) | **ASSIGNED** -- see §4h; found and assigned the same way and same day as slice K. `BL-089`. Not yet implemented. |
 | J | Independent security/integration review | ONGOING per slice -- `docs/roadmap/BACKLOG.md`'s BL-079/BL-080/BL-081 (and later rows, as slices land) are the authoritative record of each slice's own review-cycle status; not restated here as a round tally, since that would just be a second, driftable copy of the same fact. Covers the WHOLE phase, including slices K/L once they land -- deliberately kept last in the recommended order even though K/L were assigned after it was originally listed. |
 

@@ -2853,6 +2853,7 @@ test("CLI agent capabilities returns version/capabilities with no auth/channel r
     listProposalArtifacts: async () => { throw new Error("not used"); },
     operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -2898,6 +2899,7 @@ test("CLI agent capabilities is never blocked by the operation lock (read-only)"
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     };
 
     const exitCode = await runCliCommand({
@@ -2941,6 +2943,7 @@ test("CLI agent channel-context forwards channelId after checking it against the
     listProposalArtifacts: async () => { throw new Error("not used"); },
     operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -2993,6 +2996,7 @@ test("CLI agent channel-context rejects a channelId that is not the caller's act
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3036,6 +3040,7 @@ test("CLI agent video-context rejects a channelId that is not the caller's activ
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3081,6 +3086,7 @@ test("CLI agent video-context forwards channelId/videoId and parses --include in
     listProposalArtifacts: async () => { throw new Error("not used"); },
     operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3120,6 +3126,7 @@ test("CLI agent video-context omits `include` entirely when --include is not pas
     listProposalArtifacts: async () => { throw new Error("not used"); },
     operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const exitCode = await runCliCommand({
@@ -3161,6 +3168,7 @@ test("CLI agent channel-context/video-context are never blocked by the operation
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     };
 
     const channelContextExit = await runCliCommand({
@@ -3217,6 +3225,7 @@ test("CLI agent channel-analytics forwards resolved credentialRef, channelId, st
     listProposalArtifacts: async () => { throw new Error("not used"); },
     operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3261,6 +3270,7 @@ test("CLI agent channel-analytics requires --startDate/--endDate", async () => {
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3298,6 +3308,7 @@ test("CLI agent video-analytics forwards resolved credentialRef, channelId, and 
     listProposalArtifacts: async () => { throw new Error("not used"); },
     operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3357,6 +3368,7 @@ test("CLI agent channel-analytics/video-analytics are never blocked by the opera
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     };
 
     const channelAnalyticsExit = await runCliCommand({
@@ -3402,6 +3414,7 @@ test("CLI agent list-assets forwards channelId/videoId/assetType after checking 
     listProposalArtifacts: async () => { throw new Error("not used"); },
     operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3454,6 +3467,7 @@ test("CLI agent list-assets rejects a channelId that is not the caller's active 
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3495,6 +3509,7 @@ test("CLI agent get-asset-context forwards channelId/assetId after checking it a
     listProposalArtifacts: async () => { throw new Error("not used"); },
     operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3669,6 +3684,7 @@ test("CLI agent list-assets/get-asset-context are never blocked by the operation
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     };
 
     const listExit = await runCliCommand({
@@ -3752,6 +3768,7 @@ test("CLI agent get-generation-provenance forwards channelId/changeSetId after c
     listProposalArtifacts: async () => { throw new Error("not used"); },
     operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3787,6 +3804,7 @@ test("CLI agent get-generation-provenance reports { provenance: null } when the 
     listProposalArtifacts: async () => { throw new Error("not used"); },
     operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3838,6 +3856,7 @@ test("CLI agent get-generation-provenance rejects a channelId that is not the ca
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3866,6 +3885,7 @@ test("CLI agent get-generation-provenance is never blocked by the operation lock
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     };
 
     const exitCode = await runCliCommand({
@@ -3918,6 +3938,7 @@ test("CLI agent create-content-proposal forwards channelId/objective/evidenceJso
     listProposalArtifacts: async () => { throw new Error("not used"); },
     operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3986,6 +4007,7 @@ test("CLI agent create-content-proposal rejects malformed --evidenceJson/--brief
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -4029,6 +4051,7 @@ test("CLI agent create-content-proposal rejects a channelId that is not the call
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -4070,6 +4093,7 @@ test("CLI agent create-content-proposal is rejected while the operation lock is 
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     };
 
     const createExitCode = await runCliCommand({
@@ -4141,6 +4165,7 @@ test("CLI agent get-content-proposal forwards channelId/proposalId after checkin
     listProposalArtifacts: async () => { throw new Error("not used"); },
     operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -4180,6 +4205,7 @@ test("CLI agent list-content-proposals forwards channelId after checking active 
     listProposalArtifacts: async () => { throw new Error("not used"); },
     operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -4240,6 +4266,7 @@ test("CLI agent register-external-artifact forwards channelId/proposalId/assetTy
     listProposalArtifacts: async () => { throw new Error("not used"); },
     operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -4328,6 +4355,7 @@ test("CLI agent register-external-artifact rejects malformed --provenanceJson", 
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -4385,6 +4413,7 @@ test("CLI agent register-external-artifact rejects referenceKind local_path (rea
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -4441,6 +4470,7 @@ test("CLI agent register-external-artifact rejects a channelId that is not the c
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -4471,6 +4501,7 @@ test("CLI agent list-proposal-artifacts forwards channelId/proposalId after chec
     },
     operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -4508,6 +4539,7 @@ test("CLI agent register-external-artifact is rejected while the operation lock 
       listProposalArtifacts: async () => ({ artifacts: [] }),
       operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
       operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("not used"); },
     };
 
     const registerExitCode = await runCliCommand({
@@ -4570,6 +4602,7 @@ test("CLI agent list-operations-files returns the result with no auth/channel re
       return { configured: true, files: [{ path: "AGENTS.md", isDirectory: false, sizeBytes: 42 }], truncated: false };
     },
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -4603,6 +4636,7 @@ test("CLI agent list-operations-files forwards { configured: false } unchanged w
     listProposalArtifacts: async () => { throw new Error("not used"); },
     operationsWorkspaceListFiles: async () => ({ configured: false as const }),
     operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -4639,6 +4673,7 @@ test("CLI agent get-operations-file forwards --path and returns the result, no a
       assert.deepEqual(input, { path: "AGENTS.md" });
       return { configured: true, path: "AGENTS.md", content: "# hi", truncated: false };
     },
+    findComparableVideos: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -4674,6 +4709,7 @@ test("CLI agent list-operations-files/get-operations-file are never blocked by t
       listProposalArtifacts: async () => { throw new Error("not used"); },
       operationsWorkspaceListFiles: async () => ({ configured: false as const }),
       operationsWorkspaceGetFile: async () => ({ configured: false as const }),
+      findComparableVideos: async () => { throw new Error("not used"); },
     };
 
     const listExitCode = await runCliCommand({
@@ -4693,6 +4729,289 @@ test("CLI agent list-operations-files/get-operations-file are never blocked by t
       writeStdout: () => {},
     });
     assert.equal(getExitCode, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent find-comparable-videos forwards channelId/anchorVideoId/sort after checking it against the caller's active channel", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async (input: unknown) => {
+      captured = input;
+      return {
+        anchorVideoId: "v1",
+        anchor: { videoId: "v1", title: "Anchor", publishedAt: "2026-05-01T20:00:00.000Z", durationSeconds: null, performanceMetricValue: null },
+        performanceAlignment: null,
+        candidates: [],
+        excludedForMissingData: { duration: 0, performance: 0 },
+        truncated: false,
+        metricDefinitions: null,
+        freshness: null,
+      };
+    },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "v1", "--sort", "publicationProximity"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    anchorVideoId: "v1",
+    credentialRef: undefined,
+    publicationWindowDays: undefined,
+    durationToleranceSeconds: undefined,
+    performanceMetric: undefined,
+    performanceThreshold: undefined,
+    sort: "publicationProximity",
+    limit: undefined,
+  });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.deepEqual(envelope.data.candidates, []);
+});
+
+test("CLI agent find-comparable-videos converts numeric flags (publicationWindowDays/durationToleranceSeconds/performanceThresholdValue/limit) to real numbers, and forwards credentialRef only when performanceMetric is requested", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async (input: unknown) => {
+      captured = input;
+      return {
+        anchorVideoId: "v1",
+        anchor: { videoId: "v1", title: "Anchor", publishedAt: "2026-05-01T20:00:00.000Z", durationSeconds: null, performanceMetricValue: null },
+        performanceAlignment: null,
+        candidates: [],
+        excludedForMissingData: { duration: 0, performance: 0 },
+        truncated: false,
+        metricDefinitions: null,
+        freshness: null,
+      };
+    },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "agent", "find-comparable-videos",
+      "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "v1", "--sort", "performanceMetric",
+      "--publicationWindowDays", "30", "--durationToleranceSeconds", "60",
+      "--performanceMetric", "views", "--performanceThresholdOperator", ">=", "--performanceThresholdValue", "500",
+      "--limit", "5",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    anchorVideoId: "v1",
+    credentialRef: { userId: "u1" },
+    publicationWindowDays: 30,
+    durationToleranceSeconds: 60,
+    performanceMetric: "views",
+    performanceThreshold: { operator: ">=", value: 500 },
+    sort: "performanceMetric",
+    limit: 5,
+  });
+});
+
+test("CLI agent find-comparable-videos rejects --performanceThresholdOperator given without --performanceThresholdValue (never a silently ignored threshold)", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "v1", "--sort", "publicationProximity", "--performanceThresholdOperator", ">="],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("must not be called"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI agent find-comparable-videos rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--anchorVideoId", "v1", "--sort", "publicationProximity"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("must not be called"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI agent find-comparable-videos propagates a real domain error thrown by the underlying service (e.g. DATA_NOT_SYNCED for an unknown anchor)", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "nonexistent", "--sort", "publicationProximity"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => {
+        throw new DomainError({
+          code: "DATA_NOT_SYNCED",
+          message: "anchorVideoId does not belong to the requested channel",
+          details: { channelId: "UC_1", anchorVideoId: "nonexistent" },
+        });
+      },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "DATA_NOT_SYNCED");
+});
+
+test("CLI agent find-comparable-videos is never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => ({
+        anchorVideoId: "v1",
+        anchor: { videoId: "v1", title: "Anchor", publishedAt: "2026-05-01T20:00:00.000Z", durationSeconds: null, performanceMetricValue: null },
+        performanceAlignment: null,
+        candidates: [],
+        excludedForMissingData: { duration: 0, performance: 0 },
+        truncated: false,
+        metricDefinitions: null,
+        freshness: null,
+      }),
+    };
+
+    const exitCode = await runCliCommand({
+      argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "v1", "--sort", "publicationProximity"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(exitCode, 0);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }
