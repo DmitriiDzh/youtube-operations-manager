@@ -1,5 +1,5 @@
 import { getGenerationProvenanceByChangeSetId, getStoredEditorialProfile } from "@/lib/db";
-import { createChangeDraftsCoreForProduction, createEditorialProfileCoreForProduction } from "@/lib/sync-gateway";
+import { createChangeDraftsCoreForProduction, createEditorialProfileCoreForProduction, type CreatedVia } from "@/lib/sync-gateway";
 
 /**
  * Cutover, 2026-09-22 (`docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M3, mirrors
@@ -48,7 +48,7 @@ export function createGenerationProvenanceStoreAdapter() {
       effectiveContextJson: string | null;
       evidenceJson: string | null;
       rationale: string | null;
-      createdVia: "mcp" | "cli" | "web_ui" | null;
+      createdVia: CreatedVia | null;
       agentApiVersion: string | null;
     }): Promise<void> {
       await core.createProvenance(input);

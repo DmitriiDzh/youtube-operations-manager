@@ -9,6 +9,7 @@ import type { ChangeSet } from "@/lib/changesets/contracts";
 import {
   DomainError,
   isDomainError,
+  type CreatedVia,
   type EditorialProfile,
   type EvidenceReference,
   type GeneratedFieldOutcome,
@@ -155,7 +156,7 @@ type ServiceDependencies = {
       effectiveContextJson: string | null;
       evidenceJson: string | null;
       rationale: string | null;
-      createdVia: "mcp" | "cli" | "web_ui" | null;
+      createdVia: CreatedVia | null;
       agentApiVersion: string | null;
     }): Promise<void>;
     getByChangeSetId(changeSetId: string): Promise<{
@@ -420,7 +421,7 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
       // it, which is exactly the kind of fail-open attestation gap this field exists to prevent.
       // `tsc` enforces that every call site (Web route, MCP handler, CLI dispatch, and tests)
       // states its own identity explicitly.
-      callOrigin: { createdVia: "mcp" | "cli" | "web_ui"; agentApiVersion?: string | null }
+      callOrigin: { createdVia: CreatedVia; agentApiVersion?: string | null }
     ): Promise<ChangeSet> {
       const parsedInput = parseWithSchema(createChangeSetFromGenerationInputSchema, input, "create change set from generation input");
 
@@ -620,7 +621,7 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
           // Stored as a plain `text` column (db.ts) -- narrowed back to the known literal union
           // here, since every writer of this column (this module's own `createdVia` parameter)
           // only ever supplies one of these three values or `null`.
-          createdVia: stored.createdVia as "mcp" | "cli" | "web_ui" | null,
+          createdVia: stored.createdVia as CreatedVia | null,
           agentApiVersion: stored.agentApiVersion,
         };
       } catch (error) {

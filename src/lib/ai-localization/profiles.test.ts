@@ -381,8 +381,9 @@ test("AC-PROFILE-09: provenance retrieval is channel-scoped", async () => {
 
 // Phase 7 slice F (owner spec §12/§13/§22): evidence/rationale are optional, caller-echoed,
 // per-Change-Set claims; createdVia/agentApiVersion are SERVER-STAMPED by the caller layer
-// (never taken from the validated input), defaulting to "web_ui" when the caller passes nothing.
-test("Phase 7 slice F: evidence/rationale are recorded and readable back, createdVia defaults to web_ui", async () => {
+// (never taken from the validated input, and never defaulted -- `callOrigin` is a required
+// parameter with no fallback, so the Web-route identity below is passed explicitly).
+test("Phase 7 slice F: evidence/rationale are recorded and readable back alongside the caller's stamped web_ui identity", async () => {
   const { build } = makeFixture();
   const provider = fixedProvider(() => ({ status: "ok", title: "T", description: "D" }));
   const services = createAiLocalizationServicesWithProvider(build, provider);
@@ -414,7 +415,7 @@ test("Phase 7 slice F: evidence/rationale are recorded and readable back, create
   assert.equal(provenance?.agentApiVersion, null);
 });
 
-test("Phase 7 slice F: an explicit callOrigin stamps createdVia/agentApiVersion instead of the web_ui default", async () => {
+test("Phase 7 slice F: an mcp-origin callOrigin stamps createdVia/agentApiVersion accordingly", async () => {
   const { build } = makeFixture();
   const provider = fixedProvider(() => ({ status: "ok", title: "T", description: "D" }));
   const services = createAiLocalizationServicesWithProvider(build, provider);

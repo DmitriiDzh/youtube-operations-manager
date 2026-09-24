@@ -63,6 +63,15 @@ export type DraftChangeSet = {
 };
 
 /**
+ * Which transport actually created a piece of agent-created content (owner spec §22) -- the
+ * single, canonical definition of this vocabulary. `AGENTS.md` §D: every other module that needs
+ * this type (`ai-localization/contracts.ts`) imports it from here via the `@/lib/sync-gateway`
+ * barrel, rather than retyping the same three literals.
+ */
+export const CREATED_VIA_VALUES = ["mcp", "cli", "web_ui"] as const;
+export type CreatedVia = (typeof CREATED_VIA_VALUES)[number];
+
+/**
  * AI-generation provenance for one change set -- write-once (never updated or deleted through
  * this module's own API), folded into this document 2026-09-22
  * (`docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M4, Category C) rather than
@@ -94,7 +103,7 @@ export type DraftProvenance = {
    * SERVER-STAMPED at the MCP/CLI/Web-route call site, never taken from caller input (that would
    * make it a claim, not an attestation -- see `docs/TECHNICAL_DEBT.md` RISK-54's own reasoning
    * for why this distinction matters). Same pre-existing-entry caveat as `evidenceJson` above. */
-  createdVia?: "mcp" | "cli" | "web_ui" | null;
+  createdVia?: CreatedVia | null;
   /** Phase 7 slice F -- `AGENT_API_VERSION` (`src/lib/agent-operations/contracts.ts`) at creation
    * time, SERVER-STAMPED, only when `createdVia` is `"mcp"` (the one transport where an
    * agent-operations-versioned surface actually mediated the call) -- `null` otherwise. Same

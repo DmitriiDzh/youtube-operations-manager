@@ -1,8 +1,12 @@
 import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
 import type { ChangeValidationStatus, StoredChannelRecord, StoredVideoRecord } from "@/lib/changesets/contracts";
+import type { CreatedVia } from "@/lib/sync-gateway";
 
 export type { DomainErrorCode, DomainErrorShape, StoredChannelRecord, StoredVideoRecord };
 export { DomainError, isDomainError };
+// Reused as-is from `@/lib/sync-gateway` (AGENTS.md §D) -- the single, canonical definition of
+// "which transport created this" (owner spec §22), not a second copy of the same three literals.
+export type { CreatedVia };
 
 // ---------------------------------------------------------------------------
 // Phase 6, Slice 1 -- AI LOCALIZATION (vertical feature).
@@ -219,7 +223,7 @@ export type StoredGenerationProvenance = GenerationProvenance & {
   createdAt: string;
   evidence: EvidenceReference[] | null;
   rationale: string | null;
-  createdVia: "mcp" | "cli" | "web_ui" | null;
+  createdVia: CreatedVia | null;
   agentApiVersion: string | null;
 };
 

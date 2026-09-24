@@ -262,8 +262,11 @@ attests which transport actually created it.
   coarser choice (reusing the existing per-Change-Set provenance row rather than a new per-Change
   table).
 - **Identity stamping (owner spec §22, closes RISK-54):** `createChangeSetFromGeneration` takes a
-  new, REQUIRED second parameter, `callOrigin: { createdVia: "mcp" | "cli" | "web_ui";
-  agentApiVersion?: string | null }`, SERVER-STAMPED at each of its three call sites -- never
+  new, REQUIRED second parameter, `callOrigin: { createdVia: CreatedVia; agentApiVersion?: string
+  | null }`. `CreatedVia` (`"mcp" | "cli" | "web_ui"`) is defined once in
+  `src/lib/sync-gateway/change-drafts/contracts.ts` and re-exported through the `@/lib/sync-gateway`
+  barrel and `ai-localization/contracts.ts` (`AGENTS.md` §D) -- every module that needs this
+  vocabulary imports it, none retypes it. SERVER-STAMPED at each of its three call sites -- never
   taken from the request body, so it is an attestation, not a caller's claim. The MCP handler
   (`src/mcp/server.ts`) stamps `{ createdVia: "mcp", agentApiVersion: AGENT_API_VERSION }`; the
   CLI dispatch (`src/cli/video-metadata.ts`) stamps `{ createdVia: "cli", agentApiVersion: null
@@ -360,7 +363,6 @@ second error-code enum:
 | D | Asset catalog/context (new subsystem -- nothing to reuse) | **IMPLEMENTED** -- see §4c; MCP `agent_list_assets`/`agent_get_asset_context`, CLI `agent list-assets`/`agent get-asset-context`/`asset register`. No HTTP route yet. |
 | E | Agent draft/proposal provenance | **IMPLEMENTED** -- see §4d; MCP `agent_get_generation_provenance`, CLI `agent get-generation-provenance`. No HTTP route (reuses the pre-existing one). |
 | F | Bulk localization integration -- evidence, rationale, identity stamping | **PARTIAL** -- see §4e; widens the existing `ai_localization_generate`/`ai_localization_create_change_set` MCP tools, CLI commands, and Web route. Evidence/rationale are per-Change-Set, not per-proposal (RISK-55, known limitation). |
-| F | Bulk localization integration (wraps `src/lib/ai-localization/`, already has MCP/CLI tools from BL-078 -- this slice is about context/evidence enrichment around that existing workflow, not a new persistence path) | PLANNED |
 | G | Content Proposal / external artifact registration | PLANNED |
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | IN PROGRESS |
 | I | Codex operations-workspace template | PLANNED -- see `docs/CODEX_OPERATIONS_WORKSPACE.md` once slice I lands |

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { parseWithSchema } from "@/lib/changesets/schemas";
+import { CREATED_VIA_VALUES } from "@/lib/sync-gateway";
 
 export { parseWithSchema };
 
@@ -118,7 +119,7 @@ export const storedGenerationProvenanceSchema = generationProvenanceSchema.exten
   createdAt: z.string(),
   evidence: z.array(evidenceReferenceSchema).nullable(),
   rationale: z.string().nullable(),
-  createdVia: z.enum(["mcp", "cli", "web_ui"]).nullable(),
+  createdVia: z.enum(CREATED_VIA_VALUES).nullable(),
   agentApiVersion: z.string().nullable(),
 });
 

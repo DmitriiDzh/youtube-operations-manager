@@ -1,5 +1,5 @@
 import { z, ZodError } from "zod";
-import { DomainError } from "./contracts";
+import { CREATED_VIA_VALUES, DomainError } from "./contracts";
 
 export function formatZodError(error: ZodError) {
   return error.issues.map((issue) => ({
@@ -55,7 +55,7 @@ export const createProvenanceInputSchema = z
     // itself -- this schema just carries whatever it's given through.
     evidenceJson: z.string().nullable().optional(),
     rationale: z.string().nullable().optional(),
-    createdVia: z.enum(["mcp", "cli", "web_ui"]).nullable().optional(),
+    createdVia: z.enum(CREATED_VIA_VALUES).nullable().optional(),
     agentApiVersion: z.string().nullable().optional(),
   })
   .strict();
