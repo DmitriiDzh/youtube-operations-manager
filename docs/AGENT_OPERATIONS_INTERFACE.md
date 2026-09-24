@@ -411,7 +411,7 @@ asset-insert path); `content-proposals` only owns the link.
   never-independently-verified caveats already documented for slice F; this remains an accepted,
   unchanged limitation, not something slice G2 needed to revisit.
 
-## 4g. Comparable-content context (owner spec §10) -- NOT IMPLEMENTED, not previously tracked
+## 4g. Comparable-content context (owner spec §10) -- ASSIGNED (slice K), not yet implemented
 
 Found 2026-09-24 when the full 34-section owner spec text was recovered from this session's own
 pre-compaction transcript to independently verify slice H (it had never been re-derived from the
@@ -424,11 +424,12 @@ filters and ranking" is enough). This is distinct from the already-implemented
 `analytics_comparable_age`/`agent_query_channel_analytics` (Phase 8), which compares videos at
 equivalent days-since-publish but does not let a caller search for topically/structurally similar
 videos by the broader filter set §10 describes. Tracked as `BL-088` (`docs/roadmap/BACKLOG.md`),
-`proposed` -- not assigned, not started; the smallest safe first slice would likely reuse
-`youtube-read-gateway`'s already-synced local channel/video mirror plus simple metadata-field
-filtering, no new data source.
+**assigned into this phase by the owner, Telegram 2026-09-24** ("Да, такие находки как BL 88 и 89
+тоже включай в список тасков текущей 7 фазы"); not yet implemented. The smallest safe first slice
+would likely reuse `youtube-read-gateway`'s already-synced local channel/video mirror plus simple
+metadata-field filtering, no new data source.
 
-## 4h. Performance ↔ asset linkage (owner spec §16) -- NOT IMPLEMENTED, not previously tracked
+## 4h. Performance ↔ asset linkage (owner spec §16) -- ASSIGNED (slice L), not yet implemented
 
 Found the same way as §4g, same date. The spec asks for the interface to expose associations
 along `video → asset → metadata/version → analytics → experiment/outcome` so an agent can answer
@@ -438,8 +439,8 @@ agent, not the product. Today, `creative_assets.linkedVideoId` records a raw vid
 (slice D), and `content_proposal_artifacts` records a proposal association (slice G2), but neither
 is joined against `video_metrics_daily`/analytics anywhere in this interface -- an agent must
 currently fetch a video's assets and its analytics separately and correlate them itself, with no
-product-provided join. Tracked as `BL-089` (`docs/roadmap/BACKLOG.md`), `proposed` -- not
-assigned, not started.
+product-provided join. Tracked as `BL-089` (`docs/roadmap/BACKLOG.md`), **assigned alongside
+BL-088, same owner instruction**; not yet implemented.
 
 ## 4i. Dedicated Phase 7 acceptance-contract document (owner spec §28) -- NOT PRODUCED
 
@@ -638,7 +639,9 @@ second error-code enum:
 | G | Content Proposal / external artifact registration | **CLOSED** -- see §4f; new `src/lib/content-proposals/` module, `content_proposals`/`content_proposal_artifacts` tables. Proposal create/get/list and external-artifact register/list both implemented. |
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | **VERIFIED, against the recovered verbatim spec, 2026-09-24.** Cross-checked that every `AGENT_CAPABILITIES` entry points at an actually-registered MCP tool and that every `agent_*` MCP tool has CLI parity -- zero drift. The initial capability set (owner spec §25) is fully present. The session's original verbatim spec text (34 numbered sections, sent over Telegram 2026-09-23) is not stored anywhere in this repository -- it was recovered from this session's own pre-compaction transcript to check the sections this document had never previously cited, rather than trusting citation coverage alone. That recheck found two real, previously-untracked gaps outside slice H's own scope -- §4g/§4h below (owner spec §10/§16, `BL-088`/`BL-089`) -- and one process gap, §4i (owner spec §28, no dedicated Phase 7 acceptance-contract document). Every other previously-uncited section (§3, §8, §11, §20, §21, §22, §23, §24, §26, §29-33) was confirmed either already implemented, already tracked as a known gap, or deliberately narrowed/overridden by a later, explicit owner instruction (§3/§30, slice I). |
 | I | Codex operations-workspace path surfacing | **IMPLEMENTED** -- see §4j; owner decision, Telegram 2026-09-24, narrowed this slice to a path-configuration/surfacing mechanism only (never an operations-workspace template or editorial-guideline document committed here, per `AGENTS.md` §B). New `src/lib/operations-instructions/` module, Settings-only `operationsWorkspacePath` setting, MCP `agent_list_operations_files`/`agent_get_operations_file`, CLI `agent list-operations-files`/`agent get-operations-file`. `AGENT_API_VERSION` → `0.8.0`. |
-| J | Independent security/integration review | ONGOING per slice -- `docs/roadmap/BACKLOG.md`'s BL-079/BL-080/BL-081 (and later rows, as slices land) are the authoritative record of each slice's own review-cycle status; not restated here as a round tally, since that would just be a second, driftable copy of the same fact |
+| K | Comparable-content context (`find_comparable_videos`, owner spec §10) | **ASSIGNED** -- see §4g; found by the slice-H spec recovery, 2026-09-24, then explicitly assigned into this phase by the owner the same day ("Да, такие находки как BL 88 и 89 тоже включай в список тасков текущей 7 фазы", Telegram). `BL-088`. Not yet implemented. |
+| L | Performance ↔ asset linkage (owner spec §16) | **ASSIGNED** -- see §4h; found and assigned the same way and same day as slice K. `BL-089`. Not yet implemented. |
+| J | Independent security/integration review | ONGOING per slice -- `docs/roadmap/BACKLOG.md`'s BL-079/BL-080/BL-081 (and later rows, as slices land) are the authoritative record of each slice's own review-cycle status; not restated here as a round tally, since that would just be a second, driftable copy of the same fact. Covers the WHOLE phase, including slices K/L once they land -- deliberately kept last in the recommended order even though K/L were assigned after it was originally listed. |
 
 Deliberately **not** implemented in this phase (owner spec §14/§29): the competitor/trend
 intelligence module (Phase 9) and the Experiment Engine (Phase 10). `plannedFutureCapabilities`
