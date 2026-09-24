@@ -3063,6 +3063,7 @@ test("CLI agent channel-analytics forwards resolved credentialRef, channelId, st
       return {
         channelId: "UC_1",
         period: { startDate: "2026-09-01", endDate: "2026-09-07", previousStartDate: "2026-08-25", previousEndDate: "2026-08-31" },
+        filters: {},
         metricDefinitions: [],
         freshness: { source: "live_youtube_analytics_api" as const, asOf: "2026-09-24T12:00:00.000Z", note: "..." },
         daily: [],
@@ -3166,6 +3167,7 @@ test("CLI agent channel-analytics/video-analytics are never blocked by the opera
       queryChannelAnalytics: async () => ({
         channelId: "UC_1",
         period: { startDate: "2026-09-01", endDate: "2026-09-07", previousStartDate: "2026-08-25", previousEndDate: "2026-08-31" },
+        filters: {},
         metricDefinitions: [],
         freshness: { source: "live_youtube_analytics_api" as const, asOf: "2026-09-24T12:00:00.000Z", note: "..." },
         daily: [],

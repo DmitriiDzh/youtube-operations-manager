@@ -15,10 +15,7 @@ export { DomainError, isDomainError };
 // slice B; analytics -- slice C; more to follow as later slices land). It never duplicates
 // youtube-read-gateway, analytics, ai-localization, or changesets -- those remain the single
 // owners of their own DATA; this module only re-exposes them through an agent-oriented, versioned
-// surface, with its own contracts describing that surface's shape (found stale by independent
-// review, 2026-09-24: an earlier version of this comment claimed this module owns only
-// capability/version discovery, already false the moment slice B added its own context types
-// directly below it).
+// surface, with its own contracts describing that surface's shape.
 // ---------------------------------------------------------------------------
 
 /**
@@ -50,17 +47,9 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * bump MAJOR only for a breaking change to an existing tool's contract (none is anticipated in
  * Phase 7's own additive slices).
  *
- * **Correction (slice C, 2026-09-24, found by independent advisor review):** slice B added two
- * capabilities (`channel_context.get_channel_context`/`video_context.get_video_context`) without
- * bumping this constant -- a real violation of this doc comment's own rule, left unnoticed through
- * four rounds of independent review of that slice (none of which happened to check this specific
- * invariant). Corrected here to `0.3.0`, covering both the missed slice-B bump and this slice's own
- * additions as a single bump, consistent with the "once per slice" rule stated above -- see
- * `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts`) for the current, authoritative
- * count and list of what changed; deliberately not restated as a specific number here, since an
- * earlier version of this exact sentence undercounted that list and went unnoticed until a later
- * review round caught the mismatch (2026-09-24) -- the same "a copied fact drifts from its source"
- * pattern this whole review cycle exists to catch.
+ * Current value: `0.3.0`. See `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts`) for
+ * the current, authoritative list of what capabilities exist -- deliberately not restated as a
+ * count or list here, since that would just be a second copy of the same fact.
  */
 export const AGENT_API_VERSION = "0.3.0";
 
@@ -247,6 +236,11 @@ export type AnalyticsFreshness = {
 export type ChannelAnalyticsContext = {
   channelId: string;
   period: { startDate: string; endDate: string; previousStartDate: string; previousEndDate: string };
+  /** `getChannelOverview` accepts no dimensional filter beyond `period` (no `videoId`/
+   * `metricNames`) -- always an empty object here. Present for shape-parity with
+   * `VideoAnalyticsContext.filters` and to satisfy owner spec §9's "every result must include...
+   * dimensional filters" literally even when there are none to report. */
+  filters: Record<string, never>;
   metricDefinitions: MetricDefinition[];
   freshness: AnalyticsFreshness;
   /** FACT: one row per day, as collected/reported -- never zero-filled to hide a real gap beyond

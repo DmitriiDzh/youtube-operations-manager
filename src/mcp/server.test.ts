@@ -2747,6 +2747,7 @@ function makeAgentOperationsCoreStub(): Pick<
     queryChannelAnalytics: async () => ({
       channelId: "UC_1",
       period: { startDate: "2026-09-01", endDate: "2026-09-07", previousStartDate: "2026-08-25", previousEndDate: "2026-08-31" },
+      filters: {},
       metricDefinitions: [{ name: "views", description: "Number of times the video was viewed.", unit: "count" }],
       freshness: { source: "live_youtube_analytics_api", asOf: "2026-09-24T12:00:00.000Z", note: "..." },
       daily: [],
@@ -2943,6 +2944,7 @@ test("MCP agent_query_channel_analytics forwards the resolved credentialRef and 
     return {
       channelId: "UC_1",
       period: { startDate: "2026-09-01", endDate: "2026-09-07", previousStartDate: "2026-08-25", previousEndDate: "2026-08-31" },
+      filters: {},
       metricDefinitions: [],
       freshness: { source: "live_youtube_analytics_api", asOf: "2026-09-24T12:00:00.000Z", note: "..." },
       daily: [],

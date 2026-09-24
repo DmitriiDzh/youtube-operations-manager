@@ -84,10 +84,8 @@ underlying `AgentOperationsCore.getSystemCapabilities()`, three transports, one 
 
 `AGENT_API_VERSION` is versioned independently of the product's own `package.json` version -- see
 that constant's own doc comment in `src/lib/agent-operations/contracts.ts` for the exact bump rule
-(once per slice/landing that adds one or more capabilities, never once per individual capability
-item within that slice -- corrected in slice C, 2026-09-24, after slice B missed this bump
-entirely; that constant's own comment is the single source of truth for this rule, not restated as
-a second, potentially-drifting copy here). `capabilities` is a literal,
+and current value (the single source of truth for both, not restated here). `capabilities` is a
+literal,
 human-maintained list (`AGENT_CAPABILITIES`, `src/lib/agent-operations/services.ts`) -- never
 derived automatically from the MCP tool registry, since not every capability necessarily has an
 MCP tool. An agent should call this first, before assuming any other tool exists, and use
@@ -150,10 +148,7 @@ recomputing that same report inline on every call). Raw rows/daily series are `F
 `previousTotals` (sums over `daily`) are the first real `DERIVED METRIC` values this interface
 returns -- see §5 below.
 
-**Credential-threading design (found by an index.test.ts wiring test against the REAL
-`analyticsCore`, 2026-09-24, after an earlier draft of this slice made `credentialRef` optional in
-this module's own schema and let an unresolved call reach `analyticsCore` and fail there with a
-confusing error):** unlike `getChannelContext`/`getVideoContext` above (slice B's own
+**Credential-threading design:** unlike `getChannelContext`/`getVideoContext` above (slice B's own
 no-`credentialRef`, MCP/CLI-does-`assertActiveChannel` convention), these two schemas require a
 REAL, already-resolved `credentialRef`, mirroring `src/lib/analytics/schemas.ts`'s own convention
 exactly -- because they forward straight into `analyticsCore`, which needs and validates exactly
@@ -167,20 +162,20 @@ capabilities. CLI parity: `agent channel-analytics --channelId <UC...> --startDa
 --endDate <YYYY-MM-DD>` / `agent video-analytics --channelId <UC...> [--videoId <ID>] [--startDate
 ...] [--endDate ...] [--metricNames views,likes,...]` (`docs/interfaces.md`).
 
-**Capability-discovery honesty fix (owner spec §28, found by independent advisor review,
-2026-09-24):** `get_capabilities` previously omitted every already-implemented, already-MCP/CLI-
-exposed tool outside this module itself (`channel_list`, `channel_video_list`,
-`ai_localization_generate`, `ai_localization_create_change_set`, and four more `analytics_*`
-tools), contradicting its own claim to report "only what is actually reachable right now." This
-slice registers all of them in `AGENT_CAPABILITIES` (pointing at their real, pre-existing MCP tool
-names in each entry's own description) alongside the two new `query_*_analytics` wrappers -- no new
-function for any of the eight, purely a capability-discovery-completeness fix.
+**Capability-discovery honesty (owner spec §28):** `get_capabilities` also registers every
+already-implemented, already-MCP/CLI-exposed tool outside this module itself (`channel_list`,
+`channel_video_list`, `ai_localization_generate`, `ai_localization_create_change_set`, and the
+remaining `analytics_*` tools) in `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts` --
+the authoritative list; not recounted here), pointing at their real, pre-existing MCP tool names in
+each entry's own description, alongside the two new `query_*_analytics` wrappers.
 
-**`AGENT_API_VERSION` correction:** slice B added two capabilities without bumping this constant, a
-real violation of its own doc comment's rule that went unnoticed through four rounds of independent
-review of that slice. Corrected in this slice to `0.3.0`, covering both the missed slice-B bump and
-this slice's own additions in one bump (see the constant's own doc comment in `contracts.ts` for
-the exact reasoning).
+**Known limitation (inherited, not introduced by this slice):** `queryVideoAnalytics` inherits
+`analytics_list`'s own existing lack of pagination/row limit -- an unfiltered call on a large,
+long-running channel can return thousands of rows plus every metric definition (`analytics_list`'s
+own schema comment already documents this same size caveat). Owner spec §23 asks for pagination
+support; adding it is a change to the wrapped `analyticsCore.listMetrics` contract itself, not to
+this thin wrapper, and is out of this slice's own scope -- tracked as a known gap for a future,
+separately-assigned task, not fixed here.
 
 ## 5. Context model (owner spec §6) -- design settled, mostly not yet implemented
 
@@ -240,7 +235,7 @@ second error-code enum:
 | G | Content Proposal / external artifact registration | PLANNED |
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | IN PROGRESS |
 | I | Codex operations-workspace template | PLANNED -- see `docs/CODEX_OPERATIONS_WORKSPACE.md` once slice I lands |
-| J | Independent security/integration review | ONGOING -- slices A+B's own review cycle closed 2026-09-24 (4 rounds, 1/4/2/0 findings, see BL-079/BL-080). Slice C's own review cycle is in progress; `docs/roadmap/BACKLOG.md`'s BL-081 row is the authoritative record of when it actually completed, not a round tally kept here (an earlier version of this row stated "not yet reviewed as of this writing," which went stale the moment that review actually started -- found by independent review, 2026-09-24) |
+| J | Independent security/integration review | ONGOING per slice -- `docs/roadmap/BACKLOG.md`'s BL-079/BL-080/BL-081 (and later rows, as slices land) are the authoritative record of each slice's own review-cycle status; not restated here as a round tally, since that would just be a second, driftable copy of the same fact |
 
 Deliberately **not** implemented in this phase (owner spec §14/§29): the competitor/trend
 intelligence module (Phase 9) and the Experiment Engine (Phase 10). `plannedFutureCapabilities`

@@ -143,11 +143,8 @@ export type VideoContextOutput = z.infer<typeof videoContextOutputSchema>;
 // forward their input, unmodified, straight into `analyticsCore.getChannelOverview`/`listMetrics`,
 // which require exactly this shape and do their own internal `assertActiveChannel` check keyed
 // off it (`docs/decisions/0004-active-channel-read-scoping.md`). `credentialRef` is REQUIRED here,
-// not optional, on purpose (found by an index.test.ts wiring test against the REAL analyticsCore,
-// 2026-09-24: an earlier version of this schema made it optional, which let an unresolved call
-// reach `analyticsCore` and fail there instead, with a confusing "Invalid get channel overview
-// input" error instead of this module's own clearer message) -- the CALLER (MCP/CLI) resolves the
-// caller's effective credentialRef BEFORE calling this service, exactly like the pre-existing
+// not optional -- the CALLER (MCP/CLI) resolves the caller's effective credentialRef BEFORE
+// calling this service, exactly like the pre-existing
 // `analytics_list`/`analytics_overview` MCP handlers already do for `analyticsCore` itself (parse
 // the caller's own input with `credentialRef` relaxed to optional via `.partial({credentialRef:
 // true})`, resolve it, then call this service with the resolved value merged in). Exact
@@ -201,6 +198,7 @@ export const channelAnalyticsContextOutputSchema = z
         previousEndDate: z.string(),
       })
       .strict(),
+    filters: z.object({}).strict(),
     metricDefinitions: z.array(metricDefinitionSchema),
     freshness: analyticsFreshnessSchema,
     daily: z.array(

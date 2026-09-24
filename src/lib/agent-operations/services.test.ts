@@ -344,6 +344,9 @@ test("queryChannelAnalytics forwards input unchanged to getChannelOverview and w
     previousStartDate: "2026-08-25",
     previousEndDate: "2026-08-31",
   });
+  // getChannelOverview accepts no dimensional filter beyond period -- always empty (owner spec §9
+  // still requires the field to be present, even when there's nothing to report).
+  assert.deepEqual(result.filters, {});
   // Independently known (from src/lib/analytics/contracts.ts's own CHANNEL_OVERVIEW_METRIC_NAMES,
   // not derived from this module's own output): exactly these 4 metric names, each with a
   // definition present.

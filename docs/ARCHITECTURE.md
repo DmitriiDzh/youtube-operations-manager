@@ -1330,10 +1330,8 @@ Interface for Codex") authorizing design and incremental implementation of a ver
 external operational agents consume, without per-slice approval (only the final `dev` merge needs
 explicit sign-off). **The full technical design, permission model, error vocabulary, and
 per-slice implementation status live exclusively in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's
-status table -- this heading deliberately never names which slice is implemented**, because two
-earlier versions of this heading and its body each named a specific slice as done/pending and both
-went stale the moment the next slice landed without this file being touched (found by independent
-review, 2026-09-24, rounds 1-3) -- consult §7 of that document instead, every time.
+status table -- this heading deliberately never names which slice is implemented**, so it never
+needs updating as slices land; consult §7 of that document instead, every time.
 
 In one sentence: this application remains the sole source of truth for owned-channel data,
 analytics, and the write-safety pipeline; the agent is a reasoning/proposal layer that must
@@ -1343,7 +1341,4 @@ that. This phase's planned scope spans contracts/capability-discovery, channel/v
 analytics wrapper, a new creative-asset catalog, draft provenance, bulk-localization integration,
 content-proposal/artifact registration, a Codex operations-workspace template, and independent
 review -- **which of these is actually implemented as of any given moment is tracked exclusively
-in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here** (a prior version
-of this sentence named specific slices as implemented/pending and went stale the moment the next
-slice landed without this file being touched -- found by independent review, 2026-09-24; this
-sentence is deliberately worded to never make that same claim again).
+in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here**.
