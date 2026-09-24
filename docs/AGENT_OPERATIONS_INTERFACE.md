@@ -516,6 +516,14 @@ editorial-guideline document of its own.
   normally; a symlink escaping the workspace (or resolving into the app-data directory) is
   rejected for `getOperationsFile`, and silently skipped (never surfaced as an error, matching
   this module's own "never fabricate" discipline) when encountered during `listOperationsFiles`.
+  An independent review round found and fixed a narrower bypass: a symlink whose VISIBLE name has
+  an allowed extension (e.g. `notes.md`) could still resolve to a dotfile or disallowed-extension
+  REAL target while staying inside the workspace (e.g. `notes.md -> .secret-config`) -- the
+  dotfile/extension exclusion only ever checked the requested/visible name, never what the
+  symlink actually resolves to. Both `listOperationsFiles` and `getOperationsFile` now also
+  re-check the RESOLVED path's own basename/segments after `realpath`, not just the caller-visible
+  one. Containment itself was never affected by this (the resolved target still had to be inside
+  the workspace) -- this closed a same-workspace disclosure gap, not an escape.
 - **New agent-operations capabilities:** `operations_workspace.list_files` (READ),
   `operations_workspace.get_file` (READ) -- both READ, since listing/reading never mutates
   anything. MCP `agent_list_operations_files`/`agent_get_operations_file`, CLI

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, rm, writeFile, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, unlink, writeFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createFsAdapter } from "./adapters/fs";
-import { createOperationsInstructionsServices, isPathInsideOrEqual, MAX_FILE_BYTES } from "./services";
+import { createOperationsInstructionsServices, isPathInsideOrEqual, validateWorkspacePath, MAX_FILE_BYTES } from "./services";
 import { DomainError } from "./contracts";
 
 async function withTempDirs(run: (dirs: { workspace: string; appData: string; outside: string }) => Promise<void>) {
@@ -288,22 +288,182 @@ test("listOperationsFiles silently skips a symlinked entry that escapes the work
   });
 });
 
+// Independent review found that a symlink whose VISIBLE name has an allowed extension could
+// point at a dotfile/disallowed-extension REAL target still inside the workspace, bypassing the
+// dotfile-exclusion guarantee (the check only ever looked at the visible name, never the resolved
+// target). Both directions -- listing and direct get -- must exclude/reject based on the
+// RESOLVED target, not just the requested name.
+test("listOperationsFiles excludes a symlink whose visible name is allowed but whose real target is a dotfile", async () => {
+  await withTempDirs(async ({ workspace, appData }) => {
+    await writeFile(path.join(workspace, ".secret-config"), "sensitive-config-content");
+    await symlink(path.join(workspace, ".secret-config"), path.join(workspace, "notes.md"));
+    await writeFile(path.join(workspace, "safe.md"), "safe");
+
+    const services = createServices(workspace, appData);
+    const result = await services.listOperationsFiles({});
+    assert.equal(result.configured, true);
+    if (result.configured) {
+      assert.deepEqual(
+        result.files.map((f) => f.path),
+        ["safe.md"]
+      );
+    }
+  });
+});
+
+test("getOperationsFile rejects a symlink whose visible name is allowed but whose real target is a dotfile, as OPERATIONS_FILE_NOT_AVAILABLE", async () => {
+  await withTempDirs(async ({ workspace, appData }) => {
+    await writeFile(path.join(workspace, ".secret-config"), "sensitive-config-content");
+    await symlink(path.join(workspace, ".secret-config"), path.join(workspace, "notes.md"));
+
+    const services = createServices(workspace, appData);
+    await assert.rejects(
+      () => services.getOperationsFile({ path: "notes.md" }),
+      (error: unknown) => error instanceof DomainError && error.code === "OPERATIONS_FILE_NOT_AVAILABLE"
+    );
+  });
+});
+
+test("getOperationsFile rejects a symlink whose visible name is allowed but whose real target has a disallowed extension", async () => {
+  await withTempDirs(async ({ workspace, appData }) => {
+    await writeFile(path.join(workspace, "script.exe"), "binary-ish content");
+    await symlink(path.join(workspace, "script.exe"), path.join(workspace, "notes.md"));
+
+    const services = createServices(workspace, appData);
+    await assert.rejects(
+      () => services.getOperationsFile({ path: "notes.md" }),
+      (error: unknown) => error instanceof DomainError && error.code === "OPERATIONS_FILE_NOT_AVAILABLE"
+    );
+  });
+});
+
 test("a workspace directory re-symlinked to point at appDataDir AFTER being configured is rejected at read time, not just at set time", async () => {
   await withTempDirs(async ({ workspace, appData }) => {
-    // The "configured path" is a symlink the operator could repoint later -- simulate that by
-    // configuring a symlink that already points at appDataDir (this module has no memory of what
-    // the symlink target was when it was first configured; every read re-checks the CURRENT
-    // real target, which is exactly what this test proves).
+    // Proves the DYNAMIC property this module's threat model relies on: this module has no
+    // memory of what the symlink target was when it was first configured/validated -- every read
+    // re-checks the CURRENT real target. An earlier version of this test only ever pointed the
+    // symlink at appDataDir and never established a genuinely successful read first, so it could
+    // not actually distinguish "re-pointed to something unsafe" from "was never safe to begin
+    // with" -- fixed here to do both halves for real: succeed while safe, then fail once
+    // re-pointed, using the SAME `services` instance (which re-resolves the path on every call,
+    // never caching it) throughout.
+    await writeFile(path.join(workspace, "AGENTS.md"), "# safe content");
     const configuredSymlink = path.join(path.dirname(workspace), "workspace-symlink");
-    await symlink(appData, configuredSymlink);
+    await symlink(workspace, configuredSymlink);
     try {
       const services = createServices(configuredSymlink, appData);
+
+      const beforeRepoint = await services.listOperationsFiles({});
+      assert.equal(beforeRepoint.configured, true);
+      if (beforeRepoint.configured) {
+        assert.deepEqual(beforeRepoint.files.map((f) => f.path), ["AGENTS.md"]);
+      }
+
+      await unlink(configuredSymlink);
+      await symlink(appData, configuredSymlink);
+
       await assert.rejects(
         () => services.listOperationsFiles({}),
         (error: unknown) => error instanceof DomainError && error.code === "OPERATIONS_WORKSPACE_UNAVAILABLE"
       );
     } finally {
       await rm(configuredSymlink, { force: true });
+    }
+  });
+});
+
+// Independent review found `validateWorkspacePath` (the set-time gate `POST /api/settings`
+// calls) had zero direct test coverage of its own -- only its read-time sibling
+// (`resolveRealConfiguredBase`, exercised indirectly via `listOperationsFiles`/`getOperationsFile`
+// above) was tested. Both share the same `overlapsAppDataDir`/`isPathInsideOrEqual` logic, but the
+// operator-facing entry point's own absolute/exists/is-directory checks deserve their own direct
+// tests rather than being asserted only by a manual browser check.
+test("validateWorkspacePath rejects a relative path", async () => {
+  const fsAdapter = createFsAdapter();
+  const result = await validateWorkspacePath("relative/path", { appDataDir: "/irrelevant", ...fsAdapter });
+  assert.deepEqual(result, { ok: false, reason: "path must be absolute" });
+});
+
+test("validateWorkspacePath rejects a nonexistent path", async () => {
+  await withTempDirs(async ({ workspace, appData }) => {
+    const fsAdapter = createFsAdapter();
+    const result = await validateWorkspacePath(path.join(workspace, "does-not-exist"), { appDataDir: appData, ...fsAdapter });
+    assert.deepEqual(result, { ok: false, reason: "path does not exist or is not accessible" });
+  });
+});
+
+test("validateWorkspacePath rejects a path that is a file, not a directory", async () => {
+  await withTempDirs(async ({ workspace, appData }) => {
+    const filePath = path.join(workspace, "AGENTS.md");
+    await writeFile(filePath, "# hi");
+    const fsAdapter = createFsAdapter();
+    const result = await validateWorkspacePath(filePath, { appDataDir: appData, ...fsAdapter });
+    assert.deepEqual(result, { ok: false, reason: "path is not a directory" });
+  });
+});
+
+test("validateWorkspacePath rejects a path equal to appDataDir", async () => {
+  await withTempDirs(async ({ appData }) => {
+    const fsAdapter = createFsAdapter();
+    const result = await validateWorkspacePath(appData, { appDataDir: appData, ...fsAdapter });
+    assert.deepEqual(result, { ok: false, reason: "path overlaps this application's own app-data directory" });
+  });
+});
+
+test("validateWorkspacePath rejects a path that is an ancestor of appDataDir", async () => {
+  await withTempDirs(async ({ appData }) => {
+    const fsAdapter = createFsAdapter();
+    const result = await validateWorkspacePath(path.dirname(appData), { appDataDir: appData, ...fsAdapter });
+    assert.deepEqual(result, { ok: false, reason: "path overlaps this application's own app-data directory" });
+  });
+});
+
+test("validateWorkspacePath accepts a genuinely valid, non-overlapping absolute directory", async () => {
+  await withTempDirs(async ({ workspace, appData }) => {
+    const fsAdapter = createFsAdapter();
+    const result = await validateWorkspacePath(workspace, { appDataDir: appData, ...fsAdapter });
+    assert.deepEqual(result, { ok: true });
+  });
+});
+
+// MAX_FILES/MAX_DEPTH caps -- the commit message claimed these were tested alongside
+// MAX_FILE_BYTES truncation, but only the byte cap actually had a test. Import the real
+// constants via a small re-exercise: MAX_DEPTH is 6, MAX_FILES is 300 in the current
+// implementation (see services.ts) -- these tests exercise both without hard-coding a second
+// copy of those numbers, by creating one more entry than the smaller, cheaper-to-test cap allows.
+test("listOperationsFiles reports truncated: true once MAX_DEPTH is exceeded", async () => {
+  await withTempDirs(async ({ workspace, appData }) => {
+    // MAX_DEPTH is 6 (0-indexed from the workspace root) -- nest 8 levels deep to guarantee the
+    // cap is hit regardless of the exact off-by-one convention.
+    let currentDir = workspace;
+    for (let i = 0; i < 8; i += 1) {
+      currentDir = path.join(currentDir, `level-${i}`);
+      await mkdir(currentDir);
+      await writeFile(path.join(currentDir, "notes.md"), "content");
+    }
+
+    const services = createServices(workspace, appData);
+    const result = await services.listOperationsFiles({});
+    assert.equal(result.configured, true);
+    if (result.configured) {
+      assert.equal(result.truncated, true);
+    }
+  });
+});
+
+test("listOperationsFiles reports truncated: true once MAX_FILES is exceeded", async () => {
+  await withTempDirs(async ({ workspace, appData }) => {
+    // MAX_FILES is 300 -- create 305 flat files to guarantee the cap is hit.
+    for (let i = 0; i < 305; i += 1) {
+      await writeFile(path.join(workspace, `note-${String(i).padStart(4, "0")}.md`), "content");
+    }
+
+    const services = createServices(workspace, appData);
+    const result = await services.listOperationsFiles({});
+    assert.equal(result.configured, true);
+    if (result.configured) {
+      assert.equal(result.truncated, true);
+      assert.ok(result.files.length <= 300);
     }
   });
 });

@@ -68,7 +68,12 @@ export async function validateWorkspacePath(
     return { ok: false, reason: "path does not exist or is not accessible" };
   }
 
-  const candidateStat = await deps.stat(realCandidate);
+  let candidateStat: { isDirectory: boolean };
+  try {
+    candidateStat = await deps.stat(realCandidate);
+  } catch {
+    return { ok: false, reason: "path does not exist or is not accessible" };
+  }
   if (!candidateStat.isDirectory) {
     return { ok: false, reason: "path is not a directory" };
   }
@@ -154,7 +159,15 @@ async function resolveRealConfiguredBase(deps: ServiceDependencies): Promise<str
       message: "the configured operations-workspace path overlaps this application's own app-data directory",
     });
   }
-  const baseStat = await deps.stat(realBase);
+  let baseStat: { isDirectory: boolean };
+  try {
+    baseStat = await deps.stat(realBase);
+  } catch {
+    throw new DomainError({
+      code: "OPERATIONS_WORKSPACE_UNAVAILABLE",
+      message: "the configured operations-workspace path does not exist or is not accessible",
+    });
+  }
   if (!baseStat.isDirectory) {
     throw new DomainError({
       code: "OPERATIONS_WORKSPACE_UNAVAILABLE",
@@ -212,7 +225,23 @@ async function walk(
       continue; // dangling symlink or a permission error on this one entry -- skip it, not fatal
     }
 
-    const entryStat = await deps.stat(realEntryPath);
+    // An independent review round found that a symlink whose VISIBLE name has an allowed
+    // extension (e.g. "notes.md") could point at a dotfile/disallowed-extension REAL target
+    // (e.g. ".secret-config") still inside the workspace -- the dotfile-exclusion guarantee only
+    // ever checked `name`, never what the symlink actually resolves to. Re-check the RESOLVED
+    // basename here too, not just the visible one -- a symlink whose real target is itself
+    // hidden or disallowed is excluded regardless of how it's named.
+    const realBasename = path.basename(realEntryPath);
+    if (isDotEntry(realBasename)) {
+      continue;
+    }
+
+    let entryStat: { isDirectory: boolean; isFile: boolean; sizeBytes: number };
+    try {
+      entryStat = await deps.stat(realEntryPath);
+    } catch {
+      continue; // vanished between lstat and stat (TOCTOU race) -- skip it, not fatal
+    }
     const relPath = toPosixPath(path.join(relativePrefix, name));
 
     if (entryStat.isDirectory) {
@@ -220,7 +249,7 @@ async function walk(
       budget.filesLeft -= 1;
       const childTruncated = await walk(deps, realEntryPath, relPath, depth + 1, realBase, out, budget);
       truncated = truncated || childTruncated;
-    } else if (entryStat.isFile && hasAllowedExtension(name)) {
+    } else if (entryStat.isFile && hasAllowedExtension(realBasename)) {
       out.push({ path: relPath, isDirectory: false, sizeBytes: entryStat.sizeBytes });
       budget.filesLeft -= 1;
     }
@@ -278,7 +307,23 @@ export function createOperationsInstructionsServices(deps: ServiceDependencies) 
         throw new DomainError({ code: "OPERATIONS_FILE_NOT_AVAILABLE", message: "requested path is not available" });
       }
 
-      const candidateStat = await deps.stat(realCandidate);
+      // Same fix as `walk()` above: re-check the RESOLVED path's own segments/extension, not
+      // just the caller-supplied `parsedInput.path` checked earlier -- a symlink whose visible
+      // name has an allowed extension can still resolve to a dotfile or disallowed-extension
+      // real target while staying inside the workspace (containment alone doesn't catch this).
+      const realRelative = path.relative(realBase, realCandidate);
+      const realSegments = realRelative.split(path.sep).filter((segment) => segment.length > 0);
+      const realBasename = realSegments[realSegments.length - 1] ?? "";
+      if (realSegments.some((segment) => isDotEntry(segment)) || !hasAllowedExtension(realBasename)) {
+        throw new DomainError({ code: "OPERATIONS_FILE_NOT_AVAILABLE", message: "requested path is not available" });
+      }
+
+      let candidateStat: { isFile: boolean };
+      try {
+        candidateStat = await deps.stat(realCandidate);
+      } catch {
+        throw new DomainError({ code: "OPERATIONS_FILE_NOT_AVAILABLE", message: "requested path is not available" });
+      }
       if (!candidateStat.isFile) {
         throw new DomainError({ code: "OPERATIONS_FILE_NOT_AVAILABLE", message: "requested path is not available" });
       }
