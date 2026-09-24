@@ -151,3 +151,26 @@ export function computeComparableAgeSeries(args: {
 
   return { publishDatePacific, points, cumulativePoints };
 }
+
+/**
+ * The cumulative value at exactly `dayOffset` days-since-publish, or `null` if coverage doesn't
+ * reach that day (contiguously, from day 0 -- see `computeComparableAgeSeries`'s own doc comment).
+ * A thin, shared wrapper -- extracted because more than one Phase 7 agent-operations capability
+ * needs "this video's cumulative metric value at a specific comparison day" (first
+ * `find_comparable_videos`, owner spec §10; then the asset-performance join, owner spec §16) and
+ * this project's own convention (AGENTS.md §D) is one shared implementation, never two independent
+ * copies of the same age-alignment arithmetic.
+ */
+export function getCumulativeValueAtDayOffset(args: {
+  publishedAt: string;
+  metricRows: ReadonlyArray<{ metricDate: string; metricValue: number }>;
+  dayOffset: number;
+}): number | null {
+  const series = computeComparableAgeSeries({
+    publishedAt: args.publishedAt,
+    metricRows: args.metricRows,
+    maxDays: args.dayOffset,
+  });
+  const point = series.cumulativePoints.find((p) => p.dayOffset === args.dayOffset);
+  return point ? point.cumulativeValue : null;
+}

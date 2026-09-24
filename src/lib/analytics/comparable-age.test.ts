@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { computeComparableAgeSeries, diffCalendarDays, toPacificCalendarDate } from "./comparable-age";
+import { computeComparableAgeSeries, diffCalendarDays, getCumulativeValueAtDayOffset, toPacificCalendarDate } from "./comparable-age";
 
 test("toPacificCalendarDate: a timestamp comfortably inside the Pacific-Time day keeps the same calendar date", () => {
   // 2026-09-20T17:00:36Z is PDT (UTC-7) in September -> 10:00:36 local, same calendar day.
@@ -173,4 +173,34 @@ test("computeComparableAgeSeries: multiple rows landing on the same day offset a
   });
 
   assert.deepEqual(result.points, [{ dayOffset: 0, value: 10 }]);
+});
+
+test("getCumulativeValueAtDayOffset: returns the cumulative value at exactly that day when coverage is contiguous", () => {
+  const value = getCumulativeValueAtDayOffset({
+    publishedAt: "2026-09-20T17:00:00Z",
+    metricRows: [
+      { metricDate: "2026-09-20", metricValue: 10 },
+      { metricDate: "2026-09-21", metricValue: 5 },
+      { metricDate: "2026-09-22", metricValue: 5 },
+    ],
+    dayOffset: 2,
+  });
+
+  assert.equal(value, 20);
+});
+
+test("getCumulativeValueAtDayOffset: null when coverage doesn't reach that day (a gap, or day 0 itself missing), never a fabricated 0", () => {
+  const withGap = getCumulativeValueAtDayOffset({
+    publishedAt: "2026-09-20T17:00:00Z",
+    metricRows: [{ metricDate: "2026-09-20", metricValue: 10 }], // day 0 only
+    dayOffset: 2,
+  });
+  assert.equal(withGap, null);
+
+  const noDayZero = getCumulativeValueAtDayOffset({
+    publishedAt: "2026-09-20T17:00:00Z",
+    metricRows: [{ metricDate: "2026-09-22", metricValue: 10 }], // day 2 only, day 0 missing
+    dayOffset: 2,
+  });
+  assert.equal(noDayZero, null);
 });

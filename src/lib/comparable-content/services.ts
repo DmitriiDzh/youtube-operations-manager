@@ -7,7 +7,12 @@ import {
   DEFAULT_COMPARABLE_VIDEOS_LIMIT,
   MAX_COMPARABLE_VIDEOS_LIMIT,
 } from "./schemas";
-import { computeComparableAgeSeries, diffCalendarDays, toPacificCalendarDate } from "@/lib/analytics/comparable-age";
+import {
+  computeComparableAgeSeries,
+  diffCalendarDays,
+  getCumulativeValueAtDayOffset,
+  toPacificCalendarDate,
+} from "@/lib/analytics/comparable-age";
 
 const MAX_PERFORMANCE_AGE_ALIGNMENT_DAYS = 365;
 
@@ -154,9 +159,7 @@ export function createComparableContentServices(deps: ServiceDependencies) {
       function computePerformanceValue(videoId: string, publishedAt: string): number | null {
         if (!metricRowsByVideoId) return null;
         const rows = metricRowsByVideoId.get(videoId) ?? [];
-        const series = computeComparableAgeSeries({ publishedAt, metricRows: rows, maxDays: ageAlignmentDays });
-        const point = series.cumulativePoints.find((p) => p.dayOffset === ageAlignmentDays);
-        return point ? point.cumulativeValue : null;
+        return getCumulativeValueAtDayOffset({ publishedAt, metricRows: rows, dayOffset: ageAlignmentDays });
       }
 
       const anchorTokens = tokenizeTitle(anchor.title);
