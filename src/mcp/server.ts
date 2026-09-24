@@ -1856,7 +1856,7 @@ export function createMcpServer(
     "agent_list_assets",
     {
       description:
-        "List catalogued creative assets (thumbnails, source images, scripts, prompts, project files, etc.) for a channel, optionally narrowed by a linked videoId or assetType. Metadata only -- never returns/fetches the actual file behind referenceValue. Requires channelId to be the caller's currently-active channel. Populated only via the operator-facing 'asset register' CLI command; there is no agent-callable way to add an asset in this slice.",
+        "List catalogued creative assets (thumbnails, source images, scripts, prompts, project files, etc.) for a channel, optionally narrowed by a linked videoId or assetType. Metadata only -- never returns/fetches the actual file behind referenceValue. Requires channelId to be the caller's currently-active channel. Directly populated only via the operator-facing 'asset register' CLI command (which also allows local_path); agent_register_external_artifact adds an asset indirectly, tied to a Content Proposal, restricted to referenceKind url/external_artifact_id.",
       inputSchema: listAssetsInputSchema,
     },
     (args) => handlers.agentListAssets(args)
