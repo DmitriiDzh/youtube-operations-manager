@@ -32,6 +32,11 @@ export const evidenceSourceTypeSchema = z.enum(EVIDENCE_SOURCE_TYPES);
 // Bounded-length only, never a validation of the CONTENT of an agent's citation (AGENTS.md §B).
 export const MAX_EVIDENCE_TEXT_LENGTH = 2000;
 export const MAX_EVIDENCE_EXCERPT_LENGTH = 1000;
+// How many citations a single evidence array may carry -- shared here (not just the per-field
+// bounds above) so every consumer of `evidenceReferenceSchema` bounds its own `evidence: [...]`
+// array the same way, rather than each picking its own cap that could silently drift (AGENTS.md
+// §D; the exact defect class RISK-53 was filed for, `docs/TECHNICAL_DEBT.md`).
+export const MAX_EVIDENCE_LIST_ITEMS = 20;
 
 export type EvidenceReference = {
   url: string;

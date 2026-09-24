@@ -1,6 +1,6 @@
 import { z, ZodError } from "zod";
 import { DomainError } from "./contracts";
-import { CREATED_VIA_VALUES, evidenceReferenceSchema } from "@/lib/shared-provenance";
+import { CREATED_VIA_VALUES, MAX_EVIDENCE_LIST_ITEMS, evidenceReferenceSchema } from "@/lib/shared-provenance";
 
 export function formatZodError(error: ZodError) {
   return error.issues.map((issue) => ({
@@ -29,7 +29,6 @@ const MAX_FREE_TEXT_LENGTH = 4000;
 const MAX_BRIEF_FIELD_LENGTH = 2000;
 const MAX_BRIEF_LIST_ITEMS = 20;
 const MAX_BRIEF_LIST_ITEM_LENGTH = 200;
-const MAX_EVIDENCE_ITEMS = 20;
 const MAX_REFERENCE_IDS = 50;
 
 const briefTextField = z.string().min(1).max(MAX_BRIEF_FIELD_LENGTH).nullable().optional();
@@ -60,7 +59,7 @@ export const createContentProposalInputSchema = z
     objective: z.string().min(1).max(MAX_FREE_TEXT_LENGTH).optional(),
     topicConcept: z.string().min(1).max(MAX_FREE_TEXT_LENGTH).optional(),
     rationale: z.string().min(1).max(MAX_FREE_TEXT_LENGTH).optional(),
-    evidence: z.array(evidenceReferenceSchema).max(MAX_EVIDENCE_ITEMS).optional(),
+    evidence: z.array(evidenceReferenceSchema).max(MAX_EVIDENCE_LIST_ITEMS).optional(),
     brief: contentProposalBriefSchema.optional(),
     referenceVideoIds: z.array(z.string().min(1)).max(MAX_REFERENCE_IDS).optional(),
     referenceAssetIds: z.array(z.string().min(1)).max(MAX_REFERENCE_IDS).optional(),

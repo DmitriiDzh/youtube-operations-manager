@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { parseWithSchema } from "@/lib/changesets/schemas";
-import { CREATED_VIA_VALUES, evidenceReferenceSchema, evidenceSourceTypeSchema } from "@/lib/shared-provenance";
+import { CREATED_VIA_VALUES, MAX_EVIDENCE_LIST_ITEMS, evidenceReferenceSchema, evidenceSourceTypeSchema } from "@/lib/shared-provenance";
 
 export { parseWithSchema };
 // Reused as-is from `@/lib/shared-provenance` (AGENTS.md §D/§M) -- shared with
@@ -60,7 +60,6 @@ export const generationProvenanceSchema = z
   })
   .strict();
 
-const MAX_EVIDENCE_ITEMS = 20;
 const MAX_RATIONALE_LENGTH = 4000;
 
 export const createChangeSetFromGenerationInputSchema = z
@@ -72,7 +71,7 @@ export const createChangeSetFromGenerationInputSchema = z
     // this Change Set's proposals, recorded once per Change Set (see `StoredGenerationProvenance`'s
     // own doc comment in contracts.ts for why per-Change-Set rather than per-proposal). Never
     // required, never verified by this server.
-    evidence: z.array(evidenceReferenceSchema).max(MAX_EVIDENCE_ITEMS).nullable().optional(),
+    evidence: z.array(evidenceReferenceSchema).max(MAX_EVIDENCE_LIST_ITEMS).nullable().optional(),
     rationale: z.string().max(MAX_RATIONALE_LENGTH).nullable().optional(),
   })
   .strict();

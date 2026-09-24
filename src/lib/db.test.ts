@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import {
   channels,
   clearStoredCloudConnection,
+  contentProposals,
   copyLegacyDatabaseInto,
   createIsolatedDb,
   gatewayCallEvents,
@@ -177,7 +178,7 @@ test("creative_assets: inserts and lists by channel, filtered by videoId/assetTy
   }));
 
 // Phase 7 slice G (docs/AGENT_OPERATIONS_INTERFACE.md §4f).
-test("content_proposals: inserts and lists by channel, ordered newest first, enforcing the channel foreign key", () =>
+test("content_proposals: inserts and lists by channel, enforcing the channel foreign key", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
@@ -222,6 +223,36 @@ test("content_proposals: inserts and lists by channel, ordered newest first, enf
         isolatedDb
       )
     );
+  }));
+
+// Regression: `listContentProposalsByChannel` claims "newest first" (docs/interfaces.md,
+// agent-operations' own capability description) -- proven here with two rows whose `createdAt`
+// genuinely differs (inserted directly via the Drizzle table, bypassing `insertContentProposal`'s
+// own `$defaultFn(() => new Date())`, which cannot be overridden through that function's public
+// signature). Same-second ties are a known, accepted limitation shared with every other
+// `orderBy(desc(...createdAt))` list function in this file (creative_assets, batches,
+// ai_connections) -- not a new gap introduced by this table.
+test("content_proposals: listContentProposalsByChannel actually orders by createdAt, newest first", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannel(isolatedDb, "UC_A");
+
+    await isolatedDb.insert(contentProposals).values({
+      id: "proposal-older",
+      channelId: "UC_A",
+      createdVia: "web_ui",
+      createdAt: new Date("2026-09-01T00:00:00.000Z"),
+    });
+    await isolatedDb.insert(contentProposals).values({
+      id: "proposal-newer",
+      channelId: "UC_A",
+      createdVia: "web_ui",
+      createdAt: new Date("2026-09-20T00:00:00.000Z"),
+    });
+
+    const all = await listContentProposalsByChannel("UC_A", isolatedDb);
+    assert.deepEqual(all.map((p) => p.id), ["proposal-newer", "proposal-older"]);
   }));
 
 // Phase 8 follow-up, slice 2 (docs/roadmap/FUTURE_PHASES.md §4, data-quality diagnostics).
