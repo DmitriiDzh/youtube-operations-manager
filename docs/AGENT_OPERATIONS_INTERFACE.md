@@ -680,6 +680,23 @@ wall-clock `now`; round 3: `limit` is always silently clamped, never rejected) f
   pattern and SDK-facing relaxed-schema registration (`listAssetPerformanceSdkInputSchema`) as
   slice K, applying that lesson from the start rather than needing a round to rediscover it.
 
+  **Independent-review cycle: 4 rounds, findings 5/1/1/0, closed 2026-09-25.** Notably, all 4
+  findings across rounds 1-3 were documentation staleness, never a functional bug -- round 1 found
+  the AC-PERF-03/04 acceptance-doc drift and a doc-comment inaccuracy plus a sort-mode
+  test-coverage gap (fixed, commit `92d7ecc`); round 2 found `docs/roadmap/BACKLOG.md`/
+  `docs/SYSTEM_MAP.md` still claiming the cycle "not yet started" after round 1 had already run
+  (fixed, commit `07ac8fb`); round 3 found a THIRD copy of that same stale claim, this time in
+  this document's own §7 status table row for slice L (fixed, commit `ba4ee2c`) -- while also
+  running a fresh functional pass (truncation counting, `assetType`+`performanceMetric`
+  interaction, CLI numeric parsing, timezone handling) that found nothing wrong. Round 4 did an
+  exhaustive repo-wide sweep for any remaining stale copy of the round-tally claim (found none) and
+  a further adversarial functional pass -- a hand-derived combined `assetType`+`performanceMetric`+
+  `performanceDayOffset`+`sort`+`limit` scenario run against the real service (not just the
+  existing test suite), CLI numeric-parsing edge cases, `credentialRef` handling under malformed
+  inputs, and the real (non-fake) dependency wiring's field-for-field shape compatibility -- and
+  found zero issues, closing the cycle at the same 4-round shape as slice K's own closure
+  (3/4/4/0).
+
 ## 4i. Dedicated Phase 7 acceptance-contract document (owner spec §28) -- NOT PRODUCED
 
 Owner spec §28 asks for "a dedicated Phase 7 acceptance contract" produced **before**
@@ -878,7 +895,7 @@ second error-code enum:
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | **VERIFIED, against the recovered verbatim spec, 2026-09-24.** Cross-checked that every `AGENT_CAPABILITIES` entry points at an actually-registered MCP tool and that every `agent_*` MCP tool has CLI parity -- zero drift. The initial capability set (owner spec §25) is fully present. The session's original verbatim spec text (34 numbered sections, sent over Telegram 2026-09-23) is not stored anywhere in this repository -- it was recovered from this session's own pre-compaction transcript to check the sections this document had never previously cited, rather than trusting citation coverage alone. That recheck found two real, previously-untracked gaps outside slice H's own scope -- §4g/§4h below (owner spec §10/§16, `BL-088`/`BL-089`) -- and one process gap, §4i (owner spec §28, no dedicated Phase 7 acceptance-contract document). Every other previously-uncited section (§3, §8, §11, §20, §21, §22, §23, §24, §26, §29-33) was confirmed either already implemented, already tracked as a known gap, or deliberately narrowed/overridden by a later, explicit owner instruction (§3/§30, slice I). |
 | I | Codex operations-workspace path surfacing | **IMPLEMENTED** -- see §4j; owner decision, Telegram 2026-09-24, narrowed this slice to a path-configuration/surfacing mechanism only (never an operations-workspace template or editorial-guideline document committed here, per `AGENTS.md` §B). New `src/lib/operations-instructions/` module, Settings-only `operationsWorkspacePath` setting, MCP `agent_list_operations_files`/`agent_get_operations_file`, CLI `agent list-operations-files`/`agent get-operations-file`. `AGENT_API_VERSION` → `0.8.0`. |
 | K | Comparable-content context (`find_comparable_videos`, owner spec §10) | **IMPLEMENTED, independent-review cycle closed (4 rounds, findings 3/4/4/0)** -- see §4g; found by the slice-H spec recovery, 2026-09-24, then explicitly assigned into this phase by the owner the same day ("Да, такие находки как BL 88 и 89 тоже включай в список тасков текущей 7 фазы", Telegram). New `src/lib/comparable-content/` module (K1) plus `videos.durationSeconds` sync (K0, schema v19). MCP `agent_find_comparable_videos`, CLI `agent find-comparable-videos`. `AGENT_API_VERSION` → `0.9.0`. `BL-088`. |
-| L | Performance ↔ asset linkage (owner spec §16) | **IMPLEMENTED, independent-review cycle in progress (3 rounds so far, findings 5/1/1)** -- see §4h; found and assigned the same way and same day as slice K. New `src/lib/asset-performance/` module. MCP `agent_list_asset_performance`, CLI `agent list-asset-performance`. `AGENT_API_VERSION` → `0.10.0`. `BL-089`. |
+| L | Performance ↔ asset linkage (owner spec §16) | **IMPLEMENTED, independent-review cycle closed (4 rounds, findings 5/1/1/0)** -- see §4h; found and assigned the same way and same day as slice K. New `src/lib/asset-performance/` module. MCP `agent_list_asset_performance`, CLI `agent list-asset-performance`. `AGENT_API_VERSION` → `0.10.0`. `BL-089`. |
 | J | Independent security/integration review | ONGOING per slice -- `docs/roadmap/BACKLOG.md`'s BL-079/BL-080/BL-081 (and later rows, as slices land) are the authoritative record of each slice's own review-cycle status; not restated here as a round tally, since that would just be a second, driftable copy of the same fact. Covers the WHOLE phase, including slices K/L once they land -- deliberately kept last in the recommended order even though K/L were assigned after it was originally listed. |
 
 Deliberately **not** implemented in this phase (owner spec §14/§29): the competitor/trend
