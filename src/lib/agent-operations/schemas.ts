@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { parseWithSchema } from "@/lib/changesets/schemas";
 import { credentialRefSchema } from "@/lib/video-metadata/schemas";
-import { ASSET_REFERENCE_KINDS, ASSET_TYPES } from "@/lib/asset-catalog";
+import {
+  getAssetContextInputSchema as assetCatalogGetAssetContextInputSchema,
+  getAssetContextOutputSchema as assetCatalogGetAssetContextOutputSchema,
+  listAssetsInputSchema as assetCatalogListAssetsInputSchema,
+  listAssetsOutputSchema as assetCatalogListAssetsOutputSchema,
+} from "@/lib/asset-catalog/schemas";
 
 export { parseWithSchema };
 
@@ -260,45 +265,17 @@ export type VideoAnalyticsContextOutput = z.infer<typeof videoAnalyticsContextOu
 // Slice D -- creative asset catalog (owner spec §15/§25). Same convention as slice B above: no
 // `credentialRef`, no channel-scoping check here -- the MCP/CLI layer calls
 // `channelAccessCore.assertActiveChannel` before invoking either function.
+//
+// Reused unchanged from `@/lib/asset-catalog/schemas` (AGENTS.md §D) -- this wrapper does no
+// shape transformation of its own (unlike slice C's analytics envelope), so re-exporting the
+// underlying module's own schemas directly is correct here, not a second, independently
+// maintained copy that could drift from them.
 // ---------------------------------------------------------------------------
 
-// Reused unchanged from `@/lib/asset-catalog` (AGENTS.md §D) -- never a second, independently
-// maintained copy of the same enum, which would drift the moment that module's own list grows.
-const assetTypeSchema = z.enum(ASSET_TYPES);
-
-const creativeAssetSchema = z
-  .object({
-    assetId: z.string().min(1),
-    channelId: z.string().min(1),
-    assetType: assetTypeSchema,
-    referenceKind: z.enum(ASSET_REFERENCE_KINDS),
-    referenceValue: z.string().min(1),
-    title: z.string().nullable(),
-    description: z.string().nullable(),
-    linkedVideoId: z.string().nullable(),
-    provenance: z.record(z.string(), z.unknown()).nullable(),
-    createdAt: z.string(),
-  })
-  .strict();
-
-export const listAssetsInputSchema = z
-  .object({
-    channelId: z.string().min(1),
-    videoId: z.string().min(1).optional(),
-    assetType: assetTypeSchema.optional(),
-  })
-  .strict();
-
-export const listAssetsOutputSchema = z.object({ assets: z.array(creativeAssetSchema) }).strict();
-
-export const getAssetContextInputSchema = z
-  .object({
-    channelId: z.string().min(1),
-    assetId: z.string().min(1),
-  })
-  .strict();
-
-export const getAssetContextOutputSchema = creativeAssetSchema;
+export const listAssetsInputSchema = assetCatalogListAssetsInputSchema;
+export const listAssetsOutputSchema = assetCatalogListAssetsOutputSchema;
+export const getAssetContextInputSchema = assetCatalogGetAssetContextInputSchema;
+export const getAssetContextOutputSchema = assetCatalogGetAssetContextOutputSchema;
 
 export type ListAssetsInput = z.infer<typeof listAssetsInputSchema>;
 export type ListAssetsOutput = z.infer<typeof listAssetsOutputSchema>;

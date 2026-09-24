@@ -62,9 +62,8 @@ test("createAssetCatalogCore round-trips a real register/list/get against the re
   assert.equal(fetched.referenceValue, "artifact-abc");
 });
 
-// Round 2 review coverage note (2026-09-24): the two tests above cover a rejected linkedVideoId
-// and a register/list/get round-trip with none -- neither exercises a SUCCESSFUL link against a
-// real, channel-owned video end to end.
+// The two tests above cover a rejected linkedVideoId and a register/list/get round-trip with
+// none -- this one exercises a SUCCESSFUL link against a real, channel-owned video end to end.
 test("createAssetCatalogCore.registerAsset accepts and persists a linkedVideoId that genuinely belongs to the requested channel", async () => {
   const core = createAssetCatalogCore();
   const channelId = `UC_TEST_${randomUUID()}`;
