@@ -695,6 +695,40 @@ export const analyticsWeeklyReports = sqliteTable(
   ]
 );
 
+/**
+ * Phase 7 slice D (`src/lib/asset-catalog/`) -- a portable metadata catalog for pre-existing
+ * production files (owner spec §15: "The agent needs access to files previously used in
+ * production... Do not necessarily copy large binary files into API/MCP responses. Expose
+ * metadata plus controlled file/resource handles."). `referenceValue` is stored and returned as
+ * an opaque string only -- this module never reads/fetches it (no path-traversal/filesystem-
+ * exposure surface, since the value is never resolved to an actual file).
+ *
+ * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`) as of this slice --
+ * a registered asset stays device-local and does not travel with a device handoff/snapshot,
+ * the same accepted limitation `video_metrics_daily` already has (`docs/ARCHITECTURE.md` §14.7).
+ * Tracked in `docs/TECHNICAL_DEBT.md`.
+ */
+export const creativeAssets = sqliteTable(
+  "creative_assets",
+  {
+    id: text("id").primaryKey(),
+    channelId: text("channel_id")
+      .notNull()
+      .references(() => channels.id),
+    assetType: text("asset_type").notNull(),
+    referenceKind: text("reference_kind").notNull(),
+    referenceValue: text("reference_value").notNull(),
+    title: text("title"),
+    description: text("description"),
+    linkedVideoId: text("linked_video_id").references(() => videos.id),
+    provenanceJson: text("provenance_json"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [index("creative_assets_channel_id_idx").on(table.channelId)]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -931,6 +965,29 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
       await client.execute(
         "CREATE INDEX IF NOT EXISTS analytics_weekly_reports_channel_id_idx ON analytics_weekly_reports(channel_id)"
+      );
+    },
+  },
+  {
+    version: 15,
+    description:
+      "creative_assets -- portable metadata catalog for pre-existing production files, Phase 7 slice D (docs/AGENT_OPERATIONS_INTERFACE.md §4c)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS creative_assets (" +
+          "id TEXT PRIMARY KEY, " +
+          "channel_id TEXT NOT NULL REFERENCES channels(id), " +
+          "asset_type TEXT NOT NULL, " +
+          "reference_kind TEXT NOT NULL, " +
+          "reference_value TEXT NOT NULL, " +
+          "title TEXT, " +
+          "description TEXT, " +
+          "linked_video_id TEXT REFERENCES videos(id), " +
+          "provenance_json TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS creative_assets_channel_id_idx ON creative_assets(channel_id)"
       );
     },
   },
@@ -3453,6 +3510,74 @@ export async function listWeeklyReportsByChannel(
     .from(analyticsWeeklyReports)
     .where(eq(analyticsWeeklyReports.channelId, channelId))
     .orderBy(desc(analyticsWeeklyReports.weekStartDate));
+}
+
+export type StoredCreativeAsset = {
+  id: string;
+  channelId: string;
+  assetType: string;
+  referenceKind: string;
+  referenceValue: string;
+  title: string | null;
+  description: string | null;
+  linkedVideoId: string | null;
+  provenanceJson: string | null;
+  createdAt: Date;
+};
+
+export async function insertCreativeAsset(
+  input: {
+    id: string;
+    channelId: string;
+    assetType: string;
+    referenceKind: string;
+    referenceValue: string;
+    title?: string | null;
+    description?: string | null;
+    linkedVideoId?: string | null;
+    provenanceJson?: string | null;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(creativeAssets).values({
+    id: input.id,
+    channelId: input.channelId,
+    assetType: input.assetType,
+    referenceKind: input.referenceKind,
+    referenceValue: input.referenceValue,
+    title: input.title ?? null,
+    description: input.description ?? null,
+    linkedVideoId: input.linkedVideoId ?? null,
+    provenanceJson: input.provenanceJson ?? null,
+  });
+}
+
+export async function listCreativeAssetsByChannel(
+  channelId: string,
+  filters: { videoId?: string; assetType?: string } = {},
+  database: AppDb = db
+): Promise<StoredCreativeAsset[]> {
+  const conditions = [eq(creativeAssets.channelId, channelId)];
+  if (filters.videoId) {
+    conditions.push(eq(creativeAssets.linkedVideoId, filters.videoId));
+  }
+  if (filters.assetType) {
+    conditions.push(eq(creativeAssets.assetType, filters.assetType));
+  }
+
+  return database
+    .select()
+    .from(creativeAssets)
+    .where(and(...conditions))
+    .orderBy(desc(creativeAssets.createdAt));
+}
+
+export async function getCreativeAssetById(
+  assetId: string,
+  database: AppDb = db
+): Promise<StoredCreativeAsset | null> {
+  const [row] = await database.select().from(creativeAssets).where(eq(creativeAssets.id, assetId));
+  return row ?? null;
 }
 
 // The one and only row this table ever holds -- see `cloudConnection`'s own doc comment above.

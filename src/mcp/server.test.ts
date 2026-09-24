@@ -2663,7 +2663,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
 
   assert.equal(result.isError, undefined);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
-  assert.equal(payload.agentApiVersion, "0.3.0");
+  assert.equal(payload.agentApiVersion, "0.4.0");
   assert.deepEqual(payload.grantedPermissions, ["READ", "DRAFT"]);
   assert.ok(payload.capabilities.some((c: { id: string }) => c.id === "system.get_capabilities"));
 });
@@ -2706,7 +2706,13 @@ test("MCP agent_get_capabilities is never blocked by the operation lock (read-on
 
 function makeAgentOperationsCoreStub(): Pick<
   AgentOperationsCore,
-  "getSystemCapabilities" | "getChannelContext" | "getVideoContext" | "queryChannelAnalytics" | "queryVideoAnalytics"
+  | "getSystemCapabilities"
+  | "getChannelContext"
+  | "getVideoContext"
+  | "queryChannelAnalytics"
+  | "queryVideoAnalytics"
+  | "listAssets"
+  | "getAssetContext"
 > {
   return {
     getSystemCapabilities: async () => ({
@@ -2762,6 +2768,19 @@ function makeAgentOperationsCoreStub(): Pick<
       freshness: { source: "local_collected_data", asOf: "2026-09-24T12:00:00.000Z", note: "..." },
       rows: [],
     }),
+    listAssets: async () => ({ assets: [] }),
+    getAssetContext: async () => ({
+      assetId: "asset-1",
+      channelId: "UC_1",
+      assetType: "thumbnail",
+      referenceKind: "url",
+      referenceValue: "https://example.com/a.png",
+      title: null,
+      description: null,
+      linkedVideoId: null,
+      provenance: null,
+      createdAt: "2026-09-24T00:00:00.000Z",
+    }),
   };
 }
 
@@ -2805,7 +2824,13 @@ test("MCP agent_get_channel_context rejects a channelId that is not the caller's
   // that the tool call ends in an error.
   const agentOperationsCore: Pick<
     AgentOperationsCore,
-    "getSystemCapabilities" | "getChannelContext" | "getVideoContext" | "queryChannelAnalytics" | "queryVideoAnalytics"
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
   > = {
     ...makeAgentOperationsCoreStub(),
     getChannelContext: async () => {
@@ -2871,7 +2896,13 @@ test("MCP agent_get_video_context forwards input including optional `include`, c
 test("MCP agent_get_video_context rejects a channelId that is not the caller's active channel", async () => {
   const agentOperationsCore: Pick<
     AgentOperationsCore,
-    "getSystemCapabilities" | "getChannelContext" | "getVideoContext" | "queryChannelAnalytics" | "queryVideoAnalytics"
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
   > = {
     ...makeAgentOperationsCoreStub(),
     getVideoContext: async () => {
@@ -3027,6 +3058,155 @@ test("MCP agent_query_channel_analytics/agent_query_video_analytics are never bl
     assert.notEqual(channelResult.isError, true);
     const videoResult = await handlers.agentQueryVideoAnalytics({ channelId: "UC_1" });
     assert.notEqual(videoResult.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("MCP agent_list_assets forwards input and checks active-channel access", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.listAssets = async (input: unknown) => {
+    captured = input;
+    return { assets: [] };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListAssets({ channelId: "UC_1", assetType: "thumbnail" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, { channelId: "UC_1", assetType: "thumbnail" });
+});
+
+test("MCP agent_list_assets rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    listAssets: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListAssets({ channelId: "UC_OTHER" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_get_asset_context forwards input and checks active-channel access", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.getAssetContext = async (input: unknown) => {
+    captured = input;
+    return {
+      assetId: "asset-1",
+      channelId: "UC_1",
+      assetType: "thumbnail",
+      referenceKind: "url",
+      referenceValue: "https://example.com/a.png",
+      title: null,
+      description: null,
+      linkedVideoId: null,
+      provenance: null,
+      createdAt: "2026-09-24T00:00:00.000Z",
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentGetAssetContext({ channelId: "UC_1", assetId: "asset-1" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, { channelId: "UC_1", assetId: "asset-1" });
+});
+
+test("MCP agent_get_asset_context rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    getAssetContext: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentGetAssetContext({ channelId: "UC_OTHER", assetId: "asset-1" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_list_assets/agent_get_asset_context are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      makeAgentOperationsCoreStub()
+    );
+    const listResult = await handlers.agentListAssets({ channelId: "UC_1" });
+    assert.notEqual(listResult.isError, true);
+    const getResult = await handlers.agentGetAssetContext({ channelId: "UC_1", assetId: "asset-1" });
+    assert.notEqual(getResult.isError, true);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }

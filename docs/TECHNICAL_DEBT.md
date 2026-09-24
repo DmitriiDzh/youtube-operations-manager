@@ -808,6 +808,17 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Approval required from:** none technically required (routine CLI parity addition), but the project owner explicitly asked to revisit this personally (Telegram, 2026-09-23: "Запиши вопрос про флаг в технический долг и я вернусь к нему позже") rather than have it picked up automatically.
 - **Status:** OPEN — owner will decide when to return to it.
 
+## RISK-52 — `creative_assets` (Phase 7 slice D) does not travel with a device snapshot/handoff — OPEN, 2026-09-24
+
+- **Affected components:** `src/lib/asset-catalog/` (the `creative_assets` table); `src/lib/snapshot/contracts.ts`'s `SNAPSHOT_TRANSFERRED_TABLES` allowlist (fail-safe by construction -- a new table is excluded by default unless deliberately added).
+- **Current behavior:** an asset registered via `asset register` (CLI) stays in this device's local database only. Switching to, or setting up, a second device does not bring along any previously-catalogued assets -- the catalog starts empty on that device.
+- **Why not fixed now:** the same accepted reasoning `video_metrics_daily` already has (`docs/ARCHITECTURE.md` §14.7) -- adding cross-device propagation (either the occasional whole-copy snapshot mechanism, or continuous `sync-gateway` CRDT sync) is its own scoped decision, not something to bundle into the same slice that introduces the table in the first place.
+- **Actual risk:** low today (the catalog is new and typically small), but grows as the catalog is used across a genuinely multi-device setup.
+- **Required remediation:** once real multi-device usage of the asset catalog is expected, decide explicitly between (a) adding `creative_assets` to `SNAPSHOT_TRANSFERRED_TABLES` (simple, occasional whole-copy semantics, consistent with `batches`/`audit_events`) or (b) migrating it to `sync-gateway` (continuous, concurrent-edit-safe, consistent with `change_sets`/`changes`) -- not both.
+- **Gate(s):** none blocking.
+- **Approval required from:** none technically required; a product-scope decision for whoever picks this up.
+- **Status:** OPEN — tracked, not yet decided.
+
 ---
 
 ## Summary table
@@ -865,5 +876,6 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-49 | Channel-connections list/disconnect have no per-caller channel-ownership check (deliberate, feature's actual purpose) | none blocking | OPEN |
 | RISK-50 | Top-content-by-views ranking duplicated (client-side Overview tab vs. server-side weekly report) | none blocking | OPEN |
 | RISK-51 | CLI `ai-localization generate` has no `--editorialBrief` flag (MCP tool has the equivalent) | none blocking | OPEN, owner will revisit |
+| RISK-52 | `creative_assets` (Phase 7 slice D) does not travel with a device snapshot/handoff | none blocking | OPEN |
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

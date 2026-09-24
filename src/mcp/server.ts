@@ -39,9 +39,11 @@ import {
 } from "@/lib/ai-localization/schemas";
 import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent-operations";
 import {
+  getAssetContextInputSchema,
   getChannelContextInputSchema,
   getSystemCapabilitiesInputSchema,
   getVideoContextInputSchema,
+  listAssetsInputSchema,
   queryChannelAnalyticsInputSchema,
   queryVideoAnalyticsInputSchema,
 } from "@/lib/agent-operations/schemas";
@@ -117,10 +119,16 @@ type AnalyticsCoreSubset = Pick<
 // approve/reject/apply path -- "AI may propose, human approves" (AGENTS.md §G) is untouched.
 type AiLocalizationCoreSubset = Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration">;
 
-// Phase 7 (Agent Operations Interface, docs/AGENT_OPERATIONS_INTERFACE.md) -- slices A + B + C.
+// Phase 7 (Agent Operations Interface, docs/AGENT_OPERATIONS_INTERFACE.md) -- slices A + B + C + D.
 type AgentOperationsCoreSubset = Pick<
   AgentOperationsCore,
-  "getSystemCapabilities" | "getChannelContext" | "getVideoContext" | "queryChannelAnalytics" | "queryVideoAnalytics"
+  | "getSystemCapabilities"
+  | "getChannelContext"
+  | "getVideoContext"
+  | "queryChannelAnalytics"
+  | "queryVideoAnalytics"
+  | "listAssets"
+  | "getAssetContext"
 >;
 
 type ToolResponse = {
@@ -167,6 +175,8 @@ type McpToolHandlers = {
   agentGetVideoContext: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelAnalytics: (input: unknown) => Promise<ToolResponse>;
   agentQueryVideoAnalytics: (input: unknown) => Promise<ToolResponse>;
+  agentListAssets: (input: unknown) => Promise<ToolResponse>;
+  agentGetAssetContext: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -1087,6 +1097,47 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    /** Slice D. Same explicit channel-scoping pattern as `agentGetChannelContext`/
+     * `agentGetVideoContext` -- the service function itself does no such check. */
+    async agentListAssets(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listAssetsInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.listAssets(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** Slice D. Same explicit channel-scoping note as `agentListAssets` above. */
+    async agentGetAssetContext(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getAssetContextInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.getAssetContext(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -1189,6 +1240,9 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // mutate no local state, so both are ungated, same classification as their wrapped tools.
     agentQueryChannelAnalytics: handlers.agentQueryChannelAnalytics,
     agentQueryVideoAnalytics: handlers.agentQueryVideoAnalytics,
+    // Slice D -- pure local reads over the asset catalog, ungated.
+    agentListAssets: handlers.agentListAssets,
+    agentGetAssetContext: handlers.agentGetAssetContext,
   };
 }
 
@@ -1615,6 +1669,26 @@ export function createMcpServer(
       inputSchema: queryVideoAnalyticsInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.agentQueryVideoAnalytics(args)
+  );
+
+  registerTool(
+    "agent_list_assets",
+    {
+      description:
+        "List catalogued creative assets (thumbnails, source images, scripts, prompts, project files, etc.) for a channel, optionally narrowed by a linked videoId or assetType. Metadata only -- never returns/fetches the actual file behind referenceValue. Requires channelId to be the caller's currently-active channel. Populated only via the operator-facing 'asset register' CLI command; there is no agent-callable way to add an asset in this slice.",
+      inputSchema: listAssetsInputSchema,
+    },
+    (args) => handlers.agentListAssets(args)
+  );
+
+  registerTool(
+    "agent_get_asset_context",
+    {
+      description:
+        "Fetch one catalogued asset's full metadata record by assetId (type, reference kind/value, linked video, provenance, creation date). Requires channelId to be the caller's currently-active channel and assetId to actually belong to it -- otherwise fails with ASSET_NOT_AVAILABLE, the same error for 'does not exist' and 'belongs to another channel'.",
+      inputSchema: getAssetContextInputSchema,
+    },
+    (args) => handlers.agentGetAssetContext(args)
   );
 
   return server;

@@ -18,6 +18,10 @@ export type { SqlExecutor };
  *   - `video_metrics_daily` (Phase 8, `docs/roadmap/plans/PHASE_8_PLAN.md` §6 slice 2) -- an
  *     accepted, documented limitation (`docs/ARCHITECTURE.md` §14.7), not an oversight:
  *     collected metrics stay device-local and do not travel with a snapshot/handoff.
+ *   - `creative_assets` (Phase 7 slice D, `docs/AGENT_OPERATIONS_INTERFACE.md` §4c) -- same
+ *     reasoning as `video_metrics_daily`: a deliberate, accepted, documented limitation
+ *     (`docs/TECHNICAL_DEBT.md` RISK-52), not an oversight. A registered asset stays device-local
+ *     for now; it does not travel with a snapshot/handoff.
  *   - `cloud_connection` (`docs/decisions/0008-cloud-connection.md`) -- device-local encrypted
  *     Google Cloud OAuth grant, same reasoning as `users`/`ai_connection_credentials`: never
  *     handed off, re-established per device via its own Connect flow.

@@ -51,7 +51,7 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * the current, authoritative list of what capabilities exist -- deliberately not restated as a
  * count or list here, since that would just be a second copy of the same fact.
  */
-export const AGENT_API_VERSION = "0.3.0";
+export const AGENT_API_VERSION = "0.4.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
@@ -85,7 +85,8 @@ export type AgentDataDomain =
   | "channel_metadata"
   | "video_metadata"
   | "channel_analytics"
-  | "video_analytics";
+  | "video_analytics"
+  | "asset_metadata";
 
 /**
  * Capabilities named in the owner's own spec (§14) that this interface is designed to eventually

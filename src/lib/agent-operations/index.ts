@@ -4,6 +4,7 @@ import { getChannelTargetLanguages, SCHEMA_CURRENT_VERSION } from "@/lib/db";
 import { createChangeSetChannelStoreAdapter } from "@/lib/changesets/adapters/store";
 import { createAiLocalizationCore } from "@/lib/ai-localization";
 import { createAnalyticsCore } from "@/lib/analytics";
+import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createAgentOperationsServices } from "./services";
 
 /**
@@ -32,6 +33,7 @@ export function createAgentOperationsCore() {
   const channelStore = createChangeSetChannelStoreAdapter();
   const aiLocalizationCore = createAiLocalizationCore();
   const analyticsCore = createAnalyticsCore();
+  const assetCatalogCore = createAssetCatalogCore();
 
   return createAgentOperationsServices({
     getProductVersion: readProductVersion,
@@ -48,6 +50,10 @@ export function createAgentOperationsCore() {
     getChannelOverview: analyticsCore.getChannelOverview,
     listMetrics: analyticsCore.listMetrics,
     now: () => new Date(),
+    // Slice D -- delegates unchanged to `assetCatalogCore`'s own already-tested functions
+    // (AGENTS.md §D).
+    assetCatalogListAssets: assetCatalogCore.listAssets,
+    assetCatalogGetAssetContext: assetCatalogCore.getAssetContext,
   });
 }
 
@@ -76,3 +82,4 @@ export type {
   VideoContextSection,
   VideoMetadataContext,
 } from "./contracts";
+export type { CreativeAsset } from "@/lib/asset-catalog";

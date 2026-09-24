@@ -21,6 +21,7 @@ import { createChannelAccessCore, type ChannelAccessCore } from "@/lib/channel-a
 import { createAnalyticsCore, type AnalyticsCore } from "@/lib/analytics";
 import { createAiLocalizationCore, type AiLocalizationCore } from "@/lib/ai-localization";
 import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent-operations";
+import { createAssetCatalogCore, type AssetCatalogCore } from "@/lib/asset-catalog";
 
 // CLI parity for the read/propose/create MCP tools (docs/roadmap/plans/PHASE_7_PLAN.md,
 // docs/TECHNICAL_DEBT.md RISK-04) -- same core factories, same "smallest safe slice" as
@@ -49,8 +50,15 @@ type AiLocalizationCliCoreSubset = Pick<AiLocalizationCore, "generateProposals" 
 // Phase 7 (Agent Operations Interface) -- CLI parity for the MCP agent_get_capabilities tool.
 type AgentOperationsCliCoreSubset = Pick<
   AgentOperationsCore,
-  "getSystemCapabilities" | "getChannelContext" | "getVideoContext" | "queryChannelAnalytics" | "queryVideoAnalytics"
+  | "getSystemCapabilities"
+  | "getChannelContext"
+  | "getVideoContext"
+  | "queryChannelAnalytics"
+  | "queryVideoAnalytics"
+  | "listAssets"
+  | "getAssetContext"
 >;
+type AssetCatalogCliCoreSubset = Pick<AssetCatalogCore, "registerAsset">;
 
 loadEnvConfig(process.cwd());
 
@@ -68,7 +76,7 @@ type CliAuthAdapter = {
 };
 
 export type ParsedArgs = {
-  namespace: "metadata" | "auth" | "playlist" | "changeset" | "batch" | "channel" | "analytics" | "ai-localization" | "agent";
+  namespace: "metadata" | "auth" | "playlist" | "changeset" | "batch" | "channel" | "analytics" | "ai-localization" | "agent" | "asset";
   command:
     | "list"
     | "transcript"
@@ -102,11 +110,14 @@ export type ParsedArgs = {
     | "channel-context"
     | "video-context"
     | "channel-analytics"
-    | "video-analytics";
+    | "video-analytics"
+    | "list-assets"
+    | "get-asset-context"
+    | "register";
   flags: Record<string, string | boolean>;
 };
 
-const EXPLICIT_NAMESPACES = ["auth", "playlist", "changeset", "batch", "channel", "analytics", "ai-localization", "agent"] as const;
+const EXPLICIT_NAMESPACES = ["auth", "playlist", "changeset", "batch", "channel", "analytics", "ai-localization", "agent", "asset"] as const;
 type ExplicitNamespace = (typeof EXPLICIT_NAMESPACES)[number];
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -128,7 +139,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
     channel: ["sync", "list", "video-list"],
     analytics: ["list", "overview", "data-quality", "comparable-age", "weekly-reports", "weekly-report-get"],
     "ai-localization": ["generate", "create-change-set"],
-    agent: ["capabilities", "channel-context", "video-context", "channel-analytics", "video-analytics"],
+    agent: ["capabilities", "channel-context", "video-context", "channel-analytics", "video-analytics", "list-assets", "get-asset-context"],
+    asset: ["register"],
   };
   const validMetadataCommands = ["list", "transcript", "preview", "apply"];
   const validCommands = hasExplicitNamespace
@@ -338,6 +350,11 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   // Neither persists anything -- same classification as their wrapped tools above.
   "channel-analytics",
   "video-analytics",
+  // agent list-assets/get-asset-context: pure local reads over the asset catalog -- never
+  // resolves referenceValue to an actual file, never mutates. "asset register" is deliberately
+  // NOT here -- it persists a new row.
+  "list-assets",
+  "get-asset-context",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -416,6 +433,7 @@ export async function runCliCommand(args: {
   analyticsCore?: AnalyticsCliCoreSubset;
   aiLocalizationCore?: AiLocalizationCliCoreSubset;
   agentOperationsCore?: AgentOperationsCliCoreSubset;
+  assetCatalogCore?: AssetCatalogCliCoreSubset;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
 }): Promise<number> {
@@ -430,6 +448,7 @@ export async function runCliCommand(args: {
   const analyticsCore = args.analyticsCore ?? createAnalyticsCore();
   const aiLocalizationCore = args.aiLocalizationCore ?? createAiLocalizationCore();
   const agentOperationsCore = args.agentOperationsCore ?? createAgentOperationsCore();
+  const assetCatalogCore = args.assetCatalogCore ?? createAssetCatalogCore();
   const writeStdout =
     args.writeStdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const writeStderr =
@@ -713,6 +732,25 @@ export async function runCliCommand(args: {
         return 0;
       }
 
+      if (parsedArgs.command === "list-assets") {
+        const result = await agentOperationsCore.listAssets({
+          channelId,
+          videoId: optionalStringFlag(parsedArgs.flags, "videoId"),
+          assetType: optionalStringFlag(parsedArgs.flags, "assetType"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "get-asset-context") {
+        const result = await agentOperationsCore.getAssetContext({
+          channelId,
+          assetId: requiredStringFlag(parsedArgs.flags, "assetId"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
       // "video-context" -- --include takes a comma-separated subset of metadata,localizations
       // (same convention as --videoIds/--targetLanguages above); omitted means "both sections",
       // exactly as agentOperationsCore.getVideoContext's own default already handles.
@@ -725,6 +763,49 @@ export async function runCliCommand(args: {
         channelId,
         videoId,
         ...(include ? { include } : {}),
+      });
+      writeStdout(serializeSuccess(result));
+      return 0;
+    }
+
+    // Slice D, owner spec §15/§25. "asset register" is the operator-facing way the catalog gets
+    // populated -- NOT an agent-operations capability (owner spec §25 lists only
+    // list_assets/get_asset_context as READ for this domain), so it goes straight to
+    // `assetCatalogCore`, not through `agentOperationsCore`. Same channel-scoping pattern as
+    // `ai-localization`/`changeset` above: this module's own service functions do no such
+    // checking themselves.
+    if (parsedArgs.namespace === "asset") {
+      const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
+      const assetCredentialRef = await auth.resolveEffectiveCredentialRef({
+        explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+      });
+      await channelAccessCore.assertActiveChannel({
+        userId: "userId" in assetCredentialRef ? assetCredentialRef.userId : null,
+        channelId,
+      });
+
+      // "register" -- persists a new catalog row. Never touches YouTube; gated above like
+      // changeset import (mutates the local database). --provenanceJson takes a JSON-encoded
+      // object, the same shape registerAsset's own response echoes back -- no reasonable
+      // flat-flag equivalent for an arbitrary provenance record.
+      const provenanceJsonFlag = optionalStringFlag(parsedArgs.flags, "provenanceJson");
+      let provenance: unknown;
+      if (provenanceJsonFlag) {
+        try {
+          provenance = JSON.parse(provenanceJsonFlag);
+        } catch {
+          throw new DomainError({ code: "validation_failed", message: "--provenanceJson must be valid JSON" });
+        }
+      }
+      const result = await assetCatalogCore.registerAsset({
+        channelId,
+        assetType: requiredStringFlag(parsedArgs.flags, "assetType"),
+        referenceKind: requiredStringFlag(parsedArgs.flags, "referenceKind"),
+        referenceValue: requiredStringFlag(parsedArgs.flags, "referenceValue"),
+        title: optionalStringFlag(parsedArgs.flags, "title"),
+        description: optionalStringFlag(parsedArgs.flags, "description"),
+        linkedVideoId: optionalStringFlag(parsedArgs.flags, "linkedVideoId"),
+        provenance,
       });
       writeStdout(serializeSuccess(result));
       return 0;

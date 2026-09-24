@@ -33,7 +33,7 @@ export const systemCapabilitiesOutputSchema = z
     productVersion: z.string().min(1),
     agentApiVersion: z.string().min(1),
     capabilities: z.array(agentCapabilityDescriptorSchema),
-    dataDomains: z.array(z.enum(["channel_metadata", "video_metadata", "channel_analytics", "video_analytics"])),
+    dataDomains: z.array(z.enum(["channel_metadata", "video_metadata", "channel_analytics", "video_analytics", "asset_metadata"])),
     actionClasses: z.array(permissionClassSchema),
     grantedPermissions: z.array(permissionClassSchema),
     plannedFutureCapabilities: z.array(z.enum(["query_market_intelligence", "query_competitors", "create_experiment_proposal"])),
@@ -254,3 +254,62 @@ export type QueryChannelAnalyticsInput = z.infer<typeof queryChannelAnalyticsInp
 export type ChannelAnalyticsContextOutput = z.infer<typeof channelAnalyticsContextOutputSchema>;
 export type QueryVideoAnalyticsInput = z.infer<typeof queryVideoAnalyticsInputSchema>;
 export type VideoAnalyticsContextOutput = z.infer<typeof videoAnalyticsContextOutputSchema>;
+
+// ---------------------------------------------------------------------------
+// Slice D -- creative asset catalog (owner spec §15/§25). Same convention as slice B above: no
+// `credentialRef`, no channel-scoping check here -- the MCP/CLI layer calls
+// `channelAccessCore.assertActiveChannel` before invoking either function.
+// ---------------------------------------------------------------------------
+
+const assetTypeSchema = z.enum([
+  "thumbnail",
+  "source_image",
+  "generated_image",
+  "video_loop",
+  "source_video_clip",
+  "audio_track",
+  "project_file",
+  "prompt",
+  "script",
+  "metadata_document",
+  "other",
+]);
+
+const creativeAssetSchema = z
+  .object({
+    assetId: z.string().min(1),
+    channelId: z.string().min(1),
+    assetType: assetTypeSchema,
+    referenceKind: z.enum(["url", "local_path", "external_artifact_id"]),
+    referenceValue: z.string().min(1),
+    title: z.string().nullable(),
+    description: z.string().nullable(),
+    linkedVideoId: z.string().nullable(),
+    provenance: z.record(z.string(), z.unknown()).nullable(),
+    createdAt: z.string(),
+  })
+  .strict();
+
+export const listAssetsInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    videoId: z.string().min(1).optional(),
+    assetType: assetTypeSchema.optional(),
+  })
+  .strict();
+
+export const listAssetsOutputSchema = z.object({ assets: z.array(creativeAssetSchema) }).strict();
+
+export const getAssetContextInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    assetId: z.string().min(1),
+  })
+  .strict();
+
+export const getAssetContextOutputSchema = creativeAssetSchema;
+
+export type ListAssetsInput = z.infer<typeof listAssetsInputSchema>;
+export type ListAssetsOutput = z.infer<typeof listAssetsOutputSchema>;
+export type GetAssetContextInput = z.infer<typeof getAssetContextInputSchema>;
+export type GetAssetContextOutput = z.infer<typeof getAssetContextOutputSchema>;

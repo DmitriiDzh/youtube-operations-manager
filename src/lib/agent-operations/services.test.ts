@@ -40,6 +40,18 @@ type FakeListMetricsResult = {
   channelId: string;
   rows: Array<{ videoId: string; metricDate: string; metricName: string; metricValue: number }>;
 };
+type FakeCreativeAsset = {
+  assetId: string;
+  channelId: string;
+  assetType: "thumbnail" | "script" | "other";
+  referenceKind: "url" | "local_path" | "external_artifact_id";
+  referenceValue: string;
+  title: string | null;
+  description: string | null;
+  linkedVideoId: string | null;
+  provenance: Record<string, unknown> | null;
+  createdAt: string;
+};
 
 function createFixture(
   overrides: Partial<{
@@ -52,6 +64,8 @@ function createFixture(
     getChannelOverview: (input: unknown) => Promise<FakeChannelOverview>;
     listMetrics: (input: unknown) => Promise<FakeListMetricsResult>;
     now: () => Date;
+    assetCatalogListAssets: (input: unknown) => Promise<{ assets: FakeCreativeAsset[] }>;
+    assetCatalogGetAssetContext: (input: unknown) => Promise<FakeCreativeAsset>;
   }> = {}
 ) {
   const services = createAgentOperationsServices({
@@ -74,6 +88,8 @@ function createFixture(
     getChannelOverview: overrides.getChannelOverview ?? (async () => { throw new Error("getChannelOverview not stubbed"); }),
     listMetrics: overrides.listMetrics ?? (async () => { throw new Error("listMetrics not stubbed"); }),
     now: overrides.now ?? (() => new Date("2026-09-24T12:00:00.000Z")),
+    assetCatalogListAssets: overrides.assetCatalogListAssets ?? (async () => { throw new Error("assetCatalogListAssets not stubbed"); }),
+    assetCatalogGetAssetContext: overrides.assetCatalogGetAssetContext ?? (async () => { throw new Error("assetCatalogGetAssetContext not stubbed"); }),
   });
   return { services };
 }
@@ -86,7 +102,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   const result = await services.getSystemCapabilities({});
 
   assert.equal(result.productVersion, "9.9.9");
-  assert.equal(result.agentApiVersion, "0.3.0");
+  assert.equal(result.agentApiVersion, "0.4.0");
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -301,6 +317,59 @@ test("agent capabilities list registers pre-existing tools (list_channels/list_v
 
   const draftCap = result.capabilities.find((c) => c.id === "localization_draft.create_change_set_from_agent_proposals");
   assert.equal(draftCap!.permission, "DRAFT");
+});
+
+// AC-ASSET-CAP-01 (slice D, owner spec §25): get_capabilities must report the two asset-catalog
+// READ capabilities.
+test("agent capabilities list registers the two asset-catalog capabilities as READ", async () => {
+  const { services } = createFixture();
+  const result = await services.getSystemCapabilities({});
+
+  const listCap = result.capabilities.find((c) => c.id === "asset_catalog.list_assets");
+  const getCap = result.capabilities.find((c) => c.id === "asset_catalog.get_asset_context");
+  assert.ok(listCap);
+  assert.equal(listCap!.domain, "asset_catalog");
+  assert.equal(listCap!.permission, "READ");
+  assert.ok(getCap);
+  assert.equal(getCap!.permission, "READ");
+});
+
+test("listAssets forwards its input unchanged to assetCatalogListAssets", async () => {
+  let captured: unknown;
+  const { services } = createFixture({
+    assetCatalogListAssets: async (input) => {
+      captured = input;
+      return { assets: [] };
+    },
+  });
+
+  await services.listAssets({ channelId: "UC_A", videoId: "v1" });
+  assert.deepEqual(captured, { channelId: "UC_A", videoId: "v1" });
+});
+
+test("getAssetContext forwards its input unchanged to assetCatalogGetAssetContext and returns the result", async () => {
+  let captured: unknown;
+  const { services } = createFixture({
+    assetCatalogGetAssetContext: async (input) => {
+      captured = input;
+      return {
+        assetId: "asset-1",
+        channelId: "UC_A",
+        assetType: "thumbnail",
+        referenceKind: "url",
+        referenceValue: "https://example.com/a.png",
+        title: null,
+        description: null,
+        linkedVideoId: null,
+        provenance: null,
+        createdAt: "2026-09-24T00:00:00.000Z",
+      };
+    },
+  });
+
+  const result = await services.getAssetContext({ channelId: "UC_A", assetId: "asset-1" });
+  assert.deepEqual(captured, { channelId: "UC_A", assetId: "asset-1" });
+  assert.equal(result.assetId, "asset-1");
 });
 
 // AC-ANALYTICS-01/02/03 (slice C, owner spec §9): "Create agent-oriented analytics queries...

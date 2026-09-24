@@ -18,9 +18,13 @@ import {
   ALL_VIDEO_CONTEXT_SECTIONS,
   channelAnalyticsContextOutputSchema,
   channelContextOutputSchema,
+  getAssetContextInputSchema,
+  getAssetContextOutputSchema,
   getChannelContextInputSchema,
   getSystemCapabilitiesInputSchema,
   getVideoContextInputSchema,
+  listAssetsInputSchema,
+  listAssetsOutputSchema,
   parseWithSchema,
   queryChannelAnalyticsInputSchema,
   queryVideoAnalyticsInputSchema,
@@ -29,6 +33,7 @@ import {
   videoContextOutputSchema,
 } from "./schemas";
 import { ANALYTICS_METRIC_NAMES, CHANNEL_OVERVIEW_METRIC_NAMES } from "@/lib/analytics";
+import type { CreativeAsset } from "@/lib/asset-catalog";
 
 /**
  * One entry per capability actually implemented and reachable today -- either a new function this
@@ -137,6 +142,20 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "List or fetch frozen, reproducible weekly (Mon-Sun) channel performance snapshots. Implemented as the pre-existing `analytics_weekly_reports_list`/`analytics_weekly_report_get` MCP tools/`analytics weekly-reports`/`weekly-report-get` CLI commands (`src/lib/analytics/`), not a new function. Local read only; no on-demand generation via this interface. Requires channelId to be the caller's currently-active channel.",
   },
+  {
+    id: "asset_catalog.list_assets",
+    domain: "asset_catalog",
+    permission: "READ",
+    description:
+      "List catalogued creative assets (thumbnails, source images, scripts, prompts, etc.) for a channel, optionally narrowed by linked videoId or assetType. Read-only over the local asset catalog -- never resolves referenceValue to an actual file. Requires channelId to be the caller's currently-active channel. Populated only by the operator-facing `asset register` CLI command, not by any agent capability in this slice.",
+  },
+  {
+    id: "asset_catalog.get_asset_context",
+    domain: "asset_catalog",
+    permission: "READ",
+    description:
+      "Fetch one catalogued asset's full metadata record by assetId. Requires channelId to be the caller's currently-active channel and assetId to actually belong to it.",
+  },
 ];
 
 const AGENT_DATA_DOMAINS: AgentDataDomain[] = [
@@ -144,6 +163,7 @@ const AGENT_DATA_DOMAINS: AgentDataDomain[] = [
   "video_metadata",
   "channel_analytics",
   "video_analytics",
+  "asset_metadata",
 ];
 
 /**
@@ -265,6 +285,11 @@ type ServiceDependencies = {
   /** Injected for deterministic tests, same convention `analyticsCore`'s own `clock` dependency
    * uses -- the only source of "now" this module's own freshness envelope ever reads. */
   now(): Date;
+  // Slice D -- delegates to `assetCatalogCore`'s own `listAssets`/`getAssetContext` unchanged
+  // (AGENTS.md §D). Neither does credential/channel checking of its own -- mirrors slice B's
+  // convention (see `assetCatalogListAssets`/`assetCatalogGetAssetContext` below).
+  assetCatalogListAssets(input: unknown): Promise<{ assets: CreativeAsset[] }>;
+  assetCatalogGetAssetContext(input: unknown): Promise<CreativeAsset>;
 };
 
 export function createAgentOperationsServices(deps: ServiceDependencies) {
@@ -446,6 +471,25 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
       };
 
       return parseWithSchema(videoAnalyticsContextOutputSchema, output, "query video analytics output");
+    },
+
+    /**
+     * Slice D, owner spec §25's `list_assets`. Channel-scoping is deliberately NOT done here --
+     * mirrors slice B's convention (`getChannelContext`/`getVideoContext`): the MCP/CLI caller
+     * checks `channelAccessCore.assertActiveChannel` before calling this.
+     */
+    async listAssets(input: unknown): Promise<{ assets: CreativeAsset[] }> {
+      const parsedInput = parseWithSchema(listAssetsInputSchema, input, "list assets input");
+      const result = await deps.assetCatalogListAssets(parsedInput);
+      return parseWithSchema(listAssetsOutputSchema, result, "list assets output");
+    },
+
+    /** Slice D, owner spec §25's `get_asset_context`. Same channel-scoping note as `listAssets`
+     * above. */
+    async getAssetContext(input: unknown): Promise<CreativeAsset> {
+      const parsedInput = parseWithSchema(getAssetContextInputSchema, input, "get asset context input");
+      const result = await deps.assetCatalogGetAssetContext(parsedInput);
+      return parseWithSchema(getAssetContextOutputSchema, result, "get asset context output");
     },
   };
 }

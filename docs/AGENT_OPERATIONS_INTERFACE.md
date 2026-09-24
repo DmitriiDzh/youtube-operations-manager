@@ -177,6 +177,39 @@ support; adding it is a change to the wrapped `analyticsCore.listMetrics` contra
 this thin wrapper, and is out of this slice's own scope -- tracked as a known gap for a future,
 separately-assigned task, not fixed here.
 
+## 4c. Creative asset catalog (owner spec §15/§25) -- IMPLEMENTED (slice D)
+
+`list_assets` / MCP `agent_list_assets` and `get_asset_context` / MCP `agent_get_asset_context`
+(`src/lib/agent-operations/services.ts`, delegating to a brand-new module,
+`src/lib/asset-catalog/` -- a genuinely new subsystem, nothing pre-existing to reuse). A portable
+metadata catalog for pre-existing production files: thumbnails, source images, scripts, prompts,
+project files, etc. Owner spec §15: "Do not necessarily copy large binary files into API/MCP
+responses. Expose metadata plus controlled file/resource handles." `referenceValue` is stored and
+returned as an opaque string only -- this module never reads/fetches it (no filesystem/network
+access of its own, so no path-traversal or unrelated-file-exposure surface).
+
+Same channel-scoping convention as slice B (`getChannelContext`/`getVideoContext`): no
+`credentialRef`, the MCP/CLI layer calls `channelAccessCore.assertActiveChannel` before invoking
+either function -- there is no external API call here to defer to, unlike slice C.
+`getAssetContext` reports the same `ASSET_NOT_AVAILABLE` error for a nonexistent `assetId` and one
+that belongs to a different channel, never distinguishable (protects against probing which asset
+ids exist for a channel the caller has no access to).
+
+**Populated only by the operator-facing `asset register` CLI command** -- owner spec §25's
+capability list names only `list_assets`/`get_asset_context` (READ) for this domain, not a
+register/create capability, so registration is deliberately not exposed as an MCP tool or an
+agent-operations capability in this slice (registering a NEWLY produced artifact, as opposed to
+cataloguing a pre-existing one, is a separate, later concept -- slice G's
+`register_external_artifact`). CLI: `asset register --channelId <UC...> --assetType <type>
+--referenceKind <url|local_path|external_artifact_id> --referenceValue <value> [--title]
+[--description] [--linkedVideoId] [--provenanceJson <json>]`; `agent list-assets --channelId
+<UC...> [--videoId] [--assetType]`; `agent get-asset-context --channelId <UC...> --assetId <id>`
+(`docs/interfaces.md`).
+
+**Known limitation:** a registered asset stays device-local -- it does not travel with a device
+snapshot/handoff (`docs/TECHNICAL_DEBT.md` RISK-52), the same accepted limitation
+`video_metrics_daily` already has.
+
 ## 5. Context model (owner spec §6) -- design settled, mostly not yet implemented
 
 Every context object this interface returns is meant to carry: entity identity, source, data
@@ -229,7 +262,7 @@ second error-code enum:
 | A | Contracts + capability/version discovery | **IMPLEMENTED** -- `src/lib/agent-operations/`, MCP `agent_get_capabilities`, CLI `agent capabilities`, `GET /api/agent-operations/capabilities` |
 | B | Read-only channel/video context | **IMPLEMENTED** -- see §4a; MCP `agent_get_channel_context`/`agent_get_video_context`, CLI `agent channel-context`/`agent video-context`. No HTTP route yet. |
 | C | Analytics interface (agent-oriented wrapper over `src/lib/analytics/`) | **IMPLEMENTED** -- see §4b; MCP `agent_query_channel_analytics`/`agent_query_video_analytics`, CLI `agent channel-analytics`/`agent video-analytics`. No HTTP route yet. |
-| D | Asset catalog/context (new subsystem -- nothing to reuse) | PLANNED |
+| D | Asset catalog/context (new subsystem -- nothing to reuse) | **IMPLEMENTED** -- see §4c; MCP `agent_list_assets`/`agent_get_asset_context`, CLI `agent list-assets`/`agent get-asset-context`/`asset register`. No HTTP route yet. |
 | E | Agent draft/proposal provenance | PLANNED |
 | F | Bulk localization integration (wraps `src/lib/ai-localization/`, already has MCP/CLI tools from BL-078 -- this slice is about context/evidence enrichment around that existing workflow, not a new persistence path) | PLANNED |
 | G | Content Proposal / external artifact registration | PLANNED |

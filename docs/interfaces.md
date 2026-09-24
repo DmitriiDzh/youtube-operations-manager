@@ -142,6 +142,9 @@ npm run cli:video-metadata -- agent channel-context --channelId <UC...>
 npm run cli:video-metadata -- agent video-context --channelId <UC...> --videoId <VIDEO_ID> [--include metadata,localizations]
 npm run cli:video-metadata -- agent channel-analytics --channelId <UC...> --startDate <YYYY-MM-DD> --endDate <YYYY-MM-DD>
 npm run cli:video-metadata -- agent video-analytics --channelId <UC...> [--videoId <VIDEO_ID>] [--startDate <YYYY-MM-DD>] [--endDate <YYYY-MM-DD>] [--metricNames views,likes,...]
+npm run cli:video-metadata -- agent list-assets --channelId <UC...> [--videoId <VIDEO_ID>] [--assetType thumbnail|source_image|...]
+npm run cli:video-metadata -- agent get-asset-context --channelId <UC...> --assetId <ASSET_ID>
+npm run cli:video-metadata -- asset register --channelId <UC...> --assetType <type> --referenceKind url|local_path|external_artifact_id --referenceValue <value> [--title <t>] [--description <d>] [--linkedVideoId <id>] [--provenanceJson <json>]
 ```
 
 `agent capabilities` is read-only with no channel/credential resolution at all (instance-level
@@ -168,7 +171,14 @@ check from this CLI namespace itself -- they forward a resolved `credentialRef` 
 existing `analyticsCore`, which already performs that check internally (mirrors this CLI's own
 pre-existing `analytics overview`/`analytics list` commands, not the `ai-localization` pattern).
 `--metricNames` on `video-analytics` is comma-separated; omitted, every metric this instance
-actually collects is described. See `docs/AGENT_OPERATIONS_INTERFACE.md` for the full design.
+actually collects is described.
+
+`agent list-assets`/`agent get-asset-context` are channel-scoped reads over the new asset
+catalog, same `assertActiveChannel` pattern as `channel-context`/`video-context` above. `asset
+register` is a separate namespace (not under `agent`) -- the operator-facing way the catalog gets
+populated, never a live YouTube call, gated like any other local mutation.
+`--provenanceJson` takes a JSON-encoded object. See `docs/AGENT_OPERATIONS_INTERFACE.md` for the
+full design.
 
 ### Analytics commands (CLI parity for the MCP `analytics_*` tools, Phase 8 follow-up)
 
@@ -296,6 +306,13 @@ Key MCP tools:
     `period`/`filters` echoed back, `freshness`). Wraps `analytics_list` unchanged — a local read
     only. Omitting `metricNames` describes every metric this instance actually collects, never an
     invented one.
+  - `agent_list_assets` — `{ channelId, videoId?, assetType? }` → `{ assets: CreativeAsset[] }`.
+    Local read only over the new asset catalog — never reads/fetches the actual file behind
+    `referenceValue`. Requires `channelId` to be the caller's active channel.
+  - `agent_get_asset_context` — `{ channelId, assetId }` → `CreativeAsset`. Same channel-scoping
+    as `agent_list_assets`; `ASSET_NOT_AVAILABLE` for a nonexistent id or one belonging to another
+    channel (never distinguishable). There is no agent-callable way to add an asset in this
+    slice — the catalog is populated only via the `asset register` CLI command.
 
   `get_capabilities` also now registers several already-existing, already-implemented tools it
   previously omitted (`channel_list`, `channel_video_list`, `ai_localization_generate`,
@@ -304,9 +321,8 @@ Key MCP tools:
   reachable today, not just what this module itself implements — an agent CAN already compare
   videos or create a localization draft/proposal today, just through those pre-existing tools
   rather than a dedicated `agent-operations`-specific wrapper for either. Deliberately **not**
-  reachable through ANY tool yet: creative-asset context/catalog, experiment history, or content
-  planning/external-artifact registration — those are genuinely unimplemented, later slices (D, G)
-  of this same phase.
+  reachable through ANY tool yet: experiment history, or content planning/external-artifact
+  registration — those are genuinely unimplemented, later slices (E-G) of this same phase.
 - Analytics read tools (`docs/roadmap/BACKLOG.md`, "machine-readable analytics for operational
   agents to consume" — `docs/roadmap/FUTURE_PHASES.md` §4 / `docs/PROJECT_SPEC.md` §33):
   - `analytics_list` — `{ channelId, startDate?, endDate?, videoId?, metricNames?, credentialRef? }`

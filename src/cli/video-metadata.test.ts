@@ -14,6 +14,7 @@ import type { ChannelSyncCore } from "@/lib/channel-sync";
 import type { ChannelAccessCore } from "@/lib/channel-access";
 import type { AnalyticsCore } from "@/lib/analytics";
 import type { AiLocalizationCore } from "@/lib/ai-localization";
+import type { AssetCatalogCore } from "@/lib/asset-catalog";
 import type { VideoContextSection } from "@/lib/agent-operations";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
@@ -2788,6 +2789,8 @@ test("CLI agent capabilities returns version/capabilities with no auth/channel r
     getVideoContext: async () => { throw new Error("not used"); },
     queryChannelAnalytics: async () => { throw new Error("not used"); },
     queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -2823,6 +2826,8 @@ test("CLI agent capabilities is never blocked by the operation lock (read-only)"
       getVideoContext: async () => { throw new Error("not used"); },
       queryChannelAnalytics: async () => { throw new Error("not used"); },
       queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
     };
 
     const exitCode = await runCliCommand({
@@ -2856,6 +2861,8 @@ test("CLI agent channel-context forwards channelId after checking it against the
     getVideoContext: async () => { throw new Error("not used"); },
     queryChannelAnalytics: async () => { throw new Error("not used"); },
     queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -2898,6 +2905,8 @@ test("CLI agent channel-context rejects a channelId that is not the caller's act
       getVideoContext: async () => { throw new Error("not used"); },
       queryChannelAnalytics: async () => { throw new Error("not used"); },
       queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -2931,6 +2940,8 @@ test("CLI agent video-context rejects a channelId that is not the caller's activ
       getVideoContext: async () => { throw new Error("must not be called"); },
       queryChannelAnalytics: async () => { throw new Error("not used"); },
       queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -2966,6 +2977,8 @@ test("CLI agent video-context forwards channelId/videoId and parses --include in
     },
     queryChannelAnalytics: async () => { throw new Error("not used"); },
     queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -2995,6 +3008,8 @@ test("CLI agent video-context omits `include` entirely when --include is not pas
     },
     queryChannelAnalytics: async () => { throw new Error("not used"); },
     queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
   };
 
   const exitCode = await runCliCommand({
@@ -3026,6 +3041,8 @@ test("CLI agent channel-context/video-context are never blocked by the operation
       getVideoContext: async () => ({ videoId: "v1", channelId: "UC_1", includedSections: ["metadata", "localizations"] as VideoContextSection[] }),
       queryChannelAnalytics: async () => { throw new Error("not used"); },
       queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
     };
 
     const channelContextExit = await runCliCommand({
@@ -3072,6 +3089,8 @@ test("CLI agent channel-analytics forwards resolved credentialRef, channelId, st
       };
     },
     queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3106,6 +3125,8 @@ test("CLI agent channel-analytics requires --startDate/--endDate", async () => {
       getVideoContext: async () => { throw new Error("not used"); },
       queryChannelAnalytics: async () => { throw new Error("must not be called"); },
       queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3133,6 +3154,8 @@ test("CLI agent video-analytics forwards resolved credentialRef, channelId, and 
         rows: [],
       };
     },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3182,6 +3205,8 @@ test("CLI agent channel-analytics/video-analytics are never blocked by the opera
         freshness: { source: "local_collected_data" as const, asOf: "2026-09-24T12:00:00.000Z", note: "..." },
         rows: [],
       }),
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
     };
 
     const channelAnalyticsExit = await runCliCommand({
@@ -3201,6 +3226,314 @@ test("CLI agent channel-analytics/video-analytics are never blocked by the opera
       writeStdout: () => {},
     });
     assert.equal(videoAnalyticsExit, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent list-assets forwards channelId/videoId/assetType after checking it against the caller's active channel", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async (input: unknown) => {
+      captured = input;
+      return { assets: [] };
+    },
+    getAssetContext: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "list-assets", "--channelId", "UC_1", "--userId", "u1", "--assetType", "thumbnail"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1", videoId: undefined, assetType: "thumbnail" });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.deepEqual(envelope.data.assets, []);
+});
+
+test("CLI agent list-assets rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "list-assets", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("must not be called"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI agent get-asset-context forwards channelId/assetId after checking it against the caller's active channel", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async (input: unknown) => {
+      captured = input;
+      return {
+        assetId: "asset-1",
+        channelId: "UC_1",
+        assetType: "thumbnail" as const,
+        referenceKind: "url" as const,
+        referenceValue: "https://example.com/a.png",
+        title: null,
+        description: null,
+        linkedVideoId: null,
+        provenance: null,
+        createdAt: "2026-09-24T00:00:00.000Z",
+      };
+    },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "get-asset-context", "--channelId", "UC_1", "--userId", "u1", "--assetId", "asset-1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1", assetId: "asset-1" });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.assetId, "asset-1");
+});
+
+function makeAssetCatalogCliCoreStub(): Pick<AssetCatalogCore, "registerAsset"> {
+  return {
+    registerAsset: async () => { throw new Error("registerAsset not stubbed"); },
+  };
+}
+
+test("CLI asset register forwards channelId + fields, and parses --provenanceJson", async () => {
+  let captured: unknown;
+  const assetCatalogCore: Pick<AssetCatalogCore, "registerAsset"> = {
+    registerAsset: async (input: unknown) => {
+      captured = input;
+      return {
+        assetId: "asset-1",
+        channelId: "UC_1",
+        assetType: "thumbnail",
+        referenceKind: "local_path",
+        referenceValue: "/tmp/cover.png",
+        title: "Cover v1",
+        description: null,
+        linkedVideoId: null,
+        provenance: { tool: "midjourney" },
+        createdAt: "2026-09-24T00:00:00.000Z",
+      };
+    },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "asset",
+      "register",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--assetType",
+      "thumbnail",
+      "--referenceKind",
+      "local_path",
+      "--referenceValue",
+      "/tmp/cover.png",
+      "--title",
+      "Cover v1",
+      "--provenanceJson",
+      JSON.stringify({ tool: "midjourney" }),
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    assetCatalogCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    assetType: "thumbnail",
+    referenceKind: "local_path",
+    referenceValue: "/tmp/cover.png",
+    title: "Cover v1",
+    description: undefined,
+    linkedVideoId: undefined,
+    provenance: { tool: "midjourney" },
+  });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.assetId, "asset-1");
+});
+
+test("CLI asset register rejects malformed --provenanceJson", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "asset",
+      "register",
+      "--channelId",
+      "UC_1",
+      "--assetType",
+      "thumbnail",
+      "--referenceKind",
+      "url",
+      "--referenceValue",
+      "https://example.com/a.png",
+      "--provenanceJson",
+      "{not valid json",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    assetCatalogCore: makeAssetCatalogCliCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI asset register rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["asset", "register", "--channelId", "UC_1", "--assetType", "thumbnail", "--referenceKind", "url", "--referenceValue", "https://example.com/a.png"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    assetCatalogCore: {
+      registerAsset: async () => { throw new Error("must not be called"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI agent list-assets/get-asset-context are never blocked by the operation lock (read-only); asset register is blocked", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => ({ assets: [] }),
+      getAssetContext: async () => ({
+        assetId: "asset-1",
+        channelId: "UC_1",
+        assetType: "thumbnail" as const,
+        referenceKind: "url" as const,
+        referenceValue: "https://example.com/a.png",
+        title: null,
+        description: null,
+        linkedVideoId: null,
+        provenance: null,
+        createdAt: "2026-09-24T00:00:00.000Z",
+      }),
+    };
+
+    const listExit = await runCliCommand({
+      argv: ["agent", "list-assets", "--channelId", "UC_1", "--userId", "u1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(listExit, 0);
+
+    const getExit = await runCliCommand({
+      argv: ["agent", "get-asset-context", "--channelId", "UC_1", "--userId", "u1", "--assetId", "asset-1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(getExit, 0);
+
+    const stderr: string[] = [];
+    const registerExit = await runCliCommand({
+      argv: [
+        "asset",
+        "register",
+        "--channelId",
+        "UC_1",
+        "--userId",
+        "u1",
+        "--assetType",
+        "thumbnail",
+        "--referenceKind",
+        "url",
+        "--referenceValue",
+        "https://example.com/a.png",
+      ],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      assetCatalogCore: makeAssetCatalogCliCoreStub(),
+      writeStderr: (line) => stderr.push(line),
+    });
+    assert.equal(registerExit, 1);
+    const envelope = JSON.parse(stderr[0] ?? "{}");
+    assert.equal(envelope.error.code, "operation_lock_held");
   } finally {
     await releaseOperationLock(rawSqlClient);
   }

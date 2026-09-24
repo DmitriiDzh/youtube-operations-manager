@@ -13,12 +13,15 @@ import {
   gatewayCallEvents,
   getAnalyticsReadsEnabled,
   getAnalyticsSyncSettings,
+  getCreativeAssetById,
   getDataApiReadsEnabled,
   getGatewayTrafficLast24h,
   getStoredCloudConnection,
   getWeeklyReportByWeek,
   initializeDatabaseSchema,
+  insertCreativeAsset,
   listAnalyticsCollectionRunsByChannel,
+  listCreativeAssetsByChannel,
   listVideoMetricsByChannel,
   listVideoMetricsByVideo,
   listWeeklyReportsByChannel,
@@ -108,6 +111,65 @@ test("initializeDatabaseSchema: a fresh database ends stamped at SCHEMA_CURRENT_
     assert.equal(await tableExists(client, "video_metrics_daily"), true);
     assert.equal(await tableExists(client, "analytics_collection_runs"), true);
     assert.equal(await tableExists(client, "analytics_weekly_reports"), true);
+    assert.equal(await tableExists(client, "creative_assets"), true);
+  }));
+
+// Phase 7 slice D (docs/AGENT_OPERATIONS_INTERFACE.md §4c).
+test("creative_assets: inserts and lists by channel, filtered by videoId/assetType, enforcing the channel/video foreign keys", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannelAndVideo(isolatedDb, "UC_A", "vid1");
+
+    await insertCreativeAsset(
+      {
+        id: "asset-1",
+        channelId: "UC_A",
+        assetType: "thumbnail",
+        referenceKind: "local_path",
+        referenceValue: "/tmp/does-not-matter.png",
+        title: "Cover art v1",
+        linkedVideoId: "vid1",
+      },
+      isolatedDb
+    );
+    await insertCreativeAsset(
+      {
+        id: "asset-2",
+        channelId: "UC_A",
+        assetType: "script",
+        referenceKind: "url",
+        referenceValue: "https://example.com/script.txt",
+      },
+      isolatedDb
+    );
+
+    const all = await listCreativeAssetsByChannel("UC_A", {}, isolatedDb);
+    assert.equal(all.length, 2);
+
+    const byVideo = await listCreativeAssetsByChannel("UC_A", { videoId: "vid1" }, isolatedDb);
+    assert.deepEqual(byVideo.map((a) => a.id), ["asset-1"]);
+
+    const byType = await listCreativeAssetsByChannel("UC_A", { assetType: "script" }, isolatedDb);
+    assert.deepEqual(byType.map((a) => a.id), ["asset-2"]);
+
+    const fetched = await getCreativeAssetById("asset-1", isolatedDb);
+    assert.equal(fetched?.title, "Cover art v1");
+    assert.equal(fetched?.description, null);
+
+    // A channel that was never synced must fail the FK, not silently create an orphaned row.
+    await assert.rejects(() =>
+      insertCreativeAsset(
+        {
+          id: "asset-3",
+          channelId: "UC_NEVER_SYNCED",
+          assetType: "other",
+          referenceKind: "external_artifact_id",
+          referenceValue: "artifact-123",
+        },
+        isolatedDb
+      )
+    );
   }));
 
 // Phase 8 follow-up, slice 2 (docs/roadmap/FUTURE_PHASES.md §4, data-quality diagnostics).
