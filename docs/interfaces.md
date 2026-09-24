@@ -417,10 +417,12 @@ Key MCP tools:
   reachable today, not just what this module itself implements — an agent CAN already compare
   videos or create a localization draft/proposal today, just through those pre-existing tools
   rather than a dedicated `agent-operations`-specific wrapper for either. Content Proposal
-  creation/read (Phase 7 slice G) is now reachable via `agent_create_content_proposal`/
-  `agent_get_content_proposal`/`agent_list_content_proposals` above. Deliberately **not**
-  reachable through ANY tool yet: experiment history, or external-artifact registration (owner
-  spec §19) — those remain genuinely unimplemented, later work in this same phase.
+  creation/read (Phase 7 slice G1) is now reachable via `agent_create_content_proposal`/
+  `agent_get_content_proposal`/`agent_list_content_proposals` above, and external-artifact
+  registration (owner spec §19, slice G2) via `agent_register_external_artifact`/
+  `agent_list_proposal_artifacts` above. Deliberately **not** reachable through ANY tool yet:
+  experiment history (owner spec §20, deferred to Phase 10) — that remains genuinely
+  unimplemented, later work outside this phase.
 - Analytics read tools (`docs/roadmap/BACKLOG.md`, "machine-readable analytics for operational
   agents to consume" — `docs/roadmap/FUTURE_PHASES.md` §4 / `docs/PROJECT_SPEC.md` §33):
   - `analytics_list` — `{ channelId, startDate?, endDate?, videoId?, metricNames?, credentialRef? }`

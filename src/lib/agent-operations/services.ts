@@ -169,7 +169,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "asset_catalog",
     permission: "READ",
     description:
-      "List catalogued creative assets (thumbnails, source images, scripts, prompts, etc.) for a channel, optionally narrowed by linked videoId or assetType. Read-only over the local asset catalog -- never resolves referenceValue to an actual file. Requires channelId to be the caller's currently-active channel. Populated only by the operator-facing `asset register` CLI command, not by any agent capability in this slice.",
+      "List catalogued creative assets (thumbnails, source images, scripts, prompts, etc.) for a channel, optionally narrowed by linked videoId or assetType. Read-only over the local asset catalog -- never resolves referenceValue to an actual file. Requires channelId to be the caller's currently-active channel. Directly populated only by the operator-facing `asset register` CLI command (which also allows local_path); `content_proposal.register_external_artifact` adds an asset indirectly, tied to a Content Proposal, restricted to referenceKind url/external_artifact_id.",
   },
   {
     id: "asset_catalog.get_asset_context",
