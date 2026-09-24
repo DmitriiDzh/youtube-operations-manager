@@ -209,3 +209,86 @@ test("createContentProposalCore.registerExternalArtifact rejects a proposalId th
     (error: unknown) => error instanceof DomainError && error.code === "CONTENT_PROPOSAL_NOT_AVAILABLE"
   );
 });
+
+// Proves `registerExternalArtifact`'s `linkedVideoId` genuinely reaches asset-catalog's real
+// `videoBelongsToChannel` check (AGENTS.md §F/§D) -- `content-proposals` delegates to
+// `assetCatalogCore.registerAsset` unchanged rather than re-implementing this check, so this test
+// exercises the real wiring, not a fake that always agrees.
+test("createContentProposalCore.registerExternalArtifact accepts and persists a linkedVideoId that genuinely belongs to the requested channel", async () => {
+  const core = createContentProposalCore();
+  const channelId = `UC_TEST_${randomUUID()}`;
+  const videoId = `vid_${randomUUID()}`;
+
+  await upsertChannel({
+    channelId,
+    title: "Content proposal wiring test channel 9",
+    thumbnailUrl: null,
+    uploadsPlaylistId: `UU_${randomUUID()}`,
+    connectedUserId: null,
+  });
+  await upsertVideos(
+    [
+      {
+        videoId,
+        channelId,
+        title: "Test video",
+        description: "",
+        publishedAt: "2026-09-01T00:00:00Z",
+        privacyStatus: "public",
+        defaultLanguage: null,
+        defaultAudioLanguage: null,
+        thumbnails: {},
+        existingLocalizations: {},
+        etag: null,
+      },
+    ],
+    new Date()
+  );
+
+  const proposal = await core.createContentProposal({ channelId }, WEB_UI_ORIGIN);
+
+  const link = await core.registerExternalArtifact(
+    {
+      channelId,
+      proposalId: proposal.proposalId,
+      assetType: "thumbnail",
+      referenceKind: "url",
+      referenceValue: "https://example.com/real-thumb-linked.png",
+      linkedVideoId: videoId,
+    },
+    WEB_UI_ORIGIN
+  );
+
+  assert.equal(link.asset.linkedVideoId, videoId);
+});
+
+test("createContentProposalCore.registerExternalArtifact rejects a linkedVideoId that does not belong to the requested channel", async () => {
+  const core = createContentProposalCore();
+  const channelId = `UC_TEST_${randomUUID()}`;
+
+  await upsertChannel({
+    channelId,
+    title: "Content proposal wiring test channel 10",
+    thumbnailUrl: null,
+    uploadsPlaylistId: `UU_${randomUUID()}`,
+    connectedUserId: null,
+  });
+
+  const proposal = await core.createContentProposal({ channelId }, WEB_UI_ORIGIN);
+
+  await assert.rejects(
+    () =>
+      core.registerExternalArtifact(
+        {
+          channelId,
+          proposalId: proposal.proposalId,
+          assetType: "thumbnail",
+          referenceKind: "url",
+          referenceValue: "https://example.com/real-thumb-linked.png",
+          linkedVideoId: "a-video-id-that-does-not-exist",
+        },
+        WEB_UI_ORIGIN
+      ),
+    (error: unknown) => error instanceof DomainError && error.code === "INVALID_CONTEXT_REQUEST"
+  );
+});

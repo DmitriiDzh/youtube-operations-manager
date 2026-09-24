@@ -18,6 +18,7 @@ import type { AssetCatalogCore } from "@/lib/asset-catalog";
 import type { VideoContextSection } from "@/lib/agent-operations";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
+import { parseWithSchema, registerExternalArtifactInputSchema } from "@/lib/content-proposals/schemas";
 import { runCliCommand, getCredentialRef } from "./video-metadata";
 
 function makeCoreStub(): Pick<
@@ -4270,6 +4271,61 @@ test("CLI agent register-external-artifact rejects malformed --provenanceJson", 
       getContentProposal: async () => { throw new Error("not used"); },
       listContentProposals: async () => { throw new Error("not used"); },
       registerExternalArtifact: async () => { throw new Error("must not be called"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+// Owner spec §17: proves the CLI dispatch forwards --referenceKind as a raw, unmodified string
+// into the real registerExternalArtifactInputSchema (not coerced, whitelisted, or silently
+// dropped by the CLI's own flag-parsing) and that a DomainError thrown by the core surfaces as
+// exit code 1 with the real error code -- using the actual schema here, not a hand-rolled stub
+// check, so a future change to the schema's own local_path exclusion would break this test too.
+test("CLI agent register-external-artifact rejects referenceKind local_path (real schema validation) as validation_failed", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "agent",
+      "register-external-artifact",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--proposalId",
+      "proposal-1",
+      "--assetType",
+      "thumbnail",
+      "--referenceKind",
+      "local_path",
+      "--referenceValue",
+      "/tmp/x.png",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async (input: unknown) => {
+        // Real schema, not a hand-rolled string check -- mirrors what the real
+        // contentProposalCore.registerExternalArtifact does before ever reaching a write.
+        parseWithSchema(registerExternalArtifactInputSchema, input, "register external artifact input");
+        throw new Error("must not be called -- schema should have thrown first");
+      },
       listProposalArtifacts: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),

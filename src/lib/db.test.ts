@@ -9,6 +9,7 @@ import { eq } from "drizzle-orm";
 import {
   channels,
   clearStoredCloudConnection,
+  contentProposalArtifacts,
   contentProposals,
   copyLegacyDatabaseInto,
   createIsolatedDb,
@@ -321,6 +322,65 @@ test("content_proposal_artifacts: inserts and lists by proposal, enforcing the p
         { id: "link-3", proposalId: "proposal-1", assetId: "asset-never-created", createdVia: "web_ui" },
         isolatedDb
       )
+    );
+  }));
+
+// Regression: `listContentProposalArtifactLinksByProposal` claims "newest first"
+// (docs/interfaces.md, agent-operations' own capability description) -- same discrimination
+// requirement, and same fix shape, as the `content_proposals` ordering test above (three rows,
+// random-UUID ids, a createdAt permutation matching neither insertion order nor its reverse).
+// With only one or two rows, a `createdAt`-DESC-correct expectation cannot be distinguished from
+// rowid- or id-based ordering by coincidence.
+test("content_proposal_artifacts: listContentProposalArtifactLinksByProposal actually orders by createdAt, newest first", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannel(isolatedDb, "UC_A");
+    await insertContentProposal({ id: "proposal-1", channelId: "UC_A", createdVia: "web_ui" }, isolatedDb);
+
+    const firstAsset = randomUUID();
+    const secondAsset = randomUUID();
+    const thirdAsset = randomUUID();
+    for (const assetId of [firstAsset, secondAsset, thirdAsset]) {
+      await insertCreativeAsset(
+        { id: assetId, channelId: "UC_A", assetType: "thumbnail", referenceKind: "url", referenceValue: `https://example.com/${assetId}.png` },
+        isolatedDb
+      );
+    }
+
+    const firstLink = randomUUID();
+    const secondLink = randomUUID();
+    const thirdLink = randomUUID();
+
+    // Insertion order: firstLink, secondLink, thirdLink (ascending rowid). createdAt order
+    // (newest to oldest): secondLink, firstLink, thirdLink -- a permutation matching neither
+    // rowid ascending nor descending, and unrelated to the ids' own (random) lexical order.
+    await isolatedDb.insert(contentProposalArtifacts).values({
+      id: firstLink,
+      proposalId: "proposal-1",
+      assetId: firstAsset,
+      createdVia: "web_ui",
+      createdAt: new Date("2026-09-10T00:00:00.000Z"),
+    });
+    await isolatedDb.insert(contentProposalArtifacts).values({
+      id: secondLink,
+      proposalId: "proposal-1",
+      assetId: secondAsset,
+      createdVia: "web_ui",
+      createdAt: new Date("2026-09-20T00:00:00.000Z"),
+    });
+    await isolatedDb.insert(contentProposalArtifacts).values({
+      id: thirdLink,
+      proposalId: "proposal-1",
+      assetId: thirdAsset,
+      createdVia: "web_ui",
+      createdAt: new Date("2026-09-01T00:00:00.000Z"),
+    });
+
+    const links = await listContentProposalArtifactLinksByProposal("proposal-1", isolatedDb);
+    assert.deepEqual(
+      links.map((l) => l.id),
+      [secondLink, firstLink, thirdLink]
     );
   }));
 
