@@ -518,3 +518,138 @@ test("listOperationsFiles reports truncated: true once MAX_FILES is exceeded", a
     }
   });
 });
+
+// Advisor-recommended addition when the shared `classifyEntry` predicate was extracted: a
+// symlink cycle (e.g. "loop" -> its own containing directory) stays fully CONTAINED inside the
+// workspace, so containment alone never catches it -- without a visited-real-directory guard,
+// `walk()` would recurse until MAX_DEPTH on every cycle, wasting the file budget on repeated
+// entries and potentially hiding real, unrelated files behind a spurious `truncated: true`.
+test("listOperationsFiles does not hang or waste its budget on a symlink cycle", async () => {
+  await withTempDirs(async ({ workspace, appData }) => {
+    await mkdir(path.join(workspace, "sub"));
+    await symlink(path.join(workspace, "sub"), path.join(workspace, "sub", "loop"));
+    await writeFile(path.join(workspace, "safe.md"), "safe");
+
+    const services = createServices(workspace, appData);
+    const result = await services.listOperationsFiles({});
+    assert.equal(result.configured, true);
+    if (result.configured) {
+      // The real, unrelated file must still be listed -- the cycle must not consume the whole
+      // file budget before this loop-free content is ever reached.
+      assert.ok(result.files.some((f) => f.path === "safe.md"));
+    }
+  });
+});
+
+// The comprehensive invariant this module's own security model actually promises: any FILE path
+// `listOperationsFiles` returns must also succeed via `getOperationsFile`, and conversely, no
+// candidate path excluded by classification should ever be servable by `get`. This single
+// fixture assembles every case three independent review rounds found individually (a dotfile
+// symlink, a disallowed-extension-real-target symlink, a disallowed-extension-visible-name
+// symlink, a symlink into the middle of a dotted ancestor, a 2-hop symlink chain, an
+// escaping symlink, and a directory symlink named like a file) -- proving the invariant holds
+// for all of them at once, not just individually, now that both functions share one predicate.
+test("invariant: every file listOperationsFiles returns is also readable via getOperationsFile, and excluded entries are consistently rejected by both", async () => {
+  await withTempDirs(async ({ workspace, appData, outside }) => {
+    // Genuinely valid content.
+    await writeFile(path.join(workspace, "AGENTS.md"), "real instructions");
+    await mkdir(path.join(workspace, "channel-context"));
+    await writeFile(path.join(workspace, "channel-context", "notes.txt"), "context notes");
+
+    // Case 1: dotfile behind an allowed-looking symlink name.
+    await writeFile(path.join(workspace, ".secret-config"), "secret");
+    await symlink(path.join(workspace, ".secret-config"), path.join(workspace, "config.md"));
+
+    // Case 2: disallowed-extension real target behind an allowed-looking symlink name.
+    await writeFile(path.join(workspace, "script.exe"), "binary-ish");
+    await symlink(path.join(workspace, "script.exe"), path.join(workspace, "run.md"));
+
+    // Case 3: allowed real target behind a disallowed-looking symlink name.
+    await writeFile(path.join(workspace, "actual.md"), "actual content");
+    await symlink(path.join(workspace, "actual.md"), path.join(workspace, "link.exe"));
+
+    // Case 4: symlink resolving into the MIDDLE of a dotted ancestor.
+    const hiddenSub = path.join(workspace, ".hidden", "sub");
+    await mkdir(hiddenSub, { recursive: true });
+    await writeFile(path.join(hiddenSub, "buried.md"), "buried content");
+    await symlink(hiddenSub, path.join(workspace, "docs"));
+
+    // Case 5: a 2-hop symlink chain to a genuinely valid file.
+    await writeFile(path.join(workspace, "chain-target.md"), "chained content");
+    await symlink(path.join(workspace, "chain-target.md"), path.join(workspace, "hop1.md"));
+    await symlink(path.join(workspace, "hop1.md"), path.join(workspace, "hop2.md"));
+
+    // Case 6: a symlink escaping the workspace entirely.
+    await writeFile(path.join(outside, "outside.md"), "outside content");
+    await symlink(path.join(outside, "outside.md"), path.join(workspace, "escape.md"));
+
+    // Case 7: a symlink NAMED like a file that actually resolves to a directory.
+    await mkdir(path.join(workspace, "real-dir"));
+    await writeFile(path.join(workspace, "real-dir", "inner.md"), "inner content");
+    await symlink(path.join(workspace, "real-dir"), path.join(workspace, "looks-like-a-file.md"));
+
+    const services = createServices(workspace, appData);
+    const listing = await services.listOperationsFiles({});
+    assert.equal(listing.configured, true);
+    if (!listing.configured) {
+      return;
+    }
+
+    const listedFiles: Array<{ path: string; isDirectory: boolean; sizeBytes: number | null }> = listing.files;
+    const fileEntries = listedFiles.filter((f) => !f.isDirectory);
+    const listedPaths = new Set(listedFiles.map((f) => f.path));
+
+    // Positive half: every FILE entry list returns must be readable via get, with matching size.
+    for (const entry of fileEntries) {
+      const got = await services.getOperationsFile({ path: entry.path });
+      assert.equal(got.configured, true, `expected ${entry.path} to be configured`);
+      if (got.configured) {
+        assert.equal(got.content.length <= (entry.sizeBytes ?? Infinity), true, `${entry.path} content should not exceed its listed size`);
+      }
+    }
+
+    // Every genuinely valid file must actually be present (the invariant fixture is only
+    // meaningful if the positive cases weren't accidentally excluded too).
+    for (const expected of [
+      "AGENTS.md",
+      "channel-context/notes.txt",
+      "chain-target.md",
+      "hop1.md",
+      "hop2.md",
+      "actual.md",
+      "real-dir/inner.md",
+    ]) {
+      assert.ok(listedPaths.has(expected), `expected ${expected} to be listed`);
+    }
+
+    // Negative half: every excluded case must be consistently rejected by BOTH functions -- never
+    // listed, and always OPERATIONS_FILE_NOT_AVAILABLE via get. "docs" itself is included here,
+    // not just "docs/buried.md": "docs" resolves (via the symlink) to `.hidden/sub`, and since
+    // `.hidden` is a dotted ancestor of that REAL target, the entry itself is fully excluded, not
+    // merely "listed as a directory but not recursed into" (matches the dedicated regression test
+    // for this exact case above).
+    for (const excludedPath of ["config.md", "run.md", "link.exe", "docs", "docs/buried.md", "escape.md"]) {
+      assert.ok(!listedPaths.has(excludedPath), `expected ${excludedPath} to be excluded from the listing`);
+      await assert.rejects(
+        () => services.getOperationsFile({ path: excludedPath }),
+        (error: unknown) => error instanceof DomainError && error.code === "OPERATIONS_FILE_NOT_AVAILABLE",
+        `expected getOperationsFile(${excludedPath}) to reject`
+      );
+    }
+
+    // "looks-like-a-file.md" resolves to a real DIRECTORY with no dotted ancestor of its own
+    // (unlike "docs" above) -- classification is based on the resolved target, never the visible
+    // name, so it IS listed, as a directory entry, exactly like a plain directory would be.
+    // `getOperationsFile` still rejects it, but for a different reason than the excluded-file
+    // cases above: it is for files only, never for a directory, regardless of how it was reached.
+    assert.ok(listedPaths.has("looks-like-a-file.md"), "expected looks-like-a-file.md to be listed as a directory");
+    const matchingEntries = listedFiles.filter((f) => f.path === "looks-like-a-file.md");
+    assert.equal(matchingEntries.length, 1, "expected exactly one listing entry for looks-like-a-file.md");
+    assert.equal(matchingEntries[0].isDirectory, true, "expected looks-like-a-file.md to be listed as a directory");
+    await assert.rejects(
+      () => services.getOperationsFile({ path: "looks-like-a-file.md" }),
+      (error: unknown) => error instanceof DomainError && error.code === "OPERATIONS_FILE_NOT_AVAILABLE",
+      "expected getOperationsFile(looks-like-a-file.md) to reject (directories are not readable via get)"
+    );
+  });
+});

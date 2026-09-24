@@ -177,6 +177,79 @@ async function resolveRealConfiguredBase(deps: ServiceDependencies): Promise<str
   return realBase;
 }
 
+type EntryClassification =
+  | { kind: "file"; sizeBytes: number }
+  | { kind: "dir" }
+  | { kind: "rejected" };
+
+/**
+ * THE single admissibility check for one candidate entry -- used by BOTH `listOperationsFiles`
+ * and `getOperationsFile`. Three independent review rounds each found a real gap in this exact
+ * area (a dotfile reachable via a symlink, a list/get extension-check asymmetry, a dot-directory
+ * reachable via a symlink resolving into its middle) precisely BECAUSE `walk()` and
+ * `getOperationsFile` each maintained their own, separately-evolving copy of this logic -- every
+ * fix to one silently left the other behind. Extracting one shared predicate makes that class of
+ * bug structurally impossible: there is now exactly one place this logic can drift out of sync
+ * with itself.
+ *
+ * `visibleRelPath` is the caller-facing relative path (e.g. `"docs/notes.md"`, using this
+ * module's own `/`-or-`\`-tolerant splitting, never the host's `path.sep` alone). `realPath` MUST
+ * already be a fully resolved (`realpath`'d) absolute path, already confirmed to exist.
+ */
+async function classifyEntry(
+  deps: ServiceDependencies,
+  realBase: string,
+  visibleRelPath: string,
+  realPath: string
+): Promise<EntryClassification> {
+  if (!isSyntacticallySafeRelativePath(visibleRelPath)) {
+    return { kind: "rejected" };
+  }
+  if (!isPathInsideOrEqual(realBase, realPath) || realPath === realBase) {
+    return { kind: "rejected" };
+  }
+
+  const visibleSegments = visibleRelPath.split(/[\\/]+/).filter((segment) => segment.length > 0);
+  if (visibleSegments.some((segment) => isDotEntry(segment))) {
+    return { kind: "rejected" };
+  }
+
+  // The REAL path's segments, relative to the real workspace root -- checked in addition to the
+  // visible ones above, since a symlink can make these two disagree (a visible name/path that
+  // looks fine while resolving to something hidden or differently-typed).
+  const realRelative = path.relative(realBase, realPath);
+  const realSegments = realRelative.split(path.sep).filter((segment) => segment.length > 0);
+  if (realSegments.some((segment) => isDotEntry(segment))) {
+    return { kind: "rejected" };
+  }
+
+  let stat: { isDirectory: boolean; isFile: boolean; sizeBytes: number };
+  try {
+    stat = await deps.stat(realPath);
+  } catch {
+    return { kind: "rejected" }; // vanished between resolution and stat (TOCTOU race)
+  }
+
+  if (stat.isDirectory) {
+    return { kind: "dir" };
+  }
+
+  if (stat.isFile) {
+    const visibleBasename = visibleSegments[visibleSegments.length - 1] ?? "";
+    const realBasename = realSegments[realSegments.length - 1] ?? "";
+    // Requires BOTH the visible and the resolved basename to have an allowed extension -- a
+    // symlink named e.g. "link.exe" pointing at an allowed-extension real file, or one named
+    // "notes.md" pointing at a disallowed-extension real file, is rejected either way. This is
+    // what keeps `list` and `get` in agreement: any entry `list` returns as `"file"` will also
+    // pass `get`'s identical check, and vice versa.
+    if (hasAllowedExtension(visibleBasename) && hasAllowedExtension(realBasename)) {
+      return { kind: "file", sizeBytes: stat.sizeBytes };
+    }
+  }
+
+  return { kind: "rejected" };
+}
+
 async function walk(
   deps: ServiceDependencies,
   realDir: string,
@@ -184,11 +257,13 @@ async function walk(
   depth: number,
   realBase: string,
   out: OperationsWorkspaceFileEntry[],
-  budget: { filesLeft: number }
+  budget: { filesLeft: number },
+  ancestorRealDirs: ReadonlySet<string>
 ): Promise<boolean> {
   if (depth > MAX_DEPTH) {
     return true;
   }
+
   let names: string[];
   try {
     names = await deps.readdir(realDir);
@@ -212,61 +287,43 @@ async function walk(
     let realEntryPath: string;
     try {
       const entryLstat = await deps.lstat(entryPath);
-      if (entryLstat.isSymbolicLink) {
-        realEntryPath = await deps.realpath(entryPath);
-        if (!isPathInsideOrEqual(realBase, realEntryPath) || realEntryPath === realBase) {
-          // Escapes the configured workspace -- skip silently, never error the whole listing.
-          continue;
-        }
-      } else {
-        realEntryPath = entryPath;
-      }
+      realEntryPath = entryLstat.isSymbolicLink ? await deps.realpath(entryPath) : entryPath;
     } catch {
       continue; // dangling symlink or a permission error on this one entry -- skip it, not fatal
     }
 
-    // An independent review round found that a symlink whose VISIBLE name has an allowed
-    // extension (e.g. "notes.md") could point at a dotfile/disallowed-extension REAL target
-    // (e.g. ".secret-config") still inside the workspace -- the dotfile-exclusion guarantee only
-    // ever checked `name`, never what the symlink actually resolves to. Re-check the RESOLVED
-    // path here too, not just the visible one -- a symlink whose real target is itself hidden or
-    // disallowed is excluded regardless of how it's named.
-    //
-    // A LATER review round found that checking only the immediate resolved BASENAME was still
-    // incomplete: a symlink can resolve into the MIDDLE of a dotted ancestor -- e.g. a symlink
-    // named "docs" pointing at ".hidden/sub" -- whose own basename ("sub") isn't a dot-entry even
-    // though it lives inside one. `getOperationsFile` already checked every segment of the
-    // resolved relative path for exactly this reason; `walk()` now does the same, checking ALL
-    // segments between `realBase` and this entry, not just the last one.
-    const realRelativeToBase = path.relative(realBase, realEntryPath);
-    const realSegments = realRelativeToBase.split(path.sep).filter((segment) => segment.length > 0);
-    if (realSegments.some((segment) => isDotEntry(segment))) {
-      continue;
-    }
-    const realBasename = realSegments[realSegments.length - 1] ?? "";
-
-    let entryStat: { isDirectory: boolean; isFile: boolean; sizeBytes: number };
-    try {
-      entryStat = await deps.stat(realEntryPath);
-    } catch {
-      continue; // vanished between lstat and stat (TOCTOU race) -- skip it, not fatal
-    }
     const relPath = toPosixPath(path.join(relativePrefix, name));
+    const classification = await classifyEntry(deps, realBase, relPath, realEntryPath);
 
-    if (entryStat.isDirectory) {
+    if (classification.kind === "rejected") {
+      continue; // escapes the workspace, hidden, or disallowed -- skip silently, never error
+    }
+
+    if (classification.kind === "dir") {
       out.push({ path: relPath, isDirectory: true, sizeBytes: null });
       budget.filesLeft -= 1;
-      const childTruncated = await walk(deps, realEntryPath, relPath, depth + 1, realBase, out, budget);
-      truncated = truncated || childTruncated;
-    } else if (entryStat.isFile && hasAllowedExtension(name) && hasAllowedExtension(realBasename)) {
-      // Requires BOTH the visible and the resolved name to have an allowed extension -- an
-      // independent review round found that checking only the resolved name here (while
-      // `getOperationsFile` below checks both) meant a symlink named e.g. "link.exe" pointing at
-      // an allowed-extension real file was LISTED here but then always rejected by
-      // `getOperationsFile`, indistinguishable from a vanished file. Not a security bug (nothing
-      // was ever leaked), but a confusing list/get contract mismatch -- fixed by matching
-      // `getOperationsFile`'s stricter, symmetric check.
-      out.push({ path: relPath, isDirectory: false, sizeBytes: entryStat.sizeBytes });
+      // Only skip recursion when this directory is already one of our OWN ancestors on the
+      // current path (a genuine cycle, e.g. `a/b/loop -> a`, which would otherwise recurse until
+      // `MAX_DEPTH`) -- checking against every directory visited anywhere in the whole walk
+      // (rather than just the current recursion stack) would be wrong: two different, unrelated
+      // symlinks legitimately pointing at the SAME real directory (not a cycle, just two access
+      // points to identical content) would then have the second one silently, incorrectly
+      // skipped, exactly the kind of list/get-inconsistency bug this refactor exists to prevent.
+      if (!ancestorRealDirs.has(realEntryPath)) {
+        const childTruncated = await walk(
+          deps,
+          realEntryPath,
+          relPath,
+          depth + 1,
+          realBase,
+          out,
+          budget,
+          new Set([...ancestorRealDirs, realEntryPath])
+        );
+        truncated = truncated || childTruncated;
+      }
+    } else {
+      out.push({ path: relPath, isDirectory: false, sizeBytes: classification.sizeBytes });
       budget.filesLeft -= 1;
     }
   }
@@ -285,7 +342,7 @@ export function createOperationsInstructionsServices(deps: ServiceDependencies) 
 
       const realBase = await resolveRealConfiguredBase(deps);
       const files: OperationsWorkspaceFileEntry[] = [];
-      const truncated = await walk(deps, realBase, "", 0, realBase, files, { filesLeft: MAX_FILES });
+      const truncated = await walk(deps, realBase, "", 0, realBase, files, { filesLeft: MAX_FILES }, new Set([realBase]));
 
       return parseWithSchema(
         listOperationsFilesOutputSchema,
@@ -304,10 +361,7 @@ export function createOperationsInstructionsServices(deps: ServiceDependencies) 
 
       const realBase = await resolveRealConfiguredBase(deps);
 
-      if (!isSyntacticallySafeRelativePath(parsedInput.path) || !hasAllowedExtension(parsedInput.path)) {
-        throw new DomainError({ code: "OPERATIONS_FILE_NOT_AVAILABLE", message: "requested path is not available" });
-      }
-      if (parsedInput.path.split(/[\\/]+/).some((segment) => isDotEntry(segment))) {
+      if (!isSyntacticallySafeRelativePath(parsedInput.path)) {
         throw new DomainError({ code: "OPERATIONS_FILE_NOT_AVAILABLE", message: "requested path is not available" });
       }
 
@@ -319,28 +373,8 @@ export function createOperationsInstructionsServices(deps: ServiceDependencies) 
         throw new DomainError({ code: "OPERATIONS_FILE_NOT_AVAILABLE", message: "requested path is not available" });
       }
 
-      if (!isPathInsideOrEqual(realBase, realCandidate) || realCandidate === realBase) {
-        throw new DomainError({ code: "OPERATIONS_FILE_NOT_AVAILABLE", message: "requested path is not available" });
-      }
-
-      // Same fix as `walk()` above: re-check the RESOLVED path's own segments/extension, not
-      // just the caller-supplied `parsedInput.path` checked earlier -- a symlink whose visible
-      // name has an allowed extension can still resolve to a dotfile or disallowed-extension
-      // real target while staying inside the workspace (containment alone doesn't catch this).
-      const realRelative = path.relative(realBase, realCandidate);
-      const realSegments = realRelative.split(path.sep).filter((segment) => segment.length > 0);
-      const realBasename = realSegments[realSegments.length - 1] ?? "";
-      if (realSegments.some((segment) => isDotEntry(segment)) || !hasAllowedExtension(realBasename)) {
-        throw new DomainError({ code: "OPERATIONS_FILE_NOT_AVAILABLE", message: "requested path is not available" });
-      }
-
-      let candidateStat: { isFile: boolean };
-      try {
-        candidateStat = await deps.stat(realCandidate);
-      } catch {
-        throw new DomainError({ code: "OPERATIONS_FILE_NOT_AVAILABLE", message: "requested path is not available" });
-      }
-      if (!candidateStat.isFile) {
+      const classification = await classifyEntry(deps, realBase, parsedInput.path, realCandidate);
+      if (classification.kind !== "file") {
         throw new DomainError({ code: "OPERATIONS_FILE_NOT_AVAILABLE", message: "requested path is not available" });
       }
 

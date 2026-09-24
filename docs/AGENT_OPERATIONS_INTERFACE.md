@@ -539,6 +539,19 @@ editorial-guideline document of its own.
   dotted directory's filenames/sizes (metadata only -- `getOperationsFile` already correctly
   rejected reading them, since it checked every segment from the start). Fixed by making
   `listOperationsFiles` check every segment too, matching `getOperationsFile`'s existing logic.
+- **Root-caused, then eliminated as a bug CLASS, not just patched again.** Three independent
+  review rounds each found a real gap in this exact area, and all three had the same underlying
+  cause: `listOperationsFiles`'s `walk()` and `getOperationsFile` each carried their own,
+  separately-evolving copy of the admissibility logic (containment, dot-segment exclusion,
+  extension allowlist), so every fix to one silently left the other behind. Refactored to a single
+  shared `classifyEntry(realBase, visibleRelPath, realPath)` predicate both functions call --
+  there is now exactly one place this logic can drift out of sync with itself. Also added, as part
+  of the same refactor: a symlink-cycle guard in `walk()` (an ancestor-chain check, not a
+  whole-walk "ever visited" set -- the latter would wrongly treat two unrelated symlinks pointing
+  at the SAME real directory as a false cycle, dropping the second one). A dedicated invariant
+  test now asserts, over one fixture combining every case all three rounds found individually,
+  that every file `listOperationsFiles` returns is also readable via `getOperationsFile` and that
+  every excluded case is rejected identically by both.
 - **New agent-operations capabilities:** `operations_workspace.list_files` (READ),
   `operations_workspace.get_file` (READ) -- both READ, since listing/reading never mutates
   anything. MCP `agent_list_operations_files`/`agent_get_operations_file`, CLI
