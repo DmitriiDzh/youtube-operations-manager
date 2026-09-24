@@ -41,6 +41,8 @@ import {
   operationsWorkspaceListFilesOutputSchema,
   findComparableVideosContextOutputSchema,
   findComparableVideosInputSchema,
+  listAssetPerformanceContextOutputSchema,
+  listAssetPerformanceInputSchema,
   parseWithSchema,
   queryChannelAnalyticsInputSchema,
   queryVideoAnalyticsInputSchema,
@@ -57,7 +59,8 @@ import type { ContentProposal, ProposalArtifactLink } from "@/lib/content-propos
 import type { CreatedVia } from "@/lib/shared-provenance";
 import type { OperationsWorkspaceFileResult, OperationsWorkspaceListResult } from "@/lib/operations-instructions";
 import type { FindComparableVideosResult } from "@/lib/comparable-content";
-import type { FindComparableVideosContext } from "./schemas";
+import type { ListAssetPerformanceResult } from "@/lib/asset-performance";
+import type { FindComparableVideosContext, ListAssetPerformanceContext } from "./schemas";
 
 /**
  * One entry per capability actually implemented and reachable today -- either a new function this
@@ -243,6 +246,13 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Owner spec §10: find already-synced videos on the same channel comparable to an anchor video, by publication proximity, duration proximity, and/or an age-aligned (days-since-publish, capped at 365) already-collected performance metric threshold. Local reads only -- never a live YouTube call; the performance-metric path reuses the same age-alignment logic as analytics.query_comparable_age_performance, never a second implementation. Does NOT support 'same content family', 'similar target audience', or 'similar metadata pattern' matching -- no data source for any of those exists in this application, and this capability never approximates them. Title similarity is reported only as `sharedTitleTokens`, a literal lowercase word-overlap set (after a tiny English stopword list) -- never framed as topic/semantic similarity, and never produced by an embedding model (owner spec §10 explicitly rules out embeddings for a first implementation). `credentialRef` is optional and, if omitted, resolved automatically to the caller's own active identity -- it is only actually used (for the local analytics read) when `performanceMetric` is requested. The response's `anchor` block and `performanceAlignment` report the exact reference point (video facts, and the metric name/day-offset every candidate was compared at) so results are interpretable without a second call. Videos missing the data a requested duration/performance filter needs are counted in `excludedForMissingData`, never silently coerced to a fabricated 0 or dropped without being counted. Requires channelId to be the caller's currently-active channel and anchorVideoId to actually belong to it.",
   },
+  {
+    id: "asset_performance.list_asset_performance",
+    domain: "asset_performance",
+    permission: "READ",
+    description:
+      "Owner spec §16: joins the existing asset catalog (`linkedVideoId` -- an operator/agent-asserted 'this asset was used on this video' association, never verified against YouTube and carrying no time range) against each linked video's own already-collected performance data. Always reports each video's LIFETIME totals (viewCount/likeCount/commentCount/durationSeconds, each independently null if never synced, plus `lifetimeCountersAsOf` -- when the channel sync last refreshed them, NOT when analytics were collected); an OPTIONAL age-aligned value (`performanceMetric` + a REQUIRED, caller-supplied `performanceDayOffset` -- never derived from wall-clock 'now', reusing the same shared age-alignment helper as comparable_content.find_comparable_videos, never a second implementation) is additionally computed only when both are given, and is honestly `null` (never excluded, never fabricated) for a video with real data at later days but no day-0 coverage -- a normal case for a video published before regular collection began. `sort: \"lifetimeViewCount\"` ranks by a NON-age-fair total that structurally favors older videos (more time to accumulate views) -- never itself a 'performed better' signal. This is a JOIN, not a FILTER -- a null performance value is still a reportable row, never grounds for exclusion; only an asset's own broken link (unlinked, or its linkedVideoId not resolving to a video on the SAME channel -- one combined count, since a channel-scoped read cannot further distinguish 'never synced' from 'on another channel') is excluded, counted in `excludedForMissingLink`, never silently dropped. Does NOT support thumbnail-CTR/impressions-based questions ('which thumbnails were used by high-CTR videos') -- this application's own analytics collection never fetches YouTube's impressions/CTR metrics at all, and this is never approximated via card/annotation click-through metrics (a different signal). Does NOT support metadata/version linkage (no temporal precision on `linkedVideoId`) or experiment/outcome linkage (Phase 10, not built yet). Never reads Content Proposal reference associations (`content_proposal_artifacts`) -- a structurally different, draft/unactioned relationship, never conflated with actual asset usage. `credentialRef` is optional and, if omitted, resolved automatically to the caller's own active identity -- only actually used when `performanceMetric` is requested. `limit` is silently clamped, never rejected. Requires channelId to be the caller's currently-active channel.",
+  },
 ];
 
 
@@ -399,6 +409,9 @@ type ServiceDependencies = {
   // (AGENTS.md §D). No credential/channel checking of its own -- mirrors slice B's convention,
   // same as every delegate above; the MCP/CLI caller checks `assertActiveChannel` first.
   findComparableVideos(input: unknown): Promise<FindComparableVideosResult>;
+  // Slice L -- delegates to `assetPerformanceCore`'s own `listAssetPerformance` unchanged
+  // (AGENTS.md §D). Same non-channel-checking convention as `findComparableVideos` above.
+  listAssetPerformance(input: unknown): Promise<ListAssetPerformanceResult>;
 };
 
 export function createAgentOperationsServices(deps: ServiceDependencies) {
@@ -697,6 +710,31 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
           : null,
       };
       return parseWithSchema(findComparableVideosContextOutputSchema, output, "find comparable videos output");
+    },
+
+    /**
+     * Slice L, owner spec §16. Channel-scoped -- the MCP/CLI caller checks `assertActiveChannel`
+     * before this is ever invoked, same convention as slice K. Enriches the raw asset-performance
+     * result with `metricDefinitions`/`freshness` -- same convention `findComparableVideos`/
+     * `queryVideoAnalytics` above already apply -- `null` for both unless `performanceMetric` was
+     * actually requested.
+     */
+    async listAssetPerformance(input: unknown): Promise<ListAssetPerformanceContext> {
+      const parsedInput = parseWithSchema(listAssetPerformanceInputSchema, input, "list asset performance input");
+      const result = await deps.listAssetPerformance(parsedInput);
+      const output: ListAssetPerformanceContext = {
+        ...result,
+        metricDefinitions: result.performanceAlignment ? getMetricDefinitions([result.performanceAlignment.metricName]) : null,
+        freshness: result.performanceAlignment
+          ? {
+              source: "local_collected_data",
+              asOf: deps.now().toISOString(),
+              note:
+                "Reflects whatever was last collected locally (via 'Collect now' or daily auto-collection), not a live read. Call the existing analytics_data_quality tool for exact per-date coverage.",
+            }
+          : null,
+      };
+      return parseWithSchema(listAssetPerformanceContextOutputSchema, output, "list asset performance output");
     },
   };
 }

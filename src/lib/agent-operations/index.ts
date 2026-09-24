@@ -8,6 +8,7 @@ import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createContentProposalCore } from "@/lib/content-proposals";
 import { createOperationsInstructionsCore } from "@/lib/operations-instructions";
 import { createComparableContentCore } from "@/lib/comparable-content";
+import { createAssetPerformanceCore } from "@/lib/asset-performance";
 import { createAgentOperationsServices } from "./services";
 
 /**
@@ -40,6 +41,7 @@ export function createAgentOperationsCore() {
   const contentProposalCore = createContentProposalCore();
   const operationsInstructionsCore = createOperationsInstructionsCore();
   const comparableContentCore = createComparableContentCore();
+  const assetPerformanceCore = createAssetPerformanceCore();
 
   return createAgentOperationsServices({
     getProductVersion: readProductVersion,
@@ -79,6 +81,9 @@ export function createAgentOperationsCore() {
     // Slice K -- delegates unchanged to `comparableContentCore`'s own already-tested
     // `findComparableVideos` (AGENTS.md §D).
     findComparableVideos: comparableContentCore.findComparableVideos,
+    // Slice L -- delegates unchanged to `assetPerformanceCore`'s own already-tested
+    // `listAssetPerformance` (AGENTS.md §D).
+    listAssetPerformance: assetPerformanceCore.listAssetPerformance,
   });
 }
 
@@ -120,4 +125,10 @@ export type {
   ComparableVideosSortMode,
   FindComparableVideosResult,
 } from "@/lib/comparable-content";
-export type { FindComparableVideosContext } from "./schemas";
+export type {
+  AssetPerformanceEntry,
+  AssetPerformanceLinkedVideo,
+  AssetPerformanceSortMode,
+  ListAssetPerformanceResult,
+} from "@/lib/asset-performance";
+export type { FindComparableVideosContext, ListAssetPerformanceContext } from "./schemas";

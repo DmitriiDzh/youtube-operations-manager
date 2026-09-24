@@ -120,6 +120,30 @@ type FakeFindComparableVideosResult = {
   truncated: boolean;
 };
 
+type FakeListAssetPerformanceResult = {
+  assets: Array<{
+    assetId: string;
+    assetType: "thumbnail" | "script" | "other";
+    title: string | null;
+    referenceKind: "url" | "local_path" | "external_artifact_id";
+    referenceValue: string;
+    linkedVideo: {
+      videoId: string;
+      title: string;
+      publishedAt: string;
+      lifetimeViewCount: number | null;
+      lifetimeLikeCount: number | null;
+      lifetimeCommentCount: number | null;
+      durationSeconds: number | null;
+      lifetimeCountersAsOf: string;
+      ageAlignedPerformanceValue: number | null;
+    };
+  }>;
+  performanceAlignment: { metricName: string; dayOffset: number } | null;
+  excludedForMissingLink: { unlinked: number; linkedVideoNotOnChannel: number };
+  truncated: boolean;
+};
+
 function createFixture(
   overrides: Partial<{
     productVersion: string;
@@ -148,6 +172,7 @@ function createFixture(
     operationsWorkspaceListFiles: (input: unknown) => Promise<FakeOperationsWorkspaceListResult>;
     operationsWorkspaceGetFile: (input: unknown) => Promise<FakeOperationsWorkspaceFileResult>;
     findComparableVideos: (input: unknown) => Promise<FakeFindComparableVideosResult>;
+    listAssetPerformance: (input: unknown) => Promise<FakeListAssetPerformanceResult>;
   }> = {}
 ) {
   const services = createAgentOperationsServices({
@@ -190,6 +215,8 @@ function createFixture(
       overrides.operationsWorkspaceGetFile ?? (async () => { throw new Error("operationsWorkspaceGetFile not stubbed"); }),
     findComparableVideos:
       overrides.findComparableVideos ?? (async () => { throw new Error("findComparableVideos not stubbed"); }),
+    listAssetPerformance:
+      overrides.listAssetPerformance ?? (async () => { throw new Error("listAssetPerformance not stubbed"); }),
   });
   return { services };
 }
@@ -202,7 +229,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   const result = await services.getSystemCapabilities({});
 
   assert.equal(result.productVersion, "9.9.9");
-  assert.equal(result.agentApiVersion, "0.9.0");
+  assert.equal(result.agentApiVersion, "0.10.0");
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -511,6 +538,18 @@ test("agent capabilities list registers the slice K comparable-content capabilit
   assert.equal(cap!.permission, "READ");
 });
 
+// Phase 7 slice L (owner spec §16): READ-only, joins the existing asset catalog with already-
+// collected analytics -- no new data domain needed for this capability.
+test("agent capabilities list registers the slice L asset-performance capability with correct domain/permission", async () => {
+  const { services } = createFixture();
+  const result = await services.getSystemCapabilities({});
+
+  const cap = result.capabilities.find((c) => c.id === "asset_performance.list_asset_performance");
+  assert.ok(cap);
+  assert.equal(cap!.domain, "asset_performance");
+  assert.equal(cap!.permission, "READ");
+});
+
 test("operationsWorkspaceListFiles forwards its input unchanged and returns the result unchanged", async () => {
   let captured: unknown;
   const { services } = createFixture({
@@ -617,6 +656,82 @@ test("findComparableVideos rejects input that fails its own schema (e.g. missing
 
   await assert.rejects(
     () => services.findComparableVideos({ channelId: "chan-1", anchorVideoId: "vid-anchor" }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+test("listAssetPerformance forwards its (schema-validated) input unchanged and enriches the raw result with metricDefinitions/freshness (null, since no performanceMetric was requested)", async () => {
+  let captured: unknown;
+  const fakeResult: FakeListAssetPerformanceResult = {
+    assets: [
+      {
+        assetId: "asset-1",
+        assetType: "thumbnail",
+        title: "Thumb",
+        referenceKind: "url",
+        referenceValue: "https://example.com/a.png",
+        linkedVideo: {
+          videoId: "v1",
+          title: "Video One",
+          publishedAt: "2026-05-01T20:00:00.000Z",
+          lifetimeViewCount: 1000,
+          lifetimeLikeCount: 50,
+          lifetimeCommentCount: 5,
+          durationSeconds: 600,
+          lifetimeCountersAsOf: "2026-05-04T00:00:00.000Z",
+          ageAlignedPerformanceValue: null,
+        },
+      },
+    ],
+    performanceAlignment: null,
+    excludedForMissingLink: { unlinked: 0, linkedVideoNotOnChannel: 0 },
+    truncated: false,
+  };
+  const { services } = createFixture({
+    listAssetPerformance: async (input) => {
+      captured = input;
+      return fakeResult;
+    },
+  });
+
+  const input = { channelId: "chan-1" };
+  const result = await services.listAssetPerformance(input);
+  assert.deepEqual(captured, input);
+  assert.deepEqual(result, { ...fakeResult, metricDefinitions: null, freshness: null });
+});
+
+test("listAssetPerformance populates metricDefinitions/freshness when the raw result carries a performanceAlignment", async () => {
+  const fakeResult: FakeListAssetPerformanceResult = {
+    assets: [],
+    performanceAlignment: { metricName: "views", dayOffset: 5 },
+    excludedForMissingLink: { unlinked: 0, linkedVideoNotOnChannel: 0 },
+    truncated: false,
+  };
+  const { services } = createFixture({
+    listAssetPerformance: async () => fakeResult,
+    now: () => new Date("2026-05-04T20:00:00.000Z"),
+  });
+
+  const result = await services.listAssetPerformance({
+    channelId: "chan-1",
+    performanceMetric: "views",
+    performanceDayOffset: 5,
+    credentialRef: { userId: "u1" },
+  });
+
+  assert.ok(result.metricDefinitions);
+  assert.equal(result.metricDefinitions![0]?.name, "views");
+  assert.equal(result.freshness?.source, "local_collected_data");
+  assert.equal(result.freshness?.asOf, "2026-05-04T20:00:00.000Z");
+});
+
+test("listAssetPerformance rejects input that fails its own schema (e.g. performanceMetric without performanceDayOffset) before ever calling the dependency", async () => {
+  const { services } = createFixture({
+    listAssetPerformance: async () => { throw new Error("must not be called"); },
+  });
+
+  await assert.rejects(
+    () => services.listAssetPerformance({ channelId: "chan-1", performanceMetric: "views", credentialRef: { userId: "u1" } }),
     (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
   );
 });

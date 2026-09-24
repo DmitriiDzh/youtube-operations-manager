@@ -66,6 +66,7 @@ type AgentOperationsCliCoreSubset = Pick<
   | "operationsWorkspaceListFiles"
   | "operationsWorkspaceGetFile"
   | "findComparableVideos"
+  | "listAssetPerformance"
 >;
 type AssetCatalogCliCoreSubset = Pick<AssetCatalogCore, "registerAsset">;
 
@@ -131,7 +132,8 @@ export type ParsedArgs = {
     | "list-proposal-artifacts"
     | "list-operations-files"
     | "get-operations-file"
-    | "find-comparable-videos";
+    | "find-comparable-videos"
+    | "list-asset-performance";
   flags: Record<string, string | boolean>;
 };
 
@@ -174,6 +176,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       "list-operations-files",
       "get-operations-file",
       "find-comparable-videos",
+      "list-asset-performance",
     ],
     asset: ["register"],
   };
@@ -411,6 +414,9 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   // agent find-comparable-videos (slice K, owner spec §10): local reads only (sync mirror +
   // local analytics rows), never a live YouTube call, never mutates anything.
   "find-comparable-videos",
+  // agent list-asset-performance (slice L, owner spec §16): local reads only (asset catalog +
+  // sync mirror + local analytics rows), never a live YouTube call, never mutates anything.
+  "list-asset-performance",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -979,6 +985,28 @@ export async function runCliCommand(args: {
               ? { operator: performanceThresholdOperator, value: Number(performanceThresholdValueFlag) }
               : undefined,
           sort: requiredStringFlag(parsedArgs.flags, "sort"),
+          limit: limitFlag === undefined ? undefined : Number(limitFlag),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Phase 7 slice L (owner spec §16). --performanceMetric/--performanceDayOffset each require
+      // a credentialRef -- same "only resolve/use credentials when actually needed" pattern as
+      // find-comparable-videos above. --performanceMetric/--performanceDayOffset must be given
+      // together; the domain schema itself already enforces this (no redundant CLI-side check).
+      if (parsedArgs.command === "list-asset-performance") {
+        const performanceMetric = optionalStringFlag(parsedArgs.flags, "performanceMetric");
+        const performanceDayOffsetFlag = optionalStringFlag(parsedArgs.flags, "performanceDayOffset");
+        const limitFlag = optionalStringFlag(parsedArgs.flags, "limit");
+
+        const result = await agentOperationsCore.listAssetPerformance({
+          channelId,
+          assetType: optionalStringFlag(parsedArgs.flags, "assetType"),
+          credentialRef: performanceMetric ? agentCredentialRef : undefined,
+          performanceMetric,
+          performanceDayOffset: performanceDayOffsetFlag === undefined ? undefined : Number(performanceDayOffsetFlag),
+          sort: optionalStringFlag(parsedArgs.flags, "sort"),
           limit: limitFlag === undefined ? undefined : Number(limitFlag),
         });
         writeStdout(serializeSuccess(result));

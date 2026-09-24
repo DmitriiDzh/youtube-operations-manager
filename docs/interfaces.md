@@ -160,6 +160,7 @@ npm run cli:video-metadata -- agent list-proposal-artifacts --channelId <UC...> 
 npm run cli:video-metadata -- agent list-operations-files
 npm run cli:video-metadata -- agent get-operations-file --path <RELATIVE_PATH>
 npm run cli:video-metadata -- agent find-comparable-videos --channelId <UC...> --anchorVideoId <VIDEO_ID> --sort publicationProximity|durationProximity|performanceMetric|titleTokenOverlap [--publicationWindowDays <N>] [--durationToleranceSeconds <N>] [--performanceMetric <name>] [--performanceThresholdOperator '>='|'<='] [--performanceThresholdValue <N>] [--limit <N>]
+npm run cli:video-metadata -- agent list-asset-performance --channelId <UC...> [--assetType thumbnail|source_image|...] [--performanceMetric <name> --performanceDayOffset <N>] [--sort linkedVideoPublicationDate|lifetimeViewCount|performanceMetric] [--limit <N>]
 ```
 
 `agent capabilities` is read-only with no channel/credential resolution at all (instance-level
@@ -272,6 +273,31 @@ set, never topic/semantic similarity, never produced by an embedding model. The 
 block and `performanceAlignment` report the anchor's own facts and the exact comparison day, so
 each candidate's distance fields are interpretable without a second call. See
 `docs/AGENT_OPERATIONS_INTERFACE.md` §4g for the full design.
+
+`agent list-asset-performance` (Phase 7 slice L, owner spec §16) is a channel-scoped read
+(`assertActiveChannel`, same pattern as `agent list-assets` above) that joins the existing asset
+catalog (`linkedVideoId` -- an operator/agent-asserted "this asset was used on this video"
+association, never verified against YouTube, no time range) against each linked video's own
+already-collected performance data -- local reads only, never a live YouTube call. Always reports
+each video's LIFETIME totals (`viewCount`/`likeCount`/`commentCount`/`durationSeconds`, plus
+`lifetimeCountersAsOf` -- when the channel sync last refreshed them, NOT when analytics were
+collected); `--performanceMetric`/`--performanceDayOffset` must be given together (the domain
+schema itself enforces this) and additionally compute an age-aligned value at the exact,
+caller-supplied day -- NEVER derived from wall-clock "now" (the same lesson independent review
+found the hard way in slice K, round 1). A video with real data at later days but no day-0
+coverage (published before regular collection began) correctly reports `null` here while its row
+and lifetime counters stay intact -- this is a JOIN, not a filter, so a null performance value is
+never grounds for exclusion. `--sort lifetimeViewCount` ranks by a NON-age-fair total that
+structurally favors older videos -- never itself a "performed better" signal. Only an asset's own
+broken link (unlinked, or `linkedVideoId` not resolving to a video on the SAME channel -- one
+combined count, since a channel-scoped read cannot further distinguish "never synced" from "on
+another channel") is excluded, counted in `excludedForMissingLink`. Does **not** support
+thumbnail-CTR/impressions-based questions (this application's own analytics collection never
+fetches YouTube's impressions/CTR metrics at all), `metadata/version` linkage, `experiment/outcome`
+linkage (Phase 10), or Content Proposal reference associations (a structurally different,
+draft/unactioned relationship). `--limit` above the maximum is silently clamped, never rejected
+(the same lesson independent review found in slice K, round 3). See
+`docs/AGENT_OPERATIONS_INTERFACE.md` §4h for the full design.
 
 ### Analytics commands (CLI parity for the MCP `analytics_*` tools, Phase 8 follow-up)
 
@@ -499,6 +525,37 @@ Key MCP tools:
     requested. Videos missing the data a requested duration/performance filter needs are counted in
     `excludedForMissingData`, never silently coerced to a fabricated `0` or dropped without being
     counted.
+  - `agent_list_asset_performance` (Phase 7 slice L, owner spec §16) — `{ channelId, assetType?,
+    credentialRef?, performanceMetric?, performanceDayOffset?, sort?, limit? }` → `{ assets:
+    AssetPerformanceEntry[], performanceAlignment, excludedForMissingLink: { unlinked,
+    linkedVideoNotOnChannel }, truncated, metricDefinitions, freshness }`. Joins the existing asset
+    catalog (`linkedVideoId`) against each linked video's own already-collected performance data --
+    local reads only, never a live YouTube call. Each `AssetPerformanceEntry.linkedVideo` always
+    carries LIFETIME totals (`lifetimeViewCount`/`lifetimeLikeCount`/`lifetimeCommentCount`/
+    `durationSeconds`, plus `lifetimeCountersAsOf` — when the channel sync last refreshed them, NOT
+    when analytics were collected) and an OPTIONAL `ageAlignedPerformanceValue`, computed only when
+    `performanceMetric`+`performanceDayOffset` are BOTH given (enforced by the schema itself) --
+    `performanceDayOffset` is ALWAYS caller-supplied, NEVER derived from wall-clock "now" (the exact
+    mistake independent review found and fixed in slice K, round 1). A video with real data at
+    later days but no day-0 coverage (published before regular collection began for its channel)
+    correctly reports `null` here while its row and lifetime counters stay intact — this is a JOIN,
+    not a filter, so a null performance value never excludes a row. `sort: "lifetimeViewCount"`
+    ranks by a NON-age-fair total that structurally favors older videos — never itself a "performed
+    better" signal. `excludedForMissingLink` has only two reasons, not three: `unlinked` and
+    `linkedVideoNotOnChannel` — a channel-scoped video read cannot structurally distinguish "never
+    synced" from "belongs to a different channel," and asset registration itself already validates
+    `linkedVideoId` against the same channel at write time, so a genuine cross-channel link should
+    not normally occur. `limit` above the maximum is silently clamped, never rejected (the exact
+    mistake independent review found and fixed in slice K, round 3). `credentialRef` is optional —
+    if omitted, resolved automatically to the caller's own active identity, only actually used when
+    `performanceMetric` is requested. Does **not** support thumbnail-CTR/impressions-based questions
+    (this application's own analytics collection never fetches YouTube's impressions/CTR metrics at
+    all, never approximated via card/annotation click-through metrics), `metadata/version` linkage
+    (`linkedVideoId` has no time range and is never independently verified), `experiment/outcome`
+    linkage (Phase 10, doesn't exist yet), or Content Proposal reference associations
+    (`content_proposal_artifacts` — a structurally different, draft/unactioned relationship, never
+    conflated with actual asset usage). Requires `channelId` to be the caller's currently-active
+    channel.
 
   `get_capabilities` also now registers several already-existing, already-implemented tools it
   previously omitted (`channel_list`, `channel_video_list`, `ai_localization_generate`,

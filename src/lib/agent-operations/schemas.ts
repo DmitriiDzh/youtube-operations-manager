@@ -40,6 +40,11 @@ import {
   findComparableVideosInputSchema as rawFindComparableVideosInputSchema,
   findComparableVideosOutputSchema as rawFindComparableVideosOutputSchema,
 } from "@/lib/comparable-content/schemas";
+import {
+  listAssetPerformanceBaseObjectSchema as rawListAssetPerformanceBaseObjectSchema,
+  listAssetPerformanceInputSchema as rawListAssetPerformanceInputSchema,
+  listAssetPerformanceOutputSchema as rawListAssetPerformanceOutputSchema,
+} from "@/lib/asset-performance/schemas";
 
 export { parseWithSchema };
 
@@ -398,3 +403,30 @@ export const findComparableVideosContextOutputSchema = rawFindComparableVideosOu
 
 export type FindComparableVideosInput = z.infer<typeof findComparableVideosInputSchema>;
 export type FindComparableVideosContext = z.infer<typeof findComparableVideosContextOutputSchema>;
+
+// ---------------------------------------------------------------------------
+// Slice L -- performance ↔ asset linkage (owner spec §16). Same reuse discipline.
+// ---------------------------------------------------------------------------
+
+export const listAssetPerformanceInputSchema = rawListAssetPerformanceInputSchema;
+/** SDK-facing only (relaxed `credentialRef`/cross-field rules) -- see this schema's own doc
+ * comment in `asset-performance/schemas.ts`, same precedent as slice K's
+ * `findComparableVideosSdkInputSchema`. Never used for the handler's or domain service's own
+ * (full, refined) validation. */
+export const listAssetPerformanceSdkInputSchema = rawListAssetPerformanceBaseObjectSchema;
+
+/**
+ * This module's own OUTPUT is the raw asset-performance result PLUS `metricDefinitions`/
+ * `freshness` -- same enrichment `queryVideoAnalytics`/slice K's own wrapper already add over
+ * their wrapped capabilities' raw results (owner spec §9). `null` for both unless
+ * `performanceMetric` was actually requested.
+ */
+export const listAssetPerformanceContextOutputSchema = rawListAssetPerformanceOutputSchema
+  .extend({
+    metricDefinitions: z.array(metricDefinitionSchema).nullable(),
+    freshness: analyticsFreshnessSchema.nullable(),
+  })
+  .strict();
+
+export type ListAssetPerformanceInput = z.infer<typeof listAssetPerformanceInputSchema>;
+export type ListAssetPerformanceContext = z.infer<typeof listAssetPerformanceContextOutputSchema>;

@@ -48,6 +48,8 @@ import {
   getGenerationProvenanceInputSchema,
   getSystemCapabilitiesInputSchema,
   getVideoContextInputSchema,
+  listAssetPerformanceInputSchema,
+  listAssetPerformanceSdkInputSchema,
   listAssetsInputSchema,
   listContentProposalsInputSchema,
   listProposalArtifactsInputSchema,
@@ -148,6 +150,7 @@ type AgentOperationsCoreSubset = Pick<
   | "operationsWorkspaceListFiles"
   | "operationsWorkspaceGetFile"
   | "findComparableVideos"
+  | "listAssetPerformance"
 >;
 
 type ToolResponse = {
@@ -205,6 +208,7 @@ type McpToolHandlers = {
   agentListOperationsFiles: (input: unknown) => Promise<ToolResponse>;
   agentGetOperationsFile: (input: unknown) => Promise<ToolResponse>;
   agentFindComparableVideos: (input: unknown) => Promise<ToolResponse>;
+  agentListAssetPerformance: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -1386,6 +1390,37 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    /**
+     * Phase 7 slice L (owner spec §16). Same explicit channel-scoping and credentialRef
+     * resolve-then-inject-then-validate pattern as `agentFindComparableVideos` above -- this
+     * tool's own domain schema requires `credentialRef` whenever `performanceMetric` is set, so
+     * it is resolved (caller-supplied, else the local active identity) and injected into the
+     * input BEFORE schema validation, then reused for `assertActiveChannel`.
+     */
+    async agentListAssetPerformance(input: unknown): Promise<ToolResponse> {
+      try {
+        const rawCredentialRef =
+          typeof input === "object" && input !== null ? (input as { credentialRef?: unknown }).credentialRef : undefined;
+        const credentialRef = await resolveCredentialRef(rawCredentialRef);
+        const inputWithCredentialRef =
+          typeof input === "object" && input !== null ? { ...(input as Record<string, unknown>), credentialRef } : input;
+
+        const parsedInput = listAssetPerformanceInputSchema.safeParse(inputWithCredentialRef);
+        if (!parsedInput.success) {
+          return mapValidationErrorResult(parsedInput.error);
+        }
+
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.listAssetPerformance(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -1513,6 +1548,9 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // Slice K -- a pure local read (local sync mirror + local analytics rows, never a live
     // YouTube call) -- ungated, like `agentListAssets` above.
     agentFindComparableVideos: handlers.agentFindComparableVideos,
+    // Slice L -- a pure local read (asset catalog + local sync mirror + local analytics rows,
+    // never a live YouTube call) -- ungated, like `agentFindComparableVideos` above.
+    agentListAssetPerformance: handlers.agentListAssetPerformance,
   };
 }
 
@@ -2055,6 +2093,17 @@ export function createMcpServer(
       inputSchema: findComparableVideosSdkInputSchema,
     },
     (args) => handlers.agentFindComparableVideos(args)
+  );
+
+  registerTool(
+    "agent_list_asset_performance",
+    {
+      description:
+        "Owner spec §16: joins the existing asset catalog (linkedVideoId -- an operator/agent-asserted 'this asset was used on this video' association, never verified against YouTube, no time range) against each linked video's own already-collected performance data. Always reports each video's LIFETIME totals (viewCount/likeCount/commentCount/durationSeconds, each independently null if never synced, plus lifetimeCountersAsOf -- when the channel sync last refreshed them, NOT when analytics were collected); an OPTIONAL age-aligned value (performanceMetric + a REQUIRED, caller-supplied performanceDayOffset -- never derived from wall-clock 'now', reusing the same shared age-alignment helper as agent_find_comparable_videos) is additionally computed only when both are given, and is honestly null (never excluded, never fabricated) for a video with real data at later days but no day-0 coverage. sort: 'lifetimeViewCount' ranks by a NON-age-fair total that structurally favors older videos -- never itself a 'performed better' signal. This is a JOIN, not a FILTER -- a null performance value is still a reportable row; only an asset's own broken link (unlinked, or its linkedVideoId not resolving to a video on the SAME channel -- one combined count) is excluded, counted in excludedForMissingLink. Does NOT support thumbnail-CTR/impressions-based questions (this application's own analytics collection never fetches YouTube's impressions/CTR metrics at all, never approximated via card/annotation click-through metrics), metadata/version linkage (no temporal precision on linkedVideoId), or experiment/outcome linkage (Phase 10, not built yet). Never reads Content Proposal reference associations -- a structurally different, draft/unactioned relationship. credentialRef is optional and, if omitted, resolved automatically to the caller's own active identity -- only actually used when performanceMetric is requested. limit is silently clamped, never rejected. Requires channelId to be the caller's currently-active channel.",
+      // Same SDK-facing relaxed-schema pattern as agent_find_comparable_videos above.
+      inputSchema: listAssetPerformanceSdkInputSchema,
+    },
+    (args) => handlers.agentListAssetPerformance(args)
   );
 
   return server;

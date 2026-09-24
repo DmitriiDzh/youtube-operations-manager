@@ -350,6 +350,21 @@ test("MCP server registers agent_find_comparable_videos with an SDK-facing schem
   assert.equal(result.success, true);
 });
 
+test("MCP server registers agent_list_asset_performance with an SDK-facing schema that does not itself require credentialRef when performanceMetric is set", () => {
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
+  const tools = (server as unknown as { _registeredTools?: Record<string, { inputSchema?: { safeParse: (input: unknown) => { success: boolean } } }> })
+    ._registeredTools;
+  const tool = tools?.agent_list_asset_performance;
+  assert.ok(tool?.inputSchema);
+
+  const result = tool.inputSchema.safeParse({
+    channelId: "UC_1",
+    performanceMetric: "views",
+    performanceDayOffset: 5,
+  });
+  assert.equal(result.success, true);
+});
+
 // "MCP connection" gate (owner instruction, 2026-09-21, renamed and inverted from the earlier
 // "MCP restricted mode"): a single boolean now decides whether ANY tool is registered at all,
 // not a per-tool exclusion list. Default (no option passed) must be fully disconnected -- zero
@@ -427,6 +442,8 @@ test("MCP server (connectionEnabled: true) registers every tool, including write
     // findComparableVideosInputSchema (a ZodEffects, via .refine()) without throwing --
     // registration itself is real here, unlike the handler-level tests above which bypass the SDK.
     "agent_find_comparable_videos",
+    // Slice L: same proof for listAssetPerformanceSdkInputSchema.
+    "agent_list_asset_performance",
   ]) {
     assert.equal(names.includes(tool), true, `expected ${tool} to be registered once connected`);
   }
@@ -2703,7 +2720,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
 
   assert.equal(result.isError, undefined);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
-  assert.equal(payload.agentApiVersion, "0.9.0");
+  assert.equal(payload.agentApiVersion, "0.10.0");
   assert.deepEqual(payload.grantedPermissions, ["READ", "DRAFT"]);
   assert.ok(payload.capabilities.some((c: { id: string }) => c.id === "system.get_capabilities"));
 });
@@ -2762,6 +2779,7 @@ function makeAgentOperationsCoreStub(): Pick<
   | "operationsWorkspaceListFiles"
   | "operationsWorkspaceGetFile"
   | "findComparableVideos"
+  | "listAssetPerformance"
 > {
   return {
     getSystemCapabilities: async () => ({
@@ -2903,6 +2921,14 @@ function makeAgentOperationsCoreStub(): Pick<
       metricDefinitions: null,
       freshness: null,
     }),
+    listAssetPerformance: async () => ({
+      assets: [],
+      performanceAlignment: null,
+      excludedForMissingLink: { unlinked: 0, linkedVideoNotOnChannel: 0 },
+      truncated: false,
+      metricDefinitions: null,
+      freshness: null,
+    }),
   };
 }
 
@@ -2962,6 +2988,7 @@ test("MCP agent_get_channel_context rejects a channelId that is not the caller's
     | "operationsWorkspaceListFiles"
     | "operationsWorkspaceGetFile"
     | "findComparableVideos"
+    | "listAssetPerformance"
   > = {
     ...makeAgentOperationsCoreStub(),
     getChannelContext: async () => {
@@ -3043,6 +3070,7 @@ test("MCP agent_get_video_context rejects a channelId that is not the caller's a
     | "operationsWorkspaceListFiles"
     | "operationsWorkspaceGetFile"
     | "findComparableVideos"
+    | "listAssetPerformance"
   > = {
     ...makeAgentOperationsCoreStub(),
     getVideoContext: async () => {
@@ -3246,6 +3274,7 @@ test("MCP agent_list_assets rejects a channelId that is not the caller's active 
     | "operationsWorkspaceListFiles"
     | "operationsWorkspaceGetFile"
     | "findComparableVideos"
+    | "listAssetPerformance"
   > = {
     ...makeAgentOperationsCoreStub(),
     listAssets: async () => {
@@ -3324,6 +3353,7 @@ test("MCP agent_get_asset_context rejects a channelId that is not the caller's a
     | "operationsWorkspaceListFiles"
     | "operationsWorkspaceGetFile"
     | "findComparableVideos"
+    | "listAssetPerformance"
   > = {
     ...makeAgentOperationsCoreStub(),
     getAssetContext: async () => {
@@ -3415,6 +3445,7 @@ test("MCP agent_get_generation_provenance rejects a channelId that is not the ca
     | "operationsWorkspaceListFiles"
     | "operationsWorkspaceGetFile"
     | "findComparableVideos"
+    | "listAssetPerformance"
   > = {
     ...makeAgentOperationsCoreStub(),
     getGenerationProvenance: async () => {
@@ -3522,6 +3553,7 @@ test("MCP agent_create_content_proposal rejects a channelId that is not the call
     | "operationsWorkspaceListFiles"
     | "operationsWorkspaceGetFile"
     | "findComparableVideos"
+    | "listAssetPerformance"
   > = {
     ...makeAgentOperationsCoreStub(),
     createContentProposal: async () => {
@@ -3630,6 +3662,7 @@ test("MCP agent_get_content_proposal rejects a channelId that is not the caller'
     | "operationsWorkspaceListFiles"
     | "operationsWorkspaceGetFile"
     | "findComparableVideos"
+    | "listAssetPerformance"
   > = {
     ...makeAgentOperationsCoreStub(),
     getContentProposal: async () => {
@@ -3699,6 +3732,7 @@ test("MCP agent_list_content_proposals rejects a channelId that is not the calle
     | "operationsWorkspaceListFiles"
     | "operationsWorkspaceGetFile"
     | "findComparableVideos"
+    | "listAssetPerformance"
   > = {
     ...makeAgentOperationsCoreStub(),
     listContentProposals: async () => {
@@ -3875,6 +3909,7 @@ test("MCP agent_register_external_artifact rejects a channelId that is not the c
     | "operationsWorkspaceListFiles"
     | "operationsWorkspaceGetFile"
     | "findComparableVideos"
+    | "listAssetPerformance"
   > = {
     ...makeAgentOperationsCoreStub(),
     registerExternalArtifact: async () => {
@@ -3979,6 +4014,7 @@ test("MCP agent_list_proposal_artifacts rejects a channelId that is not the call
     | "operationsWorkspaceListFiles"
     | "operationsWorkspaceGetFile"
     | "findComparableVideos"
+    | "listAssetPerformance"
   > = {
     ...makeAgentOperationsCoreStub(),
     listProposalArtifacts: async () => {
@@ -4261,6 +4297,7 @@ test("MCP agent_find_comparable_videos rejects a channelId that is not the calle
     | "operationsWorkspaceListFiles"
     | "operationsWorkspaceGetFile"
     | "findComparableVideos"
+    | "listAssetPerformance"
   > = {
     ...makeAgentOperationsCoreStub(),
     findComparableVideos: async () => {
@@ -4344,6 +4381,156 @@ test("MCP agent_find_comparable_videos is never blocked by the operation lock (r
       makeAgentOperationsCoreStub()
     );
     const result = await handlers.agentFindComparableVideos({ channelId: "UC_1", anchorVideoId: "v1", sort: "publicationProximity" });
+    assert.notEqual(result.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("MCP agent_list_asset_performance forwards input and checks active-channel access", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.listAssetPerformance = async (input: unknown) => {
+    captured = input;
+    return {
+      assets: [],
+      performanceAlignment: null,
+      excludedForMissingLink: { unlinked: 0, linkedVideoNotOnChannel: 0 },
+      truncated: false,
+      metricDefinitions: null,
+      freshness: null,
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListAssetPerformance({ channelId: "UC_1" });
+
+  assert.equal(result.isError, undefined);
+  // credentialRef is always auto-resolved and forwarded, same as agent_find_comparable_videos.
+  assert.deepEqual(captured, { channelId: "UC_1", credentialRef: { userId: "active-user" } });
+});
+
+test("MCP agent_list_asset_performance auto-resolves credentialRef to the caller's own active identity when performanceMetric is requested but no credentialRef was supplied", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.listAssetPerformance = async (input: unknown) => {
+    captured = input;
+    return {
+      assets: [],
+      performanceAlignment: { metricName: "views", dayOffset: 3 },
+      excludedForMissingLink: { unlinked: 0, linkedVideoNotOnChannel: 0 },
+      truncated: false,
+      metricDefinitions: null,
+      freshness: null,
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListAssetPerformance({ channelId: "UC_1", performanceMetric: "views", performanceDayOffset: 3 });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    performanceMetric: "views",
+    performanceDayOffset: 3,
+    credentialRef: { userId: "active-user" },
+  });
+});
+
+test("MCP agent_list_asset_performance rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+    | "getGenerationProvenance"
+    | "createContentProposal"
+    | "getContentProposal"
+    | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
+    | "findComparableVideos"
+    | "listAssetPerformance"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    listAssetPerformance: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListAssetPerformance({ channelId: "UC_OTHER" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_list_asset_performance rejects input that fails its own schema (e.g. performanceMetric without performanceDayOffset)", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    makeAgentOperationsCoreStub()
+  );
+  const result = await handlers.agentListAssetPerformance({ channelId: "UC_1", performanceMetric: "views" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP agent_list_asset_performance is never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      makeAgentOperationsCoreStub()
+    );
+    const result = await handlers.agentListAssetPerformance({ channelId: "UC_1" });
     assert.notEqual(result.isError, true);
   } finally {
     await releaseOperationLock(rawSqlClient);

@@ -613,18 +613,68 @@ videos by the broader filter set §10 describes. Tracked as `BL-088` (`docs/road
   exclusion, migration coverage). 311/311 in the four affected test files, `npm test` 1326/1326,
   tsc/lint/build clean. **Independent-review cycle for slice K: 4 rounds, findings 3/4/4/0, closed.**
 
-## 4h. Performance ↔ asset linkage (owner spec §16) -- ASSIGNED (slice L), not yet implemented
+## 4h. Performance ↔ asset linkage (owner spec §16) -- IMPLEMENTED (slice L)
 
 Found the same way as §4g, same date. The spec asks for the interface to expose associations
 along `video → asset → metadata/version → analytics → experiment/outcome` so an agent can answer
-questions like "which thumbnails were used by high-CTR videos" or "which visual concepts
-repeatedly appeared in stronger-performing videos" -- explicitly leaving causal inference to the
-agent, not the product. Today, `creative_assets.linkedVideoId` records a raw video association
-(slice D), and `content_proposal_artifacts` records a proposal association (slice G2), but neither
-is joined against `video_metrics_daily`/analytics anywhere in this interface -- an agent must
-currently fetch a video's assets and its analytics separately and correlate them itself, with no
-product-provided join. Tracked as `BL-089` (`docs/roadmap/BACKLOG.md`), **assigned alongside
-BL-088, same owner instruction**; not yet implemented.
+questions like "which thumbnails were used by high-CTR videos," "which visual concepts repeatedly
+appeared in stronger-performing videos," "which duration/content combinations produced better
+watch time," "which production assets belonged to videos that underperformed," and "which prior
+assets should be used as reference material for the next creative" -- explicitly leaving causal
+inference to the agent, not the product. Tracked as `BL-089` (`docs/roadmap/BACKLOG.md`),
+**assigned alongside BL-088, same owner instruction**. Acceptance criteria (`docs/acceptance/
+PHASE_7_ACCEPTANCE.md` §5-§7, AC-PERF-01..10) were written before implementation, per `AGENTS.md`
+§L, incorporating slice K's own two hard-won lessons (round 1: never derive a comparison day from
+wall-clock `now`; round 3: `limit` is always silently clamped, never rejected) from the start.
+
+**Design, `src/lib/asset-performance/` (contracts/schemas/services/index, §6.2 pattern):**
+
+- **New capability** `asset_performance.list_asset_performance` -- a JOIN, not a filter, of the
+  existing asset catalog (`creative_assets.linkedVideoId` -- an operator/agent-asserted "this
+  asset was used on this video" association, never verified against YouTube and carrying no time
+  range) against each linked video's own already-collected performance data. Reuses, never
+  duplicates (`AGENTS.md` §D): `assetCatalogCore.listAssets` for the catalog read,
+  `createChangeSetChannelStoreAdapter().listVideosByChannel` for video facts/lifetime counters (the
+  same store adapter slice K already reads), `analyticsCore.listMetrics` for local analytics rows
+  (only when `performanceMetric`/`performanceDayOffset` are both requested), and
+  `getCumulativeValueAtDayOffset` (extracted from slice K's own local closure into
+  `analytics/comparable-age.ts` as its own commit first, confirming K's 26 tests passed unchanged,
+  before slice L was built on it -- AGENTS.md §D: shared logic gets one owner, never a second copy).
+- **Two kinds of performance, never conflated:** LIFETIME totals (`viewCount`/`likeCount`/
+  `commentCount`/`durationSeconds`, plus `lifetimeCountersAsOf` from `videos.lastSyncedAt` --
+  always present when known, explicitly NOT age-fair) and an OPTIONAL age-aligned value
+  (`performanceMetric` + a REQUIRED, caller-supplied `performanceDayOffset` -- never derived from
+  `now`, applying slice K round 1's lesson from the start rather than rediscovering the same bug).
+  A video published before regular collection began for its channel (real data at later days, no
+  day-0 coverage) correctly gets `ageAlignedPerformanceValue: null` while its row and lifetime
+  counters stay intact -- this is a JOIN field, never grounds for exclusion.
+- **Two exclusion reasons, not three:** `excludedForMissingLink: { unlinked,
+  linkedVideoNotOnChannel }`. An earlier design considered a third, more specific
+  "video on a different channel" reason (mirroring slice K's own `excludedForMissingData`
+  granularity) -- caught by `advisor()` review before the review cycle started: the real
+  `listVideosByChannel(channelId)` dependency is already channel-scoped at the SQL layer, so
+  "never synced" and "belongs to a different channel" are structurally indistinguishable from
+  inside this capability, and asset registration itself already validates `linkedVideoId` against
+  the same channel at write time (`asset-catalog`'s own `registerAsset`) -- a genuine cross-channel
+  link should not normally occur. The capability still re-checks `channelId` explicitly as
+  defense-in-depth (`AGENTS.md` §F: channel-context validation is never automatic), just counts
+  both failure shapes under one honest bucket instead of a field that would always read `0` in
+  production.
+- **Out of scope, stated explicitly in the capability's own description** (never silently
+  approximated): thumbnail-CTR/impressions-based questions (this application's own analytics
+  collection never fetches YouTube's `impressions`/`impressionClickThroughRate` metrics at all --
+  never approximated via `cardClickRate`/`annotationClickThroughRate`, an unrelated signal);
+  `metadata/version` linkage (no temporal precision on `linkedVideoId`); `experiment/outcome`
+  linkage (Phase 10, doesn't exist yet); Content Proposal reference associations
+  (`content_proposal_artifacts`/a proposal's own `referenceAssetIds`/`referenceVideoIds`) -- a
+  structurally DIFFERENT relationship (draft, unactioned reference/inspiration material, never
+  "this asset was actually used on this video") this capability deliberately never reads.
+- Wired into `agent-operations` (`AGENT_API_VERSION` → `0.10.0`, new `asset_performance` capability
+  domain, same `metricDefinitions`/`freshness` enrichment convention as slice K's own wrapper), MCP
+  `agent_list_asset_performance`, CLI `agent list-asset-performance` -- channel-scoped
+  (`assertActiveChannel`), read-only/ungated, same credentialRef resolve-then-inject-then-validate
+  pattern and SDK-facing relaxed-schema registration (`listAssetPerformanceSdkInputSchema`) as
+  slice K, applying that lesson from the start rather than needing a round to rediscover it.
 
 ## 4i. Dedicated Phase 7 acceptance-contract document (owner spec §28) -- NOT PRODUCED
 
@@ -824,7 +874,7 @@ second error-code enum:
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | **VERIFIED, against the recovered verbatim spec, 2026-09-24.** Cross-checked that every `AGENT_CAPABILITIES` entry points at an actually-registered MCP tool and that every `agent_*` MCP tool has CLI parity -- zero drift. The initial capability set (owner spec §25) is fully present. The session's original verbatim spec text (34 numbered sections, sent over Telegram 2026-09-23) is not stored anywhere in this repository -- it was recovered from this session's own pre-compaction transcript to check the sections this document had never previously cited, rather than trusting citation coverage alone. That recheck found two real, previously-untracked gaps outside slice H's own scope -- §4g/§4h below (owner spec §10/§16, `BL-088`/`BL-089`) -- and one process gap, §4i (owner spec §28, no dedicated Phase 7 acceptance-contract document). Every other previously-uncited section (§3, §8, §11, §20, §21, §22, §23, §24, §26, §29-33) was confirmed either already implemented, already tracked as a known gap, or deliberately narrowed/overridden by a later, explicit owner instruction (§3/§30, slice I). |
 | I | Codex operations-workspace path surfacing | **IMPLEMENTED** -- see §4j; owner decision, Telegram 2026-09-24, narrowed this slice to a path-configuration/surfacing mechanism only (never an operations-workspace template or editorial-guideline document committed here, per `AGENTS.md` §B). New `src/lib/operations-instructions/` module, Settings-only `operationsWorkspacePath` setting, MCP `agent_list_operations_files`/`agent_get_operations_file`, CLI `agent list-operations-files`/`agent get-operations-file`. `AGENT_API_VERSION` → `0.8.0`. |
 | K | Comparable-content context (`find_comparable_videos`, owner spec §10) | **IMPLEMENTED, independent-review cycle closed (4 rounds, findings 3/4/4/0)** -- see §4g; found by the slice-H spec recovery, 2026-09-24, then explicitly assigned into this phase by the owner the same day ("Да, такие находки как BL 88 и 89 тоже включай в список тасков текущей 7 фазы", Telegram). New `src/lib/comparable-content/` module (K1) plus `videos.durationSeconds` sync (K0, schema v19). MCP `agent_find_comparable_videos`, CLI `agent find-comparable-videos`. `AGENT_API_VERSION` → `0.9.0`. `BL-088`. |
-| L | Performance ↔ asset linkage (owner spec §16) | **ASSIGNED** -- see §4h; found and assigned the same way and same day as slice K. `BL-089`. Not yet implemented. |
+| L | Performance ↔ asset linkage (owner spec §16) | **IMPLEMENTED, independent-review cycle not yet started** -- see §4h; found and assigned the same way and same day as slice K. New `src/lib/asset-performance/` module. MCP `agent_list_asset_performance`, CLI `agent list-asset-performance`. `AGENT_API_VERSION` → `0.10.0`. `BL-089`. |
 | J | Independent security/integration review | ONGOING per slice -- `docs/roadmap/BACKLOG.md`'s BL-079/BL-080/BL-081 (and later rows, as slices land) are the authoritative record of each slice's own review-cycle status; not restated here as a round tally, since that would just be a second, driftable copy of the same fact. Covers the WHOLE phase, including slices K/L once they land -- deliberately kept last in the recommended order even though K/L were assigned after it was originally listed. |
 
 Deliberately **not** implemented in this phase (owner spec §14/§29): the competitor/trend
