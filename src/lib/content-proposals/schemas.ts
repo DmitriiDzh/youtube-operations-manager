@@ -118,6 +118,32 @@ export const listContentProposalsOutputSchema = z.object({ proposals: z.array(co
 export const AGENT_ARTIFACT_REFERENCE_KINDS = ["url", "external_artifact_id"] as const;
 const agentArtifactReferenceKindSchema = z.enum(AGENT_ARTIFACT_REFERENCE_KINDS);
 
+// An independent review round found that checking only `new URL(value).protocol` validates
+// Node's own lenient, WHATWG-normalized parse of `value` while the RAW string is what actually
+// gets stored -- so a schemeless-authority string like "https:/etc/passwd" or
+// "https:C:\Users\x\secret" parses (under Node's parser) to a synthesized host ("etc"/"c") and
+// passes, even though it has no real authority component and other parsers (e.g. Python's
+// `urllib.parse`) disagree with Node about what it means. This does not reopen filesystem access
+// (no parse of an accepted value ever resolves to a `file:`/non-http(s) scheme), but it does not
+// match this comment's own claim that the label is made to "actually mean an http(s) URL" either.
+// Reject anything that isn't unambiguously `scheme://authority...` shaped, plus control
+// characters, raw whitespace, and backslashes (none of which belong in a well-formed URL and each
+// of which a different consumer could interpret differently than Node does).
+function isWellFormedHttpUrl(value: string): boolean {
+  if (/[\x00-\x20\x7f\\]/.test(value)) {
+    return false;
+  }
+  if (!/^https?:\/\/[^/]/i.test(value)) {
+    return false;
+  }
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export const registerExternalArtifactInputSchema = registerAssetInputSchema
   .omit({ referenceKind: true })
   .extend({
@@ -128,17 +154,10 @@ export const registerExternalArtifactInputSchema = registerAssetInputSchema
     if (data.referenceKind !== "url") {
       return;
     }
-    let isHttpUrl = false;
-    try {
-      const parsed = new URL(data.referenceValue);
-      isHttpUrl = parsed.protocol === "http:" || parsed.protocol === "https:";
-    } catch {
-      isHttpUrl = false;
-    }
-    if (!isHttpUrl) {
+    if (!isWellFormedHttpUrl(data.referenceValue)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "referenceValue must be an http(s) URL when referenceKind is \"url\"",
+        message: "referenceValue must be a well-formed http(s) URL when referenceKind is \"url\"",
         path: ["referenceValue"],
       });
     }

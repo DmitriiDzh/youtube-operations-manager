@@ -423,7 +423,26 @@ test("registerExternalArtifact rejects referenceKind local_path as validation_fa
 // label, including an absolute filesystem path or a `file://` URI, which would have defeated the
 // entire purpose of restricting agent-callable registration away from `local_path` (owner spec
 // §17). Each of these must be rejected exactly like `local_path` itself, before any write.
-for (const badUrlValue of ["/Users/x/secret", "file:///etc/passwd", "not a url at all"]) {
+//
+// The schemeless-authority/control-character cases below were added after a LATER independent
+// review round found the first fix (checking only `new URL(value).protocol`) validated Node's own
+// lenient, WHATWG-normalized parse while the RAW string is what actually gets persisted -- so a
+// string like "https:/etc/passwd" parses, under Node's parser, to a synthesized host ("etc") and
+// was wrongly accepted, even though it has no real authority component and other parsers (e.g.
+// Python's urllib.parse) disagree with Node about what it means. None of these ever resolve to a
+// `file:`/non-http(s) scheme (so filesystem access itself was never reopened), but they are not,
+// in any conventional sense, "an http(s) URL" and must be rejected too.
+for (const badUrlValue of [
+  "/Users/x/secret",
+  "file:///etc/passwd",
+  "not a url at all",
+  "https:/etc/passwd",
+  "https:///etc/passwd",
+  "https:C:\\Users\\x\\secret",
+  "https://example.com/\u0000",
+  "https://example.com/\u0007",
+  "  https://example.com/a.png  ",
+]) {
   test(`registerExternalArtifact rejects referenceValue "${badUrlValue}" under referenceKind url as validation_failed`, async () => {
     const { services, assetStore, linkStore } = createFixture();
     const proposal = await services.createContentProposal({ channelId: "UC_A" }, WEB_UI_ORIGIN);
