@@ -1006,7 +1006,7 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 16,
     description:
-      "ai_localization_generation_provenance -- additive evidence/rationale/createdVia/agentApiVersion columns, Phase 7 slice F (docs/AGENT_OPERATIONS_INTERFACE.md §4d, owner spec §12/§13/§22)",
+      "ai_localization_generation_provenance -- additive evidence/rationale/createdVia/agentApiVersion columns, Phase 7 slice F (docs/AGENT_OPERATIONS_INTERFACE.md §4e, owner spec §12/§13/§22)",
     apply: async (client) => {
       // SQLite only supports one column per ALTER TABLE ... ADD COLUMN statement -- four
       // separate calls, each additive and nullable (no backfill needed/possible for existing

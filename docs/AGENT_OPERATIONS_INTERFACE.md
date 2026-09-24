@@ -238,14 +238,16 @@ Change Set (an agent echoes back its own `generateProposals` response), never in
 attested by this server. Slice F (see §4e) added the actual server-stamped identity this section
 originally flagged as missing -- `docs/TECHNICAL_DEBT.md` RISK-54 is now RESOLVED.
 
-## 4e. Bulk localization integration -- evidence, rationale, and identity stamping (owner spec
-§12/§13/§22) -- PARTIAL (slice F)
+## 4e. Bulk localization integration -- evidence, rationale, and identity stamping (owner spec §12/§13/§22) -- PARTIAL (slice F)
 
-Widens the EXISTING `ai_localization_generate` / `ai_localization_create_change_set` pair (no new
-MCP tool, no new agent-operations capability id -- `AGENT_API_VERSION` was not bumped for this
-slice, since it widens an existing capability's contract rather than adding a new one) so an agent
-can attach evidence/rationale to a Change Set's proposals, and so every provenance record now
-attests which transport actually created it.
+Widens the EXISTING `ai_localization_create_change_set` (MCP tool, CLI command, and Web route --
+no new tool, no new agent-operations capability id, no `AGENT_API_VERSION` bump -- see that
+constant's own doc comment, `src/lib/agent-operations/contracts.ts`, for why a purely additive
+contract widening doesn't warrant one) so an agent can attach evidence/rationale to a Change
+Set's proposals, and so every provenance record now attests which transport actually created it.
+`ai_localization_generate` (the earlier, proposal-preview step) is untouched by this slice --
+evidence/rationale/identity are recorded only at Change Set creation time, not at
+proposal-generation time.
 
 - **Evidence (owner spec §13):** `createChangeSetFromGenerationInputSchema` gained an optional
   `evidence: EvidenceReference[]` array (`src/lib/ai-localization/schemas.ts`) -- each item carries
@@ -362,7 +364,7 @@ second error-code enum:
 | C | Analytics interface (agent-oriented wrapper over `src/lib/analytics/`) | **IMPLEMENTED** -- see §4b; MCP `agent_query_channel_analytics`/`agent_query_video_analytics`, CLI `agent channel-analytics`/`agent video-analytics`. No HTTP route yet. |
 | D | Asset catalog/context (new subsystem -- nothing to reuse) | **IMPLEMENTED** -- see §4c; MCP `agent_list_assets`/`agent_get_asset_context`, CLI `agent list-assets`/`agent get-asset-context`/`asset register`. No HTTP route yet. |
 | E | Agent draft/proposal provenance | **IMPLEMENTED** -- see §4d; MCP `agent_get_generation_provenance`, CLI `agent get-generation-provenance`. No HTTP route (reuses the pre-existing one). |
-| F | Bulk localization integration -- evidence, rationale, identity stamping | **PARTIAL** -- see §4e; widens the existing `ai_localization_generate`/`ai_localization_create_change_set` MCP tools, CLI commands, and Web route. Evidence/rationale are per-Change-Set, not per-proposal (RISK-55, known limitation). |
+| F | Bulk localization integration -- evidence, rationale, identity stamping | **PARTIAL** -- see §4e; widens the existing `ai_localization_create_change_set` MCP tool, CLI command, and Web route (`ai_localization_generate` is untouched). Evidence/rationale are per-Change-Set, not per-proposal (RISK-55, known limitation). |
 | G | Content Proposal / external artifact registration | PLANNED |
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | IN PROGRESS |
 | I | Codex operations-workspace template | PLANNED -- see `docs/CODEX_OPERATIONS_WORKSPACE.md` once slice I lands |

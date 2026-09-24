@@ -528,6 +528,29 @@ test("AC-CS-07: an invalid target language submitted directly to change-set crea
   assert.equal(persistedChangeSets.length, 0);
 });
 
+// Phase 7 slice F (owner spec §22): createdVia/agentApiVersion must be an attestation
+// (SERVER-STAMPED via the separate `callOrigin` parameter), never a claim a caller can smuggle
+// into the request body itself. `createChangeSetFromGenerationInputSchema` is `.strict()`, so a
+// body containing either key is rejected before persistence, not silently ignored or trusted.
+test("createChangeSetFromGeneration rejects a request body that tries to smuggle createdVia/agentApiVersion as input fields", async () => {
+  const { build, persistedChangeSets } = makeFixture();
+  const services = build(fixedProvider(() => ({ status: "ok", title: "x", description: "y" })));
+
+  await assert.rejects(
+    services.createChangeSetFromGeneration(
+      {
+        channelId: "UC_TEST",
+        proposals: [{ videoId: "v1", language: "es", title: "A" }],
+        createdVia: "mcp",
+        agentApiVersion: "9.9.9",
+      },
+      { createdVia: "web_ui", agentApiVersion: null }
+    ),
+    (err: unknown) => err instanceof DomainError && err.code === "validation_failed"
+  );
+  assert.equal(persistedChangeSets.length, 0);
+});
+
 // AC-APPROVAL-02
 test("AC-APPROVAL-02: every persisted change starts pending, never auto-approved", async () => {
   const { build, persistedChangeSets } = makeFixture();

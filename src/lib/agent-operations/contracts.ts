@@ -45,7 +45,13 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * on a different cadence than the product itself. Bump the MINOR version once per slice/landing
  * that adds one or more capabilities (not once per individual capability item within that slice);
  * bump MAJOR only for a breaking change to an existing tool's contract (none is anticipated in
- * Phase 7's own additive slices).
+ * Phase 7's own additive slices). Do NOT bump for a purely additive, backward-compatible widening
+ * of an EXISTING capability's own contract (e.g. a new optional input/output field an existing
+ * caller can simply ignore) -- that is neither a new capability nor a breaking change; MINOR is
+ * reserved for capability-discovery-relevant changes (a caller enumerating `AGENT_CAPABILITIES`
+ * learns something new exists), not every field-level widening (Phase 7 slice F's own
+ * evidence/rationale/callOrigin fields on `ai_localization_create_change_set` are this exact
+ * case).
  *
  * The version below is the current, authoritative value -- deliberately not restated in this
  * comment, since a restated copy would itself go stale on every future bump. See
