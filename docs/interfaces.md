@@ -297,13 +297,16 @@ Key MCP tools:
     only. Omitting `metricNames` describes every metric this instance actually collects, never an
     invented one.
 
-  Deliberately **not** included yet: comparable videos, creative-asset context, experiment
-  history, or any draft/proposal/content-planning capability — those are later slices (D-G) of
-  this same phase, not yet implemented. Note `get_capabilities` also now registers several
-  already-existing tools it previously omitted (`channel_list`, `channel_video_list`,
-  `ai_localization_generate`, `ai_localization_create_change_set`, and four more `analytics_*`
-  tools) so its own capability list is honest about everything actually reachable today, not just
-  what this module itself implements.
+  `get_capabilities` also now registers several already-existing, already-implemented tools it
+  previously omitted (`channel_list`, `channel_video_list`, `ai_localization_generate`,
+  `ai_localization_create_change_set`, and four more `analytics_*` tools, including
+  `analytics_comparable_age`) so its own capability list is honest about everything actually
+  reachable today, not just what this module itself implements — an agent CAN already compare
+  videos or create a localization draft/proposal today, just through those pre-existing tools
+  rather than a dedicated `agent-operations`-specific wrapper for either. Deliberately **not**
+  reachable through ANY tool yet: creative-asset context/catalog, experiment history, or content
+  planning/external-artifact registration — those are genuinely unimplemented, later slices (D, G)
+  of this same phase.
 - Analytics read tools (`docs/roadmap/BACKLOG.md`, "machine-readable analytics for operational
   agents to consume" — `docs/roadmap/FUTURE_PHASES.md` §4 / `docs/PROJECT_SPEC.md` §33):
   - `analytics_list` — `{ channelId, startDate?, endDate?, videoId?, metricNames?, credentialRef? }`

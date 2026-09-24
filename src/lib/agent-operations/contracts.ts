@@ -10,11 +10,15 @@ export { DomainError, isDomainError };
 // by operational AI agents." Codex is the first client; the interface itself must stay
 // agent-agnostic (no Codex-specific behavior baked into the contracts below).
 //
-// This module owns exactly: capability/version discovery (slice A) and the shared permission
-// vocabulary every later slice (channel/video context, analytics wrapper, asset catalog, draft
-// provenance, bulk localization integration) reuses. It never duplicates youtube-read-gateway,
-// analytics, ai-localization, or changesets -- those remain the single owners of their own data;
-// this module only re-exposes them through an agent-oriented, versioned surface.
+// This module owns: capability/version discovery, the shared permission vocabulary every slice
+// uses, and the response-shape contracts each slice defines as it lands (channel/video context --
+// slice B; analytics -- slice C; more to follow as later slices land). It never duplicates
+// youtube-read-gateway, analytics, ai-localization, or changesets -- those remain the single
+// owners of their own DATA; this module only re-exposes them through an agent-oriented, versioned
+// surface, with its own contracts describing that surface's shape (found stale by independent
+// review, 2026-09-24: an earlier version of this comment claimed this module owns only
+// capability/version discovery, already false the moment slice B added its own context types
+// directly below it).
 // ---------------------------------------------------------------------------
 
 /**

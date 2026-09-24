@@ -394,11 +394,12 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
 
     /**
      * Slice C, owner spec §9. Thin wrapper over `analyticsCore.getChannelOverview` -- forwards
-     * its own already-validated input unchanged (including `credentialRef`, if the caller
-     * supplied one), so `analyticsCore`'s own active-channel/credential/date-range validation is
-     * the single, authoritative check (no second, redundant check here). A LIVE YouTube Analytics
-     * API read (counts against that API's quota) -- see the `analytics.query_channel_analytics`
-     * capability description for this caveat surfaced to the agent up front.
+     * its own already-validated input unchanged (`credentialRef` REQUIRED here, not optional --
+     * see `queryChannelAnalyticsInputSchema`'s own doc comment for why), so `analyticsCore`'s own
+     * active-channel/credential/date-range validation is the single, authoritative check (no
+     * second, redundant check here). A LIVE YouTube Analytics API read (counts against that API's
+     * quota) -- see the `analytics.query_channel_analytics` capability description for this
+     * caveat surfaced to the agent up front.
      */
     async queryChannelAnalytics(input: unknown): Promise<ChannelAnalyticsContext> {
       const parsedInput = parseWithSchema(queryChannelAnalyticsInputSchema, input, "query channel analytics input");
