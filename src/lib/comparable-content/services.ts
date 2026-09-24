@@ -73,8 +73,10 @@ export function createComparableContentServices(deps: ServiceDependencies) {
 
       // Requiring `anchor.durationSeconds` isn't only about `durationToleranceSeconds` -- sorting
       // by `durationProximity` with an unknown anchor duration would compare every candidate's
-      // `durationDistanceSeconds` as `null` (Infinity - Infinity = NaN in the comparator below),
-      // producing an arbitrary order while still claiming to be sorted by duration proximity.
+      // `durationDistanceSeconds` as `null` (Infinity - Infinity = NaN in the comparator below;
+      // Array.prototype.sort treats a NaN result as 0, i.e. "leave these two in their current
+      // relative order" -- not a shuffle, but still a comparator that never actually compares by
+      // duration while claiming to).
       if (
         (parsedInput.durationToleranceSeconds !== undefined || parsedInput.sort === "durationProximity") &&
         anchor.durationSeconds === null

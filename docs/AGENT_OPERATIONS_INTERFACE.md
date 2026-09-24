@@ -515,6 +515,41 @@ videos by the broader filter set §10 describes. Tracked as `BL-088` (`docs/road
     `--performanceThresholdValue` must be given together, rejected as `validation_failed` otherwise
     (previously silently applied no threshold if only one was given).
 
+  **Independent-review cycle: 2 rounds, findings 3/0, closed 2026-09-24.** Round 1 found 3 real
+  issues in commit 79c3697 (fixed in 71033f7):
+  - **(bug, high)** `ageAlignmentDays` was derived from wall-clock `now()` instead of the anchor's
+    own actually-collected data. Analytics collection intentionally never reaches "today"
+    (`staleness.ts`'s own default collection range ends at yesterday), and
+    `computeComparableAgeSeries` stops a cumulative series dead at the first missing day counting
+    from day 0 -- so for a recently-published anchor (the most natural real query: "how is my new
+    video doing against similar recent ones"), picking "current age" as the comparison day would
+    almost always land on a day nobody has data for yet, making `anchor.performanceMetricValue`
+    null and excluding most/all candidates for exactly the scenario this filter exists for. Fixed:
+    the comparison day is now the LAST DAY OF CONTIGUOUS COVERAGE the anchor's own data actually
+    reaches (from `computeComparableAgeSeries`'s own `cumulativePoints`, run once against the
+    anchor's own rows before scoring any candidate), capped at 365 days and at the anchor's real
+    elapsed age as a safety bound -- degrading to day 0 if the anchor has no data at all yet, never
+    to an arbitrary later day nobody has data for either.
+  - **(bug, medium)** `sort: "durationProximity"` without `durationToleranceSeconds` didn't guard
+    against the anchor having an unknown `durationSeconds` -- every candidate's own
+    `durationDistanceSeconds ?? Infinity` comparator input became `Infinity - Infinity = NaN`
+    (which `Array.prototype.sort` treats as "leave in place," not a shuffle, but still never
+    actually sorts by duration while claiming to). Fixed: the same `INVALID_CONTEXT_REQUEST`
+    precondition already applied to `durationToleranceSeconds` now also applies whenever
+    `sort === "durationProximity"`.
+  - **(gap, medium)** `tokenizeTitle` split titles on ASCII-only `[^a-z0-9]+`, silently producing
+    zero tokens for non-Latin titles (Cyrillic, etc.) -- undocumented, and a realistic case given
+    this application's own localization focus. Fixed: Unicode-aware split (`/[^\p{L}\p{N}]+/u`).
+    CJK-style scripts with no whitespace between words remain an accepted, out-of-scope limitation
+    of this deliberately tiny heuristic (never framed as an NLP engine).
+
+  Round 2 re-verified all three fixes by hand-tracing the corrected logic against
+  `comparable-age.ts`'s actual documented semantics (not just re-running the tests), re-ran the
+  full validation suite, and found zero new issues -- only wording/test-coverage nits (folded into
+  this document and `docs/acceptance/PHASE_7_ACCEPTANCE.md`'s own AC-CMP-05 text, plus one added
+  test for `durationProximity` with a mix of known/unknown candidate durations). `npm test`
+  1319/1319, tsc/lint/build clean throughout both rounds.
+
 ## 4h. Performance ↔ asset linkage (owner spec §16) -- ASSIGNED (slice L), not yet implemented
 
 Found the same way as §4g, same date. The spec asks for the interface to expose associations

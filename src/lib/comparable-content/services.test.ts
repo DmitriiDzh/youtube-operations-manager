@@ -267,6 +267,22 @@ test("sort modes are explicit and each reports the raw comparison facts behind t
   assert.deepEqual(byTokens.candidates[0].sharedTitleTokens, ["cuban", "jazz"]);
 });
 
+test("sort durationProximity still works when the anchor's duration is known but some candidates' own duration is not -- those sort to the back, never crash or reorder arbitrarily", async () => {
+  const { services } = createFixture({
+    videos: [
+      video({ videoId: "anchor", durationSeconds: 600 }),
+      video({ videoId: "close", durationSeconds: 610 }), // distance 10
+      video({ videoId: "unknown_duration", durationSeconds: null }), // distance null -> Infinity
+      video({ videoId: "far", durationSeconds: 6000 }), // distance 5400
+    ],
+  });
+
+  const result = await services.findComparableVideos({ channelId: "UC_A", anchorVideoId: "anchor", sort: "durationProximity" });
+
+  assert.deepEqual(result.candidates.map((c) => c.videoId), ["close", "far", "unknown_duration"]);
+  assert.equal(result.candidates.find((c) => c.videoId === "unknown_duration")!.durationDistanceSeconds, null);
+});
+
 test("sharedTitleTokens handles non-Latin titles (e.g. Cyrillic), not just ASCII (this app's own localization focus makes non-Latin titles a realistic case)", async () => {
   const { services } = createFixture({
     videos: [

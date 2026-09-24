@@ -48,14 +48,16 @@ export type FindComparableVideosInput = {
    * -- required if `sort` is `"performanceMetric"`, or if `performanceThreshold` is given. */
   performanceMetric?: string;
   /** Requires `performanceMetric` to also be set. Evaluated AGE-ALIGNED: both the anchor and
-   * every candidate are compared at the SAME number of days-since-publish -- the furthest day the
-   * ANCHOR's own collected data actually reaches (never the anchor's current wall-clock age:
-   * analytics collection intentionally never reaches "today", so a recently-published anchor's
-   * current age would usually have no data at all yet), capped at 365 days, reusing the existing
-   * Phase 8 comparable-age logic (`computeComparableAgeSeries`) rather than a second, parallel
-   * age-alignment implementation (AGENTS.md §D). A candidate with no analytics coverage at that
-   * exact day is excluded and counted in `excludedForMissingData.performance`, never given a
-   * fabricated `0`/failing value. */
+   * every candidate are compared at the SAME number of days-since-publish -- the last day of
+   * CONTIGUOUS coverage the ANCHOR's own collected data reaches, counting from day 0
+   * (`computeComparableAgeSeries`'s own documented behavior: a single day the Analytics API
+   * silently omitted anywhere before that point collapses this to right before the gap; never the
+   * anchor's current wall-clock age, since analytics collection intentionally never reaches
+   * "today" and a recently-published anchor's current age would usually have no data at all yet),
+   * capped at 365 days, reusing the existing Phase 8 comparable-age logic
+   * (`computeComparableAgeSeries`) rather than a second, parallel age-alignment implementation
+   * (AGENTS.md §D). A candidate with no analytics coverage at that exact day is excluded and
+   * counted in `excludedForMissingData.performance`, never given a fabricated `0`/failing value. */
   performanceThreshold?: { operator: PerformanceThresholdOperator; value: number };
   /** Never a single hard-coded "best match" score (owner spec §10: "do not hard-code a single
    * comparison algorithm") -- an explicit, named sort mode. Every candidate's response row always
@@ -110,12 +112,12 @@ export type FindComparableVideosResult = {
    * definitions" and AC-CMP-06's "report the raw comparison facts" both require the reference
    * point itself to be visible, not just each candidate's distance from it). */
   anchor: FindComparableVideosAnchor;
-  /** `null` unless `performanceMetric` was requested. `dayOffset` is the furthest day-since-publish
-   * the ANCHOR's own collected data actually reaches (capped at 365, and at the anchor's real
-   * elapsed age) -- never the anchor's current wall-clock age, since collection intentionally never
-   * reaches "today" and a recently-published anchor's current age would usually have no data yet.
-   * The single day every candidate's `performanceMetricValue` (and the anchor's own, above) was
-   * evaluated at. */
+  /** `null` unless `performanceMetric` was requested. `dayOffset` is the last day of CONTIGUOUS
+   * coverage the ANCHOR's own collected data reaches, counting from day 0 (see
+   * `FindComparableVideosInput.performanceThreshold`'s own doc comment for why "contiguous," and
+   * why never the anchor's current wall-clock age), capped at 365 and at the anchor's real elapsed
+   * age. The single day every candidate's `performanceMetricValue` (and the anchor's own, above)
+   * was evaluated at. */
   performanceAlignment: { metricName: string; dayOffset: number } | null;
   candidates: ComparableVideoCandidate[];
   /** Never a silently shrunk result set -- every filter-driven exclusion due to a candidate
