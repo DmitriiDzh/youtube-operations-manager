@@ -34,9 +34,8 @@ export { parseWithSchema };
 export const getSystemCapabilitiesInputSchema = z.object({}).strict();
 
 // Derived from `./contracts`'s own const arrays (RISK-53, `docs/TECHNICAL_DEBT.md`) -- never a
-// second, independently-maintained copy of the same literals (AGENTS.md §D). A hardcoded copy
-// here previously drifted out of sync with `AgentDataDomain` when Phase 7 slice G added
-// `content_proposal_metadata`, breaking every real (non-fixture) capability-discovery call.
+// second, independently-maintained copy of the same literals (AGENTS.md §D), which could
+// otherwise silently drift out of sync with the real domain/permission vocabulary.
 const permissionClassSchema = z.enum(PERMISSION_CLASSES);
 
 const agentCapabilityDescriptorSchema = z

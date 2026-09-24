@@ -1,7 +1,7 @@
 import { createChangeSetChannelStoreAdapter } from "@/lib/changesets/adapters/store";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
-import { isDomainError as isAssetCatalogDomainError } from "@/lib/asset-catalog/contracts";
 import { createContentProposalStoreAdapter } from "./adapters/store";
+import { isDomainError } from "./contracts";
 import { createContentProposalServices } from "./services";
 
 export function createContentProposalCore() {
@@ -27,7 +27,7 @@ export function createContentProposalCore() {
         await assetCatalog.getAssetContext({ channelId, assetId });
         return true;
       } catch (error) {
-        if (isAssetCatalogDomainError(error) && error.code === "ASSET_NOT_AVAILABLE") return false;
+        if (isDomainError(error) && error.code === "ASSET_NOT_AVAILABLE") return false;
         throw error;
       }
     },

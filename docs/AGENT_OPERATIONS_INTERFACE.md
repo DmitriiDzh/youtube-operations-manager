@@ -338,16 +338,13 @@ produces content itself (no media pipeline, no YouTube write).
   caller-supplied. Unlike `ai_localization_generation_provenance`, `content_proposals.created_via`
   is `NOT NULL` from creation: this is a brand-new table with no pre-existing rows created before
   this field existed, so there is no backward-compatibility case to accommodate.
-- **Shared vocabulary extraction (`AGENTS.md` §M, done ahead of this slice as its own commit):**
-  `CreatedVia`/`EvidenceReference` (and their zod schemas) are now defined once in a new,
-  dependency-free `src/lib/shared-provenance/` module, imported by both `ai-localization` and
-  `content-proposals` -- neither domain module depends on the other. Also fixed, while touching
-  this area: `AgentCapabilityDomain`/`AgentDataDomain`/`PermissionClass`/`PlannedFutureCapability`
-  are now const arrays in `agent-operations/contracts.ts`, with `agent-operations/schemas.ts`
-  deriving its `z.enum(...)` calls from them instead of hardcoding a second copy (RISK-53,
-  `docs/TECHNICAL_DEBT.md`, now RESOLVED) -- the hardcoded copy had already silently drifted out
-  of sync with `AgentDataDomain` once this slice added `content_proposal_metadata`, breaking
-  every real (non-fixture) capability-discovery call, caught by this slice's own test suite.
+- **Shared vocabulary extraction (`AGENTS.md` §M):** `CreatedVia`/`EvidenceReference` (and their
+  zod schemas) are defined once in a dependency-free `src/lib/shared-provenance/` module, imported
+  by both `ai-localization` and `content-proposals` -- neither domain module depends on the other.
+  `AgentCapabilityDomain`/`AgentDataDomain`/`PermissionClass`/`PlannedFutureCapability` are const
+  arrays in `agent-operations/contracts.ts`, with `agent-operations/schemas.ts` deriving its
+  `z.enum(...)` calls from them instead of hardcoding a second copy (RISK-53, `docs/TECHNICAL_DEBT.md`,
+  RESOLVED).
 - **New agent-operations capabilities:** `content_proposal.create_content_proposal` (DRAFT),
   `content_proposal.get_content_proposal`/`content_proposal.list_content_proposals` (READ).
   MCP `agent_create_content_proposal`/`agent_get_content_proposal`/`agent_list_content_proposals`,
@@ -360,13 +357,24 @@ produces content itself (no media pipeline, no YouTube write).
   `creative_assets` already has (`docs/TECHNICAL_DEBT.md` RISK-52, note widened to cover this
   table too).
 - **§20 (Experiment context, deferred to Phase 10) compatibility:** satisfied without building
-  anything -- a proposal's own stable `proposalId` is a future link target, and
-  `referenceAssetIds` already lets a produced artifact point back at the proposal that requested
-  it. Nothing further was needed to avoid painting into a corner.
+  anything -- a proposal's own stable `proposalId` is a future link target for the
+  not-yet-built artifact-return path (owner spec §19: a produced artifact will point BACK at the
+  proposal that requested it, once that path exists). `referenceAssetIds` is the other direction
+  -- a proposal pointing at pre-existing, already-catalogued assets it references, not the
+  produced-artifact link. Nothing further was needed to avoid painting into a corner.
 - **Why PARTIAL:** the external-artifact "return path" (owner spec §19 -- registering an
   externally-produced artifact back against a proposal) is not yet implemented in this slice;
   only proposal creation/read is done so far. Evidence/rationale inherit the same per-object (not
-  per-field), never-independently-verified caveats already documented for slice F.
+  per-field), never-independently-verified caveats already documented for slice F. When that
+  return path is built, the design direction is: a link table owned by `content-proposals` (e.g.
+  `proposalId`/`assetId`/`createdVia`/`agentApiVersion`), not a new column on `creative_assets`
+  itself (`AGENTS.md` §M -- asset-catalog's own schema/code should stay untouched by a feature it
+  doesn't depend on); an agent-callable registration path restricted to `referenceKind` values
+  `url`/`external_artifact_id` only, never `local_path` (owner spec §17: "the agent should
+  receive only explicitly cataloged/authorized assets" -- an agent that could register its own
+  `local_path` would be self-authorizing filesystem access, unlike the existing operator-only
+  `asset register` CLI command, which keeps `local_path` available); and the same required,
+  no-default `callOrigin` pattern already used for `create_content_proposal`.
 
 ## 5. Context model (owner spec §6) -- design settled, mostly not yet implemented
 
@@ -398,7 +406,12 @@ the first to actually touch `HYPOTHESIS`: `profileVersion`/`effectiveContext` ar
 shape (they live in the Change Set's own `Changes`, a separate existing read); the eventual human
 approval of those Changes is a `DECISION`, entirely outside this capability's scope. No explicit
 per-field tag added for this reason -- the same naming/doc-comment-only approach as slice C.
-`ACTION`/`OUTCOME` remain unexercised by any slice so far.
+Slice G (Content Proposal -- see §4f) is the first WRITE capability to carry `HYPOTHESIS`-class
+fields on its own record, not just a read of one: `publicationHypothesis`/`expectedMetrics`
+(inside `brief`) are the agent's own prediction, never a server-verified fact -- same
+naming/doc-comment-only classification as above (the field names themselves signal "hypothesis,"
+per their own doc comment in `content-proposals/contracts.ts`). `ACTION`/`OUTCOME` remain
+unexercised by any slice so far.
 
 ## 6. Error vocabulary (owner spec §27) -- IMPLEMENTED
 
@@ -414,6 +427,7 @@ second error-code enum:
 | `ANALYTICS_STALE` | 409 | analytics data exists but is too old for the request's own freshness requirement |
 | `CHANNEL_NOT_AUTHORIZED` | 403 | channel-scoping failure (distinct from the pre-existing `CHANNEL_NOT_ACTIVE`, which is about the *caller's* active-channel session state, not the agent-interface's own authorization check) |
 | `ASSET_NOT_AVAILABLE` | 404 | a catalogued asset reference that can't currently be retrieved |
+| `CONTENT_PROPOSAL_NOT_AVAILABLE` | 404 | a Content Proposal reference that doesn't exist, or belongs to another channel |
 | `INVALID_CONTEXT_REQUEST` | 400 | a context request with an invalid shape/combination of options |
 | `DRAFT_VALIDATION_FAILED` | 422 | a DRAFT object failed field-level validation |
 | `APPROVAL_REQUIRED` | 403 | an operation that needs human approval was attempted without it |
@@ -431,7 +445,7 @@ second error-code enum:
 | F | Bulk localization integration -- evidence, rationale, identity stamping | **PARTIAL** -- see §4e; widens the existing `ai_localization_create_change_set` MCP tool, CLI command, and Web route (`ai_localization_generate` is untouched). Evidence/rationale are per-Change-Set, not per-proposal (RISK-55, known limitation). |
 | G | Content Proposal / external artifact registration | **PARTIAL** -- see §4f; new `src/lib/content-proposals/` module, `content_proposals` table. Proposal create/get/list implemented; external-artifact registration (owner spec §19) not yet implemented. |
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | IN PROGRESS |
-| I | Codex operations-workspace template | PLANNED -- see `docs/CODEX_OPERATIONS_WORKSPACE.md` once slice I lands |
+| I | Codex operations-workspace template | PLANNED -- owner decision, Telegram 2026-09-24: operating/editorial instructions for the connected agent live in a folder OUTSIDE this repository (never committed here, per `AGENTS.md` §B); this application's own Settings stores a path to that folder, and the path/its contents are surfaced to the connected agent via MCP on request. Slice I's actual scope in this repo is therefore limited to that path-configuration/surfacing mechanism -- never an operations-workspace template or editorial-guideline document committed here. |
 | J | Independent security/integration review | ONGOING per slice -- `docs/roadmap/BACKLOG.md`'s BL-079/BL-080/BL-081 (and later rows, as slices land) are the authoritative record of each slice's own review-cycle status; not restated here as a round tally, since that would just be a second, driftable copy of the same fact |
 
 Deliberately **not** implemented in this phase (owner spec §14/§29): the competitor/trend

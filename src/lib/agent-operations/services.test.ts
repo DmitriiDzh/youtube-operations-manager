@@ -386,6 +386,27 @@ test("agent capabilities list registers get_generation_provenance under localiza
   assert.equal(cap!.permission, "READ");
 });
 
+// Phase 7 slice G (owner spec §18/§25): get_capabilities must report the new content_proposal
+// domain's three capabilities with the correct permission classes -- create is DRAFT (an agent
+// may propose one), get/list are READ -- and the new content_proposal_metadata data domain.
+test("agent capabilities list registers the three content_proposal capabilities with correct domain/permission, and the new data domain", async () => {
+  const { services } = createFixture();
+  const result = await services.getSystemCapabilities({});
+
+  const createCap = result.capabilities.find((c) => c.id === "content_proposal.create_content_proposal");
+  const getCap = result.capabilities.find((c) => c.id === "content_proposal.get_content_proposal");
+  const listCap = result.capabilities.find((c) => c.id === "content_proposal.list_content_proposals");
+  assert.ok(createCap);
+  assert.equal(createCap!.domain, "content_proposal");
+  assert.equal(createCap!.permission, "DRAFT");
+  assert.ok(getCap);
+  assert.equal(getCap!.permission, "READ");
+  assert.ok(listCap);
+  assert.equal(listCap!.permission, "READ");
+
+  assert.ok(result.dataDomains.includes("content_proposal_metadata"));
+});
+
 // AC-PROVENANCE-01/02: forwards input unchanged, returns the stored record including the
 // changeSetId/channelId/createdAt fields only a stored (not mid-preview) provenance carries.
 test("getGenerationProvenance forwards its input unchanged and returns the stored record", async () => {

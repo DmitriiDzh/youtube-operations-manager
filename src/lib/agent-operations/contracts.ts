@@ -67,8 +67,7 @@ export const AGENT_API_VERSION = "0.6.0";
  *
  * Exported as a const array, not a plain union (RISK-53, `docs/TECHNICAL_DEBT.md`) -- so
  * `schemas.ts`'s own `z.enum(...)` derives from this single source instead of hardcoding a second,
- * independently-maintained copy of the same literals that could silently drift from it (the exact
- * defect class already fixed once for `asset-catalog`'s enums in Phase 7 slice D).
+ * independently-maintained copy of the same literals that could silently drift from it.
  */
 export const AGENT_CAPABILITY_DOMAINS = [
   "system",

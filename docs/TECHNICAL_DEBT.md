@@ -881,7 +881,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-54 | `agent_get_generation_provenance` (Phase 7 slice E) has no server-stamped agent/client identity or product/API version -- owner spec §22's full traceability requirement is only partially met | none blocking | RESOLVED, 2026-09-24 |
 | RISK-55 | Evidence/rationale (Phase 7 slice F) are recorded once per Change Set, not per individual proposal, and confidence/warnings/expected-objective/source-context-revision (owner spec §12/§13) aren't recorded at all | none blocking | OPEN |
 | RISK-56 | `createChangeSetFromGeneration` (Phase 7 slice F) persists the Change Set, then separately writes its now-unconditional provenance row -- not one atomic operation | none blocking | OPEN |
-| RISK-57 | Owner spec §22's third traceability element, "operation type," is not recorded anywhere on a provenance record (Phase 7 slice E/F only closed "agent/client identity" and "product/API version") | none blocking | OPEN |
+| RISK-57 | Owner spec §22's "operation type" is now structurally implied by which table a record lives on (slice G added a second); "originating task"/owner spec §21's task-envelope model remain unstarted | none blocking | OPEN |
 
 ## RISK-53 — `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` — RESOLVED, 2026-09-24
 
@@ -924,15 +924,15 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Approval required from:** none technically required to file; a future fix is its own separately-assigned task.
 - **Status:** OPEN — tracked, not yet fixed.
 
-## RISK-57 — Owner spec §22's "operation type" traceability element is not recorded on any provenance record (Phase 7 slice E/F) — OPEN, 2026-09-24
+## RISK-57 — Owner spec §22's "operation type"/"originating task" traceability elements — PARTIALLY ADDRESSED, tracked, 2026-09-24
 
-- **Affected components:** `DraftProvenance` (`src/lib/sync-gateway/change-drafts/contracts.ts`), `StoredGenerationProvenance` (`src/lib/ai-localization/contracts.ts`), `docs/AGENT_OPERATIONS_INTERFACE.md` §4d.
-- **Current behavior:** owner spec §22 asks for three traceability elements on every agent-created object: "agent/client identity," "product/API version," and "operation type." Slice F (RISK-54) added `createdVia`/`agentApiVersion`, closing the first two. Nothing records the third -- there is currently only one kind of operation this provenance record can ever result from (creating a Change Set via `createChangeSetFromGeneration`), so "operation type" has had nothing to distinguish it from so far.
-- **Why not fixed now:** with only one operation kind in existence, adding a field whose value would always be the same literal constant provides no real traceability value yet; premature to design its vocabulary before a second operation kind (e.g. a future content-proposal or asset-registration flow, slice G+) actually exists to distinguish it from.
-- **Actual risk:** low today; would become worth revisiting once a second kind of agent-created object shares the same provenance-style tracking.
-- **Required remediation:** when a second distinct operation kind needs the same provenance tracking, add an `operationType` (or similarly named) field at that point, informed by the concrete second case rather than speculatively now.
+- **Affected components:** `DraftProvenance` (`src/lib/sync-gateway/change-drafts/contracts.ts`), `StoredGenerationProvenance` (`src/lib/ai-localization/contracts.ts`), `ContentProposal` (`src/lib/content-proposals/contracts.ts`), `docs/AGENT_OPERATIONS_INTERFACE.md` §4d/§4f.
+- **Current behavior:** owner spec §22 asks for several traceability elements on every agent-created object, including "operation type" and "originating task." Slice F (RISK-54) added `createdVia`/`agentApiVersion` to `ai_localization_generation_provenance`; slice G added the identical pair to `content_proposals`, a second, distinct record type. No literal `operationType` field exists on either table.
+- **Why this is only PARTIAL, not a gap needing an immediate fix:** with two now-distinct tables (`ai_localization_generation_provenance` for Change Set creation, `content_proposals` for proposal creation), WHICH table a `createdVia`/`agentApiVersion` pair lives on already distinguishes the operation that produced it -- a reader does not need a separate `operationType` field to know a `content_proposals` row came from `create_content_proposal`, not from `createChangeSetFromGeneration`. A literal field would be redundant with the schema itself for as long as each operation kind keeps its own table. "Originating task" is a different, still entirely open gap: no capability in this interface records a `taskId`, and owner spec §21's own "Agent task model" (a structured task envelope with `taskId`/scope/permissions/status) has not been scheduled in any slice so far.
+- **Actual risk:** low today for "operation type" (structurally implied); low-but-growing for "originating task" once multiple agent actions need to be correlated back to one higher-level unit of work (e.g. an agent that generates a proposal, then registers an artifact against it, then requests a Change Set -- three separate calls with no shared identifier linking them).
+- **Required remediation:** if a future operation kind ever shares a table with an existing one (rather than getting its own), add an explicit `operationType` field at that point. Separately, and independently, owner spec §21's task-envelope model remains unimplemented -- revisit if/when the interface needs to correlate multiple agent-initiated operations back to one task.
 - **Gate(s):** none blocking.
-- **Approval required from:** none technically required to file; a future fix is its own separately-assigned task.
-- **Status:** OPEN — tracked, not yet fixed.
+- **Approval required from:** none technically required to file; a future fix (either half) is its own separately-assigned task.
+- **Status:** OPEN (operation-type structurally addressed; originating-task/§21 task model not started) — tracked.
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

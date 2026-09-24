@@ -174,6 +174,26 @@ test("createContentProposal rejects an unexpected input field as validation_fail
   );
 });
 
+// `brief` is a `.strict()`-validated object with named, bounded keys, deliberately never an open
+// `z.record` (contracts.ts's own doc comment: "never persist arbitrary unbounded content").
+test("createContentProposal rejects a brief with an unrecognized key", async () => {
+  const { services } = createFixture();
+
+  await assert.rejects(
+    () => services.createContentProposal({ channelId: "UC_A", brief: { proposedTitleDirection: "x", unexpectedKey: "oops" } }, WEB_UI_ORIGIN),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+test("createContentProposal rejects a brief field longer than its bound", async () => {
+  const { services } = createFixture();
+
+  await assert.rejects(
+    () => services.createContentProposal({ channelId: "UC_A", brief: { proposedTitleDirection: "x".repeat(2001) } }, WEB_UI_ORIGIN),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
 // Phase 7 slice G (owner spec §22): createdVia/agentApiVersion must be an attestation, never a
 // caller-suppliable input field -- same discipline as `ai-localization`'s own `.strict()` schema.
 test("createContentProposal rejects a request body that tries to smuggle createdVia/agentApiVersion as input fields", async () => {

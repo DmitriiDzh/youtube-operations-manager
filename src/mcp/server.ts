@@ -1179,8 +1179,8 @@ export function createMcpToolHandlers(
     },
 
     /**
-     * Slice G (owner spec §18). Mutates local application state (a new Change Set never
-     * involved) -- gated by the same device-availability/recovery-mode check as
+     * Slice G (owner spec §18). Mutates local application state (a new proposal row, never a
+     * Change Set) -- gated by the same device-availability/recovery-mode check as
      * `ai_localization_create_change_set`. Same explicit channel-scoping pattern as
      * `agentGetAssetContext` above -- the service function itself does no such check.
      */
