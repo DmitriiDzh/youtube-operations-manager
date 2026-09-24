@@ -2851,6 +2851,8 @@ test("CLI agent capabilities returns version/capabilities with no auth/channel r
     listContentProposals: async () => { throw new Error("not used"); },
     registerExternalArtifact: async () => { throw new Error("not used"); },
     listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -2894,6 +2896,8 @@ test("CLI agent capabilities is never blocked by the operation lock (read-only)"
       listContentProposals: async () => { throw new Error("not used"); },
       registerExternalArtifact: async () => { throw new Error("not used"); },
       listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     };
 
     const exitCode = await runCliCommand({
@@ -2935,6 +2939,8 @@ test("CLI agent channel-context forwards channelId after checking it against the
     listContentProposals: async () => { throw new Error("not used"); },
     registerExternalArtifact: async () => { throw new Error("not used"); },
     listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -2985,6 +2991,8 @@ test("CLI agent channel-context rejects a channelId that is not the caller's act
       listContentProposals: async () => { throw new Error("not used"); },
       registerExternalArtifact: async () => { throw new Error("not used"); },
       listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3026,6 +3034,8 @@ test("CLI agent video-context rejects a channelId that is not the caller's activ
       listContentProposals: async () => { throw new Error("not used"); },
       registerExternalArtifact: async () => { throw new Error("not used"); },
       listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3069,6 +3079,8 @@ test("CLI agent video-context forwards channelId/videoId and parses --include in
     listContentProposals: async () => { throw new Error("not used"); },
     registerExternalArtifact: async () => { throw new Error("not used"); },
     listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3106,6 +3118,8 @@ test("CLI agent video-context omits `include` entirely when --include is not pas
     listContentProposals: async () => { throw new Error("not used"); },
     registerExternalArtifact: async () => { throw new Error("not used"); },
     listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
   };
 
   const exitCode = await runCliCommand({
@@ -3145,6 +3159,8 @@ test("CLI agent channel-context/video-context are never blocked by the operation
       listContentProposals: async () => { throw new Error("not used"); },
       registerExternalArtifact: async () => { throw new Error("not used"); },
       listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     };
 
     const channelContextExit = await runCliCommand({
@@ -3199,6 +3215,8 @@ test("CLI agent channel-analytics forwards resolved credentialRef, channelId, st
     listContentProposals: async () => { throw new Error("not used"); },
     registerExternalArtifact: async () => { throw new Error("not used"); },
     listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3241,6 +3259,8 @@ test("CLI agent channel-analytics requires --startDate/--endDate", async () => {
       listContentProposals: async () => { throw new Error("not used"); },
       registerExternalArtifact: async () => { throw new Error("not used"); },
       listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3276,6 +3296,8 @@ test("CLI agent video-analytics forwards resolved credentialRef, channelId, and 
     listContentProposals: async () => { throw new Error("not used"); },
     registerExternalArtifact: async () => { throw new Error("not used"); },
     listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3333,6 +3355,8 @@ test("CLI agent channel-analytics/video-analytics are never blocked by the opera
       listContentProposals: async () => { throw new Error("not used"); },
       registerExternalArtifact: async () => { throw new Error("not used"); },
       listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     };
 
     const channelAnalyticsExit = await runCliCommand({
@@ -3376,6 +3400,8 @@ test("CLI agent list-assets forwards channelId/videoId/assetType after checking 
     listContentProposals: async () => { throw new Error("not used"); },
     registerExternalArtifact: async () => { throw new Error("not used"); },
     listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3426,6 +3452,8 @@ test("CLI agent list-assets rejects a channelId that is not the caller's active 
       listContentProposals: async () => { throw new Error("not used"); },
       registerExternalArtifact: async () => { throw new Error("not used"); },
       listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3465,6 +3493,8 @@ test("CLI agent get-asset-context forwards channelId/assetId after checking it a
     listContentProposals: async () => { throw new Error("not used"); },
     registerExternalArtifact: async () => { throw new Error("not used"); },
     listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3637,6 +3667,8 @@ test("CLI agent list-assets/get-asset-context are never blocked by the operation
       listContentProposals: async () => { throw new Error("not used"); },
       registerExternalArtifact: async () => { throw new Error("not used"); },
       listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     };
 
     const listExit = await runCliCommand({
@@ -3718,6 +3750,8 @@ test("CLI agent get-generation-provenance forwards channelId/changeSetId after c
     listContentProposals: async () => { throw new Error("not used"); },
     registerExternalArtifact: async () => { throw new Error("not used"); },
     listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3751,6 +3785,8 @@ test("CLI agent get-generation-provenance reports { provenance: null } when the 
     listContentProposals: async () => { throw new Error("not used"); },
     registerExternalArtifact: async () => { throw new Error("not used"); },
     listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3800,6 +3836,8 @@ test("CLI agent get-generation-provenance rejects a channelId that is not the ca
       listContentProposals: async () => { throw new Error("not used"); },
       registerExternalArtifact: async () => { throw new Error("not used"); },
       listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3826,6 +3864,8 @@ test("CLI agent get-generation-provenance is never blocked by the operation lock
       listContentProposals: async () => { throw new Error("not used"); },
       registerExternalArtifact: async () => { throw new Error("not used"); },
       listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     };
 
     const exitCode = await runCliCommand({
@@ -3876,6 +3916,8 @@ test("CLI agent create-content-proposal forwards channelId/objective/evidenceJso
     listContentProposals: async () => { throw new Error("not used"); },
     registerExternalArtifact: async () => { throw new Error("not used"); },
     listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3942,6 +3984,8 @@ test("CLI agent create-content-proposal rejects malformed --evidenceJson/--brief
       listContentProposals: async () => { throw new Error("not used"); },
       registerExternalArtifact: async () => { throw new Error("not used"); },
       listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3983,6 +4027,8 @@ test("CLI agent create-content-proposal rejects a channelId that is not the call
       listContentProposals: async () => { throw new Error("not used"); },
       registerExternalArtifact: async () => { throw new Error("not used"); },
       listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -4022,6 +4068,8 @@ test("CLI agent create-content-proposal is rejected while the operation lock is 
       listContentProposals: async () => ({ proposals: [] }),
       registerExternalArtifact: async () => { throw new Error("not used"); },
       listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     };
 
     const createExitCode = await runCliCommand({
@@ -4091,6 +4139,8 @@ test("CLI agent get-content-proposal forwards channelId/proposalId after checkin
     listContentProposals: async () => { throw new Error("not used"); },
     registerExternalArtifact: async () => { throw new Error("not used"); },
     listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -4128,6 +4178,8 @@ test("CLI agent list-content-proposals forwards channelId after checking active 
     },
     registerExternalArtifact: async () => { throw new Error("not used"); },
     listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -4186,6 +4238,8 @@ test("CLI agent register-external-artifact forwards channelId/proposalId/assetTy
       };
     },
     listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -4272,6 +4326,8 @@ test("CLI agent register-external-artifact rejects malformed --provenanceJson", 
       listContentProposals: async () => { throw new Error("not used"); },
       registerExternalArtifact: async () => { throw new Error("must not be called"); },
       listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -4327,6 +4383,8 @@ test("CLI agent register-external-artifact rejects referenceKind local_path (rea
         throw new Error("must not be called -- schema should have thrown first");
       },
       listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -4381,6 +4439,8 @@ test("CLI agent register-external-artifact rejects a channelId that is not the c
       listContentProposals: async () => { throw new Error("not used"); },
       registerExternalArtifact: async () => { throw new Error("must not be called"); },
       listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -4409,6 +4469,8 @@ test("CLI agent list-proposal-artifacts forwards channelId/proposalId after chec
       captured = input;
       return { artifacts: [] };
     },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -4444,6 +4506,8 @@ test("CLI agent register-external-artifact is rejected while the operation lock 
       listContentProposals: async () => { throw new Error("not used"); },
       registerExternalArtifact: async () => { throw new Error("must not be called"); },
       listProposalArtifacts: async () => ({ artifacts: [] }),
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
     };
 
     const registerExitCode = await runCliCommand({
@@ -4481,6 +4545,154 @@ test("CLI agent register-external-artifact is rejected while the operation lock 
       writeStdout: () => {},
     });
     assert.equal(listExitCode, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent list-operations-files returns the result with no auth/channel resolution required", async () => {
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async (input: unknown) => {
+      assert.deepEqual(input, {});
+      return { configured: true, files: [{ path: "AGENTS.md", isDirectory: false, sizeBytes: 42 }], truncated: false };
+    },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "list-operations-files"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.deepEqual(envelope.data, { configured: true, files: [{ path: "AGENTS.md", isDirectory: false, sizeBytes: 42 }], truncated: false });
+});
+
+test("CLI agent list-operations-files forwards { configured: false } unchanged when no workspace path is set", async () => {
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => ({ configured: false as const }),
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "list-operations-files"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.deepEqual(envelope.data, { configured: false });
+});
+
+test("CLI agent get-operations-file forwards --path and returns the result, no auth/channel resolution required", async () => {
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async (input: unknown) => {
+      assert.deepEqual(input, { path: "AGENTS.md" });
+      return { configured: true, path: "AGENTS.md", content: "# hi", truncated: false };
+    },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "get-operations-file", "--path", "AGENTS.md"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.deepEqual(envelope.data, { configured: true, path: "AGENTS.md", content: "# hi", truncated: false });
+});
+
+test("CLI agent list-operations-files/get-operations-file are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => ({ configured: false as const }),
+      operationsWorkspaceGetFile: async () => ({ configured: false as const }),
+    };
+
+    const listExitCode = await runCliCommand({
+      argv: ["agent", "list-operations-files"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(listExitCode, 0);
+
+    const getExitCode = await runCliCommand({
+      argv: ["agent", "get-operations-file", "--path", "AGENTS.md"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(getExitCode, 0);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }

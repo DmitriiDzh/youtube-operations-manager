@@ -457,6 +457,81 @@ now-recovered spec text plus the acceptance criteria already implicit in each sl
 suite) is appropriate work for slice J (independent security/integration review) or immediately
 before the final `dev` merge, not urgent before slice I.
 
+## 4j. Codex operations-workspace path surfacing (owner spec §3/§30) -- IMPLEMENTED (slice I)
+
+Owner spec §3 originally asked for a full "operations-workspace" example/template (an
+`AGENTS.md`, connection config, permitted capabilities, expected agent behavior, task-output/
+temporary-asset folders). The project owner narrowed this scope explicitly (Telegram,
+2026-09-24): "Как вести канал будет сложено в папке вне данного репозитория, но мы можем в
+настройках указать путь где они находятся. Чтобы эта информация попала к подключенному агенту и
+не попадала при этом в наш репозиторий" -- operating/editorial instructions for the connected
+agent live in a folder OUTSIDE this repository (never generated, templated, or committed here,
+`AGENTS.md` §B); this application's Settings tab stores a path to that folder, and its contents
+are surfaced to the connected agent via MCP/CLI on request. Slice I's actual scope is therefore
+limited to that path-configuration/surfacing mechanism, never an operations-workspace template or
+editorial-guideline document of its own.
+
+- **New module `src/lib/operations-instructions/`** (contracts/schemas/services/adapters/index --
+  §6.2 pattern). Not channel-scoped -- one global, operator-configured path, unlike every other
+  domain module in this interface.
+- **Setting:** `operationsWorkspacePath` (`src/lib/db.ts`'s `getOperationsWorkspacePath`/
+  `setOperationsWorkspacePath`, reusing the existing generic `appSettings` key-value table -- no
+  new schema/migration needed). `null`/empty both mean "not configured." **Settable ONLY through
+  `POST /api/settings`** -- no `agent`-namespaced MCP tool or CLI command can set or change it
+  (owner spec §17's `local_path` self-authorization concern, applied here: an agent that could
+  choose its own instructions directory would be authorizing its own filesystem access, exactly
+  the reasoning already established for asset registration in slice G2).
+- **Set-time validation (`validateOperationsWorkspacePath`, called from the Settings route):**
+  rejects a non-absolute path, a path that doesn't exist or isn't a directory, and -- the
+  RISK-07-motivated check -- a path that equals, is inside, or is an ANCESTOR of this
+  application's own app-data directory (an ancestor would expose the app-data directory, which
+  holds plaintext OAuth tokens, underneath the configured workspace). Verified live in a browser:
+  a relative path is rejected ("path must be absolute"), and the real macOS app-data directory
+  (`~/Library/Application Support/YouTubeOperationsManager`) is rejected as overlapping.
+- **Read-time re-validation, independent of the set-time check:** every `listOperationsFiles`/
+  `getOperationsFile` call re-resolves the configured path via `realpath` and re-runs the SAME
+  appDataDir-overlap check, because the directory could be re-symlinked to something unsafe at any
+  point after being validated and saved. Proven by a dedicated test that configures a symlink,
+  validates it once, then repoints the underlying real target at the app-data directory and
+  confirms the NEXT read is rejected -- set-time validation alone would have missed this.
+- **`listOperationsFiles(input)`:** returns `{ configured: false }` (never a silently empty list)
+  when unconfigured; otherwise walks the configured directory (depth-capped at 6, file-count
+  capped at 300, reporting `truncated: true` if either cap was hit), returning each entry's
+  path (POSIX-normalized, relative to the workspace root -- the absolute base path itself is
+  never returned, since it would leak host filesystem layout/username), `isDirectory`, and
+  `sizeBytes` (`null` for directories). Dotfiles/dot-directories are always excluded; files are
+  further filtered to an extension allowlist (`.md`/`.txt`/`.json`/`.yaml`/`.yml`) -- directories
+  are still listed for navigability regardless of what they contain.
+- **`getOperationsFile({ path })`:** returns `{ configured: false }` when unconfigured; otherwise
+  requires the given relative path to survive BOTH a cheap syntactic pre-check (no `..` segments,
+  not absolute, no control characters) AND the authoritative `realpath`-plus-`path.relative`
+  containment check against the real, current workspace root -- a naive `startsWith` prefix check
+  was deliberately avoided (it would wrongly accept a sibling directory like `/x/instr-evil`
+  against a configured `/x/instr`). A path that fails either check gets the exact same
+  `OPERATIONS_FILE_NOT_AVAILABLE` error as a genuinely nonexistent file -- never distinguishable,
+  to avoid confirming what does or doesn't exist outside the workspace. Content is capped at
+  200,000 bytes per file (`truncated: true` if the real file is larger).
+- **Symlink handling, verified with real temporary directories and real symlinks (not mocked
+  `fs`):** a symlink that stays inside the workspace is followed and its content returned
+  normally; a symlink escaping the workspace (or resolving into the app-data directory) is
+  rejected for `getOperationsFile`, and silently skipped (never surfaced as an error, matching
+  this module's own "never fabricate" discipline) when encountered during `listOperationsFiles`.
+- **New agent-operations capabilities:** `operations_workspace.list_files` (READ),
+  `operations_workspace.get_file` (READ) -- both READ, since listing/reading never mutates
+  anything. MCP `agent_list_operations_files`/`agent_get_operations_file`, CLI
+  `agent list-operations-files`/`agent get-operations-file` -- no HTTP route (MCP/CLI-first, same
+  precedent as every other slice). Neither is channel-scoped: no `channelId`/`assertActiveChannel`
+  check, mirroring `agent_get_capabilities`'s own instance-level pattern. Neither is gated by the
+  device-availability/recovery-mode check -- both are pure filesystem reads. `AGENT_API_VERSION`
+  bumped to `0.8.0`.
+- **Settings UI:** a new "Codex operations workspace" card (AI Agent sub-tab, next to MCP
+  connection), a single text input plus Save button, following the exact pattern already
+  established for the Analytics auto-collection settings card. Verified live in a browser
+  end-to-end: a real directory could be saved, its one real file was then actually listed and
+  read back through the CLI (`agent list-operations-files`/`agent get-operations-file`), an
+  invalid (relative) path was rejected with a clear inline error, a path overlapping the real
+  app-data directory was rejected, and clearing the field back to empty worked.
+
 ## 5. Context model (owner spec §6) -- design settled, mostly not yet implemented
 
 Every context object this interface returns is meant to carry: entity identity, source, data
@@ -526,7 +601,7 @@ second error-code enum:
 | F | Bulk localization integration -- evidence, rationale, identity stamping | **PARTIAL** -- see §4e; widens the existing `ai_localization_create_change_set` MCP tool, CLI command, and Web route (`ai_localization_generate` is untouched). Evidence/rationale are per-Change-Set, not per-proposal (RISK-55, known limitation). |
 | G | Content Proposal / external artifact registration | **CLOSED** -- see §4f; new `src/lib/content-proposals/` module, `content_proposals`/`content_proposal_artifacts` tables. Proposal create/get/list and external-artifact register/list both implemented. |
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | **VERIFIED, against the recovered verbatim spec, 2026-09-24.** Cross-checked that every `AGENT_CAPABILITIES` entry points at an actually-registered MCP tool and that every `agent_*` MCP tool has CLI parity -- zero drift. The initial capability set (owner spec §25) is fully present. The session's original verbatim spec text (34 numbered sections, sent over Telegram 2026-09-23) is not stored anywhere in this repository -- it was recovered from this session's own pre-compaction transcript to check the sections this document had never previously cited, rather than trusting citation coverage alone. That recheck found two real, previously-untracked gaps outside slice H's own scope -- §4g/§4h below (owner spec §10/§16, `BL-088`/`BL-089`) -- and one process gap, §4i (owner spec §28, no dedicated Phase 7 acceptance-contract document). Every other previously-uncited section (§3, §8, §11, §20, §21, §22, §23, §24, §26, §29-33) was confirmed either already implemented, already tracked as a known gap, or deliberately narrowed/overridden by a later, explicit owner instruction (§3/§30, slice I). |
-| I | Codex operations-workspace template | PLANNED -- owner decision, Telegram 2026-09-24: operating/editorial instructions for the connected agent live in a folder OUTSIDE this repository (never committed here, per `AGENTS.md` §B); this application's own Settings stores a path to that folder, and the path/its contents are surfaced to the connected agent via MCP on request. Slice I's actual scope in this repo is therefore limited to that path-configuration/surfacing mechanism -- never an operations-workspace template or editorial-guideline document committed here. |
+| I | Codex operations-workspace path surfacing | **IMPLEMENTED** -- see §4j; owner decision, Telegram 2026-09-24, narrowed this slice to a path-configuration/surfacing mechanism only (never an operations-workspace template or editorial-guideline document committed here, per `AGENTS.md` §B). New `src/lib/operations-instructions/` module, Settings-only `operationsWorkspacePath` setting, MCP `agent_list_operations_files`/`agent_get_operations_file`, CLI `agent list-operations-files`/`agent get-operations-file`. `AGENT_API_VERSION` → `0.8.0`. |
 | J | Independent security/integration review | ONGOING per slice -- `docs/roadmap/BACKLOG.md`'s BL-079/BL-080/BL-081 (and later rows, as slices land) are the authoritative record of each slice's own review-cycle status; not restated here as a round tally, since that would just be a second, driftable copy of the same fact |
 
 Deliberately **not** implemented in this phase (owner spec §14/§29): the competitor/trend

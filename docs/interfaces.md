@@ -157,6 +157,8 @@ npm run cli:video-metadata -- agent get-content-proposal --channelId <UC...> --p
 npm run cli:video-metadata -- agent list-content-proposals --channelId <UC...>
 npm run cli:video-metadata -- agent register-external-artifact --channelId <UC...> --proposalId <PROPOSAL_ID> --assetType <type> --referenceKind url|external_artifact_id --referenceValue <value> [--title <t>] [--description <d>] [--linkedVideoId <id>] [--provenanceJson <json>]
 npm run cli:video-metadata -- agent list-proposal-artifacts --channelId <UC...> --proposalId <PROPOSAL_ID>
+npm run cli:video-metadata -- agent list-operations-files
+npm run cli:video-metadata -- agent get-operations-file --path <RELATIVE_PATH>
 ```
 
 `agent capabilities` is read-only with no channel/credential resolution at all (instance-level
@@ -231,6 +233,25 @@ list-proposal-artifacts` is the same `assertActiveChannel`-checked, read-only pa
 get-asset-context`/`agent list-assets` -- it hydrates each link with its full `CreativeAsset` and
 silently drops a link whose asset is somehow missing rather than fabricating one. See
 `docs/AGENT_OPERATIONS_INTERFACE.md` §4f for the full design.
+
+`agent list-operations-files`/`agent get-operations-file` (Phase 7 slice I, owner spec §3/§30)
+surface the contents of an operator-configured, out-of-repository folder holding Codex's own
+operating instructions. Unlike every other `agent` command, neither takes `--channelId` and
+neither calls `assertActiveChannel` -- this is instance-level, not channel-scoped (one global
+path). Both return `{ configured: false }`, never an error or a silently empty list, if the
+operator hasn't set a path yet (Settings tab only -- **no command in this CLI can set or change
+it**, matching the `local_path` self-authorization concern already established for
+`register-external-artifact`). `list-operations-files` returns each file/folder's path (relative
+to the workspace root, POSIX-normalized -- the absolute base path is never exposed), whether it's
+a directory, and its size in bytes (`null` for directories); only `.md`/`.txt`/`.json`/`.yaml`/
+`.yml` files are listed, dotfiles/dot-directories are always excluded, and the result is bounded
+by a depth/file-count cap (`truncated: true` if hit). `get-operations-file --path <RELATIVE_PATH>`
+reads one file's content (capped at 200,000 bytes, `truncated: true` if the real file is larger)
+-- a path that tries to escape the workspace (`..` segments, an absolute path, or a symlink
+resolving outside it, including into this app's own app-data directory) is rejected with the same
+`OPERATIONS_FILE_NOT_AVAILABLE` error as a genuinely nonexistent file, never distinguishable. Both
+are pure filesystem reads, never gated by the device-availability check. See
+`docs/AGENT_OPERATIONS_INTERFACE.md` §4j for the full design.
 
 ### Analytics commands (CLI parity for the MCP `analytics_*` tools, Phase 8 follow-up)
 
@@ -416,6 +437,19 @@ Key MCP tools:
     ProposalArtifactLink[] }`. Same channel-scoping as `agent_get_content_proposal`; local read
     only, hydrates each link with its full `CreativeAsset` and silently drops a link whose asset is
     somehow missing rather than fabricating one.
+  - `agent_list_operations_files` (Phase 7 slice I, owner spec §3/§30) — `{}` →
+    `{ configured: false } | { configured: true, files: OperationsWorkspaceFileEntry[], truncated:
+    boolean }`. NOT channel-scoped (one global, operator-configured path) — no `channelId`, no
+    `assertActiveChannel` check, like `agent_get_capabilities`. Lists files/folders under the
+    operator-configured operations-workspace directory; `.md`/`.txt`/`.json`/`.yaml`/`.yml` files
+    only, dotfiles/dot-directories always excluded, depth/file-count capped. The path itself can
+    only be set through the Web UI's Settings tab — no MCP tool or CLI command can set it.
+  - `agent_get_operations_file` — `{ path }` → `{ configured: false } | { configured: true, path,
+    content: string, truncated: boolean }`. Same non-channel-scoped note as
+    `agent_list_operations_files`. A `path` that escapes the configured directory (`..` segments,
+    an absolute path, or a symlink resolving outside it, including into this app's own app-data
+    directory) gets the same `OPERATIONS_FILE_NOT_AVAILABLE` error as a genuinely nonexistent
+    file, never distinguishable. Content capped at 200,000 bytes.
 
   `get_capabilities` also now registers several already-existing, already-implemented tools it
   previously omitted (`channel_list`, `channel_video_list`, `ai_localization_generate`,

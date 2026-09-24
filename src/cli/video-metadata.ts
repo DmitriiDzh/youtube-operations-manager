@@ -63,6 +63,8 @@ type AgentOperationsCliCoreSubset = Pick<
   | "listContentProposals"
   | "registerExternalArtifact"
   | "listProposalArtifacts"
+  | "operationsWorkspaceListFiles"
+  | "operationsWorkspaceGetFile"
 >;
 type AssetCatalogCliCoreSubset = Pick<AssetCatalogCore, "registerAsset">;
 
@@ -125,7 +127,9 @@ export type ParsedArgs = {
     | "get-content-proposal"
     | "list-content-proposals"
     | "register-external-artifact"
-    | "list-proposal-artifacts";
+    | "list-proposal-artifacts"
+    | "list-operations-files"
+    | "get-operations-file";
   flags: Record<string, string | boolean>;
 };
 
@@ -165,6 +169,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
       "list-content-proposals",
       "register-external-artifact",
       "list-proposal-artifacts",
+      "list-operations-files",
+      "get-operations-file",
     ],
     asset: ["register"],
   };
@@ -391,6 +397,14 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   // agent list-proposal-artifacts: a local read over already-registered artifact links.
   // "register-external-artifact" is deliberately NOT here -- it persists a new asset AND link row.
   "list-proposal-artifacts",
+  // agent list-operations-files/get-operations-file: pure filesystem reads over the
+  // operator-configured operations-workspace directory -- never mutate anything. There is no
+  // "set-operations-workspace-path" CLI command in this (or any) namespace -- that path can only
+  // be set through the Web UI's Settings tab (owner spec §17's self-authorization concern:
+  // an agent that could choose its own instructions directory would be authorizing its own
+  // filesystem access).
+  "list-operations-files",
+  "get-operations-file",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -719,6 +733,23 @@ export async function runCliCommand(args: {
     if (parsedArgs.namespace === "agent") {
       if (parsedArgs.command === "capabilities") {
         const result = await agentOperationsCore.getSystemCapabilities({});
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Slice I, owner spec §3/§30. No channelId/assertActiveChannel -- like "capabilities"
+      // above, this is instance-level (one global, operator-configured workspace path), not
+      // channel-scoped.
+      if (parsedArgs.command === "list-operations-files") {
+        const result = await agentOperationsCore.operationsWorkspaceListFiles({});
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "get-operations-file") {
+        const result = await agentOperationsCore.operationsWorkspaceGetFile({
+          path: requiredStringFlag(parsedArgs.flags, "path"),
+        });
         writeStdout(serializeSuccess(result));
         return 0;
       }

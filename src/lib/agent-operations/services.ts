@@ -35,6 +35,10 @@ import {
   listContentProposalsOutputSchema,
   listProposalArtifactsInputSchema,
   listProposalArtifactsOutputSchema,
+  operationsWorkspaceGetFileInputSchema,
+  operationsWorkspaceGetFileOutputSchema,
+  operationsWorkspaceListFilesInputSchema,
+  operationsWorkspaceListFilesOutputSchema,
   parseWithSchema,
   queryChannelAnalyticsInputSchema,
   queryVideoAnalyticsInputSchema,
@@ -49,6 +53,7 @@ import type { CreativeAsset } from "@/lib/asset-catalog";
 import type { StoredGenerationProvenance } from "@/lib/ai-localization/contracts";
 import type { ContentProposal, ProposalArtifactLink } from "@/lib/content-proposals";
 import type { CreatedVia } from "@/lib/shared-provenance";
+import type { OperationsWorkspaceFileResult, OperationsWorkspaceListResult } from "@/lib/operations-instructions";
 
 /**
  * One entry per capability actually implemented and reachable today -- either a new function this
@@ -213,6 +218,20 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "List every artifact registered against a Content Proposal, newest first, each with its full catalogued asset record. Requires channelId to be the caller's currently-active channel and proposalId to actually belong to it.",
   },
+  {
+    id: "operations_workspace.list_files",
+    domain: "operations_workspace",
+    permission: "READ",
+    description:
+      "List files/folders under the operator-configured operations-workspace directory (owner spec §3/§30) -- a folder OUTSIDE this repository holding Codex's own operating/editorial instructions, never generated or stored by this application itself (AGENTS.md §B). Returns { configured: false } if the operator has not set a path yet -- never a silently empty list. Only `.md`/`.txt`/`.json`/`.yaml`/`.yml` files are listed; dotfiles/dot-directories are always excluded. Bounded by a fixed depth/file-count cap, reporting `truncated: true` if either was hit. The path itself is set only through the Settings UI (`POST /api/settings`) -- no agent-callable way exists to set or change it (the same self-authorization concern owner spec §17 already raised for `local_path` asset registration).",
+  },
+  {
+    id: "operations_workspace.get_file",
+    domain: "operations_workspace",
+    permission: "READ",
+    description:
+      "Read one file's content from the operator-configured operations-workspace directory, by its path as returned from operations_workspace.list_files. Returns { configured: false } if no path is set. A path attempting to escape the configured directory (`..` segments, an absolute path, or a symlink resolving outside it) is rejected with the same OPERATIONS_FILE_NOT_AVAILABLE error as a genuinely nonexistent file -- never distinguishable, to avoid confirming what does or doesn't exist outside the workspace. Content is capped at 200,000 bytes per file, reporting `truncated: true` if the real file is larger.",
+  },
 ];
 
 
@@ -360,6 +379,11 @@ type ServiceDependencies = {
     callOrigin: { createdVia: CreatedVia; agentApiVersion?: string | null }
   ): Promise<ProposalArtifactLink>;
   contentProposalListProposalArtifacts(input: unknown): Promise<{ artifacts: ProposalArtifactLink[] }>;
+  // Slice I -- delegates to `operationsInstructionsCore`'s own `listOperationsFiles`/
+  // `getOperationsFile` unchanged (AGENTS.md §D). No credential/channel checking -- this
+  // capability is not channel-scoped at all (one global, operator-configured workspace path).
+  operationsWorkspaceListFiles(input: unknown): Promise<OperationsWorkspaceListResult>;
+  operationsWorkspaceGetFile(input: unknown): Promise<OperationsWorkspaceFileResult>;
 };
 
 export function createAgentOperationsServices(deps: ServiceDependencies) {
@@ -618,6 +642,21 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
       const parsedInput = parseWithSchema(listProposalArtifactsInputSchema, input, "list proposal artifacts input");
       const result = await deps.contentProposalListProposalArtifacts(parsedInput);
       return parseWithSchema(listProposalArtifactsOutputSchema, result, "list proposal artifacts output");
+    },
+
+    /** Slice I, owner spec §3/§30. Not channel-scoped -- one global, operator-configured
+     * workspace path. See this capability's own description in `AGENT_CAPABILITIES` above. */
+    async operationsWorkspaceListFiles(input: unknown): Promise<OperationsWorkspaceListResult> {
+      const parsedInput = parseWithSchema(operationsWorkspaceListFilesInputSchema, input, "list operations workspace files input");
+      const result = await deps.operationsWorkspaceListFiles(parsedInput);
+      return parseWithSchema(operationsWorkspaceListFilesOutputSchema, result, "list operations workspace files output");
+    },
+
+    /** Slice I. Same non-channel-scoped note as `operationsWorkspaceListFiles` above. */
+    async operationsWorkspaceGetFile(input: unknown): Promise<OperationsWorkspaceFileResult> {
+      const parsedInput = parseWithSchema(operationsWorkspaceGetFileInputSchema, input, "get operations workspace file input");
+      const result = await deps.operationsWorkspaceGetFile(parsedInput);
+      return parseWithSchema(operationsWorkspaceGetFileOutputSchema, result, "get operations workspace file output");
     },
   };
 }

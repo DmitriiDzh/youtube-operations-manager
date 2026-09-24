@@ -13,6 +13,7 @@ import { AiConnectionsManager } from "@/components/ai-connections-manager";
 import { AnalyticsCollectionSettings } from "@/components/analytics-collection-settings";
 import { LiveWritesSettings } from "@/components/live-writes-settings";
 import { McpConnectionSettings } from "@/components/mcp-connection-settings";
+import { OperationsWorkspaceSettings } from "@/components/operations-workspace-settings";
 import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
 import { ChannelConnectionsSettings } from "@/components/channel-connections-settings";
@@ -330,6 +331,7 @@ export default function Dashboard() {
 
         <div className={settingsSubTab === "ai-agent" ? "space-y-6" : "hidden"}>
           <McpConnectionSettings />
+          <OperationsWorkspaceSettings />
           <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
             <h3 className="mb-4 flex items-center gap-1.5 text-base font-semibold text-zinc-100">
               AI provider connections

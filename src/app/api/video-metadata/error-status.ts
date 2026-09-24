@@ -61,6 +61,8 @@ const DOMAIN_ERROR_STATUS = {
   DRAFT_VALIDATION_FAILED: 422,
   APPROVAL_REQUIRED: 403,
   EXECUTION_NOT_AUTHORIZED: 403,
+  OPERATIONS_WORKSPACE_UNAVAILABLE: 409,
+  OPERATIONS_FILE_NOT_AVAILABLE: 404,
 } as const satisfies Partial<Record<DomainErrorCode, number>>;
 
 export function getVideoMetadataErrorStatus(code: DomainErrorCode) {

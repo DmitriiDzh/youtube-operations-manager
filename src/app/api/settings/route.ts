@@ -10,12 +10,15 @@ import {
   getGatewayTrafficLast24h,
   getLiveWritesEnabled,
   getMcpConnectionEnabled,
+  getOperationsWorkspacePath,
   setAnalyticsReadsEnabled,
   setAnalyticsSyncSettings,
   setDataApiReadsEnabled,
   setLiveWritesEnabled,
   setMcpConnectionEnabled,
+  setOperationsWorkspacePath,
 } from "@/lib/db";
+import { validateOperationsWorkspacePath } from "@/lib/operations-instructions";
 
 /**
  * App-wide settings (Settings tab, owner instruction 2026-09-21). Two flags today:
@@ -44,6 +47,19 @@ import {
  *   `succeeded` for a rolling 24h window, from `src/lib/db.ts`'s `getGatewayTrafficLast24h`
  *   (owner instruction, 2026-09-22 -- "сколько было попыток пройти через шлюз за последние
  *   сутки... сколько попыток... увенчались успехом"). Only the last 24h, not all-time.
+ * - `operationsWorkspacePath` -- Phase 7 slice I (owner spec §3/§30,
+ *   `docs/AGENT_OPERATIONS_INTERFACE.md` §4i, Telegram 2026-09-24): an absolute path to a folder
+ *   OUTSIDE this repository holding Codex's own operating/editorial instructions -- surfaced to
+ *   the connected agent via the read-only `agent_list_operations_files`/`agent_get_operations_file`
+ *   MCP tools/CLI commands, never generated or committed here (`AGENTS.md` §B). `null` means
+ *   unconfigured. Set-time validation (`validateOperationsWorkspacePath`) rejects a non-absolute
+ *   path, a path that doesn't exist/isn't a directory, or one that overlaps this application's own
+ *   app-data directory (RISK-07: plaintext OAuth tokens live there) -- the SAME check the read
+ *   path independently re-runs on every request, since the directory could be re-symlinked to
+ *   something unsafe after being validated here. This is the ONLY way to set this path -- no
+ *   `agent`-namespaced MCP tool or CLI command can (owner spec §17's `local_path` self-
+ *   authorization concern, applied here: an agent that could choose its own instructions
+ *   directory would be authorizing its own filesystem access).
  * - `cloudQuotaStatus` -- read-only, not settable via `POST`: real Google Cloud quota
  *   limit/usage from the Cloud Monitoring API (`docs/decisions/0008-cloud-connection.md`'s
  *   follow-up, owner instruction 2026-09-22 -- "сколько максимальная квота... сколько из неё
@@ -68,6 +84,7 @@ async function getSettingsSnapshot() {
     analyticsReadsEnabled,
     gatewayTraffic,
     cloudQuotaStatus,
+    operationsWorkspacePath,
   ] = await Promise.all([
     getLiveWritesEnabled(),
     getMcpConnectionEnabled(),
@@ -76,6 +93,7 @@ async function getSettingsSnapshot() {
     getAnalyticsReadsEnabled(),
     getGatewayTrafficLast24h(),
     createCloudQuotasCore().getQuotaStatus(),
+    getOperationsWorkspacePath(),
   ]);
 
   return {
@@ -87,6 +105,7 @@ async function getSettingsSnapshot() {
     analyticsReadsEnabled,
     gatewayTraffic,
     cloudQuotaStatus,
+    operationsWorkspacePath,
   };
 }
 
@@ -143,6 +162,23 @@ export async function POST(request: Request) {
       );
     }
     await setAnalyticsSyncSettings({ timezone: body.analyticsSyncTimezone });
+  }
+
+  if (body.operationsWorkspacePath !== undefined) {
+    if (body.operationsWorkspacePath === null || body.operationsWorkspacePath === "") {
+      await setOperationsWorkspacePath(null);
+    } else if (typeof body.operationsWorkspacePath !== "string") {
+      return NextResponse.json(
+        { error: "validation_failed", message: "operationsWorkspacePath must be a string or null" },
+        { status: 400 }
+      );
+    } else {
+      const validation = await validateOperationsWorkspacePath(body.operationsWorkspacePath);
+      if (!validation.ok) {
+        return NextResponse.json({ error: "validation_failed", message: validation.reason }, { status: 400 });
+      }
+      await setOperationsWorkspacePath(body.operationsWorkspacePath);
+    }
   }
 
   return NextResponse.json(await getSettingsSnapshot());

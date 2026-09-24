@@ -2675,7 +2675,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
 
   assert.equal(result.isError, undefined);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
-  assert.equal(payload.agentApiVersion, "0.7.0");
+  assert.equal(payload.agentApiVersion, "0.8.0");
   assert.deepEqual(payload.grantedPermissions, ["READ", "DRAFT"]);
   assert.ok(payload.capabilities.some((c: { id: string }) => c.id === "system.get_capabilities"));
 });
@@ -2731,6 +2731,8 @@ function makeAgentOperationsCoreStub(): Pick<
   | "listContentProposals"
   | "registerExternalArtifact"
   | "listProposalArtifacts"
+  | "operationsWorkspaceListFiles"
+  | "operationsWorkspaceGetFile"
 > {
   return {
     getSystemCapabilities: async () => ({
@@ -2860,6 +2862,8 @@ function makeAgentOperationsCoreStub(): Pick<
       agentApiVersion: AGENT_API_VERSION,
     }),
     listProposalArtifacts: async () => ({ artifacts: [] }),
+    operationsWorkspaceListFiles: async () => ({ configured: false }),
+    operationsWorkspaceGetFile: async () => ({ configured: false }),
   };
 }
 
@@ -2916,6 +2920,8 @@ test("MCP agent_get_channel_context rejects a channelId that is not the caller's
     | "listContentProposals"
     | "registerExternalArtifact"
     | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
   > = {
     ...makeAgentOperationsCoreStub(),
     getChannelContext: async () => {
@@ -2994,6 +3000,8 @@ test("MCP agent_get_video_context rejects a channelId that is not the caller's a
     | "listContentProposals"
     | "registerExternalArtifact"
     | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
   > = {
     ...makeAgentOperationsCoreStub(),
     getVideoContext: async () => {
@@ -3194,6 +3202,8 @@ test("MCP agent_list_assets rejects a channelId that is not the caller's active 
     | "listContentProposals"
     | "registerExternalArtifact"
     | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
   > = {
     ...makeAgentOperationsCoreStub(),
     listAssets: async () => {
@@ -3269,6 +3279,8 @@ test("MCP agent_get_asset_context rejects a channelId that is not the caller's a
     | "listContentProposals"
     | "registerExternalArtifact"
     | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
   > = {
     ...makeAgentOperationsCoreStub(),
     getAssetContext: async () => {
@@ -3357,6 +3369,8 @@ test("MCP agent_get_generation_provenance rejects a channelId that is not the ca
     | "listContentProposals"
     | "registerExternalArtifact"
     | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
   > = {
     ...makeAgentOperationsCoreStub(),
     getGenerationProvenance: async () => {
@@ -3461,6 +3475,8 @@ test("MCP agent_create_content_proposal rejects a channelId that is not the call
     | "listContentProposals"
     | "registerExternalArtifact"
     | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
   > = {
     ...makeAgentOperationsCoreStub(),
     createContentProposal: async () => {
@@ -3566,6 +3582,8 @@ test("MCP agent_get_content_proposal rejects a channelId that is not the caller'
     | "listContentProposals"
     | "registerExternalArtifact"
     | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
   > = {
     ...makeAgentOperationsCoreStub(),
     getContentProposal: async () => {
@@ -3632,6 +3650,8 @@ test("MCP agent_list_content_proposals rejects a channelId that is not the calle
     | "listContentProposals"
     | "registerExternalArtifact"
     | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
   > = {
     ...makeAgentOperationsCoreStub(),
     listContentProposals: async () => {
@@ -3805,6 +3825,8 @@ test("MCP agent_register_external_artifact rejects a channelId that is not the c
     | "listContentProposals"
     | "registerExternalArtifact"
     | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
   > = {
     ...makeAgentOperationsCoreStub(),
     registerExternalArtifact: async () => {
@@ -3906,6 +3928,8 @@ test("MCP agent_list_proposal_artifacts rejects a channelId that is not the call
     | "listContentProposals"
     | "registerExternalArtifact"
     | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
   > = {
     ...makeAgentOperationsCoreStub(),
     listProposalArtifacts: async () => {
@@ -3928,4 +3952,114 @@ test("MCP agent_list_proposal_artifacts rejects a channelId that is not the call
   assert.equal(result.isError, true);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
   assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_list_operations_files forwards its input unchanged, no channel scoping required", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.operationsWorkspaceListFiles = async (input: unknown) => {
+    captured = input;
+    return { configured: true, files: [{ path: "AGENTS.md", isDirectory: false, sizeBytes: 42 }], truncated: false };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListOperationsFiles({});
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, {});
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.deepEqual(payload, { configured: true, files: [{ path: "AGENTS.md", isDirectory: false, sizeBytes: 42 }], truncated: false });
+});
+
+test("MCP agent_list_operations_files rejects an unexpected input field", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    makeAgentOperationsCoreStub()
+  );
+  const result = await handlers.agentListOperationsFiles({ unexpected: true });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP agent_get_operations_file forwards its input unchanged, no channel scoping required", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.operationsWorkspaceGetFile = async (input: unknown) => {
+    captured = input;
+    return { configured: true, path: "AGENTS.md", content: "# hi", truncated: false };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentGetOperationsFile({ path: "AGENTS.md" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, { path: "AGENTS.md" });
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.deepEqual(payload, { configured: true, path: "AGENTS.md", content: "# hi", truncated: false });
+});
+
+test("MCP agent_get_operations_file rejects a missing path field", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    makeAgentOperationsCoreStub()
+  );
+  const result = await handlers.agentGetOperationsFile({});
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP agent_list_operations_files/agent_get_operations_file are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      makeAgentOperationsCoreStub()
+    );
+    const listResult = await handlers.agentListOperationsFiles({});
+    assert.notEqual(listResult.isError, true);
+    const getResult = await handlers.agentGetOperationsFile({ path: "AGENTS.md" });
+    assert.notEqual(getResult.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
 });

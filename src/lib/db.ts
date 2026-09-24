@@ -2035,6 +2035,29 @@ export async function setAnalyticsReadsEnabled(enabled: boolean, database: AppDb
   await setAppSetting(ANALYTICS_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
 }
 
+const OPERATIONS_WORKSPACE_PATH_SETTING_KEY = "operations_workspace_path";
+
+/**
+ * Phase 7 slice I (owner spec §3/§30, `docs/AGENT_OPERATIONS_INTERFACE.md` §4i, project owner
+ * clarification via Telegram 2026-09-24): an absolute filesystem path to a folder OUTSIDE this
+ * repository holding Codex's own operating/editorial instructions -- this application never
+ * generates, templates, or commits anything into that folder (`AGENTS.md` §B), it only stores
+ * where it is and surfaces its contents to the connected agent on request. Only ever set through
+ * the operator-facing Settings API (`POST /api/settings`), never through any `agent`-namespaced
+ * MCP tool or CLI command -- an agent that could choose its own instructions directory would be
+ * self-authorizing filesystem access, the exact `local_path`/owner-spec-§17 logic slice G2
+ * already established for asset registration. `null`/empty string both mean "not configured" --
+ * this is not a boolean toggle like the settings above, so no separate "enabled" flag exists.
+ */
+export async function getOperationsWorkspacePath(database: AppDb = db): Promise<string | null> {
+  const value = await getAppSetting(OPERATIONS_WORKSPACE_PATH_SETTING_KEY, database);
+  return value && value.length > 0 ? value : null;
+}
+
+export async function setOperationsWorkspacePath(path: string | null, database: AppDb = db): Promise<void> {
+  await setAppSetting(OPERATIONS_WORKSPACE_PATH_SETTING_KEY, path ?? "", database);
+}
+
 export type GatewayTrafficCategory =
   | "data_api_reads"
   | "analytics_reads"

@@ -89,6 +89,13 @@ type FakeProposalArtifactLink = {
   agentApiVersion: string | null;
 };
 
+type FakeOperationsWorkspaceListResult =
+  | { configured: false }
+  | { configured: true; files: Array<{ path: string; isDirectory: boolean; sizeBytes: number | null }>; truncated: boolean };
+type FakeOperationsWorkspaceFileResult =
+  | { configured: false }
+  | { configured: true; path: string; content: string; truncated: boolean };
+
 function createFixture(
   overrides: Partial<{
     productVersion: string;
@@ -114,6 +121,8 @@ function createFixture(
       callOrigin: { createdVia: "mcp" | "cli" | "web_ui"; agentApiVersion?: string | null }
     ) => Promise<FakeProposalArtifactLink>;
     contentProposalListProposalArtifacts: (input: unknown) => Promise<{ artifacts: FakeProposalArtifactLink[] }>;
+    operationsWorkspaceListFiles: (input: unknown) => Promise<FakeOperationsWorkspaceListResult>;
+    operationsWorkspaceGetFile: (input: unknown) => Promise<FakeOperationsWorkspaceFileResult>;
   }> = {}
 ) {
   const services = createAgentOperationsServices({
@@ -150,6 +159,10 @@ function createFixture(
       overrides.contentProposalRegisterExternalArtifact ?? (async () => { throw new Error("contentProposalRegisterExternalArtifact not stubbed"); }),
     contentProposalListProposalArtifacts:
       overrides.contentProposalListProposalArtifacts ?? (async () => { throw new Error("contentProposalListProposalArtifacts not stubbed"); }),
+    operationsWorkspaceListFiles:
+      overrides.operationsWorkspaceListFiles ?? (async () => { throw new Error("operationsWorkspaceListFiles not stubbed"); }),
+    operationsWorkspaceGetFile:
+      overrides.operationsWorkspaceGetFile ?? (async () => { throw new Error("operationsWorkspaceGetFile not stubbed"); }),
   });
   return { services };
 }
@@ -162,7 +175,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   const result = await services.getSystemCapabilities({});
 
   assert.equal(result.productVersion, "9.9.9");
-  assert.equal(result.agentApiVersion, "0.7.0");
+  assert.equal(result.agentApiVersion, "0.8.0");
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -439,6 +452,61 @@ test("agent capabilities list registers the two slice G2 artifact-registration c
   assert.equal(registerCap!.permission, "DRAFT");
   assert.ok(listCap);
   assert.equal(listCap!.permission, "READ");
+});
+
+// Phase 7 slice I (owner spec §3/§30): both are READ -- listing/reading the operator-configured
+// workspace never mutates anything.
+test("agent capabilities list registers the two slice I operations-workspace capabilities with correct domain/permission, and the new data domain", async () => {
+  const { services } = createFixture();
+  const result = await services.getSystemCapabilities({});
+
+  const listCap = result.capabilities.find((c) => c.id === "operations_workspace.list_files");
+  const getCap = result.capabilities.find((c) => c.id === "operations_workspace.get_file");
+  assert.ok(listCap);
+  assert.equal(listCap!.domain, "operations_workspace");
+  assert.equal(listCap!.permission, "READ");
+  assert.ok(getCap);
+  assert.equal(getCap!.domain, "operations_workspace");
+  assert.equal(getCap!.permission, "READ");
+
+  assert.ok(result.dataDomains.includes("operations_workspace_files"));
+});
+
+test("operationsWorkspaceListFiles forwards its input unchanged and returns the result unchanged", async () => {
+  let captured: unknown;
+  const { services } = createFixture({
+    operationsWorkspaceListFiles: async (input) => {
+      captured = input;
+      return { configured: true, files: [{ path: "AGENTS.md", isDirectory: false, sizeBytes: 42 }], truncated: false };
+    },
+  });
+
+  const result = await services.operationsWorkspaceListFiles({});
+  assert.deepEqual(captured, {});
+  assert.deepEqual(result, { configured: true, files: [{ path: "AGENTS.md", isDirectory: false, sizeBytes: 42 }], truncated: false });
+});
+
+test("operationsWorkspaceListFiles forwards { configured: false } unchanged when no path is set", async () => {
+  const { services } = createFixture({
+    operationsWorkspaceListFiles: async () => ({ configured: false }),
+  });
+
+  const result = await services.operationsWorkspaceListFiles({});
+  assert.deepEqual(result, { configured: false });
+});
+
+test("operationsWorkspaceGetFile forwards its input unchanged and returns the result unchanged", async () => {
+  let captured: unknown;
+  const { services } = createFixture({
+    operationsWorkspaceGetFile: async (input) => {
+      captured = input;
+      return { configured: true, path: "AGENTS.md", content: "# hi", truncated: false };
+    },
+  });
+
+  const result = await services.operationsWorkspaceGetFile({ path: "AGENTS.md" });
+  assert.deepEqual(captured, { path: "AGENTS.md" });
+  assert.deepEqual(result, { configured: true, path: "AGENTS.md", content: "# hi", truncated: false });
 });
 
 // AC-PROVENANCE-01/02: forwards input unchanged, returns the stored record including the

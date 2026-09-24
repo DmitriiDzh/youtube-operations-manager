@@ -70,7 +70,13 @@ export type DomainErrorCode =
   | "INVALID_CONTEXT_REQUEST"
   | "DRAFT_VALIDATION_FAILED"
   | "APPROVAL_REQUIRED"
-  | "EXECUTION_NOT_AUTHORIZED";
+  | "EXECUTION_NOT_AUTHORIZED"
+  // Phase 7 slice I (owner spec §3/§30, operations-workspace path surfacing). Distinct from
+  // "not configured" (which is not an error -- see `OperationsWorkspaceListResult`/
+  // `OperationsWorkspaceFileResult`'s own `configured: false` discriminant): these two cover the
+  // "configured, but something about the actual request/directory is wrong" cases.
+  | "OPERATIONS_WORKSPACE_UNAVAILABLE"
+  | "OPERATIONS_FILE_NOT_AVAILABLE";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

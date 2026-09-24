@@ -49,6 +49,8 @@ import {
   listAssetsInputSchema,
   listContentProposalsInputSchema,
   listProposalArtifactsInputSchema,
+  operationsWorkspaceGetFileInputSchema,
+  operationsWorkspaceListFilesInputSchema,
   queryChannelAnalyticsInputSchema,
   queryVideoAnalyticsInputSchema,
   registerExternalArtifactInputSchema,
@@ -141,6 +143,8 @@ type AgentOperationsCoreSubset = Pick<
   | "listContentProposals"
   | "registerExternalArtifact"
   | "listProposalArtifacts"
+  | "operationsWorkspaceListFiles"
+  | "operationsWorkspaceGetFile"
 >;
 
 type ToolResponse = {
@@ -195,6 +199,8 @@ type McpToolHandlers = {
   agentListContentProposals: (input: unknown) => Promise<ToolResponse>;
   agentRegisterExternalArtifact: (input: unknown) => Promise<ToolResponse>;
   agentListProposalArtifacts: (input: unknown) => Promise<ToolResponse>;
+  agentListOperationsFiles: (input: unknown) => Promise<ToolResponse>;
+  agentGetOperationsFile: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -1304,6 +1310,40 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    /**
+     * Phase 7 slice I (owner spec §3/§30). No channel/credential resolution at all -- like
+     * `agentGetCapabilities` above, this is instance-level (one global, operator-configured
+     * workspace path), not channel-scoped.
+     */
+    async agentListOperationsFiles(input: unknown): Promise<ToolResponse> {
+      const parsedInput = operationsWorkspaceListFilesInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const result = await agentOperationsCore.operationsWorkspaceListFiles(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** Slice I. Same non-channel-scoped note as `agentListOperationsFiles` above. */
+    async agentGetOperationsFile(input: unknown): Promise<ToolResponse> {
+      const parsedInput = operationsWorkspaceGetFileInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const result = await agentOperationsCore.operationsWorkspaceGetFile(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -1424,6 +1464,10 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     agentRegisterExternalArtifact: async (input) =>
       (await assertMcpDeviceAvailable()) ?? handlers.agentRegisterExternalArtifact(input),
     agentListProposalArtifacts: handlers.agentListProposalArtifacts,
+    // Slice I -- both are pure filesystem reads over the operator-configured workspace path,
+    // never a mutation of any kind -- ungated, like `agentListAssets` above.
+    agentListOperationsFiles: handlers.agentListOperationsFiles,
+    agentGetOperationsFile: handlers.agentGetOperationsFile,
   };
 }
 
@@ -1930,6 +1974,26 @@ export function createMcpServer(
       inputSchema: listProposalArtifactsInputSchema,
     },
     (args) => handlers.agentListProposalArtifacts(args)
+  );
+
+  registerTool(
+    "agent_list_operations_files",
+    {
+      description:
+        "List files/folders under the operator-configured operations-workspace directory (owner spec §3/§30) -- a folder OUTSIDE this repository holding Codex's own operating/editorial instructions, never generated or stored by this application itself. Returns { configured: false } if the operator has not set a path yet, never a silently empty list. Only .md/.txt/.json/.yaml/.yml files are listed; dotfiles/dot-directories are always excluded. Bounded by a fixed depth/file-count cap, reporting truncated: true if either was hit. Not channel-scoped -- one global path. The path itself can only be set through the Web UI's Settings tab, never through any MCP tool or CLI command.",
+      inputSchema: operationsWorkspaceListFilesInputSchema,
+    },
+    (args) => handlers.agentListOperationsFiles(args)
+  );
+
+  registerTool(
+    "agent_get_operations_file",
+    {
+      description:
+        "Read one file's content from the operator-configured operations-workspace directory, by its path as returned from agent_list_operations_files. Returns { configured: false } if no path is set. A path attempting to escape the configured directory (.. segments, an absolute path, or a symlink resolving outside it) is rejected with the same OPERATIONS_FILE_NOT_AVAILABLE error as a genuinely nonexistent file -- never distinguishable. Content is capped at 200,000 bytes per file, reporting truncated: true if the real file is larger. Not channel-scoped.",
+      inputSchema: operationsWorkspaceGetFileInputSchema,
+    },
+    (args) => handlers.agentGetOperationsFile(args)
   );
 
   return server;

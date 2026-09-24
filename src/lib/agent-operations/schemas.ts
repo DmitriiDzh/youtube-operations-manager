@@ -29,6 +29,12 @@ import {
   listProposalArtifactsInputSchema as contentProposalListProposalArtifactsInputSchema,
   listProposalArtifactsOutputSchema as contentProposalListProposalArtifactsOutputSchema,
 } from "@/lib/content-proposals/schemas";
+import {
+  listOperationsFilesInputSchema as rawOperationsWorkspaceListFilesInputSchema,
+  listOperationsFilesOutputSchema as rawOperationsWorkspaceListFilesOutputSchema,
+  getOperationsFileInputSchema as rawOperationsWorkspaceGetFileInputSchema,
+  getOperationsFileOutputSchema as rawOperationsWorkspaceGetFileOutputSchema,
+} from "@/lib/operations-instructions/schemas";
 
 export { parseWithSchema };
 
@@ -347,3 +353,17 @@ export type RegisterExternalArtifactInput = z.infer<typeof registerExternalArtif
 export type RegisterExternalArtifactOutput = z.infer<typeof registerExternalArtifactOutputSchema>;
 export type ListProposalArtifactsInput = z.infer<typeof listProposalArtifactsInputSchema>;
 export type ListProposalArtifactsOutput = z.infer<typeof listProposalArtifactsOutputSchema>;
+
+// ---------------------------------------------------------------------------
+// Slice I -- operations-workspace file surfacing (owner spec §3/§30). Same reuse discipline.
+// ---------------------------------------------------------------------------
+
+export const operationsWorkspaceListFilesInputSchema = rawOperationsWorkspaceListFilesInputSchema;
+export const operationsWorkspaceListFilesOutputSchema = rawOperationsWorkspaceListFilesOutputSchema;
+export const operationsWorkspaceGetFileInputSchema = rawOperationsWorkspaceGetFileInputSchema;
+export const operationsWorkspaceGetFileOutputSchema = rawOperationsWorkspaceGetFileOutputSchema;
+
+export type OperationsWorkspaceListFilesInput = z.infer<typeof operationsWorkspaceListFilesInputSchema>;
+export type OperationsWorkspaceListFilesOutput = z.infer<typeof operationsWorkspaceListFilesOutputSchema>;
+export type OperationsWorkspaceGetFileInput = z.infer<typeof operationsWorkspaceGetFileInputSchema>;
+export type OperationsWorkspaceGetFileOutput = z.infer<typeof operationsWorkspaceGetFileOutputSchema>;
