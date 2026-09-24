@@ -19,9 +19,11 @@ const TITLE_STOPWORDS = new Set([
 ]);
 
 function tokenizeTitle(title: string): Set<string> {
+  // Unicode-aware split (\p{L}/\p{N}, not a-z0-9) -- this application's own localization focus
+  // means non-Latin titles (Cyrillic, etc.) are a realistic case, not an edge case to ignore.
   const tokens = title
     .toLowerCase()
-    .split(/[^a-z0-9]+/)
+    .split(/[^\p{L}\p{N}]+/u)
     .filter((token) => token.length > 1 && !TITLE_STOPWORDS.has(token));
   return new Set(tokens);
 }
@@ -69,10 +71,17 @@ export function createComparableContentServices(deps: ServiceDependencies) {
         });
       }
 
-      if (parsedInput.durationToleranceSeconds !== undefined && anchor.durationSeconds === null) {
+      // Requiring `anchor.durationSeconds` isn't only about `durationToleranceSeconds` -- sorting
+      // by `durationProximity` with an unknown anchor duration would compare every candidate's
+      // `durationDistanceSeconds` as `null` (Infinity - Infinity = NaN in the comparator below),
+      // producing an arbitrary order while still claiming to be sorted by duration proximity.
+      if (
+        (parsedInput.durationToleranceSeconds !== undefined || parsedInput.sort === "durationProximity") &&
+        anchor.durationSeconds === null
+      ) {
         throw new DomainError({
           code: "INVALID_CONTEXT_REQUEST",
-          message: "durationToleranceSeconds was requested, but the anchor video has no known durationSeconds",
+          message: "durationToleranceSeconds/sort=durationProximity was requested, but the anchor video has no known durationSeconds",
           details: { anchorVideoId: parsedInput.anchorVideoId },
         });
       }
@@ -84,12 +93,6 @@ export function createComparableContentServices(deps: ServiceDependencies) {
       let metricRowsByVideoId: Map<string, Array<{ metricDate: string; metricValue: number }>> | null = null;
       let ageAlignmentDays = 0;
       if (parsedInput.performanceMetric) {
-        const nowPacific = toPacificCalendarDate(deps.now().toISOString());
-        ageAlignmentDays = Math.min(
-          Math.max(diffCalendarDays(anchorPublishedPacific, nowPacific), 0),
-          MAX_PERFORMANCE_AGE_ALIGNMENT_DAYS
-        );
-
         const metricsResult = await deps.listMetrics({
           credentialRef: parsedInput.credentialRef,
           channelId: parsedInput.channelId,
@@ -102,6 +105,32 @@ export function createComparableContentServices(deps: ServiceDependencies) {
           existing.push({ metricDate: row.metricDate, metricValue: row.metricValue });
           metricRowsByVideoId.set(row.videoId, existing);
         }
+
+        // The alignment day is derived from how far the ANCHOR's own collected data actually
+        // reaches -- never from wall-clock "now." Analytics collection intentionally never
+        // reaches "today" (`staleness.ts`'s own default collection range ends at yesterday), and
+        // `computeComparableAgeSeries` stops a cumulative series dead at the first missing day --
+        // picking "the anchor's current age" as the alignment day would, for any recently
+        // published anchor (the most natural real query), land on a day with no collected data
+        // yet, making `anchor.performanceMetricValue` null and excluding most/all candidates for
+        // exactly the scenario this filter exists for. Capped by the anchor's own real elapsed
+        // age (so a data anomaly can never claim a day beyond "now") and by
+        // MAX_PERFORMANCE_AGE_ALIGNMENT_DAYS, same as before.
+        const nowPacific = toPacificCalendarDate(deps.now().toISOString());
+        const maxPossibleAlignmentDays = Math.min(
+          Math.max(diffCalendarDays(anchorPublishedPacific, nowPacific), 0),
+          MAX_PERFORMANCE_AGE_ALIGNMENT_DAYS
+        );
+        const anchorRows = metricRowsByVideoId.get(anchor.videoId) ?? [];
+        const anchorSeries = computeComparableAgeSeries({
+          publishedAt: anchor.publishedAt,
+          metricRows: anchorRows,
+          maxDays: maxPossibleAlignmentDays,
+        });
+        const lastAnchorPoint = anchorSeries.cumulativePoints.at(-1);
+        // No contiguous anchor coverage at all (not even day 0) -- degrade to comparing everyone
+        // at day 0 rather than an arbitrary later day nobody has data for either.
+        ageAlignmentDays = lastAnchorPoint ? lastAnchorPoint.dayOffset : 0;
       }
 
       function computePerformanceValue(videoId: string, publishedAt: string): number | null {

@@ -4889,6 +4889,39 @@ test("CLI agent find-comparable-videos rejects --performanceThresholdOperator gi
   assert.equal(envelope.error.code, "validation_failed");
 });
 
+test("CLI agent find-comparable-videos rejects --performanceThresholdValue given without --performanceThresholdOperator (the reverse direction of the same XOR check)", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "v1", "--sort", "publicationProximity", "--performanceThresholdValue", "500"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+      operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+      operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+      findComparableVideos: async () => { throw new Error("must not be called"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
 test("CLI agent find-comparable-videos rejects a channelId that is not the caller's active channel", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({

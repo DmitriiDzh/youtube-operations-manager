@@ -126,6 +126,17 @@ test("durationToleranceSeconds fails the whole request with INVALID_CONTEXT_REQU
   );
 });
 
+test("sort durationProximity without durationToleranceSeconds still fails with INVALID_CONTEXT_REQUEST when the anchor has no known duration (never an arbitrary/NaN-driven order)", async () => {
+  const { services } = createFixture({
+    videos: [video({ videoId: "anchor", durationSeconds: null }), video({ videoId: "v1", durationSeconds: 600 })],
+  });
+
+  await assert.rejects(
+    () => services.findComparableVideos({ channelId: "UC_A", anchorVideoId: "anchor", sort: "durationProximity" }),
+    (error: unknown) => error instanceof DomainError && error.code === "INVALID_CONTEXT_REQUEST"
+  );
+});
+
 // `computeComparableAgeSeries` (reused unchanged, AGENTS.md §D) only reports a cumulative point
 // at a given day-offset if every earlier day back to 0 also has a row -- it never zero-fills a
 // gap (`comparable-age.ts`'s own documented, accepted behavior). These fixtures provide
@@ -141,24 +152,30 @@ function contiguousDailyRows(videoId: string, days: number, valuePerDay: number)
 }
 
 // AC-CMP-05
-test("performanceThreshold is evaluated age-aligned against the anchor's current age, excluding candidates with no coverage at that age", async () => {
+test("performanceThreshold is evaluated age-aligned against the furthest day the ANCHOR's own data actually reaches -- never wall-clock 'now' -- excluding candidates with no coverage at that day", async () => {
   const { services, listMetricsCalls } = createFixture({
     videos: [
       video({ videoId: "anchor", publishedAt: "2026-05-01T20:00:00.000Z" }),
-      // Published the same day as the anchor -- 3 days old at comparison time, same as the anchor.
+      // Published the same day as the anchor.
       video({ videoId: "passes", publishedAt: "2026-05-01T20:00:00.000Z" }),
-      // Too young to have data at day 3 (published on the comparison day itself).
+      // Too young to have data at day 3 (published on the anchor's own last-collected day itself).
       video({ videoId: "too_young", publishedAt: "2026-05-04T20:00:00.000Z" }),
       // Old enough, but below the threshold.
       video({ videoId: "below_threshold", publishedAt: "2026-05-01T20:00:00.000Z" }),
     ],
-    // "now" is 2026-05-04 -- the anchor (published 2026-05-01) is 3 days old at comparison time.
+    // The anchor's OWN collected data only reaches day 3 -- "now" is deliberately much later
+    // (day 20) to prove alignment is derived from the anchor's actual data coverage, not from
+    // wall-clock age: real analytics collection intentionally never reaches "today"
+    // (`staleness.ts`'s own default collection range ends at yesterday), so picking "now" as the
+    // comparison day would leave a recently-published anchor with no data at all yet -- this is
+    // the exact bug an earlier version of this service had (found by independent review).
     metricRows: [
+      ...contiguousDailyRows("anchor", 3, 5), // cumulative through day 3: 20
       ...contiguousDailyRows("passes", 3, 200), // cumulative through day 3: 800 >= 500
       ...contiguousDailyRows("below_threshold", 3, 1), // cumulative through day 3: 4, below 500
       // "too_young" has no rows at all -- genuinely no coverage.
     ],
-    now: new Date("2026-05-04T20:00:00.000Z"),
+    now: new Date("2026-05-21T20:00:00.000Z"),
   });
 
   const result = await services.findComparableVideos({
@@ -175,8 +192,25 @@ test("performanceThreshold is evaluated age-aligned against the anchor's current
   assert.equal(listMetricsCalls.length, 1);
   assert.deepEqual(listMetricsCalls[0], { credentialRef: { userId: "u1" }, channelId: "UC_A", metricNames: ["views"] });
   assert.deepEqual(result.performanceAlignment, { metricName: "views", dayOffset: 3 });
-  // The anchor itself has no metric rows in this fixture -- its own reference value is honestly
-  // null, never fabricated, exactly like a candidate with no coverage at that age.
+  assert.equal(result.anchor.performanceMetricValue, 20);
+});
+
+test("degrades to day 0 when the anchor has no collected data at all yet, rather than an arbitrary later day nobody has data for either", async () => {
+  const { services } = createFixture({
+    videos: [video({ videoId: "anchor", publishedAt: "2026-05-01T20:00:00.000Z" }), video({ videoId: "v1", publishedAt: "2026-05-01T20:00:00.000Z" })],
+    metricRows: [], // no data at all, not even day 0, for anyone
+    now: new Date("2026-05-21T20:00:00.000Z"),
+  });
+
+  const result = await services.findComparableVideos({
+    channelId: "UC_A",
+    anchorVideoId: "anchor",
+    performanceMetric: "views",
+    credentialRef: { userId: "u1" },
+    sort: "performanceMetric",
+  });
+
+  assert.deepEqual(result.performanceAlignment, { metricName: "views", dayOffset: 0 });
   assert.equal(result.anchor.performanceMetricValue, null);
 });
 
@@ -233,6 +267,24 @@ test("sort modes are explicit and each reports the raw comparison facts behind t
   assert.deepEqual(byTokens.candidates[0].sharedTitleTokens, ["cuban", "jazz"]);
 });
 
+test("sharedTitleTokens handles non-Latin titles (e.g. Cyrillic), not just ASCII (this app's own localization focus makes non-Latin titles a realistic case)", async () => {
+  const { services } = createFixture({
+    videos: [
+      video({ videoId: "anchor", title: "Обзор нового телефона" }),
+      video({ videoId: "match", title: "Обзор старого телефона" }),
+      video({ videoId: "nomatch", title: "Совершенно другое видео" }),
+    ],
+  });
+
+  const result = await services.findComparableVideos({ channelId: "UC_A", anchorVideoId: "anchor", sort: "titleTokenOverlap" });
+
+  const match = result.candidates.find((c) => c.videoId === "match");
+  assert.ok(match);
+  assert.deepEqual(match!.sharedTitleTokens.sort(), ["обзор", "телефона"]);
+  const nomatch = result.candidates.find((c) => c.videoId === "nomatch");
+  assert.deepEqual(nomatch!.sharedTitleTokens, []);
+});
+
 // AC-CMP-07
 test("limit caps the result set and reports truncated: true", async () => {
   const { services } = createFixture({
@@ -260,10 +312,12 @@ test("no truncation when every candidate fits within the limit", async () => {
   assert.equal(result.truncated, false);
 });
 
-// AC-CMP-08
+// AC-CMP-08. This test alone is NOT sufficient proof (fixtures with no YouTube client would
+// "pass" this even if a live call existed elsewhere in the module) -- the real evidence is
+// architectural: `src/lib/comparable-content/` imports neither `googleapis` nor
+// `youtube-read-gateway` anywhere (confirmed by reading the module). This test only demonstrates
+// that the injected local fakes are sufficient for a full request to succeed.
 test("performs no live YouTube call -- only the injected local dependencies are ever invoked", async () => {
-  // The fixture's own listVideosByChannel/listMetrics are pure in-memory fakes with no YouTube
-  // client of any kind -- a successful call here IS the proof there is no live-call code path.
   const { services } = createFixture({
     videos: [video({ videoId: "anchor", publishedAt: "2026-05-01T20:00:00.000Z" }), video({ videoId: "v1", publishedAt: "2026-05-01T20:00:00.000Z" })],
     metricRows: [{ videoId: "v1", metricDate: "2026-05-01", metricName: "views", metricValue: 1 }],

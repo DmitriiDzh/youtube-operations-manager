@@ -48,11 +48,14 @@ export type FindComparableVideosInput = {
    * -- required if `sort` is `"performanceMetric"`, or if `performanceThreshold` is given. */
   performanceMetric?: string;
   /** Requires `performanceMetric` to also be set. Evaluated AGE-ALIGNED: both the anchor and
-   * every candidate are compared at the SAME number of days-since-publish (the anchor's own
-   * current age, capped at 365 days), reusing the existing Phase 8 comparable-age logic
-   * (`computeComparableAgeSeries`) rather than a second, parallel age-alignment implementation
-   * (AGENTS.md §D). A candidate with no analytics coverage at that exact age is excluded and
-   * counted in `excludedForMissingData.performance`, never given a fabricated `0`/failing value. */
+   * every candidate are compared at the SAME number of days-since-publish -- the furthest day the
+   * ANCHOR's own collected data actually reaches (never the anchor's current wall-clock age:
+   * analytics collection intentionally never reaches "today", so a recently-published anchor's
+   * current age would usually have no data at all yet), capped at 365 days, reusing the existing
+   * Phase 8 comparable-age logic (`computeComparableAgeSeries`) rather than a second, parallel
+   * age-alignment implementation (AGENTS.md §D). A candidate with no analytics coverage at that
+   * exact day is excluded and counted in `excludedForMissingData.performance`, never given a
+   * fabricated `0`/failing value. */
   performanceThreshold?: { operator: PerformanceThresholdOperator; value: number };
   /** Never a single hard-coded "best match" score (owner spec §10: "do not hard-code a single
    * comparison algorithm") -- an explicit, named sort mode. Every candidate's response row always
@@ -75,9 +78,10 @@ export type ComparableVideoCandidate = {
   durationSeconds: number | null;
   /** DERIVED: `|anchor.durationSeconds - durationSeconds|`. `null` if either side is `null`. */
   durationDistanceSeconds: number | null;
-  /** DERIVED, from already-collected local analytics, age-aligned against the anchor's own
-   * current age. `null` if `performanceMetric` was not requested, or if this candidate has no
-   * analytics coverage at the comparison age (never a fabricated `0`). */
+  /** DERIVED, from already-collected local analytics, age-aligned against the furthest day the
+   * anchor's own data actually reaches (see `performanceThreshold`'s own doc comment above --
+   * never the anchor's current wall-clock age). `null` if `performanceMetric` was not requested,
+   * or if this candidate has no analytics coverage at the comparison day (never a fabricated `0`). */
   performanceMetricValue: number | null;
   /** DERIVED: title words (case-insensitive, punctuation-stripped, common English stopwords
    * removed) shared with the anchor's own title -- an explicit, inspectable signal, never framed
@@ -93,8 +97,9 @@ export type FindComparableVideosAnchor = {
   durationSeconds: number | null;
   /** The anchor's own cumulative metric value at `performanceAlignment.dayOffset` -- the same
    * age-aligned reference point every candidate's own `performanceMetricValue` is compared
-   * against. `null` if `performanceMetric` was not requested, or if the anchor itself has no
-   * analytics coverage at that age (never a fabricated `0`). */
+   * against. `null` if `performanceMetric` was not requested, or if the anchor has no collected
+   * data at all yet (day offset then defaults to 0, and even day 0 has no row) -- never a
+   * fabricated `0`. */
   performanceMetricValue: number | null;
 };
 
@@ -105,9 +110,12 @@ export type FindComparableVideosResult = {
    * definitions" and AC-CMP-06's "report the raw comparison facts" both require the reference
    * point itself to be visible, not just each candidate's distance from it). */
   anchor: FindComparableVideosAnchor;
-  /** `null` unless `performanceMetric` was requested. `dayOffset` is the anchor's own current age
-   * in days-since-publish (capped at 365) -- the single day every candidate's
-   * `performanceMetricValue` (and the anchor's own, above) was evaluated at. */
+  /** `null` unless `performanceMetric` was requested. `dayOffset` is the furthest day-since-publish
+   * the ANCHOR's own collected data actually reaches (capped at 365, and at the anchor's real
+   * elapsed age) -- never the anchor's current wall-clock age, since collection intentionally never
+   * reaches "today" and a recently-published anchor's current age would usually have no data yet.
+   * The single day every candidate's `performanceMetricValue` (and the anchor's own, above) was
+   * evaluated at. */
   performanceAlignment: { metricName: string; dayOffset: number } | null;
   candidates: ComparableVideoCandidate[];
   /** Never a silently shrunk result set -- every filter-driven exclusion due to a candidate
