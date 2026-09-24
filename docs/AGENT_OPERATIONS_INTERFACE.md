@@ -411,6 +411,52 @@ asset-insert path); `content-proposals` only owns the link.
   never-independently-verified caveats already documented for slice F; this remains an accepted,
   unchanged limitation, not something slice G2 needed to revisit.
 
+## 4g. Comparable-content context (owner spec §10) -- NOT IMPLEMENTED, not previously tracked
+
+Found 2026-09-24 when the full 34-section owner spec text was recovered from this session's own
+pre-compaction transcript to independently verify slice H (it had never been re-derived from the
+verbatim spec before -- this document's own citations had never referenced §10 at all, and no
+slice, backlog row, or `docs/TECHNICAL_DEBT.md` entry mentioned it either). The spec asks for a
+`find_comparable_videos(...)` capability with filters (same channel, same content family, similar
+topic/duration/publication period/target audience/metadata pattern, historical performance
+threshold), explicitly NOT requiring embeddings/vector search for a first implementation ("simple
+filters and ranking" is enough). This is distinct from the already-implemented
+`analytics_comparable_age`/`agent_query_channel_analytics` (Phase 8), which compares videos at
+equivalent days-since-publish but does not let a caller search for topically/structurally similar
+videos by the broader filter set §10 describes. Tracked as `BL-088` (`docs/roadmap/BACKLOG.md`),
+`proposed` -- not assigned, not started; the smallest safe first slice would likely reuse
+`youtube-read-gateway`'s already-synced local channel/video mirror plus simple metadata-field
+filtering, no new data source.
+
+## 4h. Performance ↔ asset linkage (owner spec §16) -- NOT IMPLEMENTED, not previously tracked
+
+Found the same way as §4g, same date. The spec asks for the interface to expose associations
+along `video → asset → metadata/version → analytics → experiment/outcome` so an agent can answer
+questions like "which thumbnails were used by high-CTR videos" or "which visual concepts
+repeatedly appeared in stronger-performing videos" -- explicitly leaving causal inference to the
+agent, not the product. Today, `creative_assets.linkedVideoId` records a raw video association
+(slice D), and `content_proposal_artifacts` records a proposal association (slice G2), but neither
+is joined against `video_metrics_daily`/analytics anywhere in this interface -- an agent must
+currently fetch a video's assets and its analytics separately and correlate them itself, with no
+product-provided join. Tracked as `BL-089` (`docs/roadmap/BACKLOG.md`), `proposed` -- not
+assigned, not started.
+
+## 4i. Dedicated Phase 7 acceptance-contract document (owner spec §28) -- NOT PRODUCED
+
+Owner spec §28 asks for "a dedicated Phase 7 acceptance contract" produced **before**
+implementation, covering an explicit list of scenarios (version/capability discovery, channel
+isolation, no dev-repo dependency, no direct DB access, no secret exposure, and more -- see the
+recovered spec text). Every prior phase in this repository that reached this maturity got its own
+`docs/acceptance/PHASE_N_ACCEPTANCE.md` (Phase 5, Phase 6, Phase 6 AI Connections, the
+cross-platform pre-release work) -- Phase 7 has not. Acceptance criteria WERE derived from the
+spec per slice, before each slice's own implementation (`AGENTS.md` §L's discipline was followed
+throughout, and independent review cycles verified this repeatedly), so the substantive intent of
+§28 was not skipped -- but no single, consolidated document exists recording that contract the way
+`docs/acceptance/PHASE_6_ACCEPTANCE.md` does for Phase 6. Producing one retroactively (from the
+now-recovered spec text plus the acceptance criteria already implicit in each slice's own test
+suite) is appropriate work for slice J (independent security/integration review) or immediately
+before the final `dev` merge, not urgent before slice I.
+
 ## 5. Context model (owner spec §6) -- design settled, mostly not yet implemented
 
 Every context object this interface returns is meant to carry: entity identity, source, data
@@ -479,7 +525,7 @@ second error-code enum:
 | E | Agent draft/proposal provenance | **PARTIAL** -- see §4d; MCP `agent_get_generation_provenance`, CLI `agent get-generation-provenance`. No HTTP route (reuses the pre-existing one). "Originating task" (owner spec §22) still not recorded (RISK-57). |
 | F | Bulk localization integration -- evidence, rationale, identity stamping | **PARTIAL** -- see §4e; widens the existing `ai_localization_create_change_set` MCP tool, CLI command, and Web route (`ai_localization_generate` is untouched). Evidence/rationale are per-Change-Set, not per-proposal (RISK-55, known limitation). |
 | G | Content Proposal / external artifact registration | **CLOSED** -- see §4f; new `src/lib/content-proposals/` module, `content_proposals`/`content_proposal_artifacts` tables. Proposal create/get/list and external-artifact register/list both implemented. |
-| H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | **VERIFIED CONSISTENT as of slice G2** -- cross-checked (not merely asserted) that every `AGENT_CAPABILITIES` entry (`src/lib/agent-operations/services.ts`) points at an actually-registered MCP tool (either a dedicated `agent_*` tool or a named pre-existing one, per §28's capability-discovery-honesty rule) and that every `agent_*` MCP tool has CLI parity under the `agent` namespace (`src/cli/video-metadata.ts`) -- zero drift found in either direction. This slice has no discrete deliverable of its own beyond that rolling consistency (it is not a numbered owner-spec section, unlike A-G, I, J); its remaining, already-tracked gaps are the ones each landed slice already recorded on its own (RISK-55, RISK-57, owner spec §23 pagination on `analytics_list`/`query_video_analytics`, and any HTTP route beyond slice A's `GET /api/agent-operations/capabilities` -- HTTP is "where useful" per the phase's own MCP-first framing, not mandatory per capability). This status was derived by cross-checking the actual current code against this document's own per-slice sections (§4a-§4f) -- the full 34-section owner spec text itself is not stored verbatim anywhere in this repository (only per-topic citations, `owner spec §N`, throughout this document), so a handful of section numbers this document has never had occasion to cite (§3, §8, §10, §11, §16, §20, §24, §26, §30-34) were not independently re-checked against their own verbatim text in this pass. |
+| H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | **VERIFIED, against the recovered verbatim spec, 2026-09-24.** Cross-checked that every `AGENT_CAPABILITIES` entry points at an actually-registered MCP tool and that every `agent_*` MCP tool has CLI parity -- zero drift. The initial capability set (owner spec §25) is fully present. The session's original verbatim spec text (34 numbered sections, sent over Telegram 2026-09-23) is not stored anywhere in this repository -- it was recovered from this session's own pre-compaction transcript to check the sections this document had never previously cited, rather than trusting citation coverage alone. That recheck found two real, previously-untracked gaps outside slice H's own scope -- §4g/§4h below (owner spec §10/§16, `BL-088`/`BL-089`) -- and one process gap, §4i (owner spec §28, no dedicated Phase 7 acceptance-contract document). Every other previously-uncited section (§3, §8, §11, §20, §21, §22, §23, §24, §26, §29-33) was confirmed either already implemented, already tracked as a known gap, or deliberately narrowed/overridden by a later, explicit owner instruction (§3/§30, slice I). |
 | I | Codex operations-workspace template | PLANNED -- owner decision, Telegram 2026-09-24: operating/editorial instructions for the connected agent live in a folder OUTSIDE this repository (never committed here, per `AGENTS.md` §B); this application's own Settings stores a path to that folder, and the path/its contents are surfaced to the connected agent via MCP on request. Slice I's actual scope in this repo is therefore limited to that path-configuration/surfacing mechanism -- never an operations-workspace template or editorial-guideline document committed here. |
 | J | Independent security/integration review | ONGOING per slice -- `docs/roadmap/BACKLOG.md`'s BL-079/BL-080/BL-081 (and later rows, as slices land) are the authoritative record of each slice's own review-cycle status; not restated here as a round tally, since that would just be a second, driftable copy of the same fact |
 
