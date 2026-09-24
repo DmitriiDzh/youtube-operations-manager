@@ -983,6 +983,69 @@ test("initializeDatabaseSchema: an existing pre-versioning database (baseline ta
       true,
       "a later migration (v14) must still apply correctly on the pre-versioning re-apply path"
     );
+    // Phase 7 slice K, AC-DUR-05: a later ADD-COLUMN migration (v19, not just a CREATE TABLE
+    // migration like v13/v14 above) must also survive the pre-versioning re-apply path -- this
+    // is exactly the `isDuplicateColumnError`-tolerance scenario RISK-33 already documents for
+    // v4's own view_count/comment_count/like_count columns.
+    await client.execute(
+      "INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('UC_PREV', 'x', 'UU_PREV')"
+    );
+    await client.execute(
+      "INSERT INTO videos (id, channel_id, title, description, published_at, privacy_status, thumbnails_json, localizations_json, duration_seconds) " +
+        "VALUES ('v_prev', 'UC_PREV', 't', '', '2026-01-01T00:00:00Z', 'public', '{}', '{}', 630)"
+    );
+    const durationRow = await client.execute("SELECT duration_seconds FROM videos WHERE id = 'v_prev'");
+    assert.equal(
+      durationRow.rows[0]?.duration_seconds,
+      630,
+      "a later migration (v19, ADD COLUMN) must still apply correctly on the pre-versioning re-apply path"
+    );
+  }));
+
+// Phase 7 slice K (owner spec §10 -- AC-DUR-01). `upsertVideos`/`listStoredVideosByChannel`
+// always use the module-level singleton `db`, not an injectable one (a pre-existing gap, not
+// introduced by this slice, and out of this slice's own scope to retrofit) -- so this proves the
+// same round trip directly against an isolated temp database via Drizzle, the same way this
+// file's own `seedVideo` helper already does, confirming the schema column and its mapping
+// (`mapStoredVideo`'s `durationSeconds: row.durationSeconds`) actually round-trip correctly.
+test("videos.duration_seconds round-trips through the real Drizzle schema, and stays null when never provided (never a fabricated 0)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(channels).values({
+      id: "UC_A",
+      title: "Test Channel",
+      thumbnailUrl: null,
+      uploadsPlaylistId: "UU_TEST",
+      connectedUserId: null,
+    });
+
+    await isolatedDb.insert(videos).values({
+      id: "v_with_duration",
+      channelId: "UC_A",
+      title: "Title",
+      description: "",
+      publishedAt: "2026-01-01T00:00:00.000Z",
+      privacyStatus: "public",
+      thumbnailsJson: "{}",
+      localizationsJson: "{}",
+      durationSeconds: 630,
+    });
+    await isolatedDb.insert(videos).values({
+      id: "v_without_duration",
+      channelId: "UC_A",
+      title: "Title",
+      description: "",
+      publishedAt: "2026-01-01T00:00:00.000Z",
+      privacyStatus: "public",
+      thumbnailsJson: "{}",
+      localizationsJson: "{}",
+    });
+
+    const rows = await isolatedDb.select().from(videos).where(eq(videos.channelId, "UC_A"));
+    const byId = new Map(rows.map((v) => [v.id, v]));
+    assert.equal(byId.get("v_with_duration")?.durationSeconds, 630);
+    assert.equal(byId.get("v_without_duration")?.durationSeconds, null);
   }));
 
 // AC-SCHEMA-04

@@ -217,6 +217,9 @@ export const videos = sqliteTable("videos", {
   viewCount: integer("view_count"),
   commentCount: integer("comment_count"),
   likeCount: integer("like_count"),
+  // Additive, schema version 19 (Phase 7 slice K, owner spec §10 "similar duration" filter) --
+  // same nullable-until-next-sync convention as the three columns above.
+  durationSeconds: integer("duration_seconds"),
   lastSyncedAt: integer("last_synced_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),
@@ -1148,6 +1151,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 19,
+    description:
+      "videos.duration_seconds -- Phase 7 slice K, owner spec §10 comparable-content 'similar duration' filter (docs/AGENT_OPERATIONS_INTERFACE.md §4g)",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE videos ADD COLUMN duration_seconds INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -1811,6 +1826,7 @@ export type StoredVideo = {
   viewCount: number | null;
   commentCount: number | null;
   likeCount: number | null;
+  durationSeconds: number | null;
   lastSyncedAt: Date;
 };
 
@@ -1846,6 +1862,7 @@ function mapStoredVideo(row: typeof videos.$inferSelect): StoredVideo {
     viewCount: row.viewCount,
     commentCount: row.commentCount,
     likeCount: row.likeCount,
+    durationSeconds: row.durationSeconds,
     lastSyncedAt: row.lastSyncedAt,
   };
 }
@@ -2262,6 +2279,7 @@ export async function upsertVideos(
     viewCount?: number | null;
     commentCount?: number | null;
     likeCount?: number | null;
+    durationSeconds?: number | null;
   }>,
   syncedAt: Date
 ): Promise<void> {
@@ -2281,6 +2299,7 @@ export async function upsertVideos(
       viewCount: entry.viewCount ?? null,
       commentCount: entry.commentCount ?? null,
       likeCount: entry.likeCount ?? null,
+      durationSeconds: entry.durationSeconds ?? null,
       lastSyncedAt: syncedAt,
     };
 

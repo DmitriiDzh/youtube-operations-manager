@@ -254,12 +254,48 @@ export type VideoSyncMetadata = {
   viewCount: number | null;
   commentCount: number | null;
   likeCount: number | null;
+  durationSeconds: number | null;
 };
 
 function parseStatCount(value: string | null | undefined): number | null {
   if (value === null || value === undefined) return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+// Phase 7 slice K (owner spec §10 -- "similar duration" comparable-content filter). YouTube's
+// `contentDetails.duration` is an ISO-8601 duration string (e.g. "PT10M30S", "P1DT2H"). Years/
+// months are approximated as 365/30 days respectively -- YouTube videos never plausibly report
+// those units at meaningful scale, so the approximation error is immaterial in practice, but it
+// IS an approximation, not exact calendar arithmetic (documented here so a future reader doesn't
+// assume otherwise).
+const ISO8601_DURATION_RE = /^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/;
+
+/**
+ * Never fabricates a fact (owner spec §9): an unparseable or absent duration is `null`. A
+ * genuinely all-zero duration (`"P0D"`, `"PT0S"`) is ALSO `null`, not a literal `0` -- YouTube
+ * uses this as a placeholder for an in-progress live broadcast/premiere whose final length isn't
+ * known yet, never as a real fact about a processed video's actual length.
+ */
+export function parseIso8601DurationToSeconds(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const match = ISO8601_DURATION_RE.exec(value);
+  if (!match) return null;
+
+  const [, years, months, days, hours, minutes, seconds] = match;
+  if (!years && !months && !days && !hours && !minutes && !seconds) {
+    return null; // e.g. a bare "P" or "PT" with no actual components -- not a real duration
+  }
+
+  const totalSeconds =
+    Number(years ?? 0) * 365 * 24 * 3600 +
+    Number(months ?? 0) * 30 * 24 * 3600 +
+    Number(days ?? 0) * 24 * 3600 +
+    Number(hours ?? 0) * 3600 +
+    Number(minutes ?? 0) * 60 +
+    Number(seconds ?? 0);
+
+  return totalSeconds > 0 ? Math.round(totalSeconds) : null;
 }
 
 function toThumbnailMap(
@@ -287,7 +323,7 @@ export async function getVideosMetadataContextBatch(
     if (batch.length === 0) continue;
 
     const res = await youtube.videos.list({
-      part: ["snippet", "status", "localizations", "statistics"],
+      part: ["snippet", "status", "localizations", "statistics", "contentDetails"],
       id: batch,
       maxResults: YOUTUBE_VIDEOS_LIST_BATCH_SIZE,
     });
@@ -312,6 +348,8 @@ export async function getVideosMetadataContextBatch(
         viewCount: parseStatCount(item.statistics?.viewCount),
         commentCount: parseStatCount(item.statistics?.commentCount),
         likeCount: parseStatCount(item.statistics?.likeCount),
+        // Phase 7 slice K (owner spec §10). Same "never fabricate" discipline as the stats above.
+        durationSeconds: parseIso8601DurationToSeconds(item.contentDetails?.duration),
       });
     }
   }

@@ -11,6 +11,7 @@ import {
   getVideosMetadataContextBatch,
   listSupportedLanguages,
   listUploadsPlaylistVideoIds,
+  parseIso8601DurationToSeconds,
 } from "./data-api";
 
 // The "Data API reads" toggle (owner instruction, 2026-09-22): default-enabled, unlike Gate B's
@@ -147,6 +148,67 @@ test("getVideosMetadataContextBatch parses statistics as numbers and requests th
     { viewCount: results[1]?.viewCount, commentCount: results[1]?.commentCount, likeCount: results[1]?.likeCount },
     { viewCount: 7, commentCount: null, likeCount: null }
   );
+});
+
+// Phase 7 slice K (owner spec §10 -- AC-DUR-02/AC-DUR-03). Never invents a fact: unparseable or
+// absent input is null; an all-zero duration ("P0D"/"PT0S", YouTube's placeholder for an
+// in-progress live broadcast/premiere with no fixed length yet) is ALSO null, never a literal 0.
+test("parseIso8601DurationToSeconds converts every plausible YouTube duration format to whole seconds", () => {
+  assert.equal(parseIso8601DurationToSeconds("PT10M30S"), 630);
+  assert.equal(parseIso8601DurationToSeconds("PT1H"), 3600);
+  assert.equal(parseIso8601DurationToSeconds("P1DT2H3M4S"), 24 * 3600 + 2 * 3600 + 3 * 60 + 4);
+  assert.equal(parseIso8601DurationToSeconds("PT45S"), 45);
+  assert.equal(parseIso8601DurationToSeconds("P1D"), 24 * 3600);
+});
+
+test("parseIso8601DurationToSeconds returns null for an all-zero duration, never a literal 0", () => {
+  assert.equal(parseIso8601DurationToSeconds("P0D"), null);
+  assert.equal(parseIso8601DurationToSeconds("PT0S"), null);
+});
+
+test("parseIso8601DurationToSeconds returns null for missing or unparseable input, never a fabricated value", () => {
+  assert.equal(parseIso8601DurationToSeconds(null), null);
+  assert.equal(parseIso8601DurationToSeconds(undefined), null);
+  assert.equal(parseIso8601DurationToSeconds(""), null);
+  assert.equal(parseIso8601DurationToSeconds("not a duration"), null);
+  assert.equal(parseIso8601DurationToSeconds("PT"), null);
+  assert.equal(parseIso8601DurationToSeconds("P"), null);
+});
+
+test("getVideosMetadataContextBatch requests contentDetails and parses duration into whole seconds, never inventing a value for a missing one", async () => {
+  let requestedParts: string[] | undefined;
+
+  const youtube = fakeYoutubeClient({
+    videosList: (async (args: { part?: string[] }) => {
+      requestedParts = args.part;
+      return {
+        data: {
+          items: [
+            {
+              id: "v1",
+              etag: "etag-v1",
+              snippet: { title: "T", description: "D", publishedAt: "2026-01-01T00:00:00.000Z" },
+              status: { privacyStatus: "public" },
+              contentDetails: { duration: "PT10M30S" },
+            },
+            {
+              id: "v2",
+              etag: "etag-v2",
+              snippet: { title: "T2", description: "D2", publishedAt: "2026-01-01T00:00:00.000Z" },
+              status: { privacyStatus: "public" },
+              // No contentDetails at all -- e.g. an older cached response shape.
+            },
+          ],
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["videos"]["list"],
+  });
+
+  const results = await getVideosMetadataContextBatch(youtube, ["v1", "v2"]);
+
+  assert.ok(requestedParts?.includes("contentDetails"));
+  assert.equal(results[0]?.durationSeconds, 630);
+  assert.equal(results[1]?.durationSeconds, null);
 });
 
 test("AC-QUOTA-01: the exact approved 75-video fixture issues 2 videos.list calls (chunks of 50 and 25), never 75", async () => {

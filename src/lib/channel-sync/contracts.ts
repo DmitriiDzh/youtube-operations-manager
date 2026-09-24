@@ -73,6 +73,7 @@ export type VideoSyncMetadata = {
   viewCount: number | null;
   commentCount: number | null;
   likeCount: number | null;
+  durationSeconds: number | null;
 };
 
 export type SyncChannelResult = {
