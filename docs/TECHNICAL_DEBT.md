@@ -881,6 +881,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-54 | `agent_get_generation_provenance` (Phase 7 slice E) has no server-stamped agent/client identity or product/API version -- owner spec §22's full traceability requirement is only partially met | none blocking | RESOLVED, 2026-09-24 |
 | RISK-55 | Evidence/rationale (Phase 7 slice F) are recorded once per Change Set, not per individual proposal, and confidence/warnings/expected-objective/source-context-revision (owner spec §12/§13) aren't recorded at all | none blocking | OPEN |
 | RISK-56 | `createChangeSetFromGeneration` (Phase 7 slice F) persists the Change Set, then separately writes its now-unconditional provenance row -- not one atomic operation | none blocking | OPEN |
+| RISK-57 | Owner spec §22's third traceability element, "operation type," is not recorded anywhere on a provenance record (Phase 7 slice E/F only closed "agent/client identity" and "product/API version") | none blocking | OPEN |
 
 ## RISK-53 — `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` — OPEN, 2026-09-24
 
@@ -920,6 +921,17 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Why not fixed now:** wrapping both writes in one transaction would mean either changing `changeSetServices.createChangeSetFromProposals`'s own transaction boundary (a pre-existing, independently-tested function outside this slice's scope) or building a new compensating-rollback path -- both larger than this slice's own scope of "add evidence/rationale/identity to provenance."
 - **Actual risk:** low in practice -- a provenance write failing here (both operations write to the same local SQLite database via already-tested, narrow write paths) would be unusual; the exposure is proportional to how often MCP/CLI callers actually retry on error without checking whether the Change Set already exists.
 - **Required remediation:** either wrap both writes in a single transaction, or have the caller check for an already-existing Change Set (e.g. by a caller-supplied idempotency key) before retrying.
+- **Gate(s):** none blocking.
+- **Approval required from:** none technically required to file; a future fix is its own separately-assigned task.
+- **Status:** OPEN — tracked, not yet fixed.
+
+## RISK-57 — Owner spec §22's "operation type" traceability element is not recorded on any provenance record (Phase 7 slice E/F) — OPEN, 2026-09-24
+
+- **Affected components:** `DraftProvenance` (`src/lib/sync-gateway/change-drafts/contracts.ts`), `StoredGenerationProvenance` (`src/lib/ai-localization/contracts.ts`), `docs/AGENT_OPERATIONS_INTERFACE.md` §4d.
+- **Current behavior:** owner spec §22 asks for three traceability elements on every agent-created object: "agent/client identity," "product/API version," and "operation type." Slice F (RISK-54) added `createdVia`/`agentApiVersion`, closing the first two. Nothing records the third -- there is currently only one kind of operation this provenance record can ever result from (creating a Change Set via `createChangeSetFromGeneration`), so "operation type" has had nothing to distinguish it from so far.
+- **Why not fixed now:** with only one operation kind in existence, adding a field whose value would always be the same literal constant provides no real traceability value yet; premature to design its vocabulary before a second operation kind (e.g. a future content-proposal or asset-registration flow, slice G+) actually exists to distinguish it from.
+- **Actual risk:** low today; would become worth revisiting once a second kind of agent-created object shares the same provenance-style tracking.
+- **Required remediation:** when a second distinct operation kind needs the same provenance tracking, add an `operationType` (or similarly named) field at that point, informed by the concrete second case rather than speculatively now.
 - **Gate(s):** none blocking.
 - **Approval required from:** none technically required to file; a future fix is its own separately-assigned task.
 - **Status:** OPEN — tracked, not yet fixed.
