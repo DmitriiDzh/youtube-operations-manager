@@ -2802,7 +2802,7 @@ function makeRestrictiveChannelAccessStub() {
 test("MCP agent_get_channel_context rejects a channelId that is not the caller's active channel", async () => {
   // Uses a "must not be called" stub, not the ordinary makeAgentOperationsCoreStub(), so this
   // test proves the service is genuinely never reached on a channel-scoping failure -- not just
-  // that the tool call ends in an error (found by independent review, 2026-09-24).
+  // that the tool call ends in an error.
   const agentOperationsCore: Pick<
     AgentOperationsCore,
     "getSystemCapabilities" | "getChannelContext" | "getVideoContext" | "queryChannelAnalytics" | "queryVideoAnalytics"
