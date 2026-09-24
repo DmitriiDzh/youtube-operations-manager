@@ -51,8 +51,12 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * bumping this constant -- a real violation of this doc comment's own rule, left unnoticed through
  * four rounds of independent review of that slice (none of which happened to check this specific
  * invariant). Corrected here to `0.3.0`, covering both the missed slice-B bump and this slice's own
- * additions (four newly-registered pre-existing tools plus two new `query_*_analytics`
- * capabilities) as a single bump, consistent with the "once per slice" rule stated above.
+ * additions as a single bump, consistent with the "once per slice" rule stated above -- see
+ * `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts`) for the current, authoritative
+ * count and list of what changed; deliberately not restated as a specific number here, since an
+ * earlier version of this exact sentence undercounted that list and went unnoticed until a later
+ * review round caught the mismatch (2026-09-24) -- the same "a copied fact drifts from its source"
+ * pattern this whole review cycle exists to catch.
  */
 export const AGENT_API_VERSION = "0.3.0";
 

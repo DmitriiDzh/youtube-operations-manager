@@ -33,10 +33,22 @@ import { ANALYTICS_METRIC_NAMES, CHANNEL_OVERVIEW_METRIC_NAMES } from "@/lib/ana
 /**
  * One entry per capability actually implemented and reachable today. Slice A ships only
  * `system.get_capabilities` itself -- every later slice (B: channel/video context, C: analytics,
- * D: asset catalog, E: localization drafts, F: bulk localization, G: content proposals) appends
- * its own entries here as it lands, never before. This is the literal, human-maintained inventory
- * `get_capabilities` reports -- not derived from `src/mcp/server.ts`'s tool registry, since not
- * every capability necessarily has (or needs) an MCP tool vs. an HTTP-only route.
+ * D: asset catalog, E: agent draft/proposal provenance, F: bulk localization, G: content
+ * proposals) generally appends its own entries here as it lands.
+ *
+ * **Exception (added slice C, 2026-09-24):** a slice may ALSO register an already-existing,
+ * already-shipped tool that predates this module -- e.g. slice C's own `localization_draft.*`
+ * entries below describe the pre-existing `ai_localization_generate`/
+ * `ai_localization_create_change_set` tools (shipped well before this module existed at all), not
+ * a new function slice C itself implements. An earlier version of this comment claimed a
+ * capability's domain is never populated before "its own" slice lands -- that was already false
+ * the moment this exception was written, found by independent review, 2026-09-24. A capability's
+ * `domain` label groups it by subject matter for a caller scanning what's available; it does not
+ * imply that domain's own dedicated slice has landed.
+ *
+ * This is the literal, human-maintained inventory `get_capabilities` reports -- not derived from
+ * `src/mcp/server.ts`'s tool registry, since not every capability necessarily has (or needs) an
+ * MCP tool vs. an HTTP-only route.
  */
 const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   {
