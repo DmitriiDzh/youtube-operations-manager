@@ -40,8 +40,6 @@ export { createChangeDraftsCoreForProduction } from "./change-drafts";
 export { createChangeDraftsSyncCoreForProduction } from "./change-drafts-sync";
 export { DomainError, isDomainError } from "./change-drafts/contracts";
 export type { FieldConflict } from "./change-drafts/contracts";
-export { CREATED_VIA_VALUES } from "./change-drafts/contracts";
-export type { CreatedVia } from "./change-drafts/contracts";
 
 export { createEditorialProfileCoreForProduction } from "./editorial-profile";
 export type { EditorialProfileDocument, FieldConflict as EditorialProfileFieldConflict } from "./editorial-profile";

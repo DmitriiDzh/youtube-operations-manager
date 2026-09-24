@@ -1,12 +1,13 @@
 import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
 import type { ChangeValidationStatus, StoredChannelRecord, StoredVideoRecord } from "@/lib/changesets/contracts";
-import type { CreatedVia } from "@/lib/sync-gateway";
+import type { CreatedVia, EvidenceReference, EvidenceSourceType } from "@/lib/shared-provenance";
 
 export type { DomainErrorCode, DomainErrorShape, StoredChannelRecord, StoredVideoRecord };
 export { DomainError, isDomainError };
-// Reused as-is from `@/lib/sync-gateway` (AGENTS.md §D) -- the single, canonical definition of
-// "which transport created this" (owner spec §22), not a second copy of the same three literals.
-export type { CreatedVia };
+// Reused as-is from `@/lib/shared-provenance` (AGENTS.md §D/§M) -- the single, canonical
+// definition of this vocabulary, shared with `content-proposals` (Phase 7 slice G); neither
+// module owns the other, so this vocabulary lives in its own dependency-free module.
+export type { CreatedVia, EvidenceReference, EvidenceSourceType };
 
 // ---------------------------------------------------------------------------
 // Phase 6, Slice 1 -- AI LOCALIZATION (vertical feature).
@@ -179,26 +180,6 @@ export type EditorialProfile = {
 export type GenerationProvenance = {
   profileVersion: number | null;
   effectiveContext: GenerationContext | null;
-};
-
-/**
- * One agent-cited piece of external research or comparable-video evidence backing a generated
- * proposal (Phase 7 slice F, owner spec §13). Caller-supplied and never independently verified by
- * this server -- `AGENTS.md` §B/§G's "AI proposes" principle applied to citations, not just to the
- * title/description text itself. `sourceType` distinguishes research the agent performed outside
- * this application (`external_research`) from figures already owned by this channel
- * (`channel_analytics`, `comparable_video`) so a reader can tell "the agent looked this up" from
- * "this app already knew this" -- owner spec §13's explicit ask.
- */
-export type EvidenceSourceType = "external_research" | "channel_analytics" | "comparable_video" | "other";
-
-export type EvidenceReference = {
-  url: string;
-  retrievedAt: string;
-  description: string;
-  claimSupported: string;
-  sourceType: EvidenceSourceType;
-  excerpt?: string | null;
 };
 
 /**

@@ -1,5 +1,6 @@
 import { z, ZodError } from "zod";
-import { CREATED_VIA_VALUES, DomainError } from "./contracts";
+import { DomainError } from "./contracts";
+import { CREATED_VIA_VALUES } from "@/lib/shared-provenance";
 
 export function formatZodError(error: ZodError) {
   return error.issues.map((issue) => ({

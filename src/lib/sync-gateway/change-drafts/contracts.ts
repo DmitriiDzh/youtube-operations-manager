@@ -8,6 +8,7 @@ import type {
   ChangeType,
   ChangeValidationStatus,
 } from "@/lib/changesets/contracts";
+import type { CreatedVia } from "@/lib/shared-provenance";
 
 export type { DomainErrorCode, DomainErrorShape };
 export { DomainError, isDomainError };
@@ -61,15 +62,6 @@ export type DraftChangeSet = {
   createdAt: string;
   updatedAt: string;
 };
-
-/**
- * Which transport actually created a piece of agent-created content (owner spec §22) -- the
- * single, canonical definition of this vocabulary. `AGENTS.md` §D: every other module that needs
- * this type (`ai-localization/contracts.ts`) imports it from here via the `@/lib/sync-gateway`
- * barrel, rather than retyping the same three literals.
- */
-export const CREATED_VIA_VALUES = ["mcp", "cli", "web_ui"] as const;
-export type CreatedVia = (typeof CREATED_VIA_VALUES)[number];
 
 /**
  * AI-generation provenance for one change set -- write-once (never updated or deleted through

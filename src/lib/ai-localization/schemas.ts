@@ -1,8 +1,11 @@
 import { z } from "zod";
 import { parseWithSchema } from "@/lib/changesets/schemas";
-import { CREATED_VIA_VALUES } from "@/lib/sync-gateway";
+import { CREATED_VIA_VALUES, evidenceReferenceSchema, evidenceSourceTypeSchema } from "@/lib/shared-provenance";
 
 export { parseWithSchema };
+// Reused as-is from `@/lib/shared-provenance` (AGENTS.md §D/§M) -- shared with
+// `content-proposals` (Phase 7 slice G), not a second copy of the same schema.
+export { evidenceSourceTypeSchema, evidenceReferenceSchema };
 
 // Bounded-length, purely structural -- this repository never validates or supplies
 // the CONTENT of editorial context (AGENTS.md §B); the length cap only prevents an
@@ -57,25 +60,8 @@ export const generationProvenanceSchema = z
   })
   .strict();
 
-// Bounded the same way as generationContextSchema's free-text fields above -- a length cap only,
-// never a validation of the CONTENT of an agent's citation (AGENTS.md §B).
 const MAX_EVIDENCE_ITEMS = 20;
-const MAX_EVIDENCE_TEXT_LENGTH = 2000;
-const MAX_EVIDENCE_EXCERPT_LENGTH = 1000;
 const MAX_RATIONALE_LENGTH = 4000;
-
-export const evidenceSourceTypeSchema = z.enum(["external_research", "channel_analytics", "comparable_video", "other"]);
-
-export const evidenceReferenceSchema = z
-  .object({
-    url: z.string().min(1).max(MAX_EVIDENCE_TEXT_LENGTH),
-    retrievedAt: z.string().min(1),
-    description: z.string().min(1).max(MAX_EVIDENCE_TEXT_LENGTH),
-    claimSupported: z.string().min(1).max(MAX_EVIDENCE_TEXT_LENGTH),
-    sourceType: evidenceSourceTypeSchema,
-    excerpt: z.string().max(MAX_EVIDENCE_EXCERPT_LENGTH).nullable().optional(),
-  })
-  .strict();
 
 export const createChangeSetFromGenerationInputSchema = z
   .object({
