@@ -623,7 +623,7 @@ watch time," "which production assets belonged to videos that underperformed," a
 assets should be used as reference material for the next creative" -- explicitly leaving causal
 inference to the agent, not the product. Tracked as `BL-089` (`docs/roadmap/BACKLOG.md`),
 **assigned alongside BL-088, same owner instruction**. Acceptance criteria (`docs/acceptance/
-PHASE_7_ACCEPTANCE.md` §5-§7, AC-PERF-01..10) were written before implementation, per `AGENTS.md`
+PHASE_7_ACCEPTANCE.md` §5-§7, AC-PERF-01..12) were written before implementation, per `AGENTS.md`
 §L, incorporating slice K's own two hard-won lessons (round 1: never derive a comparison day from
 wall-clock `now`; round 3: `limit` is always silently clamped, never rejected) from the start.
 
@@ -659,7 +659,11 @@ wall-clock `now`; round 3: `limit` is always silently clamped, never rejected) f
   link should not normally occur. The capability still re-checks `channelId` explicitly as
   defense-in-depth (`AGENTS.md` §F: channel-context validation is never automatic), just counts
   both failure shapes under one honest bucket instead of a field that would always read `0` in
-  production.
+  production. `docs/acceptance/PHASE_7_ACCEPTANCE.md`'s own AC-PERF-03/04 were AMENDED to record
+  this (found by slice L's own independent-review round 1 as an `AGENTS.md` §L process gap: the
+  acceptance doc had not been updated to match, even though the code and this section already had)
+  -- the amendment quotes the original two-counter criteria verbatim alongside the stated reason,
+  per §L's "changing a previously-approved acceptance test requires explicit justification" rule.
 - **Out of scope, stated explicitly in the capability's own description** (never silently
   approximated): thumbnail-CTR/impressions-based questions (this application's own analytics
   collection never fetches YouTube's `impressions`/`impressionClickThroughRate` metrics at all --

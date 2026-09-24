@@ -46,7 +46,11 @@ export type ListAssetPerformanceInput = {
    * at -- ALWAYS caller-supplied, NEVER derived from wall-clock "now" (the exact mistake
    * independent review found and fixed in slice K, round 1: deriving a comparison day from `now()`
    * makes it null for most videos on any real, established channel, since day-0 collection
-   * coverage gaps are the common case this correction addresses generally). */
+   * coverage gaps are the common case this correction addresses generally). Bounded at schema
+   * level (see `schemas.ts`) purely for input-sanity symmetry with slice K's own numeric day-count
+   * fields (`publicationWindowDays`) -- not a functional necessity, since `getCumulativeValueAtDayOffset`
+   * is already naturally bounded by a video's own actual collected date range regardless of how
+   * large this value is. */
   performanceDayOffset?: number;
   /** Never a single hard-coded "best match" ranking -- an explicit, named sort mode. */
   sort?: AssetPerformanceSortMode;
@@ -68,9 +72,12 @@ export type AssetPerformanceLinkedVideo = {
   lifetimeLikeCount: number | null;
   lifetimeCommentCount: number | null;
   durationSeconds: number | null;
-  /** When these lifetime counters were last refreshed by a channel sync (`videos.lastSyncedAt`)
-   * -- NOT when analytics were last collected (that's `freshness.asOf`, only present when
-   * `performanceMetric` is requested). Lets a caller judge how current the lifetime totals are. */
+  /** When these lifetime counters were last refreshed by a channel sync (`videos.lastSyncedAt`).
+   * NOT the same thing as the agent-operations wrapper's own `freshness.asOf` (the timestamp of
+   * this API call itself, only present when `performanceMetric` is requested) -- neither field
+   * reports actual per-date analytics collection coverage; that is only available via the
+   * separate `analytics_data_quality` tool. Lets a caller judge how current the lifetime totals
+   * are, independent of whether a performance metric was requested at all. */
   lifetimeCountersAsOf: string;
   /** DERIVED, age-aligned at `performanceAlignment.dayOffset` (reusing
    * `getCumulativeValueAtDayOffset`, AGENTS.md §D) -- `null` if `performanceMetric` was not

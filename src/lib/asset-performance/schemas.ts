@@ -47,7 +47,10 @@ export const listAssetPerformanceBaseObjectSchema = z
     assetType: assetTypeSchema.optional(),
     credentialRef: credentialRefSchema.optional(),
     performanceMetric: performanceMetricSchema.optional(),
-    performanceDayOffset: z.number().int().nonnegative().optional(),
+    // .max(3650) purely for input-sanity symmetry with slice K's own `publicationWindowDays`
+    // bound -- not functionally required, since a video's actual collected data already bounds
+    // how far getCumulativeValueAtDayOffset can ever reach regardless of this value.
+    performanceDayOffset: z.number().int().nonnegative().max(3650).optional(),
     sort: sortModeSchema.optional(),
     limit: z.number().int().positive().optional(),
   })

@@ -231,7 +231,7 @@ test("listMetrics is never called when performanceMetric is not requested (no un
 });
 
 // AC-PERF-08
-test("sort modes are explicit: linkedVideoPublicationDate (default, newest first), lifetimeViewCount, performanceMetric", async () => {
+test("sort modes are explicit: linkedVideoPublicationDate (newest first), lifetimeViewCount, and omitting sort entirely defaults to linkedVideoPublicationDate", async () => {
   const { services } = createFixture({
     assets: [
       asset({ assetId: "old_video", linkedVideoId: "old" }),
@@ -246,10 +246,46 @@ test("sort modes are explicit: linkedVideoPublicationDate (default, newest first
   });
 
   const byDate = await services.listAssetPerformance({ channelId: "UC_A", sort: "linkedVideoPublicationDate" });
-  assert.equal(byDate.assets[0]?.assetId, "new_video");
+  assert.deepEqual(byDate.assets.map((a) => a.assetId), ["new_video", "popular", "old_video"]);
 
   const byViews = await services.listAssetPerformance({ channelId: "UC_A", sort: "lifetimeViewCount" });
-  assert.equal(byViews.assets[0]?.assetId, "popular");
+  assert.deepEqual(byViews.assets.map((a) => a.assetId), ["popular", "old_video", "new_video"]);
+
+  // Omitting `sort` entirely, with more than one entry, must default to the SAME order as
+  // explicitly requesting linkedVideoPublicationDate -- not just happen to match on a
+  // single-entry result set (AC-PERF-01's own fixture only ever has one asset).
+  const byDefault = await services.listAssetPerformance({ channelId: "UC_A" });
+  assert.deepEqual(byDefault.assets.map((a) => a.assetId), ["new_video", "popular", "old_video"]);
+});
+
+test("sort: performanceMetric ranks by ageAlignedPerformanceValue, descending, with null values sorted last", async () => {
+  const { services } = createFixture({
+    assets: [
+      asset({ assetId: "high", linkedVideoId: "high" }),
+      asset({ assetId: "low", linkedVideoId: "low" }),
+      asset({ assetId: "no_coverage", linkedVideoId: "no_coverage" }),
+    ],
+    videos: [
+      video({ videoId: "high", publishedAt: "2026-05-01T20:00:00.000Z" }),
+      video({ videoId: "low", publishedAt: "2026-05-01T20:00:00.000Z" }),
+      video({ videoId: "no_coverage", publishedAt: "2026-05-01T20:00:00.000Z" }),
+    ],
+    metricRows: [
+      ...contiguousDailyRows("high", 3, 200), // cumulative through day 3: 800
+      ...contiguousDailyRows("low", 3, 10), // cumulative through day 3: 40
+      // "no_coverage" has no rows at all -- ageAlignedPerformanceValue stays null.
+    ],
+  });
+
+  const result = await services.listAssetPerformance({
+    channelId: "UC_A",
+    performanceMetric: "views",
+    performanceDayOffset: 3,
+    credentialRef: { userId: "u1" },
+    sort: "performanceMetric",
+  });
+
+  assert.deepEqual(result.assets.map((a) => a.assetId), ["high", "low", "no_coverage"]);
 });
 
 test("rejects sort performanceMetric without performanceMetric/performanceDayOffset being set", async () => {
