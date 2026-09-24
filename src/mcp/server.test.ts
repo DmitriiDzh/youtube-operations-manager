@@ -2663,7 +2663,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
 
   assert.equal(result.isError, undefined);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
-  assert.equal(payload.agentApiVersion, "0.4.0");
+  assert.equal(payload.agentApiVersion, "0.5.0");
   assert.deepEqual(payload.grantedPermissions, ["READ", "DRAFT"]);
   assert.ok(payload.capabilities.some((c: { id: string }) => c.id === "system.get_capabilities"));
 });
@@ -2713,6 +2713,7 @@ function makeAgentOperationsCoreStub(): Pick<
   | "queryVideoAnalytics"
   | "listAssets"
   | "getAssetContext"
+  | "getGenerationProvenance"
 > {
   return {
     getSystemCapabilities: async () => ({
@@ -2781,6 +2782,13 @@ function makeAgentOperationsCoreStub(): Pick<
       provenance: null,
       createdAt: "2026-09-24T00:00:00.000Z",
     }),
+    getGenerationProvenance: async () => ({
+      profileVersion: 1,
+      effectiveContext: null,
+      changeSetId: "cs-1",
+      channelId: "UC_1",
+      createdAt: "2026-09-24T00:00:00.000Z",
+    }),
   };
 }
 
@@ -2831,6 +2839,7 @@ test("MCP agent_get_channel_context rejects a channelId that is not the caller's
     | "queryVideoAnalytics"
     | "listAssets"
     | "getAssetContext"
+    | "getGenerationProvenance"
   > = {
     ...makeAgentOperationsCoreStub(),
     getChannelContext: async () => {
@@ -2903,6 +2912,7 @@ test("MCP agent_get_video_context rejects a channelId that is not the caller's a
     | "queryVideoAnalytics"
     | "listAssets"
     | "getAssetContext"
+    | "getGenerationProvenance"
   > = {
     ...makeAgentOperationsCoreStub(),
     getVideoContext: async () => {
@@ -3097,6 +3107,7 @@ test("MCP agent_list_assets rejects a channelId that is not the caller's active 
     | "queryVideoAnalytics"
     | "listAssets"
     | "getAssetContext"
+    | "getGenerationProvenance"
   > = {
     ...makeAgentOperationsCoreStub(),
     listAssets: async () => {
@@ -3166,6 +3177,7 @@ test("MCP agent_get_asset_context rejects a channelId that is not the caller's a
     | "queryVideoAnalytics"
     | "listAssets"
     | "getAssetContext"
+    | "getGenerationProvenance"
   > = {
     ...makeAgentOperationsCoreStub(),
     getAssetContext: async () => {
@@ -3207,6 +3219,87 @@ test("MCP agent_list_assets/agent_get_asset_context are never blocked by the ope
     assert.notEqual(listResult.isError, true);
     const getResult = await handlers.agentGetAssetContext({ channelId: "UC_1", assetId: "asset-1" });
     assert.notEqual(getResult.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("MCP agent_get_generation_provenance forwards input and checks active-channel access", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.getGenerationProvenance = async (input: unknown) => {
+    captured = input;
+    return null;
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentGetGenerationProvenance({ channelId: "UC_1", changeSetId: "cs-1" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, { channelId: "UC_1", changeSetId: "cs-1" });
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.provenance, null);
+});
+
+test("MCP agent_get_generation_provenance rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+    | "getGenerationProvenance"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    getGenerationProvenance: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentGetGenerationProvenance({ channelId: "UC_OTHER", changeSetId: "cs-1" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_get_generation_provenance is never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      makeAgentOperationsCoreStub()
+    );
+    const result = await handlers.agentGetGenerationProvenance({ channelId: "UC_1", changeSetId: "cs-1" });
+    assert.notEqual(result.isError, true);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }

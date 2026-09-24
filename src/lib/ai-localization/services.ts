@@ -21,6 +21,7 @@ import {
   type LocalizationProvider,
   type ReviewedProposal,
   type StoredChannelRecord,
+  type StoredGenerationProvenance,
   type StoredVideoRecord,
 } from "./contracts";
 import { OperationLockError } from "@/lib/operation-lock";
@@ -576,7 +577,7 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
      * not found, exactly like every other channel-scoped resource in this codebase
      * (`AGENTS.md` §F).
      */
-    async getGenerationProvenance(input: unknown): Promise<GenerationProvenance | null> {
+    async getGenerationProvenance(input: unknown): Promise<StoredGenerationProvenance | null> {
       const parsedInput = parseWithSchema(getGenerationProvenanceInputSchema, input, "get generation provenance input");
 
       try {
@@ -587,6 +588,9 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
         return {
           profileVersion: stored.profileVersion,
           effectiveContext: stored.effectiveContextJson ? (JSON.parse(stored.effectiveContextJson) as GenerationContext) : null,
+          changeSetId: stored.changeSetId,
+          channelId: stored.channelId,
+          createdAt: stored.createdAt.toISOString(),
         };
       } catch (error) {
         throw mapUnknownError(error, "not_found");

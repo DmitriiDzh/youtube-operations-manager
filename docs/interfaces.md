@@ -145,6 +145,7 @@ npm run cli:video-metadata -- agent video-analytics --channelId <UC...> [--video
 npm run cli:video-metadata -- agent list-assets --channelId <UC...> [--videoId <VIDEO_ID>] [--assetType thumbnail|source_image|...]
 npm run cli:video-metadata -- agent get-asset-context --channelId <UC...> --assetId <ASSET_ID>
 npm run cli:video-metadata -- asset register --channelId <UC...> --assetType <type> --referenceKind url|local_path|external_artifact_id --referenceValue <value> [--title <t>] [--description <d>] [--linkedVideoId <id>] [--provenanceJson <json>]
+npm run cli:video-metadata -- agent get-generation-provenance --channelId <UC...> --changeSetId <CHANGE_SET_ID>
 ```
 
 `agent capabilities` is read-only with no channel/credential resolution at all (instance-level
@@ -177,8 +178,15 @@ actually collects is described.
 catalog, same `assertActiveChannel` pattern as `channel-context`/`video-context` above. `asset
 register` is a separate namespace (not under `agent`) -- the operator-facing way the catalog gets
 populated, never a live YouTube call, gated like any other local mutation.
-`--provenanceJson` takes a JSON-encoded object. See `docs/AGENT_OPERATIONS_INTERFACE.md` for the
-full design.
+`--provenanceJson` takes a JSON-encoded object.
+
+`agent get-generation-provenance` is a channel-scoped read over the pre-existing
+`ai-localization` provenance record for a Change Set (editorial-profile version, effective
+context, `changeSetId`/`channelId`/creation time) -- same `assertActiveChannel` pattern. Reports
+`{ provenance: null }`, never an error, for a Change Set with none recorded (e.g. XLSX import).
+The returned `profileVersion`/`effectiveContext` were supplied by whoever created the Change Set,
+not independently verified by this server. See `docs/AGENT_OPERATIONS_INTERFACE.md` for the full
+design.
 
 ### Analytics commands (CLI parity for the MCP `analytics_*` tools, Phase 8 follow-up)
 
@@ -272,9 +280,12 @@ Key MCP tools:
     "pending"` — there is no code path, here or anywhere, that can mark an AI-authored proposal
     already-approved (`AGENTS.md` §G).
 
-  Deliberately **not** included in this slice: `getEditorialProfile`/`saveEditorialProfile`/
-  `getGenerationProvenance` (no MCP/CLI tool for any of the three), and any approve/reject/apply
-  path for a Change Set regardless of its source — same Gate-B-blocked gap RISK-04 already tracks.
+  Deliberately **not** included in this slice: `getEditorialProfile`/`saveEditorialProfile` (no
+  MCP/CLI tool for either), and any approve/reject/apply path for a Change Set regardless of its
+  source — same Gate-B-blocked gap RISK-04 already tracks. `getGenerationProvenance` WAS in this
+  list until Phase 7 slice E added `agent_get_generation_provenance` (see the Agent Operations
+  Interface tools below) — not an `ai_localization_*`-namespaced tool, but the same underlying
+  function.
 - Agent Operations Interface tools (Phase 7, `docs/AGENT_OPERATIONS_INTERFACE.md` §7 for current slice status):
   - `agent_get_capabilities` — `{}` (no parameters) → `SystemCapabilities` (product/agent-API
     version, implemented capabilities, data domains, the full permission vocabulary, what's
@@ -313,6 +324,14 @@ Key MCP tools:
     as `agent_list_assets`; `ASSET_NOT_AVAILABLE` for a nonexistent id or one belonging to another
     channel (never distinguishable). There is no agent-callable way to add an asset in this
     slice — the catalog is populated only via the `asset register` CLI command.
+  - `agent_get_generation_provenance` — `{ channelId, changeSetId }` → `{ provenance:
+    StoredGenerationProvenance | null }`. Wraps the pre-existing `ai-localization` provenance
+    record (previously only reachable via its own HTTP route, no MCP/CLI tool) — same
+    channel-scoping as `agent_get_asset_context`; `{ provenance: null }`, never an error, for a
+    Change Set with none recorded. `profileVersion`/`effectiveContext` were supplied by whoever
+    created the Change Set, not independently attested by this server. **No server-stamped
+    agent/client identity or product/API version yet** (owner spec §22's full traceability
+    requirement) — a documented, deferred gap, not implemented in this slice.
 
   `get_capabilities` also now registers several already-existing, already-implemented tools it
   previously omitted (`channel_list`, `channel_video_list`, `ai_localization_generate`,

@@ -54,6 +54,9 @@ export function createAgentOperationsCore() {
     // (AGENTS.md §D).
     assetCatalogListAssets: assetCatalogCore.listAssets,
     assetCatalogGetAssetContext: assetCatalogCore.getAssetContext,
+    // Slice E -- delegates unchanged to `aiLocalizationCore`'s own already-existing, already-
+    // tested `getGenerationProvenance` (AGENTS.md §D).
+    aiLocalizationGetGenerationProvenance: aiLocalizationCore.getGenerationProvenance,
   });
 }
 
@@ -83,3 +86,4 @@ export type {
   VideoMetadataContext,
 } from "./contracts";
 export type { CreativeAsset } from "@/lib/asset-catalog";
+export type { StoredGenerationProvenance } from "@/lib/ai-localization/contracts";

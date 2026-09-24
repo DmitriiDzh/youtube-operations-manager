@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SCHEMA_CURRENT_VERSION } from "@/lib/db";
+import { randomUUID } from "node:crypto";
+import { SCHEMA_CURRENT_VERSION, upsertChannel } from "@/lib/db";
 import { DomainError } from "./contracts";
 import { createAgentOperationsCore } from "./index";
 
@@ -58,4 +59,25 @@ test("createAgentOperationsCore.queryChannelAnalytics reaches the REAL analytics
       }),
     (error: unknown) => error instanceof DomainError && error.code === "CHANNEL_NOT_ACTIVE"
   );
+});
+
+// Slice E wiring test: uses the REAL aiLocalizationCore, unlike services.test.ts's stub. This
+// module's own getGenerationProvenance does zero channel-scoping of its own -- it forwards
+// straight to aiLocalizationCore.getGenerationProvenance, which does its own real check
+// internally. A real, freshly-synced channel with no Change Sets at all must return null (not
+// throw, not fabricate a record), proving the wrapper reaches the real service.
+test("createAgentOperationsCore.getGenerationProvenance reaches the REAL aiLocalizationCore (returns null for a real channel with no recorded provenance, not a mock)", async () => {
+  const core = createAgentOperationsCore();
+  const channelId = `UC_TEST_${randomUUID()}`;
+
+  await upsertChannel({
+    channelId,
+    title: "Agent-operations provenance wiring test channel",
+    thumbnailUrl: null,
+    uploadsPlaylistId: `UU_${randomUUID()}`,
+    connectedUserId: null,
+  });
+
+  const result = await core.getGenerationProvenance({ channelId, changeSetId: "cs-does-not-exist" });
+  assert.equal(result, null);
 });

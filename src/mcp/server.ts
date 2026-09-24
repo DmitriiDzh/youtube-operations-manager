@@ -41,6 +41,7 @@ import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent
 import {
   getAssetContextInputSchema,
   getChannelContextInputSchema,
+  getGenerationProvenanceInputSchema,
   getSystemCapabilitiesInputSchema,
   getVideoContextInputSchema,
   listAssetsInputSchema,
@@ -119,7 +120,7 @@ type AnalyticsCoreSubset = Pick<
 // approve/reject/apply path -- "AI may propose, human approves" (AGENTS.md §G) is untouched.
 type AiLocalizationCoreSubset = Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration">;
 
-// Phase 7 (Agent Operations Interface, docs/AGENT_OPERATIONS_INTERFACE.md) -- slices A + B + C + D.
+// Phase 7 (Agent Operations Interface, docs/AGENT_OPERATIONS_INTERFACE.md) -- slices A-E.
 type AgentOperationsCoreSubset = Pick<
   AgentOperationsCore,
   | "getSystemCapabilities"
@@ -129,6 +130,7 @@ type AgentOperationsCoreSubset = Pick<
   | "queryVideoAnalytics"
   | "listAssets"
   | "getAssetContext"
+  | "getGenerationProvenance"
 >;
 
 type ToolResponse = {
@@ -177,6 +179,7 @@ type McpToolHandlers = {
   agentQueryVideoAnalytics: (input: unknown) => Promise<ToolResponse>;
   agentListAssets: (input: unknown) => Promise<ToolResponse>;
   agentGetAssetContext: (input: unknown) => Promise<ToolResponse>;
+  agentGetGenerationProvenance: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -1138,6 +1141,27 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    /** Slice E. Same explicit channel-scoping pattern as `agentGetAssetContext` above -- the
+     * service function itself does no such check. */
+    async agentGetGenerationProvenance(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getGenerationProvenanceInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.getGenerationProvenance(parsedInput.data);
+        return toolSuccessResult({ provenance: result } as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -1243,6 +1267,8 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // Slice D -- pure local reads over the asset catalog, ungated.
     agentListAssets: handlers.agentListAssets,
     agentGetAssetContext: handlers.agentGetAssetContext,
+    // Slice E -- a pure local read over an immutable, already-persisted provenance row; ungated.
+    agentGetGenerationProvenance: handlers.agentGetGenerationProvenance,
   };
 }
 
@@ -1689,6 +1715,16 @@ export function createMcpServer(
       inputSchema: getAssetContextInputSchema,
     },
     (args) => handlers.agentGetAssetContext(args)
+  );
+
+  registerTool(
+    "agent_get_generation_provenance",
+    {
+      description:
+        "Read back the immutable provenance recorded for a localization Change Set at creation time -- editorial-profile version, effective context, changeSetId/channelId, and real creation timestamp. Returns { provenance: null } if the Change Set was created without one (e.g. XLSX import) -- never an error. The recorded profileVersion/effectiveContext were supplied by whoever created the Change Set, not independently verified by this server -- treat as a claimed, not attested, fact. Requires channelId to be the caller's currently-active channel; a changeSetId belonging to another channel returns the same null as a nonexistent one.",
+      inputSchema: getGenerationProvenanceInputSchema,
+    },
+    (args) => handlers.agentGetGenerationProvenance(args)
   );
 
   return server;

@@ -82,6 +82,16 @@ export const getGenerationProvenanceInputSchema = z
   })
   .strict();
 
+// `getGenerationProvenance`'s own return shape (Phase 7 slice E) -- adds the fields only a
+// STORED row can carry (changeSetId/channelId/createdAt), on top of `generationProvenanceSchema`'s
+// base shape. See `StoredGenerationProvenance`'s own doc comment in contracts.ts for why this is
+// a distinct type from the plain echo `generationProvenanceSchema` validates on the way in.
+export const storedGenerationProvenanceSchema = generationProvenanceSchema.extend({
+  changeSetId: z.string().min(1),
+  channelId: z.string().min(1),
+  createdAt: z.string(),
+});
+
 export const saveEditorialProfileInputSchema = z
   .object({
     channelId: z.string().min(1),

@@ -7,6 +7,10 @@ import {
   listAssetsInputSchema as assetCatalogListAssetsInputSchema,
   listAssetsOutputSchema as assetCatalogListAssetsOutputSchema,
 } from "@/lib/asset-catalog/schemas";
+import {
+  getGenerationProvenanceInputSchema as aiLocalizationGetGenerationProvenanceInputSchema,
+  storedGenerationProvenanceSchema,
+} from "@/lib/ai-localization/schemas";
 
 export { parseWithSchema };
 
@@ -281,3 +285,16 @@ export type ListAssetsInput = z.infer<typeof listAssetsInputSchema>;
 export type ListAssetsOutput = z.infer<typeof listAssetsOutputSchema>;
 export type GetAssetContextInput = z.infer<typeof getAssetContextInputSchema>;
 export type GetAssetContextOutput = z.infer<typeof getAssetContextOutputSchema>;
+
+// ---------------------------------------------------------------------------
+// Slice E -- agent draft/proposal provenance (owner spec §22). Same slice-B convention as above
+// (no `credentialRef`; MCP/CLI calls `channelAccessCore.assertActiveChannel` first). Reused
+// unchanged from `@/lib/ai-localization/schemas` (AGENTS.md §D) -- no shape transformation of its
+// own, so re-exported directly rather than duplicated.
+// ---------------------------------------------------------------------------
+
+export const getGenerationProvenanceInputSchema = aiLocalizationGetGenerationProvenanceInputSchema;
+export const getGenerationProvenanceOutputSchema = storedGenerationProvenanceSchema.nullable();
+
+export type GetGenerationProvenanceInput = z.infer<typeof getGenerationProvenanceInputSchema>;
+export type GetGenerationProvenanceOutput = z.infer<typeof getGenerationProvenanceOutputSchema>;

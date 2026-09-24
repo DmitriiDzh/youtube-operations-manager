@@ -210,6 +210,38 @@ cataloguing a pre-existing one, is a separate, later concept -- slice G's
 snapshot/handoff (`docs/TECHNICAL_DEBT.md` RISK-52), the same accepted limitation
 `video_metrics_daily` already has.
 
+## 4d. Agent draft/proposal provenance (owner spec §22) -- PARTIAL (slice E)
+
+`get_generation_provenance` / MCP `agent_get_generation_provenance` (`src/lib/agent-operations/`)
+delegates to the ALREADY-EXISTING `ai-localization` provenance mechanism (a table recording, per
+Change Set, the editorial-profile version and effective context used to generate it) -- this slice
+adds no new storage of its own. It closes a real, previously-documented gap: this read had a
+working HTTP route (`GET .../ai-localization/change-sets/[changeSetId]/provenance`) but no
+MCP/CLI tool, explicitly scoped out of BL-078 and tracked as such in `docs/TECHNICAL_DEBT.md`
+RISK-04's own history.
+
+Response additionally carries `changeSetId`/`channelId`/`createdAt` (the real moment the Change
+Set's provenance was recorded, traced through `DraftProvenance`'s own write path to confirm it is
+not a later device's own projection/sync timestamp) -- fields the stored row already had but the
+pre-existing `GenerationProvenance` return type dropped; widened additively as
+`StoredGenerationProvenance` (`src/lib/ai-localization/contracts.ts`), a distinct type from
+`GenerationProvenance` (which `generateProposals` also returns mid-preview, before any Change Set
+exists, so it cannot carry those fields). Same slice-B channel-scoping/credentialRef convention as
+`get_asset_context`; same `null`-for-both-"missing"-and-"wrong-channel" pattern the underlying
+HTTP route already established.
+
+**Why PARTIAL, not IMPLEMENTED:** owner spec §22 asks for full traceability -- "agent/client
+identity," "product/API version," and "operation type" on every agent-created object. Nothing in
+this codebase currently stamps who/what created a Change Set (MCP vs. CLI vs. Web UI, which
+product version) at creation time -- `profileVersion`/`effectiveContext` are supplied BY THE
+CALLER when creating the Change Set (an agent echoes back its own `generateProposals` response),
+never independently attested by this server. This capability's own description says so explicitly.
+Adding real server-stamped identity/origin would mean changing `DraftProvenance`'s own CRDT
+document shape and its SQL projection (`docs/decisions/0001-additive-idempotent-schema-strategy.md`
+territory) -- a data-preservation-adjacent change requiring `AGENTS.md` §A's full reading pass and
+§L's stricter testing discipline, out of proportion to this slice's own "expose what already
+exists" scope. Tracked as a known gap for a future, separately-assigned task, not implemented here.
+
 ## 5. Context model (owner spec §6) -- design settled, mostly not yet implemented
 
 Every context object this interface returns is meant to carry: entity identity, source, data
@@ -233,8 +265,14 @@ METRIC` data in one response: raw daily/row-level data is `FACT`, `currentTotals
 doc comment in `src/lib/agent-operations/contracts.ts` (`ChannelAnalyticsContext`), not yet by an
 explicit per-field machine-readable tag in the response shape itself (that finer-grained tagging,
 if ever needed, remains a future refinement -- naming/doc-comment separation was judged sufficient
-for this slice's actual two response shapes). `HYPOTHESIS`/`DECISION`/`ACTION`/`OUTCOME` remain
-unexercised until a later slice (E: draft/proposal provenance) actually produces that kind of data.
+for this slice's actual two response shapes). Slice E (draft/proposal provenance, PARTIAL -- see
+§4d) is the first to actually touch `HYPOTHESIS`: `profileVersion`/`effectiveContext` are `FACT`
+(what was actually recorded, verbatim); the proposals that generation produced are themselves
+`HYPOTHESIS` (AI-authored, not yet human-reviewed) but are not part of THIS read's own response
+shape (they live in the Change Set's own `Changes`, a separate existing read); the eventual human
+approval of those Changes is a `DECISION`, entirely outside this capability's scope. No explicit
+per-field tag added for this reason -- the same naming/doc-comment-only approach as slice C.
+`ACTION`/`OUTCOME` remain unexercised by any slice so far.
 
 ## 6. Error vocabulary (owner spec §27) -- IMPLEMENTED
 
@@ -263,7 +301,7 @@ second error-code enum:
 | B | Read-only channel/video context | **IMPLEMENTED** -- see §4a; MCP `agent_get_channel_context`/`agent_get_video_context`, CLI `agent channel-context`/`agent video-context`. No HTTP route yet. |
 | C | Analytics interface (agent-oriented wrapper over `src/lib/analytics/`) | **IMPLEMENTED** -- see §4b; MCP `agent_query_channel_analytics`/`agent_query_video_analytics`, CLI `agent channel-analytics`/`agent video-analytics`. No HTTP route yet. |
 | D | Asset catalog/context (new subsystem -- nothing to reuse) | **IMPLEMENTED** -- see §4c; MCP `agent_list_assets`/`agent_get_asset_context`, CLI `agent list-assets`/`agent get-asset-context`/`asset register`. No HTTP route yet. |
-| E | Agent draft/proposal provenance | PLANNED |
+| E | Agent draft/proposal provenance | **PARTIAL** -- see §4d; MCP `agent_get_generation_provenance`, CLI `agent get-generation-provenance`. No server-stamped agent/client identity or product/API version yet (deferred, see §4d). No HTTP route (reuses the pre-existing one). |
 | F | Bulk localization integration (wraps `src/lib/ai-localization/`, already has MCP/CLI tools from BL-078 -- this slice is about context/evidence enrichment around that existing workflow, not a new persistence path) | PLANNED |
 | G | Content Proposal / external artifact registration | PLANNED |
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | IN PROGRESS |

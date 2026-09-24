@@ -51,7 +51,7 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * the current, authoritative list of what capabilities exist -- deliberately not restated as a
  * count or list here, since that would just be a second copy of the same fact.
  */
-export const AGENT_API_VERSION = "0.4.0";
+export const AGENT_API_VERSION = "0.5.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

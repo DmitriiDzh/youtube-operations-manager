@@ -2791,6 +2791,7 @@ test("CLI agent capabilities returns version/capabilities with no auth/channel r
     queryVideoAnalytics: async () => { throw new Error("not used"); },
     listAssets: async () => { throw new Error("not used"); },
     getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -2828,6 +2829,7 @@ test("CLI agent capabilities is never blocked by the operation lock (read-only)"
       queryVideoAnalytics: async () => { throw new Error("not used"); },
       listAssets: async () => { throw new Error("not used"); },
       getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
     };
 
     const exitCode = await runCliCommand({
@@ -2863,6 +2865,7 @@ test("CLI agent channel-context forwards channelId after checking it against the
     queryVideoAnalytics: async () => { throw new Error("not used"); },
     listAssets: async () => { throw new Error("not used"); },
     getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -2907,6 +2910,7 @@ test("CLI agent channel-context rejects a channelId that is not the caller's act
       queryVideoAnalytics: async () => { throw new Error("not used"); },
       listAssets: async () => { throw new Error("not used"); },
       getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -2942,6 +2946,7 @@ test("CLI agent video-context rejects a channelId that is not the caller's activ
       queryVideoAnalytics: async () => { throw new Error("not used"); },
       listAssets: async () => { throw new Error("not used"); },
       getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -2979,6 +2984,7 @@ test("CLI agent video-context forwards channelId/videoId and parses --include in
     queryVideoAnalytics: async () => { throw new Error("not used"); },
     listAssets: async () => { throw new Error("not used"); },
     getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3010,6 +3016,7 @@ test("CLI agent video-context omits `include` entirely when --include is not pas
     queryVideoAnalytics: async () => { throw new Error("not used"); },
     listAssets: async () => { throw new Error("not used"); },
     getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
   };
 
   const exitCode = await runCliCommand({
@@ -3043,6 +3050,7 @@ test("CLI agent channel-context/video-context are never blocked by the operation
       queryVideoAnalytics: async () => { throw new Error("not used"); },
       listAssets: async () => { throw new Error("not used"); },
       getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
     };
 
     const channelContextExit = await runCliCommand({
@@ -3091,6 +3099,7 @@ test("CLI agent channel-analytics forwards resolved credentialRef, channelId, st
     queryVideoAnalytics: async () => { throw new Error("not used"); },
     listAssets: async () => { throw new Error("not used"); },
     getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3127,6 +3136,7 @@ test("CLI agent channel-analytics requires --startDate/--endDate", async () => {
       queryVideoAnalytics: async () => { throw new Error("not used"); },
       listAssets: async () => { throw new Error("not used"); },
       getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3156,6 +3166,7 @@ test("CLI agent video-analytics forwards resolved credentialRef, channelId, and 
     },
     listAssets: async () => { throw new Error("not used"); },
     getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3207,6 +3218,7 @@ test("CLI agent channel-analytics/video-analytics are never blocked by the opera
       }),
       listAssets: async () => { throw new Error("not used"); },
       getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
     };
 
     const channelAnalyticsExit = await runCliCommand({
@@ -3244,6 +3256,7 @@ test("CLI agent list-assets forwards channelId/videoId/assetType after checking 
       return { assets: [] };
     },
     getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3288,6 +3301,7 @@ test("CLI agent list-assets rejects a channelId that is not the caller's active 
       queryVideoAnalytics: async () => { throw new Error("not used"); },
       listAssets: async () => { throw new Error("must not be called"); },
       getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3321,6 +3335,7 @@ test("CLI agent get-asset-context forwards channelId/assetId after checking it a
         createdAt: "2026-09-24T00:00:00.000Z",
       };
     },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3487,6 +3502,7 @@ test("CLI agent list-assets/get-asset-context are never blocked by the operation
         provenance: null,
         createdAt: "2026-09-24T00:00:00.000Z",
       }),
+      getGenerationProvenance: async () => { throw new Error("not used"); },
     };
 
     const listExit = await runCliCommand({
@@ -3534,6 +3550,135 @@ test("CLI agent list-assets/get-asset-context are never blocked by the operation
     assert.equal(registerExit, 1);
     const envelope = JSON.parse(stderr[0] ?? "{}");
     assert.equal(envelope.error.code, "operation_lock_held");
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent get-generation-provenance forwards channelId/changeSetId after checking it against the caller's active channel", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async (input: unknown) => {
+      captured = input;
+      return {
+        profileVersion: 2,
+        effectiveContext: null,
+        changeSetId: "cs-1",
+        channelId: "UC_1",
+        createdAt: "2026-09-24T00:00:00.000Z",
+      };
+    },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "get-generation-provenance", "--channelId", "UC_1", "--userId", "u1", "--changeSetId", "cs-1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1", changeSetId: "cs-1" });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.provenance.changeSetId, "cs-1");
+});
+
+test("CLI agent get-generation-provenance reports { provenance: null } when the underlying core has none, not an error", async () => {
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => null,
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "get-generation-provenance", "--channelId", "UC_1", "--userId", "u1", "--changeSetId", "cs-none"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.provenance, null);
+});
+
+test("CLI agent get-generation-provenance rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "get-generation-provenance", "--channelId", "UC_1", "--changeSetId", "cs-1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("must not be called"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI agent get-generation-provenance is never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => null,
+    };
+
+    const exitCode = await runCliCommand({
+      argv: ["agent", "get-generation-provenance", "--channelId", "UC_1", "--userId", "u1", "--changeSetId", "cs-1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(exitCode, 0);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }

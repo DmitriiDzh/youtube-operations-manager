@@ -878,6 +878,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-51 | CLI `ai-localization generate` has no `--editorialBrief` flag (MCP tool has the equivalent) | none blocking | OPEN, owner will revisit |
 | RISK-52 | `creative_assets` (Phase 7 slice D) does not travel with a device snapshot/handoff | none blocking | OPEN |
 | RISK-53 | `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` | none blocking | OPEN |
+| RISK-54 | `agent_get_generation_provenance` (Phase 7 slice E) has no server-stamped agent/client identity or product/API version -- owner spec §22's full traceability requirement is only partially met | none blocking | OPEN |
 
 ## RISK-53 — `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` — OPEN, 2026-09-24
 
@@ -887,6 +888,17 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Required remediation:** derive `permissionClassSchema` from `PERMISSION_CLASSES` (e.g. `z.enum(PERMISSION_CLASSES)`) and the `plannedFutureCapabilities` schema field from `PLANNED_FUTURE_CAPABILITIES`, same fix shape already applied to `asset-catalog`'s enums in slice D.
 - **Gate(s):** none blocking.
 - **Approval required from:** none -- routine cleanup, whenever it's next touched.
+- **Status:** OPEN — tracked, not yet fixed.
+
+## RISK-54 — `agent_get_generation_provenance` (Phase 7 slice E) has no server-stamped agent/client identity or product/API version — OPEN, 2026-09-24
+
+- **Affected components:** `src/lib/ai-localization/services.ts`'s `createChangeSetFromGeneration`/`getGenerationProvenance`; `DraftProvenance` (`src/lib/sync-gateway/change-drafts/contracts.ts`); the new `agent_get_generation_provenance` MCP tool/`agent get-generation-provenance` CLI command (`docs/AGENT_OPERATIONS_INTERFACE.md` §4d).
+- **Current behavior:** the recorded `profileVersion`/`effectiveContext` on a Change Set's provenance are supplied BY THE CALLER creating the Change Set (an agent echoes back its own prior `generateProposals` response) -- nothing server-side records WHO/WHAT created it (MCP vs. CLI vs. Web UI's own "Generate with AI"), nor which product/Agent API version was running at the time. A Change Set created by Codex over MCP is indistinguishable, in its own provenance record, from one a human created via the Web UI.
+- **Why not fixed now:** owner spec §22 explicitly asks for this ("agent/client identity; product/API version... operation type"), but implementing it means changing `DraftProvenance`'s own CRDT document shape and its SQL projection (`ai_localization_generation_provenance`) -- a data-preservation-adjacent change under `docs/decisions/0001-additive-idempotent-schema-strategy.md`'s own governance, requiring `AGENTS.md` §A's full reading pass and §L's stricter acceptance-criteria-first testing discipline before touching it. Out of proportion to slice E's own "expose what already exists" scope (`AGENTS.md` §C).
+- **Actual risk:** low today (this interface has no live agents connected yet; READ+DRAFT only, no autonomous write path exists regardless of provenance completeness) but grows once an actual operational agent is connected and provenance is relied on for audit/trust decisions.
+- **Required remediation:** add an additive `createdVia`/similar field to `DraftProvenance`, stamped by the MCP/CLI/Web layer at creation time (never taken from caller input, to actually attest origin rather than merely echo a claim), projected into a new, additive SQL column -- its own separately-assigned, `AGENTS.md` §A/§L-governed task.
+- **Gate(s):** none blocking.
+- **Approval required from:** none technically required to file; implementing the fix touches write-safety-adjacent provenance/audit integrity and should get the project owner's awareness before starting.
 - **Status:** OPEN — tracked, not yet fixed.
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

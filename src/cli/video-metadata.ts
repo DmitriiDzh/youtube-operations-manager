@@ -57,6 +57,7 @@ type AgentOperationsCliCoreSubset = Pick<
   | "queryVideoAnalytics"
   | "listAssets"
   | "getAssetContext"
+  | "getGenerationProvenance"
 >;
 type AssetCatalogCliCoreSubset = Pick<AssetCatalogCore, "registerAsset">;
 
@@ -113,7 +114,8 @@ export type ParsedArgs = {
     | "video-analytics"
     | "list-assets"
     | "get-asset-context"
-    | "register";
+    | "register"
+    | "get-generation-provenance";
   flags: Record<string, string | boolean>;
 };
 
@@ -139,7 +141,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     channel: ["sync", "list", "video-list"],
     analytics: ["list", "overview", "data-quality", "comparable-age", "weekly-reports", "weekly-report-get"],
     "ai-localization": ["generate", "create-change-set"],
-    agent: ["capabilities", "channel-context", "video-context", "channel-analytics", "video-analytics", "list-assets", "get-asset-context"],
+    agent: ["capabilities", "channel-context", "video-context", "channel-analytics", "video-analytics", "list-assets", "get-asset-context", "get-generation-provenance"],
     asset: ["register"],
   };
   const validMetadataCommands = ["list", "transcript", "preview", "apply"];
@@ -355,6 +357,8 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   // NOT here -- it persists a new row.
   "list-assets",
   "get-asset-context",
+  // agent get-generation-provenance: a local read over an immutable, already-persisted row.
+  "get-generation-provenance",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -748,6 +752,15 @@ export async function runCliCommand(args: {
           assetId: requiredStringFlag(parsedArgs.flags, "assetId"),
         });
         writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "get-generation-provenance") {
+        const result = await agentOperationsCore.getGenerationProvenance({
+          channelId,
+          changeSetId: requiredStringFlag(parsedArgs.flags, "changeSetId"),
+        });
+        writeStdout(serializeSuccess({ provenance: result }));
         return 0;
       }
 

@@ -319,6 +319,13 @@ test("AC-PROFILE-08: a Change Set's recorded provenance survives a later edit to
   const provenance = await services.getGenerationProvenance({ channelId: "UC_TEST", changeSetId: changeSet.id });
   assert.equal(provenance?.profileVersion, 1);
   assert.equal(provenance?.effectiveContext?.toneNotes, "Formal");
+  // Phase 7 slice E: getGenerationProvenance's own return additionally echoes changeSetId/
+  // channelId/createdAt (StoredGenerationProvenance), unlike generateProposals's own
+  // generationContext field (GenerationProvenance, no Change Set exists yet at that point).
+  assert.equal(provenance?.changeSetId, changeSet.id);
+  assert.equal(provenance?.channelId, "UC_TEST");
+  assert.equal(typeof provenance?.createdAt, "string");
+  assert.ok(!Number.isNaN(Date.parse(provenance!.createdAt)));
 
   const liveProfile = await services.getEditorialProfile({ channelId: "UC_TEST" });
   assert.equal(liveProfile?.version, 2);

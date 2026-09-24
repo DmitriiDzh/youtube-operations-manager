@@ -177,6 +177,21 @@ export type GenerationProvenance = {
   effectiveContext: GenerationContext | null;
 };
 
+/**
+ * `getGenerationProvenance`'s own return shape -- a STORED provenance record read back after a
+ * Change Set already exists, distinct from `GenerationProvenance` above (which `generateProposals`
+ * also returns mid-preview, before any Change Set exists, so it cannot carry `changeSetId`/
+ * `createdAt`). `createdAt` here is the real moment `createChangeSetFromGeneration` recorded this
+ * row (`DraftProvenance.createdAt`, `src/lib/sync-gateway/change-drafts/contracts.ts`) -- not a
+ * later device's own projection/sync time, verified by reading `createProvenance`'s own
+ * implementation before adding this field.
+ */
+export type StoredGenerationProvenance = GenerationProvenance & {
+  changeSetId: string;
+  channelId: string;
+  createdAt: string;
+};
+
 /** A proposal the human has inspected and, optionally, edited before it is persisted
  * as a Change (via the existing ChangeSet creation path). Omitting a field means "no
  * proposed change for this field" -- the same "blank = no change" rule as XLSX import

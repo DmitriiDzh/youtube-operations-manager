@@ -21,6 +21,8 @@ import {
   getAssetContextInputSchema,
   getAssetContextOutputSchema,
   getChannelContextInputSchema,
+  getGenerationProvenanceInputSchema,
+  getGenerationProvenanceOutputSchema,
   getSystemCapabilitiesInputSchema,
   getVideoContextInputSchema,
   listAssetsInputSchema,
@@ -34,6 +36,7 @@ import {
 } from "./schemas";
 import { ANALYTICS_METRIC_NAMES, CHANNEL_OVERVIEW_METRIC_NAMES } from "@/lib/analytics";
 import type { CreativeAsset } from "@/lib/asset-catalog";
+import type { StoredGenerationProvenance } from "@/lib/ai-localization/contracts";
 
 /**
  * One entry per capability actually implemented and reachable today -- either a new function this
@@ -102,6 +105,13 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     permission: "DRAFT",
     description:
       "Persist a reviewed set of localization proposals as a new Change Set, every Change starting `approvalStatus: \"pending\"` -- no code path anywhere can mark an agent-authored proposal already-approved (AGENTS.md §G). Implemented as the pre-existing `ai_localization_create_change_set` MCP tool/`ai-localization create-change-set` CLI command (`src/lib/ai-localization/`), not a new function -- registered here for capability-discovery completeness.",
+  },
+  {
+    id: "localization_draft.get_generation_provenance",
+    domain: "localization_draft",
+    permission: "READ",
+    description:
+      "Read back the immutable provenance recorded for a localization Change Set at creation time (editorial-profile version, effective context, changeSetId/channelId, creation time) -- null if the Change Set was created without one (e.g. XLSX import). The recorded profileVersion/effectiveContext were supplied by the CALLER when creating the Change Set (not independently attested by this server) -- do not treat them as server-verified fact. Requires channelId to be the caller's currently-active channel and changeSetId to actually belong to it (both a nonexistent id and one from another channel return null, never distinguishable).",
   },
   {
     id: "analytics.query_channel_analytics",
@@ -290,6 +300,10 @@ type ServiceDependencies = {
   // convention (see `assetCatalogListAssets`/`assetCatalogGetAssetContext` below).
   assetCatalogListAssets(input: unknown): Promise<{ assets: CreativeAsset[] }>;
   assetCatalogGetAssetContext(input: unknown): Promise<CreativeAsset>;
+  // Slice E -- delegates to `aiLocalizationCore`'s own already-existing `getGenerationProvenance`
+  // unchanged (AGENTS.md §D). No credential/channel checking of its own -- mirrors slice B's
+  // convention, same as the asset-catalog delegates above.
+  aiLocalizationGetGenerationProvenance(input: unknown): Promise<StoredGenerationProvenance | null>;
 };
 
 export function createAgentOperationsServices(deps: ServiceDependencies) {
@@ -490,6 +504,21 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
       const parsedInput = parseWithSchema(getAssetContextInputSchema, input, "get asset context input");
       const result = await deps.assetCatalogGetAssetContext(parsedInput);
       return parseWithSchema(getAssetContextOutputSchema, result, "get asset context output");
+    },
+
+    /**
+     * Slice E, owner spec §22. Same channel-scoping note as `getAssetContext` above. Returns
+     * `null` for a Change Set that has no recorded provenance (XLSX import, or one created before
+     * this feature existed) -- never an error, and the same `null` for "doesn't exist" and
+     * "belongs to another channel" (never distinguishable -- `aiLocalizationCore`'s own existing
+     * behavior, unchanged here). The returned `profileVersion`/`effectiveContext` were supplied
+     * by whichever caller created the Change Set, not independently attested by this server --
+     * see this capability's own description in `AGENT_CAPABILITIES` above.
+     */
+    async getGenerationProvenance(input: unknown): Promise<StoredGenerationProvenance | null> {
+      const parsedInput = parseWithSchema(getGenerationProvenanceInputSchema, input, "get generation provenance input");
+      const result = await deps.aiLocalizationGetGenerationProvenance(parsedInput);
+      return parseWithSchema(getGenerationProvenanceOutputSchema, result, "get generation provenance output");
     },
   };
 }

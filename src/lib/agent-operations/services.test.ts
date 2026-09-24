@@ -52,6 +52,13 @@ type FakeCreativeAsset = {
   provenance: Record<string, unknown> | null;
   createdAt: string;
 };
+type FakeGenerationProvenance = {
+  profileVersion: number | null;
+  effectiveContext: Record<string, unknown> | null;
+  changeSetId: string;
+  channelId: string;
+  createdAt: string;
+};
 
 function createFixture(
   overrides: Partial<{
@@ -66,6 +73,7 @@ function createFixture(
     now: () => Date;
     assetCatalogListAssets: (input: unknown) => Promise<{ assets: FakeCreativeAsset[] }>;
     assetCatalogGetAssetContext: (input: unknown) => Promise<FakeCreativeAsset>;
+    aiLocalizationGetGenerationProvenance: (input: unknown) => Promise<FakeGenerationProvenance | null>;
   }> = {}
 ) {
   const services = createAgentOperationsServices({
@@ -90,6 +98,8 @@ function createFixture(
     now: overrides.now ?? (() => new Date("2026-09-24T12:00:00.000Z")),
     assetCatalogListAssets: overrides.assetCatalogListAssets ?? (async () => { throw new Error("assetCatalogListAssets not stubbed"); }),
     assetCatalogGetAssetContext: overrides.assetCatalogGetAssetContext ?? (async () => { throw new Error("assetCatalogGetAssetContext not stubbed"); }),
+    aiLocalizationGetGenerationProvenance:
+      overrides.aiLocalizationGetGenerationProvenance ?? (async () => { throw new Error("aiLocalizationGetGenerationProvenance not stubbed"); }),
   });
   return { services };
 }
@@ -102,7 +112,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   const result = await services.getSystemCapabilities({});
 
   assert.equal(result.productVersion, "9.9.9");
-  assert.equal(result.agentApiVersion, "0.4.0");
+  assert.equal(result.agentApiVersion, "0.5.0");
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -332,6 +342,52 @@ test("agent capabilities list registers the two asset-catalog capabilities as RE
   assert.equal(listCap!.permission, "READ");
   assert.ok(getCap);
   assert.equal(getCap!.permission, "READ");
+});
+
+// AC-PROVENANCE-CAP-01 (slice E, owner spec §22).
+test("agent capabilities list registers get_generation_provenance under localization_draft as READ", async () => {
+  const { services } = createFixture();
+  const result = await services.getSystemCapabilities({});
+
+  const cap = result.capabilities.find((c) => c.id === "localization_draft.get_generation_provenance");
+  assert.ok(cap);
+  assert.equal(cap!.domain, "localization_draft");
+  assert.equal(cap!.permission, "READ");
+});
+
+// AC-PROVENANCE-01/02: forwards input unchanged, returns the stored record including the
+// changeSetId/channelId/createdAt fields only a stored (not mid-preview) provenance carries.
+test("getGenerationProvenance forwards its input unchanged and returns the stored record", async () => {
+  let captured: unknown;
+  const { services } = createFixture({
+    aiLocalizationGetGenerationProvenance: async (input) => {
+      captured = input;
+      return {
+        profileVersion: 3,
+        effectiveContext: { toneNotes: "Playful" },
+        changeSetId: "cs-1",
+        channelId: "UC_A",
+        createdAt: "2026-09-24T00:00:00.000Z",
+      };
+    },
+  });
+
+  const result = await services.getGenerationProvenance({ channelId: "UC_A", changeSetId: "cs-1" });
+  assert.deepEqual(captured, { channelId: "UC_A", changeSetId: "cs-1" });
+  assert.equal(result?.profileVersion, 3);
+  assert.equal(result?.changeSetId, "cs-1");
+  assert.equal(result?.createdAt, "2026-09-24T00:00:00.000Z");
+});
+
+// AC-PROVENANCE-03: a Change Set with no recorded provenance returns null, never an error or a
+// fabricated record.
+test("getGenerationProvenance returns null when the underlying core has no provenance for this Change Set", async () => {
+  const { services } = createFixture({
+    aiLocalizationGetGenerationProvenance: async () => null,
+  });
+
+  const result = await services.getGenerationProvenance({ channelId: "UC_A", changeSetId: "cs-no-provenance" });
+  assert.equal(result, null);
 });
 
 test("listAssets forwards its input unchanged to assetCatalogListAssets", async () => {
