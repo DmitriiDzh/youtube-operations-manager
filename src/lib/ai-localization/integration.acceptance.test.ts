@@ -332,10 +332,13 @@ test("AC-APPROVAL-01 + AC-BATCH-REUSE-01 + AC-PRESERVE-01: AI-generated proposal
 
   // Step 3-4: human inspects, edits the title, and creates the Change Set.
   const editedTitle = "Gatos do Mundo (revisado)";
-  const changeSet = await ai.createChangeSetFromGeneration({
-    channelId: "UC_TEST",
-    proposals: [{ videoId: "v1", language: "pt-BR", title: editedTitle, description: descriptionField.proposedValue }],
-  });
+  const changeSet = await ai.createChangeSetFromGeneration(
+    {
+      channelId: "UC_TEST",
+      proposals: [{ videoId: "v1", language: "pt-BR", title: editedTitle, description: descriptionField.proposedValue }],
+    },
+    { createdVia: "web_ui", agentApiVersion: null }
+  );
   assert.equal(changeSet.source, "ai_localization");
   assert.equal(changeSet.totalChanges, 2);
 
@@ -421,10 +424,13 @@ test("AC-CONFLICT-REUSE-01: an ai_localization change is revalidated against cur
     logger: { info() {}, error() {} },
   });
 
-  const changeSet = await ai.createChangeSetFromGeneration({
-    channelId: "UC_TEST",
-    proposals: [{ videoId: "v1", language: "es", title: "Gatos del mundo" }],
-  });
+  const changeSet = await ai.createChangeSetFromGeneration(
+    {
+      channelId: "UC_TEST",
+      proposals: [{ videoId: "v1", language: "es", title: "Gatos del mundo" }],
+    },
+    { createdVia: "web_ui", agentApiVersion: null }
+  );
   const { changes } = await fixture.changeSetServices.getChangeSet({ channelId: "UC_TEST", changeSetId: changeSet.id });
   const change = changes[0];
 

@@ -77,6 +77,29 @@ export type DraftProvenance = {
   profileVersion: number | null;
   effectiveContextJson: string | null;
   createdAt: string;
+  /** Phase 7 slice F (owner spec §13) -- JSON-encoded `EvidenceReference[]`, agent-supplied
+   * external research citations. `null` when none were supplied -- never fabricated. Every NEW
+   * write via `createProvenance` always sets this to a concrete value (a string or `null`), but
+   * the field is typed OPTIONAL here because Automerge has no schema migration
+   * (`ChannelDraftDocument.provenance?`'s own doc comment applies identically to entries, not
+   * just to the map itself): an entry created before this field existed simply lacks the key
+   * entirely, reading as `undefined`, not `null` -- every reader (`upsertProvenance`) must
+   * normalize with `?? null` rather than assume the key is always present. */
+  evidenceJson?: string | null;
+  /** Phase 7 slice F (owner spec §12) -- agent-supplied rationale for the generated proposals.
+   * Never independently verified by this server (same caveat as `effectiveContextJson`). Same
+   * pre-existing-entry caveat as `evidenceJson` above. */
+  rationale?: string | null;
+  /** Phase 7 slice F (owner spec §22) -- which transport actually created this Change Set.
+   * SERVER-STAMPED at the MCP/CLI/Web-route call site, never taken from caller input (that would
+   * make it a claim, not an attestation -- see `docs/TECHNICAL_DEBT.md` RISK-54's own reasoning
+   * for why this distinction matters). Same pre-existing-entry caveat as `evidenceJson` above. */
+  createdVia?: "mcp" | "cli" | "web_ui" | null;
+  /** Phase 7 slice F -- `AGENT_API_VERSION` (`src/lib/agent-operations/contracts.ts`) at creation
+   * time, SERVER-STAMPED, only when `createdVia` is `"mcp"` (the one transport where an
+   * agent-operations-versioned surface actually mediated the call) -- `null` otherwise. Same
+   * pre-existing-entry caveat as `evidenceJson` above. */
+  agentApiVersion?: string | null;
 };
 
 /**

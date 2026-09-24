@@ -13,6 +13,7 @@ import type { ChannelAccessCore } from "@/lib/channel-access";
 import type { AnalyticsCore } from "@/lib/analytics";
 import type { AiLocalizationCore } from "@/lib/ai-localization";
 import type { AgentOperationsCore } from "@/lib/agent-operations";
+import { AGENT_API_VERSION } from "@/lib/agent-operations";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { createMcpServer, createMcpToolHandlers } from "./server";
@@ -2466,7 +2467,9 @@ test("MCP analytics_weekly_report_get rejects a missing weekStartDate", async ()
   assert.equal(payload.error.code, "validation_failed");
 });
 
-function makeAiLocalizationCoreStub(): Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration"> {
+function makeAiLocalizationCoreStub(
+  captureCreateChangeSetCallOrigin?: (callOrigin: unknown) => void
+): Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration"> {
   return {
     generateProposals: async () => ({
       results: [
@@ -2500,7 +2503,10 @@ function makeAiLocalizationCoreStub(): Pick<AiLocalizationCore, "generateProposa
       },
       generationContext: { profileVersion: null, effectiveContext: null },
     }),
-    createChangeSetFromGeneration: async () => makeChangeSet({ source: "ai_localization" }),
+    createChangeSetFromGeneration: async (_input, callOrigin) => {
+      captureCreateChangeSetCallOrigin?.(callOrigin);
+      return makeChangeSet({ source: "ai_localization" });
+    },
   };
 }
 
@@ -2581,6 +2587,7 @@ test("MCP ai_localization_generate rejects a missing channelId", async () => {
 });
 
 test("MCP ai_localization_create_change_set persists via createChangeSetFromGeneration, source ai_localization", async () => {
+  let capturedCallOrigin: unknown;
   const handlers = createMcpToolHandlers(
     makeCoreStub(),
     makeAuthStub(),
@@ -2588,7 +2595,9 @@ test("MCP ai_localization_create_change_set persists via createChangeSetFromGene
     undefined,
     makeChannelAccessCoreStub(),
     undefined,
-    makeAiLocalizationCoreStub()
+    makeAiLocalizationCoreStub((callOrigin) => {
+      capturedCallOrigin = callOrigin;
+    })
   );
   const result = await handlers.aiLocalizationCreateChangeSet({
     channelId: "UC_1",
@@ -2598,6 +2607,9 @@ test("MCP ai_localization_create_change_set persists via createChangeSetFromGene
   assert.equal(result.isError, undefined);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
   assert.equal(payload.source, "ai_localization");
+  // Phase 7 slice F (owner spec §22): the MCP transport must SERVER-STAMP its own identity --
+  // never left to default to "web_ui", and never taken from the caller's input.
+  assert.deepEqual(capturedCallOrigin, { createdVia: "mcp", agentApiVersion: AGENT_API_VERSION });
 });
 
 test("MCP ai_localization_create_change_set is rejected while the operation lock is held; ai_localization_generate is not", async () => {
@@ -2788,6 +2800,10 @@ function makeAgentOperationsCoreStub(): Pick<
       changeSetId: "cs-1",
       channelId: "UC_1",
       createdAt: "2026-09-24T00:00:00.000Z",
+      evidence: null,
+      rationale: null,
+      createdVia: null,
+      agentApiVersion: null,
     }),
   };
 }

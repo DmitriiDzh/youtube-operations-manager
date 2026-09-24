@@ -46,6 +46,10 @@ export function createGenerationProvenanceStoreAdapter() {
       channelId: string;
       profileVersion: number | null;
       effectiveContextJson: string | null;
+      evidenceJson: string | null;
+      rationale: string | null;
+      createdVia: "mcp" | "cli" | "web_ui" | null;
+      agentApiVersion: string | null;
     }): Promise<void> {
       await core.createProvenance(input);
     },

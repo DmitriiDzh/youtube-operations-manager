@@ -37,7 +37,7 @@ import {
   createChangeSetFromGenerationInputSchema,
   generateProposalsInputSchema,
 } from "@/lib/ai-localization/schemas";
-import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent-operations";
+import { createAgentOperationsCore, type AgentOperationsCore, AGENT_API_VERSION } from "@/lib/agent-operations";
 import {
   getAssetContextInputSchema,
   getChannelContextInputSchema,
@@ -991,7 +991,13 @@ export function createMcpToolHandlers(
           userId: getCredentialUserId(credentialRef),
           channelId: parsedInput.data.channelId,
         });
-        const result = await aiLocalizationCore.createChangeSetFromGeneration(parsedInput.data);
+        // Phase 7 slice F (owner spec §22): this is the one transport an agent-operations-
+        // versioned surface actually mediates, so it is the only one that stamps a real
+        // `agentApiVersion` alongside `createdVia: "mcp"`.
+        const result = await aiLocalizationCore.createChangeSetFromGeneration(parsedInput.data, {
+          createdVia: "mcp",
+          agentApiVersion: AGENT_API_VERSION,
+        });
         return toolSuccessResult(result as unknown as Record<string, unknown>);
       } catch (error) {
         return toolErrorResult(error);

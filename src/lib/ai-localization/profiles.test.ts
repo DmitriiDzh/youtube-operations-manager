@@ -119,11 +119,32 @@ function makeFixture(channelIds: string[] = ["UC_TEST"]) {
 
   const provenanceRecords = new Map<
     string,
-    { id: string; changeSetId: string; channelId: string; profileVersion: number | null; effectiveContextJson: string | null; createdAt: Date }
+    {
+      id: string;
+      changeSetId: string;
+      channelId: string;
+      profileVersion: number | null;
+      effectiveContextJson: string | null;
+      createdAt: Date;
+      evidenceJson: string | null;
+      rationale: string | null;
+      createdVia: string | null;
+      agentApiVersion: string | null;
+    }
   >();
   let provenanceCreateCount = 0;
   const provenanceStore = {
-    async create(input: { id: string; changeSetId: string; channelId: string; profileVersion: number | null; effectiveContextJson: string | null }) {
+    async create(input: {
+      id: string;
+      changeSetId: string;
+      channelId: string;
+      profileVersion: number | null;
+      effectiveContextJson: string | null;
+      evidenceJson: string | null;
+      rationale: string | null;
+      createdVia: "mcp" | "cli" | "web_ui" | null;
+      agentApiVersion: string | null;
+    }) {
       provenanceCreateCount += 1;
       provenanceRecords.set(input.changeSetId, { ...input, createdAt: new Date() });
     },
@@ -308,11 +329,14 @@ test("AC-PROFILE-08: a Change Set's recorded provenance survives a later edit to
   assert.equal(generation.generationContext.profileVersion, 1);
   assert.equal(generation.generationContext.effectiveContext?.toneNotes, "Formal");
 
-  const changeSet = await services.createChangeSetFromGeneration({
-    channelId: "UC_TEST",
-    proposals: [{ videoId: "v1", language: "es", title: "T" }],
-    provenance: generation.generationContext,
-  });
+  const changeSet = await services.createChangeSetFromGeneration(
+    {
+      channelId: "UC_TEST",
+      proposals: [{ videoId: "v1", language: "es", title: "T" }],
+      provenance: generation.generationContext,
+    },
+    { createdVia: "web_ui", agentApiVersion: null }
+  );
 
   await services.saveEditorialProfile({ channelId: "UC_TEST", toneNotes: "Playful" });
 
@@ -339,17 +363,101 @@ test("AC-PROFILE-09: provenance retrieval is channel-scoped", async () => {
   const services = createAiLocalizationServicesWithProvider(build, provider);
 
   const generation = await services.generateProposals({ channelId: "UC_A", videoIds: ["v1"], targetLanguages: ["es"] });
-  const changeSet = await services.createChangeSetFromGeneration({
-    channelId: "UC_A",
-    proposals: [{ videoId: "v1", language: "es", title: "T" }],
-    provenance: generation.generationContext,
-  });
+  const changeSet = await services.createChangeSetFromGeneration(
+    {
+      channelId: "UC_A",
+      proposals: [{ videoId: "v1", language: "es", title: "T" }],
+      provenance: generation.generationContext,
+    },
+    { createdVia: "web_ui", agentApiVersion: null }
+  );
 
   const crossChannel = await services.getGenerationProvenance({ channelId: "UC_B", changeSetId: changeSet.id });
   assert.equal(crossChannel, null);
 
   const sameChannel = await services.getGenerationProvenance({ channelId: "UC_A", changeSetId: changeSet.id });
   assert.notEqual(sameChannel, null);
+});
+
+// Phase 7 slice F (owner spec §12/§13/§22): evidence/rationale are optional, caller-echoed,
+// per-Change-Set claims; createdVia/agentApiVersion are SERVER-STAMPED by the caller layer
+// (never taken from the validated input), defaulting to "web_ui" when the caller passes nothing.
+test("Phase 7 slice F: evidence/rationale are recorded and readable back, createdVia defaults to web_ui", async () => {
+  const { build } = makeFixture();
+  const provider = fixedProvider(() => ({ status: "ok", title: "T", description: "D" }));
+  const services = createAiLocalizationServicesWithProvider(build, provider);
+
+  const evidence = [
+    {
+      url: "https://example.com/trend-report",
+      retrievedAt: "2026-09-24T00:00:00.000Z",
+      description: "Comparable-video title-length analysis",
+      claimSupported: "Shorter titles perform better for this audience",
+      sourceType: "external_research" as const,
+    },
+  ];
+
+  const changeSet = await services.createChangeSetFromGeneration(
+    {
+      channelId: "UC_TEST",
+      proposals: [{ videoId: "v1", language: "es", title: "T" }],
+      evidence,
+      rationale: "Shorter titles tested better on 3 comparable videos.",
+    },
+    { createdVia: "web_ui", agentApiVersion: null }
+  );
+
+  const provenance = await services.getGenerationProvenance({ channelId: "UC_TEST", changeSetId: changeSet.id });
+  assert.deepEqual(provenance?.evidence, evidence);
+  assert.equal(provenance?.rationale, "Shorter titles tested better on 3 comparable videos.");
+  assert.equal(provenance?.createdVia, "web_ui");
+  assert.equal(provenance?.agentApiVersion, null);
+});
+
+test("Phase 7 slice F: an explicit callOrigin stamps createdVia/agentApiVersion instead of the web_ui default", async () => {
+  const { build } = makeFixture();
+  const provider = fixedProvider(() => ({ status: "ok", title: "T", description: "D" }));
+  const services = createAiLocalizationServicesWithProvider(build, provider);
+
+  const changeSet = await services.createChangeSetFromGeneration(
+    {
+      channelId: "UC_TEST",
+      proposals: [{ videoId: "v1", language: "es", title: "T" }],
+      rationale: "Agent-authored rationale.",
+    },
+    { createdVia: "mcp", agentApiVersion: "0.6.0" }
+  );
+
+  const provenance = await services.getGenerationProvenance({ channelId: "UC_TEST", changeSetId: changeSet.id });
+  assert.equal(provenance?.createdVia, "mcp");
+  assert.equal(provenance?.agentApiVersion, "0.6.0");
+});
+
+// RISK-54 regression (docs/TECHNICAL_DEBT.md): a Change Set created with NO provenance echo, NO
+// evidence, and NO rationale must still get its provenance row stamped with the caller's real
+// identity -- otherwise a Change Set created by Codex over MCP would be indistinguishable from a
+// human-authored one whenever the agent had nothing else to record, which is exactly the gap
+// RISK-54 was opened to close.
+test("Phase 7 slice F: an MCP-origin Change Set with no provenance/evidence/rationale still records createdVia/agentApiVersion", async () => {
+  const { build } = makeFixture();
+  const provider = fixedProvider(() => ({ status: "ok", title: "T", description: "D" }));
+  const services = createAiLocalizationServicesWithProvider(build, provider);
+
+  const changeSet = await services.createChangeSetFromGeneration(
+    {
+      channelId: "UC_TEST",
+      proposals: [{ videoId: "v1", language: "es", title: "T" }],
+    },
+    { createdVia: "mcp", agentApiVersion: "0.6.0" }
+  );
+
+  const provenance = await services.getGenerationProvenance({ channelId: "UC_TEST", changeSetId: changeSet.id });
+  assert.notEqual(provenance, null, "a provenance row must exist even with nothing else to echo");
+  assert.equal(provenance?.createdVia, "mcp");
+  assert.equal(provenance?.agentApiVersion, "0.6.0");
+  assert.equal(provenance?.profileVersion, null);
+  assert.equal(provenance?.evidence, null);
+  assert.equal(provenance?.rationale, null);
 });
 
 // AC-PROFILE-10

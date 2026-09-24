@@ -210,7 +210,7 @@ cataloguing a pre-existing one, is a separate, later concept -- slice G's
 snapshot/handoff (`docs/TECHNICAL_DEBT.md` RISK-52), the same accepted limitation
 `video_metrics_daily` already has.
 
-## 4d. Agent draft/proposal provenance (owner spec §22) -- PARTIAL (slice E)
+## 4d. Agent draft/proposal provenance (owner spec §22) -- IMPLEMENTED (slice E, identity gap closed in slice F -- see §4e)
 
 `get_generation_provenance` / MCP `agent_get_generation_provenance` (`src/lib/agent-operations/`)
 delegates to the ALREADY-EXISTING `ai-localization` provenance mechanism (a table recording, per
@@ -230,17 +230,74 @@ exists, so it cannot carry those fields). Same slice-B channel-scoping/credentia
 `get_asset_context`; same `null`-for-both-"missing"-and-"wrong-channel" pattern the underlying
 HTTP route already established.
 
-**Why PARTIAL, not IMPLEMENTED:** owner spec §22 asks for full traceability -- "agent/client
-identity," "product/API version," and "operation type" on every agent-created object. Nothing in
-this codebase currently stamps who/what created a Change Set (MCP vs. CLI vs. Web UI, which
-product version) at creation time -- `profileVersion`/`effectiveContext` are supplied BY THE
-CALLER when creating the Change Set (an agent echoes back its own `generateProposals` response),
-never independently attested by this server. This capability's own description says so explicitly.
-Adding real server-stamped identity/origin would mean changing `DraftProvenance`'s own CRDT
-document shape and its SQL projection (`docs/decisions/0001-additive-idempotent-schema-strategy.md`
-territory) -- a data-preservation-adjacent change requiring `AGENTS.md` §A's full reading pass and
-§L's stricter testing discipline, out of proportion to this slice's own "expose what already
-exists" scope. Tracked as a known gap for a future, separately-assigned task, not implemented here.
+**Why slice E alone was PARTIAL, not IMPLEMENTED (resolved by slice F):** owner spec §22 asks for
+full traceability -- "agent/client identity," "product/API version," and "operation type" on every
+agent-created object. Slice E's read wrapper alone closed the MCP/CLI tool-surface gap but stamped
+nothing new; `profileVersion`/`effectiveContext` remained supplied BY THE CALLER when creating the
+Change Set (an agent echoes back its own `generateProposals` response), never independently
+attested by this server. Slice F (see §4e) added the actual server-stamped identity this section
+originally flagged as missing -- `docs/TECHNICAL_DEBT.md` RISK-54 is now RESOLVED.
+
+## 4e. Bulk localization integration -- evidence, rationale, and identity stamping (owner spec
+§12/§13/§22) -- PARTIAL (slice F)
+
+Widens the EXISTING `ai_localization_generate` / `ai_localization_create_change_set` pair (no new
+MCP tool, no new agent-operations capability id -- `AGENT_API_VERSION` was not bumped for this
+slice, since it widens an existing capability's contract rather than adding a new one) so an agent
+can attach evidence/rationale to a Change Set's proposals, and so every provenance record now
+attests which transport actually created it.
+
+- **Evidence (owner spec §13):** `createChangeSetFromGenerationInputSchema` gained an optional
+  `evidence: EvidenceReference[]` array (`src/lib/ai-localization/schemas.ts`) -- each item carries
+  `url`, `retrievedAt`, `description`, `claimSupported`, `sourceType`
+  (`external_research | channel_analytics | comparable_video | other`), and an optional `excerpt`.
+  Caller-supplied, never independently verified by this server (same "AI proposes" discipline
+  `AGENTS.md` §B/§G already apply to the title/description text itself) -- distinguishes research
+  an agent performed OUTSIDE this application from figures the application already owned, per the
+  owner spec's own explicit ask.
+- **Rationale (owner spec §12):** an optional free-text `rationale` string, same caller-supplied,
+  never-verified discipline.
+- **Granularity (known, accepted limitation):** both are recorded once per Change Set, not per
+  individual proposal within it -- `docs/TECHNICAL_DEBT.md` RISK-55 tracks this as a deliberate,
+  coarser choice (reusing the existing per-Change-Set provenance row rather than a new per-Change
+  table).
+- **Identity stamping (owner spec §22, closes RISK-54):** `createChangeSetFromGeneration` takes a
+  new, REQUIRED second parameter, `callOrigin: { createdVia: "mcp" | "cli" | "web_ui";
+  agentApiVersion?: string | null }`, SERVER-STAMPED at each of its three call sites -- never
+  taken from the request body, so it is an attestation, not a caller's claim. The MCP handler
+  (`src/mcp/server.ts`) stamps `{ createdVia: "mcp", agentApiVersion: AGENT_API_VERSION }`; the
+  CLI dispatch (`src/cli/video-metadata.ts`) stamps `{ createdVia: "cli", agentApiVersion: null
+  }`; the pre-existing Web route now explicitly stamps `{ createdVia: "web_ui", agentApiVersion:
+  null }` too. Deliberately no default value for this parameter -- a default of `"web_ui"` would
+  silently mislabel any future call site that forgot to pass it, exactly the fail-open gap this
+  field exists to prevent; `tsc` now enforces that every call site (including tests) states its
+  own identity explicitly.
+- **A provenance row is always recorded, unconditionally**, even when the caller echoes no
+  `provenance`/`evidence`/`rationale` at all -- so identity is attested for every Change Set
+  regardless of what else it carries.
+- **Storage:** `DraftProvenance` (`src/lib/sync-gateway/change-drafts/contracts.ts`) and
+  `ai_localization_generation_provenance` (SCHEMA_MIGRATIONS v16) gained four additive, nullable
+  columns: `evidence_json`, `rationale`, `created_via`, `agent_api_version`. `createProvenance`'s
+  own input schema (`src/lib/sync-gateway/change-drafts/schemas.ts`) keeps them optional so every
+  pre-existing call site that predates this field keeps working unchanged.
+- **Projection self-healing:** `projectToSql` re-projects the whole CRDT document, including
+  every provenance entry, on every save -- so `setStoredGenerationProvenanceRow`
+  (`src/lib/db.ts`) uses `onConflictDoUpdate`, not `onConflictDoNothing`, so that a pre-existing
+  SQL row for a given provenance id (e.g. one written by an older app version/schema that
+  predates these columns) always gets corrected by a later re-projection instead of being
+  permanently frozen. This also requires normalizing `DraftProvenance`'s four new fields to
+  `?? null` before writing (`upsertProvenance`) -- a genuinely pre-existing CRDT entry lacks
+  those keys entirely (Automerge has no schema migration), reading as `undefined`, not `null`.
+  Verified against real SQLite in
+  `src/lib/sync-gateway/change-drafts/adapters/sql-projection.test.ts`, including a dedicated
+  backward-compatibility test for an entry missing the keys.
+- **Why PARTIAL:** RISK-55's per-Change-Set (not per-proposal) evidence granularity remains a
+  known, documented gap relative to owner spec §12/§13's literal per-draft phrasing. Owner spec
+  §12/§13 also describe `confidence` (explicitly never to be treated as a factual probability),
+  `warnings`, an `expected objective`, and a `source-context revision/ID` as part of a proposal's
+  own record -- this slice's research fork deliberately deferred all four (no `ReviewedProposal`/
+  `GenerationResult` field carries them yet) rather than widen the proposal shape itself in the
+  same pass as provenance/evidence; RISK-55 now also tracks this as part of the same open gap.
 
 ## 5. Context model (owner spec §6) -- design settled, mostly not yet implemented
 
@@ -265,8 +322,8 @@ METRIC` data in one response: raw daily/row-level data is `FACT`, `currentTotals
 doc comment in `src/lib/agent-operations/contracts.ts` (`ChannelAnalyticsContext`), not yet by an
 explicit per-field machine-readable tag in the response shape itself (that finer-grained tagging,
 if ever needed, remains a future refinement -- naming/doc-comment separation was judged sufficient
-for this slice's actual two response shapes). Slice E (draft/proposal provenance, PARTIAL -- see
-§4d) is the first to actually touch `HYPOTHESIS`: `profileVersion`/`effectiveContext` are `FACT`
+for this slice's actual two response shapes). Slice E (draft/proposal provenance -- see §4d) is
+the first to actually touch `HYPOTHESIS`: `profileVersion`/`effectiveContext` are `FACT`
 (what was actually recorded, verbatim); the proposals that generation produced are themselves
 `HYPOTHESIS` (AI-authored, not yet human-reviewed) but are not part of THIS read's own response
 shape (they live in the Change Set's own `Changes`, a separate existing read); the eventual human
@@ -301,7 +358,8 @@ second error-code enum:
 | B | Read-only channel/video context | **IMPLEMENTED** -- see §4a; MCP `agent_get_channel_context`/`agent_get_video_context`, CLI `agent channel-context`/`agent video-context`. No HTTP route yet. |
 | C | Analytics interface (agent-oriented wrapper over `src/lib/analytics/`) | **IMPLEMENTED** -- see §4b; MCP `agent_query_channel_analytics`/`agent_query_video_analytics`, CLI `agent channel-analytics`/`agent video-analytics`. No HTTP route yet. |
 | D | Asset catalog/context (new subsystem -- nothing to reuse) | **IMPLEMENTED** -- see §4c; MCP `agent_list_assets`/`agent_get_asset_context`, CLI `agent list-assets`/`agent get-asset-context`/`asset register`. No HTTP route yet. |
-| E | Agent draft/proposal provenance | **PARTIAL** -- see §4d; MCP `agent_get_generation_provenance`, CLI `agent get-generation-provenance`. No server-stamped agent/client identity or product/API version yet (deferred, see §4d). No HTTP route (reuses the pre-existing one). |
+| E | Agent draft/proposal provenance | **IMPLEMENTED** -- see §4d; MCP `agent_get_generation_provenance`, CLI `agent get-generation-provenance`. No HTTP route (reuses the pre-existing one). |
+| F | Bulk localization integration -- evidence, rationale, identity stamping | **PARTIAL** -- see §4e; widens the existing `ai_localization_generate`/`ai_localization_create_change_set` MCP tools, CLI commands, and Web route. Evidence/rationale are per-Change-Set, not per-proposal (RISK-55, known limitation). |
 | F | Bulk localization integration (wraps `src/lib/ai-localization/`, already has MCP/CLI tools from BL-078 -- this slice is about context/evidence enrichment around that existing workflow, not a new persistence path) | PLANNED |
 | G | Content Proposal / external artifact registration | PLANNED |
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | IN PROGRESS |

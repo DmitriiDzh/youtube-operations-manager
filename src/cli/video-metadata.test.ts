@@ -2682,8 +2682,10 @@ test("CLI ai-localization generate rejects a channelId that is not the caller's 
 test("CLI ai-localization create-change-set parses --proposalsJson/--provenanceJson and persists via createChangeSetFromGeneration", async () => {
   const aiLocalizationCore = makeAiLocalizationCliCoreStub();
   let captured: unknown;
-  aiLocalizationCore.createChangeSetFromGeneration = async (input: unknown) => {
+  let capturedCallOrigin: unknown;
+  aiLocalizationCore.createChangeSetFromGeneration = async (input: unknown, callOrigin: unknown) => {
     captured = input;
+    capturedCallOrigin = callOrigin;
     return { ...makeChangeSetRecord(), source: "ai_localization" as const };
   };
 
@@ -2713,9 +2715,60 @@ test("CLI ai-localization create-change-set parses --proposalsJson/--provenanceJ
     channelId: "UC_1",
     proposals: [{ videoId: "v1", language: "es", title: "Nuevo titulo" }],
     provenance: { profileVersion: 2, effectiveContext: null },
+    evidence: undefined,
+    rationale: undefined,
   });
   const envelope = JSON.parse(stdout[0] ?? "{}");
   assert.equal(envelope.data.source, "ai_localization");
+  // Phase 7 slice F (owner spec §22): the CLI transport must SERVER-STAMP its own identity, with
+  // no agentApiVersion (that field only ever applies to the MCP transport).
+  assert.deepEqual(capturedCallOrigin, { createdVia: "cli", agentApiVersion: null });
+});
+
+// Phase 7 slice F (owner spec §12/§13).
+test("CLI ai-localization create-change-set parses --evidenceJson/--rationale and forwards them unchanged", async () => {
+  const aiLocalizationCore = makeAiLocalizationCliCoreStub();
+  let captured: unknown;
+  aiLocalizationCore.createChangeSetFromGeneration = async (input: unknown) => {
+    captured = input;
+    return { ...makeChangeSetRecord(), source: "ai_localization" as const };
+  };
+
+  const evidence = [
+    {
+      url: "https://example.com/report",
+      retrievedAt: "2026-09-24T00:00:00.000Z",
+      description: "Comparable-video title-length analysis",
+      claimSupported: "Shorter titles perform better",
+      sourceType: "external_research",
+    },
+  ];
+
+  const exitCode = await runCliCommand({
+    argv: [
+      "ai-localization",
+      "create-change-set",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--proposalsJson",
+      JSON.stringify([{ videoId: "v1", language: "es", title: "Nuevo titulo" }]),
+      "--evidenceJson",
+      JSON.stringify(evidence),
+      "--rationale",
+      "Shorter titles tested better.",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    aiLocalizationCore,
+    writeStdout: () => {},
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual((captured as { evidence: unknown }).evidence, evidence);
+  assert.equal((captured as { rationale: unknown }).rationale, "Shorter titles tested better.");
 });
 
 test("CLI ai-localization create-change-set rejects malformed --proposalsJson", async () => {
@@ -3573,6 +3626,10 @@ test("CLI agent get-generation-provenance forwards channelId/changeSetId after c
         changeSetId: "cs-1",
         channelId: "UC_1",
         createdAt: "2026-09-24T00:00:00.000Z",
+        evidence: null,
+        rationale: null,
+        createdVia: null,
+        agentApiVersion: null,
       };
     },
   };

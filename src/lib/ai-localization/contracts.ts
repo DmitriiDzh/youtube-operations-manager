@@ -178,6 +178,26 @@ export type GenerationProvenance = {
 };
 
 /**
+ * One agent-cited piece of external research or comparable-video evidence backing a generated
+ * proposal (Phase 7 slice F, owner spec §13). Caller-supplied and never independently verified by
+ * this server -- `AGENTS.md` §B/§G's "AI proposes" principle applied to citations, not just to the
+ * title/description text itself. `sourceType` distinguishes research the agent performed outside
+ * this application (`external_research`) from figures already owned by this channel
+ * (`channel_analytics`, `comparable_video`) so a reader can tell "the agent looked this up" from
+ * "this app already knew this" -- owner spec §13's explicit ask.
+ */
+export type EvidenceSourceType = "external_research" | "channel_analytics" | "comparable_video" | "other";
+
+export type EvidenceReference = {
+  url: string;
+  retrievedAt: string;
+  description: string;
+  claimSupported: string;
+  sourceType: EvidenceSourceType;
+  excerpt?: string | null;
+};
+
+/**
  * `getGenerationProvenance`'s own return shape -- a STORED provenance record read back after a
  * Change Set already exists, distinct from `GenerationProvenance` above (which `generateProposals`
  * also returns mid-preview, before any Change Set exists, so it cannot carry `changeSetId`/
@@ -185,11 +205,22 @@ export type GenerationProvenance = {
  * row (`DraftProvenance.createdAt`, `src/lib/sync-gateway/change-drafts/contracts.ts`) -- not a
  * later device's own projection/sync time, verified by reading `createProvenance`'s own
  * implementation before adding this field.
+ *
+ * `evidence`/`rationale` (Phase 7 slice F, owner spec §12/§13) are recorded once per Change Set,
+ * not per individual proposal within it -- a deliberate, coarser granularity than the owner
+ * spec's own per-draft phrasing (`docs/TECHNICAL_DEBT.md` RISK-55 tracks this as a known,
+ * accepted limitation). `createdVia`/`agentApiVersion` (owner spec §22) are SERVER-STAMPED at the
+ * MCP/CLI/Web-route call site, never taken from caller input -- see `DraftProvenance`'s own doc
+ * comment (`src/lib/sync-gateway/change-drafts/contracts.ts`) for why that distinction matters.
  */
 export type StoredGenerationProvenance = GenerationProvenance & {
   changeSetId: string;
   channelId: string;
   createdAt: string;
+  evidence: EvidenceReference[] | null;
+  rationale: string | null;
+  createdVia: "mcp" | "cli" | "web_ui" | null;
+  agentApiVersion: string | null;
 };
 
 /** A proposal the human has inspected and, optionally, edited before it is persisted

@@ -104,14 +104,14 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "localization_draft",
     permission: "DRAFT",
     description:
-      "Persist a reviewed set of localization proposals as a new Change Set, every Change starting `approvalStatus: \"pending\"` -- no code path anywhere can mark an agent-authored proposal already-approved (AGENTS.md §G). Implemented as the pre-existing `ai_localization_create_change_set` MCP tool/`ai-localization create-change-set` CLI command (`src/lib/ai-localization/`), not a new function -- registered here for capability-discovery completeness.",
+      "Persist a reviewed set of localization proposals as a new Change Set, every Change starting `approvalStatus: \"pending\"` -- no code path anywhere can mark an agent-authored proposal already-approved (AGENTS.md §G). Optionally accepts `evidence` (external research/comparable-video citations, owner spec §13) and `rationale` (owner spec §12), recorded once per Change Set (not per proposal) on its provenance record -- never independently verified by this server. Implemented as the pre-existing `ai_localization_create_change_set` MCP tool/`ai-localization create-change-set` CLI command (`src/lib/ai-localization/`), not a new function -- registered here for capability-discovery completeness.",
   },
   {
     id: "localization_draft.get_generation_provenance",
     domain: "localization_draft",
     permission: "READ",
     description:
-      "Read back the immutable provenance recorded for a localization Change Set at creation time (editorial-profile version, effective context, changeSetId/channelId, creation time) -- null if the Change Set was created without one (e.g. XLSX import). The recorded profileVersion/effectiveContext were supplied by the CALLER when creating the Change Set (not independently attested by this server) -- do not treat them as server-verified fact. Requires channelId to be the caller's currently-active channel and changeSetId to actually belong to it (both a nonexistent id and one from another channel return null, never distinguishable).",
+      "Read back the provenance recorded for a localization Change Set at creation time (editorial-profile version, effective context, evidence, rationale, changeSetId/channelId, creation time). Every ai_localization Change Set now gets a provenance row unconditionally; `null` therefore means the Change Set itself never went through this path (an XLSX-import or deletion-source Change Set), or the changeSetId is nonexistent, or it belongs to another channel (none of these are distinguishable from each other). `profileVersion`/`effectiveContext`/`evidence`/`rationale` were supplied by the CALLER when creating the Change Set (not independently attested by this server) -- do not treat them as server-verified fact; each is `null` on the row itself when the caller supplied nothing. `createdVia`/`agentApiVersion` (owner spec §22) ARE server-stamped, never caller-supplied: `\"mcp\"` with the real agent API version for a Change Set created through this MCP surface, `\"cli\"`/null for the CLI, `\"web_ui\"`/null for the Web UI's own \"Generate with AI\", and null/null only for a row created before this field existed. Requires channelId to be the caller's currently-active channel and changeSetId to actually belong to it.",
   },
   {
     id: "analytics.query_channel_analytics",

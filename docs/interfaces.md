@@ -116,7 +116,7 @@ that remains Web-UI-only, same as the equivalent MCP tools.
 
 ```bash
 npm run cli:video-metadata -- ai-localization generate --channelId <UC...> --videoIds <id1,id2,...> --targetLanguages <lang1,lang2,...> [--providerName mock] [--connectionId <CONNECTION_ID>]
-npm run cli:video-metadata -- ai-localization create-change-set --channelId <UC...> --proposalsJson <json> [--provenanceJson <json>]
+npm run cli:video-metadata -- ai-localization create-change-set --channelId <UC...> --proposalsJson <json> [--provenanceJson <json>] [--evidenceJson <json>] [--rationale <text>]
 ```
 
 `generate` calls the same `generateProposals` function the Web UI's own "Generate with AI" step
@@ -129,10 +129,16 @@ proposals as a new Change Set, `source: "ai_localization"` -- the exact same per
 unaffected; it is gated like `changeset import` above. `--proposalsJson`/`--provenanceJson` take a
 JSON-encoded value (an array of `{videoId, language, title?, description?}` objects, and the
 `generationContext` a prior `generate` call returned, respectively) -- there is no reasonable flat
-CLI-flag equivalent for that shape. Neither command has an apply-class equivalent, same as Change
-Sets above; there is also no CLI/MCP command for the channel editorial profile or generation
-provenance reads (see `docs/ARCHITECTURE.md` §11's BL-075/BL-078 entry for what this slice
-deliberately left out).
+CLI-flag equivalent for that shape. `--evidenceJson`/`--rationale` (Phase 7 slice F, owner spec
+§12/§13) are optional, caller-supplied research citations/reasoning for the Change Set's proposals
+as a whole (not per-proposal, `docs/TECHNICAL_DEBT.md` RISK-55) -- `--evidenceJson` is a
+JSON-encoded `EvidenceReference[]` (`url`, `retrievedAt`, `description`, `claimSupported`,
+`sourceType`, optional `excerpt`), `--rationale` is plain text. Every `create-change-set` call
+(this CLI command, the MCP tool, and the Web route) records which transport created the Change
+Set (`createdVia`/`agentApiVersion`, SERVER-STAMPED, never caller-supplied) -- see
+`docs/AGENT_OPERATIONS_INTERFACE.md` §4e. Neither command has an apply-class equivalent, same as
+Change Sets above; there is also no CLI/MCP command for the channel editorial profile (see
+`docs/ARCHITECTURE.md` §11's BL-075/BL-078 entry for what this slice deliberately left out).
 
 ### Agent Operations commands (CLI parity for the MCP `agent_*` tools, Phase 7 -- see `docs/AGENT_OPERATIONS_INTERFACE.md` §7 for which slice is currently implemented)
 
@@ -274,11 +280,15 @@ Key MCP tools:
     (video, language) targets per call, gated by its own internal device-availability check
     (RISK-30) rather than this tool's own mutation gate.
   - `ai_localization_create_change_set` — `{ channelId, proposals: ReviewedProposal[],
-    provenance? }` → the created `ChangeSet` (`source: "ai_localization"`). **Persists** a new
-    Change Set — mutates local state only, never YouTube, gated by the same device-availability
-    check as `changeset_create_from_import`. Every resulting Change starts `approvalStatus:
-    "pending"` — there is no code path, here or anywhere, that can mark an AI-authored proposal
-    already-approved (`AGENTS.md` §G).
+    provenance?, evidence?, rationale? }` → the created `ChangeSet` (`source: "ai_localization"`).
+    **Persists** a new Change Set — mutates local state only, never YouTube, gated by the same
+    device-availability check as `changeset_create_from_import`. Every resulting Change starts
+    `approvalStatus: "pending"` — there is no code path, here or anywhere, that can mark an
+    AI-authored proposal already-approved (`AGENTS.md` §G). `evidence`/`rationale` (Phase 7 slice
+    F, owner spec §12/§13) are optional, caller-supplied, per-Change-Set (not per-proposal,
+    `docs/TECHNICAL_DEBT.md` RISK-55) research citations/reasoning, never independently verified.
+    This handler also SERVER-STAMPS `createdVia: "mcp"` and `agentApiVersion` on the resulting
+    provenance record — see `agent_get_generation_provenance` below.
 
   Deliberately **not** included in this slice: `getEditorialProfile`/`saveEditorialProfile` (no
   MCP/CLI tool for either), and any approve/reject/apply path for a Change Set regardless of its
@@ -328,10 +338,13 @@ Key MCP tools:
     StoredGenerationProvenance | null }`. Wraps the pre-existing `ai-localization` provenance
     record (previously only reachable via its own HTTP route, no MCP/CLI tool) — same
     channel-scoping as `agent_get_asset_context`; `{ provenance: null }`, never an error, for a
-    Change Set with none recorded. `profileVersion`/`effectiveContext` were supplied by whoever
-    created the Change Set, not independently attested by this server. **No server-stamped
-    agent/client identity or product/API version yet** (owner spec §22's full traceability
-    requirement) — a documented, deferred gap, not implemented in this slice.
+    Change Set with none recorded. `profileVersion`/`effectiveContext`/`evidence`/`rationale` were
+    supplied by whoever created the Change Set, not independently attested by this server.
+    `createdVia`/`agentApiVersion` (Phase 7 slice F, owner spec §22) ARE server-stamped, never
+    caller-supplied — `createdVia: "mcp"` with the real `agentApiVersion` for a Change Set created
+    through this MCP surface, `"cli"`/`null` for the CLI, `"web_ui"`/`null` for the Web UI's own
+    "Generate with AI", and `null`/`null` for a row created before this field existed
+    (`docs/TECHNICAL_DEBT.md` RISK-54, RESOLVED).
 
   `get_capabilities` also now registers several already-existing, already-implemented tools it
   previously omitted (`channel_list`, `channel_video_list`, `ai_localization_generate`,
@@ -341,7 +354,7 @@ Key MCP tools:
   videos or create a localization draft/proposal today, just through those pre-existing tools
   rather than a dedicated `agent-operations`-specific wrapper for either. Deliberately **not**
   reachable through ANY tool yet: experiment history, or content planning/external-artifact
-  registration — those are genuinely unimplemented, later slices (E-G) of this same phase.
+  registration — those are genuinely unimplemented, later slices (G onward) of this same phase.
 - Analytics read tools (`docs/roadmap/BACKLOG.md`, "machine-readable analytics for operational
   agents to consume" — `docs/roadmap/FUTURE_PHASES.md` §4 / `docs/PROJECT_SPEC.md` §33):
   - `analytics_list` — `{ channelId, startDate?, endDate?, videoId?, metricNames?, credentialRef? }`

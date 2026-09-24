@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DomainError } from "./contracts";
 import { createAgentOperationsServices } from "./services";
+import type { EvidenceReference } from "@/lib/ai-localization/contracts";
 
 type FakeChannel = { channelId: string; title: string; lastSyncedAt: Date | null };
 type FakeVideo = {
@@ -58,6 +59,10 @@ type FakeGenerationProvenance = {
   changeSetId: string;
   channelId: string;
   createdAt: string;
+  evidence: EvidenceReference[] | null;
+  rationale: string | null;
+  createdVia: "mcp" | "cli" | "web_ui" | null;
+  agentApiVersion: string | null;
 };
 
 function createFixture(
@@ -368,6 +373,10 @@ test("getGenerationProvenance forwards its input unchanged and returns the store
         changeSetId: "cs-1",
         channelId: "UC_A",
         createdAt: "2026-09-24T00:00:00.000Z",
+        evidence: null,
+        rationale: null,
+        createdVia: null,
+        agentApiVersion: null,
       };
     },
   });

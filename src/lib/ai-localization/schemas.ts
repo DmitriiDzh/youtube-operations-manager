@@ -56,11 +56,37 @@ export const generationProvenanceSchema = z
   })
   .strict();
 
+// Bounded the same way as generationContextSchema's free-text fields above -- a length cap only,
+// never a validation of the CONTENT of an agent's citation (AGENTS.md §B).
+const MAX_EVIDENCE_ITEMS = 20;
+const MAX_EVIDENCE_TEXT_LENGTH = 2000;
+const MAX_EVIDENCE_EXCERPT_LENGTH = 1000;
+const MAX_RATIONALE_LENGTH = 4000;
+
+export const evidenceSourceTypeSchema = z.enum(["external_research", "channel_analytics", "comparable_video", "other"]);
+
+export const evidenceReferenceSchema = z
+  .object({
+    url: z.string().min(1).max(MAX_EVIDENCE_TEXT_LENGTH),
+    retrievedAt: z.string().min(1),
+    description: z.string().min(1).max(MAX_EVIDENCE_TEXT_LENGTH),
+    claimSupported: z.string().min(1).max(MAX_EVIDENCE_TEXT_LENGTH),
+    sourceType: evidenceSourceTypeSchema,
+    excerpt: z.string().max(MAX_EVIDENCE_EXCERPT_LENGTH).nullable().optional(),
+  })
+  .strict();
+
 export const createChangeSetFromGenerationInputSchema = z
   .object({
     channelId: z.string().min(1),
     proposals: z.array(reviewedProposalSchema).min(1).max(10_000),
     provenance: generationProvenanceSchema.optional(),
+    // Phase 7 slice F (owner spec §12/§13) -- agent-supplied, caller-echoed evidence/rationale for
+    // this Change Set's proposals, recorded once per Change Set (see `StoredGenerationProvenance`'s
+    // own doc comment in contracts.ts for why per-Change-Set rather than per-proposal). Never
+    // required, never verified by this server.
+    evidence: z.array(evidenceReferenceSchema).max(MAX_EVIDENCE_ITEMS).nullable().optional(),
+    rationale: z.string().max(MAX_RATIONALE_LENGTH).nullable().optional(),
   })
   .strict();
 
@@ -90,6 +116,10 @@ export const storedGenerationProvenanceSchema = generationProvenanceSchema.exten
   changeSetId: z.string().min(1),
   channelId: z.string().min(1),
   createdAt: z.string(),
+  evidence: z.array(evidenceReferenceSchema).nullable(),
+  rationale: z.string().nullable(),
+  createdVia: z.enum(["mcp", "cli", "web_ui"]).nullable(),
+  agentApiVersion: z.string().nullable(),
 });
 
 export const saveEditorialProfileInputSchema = z

@@ -285,10 +285,15 @@ export const channelEditorialProfiles = sqliteTable("channel_editorial_profiles"
     .$defaultFn(() => new Date()),
 });
 
-// Immutable, append-only: one row per successful `createChangeSetFromGeneration` call,
-// recording exactly which profile version and/or per-request editorialBrief actually
-// produced that Change Set's proposals -- so editing or deleting the profile afterward
-// never loses this record (the reproducibility requirement). Never updated after insert.
+// Write-once in spirit, one row unconditionally recorded per successful
+// `createChangeSetFromGeneration` call (see that function's own doc comment), recording exactly
+// which profile version and/or per-request editorialBrief actually produced that Change Set's
+// proposals -- so editing or deleting the profile afterward never loses this record (the
+// reproducibility requirement).
+// Its CONTENT never changes after insert through this application's own API, but the SQL row
+// itself CAN be rewritten by a later re-projection of the same CRDT document (e.g. to backfill
+// columns added by a later app version) -- see `setStoredGenerationProvenanceRow`'s own doc
+// comment below for why that update path exists.
 export const aiLocalizationGenerationProvenance = sqliteTable("ai_localization_generation_provenance", {
   id: text("id").primaryKey(),
   changeSetId: text("change_set_id")
@@ -303,6 +308,13 @@ export const aiLocalizationGenerationProvenance = sqliteTable("ai_localization_g
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),
+  // Phase 7 slice F (SCHEMA_MIGRATIONS version 16) -- additive columns on this same baseline
+  // table via `ALTER TABLE ... ADD COLUMN`. See `DraftProvenance`'s own doc comment
+  // (`src/lib/sync-gateway/change-drafts/contracts.ts`) for what each field means.
+  evidenceJson: text("evidence_json"),
+  rationale: text("rationale"),
+  createdVia: text("created_via"),
+  agentApiVersion: text("agent_api_version"),
 });
 
 // Phase 6, AI Connections (provider-agnostic). Purely additive (ADR 0001), owned
@@ -989,6 +1001,26 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute(
         "CREATE INDEX IF NOT EXISTS creative_assets_channel_id_idx ON creative_assets(channel_id)"
       );
+    },
+  },
+  {
+    version: 16,
+    description:
+      "ai_localization_generation_provenance -- additive evidence/rationale/createdVia/agentApiVersion columns, Phase 7 slice F (docs/AGENT_OPERATIONS_INTERFACE.md §4d, owner spec §12/§13/§22)",
+    apply: async (client) => {
+      // SQLite only supports one column per ALTER TABLE ... ADD COLUMN statement -- four
+      // separate calls, each additive and nullable (no backfill needed/possible for existing
+      // rows, which simply have no evidence/rationale/creator-identity recorded, same "never
+      // fabricate" discipline this codebase already applies elsewhere). Each wrapped in the same
+      // isDuplicateColumnError tolerance as every other ADD-COLUMN migration above (RISK-33) --
+      // required here too, since a pre-versioning database can already carry these columns.
+      for (const column of ["evidence_json", "rationale", "created_via", "agent_api_version"]) {
+        try {
+          await client.execute(`ALTER TABLE ai_localization_generation_provenance ADD COLUMN ${column} TEXT`);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
     },
   },
 ];
@@ -2465,6 +2497,10 @@ export type StoredGenerationProvenance = {
   profileVersion: number | null;
   effectiveContextJson: string | null;
   createdAt: Date;
+  evidenceJson: string | null;
+  rationale: string | null;
+  createdVia: string | null;
+  agentApiVersion: string | null;
 };
 
 function mapStoredGenerationProvenance(
@@ -2477,6 +2513,10 @@ function mapStoredGenerationProvenance(
     profileVersion: row.profileVersion,
     effectiveContextJson: row.effectiveContextJson,
     createdAt: row.createdAt,
+    evidenceJson: row.evidenceJson,
+    rationale: row.rationale,
+    createdVia: row.createdVia,
+    agentApiVersion: row.agentApiVersion,
   };
 }
 
@@ -2491,15 +2531,21 @@ export async function getGenerationProvenanceByChangeSetId(
 }
 
 /**
- * Raw write-once insert -- writes exactly the row it is given (including `createdAt`, preserving
- * the moment it was actually created, which may be on another device). No-ops on a duplicate `id`
- * rather than throwing, since a `mergeIncoming`/re-projection can legitimately re-project an
- * already-projected provenance entry. Used only as the SQL read-projection target for
- * `src/lib/sync-gateway/change-drafts/` (2026-09-22, `docs/roadmap/plans/
- * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M4) -- that module's per-channel Automerge document
- * is now the source of truth for provenance. The old direct-SQL `createGenerationProvenance` was
- * deleted the same day once its only caller was repointed at that module -- confirmed zero
- * remaining callers anywhere in `src/`.
+ * Write-once-in-spirit upsert -- the CRDT document (`src/lib/sync-gateway/change-drafts/`) is the
+ * real source of truth for provenance and never changes an entry's *content* after creation, but
+ * this SQL projection itself must still be updateable: `projectToSql` re-projects the WHOLE
+ * document (including every provenance entry) on every local save AND every remote merge, so a
+ * stale or partially-written SQL row for a given `id` -- e.g. one inserted by an older app
+ * version whose schema/entry shape predated Phase 7 slice F's evidence/rationale/createdVia/
+ * agentApiVersion columns -- must be correctable by a LATER re-projection that writes the CRDT
+ * entry's actual current values. `onConflictDoNothing()` would silently skip every later
+ * re-projection attempt for that same `id` once a row already existed, permanently freezing it;
+ * `onConflictDoUpdate` fixes this: re-writing a row on every re-projection is a safe no-op when
+ * nothing actually changed, and a real correction whenever it did.
+ * Used only as the SQL read-projection target for `src/lib/sync-gateway/change-drafts/`
+ * (2026-09-22, `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M4) -- the old
+ * direct-SQL `createGenerationProvenance` was deleted the same day once its only caller was
+ * repointed at that module.
  */
 export async function setStoredGenerationProvenanceRow(input: {
   id: string;
@@ -2508,8 +2554,28 @@ export async function setStoredGenerationProvenanceRow(input: {
   profileVersion: number | null;
   effectiveContextJson: string | null;
   createdAt: Date;
+  evidenceJson: string | null;
+  rationale: string | null;
+  createdVia: string | null;
+  agentApiVersion: string | null;
 }): Promise<void> {
-  await db.insert(aiLocalizationGenerationProvenance).values(input).onConflictDoNothing();
+  await db
+    .insert(aiLocalizationGenerationProvenance)
+    .values(input)
+    .onConflictDoUpdate({
+      target: aiLocalizationGenerationProvenance.id,
+      set: {
+        changeSetId: input.changeSetId,
+        channelId: input.channelId,
+        profileVersion: input.profileVersion,
+        effectiveContextJson: input.effectiveContextJson,
+        createdAt: input.createdAt,
+        evidenceJson: input.evidenceJson,
+        rationale: input.rationale,
+        createdVia: input.createdVia,
+        agentApiVersion: input.agentApiVersion,
+      },
+    });
 }
 
 /**

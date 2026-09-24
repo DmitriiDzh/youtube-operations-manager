@@ -47,9 +47,10 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * bump MAJOR only for a breaking change to an existing tool's contract (none is anticipated in
  * Phase 7's own additive slices).
  *
- * Current value: `0.3.0`. See `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts`) for
- * the current, authoritative list of what capabilities exist -- deliberately not restated as a
- * count or list here, since that would just be a second copy of the same fact.
+ * The version below is the current, authoritative value -- deliberately not restated in this
+ * comment, since a restated copy would itself go stale on every future bump. See
+ * `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts`) for the current, authoritative
+ * list of capabilities.
  */
 export const AGENT_API_VERSION = "0.5.0";
 

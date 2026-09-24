@@ -641,28 +641,38 @@ export async function runCliCommand(args: {
 
       // "create-change-set" -- persists a new Change Set (source: "ai_localization"). Never
       // writes to YouTube; gated above like changeset import (mutates the local database).
-      // --proposalsJson/--provenanceJson take a JSON-encoded value, the same shape
-      // generateProposals's own response already returns for a caller to echo back --
-      // there is no reasonable flat-flag equivalent for an array of {videoId, language,
-      // title?, description?} objects.
+      // --proposalsJson/--provenanceJson/--evidenceJson take a JSON-encoded value, the same
+      // shape generateProposals's own response already returns for a caller to echo back (or,
+      // for --evidenceJson, owner spec §13's EvidenceReference[] shape) -- there is no
+      // reasonable flat-flag equivalent for either. --rationale is plain free text (Phase 7
+      // slice F, owner spec §12).
       const proposalsJson = requiredStringFlag(parsedArgs.flags, "proposalsJson");
       const provenanceJsonFlag = optionalStringFlag(parsedArgs.flags, "provenanceJson");
+      const evidenceJsonFlag = optionalStringFlag(parsedArgs.flags, "evidenceJson");
+      const rationaleFlag = optionalStringFlag(parsedArgs.flags, "rationale");
       let proposals: unknown;
       let provenance: unknown;
+      let evidence: unknown;
       try {
         proposals = JSON.parse(proposalsJson);
         provenance = provenanceJsonFlag ? JSON.parse(provenanceJsonFlag) : undefined;
+        evidence = evidenceJsonFlag ? JSON.parse(evidenceJsonFlag) : undefined;
       } catch {
         throw new DomainError({
           code: "validation_failed",
-          message: "--proposalsJson/--provenanceJson must each be valid JSON",
+          message: "--proposalsJson/--provenanceJson/--evidenceJson must each be valid JSON",
         });
       }
-      const result = await aiLocalizationCore.createChangeSetFromGeneration({
-        channelId,
-        proposals,
-        provenance,
-      });
+      const result = await aiLocalizationCore.createChangeSetFromGeneration(
+        {
+          channelId,
+          proposals,
+          provenance,
+          evidence,
+          rationale: rationaleFlag,
+        },
+        { createdVia: "cli", agentApiVersion: null }
+      );
       writeStdout(serializeSuccess(result));
       return 0;
     }

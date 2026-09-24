@@ -101,9 +101,33 @@ function makeFixture(videos: StoredVideoRecord[] = [makeVideo()]) {
     },
   };
 
-  const provenanceRecords = new Map<string, { id: string; changeSetId: string; channelId: string; profileVersion: number | null; effectiveContextJson: string | null; createdAt: Date }>();
+  const provenanceRecords = new Map<
+    string,
+    {
+      id: string;
+      changeSetId: string;
+      channelId: string;
+      profileVersion: number | null;
+      effectiveContextJson: string | null;
+      createdAt: Date;
+      evidenceJson: string | null;
+      rationale: string | null;
+      createdVia: string | null;
+      agentApiVersion: string | null;
+    }
+  >();
   const provenanceStore = {
-    async create(input: { id: string; changeSetId: string; channelId: string; profileVersion: number | null; effectiveContextJson: string | null }) {
+    async create(input: {
+      id: string;
+      changeSetId: string;
+      channelId: string;
+      profileVersion: number | null;
+      effectiveContextJson: string | null;
+      evidenceJson: string | null;
+      rationale: string | null;
+      createdVia: "mcp" | "cli" | "web_ui" | null;
+      agentApiVersion: string | null;
+    }) {
       provenanceRecords.set(input.changeSetId, { ...input, createdAt: new Date() });
     },
     async getByChangeSetId(changeSetId: string) {
@@ -372,10 +396,13 @@ test("AC-CS-01: creating a change set from reviewed proposals persists only requ
   const { build, persistedChangeSets } = makeFixture();
   const services = build(fixedProvider(() => ({ status: "ok", title: "x", description: "y" })));
 
-  const changeSet = await services.createChangeSetFromGeneration({
-    channelId: "UC_TEST",
-    proposals: [{ videoId: "v1", language: "es", title: "Gatos del mundo" }],
-  });
+  const changeSet = await services.createChangeSetFromGeneration(
+    {
+      channelId: "UC_TEST",
+      proposals: [{ videoId: "v1", language: "es", title: "Gatos del mundo" }],
+    },
+    { createdVia: "web_ui", agentApiVersion: null }
+  );
 
   assert.equal(changeSet.source, "ai_localization");
   assert.equal(persistedChangeSets.length, 1);
@@ -392,10 +419,13 @@ test("AC-CS-02: omitting a field from a reviewed proposal never creates a change
   const { build, persistedChangeSets } = makeFixture([video]);
   const services = build(fixedProvider(() => ({ status: "ok", title: "x", description: "y" })));
 
-  await services.createChangeSetFromGeneration({
-    channelId: "UC_TEST",
-    proposals: [{ videoId: "v1", language: "es", title: "Gatos del mundo" }],
-  });
+  await services.createChangeSetFromGeneration(
+    {
+      channelId: "UC_TEST",
+      proposals: [{ videoId: "v1", language: "es", title: "Gatos del mundo" }],
+    },
+    { createdVia: "web_ui", agentApiVersion: null }
+  );
 
   const changes = persistedChangeSets[0].changes as Array<{ field: string }>;
   assert.equal(changes.length, 1);
@@ -408,10 +438,13 @@ test("AC-CS-03: a human-edited proposal is what gets persisted, and the provider
   const provider = fixedProvider(() => ({ status: "ok", title: "[ES] Cats of the world", description: "[ES] A tour." })) as LocalizationProvider & { calls: number };
   const services = build(provider);
 
-  await services.createChangeSetFromGeneration({
-    channelId: "UC_TEST",
-    proposals: [{ videoId: "v1", language: "es", title: "Los Gatos del Mundo" }],
-  });
+  await services.createChangeSetFromGeneration(
+    {
+      channelId: "UC_TEST",
+      proposals: [{ videoId: "v1", language: "es", title: "Los Gatos del Mundo" }],
+    },
+    { createdVia: "web_ui", agentApiVersion: null }
+  );
 
   const change = persistedChangeSets[0].changes[0] as { proposedValue: string };
   assert.equal(change.proposedValue, "Los Gatos del Mundo");
@@ -424,13 +457,16 @@ test("AC-CS-04: a duplicate (videoId, language) pair in submitted proposals is r
   const services = build(fixedProvider(() => ({ status: "ok", title: "x", description: "y" })));
 
   await assert.rejects(
-    services.createChangeSetFromGeneration({
-      channelId: "UC_TEST",
-      proposals: [
-        { videoId: "v1", language: "es", title: "A" },
-        { videoId: "v1", language: "es", title: "B" },
-      ],
-    }),
+    services.createChangeSetFromGeneration(
+      {
+        channelId: "UC_TEST",
+        proposals: [
+          { videoId: "v1", language: "es", title: "A" },
+          { videoId: "v1", language: "es", title: "B" },
+        ],
+      },
+      { createdVia: "web_ui", agentApiVersion: null }
+    ),
     DomainError
   );
   assert.equal(persistedChangeSets.length, 0);
@@ -442,10 +478,13 @@ test("AC-CS-05: a proposal for a video outside this channel's synchronized data 
   const services = build(fixedProvider(() => ({ status: "ok", title: "x", description: "y" })));
 
   await assert.rejects(
-    services.createChangeSetFromGeneration({
-      channelId: "UC_TEST",
-      proposals: [{ videoId: "v-unknown", language: "es", title: "A" }],
-    }),
+    services.createChangeSetFromGeneration(
+      {
+        channelId: "UC_TEST",
+        proposals: [{ videoId: "v-unknown", language: "es", title: "A" }],
+      },
+      { createdVia: "web_ui", agentApiVersion: null }
+    ),
     (err: unknown) => err instanceof DomainError && err.code === "not_found"
   );
   assert.equal(persistedChangeSets.length, 0);
@@ -458,10 +497,13 @@ test("AC-CS-06: submitting only unchanged proposals produces no change set", asy
   const services = build(fixedProvider(() => ({ status: "ok", title: "x", description: "y" })));
 
   await assert.rejects(
-    services.createChangeSetFromGeneration({
-      channelId: "UC_TEST",
-      proposals: [{ videoId: "v1", language: "es", title: "Ya traducido" }],
-    }),
+    services.createChangeSetFromGeneration(
+      {
+        channelId: "UC_TEST",
+        proposals: [{ videoId: "v1", language: "es", title: "Ya traducido" }],
+      },
+      { createdVia: "web_ui", agentApiVersion: null }
+    ),
     (err: unknown) => err instanceof DomainError && err.code === "generation_no_proposals"
   );
   assert.equal(persistedChangeSets.length, 0);
@@ -474,10 +516,13 @@ test("AC-CS-07: an invalid target language submitted directly to change-set crea
   const services = build(fixedProvider(() => ({ status: "ok", title: "x", description: "y" })));
 
   await assert.rejects(
-    services.createChangeSetFromGeneration({
-      channelId: "UC_TEST",
-      proposals: [{ videoId: "v1", language: "!!!", title: "A" }],
-    }),
+    services.createChangeSetFromGeneration(
+      {
+        channelId: "UC_TEST",
+        proposals: [{ videoId: "v1", language: "!!!", title: "A" }],
+      },
+      { createdVia: "web_ui", agentApiVersion: null }
+    ),
     (err: unknown) => err instanceof DomainError && err.code === "generation_invalid_target_language"
   );
   assert.equal(persistedChangeSets.length, 0);
@@ -488,10 +533,13 @@ test("AC-APPROVAL-02: every persisted change starts pending, never auto-approved
   const { build, persistedChangeSets } = makeFixture();
   const services = build(fixedProvider(() => ({ status: "ok", title: "x", description: "y" })));
 
-  await services.createChangeSetFromGeneration({
-    channelId: "UC_TEST",
-    proposals: [{ videoId: "v1", language: "es", title: "Gatos del mundo" }],
-  });
+  await services.createChangeSetFromGeneration(
+    {
+      channelId: "UC_TEST",
+      proposals: [{ videoId: "v1", language: "es", title: "Gatos del mundo" }],
+    },
+    { createdVia: "web_ui", agentApiVersion: null }
+  );
 
   // The persisted change objects passed to changeSetServices carry no approvalStatus
   // field at all (createChangeSetFromProposals/changesets always initializes new
