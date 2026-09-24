@@ -367,6 +367,17 @@ test("queryChannelAnalytics rejects a missing credentialRef as validation_failed
   );
 });
 
+// Symmetry with the queryChannelAnalytics test above (found by independent review, 2026-09-24) --
+// this exact same required-credentialRef property carries equal safety weight for both functions.
+test("queryVideoAnalytics rejects a missing credentialRef as validation_failed (required, not optional -- see schema's own doc comment)", async () => {
+  const { services } = createFixture();
+
+  await assert.rejects(
+    () => services.queryVideoAnalytics({ channelId: "UC_A" }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
 test("queryVideoAnalytics forwards input unchanged to listMetrics and wraps the result with local-read freshness, defaulting metric definitions to the full known list when metricNames is omitted", async () => {
   let captured: unknown;
   const { services } = createFixture({

@@ -82,9 +82,12 @@ underlying `AgentOperationsCore.getSystemCapabilities()`, three transports, one 
 }
 ```
 
-`AGENT_API_VERSION` is versioned independently of the product's own `package.json` version --
-bump the minor version when a new capability is added, major only for a breaking contract change
-(none anticipated across Phase 7's own additive slices). `capabilities` is a literal,
+`AGENT_API_VERSION` is versioned independently of the product's own `package.json` version -- see
+that constant's own doc comment in `src/lib/agent-operations/contracts.ts` for the exact bump rule
+(once per slice/landing that adds one or more capabilities, never once per individual capability
+item within that slice -- corrected in slice C, 2026-09-24, after slice B missed this bump
+entirely; that constant's own comment is the single source of truth for this rule, not restated as
+a second, potentially-drifting copy here). `capabilities` is a literal,
 human-maintained list (`AGENT_CAPABILITIES`, `src/lib/agent-operations/services.ts`) -- never
 derived automatically from the MCP tool registry, since not every capability necessarily has an
 MCP tool. An agent should call this first, before assuming any other tool exists, and use
