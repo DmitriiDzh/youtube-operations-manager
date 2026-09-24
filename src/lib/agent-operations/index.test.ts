@@ -20,7 +20,7 @@ test("createAgentOperationsCore wires real productVersion/schemaVersion, matchin
   assert.ok(result.productVersion.length > 0);
 });
 
-// Slice C credential-threading wiring test (per independent advisor review, 2026-09-24): unlike
+// Slice C credential-threading wiring test: unlike
 // services.test.ts's fully-stubbed `getChannelOverview`/`listMetrics`, this exercises the REAL
 // `analyticsCore` wired in by `createAgentOperationsCore()`. This module's own service function
 // does zero credential/channel checking of its own -- it only forwards `credentialRef` straight
@@ -31,8 +31,7 @@ test("createAgentOperationsCore wires real productVersion/schemaVersion, matchin
 // never activated for that user forces the REAL `assertActiveChannel` path inside `analyticsCore`
 // to run and fail closed, proving the wrapper genuinely reaches the real service rather than a
 // mock (and that a required, already-resolved `credentialRef` is what this module's own schema
-// actually expects -- see that schema's own doc comment for why an earlier, optional-credentialRef
-// version of it was wrong).
+// actually expects).
 test("createAgentOperationsCore.queryVideoAnalytics reaches the REAL analyticsCore (fails closed on a never-activated channel, not a mock)", async () => {
   const core = createAgentOperationsCore();
 

@@ -284,10 +284,9 @@ test("agent capabilities list includes the two new slice-B capabilities with cor
   assert.equal(videoCap!.domain, "video_context");
 });
 
-// AC-CAP-09 (slice C, owner spec §28): get_capabilities must now also report the pre-existing
-// tools it previously omitted (found by independent advisor review, 2026-09-24), plus the two new
-// query_*_analytics wrappers -- one representative check per registered id/domain/permission
-// combination named in the owner's own §25 initial capability set.
+// AC-CAP-09 (slice C, owner spec §28): get_capabilities must report the pre-existing tools it
+// wraps/reuses, plus the two new query_*_analytics wrappers -- one representative check per
+// registered id/domain/permission combination named in the owner's own §25 initial capability set.
 test("agent capabilities list registers pre-existing tools (list_channels/list_videos/localization draft) and the two new analytics wrappers", async () => {
   const { services } = createFixture();
   const result = await services.getSystemCapabilities({});
@@ -370,8 +369,8 @@ test("queryChannelAnalytics rejects a missing credentialRef as validation_failed
   );
 });
 
-// Symmetry with the queryChannelAnalytics test above (found by independent review, 2026-09-24) --
-// this exact same required-credentialRef property carries equal safety weight for both functions.
+// Symmetry with the queryChannelAnalytics test above -- this exact same required-credentialRef
+// property carries equal safety weight for both functions.
 test("queryVideoAnalytics rejects a missing credentialRef as validation_failed (required, not optional -- see schema's own doc comment)", async () => {
   const { services } = createFixture();
 
