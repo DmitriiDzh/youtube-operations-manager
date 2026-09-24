@@ -210,7 +210,7 @@ cataloguing a pre-existing one, is a separate, later concept -- slice G's
 snapshot/handoff (`docs/TECHNICAL_DEBT.md` RISK-52), the same accepted limitation
 `video_metrics_daily` already has.
 
-## 4d. Agent draft/proposal provenance (owner spec §22) -- PARTIAL (slice E; identity/version closed in slice F -- see §4e; "operation type" still not recorded, RISK-57)
+## 4d. Agent draft/proposal provenance (owner spec §22) -- PARTIAL (slice E; identity/version closed in slice F -- see §4e; "originating task" still not recorded, RISK-57)
 
 `get_generation_provenance` / MCP `agent_get_generation_provenance` (`src/lib/agent-operations/`)
 delegates to the ALREADY-EXISTING `ai-localization` provenance mechanism (a table recording, per
@@ -231,16 +231,18 @@ exists, so it cannot carry those fields). Same slice-B channel-scoping/credentia
 HTTP route already established.
 
 **Why still PARTIAL:** owner spec §22 asks for full traceability -- "agent/client identity,"
-"product/API version," and "operation type" on every agent-created object. Slice E's read wrapper
-alone closed the MCP/CLI tool-surface gap but stamped nothing new; `profileVersion`/
-`effectiveContext` remained supplied BY THE CALLER when creating the Change Set (an agent echoes
-back its own `generateProposals` response), never independently attested by this server. Slice F
-(see §4e) added server-stamped `createdVia`/`agentApiVersion` -- covering "agent/client identity"
-and "product/API version," `docs/TECHNICAL_DEBT.md` RISK-54 is now RESOLVED for exactly that
-narrower scope. The third element, "operation type" (e.g. distinguishing that this record came
-from a Change-Set-creation call specifically, as opposed to some future different kind of
-agent-created object), is still not recorded anywhere -- tracked as `docs/TECHNICAL_DEBT.md`
-RISK-57.
+"product/API version," "operation type," and "originating task" on every agent-created object.
+Slice E's read wrapper alone closed the MCP/CLI tool-surface gap but stamped nothing new;
+`profileVersion`/`effectiveContext` remained supplied BY THE CALLER when creating the Change Set
+(an agent echoes back its own `generateProposals` response), never independently attested by this
+server. Slice F (see §4e) added server-stamped `createdVia`/`agentApiVersion` -- covering
+"agent/client identity" and "product/API version," `docs/TECHNICAL_DEBT.md` RISK-54 is now
+RESOLVED for exactly that narrower scope. "Operation type" is now structurally addressed too
+(slice G added a second, distinct table for a second kind of agent-created object -- which table
+a `createdVia`/`agentApiVersion` pair lives on already distinguishes the operation, per
+`docs/TECHNICAL_DEBT.md` RISK-57's own updated reasoning). "Originating task" remains genuinely
+unrecorded -- no capability in this interface stamps a `taskId`, and owner spec §21's "Agent task
+model" has not been scheduled in any slice so far; tracked as the remaining open half of RISK-57.
 
 ## 4e. Bulk localization integration -- evidence, rationale, and identity stamping (owner spec §12/§13/§22) -- PARTIAL (slice F)
 
@@ -269,10 +271,11 @@ proposal-generation time.
   table).
 - **Identity stamping (owner spec §22, closes RISK-54):** `createChangeSetFromGeneration` takes a
   new, REQUIRED second parameter, `callOrigin: { createdVia: CreatedVia; agentApiVersion?: string
-  | null }`. `CreatedVia` (`"mcp" | "cli" | "web_ui"`) is defined once in
-  `src/lib/sync-gateway/change-drafts/contracts.ts` and re-exported through the `@/lib/sync-gateway`
-  barrel and `ai-localization/contracts.ts` (`AGENTS.md` §D) -- every module that needs this
-  vocabulary imports it, none retypes it. SERVER-STAMPED at each of its three call sites -- never
+  | null }`. `CreatedVia` (`"mcp" | "cli" | "web_ui"`) is defined once in the dependency-free
+  `src/lib/shared-provenance/` module (see §4f -- extracted there since slice G's own
+  `content-proposals` module needs the identical vocabulary and neither module may depend on the
+  other) and re-exported through `ai-localization/contracts.ts` (`AGENTS.md` §D) -- every module
+  that needs this vocabulary imports it, none retypes it. SERVER-STAMPED at each of its three call sites -- never
   taken from the request body, so it is an attestation, not a caller's claim. The MCP handler
   (`src/mcp/server.ts`) stamps `{ createdVia: "mcp", agentApiVersion: AGENT_API_VERSION }`; the
   CLI dispatch (`src/cli/video-metadata.ts`) stamps `{ createdVia: "cli", agentApiVersion: null
@@ -441,7 +444,7 @@ second error-code enum:
 | B | Read-only channel/video context | **IMPLEMENTED** -- see §4a; MCP `agent_get_channel_context`/`agent_get_video_context`, CLI `agent channel-context`/`agent video-context`. No HTTP route yet. |
 | C | Analytics interface (agent-oriented wrapper over `src/lib/analytics/`) | **IMPLEMENTED** -- see §4b; MCP `agent_query_channel_analytics`/`agent_query_video_analytics`, CLI `agent channel-analytics`/`agent video-analytics`. No HTTP route yet. |
 | D | Asset catalog/context (new subsystem -- nothing to reuse) | **IMPLEMENTED** -- see §4c; MCP `agent_list_assets`/`agent_get_asset_context`, CLI `agent list-assets`/`agent get-asset-context`/`asset register`. No HTTP route yet. |
-| E | Agent draft/proposal provenance | **PARTIAL** -- see §4d; MCP `agent_get_generation_provenance`, CLI `agent get-generation-provenance`. No HTTP route (reuses the pre-existing one). "Operation type" (owner spec §22) still not recorded (RISK-57). |
+| E | Agent draft/proposal provenance | **PARTIAL** -- see §4d; MCP `agent_get_generation_provenance`, CLI `agent get-generation-provenance`. No HTTP route (reuses the pre-existing one). "Originating task" (owner spec §22) still not recorded (RISK-57). |
 | F | Bulk localization integration -- evidence, rationale, identity stamping | **PARTIAL** -- see §4e; widens the existing `ai_localization_create_change_set` MCP tool, CLI command, and Web route (`ai_localization_generate` is untouched). Evidence/rationale are per-Change-Set, not per-proposal (RISK-55, known limitation). |
 | G | Content Proposal / external artifact registration | **PARTIAL** -- see §4f; new `src/lib/content-proposals/` module, `content_proposals` table. Proposal create/get/list implemented; external-artifact registration (owner spec §19) not yet implemented. |
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | IN PROGRESS |

@@ -229,9 +229,13 @@ test("content_proposals: inserts and lists by channel, enforcing the channel for
 // agent-operations' own capability description) -- proven here with two rows whose `createdAt`
 // genuinely differs (inserted directly via the Drizzle table, bypassing `insertContentProposal`'s
 // own `$defaultFn(() => new Date())`, which cannot be overridden through that function's public
-// signature). Same-second ties are a known, accepted limitation shared with every other
-// `orderBy(desc(...createdAt))` list function in this file (creative_assets, batches,
-// ai_connections) -- not a new gap introduced by this table.
+// signature). The row with the LATER `createdAt` is deliberately inserted FIRST (and given an id
+// that sorts alphabetically/by-rowid BEFORE the other row) -- so this test can only pass if the
+// query genuinely orders by `createdAt`, not by insertion order or id, which a weaker version of
+// this test (inserting in chronological order) would not have discriminated. Same-second ties
+// are a known, accepted limitation shared with every other `orderBy(desc(...createdAt))` list
+// function in this file (creative_assets, batches, ai_connections) -- not a new gap introduced by
+// this table.
 test("content_proposals: listContentProposalsByChannel actually orders by createdAt, newest first", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
@@ -239,20 +243,23 @@ test("content_proposals: listContentProposalsByChannel actually orders by create
     await seedChannel(isolatedDb, "UC_A");
 
     await isolatedDb.insert(contentProposals).values({
-      id: "proposal-older",
-      channelId: "UC_A",
-      createdVia: "web_ui",
-      createdAt: new Date("2026-09-01T00:00:00.000Z"),
-    });
-    await isolatedDb.insert(contentProposals).values({
-      id: "proposal-newer",
+      id: "a-proposal-inserted-first-but-newer",
       channelId: "UC_A",
       createdVia: "web_ui",
       createdAt: new Date("2026-09-20T00:00:00.000Z"),
     });
+    await isolatedDb.insert(contentProposals).values({
+      id: "z-proposal-inserted-second-but-older",
+      channelId: "UC_A",
+      createdVia: "web_ui",
+      createdAt: new Date("2026-09-01T00:00:00.000Z"),
+    });
 
     const all = await listContentProposalsByChannel("UC_A", isolatedDb);
-    assert.deepEqual(all.map((p) => p.id), ["proposal-newer", "proposal-older"]);
+    assert.deepEqual(all.map((p) => p.id), [
+      "a-proposal-inserted-first-but-newer",
+      "z-proposal-inserted-second-but-older",
+    ]);
   }));
 
 // Phase 8 follow-up, slice 2 (docs/roadmap/FUTURE_PHASES.md §4, data-quality diagnostics).
