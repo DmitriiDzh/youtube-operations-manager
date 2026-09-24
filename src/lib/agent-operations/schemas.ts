@@ -2,6 +2,12 @@ import { z } from "zod";
 import { parseWithSchema } from "@/lib/changesets/schemas";
 import { credentialRefSchema } from "@/lib/video-metadata/schemas";
 import {
+  AGENT_CAPABILITY_DOMAINS,
+  AGENT_DATA_DOMAINS,
+  PERMISSION_CLASSES,
+  PLANNED_FUTURE_CAPABILITIES,
+} from "./contracts";
+import {
   getAssetContextInputSchema as assetCatalogGetAssetContextInputSchema,
   getAssetContextOutputSchema as assetCatalogGetAssetContextOutputSchema,
   listAssetsInputSchema as assetCatalogListAssetsInputSchema,
@@ -11,6 +17,14 @@ import {
   getGenerationProvenanceInputSchema as aiLocalizationGetGenerationProvenanceInputSchema,
   storedGenerationProvenanceSchema,
 } from "@/lib/ai-localization/schemas";
+import {
+  createContentProposalInputSchema as contentProposalCreateContentProposalInputSchema,
+  createContentProposalOutputSchema as contentProposalCreateContentProposalOutputSchema,
+  getContentProposalInputSchema as contentProposalGetContentProposalInputSchema,
+  getContentProposalOutputSchema as contentProposalGetContentProposalOutputSchema,
+  listContentProposalsInputSchema as contentProposalListContentProposalsInputSchema,
+  listContentProposalsOutputSchema as contentProposalListContentProposalsOutputSchema,
+} from "@/lib/content-proposals/schemas";
 
 export { parseWithSchema };
 
@@ -19,20 +33,16 @@ export { parseWithSchema };
 // schema in this codebase.
 export const getSystemCapabilitiesInputSchema = z.object({}).strict();
 
-const permissionClassSchema = z.enum(["READ", "DRAFT", "APPROVE", "EXECUTE"]);
+// Derived from `./contracts`'s own const arrays (RISK-53, `docs/TECHNICAL_DEBT.md`) -- never a
+// second, independently-maintained copy of the same literals (AGENTS.md §D). A hardcoded copy
+// here previously drifted out of sync with `AgentDataDomain` when Phase 7 slice G added
+// `content_proposal_metadata`, breaking every real (non-fixture) capability-discovery call.
+const permissionClassSchema = z.enum(PERMISSION_CLASSES);
 
 const agentCapabilityDescriptorSchema = z
   .object({
     id: z.string().min(1),
-    domain: z.enum([
-      "system",
-      "channel_context",
-      "video_context",
-      "analytics",
-      "asset_catalog",
-      "localization_draft",
-      "content_proposal",
-    ]),
+    domain: z.enum(AGENT_CAPABILITY_DOMAINS),
     permission: permissionClassSchema,
     description: z.string().min(1),
   })
@@ -43,10 +53,10 @@ export const systemCapabilitiesOutputSchema = z
     productVersion: z.string().min(1),
     agentApiVersion: z.string().min(1),
     capabilities: z.array(agentCapabilityDescriptorSchema),
-    dataDomains: z.array(z.enum(["channel_metadata", "video_metadata", "channel_analytics", "video_analytics", "asset_metadata"])),
+    dataDomains: z.array(z.enum(AGENT_DATA_DOMAINS)),
     actionClasses: z.array(permissionClassSchema),
     grantedPermissions: z.array(permissionClassSchema),
-    plannedFutureCapabilities: z.array(z.enum(["query_market_intelligence", "query_competitors", "create_experiment_proposal"])),
+    plannedFutureCapabilities: z.array(z.enum(PLANNED_FUTURE_CAPABILITIES)),
     schemaVersions: z.object({ app: z.number().int().positive() }).strict(),
   })
   .strict();
@@ -298,3 +308,25 @@ export const getGenerationProvenanceOutputSchema = storedGenerationProvenanceSch
 
 export type GetGenerationProvenanceInput = z.infer<typeof getGenerationProvenanceInputSchema>;
 export type GetGenerationProvenanceOutput = z.infer<typeof getGenerationProvenanceOutputSchema>;
+
+// ---------------------------------------------------------------------------
+// Slice G -- Content Proposal / external artifact registration (owner spec §18/§19/§20). Same
+// slice-B convention as above (no `credentialRef`; MCP/CLI calls
+// `channelAccessCore.assertActiveChannel` first). Reused unchanged from
+// `@/lib/content-proposals/schemas` (AGENTS.md §D) -- no shape transformation of its own, so
+// re-exported directly rather than duplicated.
+// ---------------------------------------------------------------------------
+
+export const createContentProposalInputSchema = contentProposalCreateContentProposalInputSchema;
+export const createContentProposalOutputSchema = contentProposalCreateContentProposalOutputSchema;
+export const getContentProposalInputSchema = contentProposalGetContentProposalInputSchema;
+export const getContentProposalOutputSchema = contentProposalGetContentProposalOutputSchema;
+export const listContentProposalsInputSchema = contentProposalListContentProposalsInputSchema;
+export const listContentProposalsOutputSchema = contentProposalListContentProposalsOutputSchema;
+
+export type CreateContentProposalInput = z.infer<typeof createContentProposalInputSchema>;
+export type CreateContentProposalOutput = z.infer<typeof createContentProposalOutputSchema>;
+export type GetContentProposalInput = z.infer<typeof getContentProposalInputSchema>;
+export type GetContentProposalOutput = z.infer<typeof getContentProposalOutputSchema>;
+export type ListContentProposalsInput = z.infer<typeof listContentProposalsInputSchema>;
+export type ListContentProposalsOutput = z.infer<typeof listContentProposalsOutputSchema>;

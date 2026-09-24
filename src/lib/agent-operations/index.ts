@@ -5,6 +5,7 @@ import { createChangeSetChannelStoreAdapter } from "@/lib/changesets/adapters/st
 import { createAiLocalizationCore } from "@/lib/ai-localization";
 import { createAnalyticsCore } from "@/lib/analytics";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
+import { createContentProposalCore } from "@/lib/content-proposals";
 import { createAgentOperationsServices } from "./services";
 
 /**
@@ -34,6 +35,7 @@ export function createAgentOperationsCore() {
   const aiLocalizationCore = createAiLocalizationCore();
   const analyticsCore = createAnalyticsCore();
   const assetCatalogCore = createAssetCatalogCore();
+  const contentProposalCore = createContentProposalCore();
 
   return createAgentOperationsServices({
     getProductVersion: readProductVersion,
@@ -57,6 +59,11 @@ export function createAgentOperationsCore() {
     // Slice E -- delegates unchanged to `aiLocalizationCore`'s own already-existing, already-
     // tested `getGenerationProvenance` (AGENTS.md §D).
     aiLocalizationGetGenerationProvenance: aiLocalizationCore.getGenerationProvenance,
+    // Slice G -- delegates unchanged to `contentProposalCore`'s own already-tested functions
+    // (AGENTS.md §D).
+    contentProposalCreateContentProposal: contentProposalCore.createContentProposal,
+    contentProposalGetContentProposal: contentProposalCore.getContentProposal,
+    contentProposalListContentProposals: contentProposalCore.listContentProposals,
   });
 }
 
@@ -87,3 +94,4 @@ export type {
 } from "./contracts";
 export type { CreativeAsset } from "@/lib/asset-catalog";
 export type { StoredGenerationProvenance } from "@/lib/ai-localization/contracts";
+export type { ContentProposal, ContentProposalBrief } from "@/lib/content-proposals";

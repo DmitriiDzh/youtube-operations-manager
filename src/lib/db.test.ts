@@ -13,14 +13,17 @@ import {
   gatewayCallEvents,
   getAnalyticsReadsEnabled,
   getAnalyticsSyncSettings,
+  getContentProposalById,
   getCreativeAssetById,
   getDataApiReadsEnabled,
   getGatewayTrafficLast24h,
   getStoredCloudConnection,
   getWeeklyReportByWeek,
   initializeDatabaseSchema,
+  insertContentProposal,
   insertCreativeAsset,
   listAnalyticsCollectionRunsByChannel,
+  listContentProposalsByChannel,
   listCreativeAssetsByChannel,
   listVideoMetricsByChannel,
   listVideoMetricsByVideo,
@@ -112,6 +115,7 @@ test("initializeDatabaseSchema: a fresh database ends stamped at SCHEMA_CURRENT_
     assert.equal(await tableExists(client, "analytics_collection_runs"), true);
     assert.equal(await tableExists(client, "analytics_weekly_reports"), true);
     assert.equal(await tableExists(client, "creative_assets"), true);
+    assert.equal(await tableExists(client, "content_proposals"), true);
   }));
 
 // Phase 7 slice D (docs/AGENT_OPERATIONS_INTERFACE.md §4c).
@@ -166,6 +170,54 @@ test("creative_assets: inserts and lists by channel, filtered by videoId/assetTy
           assetType: "other",
           referenceKind: "external_artifact_id",
           referenceValue: "artifact-123",
+        },
+        isolatedDb
+      )
+    );
+  }));
+
+// Phase 7 slice G (docs/AGENT_OPERATIONS_INTERFACE.md §4f).
+test("content_proposals: inserts and lists by channel, ordered newest first, enforcing the channel foreign key", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannel(isolatedDb, "UC_A");
+
+    await insertContentProposal(
+      {
+        id: "proposal-1",
+        channelId: "UC_A",
+        objective: "Grow subscribers",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+    await insertContentProposal(
+      {
+        id: "proposal-2",
+        channelId: "UC_A",
+        objective: "Increase watch time",
+        createdVia: "mcp",
+        agentApiVersion: "0.6.0",
+      },
+      isolatedDb
+    );
+
+    const all = await listContentProposalsByChannel("UC_A", isolatedDb);
+    assert.deepEqual(all.map((p) => p.id).sort(), ["proposal-1", "proposal-2"]);
+
+    const fetched = await getContentProposalById("proposal-2", isolatedDb);
+    assert.equal(fetched?.objective, "Increase watch time");
+    assert.equal(fetched?.createdVia, "mcp");
+    assert.equal(fetched?.agentApiVersion, "0.6.0");
+
+    // A channel that was never synced must fail the FK, not silently create an orphaned row.
+    await assert.rejects(() =>
+      insertContentProposal(
+        {
+          id: "proposal-3",
+          channelId: "UC_NEVER_SYNCED",
+          createdVia: "web_ui",
         },
         isolatedDb
       )

@@ -308,6 +308,66 @@ proposal-generation time.
   `GenerationResult` field carries them yet) rather than widen the proposal shape itself in the
   same pass as provenance/evidence; RISK-55 now also tracks this as part of the same open gap.
 
+## 4f. Content Proposal / external artifact registration (owner spec §18/§19/§20) -- PARTIAL (slice G)
+
+New module `src/lib/content-proposals/` (contracts/schemas/services/adapters/index -- §6.2 pattern),
+new `content_proposals` table (SCHEMA_MIGRATIONS v17). A Content Proposal is a structured,
+agent-authored (or human-authored) idea for a piece of content, per owner spec §18 -- "the
+application does not need to generate every resulting asset. Codex or external tools may create
+the content." This module owns exactly the proposal RECORD; it never generates, fetches, or
+produces content itself (no media pipeline, no YouTube write).
+
+- **Write-once by design:** create, get, list only -- no update, no status field, no approval
+  workflow. The owner spec describes no review/approval process for proposals (unlike Change
+  Sets); inventing one would be scope creep (`AGENTS.md` §C). A proposal is simply a DRAFT object;
+  `GRANTED_PERMISSIONS` remains `["READ","DRAFT"]`.
+- **Fields (owner spec §18):** `objective`/`topicConcept`/`rationale` are dedicated, bounded
+  free-text columns. `evidence` reuses the exact `EvidenceReference` shape from slice F (owner
+  spec §13), now defined once in `src/lib/shared-provenance/` (see below). The remaining,
+  heterogeneous field list (proposed title/thumbnail/visual/audio direction, duration,
+  publication hypothesis, localization strategy, experiment design, expected metrics, required
+  production outputs) is collapsed into one bounded, `.strict()`-validated `brief` object rather
+  than ~10 speculative dedicated columns, since none of them is queried structurally anywhere in
+  this codebase yet. `referenceVideoIds`/`referenceAssetIds` are each validated, at creation
+  time, to actually belong to the requesting channel (`AGENTS.md` §F) -- against the existing
+  channel/video sync mirror and against `asset-catalog`'s own channel-scoped `getAssetContext`
+  (`AGENTS.md` §D -- never a second, parallel asset-ownership check).
+- **Identity stamping (owner spec §22):** `createContentProposal` takes the same required,
+  no-default `callOrigin` parameter as `ai-localization`'s `createChangeSetFromGeneration` (slice
+  F) -- `createdVia`/`agentApiVersion`, SERVER-STAMPED at the MCP/CLI call site, never
+  caller-supplied. Unlike `ai_localization_generation_provenance`, `content_proposals.created_via`
+  is `NOT NULL` from creation: this is a brand-new table with no pre-existing rows created before
+  this field existed, so there is no backward-compatibility case to accommodate.
+- **Shared vocabulary extraction (`AGENTS.md` §M, done ahead of this slice as its own commit):**
+  `CreatedVia`/`EvidenceReference` (and their zod schemas) are now defined once in a new,
+  dependency-free `src/lib/shared-provenance/` module, imported by both `ai-localization` and
+  `content-proposals` -- neither domain module depends on the other. Also fixed, while touching
+  this area: `AgentCapabilityDomain`/`AgentDataDomain`/`PermissionClass`/`PlannedFutureCapability`
+  are now const arrays in `agent-operations/contracts.ts`, with `agent-operations/schemas.ts`
+  deriving its `z.enum(...)` calls from them instead of hardcoding a second copy (RISK-53,
+  `docs/TECHNICAL_DEBT.md`, now RESOLVED) -- the hardcoded copy had already silently drifted out
+  of sync with `AgentDataDomain` once this slice added `content_proposal_metadata`, breaking
+  every real (non-fixture) capability-discovery call, caught by this slice's own test suite.
+- **New agent-operations capabilities:** `content_proposal.create_content_proposal` (DRAFT),
+  `content_proposal.get_content_proposal`/`content_proposal.list_content_proposals` (READ).
+  MCP `agent_create_content_proposal`/`agent_get_content_proposal`/`agent_list_content_proposals`,
+  CLI `agent create-content-proposal`/`agent get-content-proposal`/`agent list-content-proposals`
+  -- no HTTP route (matches slices B-F's own MCP/CLI-first precedent). `create` mutates local
+  state (a new proposal row), gated by the same device-availability/recovery-mode check as
+  `ai_localization_create_change_set`; `get`/`list` are pure local reads, ungated.
+  `AGENT_API_VERSION` bumped to `0.6.0` (new capability ids, per that constant's own policy).
+- **Storage:** not in `SNAPSHOT_TRANSFERRED_TABLES` -- same accepted, device-local limitation
+  `creative_assets` already has (`docs/TECHNICAL_DEBT.md` RISK-52, note widened to cover this
+  table too).
+- **§20 (Experiment context, deferred to Phase 10) compatibility:** satisfied without building
+  anything -- a proposal's own stable `proposalId` is a future link target, and
+  `referenceAssetIds` already lets a produced artifact point back at the proposal that requested
+  it. Nothing further was needed to avoid painting into a corner.
+- **Why PARTIAL:** the external-artifact "return path" (owner spec §19 -- registering an
+  externally-produced artifact back against a proposal) is not yet implemented in this slice;
+  only proposal creation/read is done so far. Evidence/rationale inherit the same per-object (not
+  per-field), never-independently-verified caveats already documented for slice F.
+
 ## 5. Context model (owner spec §6) -- design settled, mostly not yet implemented
 
 Every context object this interface returns is meant to carry: entity identity, source, data
@@ -369,7 +429,7 @@ second error-code enum:
 | D | Asset catalog/context (new subsystem -- nothing to reuse) | **IMPLEMENTED** -- see §4c; MCP `agent_list_assets`/`agent_get_asset_context`, CLI `agent list-assets`/`agent get-asset-context`/`asset register`. No HTTP route yet. |
 | E | Agent draft/proposal provenance | **PARTIAL** -- see §4d; MCP `agent_get_generation_provenance`, CLI `agent get-generation-provenance`. No HTTP route (reuses the pre-existing one). "Operation type" (owner spec §22) still not recorded (RISK-57). |
 | F | Bulk localization integration -- evidence, rationale, identity stamping | **PARTIAL** -- see §4e; widens the existing `ai_localization_create_change_set` MCP tool, CLI command, and Web route (`ai_localization_generate` is untouched). Evidence/rationale are per-Change-Set, not per-proposal (RISK-55, known limitation). |
-| G | Content Proposal / external artifact registration | PLANNED |
+| G | Content Proposal / external artifact registration | **PARTIAL** -- see §4f; new `src/lib/content-proposals/` module, `content_proposals` table. Proposal create/get/list implemented; external-artifact registration (owner spec §19) not yet implemented. |
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | IN PROGRESS |
 | I | Codex operations-workspace template | PLANNED -- see `docs/CODEX_OPERATIONS_WORKSPACE.md` once slice I lands |
 | J | Independent security/integration review | ONGOING per slice -- `docs/roadmap/BACKLOG.md`'s BL-079/BL-080/BL-081 (and later rows, as slices land) are the authoritative record of each slice's own review-cycle status; not restated here as a round tally, since that would just be a second, driftable copy of the same fact |

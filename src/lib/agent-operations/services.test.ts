@@ -64,6 +64,20 @@ type FakeGenerationProvenance = {
   createdVia: "mcp" | "cli" | "web_ui" | null;
   agentApiVersion: string | null;
 };
+type FakeContentProposal = {
+  proposalId: string;
+  channelId: string;
+  objective: string | null;
+  topicConcept: string | null;
+  rationale: string | null;
+  evidence: EvidenceReference[] | null;
+  brief: Record<string, unknown> | null;
+  referenceVideoIds: string[] | null;
+  referenceAssetIds: string[] | null;
+  createdAt: string;
+  createdVia: "mcp" | "cli" | "web_ui";
+  agentApiVersion: string | null;
+};
 
 function createFixture(
   overrides: Partial<{
@@ -79,6 +93,12 @@ function createFixture(
     assetCatalogListAssets: (input: unknown) => Promise<{ assets: FakeCreativeAsset[] }>;
     assetCatalogGetAssetContext: (input: unknown) => Promise<FakeCreativeAsset>;
     aiLocalizationGetGenerationProvenance: (input: unknown) => Promise<FakeGenerationProvenance | null>;
+    contentProposalCreateContentProposal: (
+      input: unknown,
+      callOrigin: { createdVia: "mcp" | "cli" | "web_ui"; agentApiVersion?: string | null }
+    ) => Promise<FakeContentProposal>;
+    contentProposalGetContentProposal: (input: unknown) => Promise<FakeContentProposal>;
+    contentProposalListContentProposals: (input: unknown) => Promise<{ proposals: FakeContentProposal[] }>;
   }> = {}
 ) {
   const services = createAgentOperationsServices({
@@ -105,6 +125,12 @@ function createFixture(
     assetCatalogGetAssetContext: overrides.assetCatalogGetAssetContext ?? (async () => { throw new Error("assetCatalogGetAssetContext not stubbed"); }),
     aiLocalizationGetGenerationProvenance:
       overrides.aiLocalizationGetGenerationProvenance ?? (async () => { throw new Error("aiLocalizationGetGenerationProvenance not stubbed"); }),
+    contentProposalCreateContentProposal:
+      overrides.contentProposalCreateContentProposal ?? (async () => { throw new Error("contentProposalCreateContentProposal not stubbed"); }),
+    contentProposalGetContentProposal:
+      overrides.contentProposalGetContentProposal ?? (async () => { throw new Error("contentProposalGetContentProposal not stubbed"); }),
+    contentProposalListContentProposals:
+      overrides.contentProposalListContentProposals ?? (async () => { throw new Error("contentProposalListContentProposals not stubbed"); }),
   });
   return { services };
 }
@@ -117,7 +143,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   const result = await services.getSystemCapabilities({});
 
   assert.equal(result.productVersion, "9.9.9");
-  assert.equal(result.agentApiVersion, "0.5.0");
+  assert.equal(result.agentApiVersion, "0.6.0");
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -555,4 +581,82 @@ test("queryVideoAnalytics narrows metricDefinitions to exactly the requested met
   assert.equal(viewsDefinition!.unit, "count");
   const unknownDefinition = result.metricDefinitions.find((d) => d.name === "totally_made_up_metric");
   assert.equal(unknownDefinition!.description, "No definition recorded for this metric name.");
+});
+
+// Phase 7 slice G: createContentProposal forwards its input AND callOrigin unchanged to the
+// underlying core, returning its result unmodified (this wrapper does no shape transformation).
+test("createContentProposal forwards input and callOrigin unchanged to contentProposalCreateContentProposal", async () => {
+  let capturedInput: unknown;
+  let capturedCallOrigin: unknown;
+  const { services } = createFixture({
+    contentProposalCreateContentProposal: async (input, callOrigin) => {
+      capturedInput = input;
+      capturedCallOrigin = callOrigin;
+      return {
+        proposalId: "proposal-1",
+        channelId: "UC_A",
+        objective: "Grow",
+        topicConcept: null,
+        rationale: null,
+        evidence: null,
+        brief: null,
+        referenceVideoIds: null,
+        referenceAssetIds: null,
+        createdAt: "2026-09-24T00:00:00.000Z",
+        createdVia: "mcp",
+        agentApiVersion: "0.6.0",
+      };
+    },
+  });
+
+  const result = await services.createContentProposal(
+    { channelId: "UC_A", objective: "Grow" },
+    { createdVia: "mcp", agentApiVersion: "0.6.0" }
+  );
+
+  assert.deepEqual(capturedInput, { channelId: "UC_A", objective: "Grow" });
+  assert.deepEqual(capturedCallOrigin, { createdVia: "mcp", agentApiVersion: "0.6.0" });
+  assert.equal(result.proposalId, "proposal-1");
+  assert.equal(result.createdVia, "mcp");
+});
+
+test("listContentProposals forwards its input unchanged to contentProposalListContentProposals", async () => {
+  let captured: unknown;
+  const { services } = createFixture({
+    contentProposalListContentProposals: async (input) => {
+      captured = input;
+      return { proposals: [] };
+    },
+  });
+
+  const result = await services.listContentProposals({ channelId: "UC_A" });
+  assert.deepEqual(captured, { channelId: "UC_A" });
+  assert.deepEqual(result.proposals, []);
+});
+
+test("getContentProposal forwards its input unchanged and returns the stored record", async () => {
+  let captured: unknown;
+  const { services } = createFixture({
+    contentProposalGetContentProposal: async (input) => {
+      captured = input;
+      return {
+        proposalId: "proposal-1",
+        channelId: "UC_A",
+        objective: null,
+        topicConcept: null,
+        rationale: null,
+        evidence: null,
+        brief: null,
+        referenceVideoIds: null,
+        referenceAssetIds: null,
+        createdAt: "2026-09-24T00:00:00.000Z",
+        createdVia: "web_ui",
+        agentApiVersion: null,
+      };
+    },
+  });
+
+  const result = await services.getContentProposal({ channelId: "UC_A", proposalId: "proposal-1" });
+  assert.deepEqual(captured, { channelId: "UC_A", proposalId: "proposal-1" });
+  assert.equal(result.proposalId, "proposal-1");
 });

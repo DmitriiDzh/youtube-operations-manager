@@ -39,12 +39,15 @@ import {
 } from "@/lib/ai-localization/schemas";
 import { createAgentOperationsCore, type AgentOperationsCore, AGENT_API_VERSION } from "@/lib/agent-operations";
 import {
+  createContentProposalInputSchema,
   getAssetContextInputSchema,
   getChannelContextInputSchema,
+  getContentProposalInputSchema,
   getGenerationProvenanceInputSchema,
   getSystemCapabilitiesInputSchema,
   getVideoContextInputSchema,
   listAssetsInputSchema,
+  listContentProposalsInputSchema,
   queryChannelAnalyticsInputSchema,
   queryVideoAnalyticsInputSchema,
 } from "@/lib/agent-operations/schemas";
@@ -131,6 +134,9 @@ type AgentOperationsCoreSubset = Pick<
   | "listAssets"
   | "getAssetContext"
   | "getGenerationProvenance"
+  | "createContentProposal"
+  | "getContentProposal"
+  | "listContentProposals"
 >;
 
 type ToolResponse = {
@@ -180,6 +186,9 @@ type McpToolHandlers = {
   agentListAssets: (input: unknown) => Promise<ToolResponse>;
   agentGetAssetContext: (input: unknown) => Promise<ToolResponse>;
   agentGetGenerationProvenance: (input: unknown) => Promise<ToolResponse>;
+  agentCreateContentProposal: (input: unknown) => Promise<ToolResponse>;
+  agentGetContentProposal: (input: unknown) => Promise<ToolResponse>;
+  agentListContentProposals: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -1168,6 +1177,77 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    /**
+     * Slice G (owner spec §18). Mutates local application state (a new Change Set never
+     * involved) -- gated by the same device-availability/recovery-mode check as
+     * `ai_localization_create_change_set`. Same explicit channel-scoping pattern as
+     * `agentGetAssetContext` above -- the service function itself does no such check.
+     */
+    async agentCreateContentProposal(input: unknown): Promise<ToolResponse> {
+      const parsedInput = createContentProposalInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        // Phase 7 slice G (owner spec §22): this is the one transport an agent-operations-
+        // versioned surface actually mediates, so it is the only one that stamps a real
+        // `agentApiVersion` alongside `createdVia: "mcp"`.
+        const result = await agentOperationsCore.createContentProposal(parsedInput.data, {
+          createdVia: "mcp",
+          agentApiVersion: AGENT_API_VERSION,
+        });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** Slice G. Same explicit channel-scoping note as `agentGetAssetContext` above. */
+    async agentGetContentProposal(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getContentProposalInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.getContentProposal(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** Slice G. Same explicit channel-scoping note as `agentListAssets` above. */
+    async agentListContentProposals(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listContentProposalsInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.listContentProposals(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -1275,6 +1355,13 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     agentGetAssetContext: handlers.agentGetAssetContext,
     // Slice E -- a pure local read over an immutable, already-persisted provenance row; ungated.
     agentGetGenerationProvenance: handlers.agentGetGenerationProvenance,
+    // Slice G -- `createContentProposal` is a real local-persistence mutation (a new proposal
+    // row) -- gated, like `aiLocalizationCreateChangeSet` above. `getContentProposal`/
+    // `listContentProposals` are pure local reads -- ungated, like `agentListAssets` above.
+    agentCreateContentProposal: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.agentCreateContentProposal(input),
+    agentGetContentProposal: handlers.agentGetContentProposal,
+    agentListContentProposals: handlers.agentListContentProposals,
   };
 }
 
@@ -1731,6 +1818,36 @@ export function createMcpServer(
       inputSchema: getGenerationProvenanceInputSchema,
     },
     (args) => handlers.agentGetGenerationProvenance(args)
+  );
+
+  registerTool(
+    "agent_create_content_proposal",
+    {
+      description:
+        "Create a structured Content Proposal (owner spec §18) -- optional objective, topicConcept, rationale, evidence (external-research/comparable-video citations: url, retrievedAt, description, claimSupported, sourceType, optional excerpt), a bounded free-form brief (proposedTitleDirection, thumbnailDirection, visualBrief, audioBrief, durationHint, publicationHypothesis, localizationStrategy, experimentDesign, expectedMetrics, requiredProductionOutputs), and referenceVideoIds/referenceAssetIds (each validated to actually belong to the requesting channel). Write-once -- there is no update or approval workflow for this domain; a proposal is a DRAFT object, full stop. createdVia/agentApiVersion (owner spec §22) are SERVER-STAMPED: 'mcp' with the real agent API version for a proposal created through this MCP surface, never caller-supplied. The application does not generate any of the proposed content itself. Requires channelId to be the caller's currently-active channel. Mutates local application state, so this tool is gated by the same device-availability/recovery-mode check as ai_localization_create_change_set.",
+      inputSchema: createContentProposalInputSchema,
+    },
+    (args) => handlers.agentCreateContentProposal(args)
+  );
+
+  registerTool(
+    "agent_get_content_proposal",
+    {
+      description:
+        "Fetch one Content Proposal's full record by proposalId. Requires channelId to be the caller's currently-active channel and proposalId to actually belong to it -- otherwise fails with CONTENT_PROPOSAL_NOT_AVAILABLE, the same error for 'does not exist' and 'belongs to another channel'.",
+      inputSchema: getContentProposalInputSchema,
+    },
+    (args) => handlers.agentGetContentProposal(args)
+  );
+
+  registerTool(
+    "agent_list_content_proposals",
+    {
+      description:
+        "List Content Proposals for a channel, newest first. Metadata only -- never resolves referenced videos/assets itself. Requires channelId to be the caller's currently-active channel.",
+      inputSchema: listContentProposalsInputSchema,
+    },
+    (args) => handlers.agentListContentProposals(args)
   );
 
   return server;

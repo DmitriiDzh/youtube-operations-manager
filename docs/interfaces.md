@@ -152,6 +152,9 @@ npm run cli:video-metadata -- agent list-assets --channelId <UC...> [--videoId <
 npm run cli:video-metadata -- agent get-asset-context --channelId <UC...> --assetId <ASSET_ID>
 npm run cli:video-metadata -- asset register --channelId <UC...> --assetType <type> --referenceKind url|local_path|external_artifact_id --referenceValue <value> [--title <t>] [--description <d>] [--linkedVideoId <id>] [--provenanceJson <json>]
 npm run cli:video-metadata -- agent get-generation-provenance --channelId <UC...> --changeSetId <CHANGE_SET_ID>
+npm run cli:video-metadata -- agent create-content-proposal --channelId <UC...> [--objective <text>] [--topicConcept <text>] [--rationale <text>] [--evidenceJson <json>] [--briefJson <json>] [--referenceVideoIds <id1,id2,...>] [--referenceAssetIds <id1,id2,...>]
+npm run cli:video-metadata -- agent get-content-proposal --channelId <UC...> --proposalId <PROPOSAL_ID>
+npm run cli:video-metadata -- agent list-content-proposals --channelId <UC...>
 ```
 
 `agent capabilities` is read-only with no channel/credential resolution at all (instance-level
@@ -193,6 +196,20 @@ context, `changeSetId`/`channelId`/creation time) -- same `assertActiveChannel` 
 The returned `profileVersion`/`effectiveContext` were supplied by whoever created the Change Set,
 not independently verified by this server. See `docs/AGENT_OPERATIONS_INTERFACE.md` for the full
 design.
+
+`agent create-content-proposal` (Phase 7 slice G, owner spec §18) persists a new, write-once
+Content Proposal -- no update, no approval workflow (the owner spec describes none for this
+domain). `--evidenceJson` takes a JSON-encoded `EvidenceReference[]` (same shape as
+`ai-localization create-change-set`'s own `--evidenceJson`), `--briefJson` a JSON-encoded
+`ContentProposalBrief` (proposedTitleDirection, thumbnailDirection, visualBrief, audioBrief,
+durationHint, publicationHypothesis, localizationStrategy, experimentDesign, expectedMetrics,
+requiredProductionOutputs), `--referenceVideoIds`/`--referenceAssetIds` a comma-separated list of
+ids -- each validated to actually belong to `--channelId`. Mutates local state, gated like
+`ai-localization create-change-set`. `createdVia`/`agentApiVersion` are SERVER-STAMPED
+(`"cli"`/`null`), never taken from flags. `agent get-content-proposal`/`agent
+list-content-proposals` are the same `assertActiveChannel`-checked, read-only pattern as
+`agent get-asset-context`/`agent list-assets` above. See `docs/AGENT_OPERATIONS_INTERFACE.md`
+§4f for the full design.
 
 ### Analytics commands (CLI parity for the MCP `analytics_*` tools, Phase 8 follow-up)
 
@@ -345,6 +362,19 @@ Key MCP tools:
     through this MCP surface, `"cli"`/`null` for the CLI, `"web_ui"`/`null` for the Web UI's own
     "Generate with AI", and `null`/`null` for a row created before this field existed
     (`docs/TECHNICAL_DEBT.md` RISK-54, RESOLVED).
+  - `agent_create_content_proposal` (Phase 7 slice G, owner spec §18) — `{ channelId, objective?,
+    topicConcept?, rationale?, evidence?, brief?, referenceVideoIds?, referenceAssetIds? }` →
+    `ContentProposal`. **Persists** a new, write-once proposal row — no update, no approval
+    workflow (the owner spec describes none for this domain; a proposal is a DRAFT object, full
+    stop). `referenceVideoIds`/`referenceAssetIds` are each validated to actually belong to
+    `channelId`. `createdVia`/`agentApiVersion` are SERVER-STAMPED (`"mcp"` + the real
+    `AGENT_API_VERSION`), never taken from the request body. Mutates local state only, gated by
+    the same device-availability check as `ai_localization_create_change_set`.
+  - `agent_get_content_proposal` — `{ channelId, proposalId }` → `ContentProposal`. Same
+    channel-scoping as `agent_get_asset_context`; `CONTENT_PROPOSAL_NOT_AVAILABLE` for a
+    nonexistent id or one belonging to another channel (never distinguishable).
+  - `agent_list_content_proposals` — `{ channelId }` → `{ proposals: ContentProposal[] }`. Local
+    read only, newest first.
 
   `get_capabilities` also now registers several already-existing, already-implemented tools it
   previously omitted (`channel_list`, `channel_video_list`, `ai_localization_generate`,
@@ -352,9 +382,11 @@ Key MCP tools:
   `analytics_comparable_age`) so its own capability list is honest about everything actually
   reachable today, not just what this module itself implements — an agent CAN already compare
   videos or create a localization draft/proposal today, just through those pre-existing tools
-  rather than a dedicated `agent-operations`-specific wrapper for either. Deliberately **not**
-  reachable through ANY tool yet: experiment history, or content planning/external-artifact
-  registration — those are genuinely unimplemented, later slices (G onward) of this same phase.
+  rather than a dedicated `agent-operations`-specific wrapper for either. Content Proposal
+  creation/read (Phase 7 slice G) is now reachable via `agent_create_content_proposal`/
+  `agent_get_content_proposal`/`agent_list_content_proposals` above. Deliberately **not**
+  reachable through ANY tool yet: experiment history, or external-artifact registration (owner
+  spec §19) — those remain genuinely unimplemented, later work in this same phase.
 - Analytics read tools (`docs/roadmap/BACKLOG.md`, "machine-readable analytics for operational
   agents to consume" — `docs/roadmap/FUTURE_PHASES.md` §4 / `docs/PROJECT_SPEC.md` §33):
   - `analytics_list` — `{ channelId, startDate?, endDate?, videoId?, metricNames?, credentialRef? }`

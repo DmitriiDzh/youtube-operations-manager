@@ -58,21 +58,28 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts`) for the current, authoritative
  * list of capabilities.
  */
-export const AGENT_API_VERSION = "0.5.0";
+export const AGENT_API_VERSION = "0.6.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
  * (owner spec §25: "Do not implement empty fake tools merely to fill this list"). `domain` groups
  * related capabilities for a caller scanning what's available without reading every id.
+ *
+ * Exported as a const array, not a plain union (RISK-53, `docs/TECHNICAL_DEBT.md`) -- so
+ * `schemas.ts`'s own `z.enum(...)` derives from this single source instead of hardcoding a second,
+ * independently-maintained copy of the same literals that could silently drift from it (the exact
+ * defect class already fixed once for `asset-catalog`'s enums in Phase 7 slice D).
  */
-export type AgentCapabilityDomain =
-  | "system"
-  | "channel_context"
-  | "video_context"
-  | "analytics"
-  | "asset_catalog"
-  | "localization_draft"
-  | "content_proposal";
+export const AGENT_CAPABILITY_DOMAINS = [
+  "system",
+  "channel_context",
+  "video_context",
+  "analytics",
+  "asset_catalog",
+  "localization_draft",
+  "content_proposal",
+] as const;
+export type AgentCapabilityDomain = (typeof AGENT_CAPABILITY_DOMAINS)[number];
 
 export type AgentCapabilityDescriptor = {
   id: string;
@@ -86,14 +93,18 @@ export type AgentCapabilityDescriptor = {
  * `AGENT_CAPABILITIES` below -- a domain is only listed once at least one real capability serves
  * it. `competitor_intelligence`/`experiment_history` are DELIBERATELY absent (owner spec §14/§20:
  * extension points only, Phase 9/10 not implemented) -- see `PLANNED_FUTURE_CAPABILITIES` for how
- * a caller distinguishes "not built yet" from "doesn't exist as a concept."
+ * a caller distinguishes "not built yet" from "doesn't exist as a concept." Same const-array
+ * rationale as `AGENT_CAPABILITY_DOMAINS` above (RISK-53).
  */
-export type AgentDataDomain =
-  | "channel_metadata"
-  | "video_metadata"
-  | "channel_analytics"
-  | "video_analytics"
-  | "asset_metadata";
+export const AGENT_DATA_DOMAINS = [
+  "channel_metadata",
+  "video_metadata",
+  "channel_analytics",
+  "video_analytics",
+  "asset_metadata",
+  "content_proposal_metadata",
+] as const;
+export type AgentDataDomain = (typeof AGENT_DATA_DOMAINS)[number];
 
 /**
  * Capabilities named in the owner's own spec (§14) that this interface is designed to eventually

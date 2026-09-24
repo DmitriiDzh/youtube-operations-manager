@@ -808,10 +808,10 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Approval required from:** none technically required (routine CLI parity addition), but the project owner explicitly asked to revisit this personally (Telegram, 2026-09-23: "Запиши вопрос про флаг в технический долг и я вернусь к нему позже") rather than have it picked up automatically.
 - **Status:** OPEN — owner will decide when to return to it.
 
-## RISK-52 — `creative_assets` (Phase 7 slice D) does not travel with a device snapshot/handoff — OPEN, 2026-09-24
+## RISK-52 — `creative_assets`/`content_proposals` (Phase 7 slices D/G) do not travel with a device snapshot/handoff — OPEN, 2026-09-24
 
-- **Affected components:** `src/lib/asset-catalog/` (the `creative_assets` table); `src/lib/snapshot/contracts.ts`'s `SNAPSHOT_TRANSFERRED_TABLES` allowlist (fail-safe by construction -- a new table is excluded by default unless deliberately added).
-- **Current behavior:** an asset registered via `asset register` (CLI) stays in this device's local database only. Switching to, or setting up, a second device does not bring along any previously-catalogued assets -- the catalog starts empty on that device.
+- **Affected components:** `src/lib/asset-catalog/` (the `creative_assets` table); `src/lib/content-proposals/` (the `content_proposals` table, Phase 7 slice G, same accepted limitation); `src/lib/snapshot/contracts.ts`'s `SNAPSHOT_TRANSFERRED_TABLES` allowlist (fail-safe by construction -- a new table is excluded by default unless deliberately added).
+- **Current behavior:** an asset registered via `asset register` (CLI), or a Content Proposal created via `agent create-content-proposal`/its MCP tool, stays in this device's local database only. Switching to, or setting up, a second device does not bring along any previously-catalogued assets or proposals -- both start empty on that device.
 - **Why not fixed now:** the same accepted reasoning `video_metrics_daily` already has (`docs/ARCHITECTURE.md` §14.7) -- adding cross-device propagation (either the occasional whole-copy snapshot mechanism, or continuous `sync-gateway` CRDT sync) is its own scoped decision, not something to bundle into the same slice that introduces the table in the first place.
 - **Actual risk:** low today (the catalog is new and typically small), but grows as the catalog is used across a genuinely multi-device setup.
 - **Required remediation:** once real multi-device usage of the asset catalog is expected, decide explicitly between (a) adding `creative_assets` to `SNAPSHOT_TRANSFERRED_TABLES` (simple, occasional whole-copy semantics, consistent with `batches`/`audit_events`) or (b) migrating it to `sync-gateway` (continuous, concurrent-edit-safe, consistent with `change_sets`/`changes`) -- not both.
@@ -876,22 +876,21 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-49 | Channel-connections list/disconnect have no per-caller channel-ownership check (deliberate, feature's actual purpose) | none blocking | OPEN |
 | RISK-50 | Top-content-by-views ranking duplicated (client-side Overview tab vs. server-side weekly report) | none blocking | OPEN |
 | RISK-51 | CLI `ai-localization generate` has no `--editorialBrief` flag (MCP tool has the equivalent) | none blocking | OPEN, owner will revisit |
-| RISK-52 | `creative_assets` (Phase 7 slice D) does not travel with a device snapshot/handoff | none blocking | OPEN |
-| RISK-53 | `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` | none blocking | OPEN |
+| RISK-52 | `creative_assets`/`content_proposals` (Phase 7 slices D/G) do not travel with a device snapshot/handoff | none blocking | OPEN |
+| RISK-53 | `agent-operations/schemas.ts` hardcoded its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES`/domain enums instead of importing them from `contracts.ts` -- caused a real capability-discovery bug when slice G added a new data domain | none (fixed) | RESOLVED, 2026-09-24 |
 | RISK-54 | `agent_get_generation_provenance` (Phase 7 slice E) has no server-stamped agent/client identity or product/API version -- owner spec §22's full traceability requirement is only partially met | none blocking | RESOLVED, 2026-09-24 |
 | RISK-55 | Evidence/rationale (Phase 7 slice F) are recorded once per Change Set, not per individual proposal, and confidence/warnings/expected-objective/source-context-revision (owner spec §12/§13) aren't recorded at all | none blocking | OPEN |
 | RISK-56 | `createChangeSetFromGeneration` (Phase 7 slice F) persists the Change Set, then separately writes its now-unconditional provenance row -- not one atomic operation | none blocking | OPEN |
 | RISK-57 | Owner spec §22's third traceability element, "operation type," is not recorded anywhere on a provenance record (Phase 7 slice E/F only closed "agent/client identity" and "product/API version") | none blocking | OPEN |
 
-## RISK-53 — `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` — OPEN, 2026-09-24
+## RISK-53 — `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` — RESOLVED, 2026-09-24
 
-- **Affected components:** `src/lib/agent-operations/schemas.ts`'s `permissionClassSchema` (`z.enum(["READ","DRAFT","APPROVE","EXECUTE"])`) and the inline `plannedFutureCapabilities` enum inside `systemCapabilitiesOutputSchema`; both duplicate `contracts.ts`'s own `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` `as const` arrays (already real, importable exports) instead of deriving from them.
-- **Current behavior:** the two lists happen to agree today (found while reviewing slice D's own asset-type enum, which had the identical defect and was fixed by importing from its source module). No functional bug yet.
-- **Why not fixed now:** out of scope for slice D's own review cycle (this is slice A code); flagged for its own separate, small fix rather than folded into an unrelated slice's commit.
-- **Required remediation:** derive `permissionClassSchema` from `PERMISSION_CLASSES` (e.g. `z.enum(PERMISSION_CLASSES)`) and the `plannedFutureCapabilities` schema field from `PLANNED_FUTURE_CAPABILITIES`, same fix shape already applied to `asset-catalog`'s enums in slice D.
-- **Gate(s):** none blocking.
-- **Approval required from:** none -- routine cleanup, whenever it's next touched.
-- **Status:** OPEN — tracked, not yet fixed.
+- **Affected components:** `src/lib/agent-operations/schemas.ts`'s `permissionClassSchema`, the `domain` enum inside `agentCapabilityDescriptorSchema`, and the `dataDomains`/`plannedFutureCapabilities` fields inside `systemCapabilitiesOutputSchema`.
+- **Prior behavior:** all four hardcoded their own copies of literals already defined as real, importable `as const` arrays in `contracts.ts` (`PERMISSION_CLASSES`, `PLANNED_FUTURE_CAPABILITIES`) or as plain TS unions with no exported array at all (`AgentCapabilityDomain`, `AgentDataDomain`).
+- **What actually forced the fix:** while implementing Phase 7 slice G, adding `content_proposal_metadata` to `AgentDataDomain` broke every real (non-fixture) call to `getSystemCapabilities` -- the hardcoded `dataDomains` enum in `schemas.ts` had already drifted out of sync with the type, rejecting the new value at the output-schema-validation step. This is exactly the "could silently drift" risk this entry originally flagged, now realized as a genuine functional bug, not merely a latent one.
+- **Fix:** `AgentCapabilityDomain` and `AgentDataDomain` converted to const-array-derived types in `contracts.ts` (`AGENT_CAPABILITY_DOMAINS`, `AGENT_DATA_DOMAINS`), matching the existing `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` pattern. `schemas.ts` now derives all four `z.enum(...)` calls from these arrays instead of hardcoding a second copy. `services.ts`'s own separate, previously-duplicated local `AGENT_DATA_DOMAINS` runtime list was also removed in favor of importing the one from `contracts.ts`.
+- **Verification:** `npm test` (all agent-operations/MCP/CLI tests, including new Phase 7 slice G coverage), `tsc`/`lint`/`build` clean.
+- **Status:** RESOLVED — 2026-09-24.
 
 ## RISK-54 — `agent_get_generation_provenance` (Phase 7 slice E) has no server-stamped agent/client identity or product/API version — RESOLVED, 2026-09-24
 

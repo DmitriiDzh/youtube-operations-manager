@@ -1,11 +1,11 @@
 import {
   AGENT_API_VERSION,
+  AGENT_DATA_DOMAINS,
   DomainError,
   GRANTED_PERMISSIONS,
   PERMISSION_CLASSES,
   PLANNED_FUTURE_CAPABILITIES,
   type AgentCapabilityDescriptor,
-  type AgentDataDomain,
   type ChannelAnalyticsContext,
   type ChannelContext,
   type MetricDefinition,
@@ -18,15 +18,21 @@ import {
   ALL_VIDEO_CONTEXT_SECTIONS,
   channelAnalyticsContextOutputSchema,
   channelContextOutputSchema,
+  createContentProposalInputSchema,
+  createContentProposalOutputSchema,
   getAssetContextInputSchema,
   getAssetContextOutputSchema,
   getChannelContextInputSchema,
+  getContentProposalInputSchema,
+  getContentProposalOutputSchema,
   getGenerationProvenanceInputSchema,
   getGenerationProvenanceOutputSchema,
   getSystemCapabilitiesInputSchema,
   getVideoContextInputSchema,
   listAssetsInputSchema,
   listAssetsOutputSchema,
+  listContentProposalsInputSchema,
+  listContentProposalsOutputSchema,
   parseWithSchema,
   queryChannelAnalyticsInputSchema,
   queryVideoAnalyticsInputSchema,
@@ -37,6 +43,8 @@ import {
 import { ANALYTICS_METRIC_NAMES, CHANNEL_OVERVIEW_METRIC_NAMES } from "@/lib/analytics";
 import type { CreativeAsset } from "@/lib/asset-catalog";
 import type { StoredGenerationProvenance } from "@/lib/ai-localization/contracts";
+import type { ContentProposal } from "@/lib/content-proposals";
+import type { CreatedVia } from "@/lib/shared-provenance";
 
 /**
  * One entry per capability actually implemented and reachable today -- either a new function this
@@ -166,15 +174,29 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Fetch one catalogued asset's full metadata record by assetId. Requires channelId to be the caller's currently-active channel and assetId to actually belong to it.",
   },
+  {
+    id: "content_proposal.create_content_proposal",
+    domain: "content_proposal",
+    permission: "DRAFT",
+    description:
+      "Create a structured Content Proposal (owner spec §18) -- objective, topic/concept, rationale, evidence, a bounded free-form `brief` (title/thumbnail/visual/audio direction, duration, publication hypothesis, localization strategy, experiment design, expected metrics, required production outputs), and references to already-synced videos/catalogued assets. Write-once: there is no update or approval workflow for this domain (a proposal is a DRAFT object, full stop -- inventing an approval state machine the owner spec never asked for would be scope creep). `referenceVideoIds`/`referenceAssetIds` are each validated to actually belong to the requesting channel. `createdVia`/`agentApiVersion` (owner spec §22) are SERVER-STAMPED, never caller-supplied. The application does not generate any of the proposed content itself -- Codex or external tools may produce it; a separate, not-yet-implemented capability will let externally-produced artifacts be registered back against a proposal (owner spec §19).",
+  },
+  {
+    id: "content_proposal.get_content_proposal",
+    domain: "content_proposal",
+    permission: "READ",
+    description:
+      "Fetch one Content Proposal's full record by proposalId. Requires channelId to be the caller's currently-active channel and proposalId to actually belong to it -- otherwise fails with CONTENT_PROPOSAL_NOT_AVAILABLE, the same error for 'does not exist' and 'belongs to another channel'.",
+  },
+  {
+    id: "content_proposal.list_content_proposals",
+    domain: "content_proposal",
+    permission: "READ",
+    description:
+      "List Content Proposals for a channel, newest first. Read-only over the local proposal record -- never resolves referenced videos/assets itself. Requires channelId to be the caller's currently-active channel.",
+  },
 ];
 
-const AGENT_DATA_DOMAINS: AgentDataDomain[] = [
-  "channel_metadata",
-  "video_metadata",
-  "channel_analytics",
-  "video_analytics",
-  "asset_metadata",
-];
 
 /**
  * Owner spec §9: "The exact metrics must follow the ACTUAL data currently collected. Do not
@@ -304,6 +326,15 @@ type ServiceDependencies = {
   // unchanged (AGENTS.md §D). No credential/channel checking of its own -- mirrors slice B's
   // convention, same as the asset-catalog delegates above.
   aiLocalizationGetGenerationProvenance(input: unknown): Promise<StoredGenerationProvenance | null>;
+  // Slice G -- delegates to `contentProposalCore`'s own `createContentProposal`/
+  // `getContentProposal`/`listContentProposals` unchanged (AGENTS.md §D). No credential/channel
+  // checking of its own -- mirrors slice B's convention, same as every delegate above.
+  contentProposalCreateContentProposal(
+    input: unknown,
+    callOrigin: { createdVia: CreatedVia; agentApiVersion?: string | null }
+  ): Promise<ContentProposal>;
+  contentProposalGetContentProposal(input: unknown): Promise<ContentProposal>;
+  contentProposalListContentProposals(input: unknown): Promise<{ proposals: ContentProposal[] }>;
 };
 
 export function createAgentOperationsServices(deps: ServiceDependencies) {
@@ -321,7 +352,7 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
         productVersion: deps.getProductVersion(),
         agentApiVersion: AGENT_API_VERSION,
         capabilities: AGENT_CAPABILITIES,
-        dataDomains: AGENT_DATA_DOMAINS,
+        dataDomains: [...AGENT_DATA_DOMAINS],
         actionClasses: PERMISSION_CLASSES,
         grantedPermissions: GRANTED_PERMISSIONS,
         plannedFutureCapabilities: PLANNED_FUTURE_CAPABILITIES,
@@ -519,6 +550,31 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
       const parsedInput = parseWithSchema(getGenerationProvenanceInputSchema, input, "get generation provenance input");
       const result = await deps.aiLocalizationGetGenerationProvenance(parsedInput);
       return parseWithSchema(getGenerationProvenanceOutputSchema, result, "get generation provenance output");
+    },
+
+    /** Slice G, owner spec §18. See this capability's own description in `AGENT_CAPABILITIES`
+     * above for what is and isn't validated/recorded. */
+    async createContentProposal(
+      input: unknown,
+      callOrigin: { createdVia: CreatedVia; agentApiVersion?: string | null }
+    ): Promise<ContentProposal> {
+      const parsedInput = parseWithSchema(createContentProposalInputSchema, input, "create content proposal input");
+      const result = await deps.contentProposalCreateContentProposal(parsedInput, callOrigin);
+      return parseWithSchema(createContentProposalOutputSchema, result, "create content proposal output");
+    },
+
+    /** Slice G. Same channel-scoping note as `getAssetContext` above. */
+    async getContentProposal(input: unknown): Promise<ContentProposal> {
+      const parsedInput = parseWithSchema(getContentProposalInputSchema, input, "get content proposal input");
+      const result = await deps.contentProposalGetContentProposal(parsedInput);
+      return parseWithSchema(getContentProposalOutputSchema, result, "get content proposal output");
+    },
+
+    /** Slice G. Same channel-scoping note as `listAssets` above. */
+    async listContentProposals(input: unknown): Promise<{ proposals: ContentProposal[] }> {
+      const parsedInput = parseWithSchema(listContentProposalsInputSchema, input, "list content proposals input");
+      const result = await deps.contentProposalListContentProposals(parsedInput);
+      return parseWithSchema(listContentProposalsOutputSchema, result, "list content proposals output");
     },
   };
 }

@@ -58,6 +58,9 @@ type AgentOperationsCliCoreSubset = Pick<
   | "listAssets"
   | "getAssetContext"
   | "getGenerationProvenance"
+  | "createContentProposal"
+  | "getContentProposal"
+  | "listContentProposals"
 >;
 type AssetCatalogCliCoreSubset = Pick<AssetCatalogCore, "registerAsset">;
 
@@ -115,7 +118,10 @@ export type ParsedArgs = {
     | "list-assets"
     | "get-asset-context"
     | "register"
-    | "get-generation-provenance";
+    | "get-generation-provenance"
+    | "create-content-proposal"
+    | "get-content-proposal"
+    | "list-content-proposals";
   flags: Record<string, string | boolean>;
 };
 
@@ -141,7 +147,19 @@ export function parseArgs(argv: string[]): ParsedArgs {
     channel: ["sync", "list", "video-list"],
     analytics: ["list", "overview", "data-quality", "comparable-age", "weekly-reports", "weekly-report-get"],
     "ai-localization": ["generate", "create-change-set"],
-    agent: ["capabilities", "channel-context", "video-context", "channel-analytics", "video-analytics", "list-assets", "get-asset-context", "get-generation-provenance"],
+    agent: [
+      "capabilities",
+      "channel-context",
+      "video-context",
+      "channel-analytics",
+      "video-analytics",
+      "list-assets",
+      "get-asset-context",
+      "get-generation-provenance",
+      "create-content-proposal",
+      "get-content-proposal",
+      "list-content-proposals",
+    ],
     asset: ["register"],
   };
   const validMetadataCommands = ["list", "transcript", "preview", "apply"];
@@ -359,6 +377,11 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   "get-asset-context",
   // agent get-generation-provenance: a local read over an immutable, already-persisted row.
   "get-generation-provenance",
+  // agent get-content-proposal/list-content-proposals: pure local reads over the proposal
+  // record -- never resolves referenced videos/assets, never mutates. "create-content-proposal"
+  // is deliberately NOT here -- it persists a new row.
+  "get-content-proposal",
+  "list-content-proposals",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -771,6 +794,64 @@ export async function runCliCommand(args: {
           changeSetId: requiredStringFlag(parsedArgs.flags, "changeSetId"),
         });
         writeStdout(serializeSuccess({ provenance: result }));
+        return 0;
+      }
+
+      // Phase 7 slice G (owner spec §18). --evidenceJson/--briefJson take a JSON-encoded value
+      // (EvidenceReference[] / ContentProposalBrief respectively) -- same reasoning as
+      // ai-localization create-change-set's own --evidenceJson above: there is no reasonable
+      // flat-flag equivalent for either shape. --referenceVideoIds/--referenceAssetIds take a
+      // comma-separated list of ids, same convention as --metricNames above.
+      if (parsedArgs.command === "create-content-proposal") {
+        const evidenceJsonFlag = optionalStringFlag(parsedArgs.flags, "evidenceJson");
+        const briefJsonFlag = optionalStringFlag(parsedArgs.flags, "briefJson");
+        const referenceVideoIdsFlag = optionalStringFlag(parsedArgs.flags, "referenceVideoIds");
+        const referenceAssetIdsFlag = optionalStringFlag(parsedArgs.flags, "referenceAssetIds");
+        let evidence: unknown;
+        let brief: unknown;
+        try {
+          evidence = evidenceJsonFlag ? JSON.parse(evidenceJsonFlag) : undefined;
+          brief = briefJsonFlag ? JSON.parse(briefJsonFlag) : undefined;
+        } catch {
+          throw new DomainError({
+            code: "validation_failed",
+            message: "--evidenceJson/--briefJson must each be valid JSON",
+          });
+        }
+
+        const result = await agentOperationsCore.createContentProposal(
+          {
+            channelId,
+            objective: optionalStringFlag(parsedArgs.flags, "objective"),
+            topicConcept: optionalStringFlag(parsedArgs.flags, "topicConcept"),
+            rationale: optionalStringFlag(parsedArgs.flags, "rationale"),
+            evidence,
+            brief,
+            referenceVideoIds: referenceVideoIdsFlag
+              ? referenceVideoIdsFlag.split(",").map((entry) => entry.trim()).filter(Boolean)
+              : undefined,
+            referenceAssetIds: referenceAssetIdsFlag
+              ? referenceAssetIdsFlag.split(",").map((entry) => entry.trim()).filter(Boolean)
+              : undefined,
+          },
+          { createdVia: "cli", agentApiVersion: null }
+        );
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "get-content-proposal") {
+        const result = await agentOperationsCore.getContentProposal({
+          channelId,
+          proposalId: requiredStringFlag(parsedArgs.flags, "proposalId"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "list-content-proposals") {
+        const result = await agentOperationsCore.listContentProposals({ channelId });
+        writeStdout(serializeSuccess(result));
         return 0;
       }
 

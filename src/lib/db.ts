@@ -741,6 +741,53 @@ export const creativeAssets = sqliteTable(
   (table) => [index("creative_assets_channel_id_idx").on(table.channelId)]
 );
 
+/**
+ * Phase 7 slice G (`src/lib/content-proposals/`) -- a structured Content Proposal (owner spec
+ * §18): "Codex should be able to create a structured Content Proposal using application
+ * context... The application does not need to generate every resulting asset." Write-once
+ * (create/get/list only through this module's own API) -- there is no update/status/approval
+ * concept for this domain (see `content-proposals/contracts.ts`'s own doc comment for why one
+ * was deliberately not invented).
+ *
+ * `evidence_json`/`brief_json`/`reference_video_ids_json`/`reference_asset_ids_json` are bounded,
+ * `.strict()`-validated JSON at the application layer (`content-proposals/schemas.ts`) -- the
+ * heterogeneous remainder of owner spec §18's field list (title/thumbnail/visual/audio direction,
+ * duration, publication hypothesis, localization strategy, experiment design, expected metrics,
+ * required production outputs) is collapsed into `brief_json` rather than ~10 speculative
+ * dedicated columns, since none of those fields is queried structurally anywhere in this
+ * codebase yet.
+ *
+ * `created_via` is NOT NULL from creation (unlike `ai_localization_generation_provenance`'s own
+ * nullable column) -- this is a brand-new table with no pre-existing rows created before this
+ * field existed, so there is no backward-compatibility case to accommodate (owner spec §22,
+ * SERVER-STAMPED, never taken from caller input).
+ *
+ * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`) -- same accepted,
+ * device-local limitation `creative_assets` already has (`docs/TECHNICAL_DEBT.md` RISK-52).
+ */
+export const contentProposals = sqliteTable(
+  "content_proposals",
+  {
+    id: text("id").primaryKey(),
+    channelId: text("channel_id")
+      .notNull()
+      .references(() => channels.id),
+    objective: text("objective"),
+    topicConcept: text("topic_concept"),
+    rationale: text("rationale"),
+    evidenceJson: text("evidence_json"),
+    briefJson: text("brief_json"),
+    referenceVideoIdsJson: text("reference_video_ids_json"),
+    referenceAssetIdsJson: text("reference_asset_ids_json"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    createdVia: text("created_via").notNull(),
+    agentApiVersion: text("agent_api_version"),
+  },
+  (table) => [index("content_proposals_channel_id_idx").on(table.channelId)]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -1021,6 +1068,31 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           if (!isDuplicateColumnError(error)) throw error;
         }
       }
+    },
+  },
+  {
+    version: 17,
+    description:
+      "content_proposals -- structured Content Proposal records, Phase 7 slice G (docs/AGENT_OPERATIONS_INTERFACE.md §4f, owner spec §18/§19/§20)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS content_proposals (" +
+          "id TEXT PRIMARY KEY, " +
+          "channel_id TEXT NOT NULL REFERENCES channels(id), " +
+          "objective TEXT, " +
+          "topic_concept TEXT, " +
+          "rationale TEXT, " +
+          "evidence_json TEXT, " +
+          "brief_json TEXT, " +
+          "reference_video_ids_json TEXT, " +
+          "reference_asset_ids_json TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "created_via TEXT NOT NULL, " +
+          "agent_api_version TEXT)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS content_proposals_channel_id_idx ON content_proposals(channel_id)"
+      );
     },
   },
 ];
@@ -3643,6 +3715,71 @@ export async function getCreativeAssetById(
   database: AppDb = db
 ): Promise<StoredCreativeAsset | null> {
   const [row] = await database.select().from(creativeAssets).where(eq(creativeAssets.id, assetId));
+  return row ?? null;
+}
+
+export type StoredContentProposal = {
+  id: string;
+  channelId: string;
+  objective: string | null;
+  topicConcept: string | null;
+  rationale: string | null;
+  evidenceJson: string | null;
+  briefJson: string | null;
+  referenceVideoIdsJson: string | null;
+  referenceAssetIdsJson: string | null;
+  createdAt: Date;
+  createdVia: string;
+  agentApiVersion: string | null;
+};
+
+export async function insertContentProposal(
+  input: {
+    id: string;
+    channelId: string;
+    objective?: string | null;
+    topicConcept?: string | null;
+    rationale?: string | null;
+    evidenceJson?: string | null;
+    briefJson?: string | null;
+    referenceVideoIdsJson?: string | null;
+    referenceAssetIdsJson?: string | null;
+    createdVia: string;
+    agentApiVersion?: string | null;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(contentProposals).values({
+    id: input.id,
+    channelId: input.channelId,
+    objective: input.objective ?? null,
+    topicConcept: input.topicConcept ?? null,
+    rationale: input.rationale ?? null,
+    evidenceJson: input.evidenceJson ?? null,
+    briefJson: input.briefJson ?? null,
+    referenceVideoIdsJson: input.referenceVideoIdsJson ?? null,
+    referenceAssetIdsJson: input.referenceAssetIdsJson ?? null,
+    createdVia: input.createdVia,
+    agentApiVersion: input.agentApiVersion ?? null,
+  });
+}
+
+export async function listContentProposalsByChannel(
+  channelId: string,
+  database: AppDb = db
+): Promise<StoredContentProposal[]> {
+  return database
+    .select()
+    .from(contentProposals)
+    .where(eq(contentProposals.channelId, channelId))
+    .orderBy(desc(contentProposals.createdAt));
+}
+
+export async function getContentProposalById(
+  proposalId: string,
+  database: AppDb = db
+): Promise<StoredContentProposal | null> {
+  const [row] = await database.select().from(contentProposals).where(eq(contentProposals.id, proposalId));
   return row ?? null;
 }
 
