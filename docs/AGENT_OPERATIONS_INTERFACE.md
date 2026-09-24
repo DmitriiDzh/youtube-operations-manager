@@ -515,7 +515,10 @@ videos by the broader filter set §10 describes. Tracked as `BL-088` (`docs/road
     `--performanceThresholdValue` must be given together, rejected as `validation_failed` otherwise
     (previously silently applied no threshold if only one was given).
 
-  **Independent-review cycle: 2 rounds, findings 3/0, closed 2026-09-24.** Round 1 found 3 real
+  **Independent-review cycle: IN PROGRESS, 2 rounds so far, findings 3/4 (not yet closed --
+  round 2 found 4 issues, not zero; a round only counts as closing the cycle when it finds
+  literally nothing, per this project's own established convention, e.g. slice I's 3/1/1/0).**
+  Round 1 found 3 real
   issues in commit 79c3697 (fixed in 71033f7):
   - **(bug, high)** `ageAlignmentDays` was derived from wall-clock `now()` instead of the anchor's
     own actually-collected data. Analytics collection intentionally never reaches "today"
@@ -543,12 +546,26 @@ videos by the broader filter set §10 describes. Tracked as `BL-088` (`docs/road
     CJK-style scripts with no whitespace between words remain an accepted, out-of-scope limitation
     of this deliberately tiny heuristic (never framed as an NLP engine).
 
-  Round 2 re-verified all three fixes by hand-tracing the corrected logic against
-  `comparable-age.ts`'s actual documented semantics (not just re-running the tests), re-ran the
-  full validation suite, and found zero new issues -- only wording/test-coverage nits (folded into
-  this document and `docs/acceptance/PHASE_7_ACCEPTANCE.md`'s own AC-CMP-05 text, plus one added
-  test for `durationProximity` with a mix of known/unknown candidate durations). `npm test`
-  1319/1319, tsc/lint/build clean throughout both rounds.
+  Round 2 re-verified all three round-1 fixes by hand-tracing the corrected logic against
+  `comparable-age.ts`'s actual documented semantics (not just re-running the tests) and confirmed
+  none introduced a new bug, but still found 4 real (lower-severity) issues of its own -- fixed in
+  the same pass, not deferred: a missing test combination (`durationProximity` sort with the
+  anchor's own duration known but a mix of known/unknown candidate durations); a doc-drift finding
+  (this section had not yet been updated to record round 1's own 3 fixes, an `AGENTS.md` §H gap);
+  and 2 wording nits (the "furthest day the anchor's data reaches" phrasing was tightened to say
+  "last day of CONTIGUOUS coverage from day 0," since a single Analytics-API-omitted day earlier in
+  the series collapses the comparison day to before that gap -- `comparable-age.ts`'s own existing,
+  documented behavior, not a new bug; and a comment correcting that `Array.prototype.sort` treats a
+  `NaN` comparator result as "leave in place," not a shuffle). `npm test` 1320/1320, tsc/lint/build
+  clean through both rounds. **Round 3 is running** -- specifically checking an anchor published
+  before regular collection began for its channel (a realistic, likely common case on an existing
+  channel, distinct from round 1's "recently published anchor" scenario): such an anchor's own
+  `cumulativePoints` can be empty even though its real elapsed age is large, degrading to day 0 with
+  a `null` anchor value and excluding every candidate for `excludedForMissingData.performance` --
+  correct per this capability's own "never fabricate coverage that doesn't exist" rule, but round 3
+  is asked to judge whether the response needs a more explicit signal for this specific case, or
+  whether the capability's own description already covers it adequately, rather than pre-deciding
+  it here.
 
 ## 4h. Performance ↔ asset linkage (owner spec §16) -- ASSIGNED (slice L), not yet implemented
 
@@ -760,7 +777,7 @@ second error-code enum:
 | G | Content Proposal / external artifact registration | **CLOSED** -- see §4f; new `src/lib/content-proposals/` module, `content_proposals`/`content_proposal_artifacts` tables. Proposal create/get/list and external-artifact register/list both implemented. |
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | **VERIFIED, against the recovered verbatim spec, 2026-09-24.** Cross-checked that every `AGENT_CAPABILITIES` entry points at an actually-registered MCP tool and that every `agent_*` MCP tool has CLI parity -- zero drift. The initial capability set (owner spec §25) is fully present. The session's original verbatim spec text (34 numbered sections, sent over Telegram 2026-09-23) is not stored anywhere in this repository -- it was recovered from this session's own pre-compaction transcript to check the sections this document had never previously cited, rather than trusting citation coverage alone. That recheck found two real, previously-untracked gaps outside slice H's own scope -- §4g/§4h below (owner spec §10/§16, `BL-088`/`BL-089`) -- and one process gap, §4i (owner spec §28, no dedicated Phase 7 acceptance-contract document). Every other previously-uncited section (§3, §8, §11, §20, §21, §22, §23, §24, §26, §29-33) was confirmed either already implemented, already tracked as a known gap, or deliberately narrowed/overridden by a later, explicit owner instruction (§3/§30, slice I). |
 | I | Codex operations-workspace path surfacing | **IMPLEMENTED** -- see §4j; owner decision, Telegram 2026-09-24, narrowed this slice to a path-configuration/surfacing mechanism only (never an operations-workspace template or editorial-guideline document committed here, per `AGENTS.md` §B). New `src/lib/operations-instructions/` module, Settings-only `operationsWorkspacePath` setting, MCP `agent_list_operations_files`/`agent_get_operations_file`, CLI `agent list-operations-files`/`agent get-operations-file`. `AGENT_API_VERSION` → `0.8.0`. |
-| K | Comparable-content context (`find_comparable_videos`, owner spec §10) | **IMPLEMENTED, independent-review cycle closed (2 rounds, 3/0)** -- see §4g; found by the slice-H spec recovery, 2026-09-24, then explicitly assigned into this phase by the owner the same day ("Да, такие находки как BL 88 и 89 тоже включай в список тасков текущей 7 фазы", Telegram). New `src/lib/comparable-content/` module (K1) plus `videos.durationSeconds` sync (K0, schema v19). MCP `agent_find_comparable_videos`, CLI `agent find-comparable-videos`. `AGENT_API_VERSION` → `0.9.0`. `BL-088`. |
+| K | Comparable-content context (`find_comparable_videos`, owner spec §10) | **IMPLEMENTED, independent-review cycle IN PROGRESS (2 rounds so far, findings 3/4, round 3 running)** -- see §4g; found by the slice-H spec recovery, 2026-09-24, then explicitly assigned into this phase by the owner the same day ("Да, такие находки как BL 88 и 89 тоже включай в список тасков текущей 7 фазы", Telegram). New `src/lib/comparable-content/` module (K1) plus `videos.durationSeconds` sync (K0, schema v19). MCP `agent_find_comparable_videos`, CLI `agent find-comparable-videos`. `AGENT_API_VERSION` → `0.9.0`. `BL-088`. |
 | L | Performance ↔ asset linkage (owner spec §16) | **ASSIGNED** -- see §4h; found and assigned the same way and same day as slice K. `BL-089`. Not yet implemented. |
 | J | Independent security/integration review | ONGOING per slice -- `docs/roadmap/BACKLOG.md`'s BL-079/BL-080/BL-081 (and later rows, as slices land) are the authoritative record of each slice's own review-cycle status; not restated here as a round tally, since that would just be a second, driftable copy of the same fact. Covers the WHOLE phase, including slices K/L once they land -- deliberately kept last in the recommended order even though K/L were assigned after it was originally listed. |
 
