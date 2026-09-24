@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import { upsertChannel } from "@/lib/db";
+import { upsertChannel, upsertVideos } from "@/lib/db";
 import { DomainError } from "./contracts";
 import { createAssetCatalogCore } from "./index";
 
@@ -60,4 +60,58 @@ test("createAssetCatalogCore round-trips a real register/list/get against the re
 
   const fetched = await core.getAssetContext({ channelId, assetId: registered.assetId });
   assert.equal(fetched.referenceValue, "artifact-abc");
+});
+
+// Round 2 review coverage note (2026-09-24): the two tests above cover a rejected linkedVideoId
+// and a register/list/get round-trip with none -- neither exercises a SUCCESSFUL link against a
+// real, channel-owned video end to end.
+test("createAssetCatalogCore.registerAsset accepts and persists a linkedVideoId that genuinely belongs to the requested channel", async () => {
+  const core = createAssetCatalogCore();
+  const channelId = `UC_TEST_${randomUUID()}`;
+  const videoId = `vid_${randomUUID()}`;
+
+  await upsertChannel({
+    channelId,
+    title: "Asset catalog wiring test channel 3",
+    thumbnailUrl: null,
+    uploadsPlaylistId: `UU_${randomUUID()}`,
+    connectedUserId: null,
+  });
+  await upsertVideos(
+    [
+      {
+        videoId,
+        channelId,
+        title: "Test video",
+        description: "",
+        publishedAt: "2026-09-01T00:00:00Z",
+        privacyStatus: "public",
+        defaultLanguage: null,
+        defaultAudioLanguage: null,
+        thumbnails: {},
+        existingLocalizations: {},
+        etag: null,
+      },
+    ],
+    new Date()
+  );
+
+  const registered = await core.registerAsset({
+    channelId,
+    assetType: "thumbnail",
+    referenceKind: "url",
+    referenceValue: "https://example.com/thumb.png",
+    linkedVideoId: videoId,
+  });
+
+  assert.equal(registered.linkedVideoId, videoId);
+
+  const fetched = await core.getAssetContext({ channelId, assetId: registered.assetId });
+  assert.equal(fetched.linkedVideoId, videoId);
+
+  const byVideo = await core.listAssets({ channelId, videoId });
+  assert.deepEqual(
+    byVideo.assets.map((a) => a.assetId),
+    [registered.assetId]
+  );
 });

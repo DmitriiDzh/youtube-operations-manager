@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { parseWithSchema } from "@/lib/changesets/schemas";
 import { credentialRefSchema } from "@/lib/video-metadata/schemas";
+import { ASSET_REFERENCE_KINDS, ASSET_TYPES } from "@/lib/asset-catalog";
 
 export { parseWithSchema };
 
@@ -261,26 +262,16 @@ export type VideoAnalyticsContextOutput = z.infer<typeof videoAnalyticsContextOu
 // `channelAccessCore.assertActiveChannel` before invoking either function.
 // ---------------------------------------------------------------------------
 
-const assetTypeSchema = z.enum([
-  "thumbnail",
-  "source_image",
-  "generated_image",
-  "video_loop",
-  "source_video_clip",
-  "audio_track",
-  "project_file",
-  "prompt",
-  "script",
-  "metadata_document",
-  "other",
-]);
+// Reused unchanged from `@/lib/asset-catalog` (AGENTS.md §D) -- never a second, independently
+// maintained copy of the same enum, which would drift the moment that module's own list grows.
+const assetTypeSchema = z.enum(ASSET_TYPES);
 
 const creativeAssetSchema = z
   .object({
     assetId: z.string().min(1),
     channelId: z.string().min(1),
     assetType: assetTypeSchema,
-    referenceKind: z.enum(["url", "local_path", "external_artifact_id"]),
+    referenceKind: z.enum(ASSET_REFERENCE_KINDS),
     referenceValue: z.string().min(1),
     title: z.string().nullable(),
     description: z.string().nullable(),
