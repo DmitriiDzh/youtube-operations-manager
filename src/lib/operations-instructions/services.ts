@@ -249,7 +249,14 @@ async function walk(
       budget.filesLeft -= 1;
       const childTruncated = await walk(deps, realEntryPath, relPath, depth + 1, realBase, out, budget);
       truncated = truncated || childTruncated;
-    } else if (entryStat.isFile && hasAllowedExtension(realBasename)) {
+    } else if (entryStat.isFile && hasAllowedExtension(name) && hasAllowedExtension(realBasename)) {
+      // Requires BOTH the visible and the resolved name to have an allowed extension -- an
+      // independent review round found that checking only the resolved name here (while
+      // `getOperationsFile` below checks both) meant a symlink named e.g. "link.exe" pointing at
+      // an allowed-extension real file was LISTED here but then always rejected by
+      // `getOperationsFile`, indistinguishable from a vanished file. Not a security bug (nothing
+      // was ever leaked), but a confusing list/get contract mismatch -- fixed by matching
+      // `getOperationsFile`'s stricter, symmetric check.
       out.push({ path: relPath, isDirectory: false, sizeBytes: entryStat.sizeBytes });
       budget.filesLeft -= 1;
     }

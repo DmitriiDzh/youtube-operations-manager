@@ -337,6 +337,30 @@ test("getOperationsFile rejects a symlink whose visible name is allowed but whos
   });
 });
 
+// Round 2 of independent review found that `listOperationsFiles` and `getOperationsFile` had
+// become asymmetric after round 1's dotfile fix: a symlink with a DISALLOWED visible extension
+// (e.g. "link.exe") pointing at an ALLOWED-extension real target would be LISTED (only the
+// resolved name was checked) but then always REJECTED by getOperationsFile (which checks both the
+// visible and resolved name) -- not a security bug (nothing leaked, it failed closed), but a
+// confusing contract where a path returned by list always 404s on get. Fixed by requiring both
+// checks in `walk()` too, matching `getOperationsFile`'s own symmetry.
+test("listOperationsFiles excludes a symlink whose visible name has a disallowed extension even when its real target's extension is allowed", async () => {
+  await withTempDirs(async ({ workspace, appData }) => {
+    await writeFile(path.join(workspace, "actual.md"), "real content");
+    await symlink(path.join(workspace, "actual.md"), path.join(workspace, "link.exe"));
+
+    const services = createServices(workspace, appData);
+    const result = await services.listOperationsFiles({});
+    assert.equal(result.configured, true);
+    if (result.configured) {
+      assert.deepEqual(
+        result.files.map((f) => f.path),
+        ["actual.md"]
+      );
+    }
+  });
+});
+
 test("a workspace directory re-symlinked to point at appDataDir AFTER being configured is rejected at read time, not just at set time", async () => {
   await withTempDirs(async ({ workspace, appData }) => {
     // Proves the DYNAMIC property this module's threat model relies on: this module has no
