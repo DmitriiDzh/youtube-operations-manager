@@ -195,12 +195,15 @@ either function -- there is no external API call here to defer to, unlike slice 
 that belongs to a different channel, never distinguishable (protects against probing which asset
 ids exist for a channel the caller has no access to).
 
-**Populated only by the operator-facing `asset register` CLI command** -- owner spec §25's
+**Directly populated only by the operator-facing `asset register` CLI command** -- owner spec §25's
 capability list names only `list_assets`/`get_asset_context` (READ) for this domain, not a
-register/create capability, so registration is deliberately not exposed as an MCP tool or an
-agent-operations capability in this slice (registering a NEWLY produced artifact, as opposed to
-cataloguing a pre-existing one, is a separate, later concept -- slice G's
-`register_external_artifact`). CLI: `asset register --channelId <UC...> --assetType <type>
+register/create capability, so `asset register` itself is deliberately not exposed as an MCP tool
+or an agent-operations capability in this slice (registering a NEWLY produced artifact, as opposed
+to cataloguing a pre-existing one, is a separate, later concept -- slice G's
+`register_external_artifact`, §4f below, now IMPLEMENTED: an indirect, agent-callable way to
+populate this same catalog, tied to a Content Proposal and restricted to `referenceKind`
+`url`/`external_artifact_id` -- `local_path` remains reachable only via this direct, operator-only
+command). CLI: `asset register --channelId <UC...> --assetType <type>
 --referenceKind <url|local_path|external_artifact_id> --referenceValue <value> [--title]
 [--description] [--linkedVideoId] [--provenanceJson <json>]`; `agent list-assets --channelId
 <UC...> [--videoId] [--assetType]`; `agent get-asset-context --channelId <UC...> --assetId <id>`
@@ -383,6 +386,13 @@ asset-insert path); `content-proposals` only owns the link.
   agent should receive only explicitly cataloged/authorized assets"; an agent that could register
   its own `local_path` would be self-authorizing filesystem access). The pre-existing,
   human-operator-only `asset register` CLI command is untouched and keeps `local_path` available.
+  **The enum alone is only a label** -- `registerExternalArtifactInputSchema` additionally
+  `.superRefine`s that a `"url"`-labeled `referenceValue` is an actual, parseable http(s) URL
+  (rejects a filesystem path or `file://` URI); found missing by an independent review round
+  (RISK-58, `docs/TECHNICAL_DEBT.md`, `url` half RESOLVED) and fixed the same slice.
+  `"external_artifact_id"` remains intentionally opaque -- no structural validation beyond
+  non-empty, since this application never resolves it; RISK-58's `external_artifact_id` half
+  stays deliberately OPEN as a documented limitation, not an oversight.
 - **`listProposalArtifacts(input)`:** validates proposal ownership, lists links, hydrates each via
   `assetCatalogCore.getAssetContext`; silently drops a link whose asset is somehow missing rather
   than fabricating one (matches asset-catalog's own JSON-tolerance discipline).

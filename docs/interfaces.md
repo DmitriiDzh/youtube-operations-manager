@@ -219,7 +219,11 @@ external agent workflows to return created artifacts to the system" -- it regist
 and links it to an existing, channel-owned Content Proposal. `--referenceKind` accepts only
 `url`/`external_artifact_id` here -- **not** `local_path` (owner spec §17: the agent must receive
 only explicitly cataloged/authorized assets; `local_path` registration remains available only via
-the pre-existing, operator-only `asset register` command above). `--provenanceJson` takes a
+the pre-existing, operator-only `asset register` command above). When `--referenceKind url` is
+given, `--referenceValue` must actually be an http(s) URL -- the schema validates the shape, not
+just the label (RISK-58, `docs/TECHNICAL_DEBT.md`); a filesystem path or `file://` URI is
+rejected. `external_artifact_id` remains an intentionally opaque, unvalidated identifier this
+application never resolves. `--provenanceJson` takes a
 JSON-encoded object, same convention as `asset register`'s own flag. Mutates local state (a new
 asset row plus a new link row), gated like `create-content-proposal`. `createdVia`/
 `agentApiVersion` are SERVER-STAMPED (`"cli"`/`null`), never taken from flags. `agent
@@ -402,7 +406,10 @@ Key MCP tools:
     an existing, channel-owned proposal. `referenceKind` accepts only `url`/`external_artifact_id`
     here — never `local_path` (owner spec §17: the agent must receive only explicitly
     cataloged/authorized assets; an agent that could register its own `local_path` would be
-    self-authorizing filesystem access). `createdVia`/`agentApiVersion` are SERVER-STAMPED (`"mcp"`
+    self-authorizing filesystem access). `url` is structurally validated as an actual http(s) URL,
+    not merely labeled (RISK-58, `docs/TECHNICAL_DEBT.md`); `external_artifact_id` remains an
+    intentionally opaque, unvalidated identifier never resolved by this application.
+    `createdVia`/`agentApiVersion` are SERVER-STAMPED (`"mcp"`
     + the real `AGENT_API_VERSION`), never taken from the request body. Mutates local state, gated
     by the same device-availability check as `agent_create_content_proposal`.
   - `agent_list_proposal_artifacts` — `{ channelId, proposalId }` → `{ artifacts:

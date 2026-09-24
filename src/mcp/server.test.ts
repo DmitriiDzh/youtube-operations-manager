@@ -3753,6 +3753,42 @@ test("MCP agent_register_external_artifact rejects referenceKind local_path as v
   assert.equal(payload.error.code, "validation_failed");
 });
 
+// RISK-58 (docs/TECHNICAL_DEBT.md): the `referenceKind: "url"` enum value alone was only a label
+// -- an independent review round found the schema originally accepted any non-empty string under
+// it, including a filesystem path. This must be rejected at the MCP tool's own schema validation,
+// exactly like `local_path` above.
+test("MCP agent_register_external_artifact rejects a filesystem path under referenceKind url as validation_failed", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let called = false;
+  agentOperationsCore.registerExternalArtifact = async () => {
+    called = true;
+    throw new Error("should not be called");
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentRegisterExternalArtifact({
+    channelId: "UC_1",
+    proposalId: "proposal-1",
+    assetType: "thumbnail",
+    referenceKind: "url",
+    referenceValue: "/Users/x/secret",
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(called, false);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
 test("MCP agent_register_external_artifact rejects a channelId that is not the caller's active channel", async () => {
   const agentOperationsCore: Pick<
     AgentOperationsCore,

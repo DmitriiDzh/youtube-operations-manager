@@ -249,7 +249,10 @@ export function createContentProposalServices(deps: ServiceDependencies) {
      * own `registerAsset` (AGENTS.md §D) -- this function only creates the LINK between that
      * asset and the requesting proposal. `referenceKind` is restricted to
      * `AGENT_ARTIFACT_REFERENCE_KINDS` by the input schema itself (never `local_path` -- owner
-     * spec §17). `callOrigin` is SERVER-STAMPED, same discipline as `createContentProposal`.
+     * spec §17), and the schema also structurally validates that a `"url"`-labeled
+     * `referenceValue` is an actual http(s) URL, not merely labeled as one (RISK-58,
+     * `docs/TECHNICAL_DEBT.md`). `callOrigin` is SERVER-STAMPED, same discipline as
+     * `createContentProposal`.
      *
      * Not wrapped in a single transaction with the underlying `registerAsset` call
      * (`docs/TECHNICAL_DEBT.md` RISK-56 -- the same non-atomic-multi-write pattern already

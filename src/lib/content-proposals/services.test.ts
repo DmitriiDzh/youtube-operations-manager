@@ -418,6 +418,58 @@ test("registerExternalArtifact rejects referenceKind local_path as validation_fa
   assert.equal(linkStore.size, 0);
 });
 
+// RISK-58 (docs/TECHNICAL_DEBT.md): `referenceKind: "url"` alone is only a label -- an
+// independent review round found the schema originally accepted any non-empty string under that
+// label, including an absolute filesystem path or a `file://` URI, which would have defeated the
+// entire purpose of restricting agent-callable registration away from `local_path` (owner spec
+// §17). Each of these must be rejected exactly like `local_path` itself, before any write.
+for (const badUrlValue of ["/Users/x/secret", "file:///etc/passwd", "not a url at all"]) {
+  test(`registerExternalArtifact rejects referenceValue "${badUrlValue}" under referenceKind url as validation_failed`, async () => {
+    const { services, assetStore, linkStore } = createFixture();
+    const proposal = await services.createContentProposal({ channelId: "UC_A" }, WEB_UI_ORIGIN);
+
+    await assert.rejects(
+      () =>
+        services.registerExternalArtifact(
+          {
+            channelId: "UC_A",
+            proposalId: proposal.proposalId,
+            assetType: "thumbnail",
+            referenceKind: "url",
+            referenceValue: badUrlValue,
+          },
+          WEB_UI_ORIGIN
+        ),
+      (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+    );
+    assert.equal(assetStore.size, 0);
+    assert.equal(linkStore.size, 0);
+  });
+}
+
+// The opaque half of RISK-58: `external_artifact_id` has no structural shape to validate, so an
+// arbitrary non-empty string (deliberately NOT URL-shaped) must still be accepted here, unlike
+// the same value under `referenceKind: "url"` above.
+test("registerExternalArtifact accepts an arbitrary opaque referenceValue under referenceKind external_artifact_id", async () => {
+  const { services, assetStore, linkStore } = createFixture();
+  const proposal = await services.createContentProposal({ channelId: "UC_A" }, WEB_UI_ORIGIN);
+
+  const result = await services.registerExternalArtifact(
+    {
+      channelId: "UC_A",
+      proposalId: proposal.proposalId,
+      assetType: "thumbnail",
+      referenceKind: "external_artifact_id",
+      referenceValue: "not-a-url-at-all-123",
+    },
+    WEB_UI_ORIGIN
+  );
+
+  assert.equal(result.asset.referenceValue, "not-a-url-at-all-123");
+  assert.equal(assetStore.size, 1);
+  assert.equal(linkStore.size, 1);
+});
+
 test("registerExternalArtifact throws CONTENT_PROPOSAL_NOT_AVAILABLE for a proposalId that belongs to a different channel", async () => {
   const { services } = createFixture();
   const proposal = await services.createContentProposal({ channelId: "UC_A" }, WEB_UI_ORIGIN);
@@ -460,11 +512,15 @@ test("registerExternalArtifact rejects a request body that tries to smuggle crea
   );
 });
 
+// Note: the first fixture's referenceValue is a real http(s) URL, not an arbitrary placeholder
+// like the pre-existing "a" this test used before RISK-58's fix (docs/TECHNICAL_DEBT.md) started
+// structurally validating referenceKind "url" -- this test's own subject (listProposalArtifacts
+// returns every artifact) is unaffected; only the input needed to become schema-valid.
 test("listProposalArtifacts returns every artifact registered against the proposal", async () => {
   const { services } = createFixture();
   const proposal = await services.createContentProposal({ channelId: "UC_A" }, WEB_UI_ORIGIN);
   await services.registerExternalArtifact(
-    { channelId: "UC_A", proposalId: proposal.proposalId, assetType: "thumbnail", referenceKind: "url", referenceValue: "a" },
+    { channelId: "UC_A", proposalId: proposal.proposalId, assetType: "thumbnail", referenceKind: "url", referenceValue: "https://example.com/a.png" },
     WEB_UI_ORIGIN
   );
   await services.registerExternalArtifact(
@@ -476,7 +532,7 @@ test("listProposalArtifacts returns every artifact registered against the propos
   assert.equal(result.artifacts.length, 2);
   assert.deepEqual(
     result.artifacts.map((a) => a.asset.referenceValue).sort(),
-    ["a", "artifact-1"]
+    ["artifact-1", "https://example.com/a.png"]
   );
 });
 

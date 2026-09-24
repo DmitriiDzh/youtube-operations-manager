@@ -924,12 +924,15 @@ export async function runCliCommand(args: {
       return 0;
     }
 
-    // Slice D, owner spec §15/§25. "asset register" is the operator-facing way the catalog gets
-    // populated -- NOT an agent-operations capability (owner spec §25 lists only
-    // list_assets/get_asset_context as READ for this domain), so it goes straight to
-    // `assetCatalogCore`, not through `agentOperationsCore`. Same channel-scoping pattern as
-    // `ai-localization`/`changeset` above: this module's own service functions do no such
-    // checking themselves.
+    // Slice D, owner spec §15/§25. "asset register" itself is NOT an agent-operations capability
+    // (owner spec §25 lists only list_assets/get_asset_context as READ for this domain), so it
+    // goes straight to `assetCatalogCore`, not through `agentOperationsCore` -- this is still the
+    // only DIRECT, operator-facing way to populate the catalog, and the only way to register
+    // `local_path`. Slice G2 later adds an INDIRECT, agent-callable way to populate the catalog,
+    // tied to a Content Proposal and restricted to referenceKind url/external_artifact_id (see
+    // "register-external-artifact" below) -- this comment is not stale, just narrower in scope
+    // than "no agent can ever add an asset." Same channel-scoping pattern as `ai-localization`/
+    // `changeset` above: this module's own service functions do no such checking themselves.
     if (parsedArgs.namespace === "asset") {
       const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
       const assetCredentialRef = await auth.resolveEffectiveCredentialRef({

@@ -86,8 +86,11 @@ export type ContentProposal = {
  * Agent-callable registration (unlike the pre-existing, operator-only `asset register` CLI
  * command) is deliberately restricted to `referenceKind` values `"url"`/`"external_artifact_id"`
  * -- never `"local_path"` (owner spec §17: "the agent should receive only explicitly
- * cataloged/authorized assets"; an agent that could register its own `local_path` would be
- * self-authorizing filesystem access this application never explicitly granted it).
+ * cataloged/authorized assets"). The `"url"` label is enforced structurally: the input schema
+ * requires an actual http(s) URL shape, not merely the label (RISK-58, `docs/TECHNICAL_DEBT.md`)
+ * -- an unvalidated label alone would let an agent register a filesystem path under a `"url"`
+ * label and defeat the restriction's purpose. `"external_artifact_id"` remains intentionally
+ * opaque and unvalidated beyond "non-empty string" -- it is never resolved by this application.
  */
 export type ProposalArtifactLink = {
   linkId: string;

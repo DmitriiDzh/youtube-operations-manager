@@ -107,6 +107,14 @@ export const listContentProposalsOutputSchema = z.object({ proposals: z.array(co
 // from asset-catalog's own `registerAssetInputSchema` (`.omit`/`.extend`, never a hand-copied
 // second definition of `assetType`/`referenceValue`/etc. -- the RISK-53 duplication pattern) with
 // only `referenceKind` narrowed and `proposalId` added.
+//
+// NOTE on what this restriction actually guarantees (RISK-58, `docs/TECHNICAL_DEBT.md`): the
+// `referenceKind` enum alone is only a caller-supplied LABEL. Without the `.superRefine` below, an
+// agent could label an arbitrary filesystem path `referenceKind: "url"` and have it accepted --
+// the restriction would prevent nothing. The refinement below makes the `"url"` label actually
+// mean an http(s) URL. `"external_artifact_id"` remains intentionally opaque (an arbitrary
+// external-system identifier, never resolved by this application) and is NOT similarly validated
+// -- callers must not assume any structural guarantee about its content beyond "non-empty string."
 export const AGENT_ARTIFACT_REFERENCE_KINDS = ["url", "external_artifact_id"] as const;
 const agentArtifactReferenceKindSchema = z.enum(AGENT_ARTIFACT_REFERENCE_KINDS);
 
@@ -115,6 +123,25 @@ export const registerExternalArtifactInputSchema = registerAssetInputSchema
   .extend({
     proposalId: z.string().min(1),
     referenceKind: agentArtifactReferenceKindSchema,
+  })
+  .superRefine((data, ctx) => {
+    if (data.referenceKind !== "url") {
+      return;
+    }
+    let isHttpUrl = false;
+    try {
+      const parsed = new URL(data.referenceValue);
+      isHttpUrl = parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+      isHttpUrl = false;
+    }
+    if (!isHttpUrl) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "referenceValue must be an http(s) URL when referenceKind is \"url\"",
+        path: ["referenceValue"],
+      });
+    }
   });
 
 export const listProposalArtifactsInputSchema = z

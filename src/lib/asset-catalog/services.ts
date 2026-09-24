@@ -82,10 +82,14 @@ export function createAssetCatalogServices(deps: ServiceDependencies) {
   return {
     /**
      * Owner spec §15/§19-adjacent: catalogs a pre-existing production file by reference (never
-     * copies or reads the file itself). Not part of the agent-operations capability set (owner
-     * spec §25 lists only `list_assets`/`get_asset_context` as READ capabilities for this
-     * domain) -- this is the operator-facing way the catalog gets populated, exposed via CLI
-     * only, not as an agent-callable MCP tool in this slice.
+     * copies or reads the file itself). This function itself is not part of the agent-operations
+     * capability set (owner spec §25 lists only `list_assets`/`get_asset_context` as READ
+     * capabilities for this domain) -- it is exposed directly via CLI only ("asset register"),
+     * not as its own agent-callable MCP tool. It IS reachable indirectly, however, via
+     * `content-proposals`' `registerExternalArtifact` (Phase 7 slice G2, owner spec §19), which
+     * delegates to this exact function -- restricted there to `referenceKind`
+     * `url`/`external_artifact_id`, never `local_path` (see `content-proposals/schemas.ts`'s
+     * `registerExternalArtifactInputSchema`).
      */
     async registerAsset(input: unknown): Promise<CreativeAsset> {
       const parsedInput = parseWithSchema(registerAssetInputSchema, input, "register asset input");
