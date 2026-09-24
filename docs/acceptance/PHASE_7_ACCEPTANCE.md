@@ -1,6 +1,6 @@
 # PHASE_7_ACCEPTANCE.md
 
-**Status: retroactive/incremental acceptance contract, started 2026-09-24.** Owner spec §28 asks for a dedicated Phase 7 acceptance contract, produced before implementation. Slices A-I were implemented before this document existed; their acceptance criteria WERE derived from the spec per slice (each slice's own commit history and `docs/AGENT_OPERATIONS_INTERFACE.md` sections record this), just never consolidated into one document (`docs/AGENT_OPERATIONS_INTERFACE.md` §4i tracks this gap). Per that same §4i note, backfilling A-I's own scenarios into this document is deferred to slice J (independent security/integration review), not done here. **This document currently covers slice K only, written before K's implementation, per `AGENTS.md` §L** — L will be added the same way when it starts.
+**Status: retroactive/incremental acceptance contract, started 2026-09-24.** Owner spec §28 asks for a dedicated Phase 7 acceptance contract, produced before implementation. Slices A-I were implemented before this document existed; their acceptance criteria WERE derived from the spec per slice (each slice's own commit history and `docs/AGENT_OPERATIONS_INTERFACE.md` sections record this), just never consolidated into one document (`docs/AGENT_OPERATIONS_INTERFACE.md` §4i tracks this gap). Per that same §4i note, backfilling A-I's own scenarios into this document is deferred to slice J (independent security/integration review), not done here. **This document covers slice K (implemented, independent-review cycle closed) and slice L (§5-§7 below, written before L's implementation, per `AGENTS.md` §L).**
 
 This document is derived strictly from:
 
@@ -50,5 +50,51 @@ Owner spec §10 lists "similar duration" as an explicit filter. No duration fiel
 ## 4. Deliberately not verified here
 
 - Real YouTube OAuth/live API behavior for `contentDetails.duration` on an actual account (no live Google login available in this environment, `AGENTS.md` §G) — verified against this codebase's own parsing logic and documented ISO-8601 duration grammar only.
-- Slice L's own acceptance criteria (added separately when that slice starts).
 - A-I's backfilled scenarios (deferred to slice J per `docs/AGENT_OPERATIONS_INTERFACE.md` §4i).
+
+---
+
+## 5. Scope boundary — slice L (performance ↔ asset linkage, owner spec §16)
+
+This section is derived strictly from the recovered verbatim owner spec, §16 ("Performance ↔ asset linkage"):
+
+> A core requirement is to let the agent reason about historical creatives using performance data. The system should support questions such as: Which thumbnails were used by high-CTR videos? Which visual concepts repeatedly appeared in stronger-performing videos? Which duration/content combinations produced better watch time? Which production assets belonged to videos that underperformed? Which prior assets should be used as reference material for the next creative? Do not automatically infer causation. The interface should expose associations between: video → asset → metadata/version → analytics → experiment/outcome. The agent decides what hypotheses to draw.
+
+Plus owner spec §9 ("never invent unavailable metrics," "every result must include metric definitions") and `AGENTS.md` §D (reuse, one owner per capability)/§M (feature-module independence, no reaching into `asset-catalog`'s own module for something it doesn't own).
+
+**In scope:** a `list_asset_performance` capability joining the existing asset catalog (`creative_assets.linkedVideoId` — "this asset was used on this video," an operator/agent-asserted association `AGENTS.md` §F never verifies against YouTube) against each linked video's own already-collected performance data. Two kinds of performance are reported, never conflated:
+
+- **Lifetime totals** (`viewCount`/`likeCount`/`commentCount`, already synced for every video since schema v4, plus `durationSeconds` from K0) — always present when known, explicitly labeled as lifetime, not age-fair (an older video has simply had more time to accumulate views than a newer one).
+- **Age-aligned performance** (`performanceMetric` + a caller-supplied `dayOffset`, reusing `getCumulativeValueAtDayOffset` from `@/lib/analytics/comparable-age.ts` — the same shared helper slice K extracted, `AGENTS.md` §D) — only computed when both are explicitly requested. **The day offset is always caller-supplied, never auto-derived from wall-clock "now"** (the exact mistake independent review found and fixed in slice K, round 1 — deriving it from `now()` would make it null for most videos on any real, established channel, since day-0 collection coverage is the common failure mode this correction addresses generally, not just for a single "recently published" case).
+
+This directly answers "which production assets belonged to videos that underperformed" and, as a proxy (grouping by `assetType`/`title`, which this capability does NOT itself do — that's left to the caller per "the agent decides what hypotheses to draw"), "which visual concepts repeatedly appeared in stronger-performing videos."
+
+**Out of scope (not implemented, not claimed as implemented):**
+
+- **"Which thumbnails were used by high-CTR videos"** — NOT supported. This application's own analytics collection (`ANALYTICS_METRIC_NAMES`, `src/lib/analytics/contracts.ts`) never fetches YouTube's `impressions`/`impressionClickThroughRate` metrics at all — there is no thumbnail-CTR data anywhere in this application to expose. Never approximated via `cardClickRate`/`annotationClickThroughRate` (in-video card/annotation clicks, an entirely different signal from thumbnail impressions on the watch/search page). Stated explicitly in the capability's own description, the same discipline slice K already applies to its own three unsupported filters.
+- **"Which duration/content combinations produced better watch time"** — a video's own `estimatedMinutesWatched`/`durationSeconds` are both already exposed (the former as an age-aligned `performanceMetric` option, the latter as a lifetime fact), so an agent CAN compute this itself from the raw data this capability returns — but this capability does not itself group, bucket, or rank by duration/content combination. No pattern-mining of any kind is performed here (owner spec's own "the agent decides what hypotheses to draw").
+- **`metadata/version` linkage** — `creative_assets.linkedVideoId` has no time range and is never independently verified: a thumbnail may have been swapped since the association was recorded, and nothing here can tell a caller which version of a video's metadata an asset actually corresponds to. Reported as a plain, current association only, with this limitation stated in the capability's own description — never silently implied to be temporally precise.
+- **`experiment/outcome` linkage** — belongs to Phase 10 (the Experiment Engine, `docs/roadmap/FUTURE_PHASES.md`), which doesn't exist yet. No speculative schema or code for it here.
+- **"Which prior assets should be used as reference material for the next creative"** — this is a forward-looking recommendation question, not a performance-linkage lookup; already partially reachable today via the existing `asset_catalog.list_assets`/`get_asset_context` capabilities (browsing the catalog directly), not something this new capability adds.
+- **Content Proposal reference associations** (`content_proposal_artifacts`, a proposal's own `referenceAssetIds`/`referenceVideoIds`) are a DIFFERENT relationship — draft, unactioned reference/inspiration material a proposal cites, never "this asset was actually used on this video." This capability reads only `creative_assets.linkedVideoId`, never `content_proposal_artifacts` or any proposal field, to avoid conflating two structurally different kinds of association under one join.
+- Any live YouTube API call, any write of any kind — this is a pure READ capability, same convention as every other read-only agent-operations capability.
+
+## 6. `list_asset_performance` scenarios
+
+- AC-PERF-01: given `{ channelId }` with no filters, returns every catalogued asset on that channel whose `linkedVideoId` resolves to an actually-synced video belonging to the SAME channel, each paired with that video's own facts (`videoId`, `title`, `publishedAt`) and lifetime counters (`viewCount`/`likeCount`/`commentCount`/`durationSeconds`, each independently `null` if never synced — never a fabricated `0`).
+- AC-PERF-02: an asset with `linkedVideoId: null` (never linked to any video) is excluded from the returned list and counted separately in `excludedForMissingLink.unlinked` — never silently dropped with no explanation, never included with fabricated video facts.
+- AC-PERF-03: an asset whose `linkedVideoId` does not resolve to any locally-synced video (e.g. the video was later deleted from YouTube, or was never synced) is excluded and counted in `excludedForMissingLink.videoNotSynced`.
+- AC-PERF-04: an asset whose `linkedVideoId` resolves to a video belonging to a DIFFERENT channel than the requested `channelId` is excluded and counted in `excludedForMissingLink.videoOnOtherChannel` — never leaked across channels, and never silently conflated with "not synced" (a distinguishable, honestly separate count).
+- AC-PERF-05: `assetType` filters to exactly that catalogued asset type (the existing `ASSET_TYPES` enum, `asset-catalog/contracts.ts`) — omitted, every type is returned.
+- AC-PERF-06: `performanceMetric` (one of the existing `CUMULATIVE_COMPARISON_METRIC_NAMES`) and `performanceDayOffset` (a plain caller-supplied integer, never derived from `now()`) must be given TOGETHER — one without the other is rejected as `validation_failed`. When both are given, each linked video's `ageAlignedPerformanceValue` is computed via the shared `getCumulativeValueAtDayOffset` helper (never a second implementation); a video with no contiguous coverage reaching that exact day gets `null`, honestly, never a fabricated value and never excluded from the list on this basis alone (this capability is a JOIN, not a FILTER — see §5's own scope statement; a `null` performance value is still a reportable row, not grounds for silent exclusion).
+- AC-PERF-07: `credentialRef` is optional; if a caller requests `performanceMetric` without an explicit one, it is auto-resolved to the caller's own active local identity (the same MCP-layer pattern slice K already established, never left as a caller-visible validation failure).
+- AC-PERF-08: `sort` is an explicit, named enum (`linkedVideoPublicationDate` default, `lifetimeViewCount`, `performanceMetric` — the last requiring `performanceMetric`/`performanceDayOffset` to also be set) — never a single hard-coded "best" ranking, matching slice K's own "do not hard-code a single comparison algorithm" convention applied here too even though owner spec §16 doesn't repeat that exact sentence for this section.
+- AC-PERF-09: `limit` is silently clamped to a fixed maximum, `truncated: true` reported when clamped/exceeded — NEVER rejected as invalid (the exact mistake independent review found and fixed in slice K, round 3; this capability must not repeat it).
+- AC-PERF-10: the whole capability performs local reads only — no live YouTube API call.
+- AC-PERF-11: `channelId` is checked against the caller's active channel at the MCP/CLI layer before the service is ever called (the service itself does no such check), mirroring every other channel-scoped capability in this interface.
+- AC-PERF-12: the capability's own description explicitly states that thumbnail-CTR/impressions-based questions, `metadata/version` linkage, and `experiment/outcome` linkage are NOT supported (§5's own scope boundary) — never silently omitted from the response with no explanation.
+
+## 7. Deliberately not verified here (slice L)
+
+- Real YouTube OAuth/live API behavior (no live Google login available in this environment, `AGENTS.md` §G).
+- A-I's backfilled scenarios (deferred to slice J, unchanged from §4 above).
