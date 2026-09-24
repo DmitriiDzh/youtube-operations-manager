@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { parseWithSchema } from "@/lib/changesets/schemas";
+import { credentialRefSchema } from "@/lib/video-metadata/schemas";
 
 export { parseWithSchema };
 
@@ -134,3 +135,124 @@ export type GetChannelContextInput = z.infer<typeof getChannelContextInputSchema
 export type ChannelContextOutput = z.infer<typeof channelContextOutputSchema>;
 export type GetVideoContextInput = z.infer<typeof getVideoContextInputSchema>;
 export type VideoContextOutput = z.infer<typeof videoContextOutputSchema>;
+
+// ---------------------------------------------------------------------------
+// Slice C -- analytics interface (owner spec §9). UNLIKE slice B above, these two require a
+// REAL, already-resolved `credentialRef` -- deliberately mirroring `src/lib/analytics/schemas.ts`'s
+// own established convention (not the changeset/ai-localization one), because these functions
+// forward their input, unmodified, straight into `analyticsCore.getChannelOverview`/`listMetrics`,
+// which require exactly this shape and do their own internal `assertActiveChannel` check keyed
+// off it (`docs/decisions/0004-active-channel-read-scoping.md`). `credentialRef` is REQUIRED here,
+// not optional, on purpose (found by an index.test.ts wiring test against the REAL analyticsCore,
+// 2026-09-24: an earlier version of this schema made it optional, which let an unresolved call
+// reach `analyticsCore` and fail there instead, with a confusing "Invalid get channel overview
+// input" error instead of this module's own clearer message) -- the CALLER (MCP/CLI) resolves the
+// caller's effective credentialRef BEFORE calling this service, exactly like the pre-existing
+// `analytics_list`/`analytics_overview` MCP handlers already do for `analyticsCore` itself (parse
+// the caller's own input with `credentialRef` relaxed to optional via `.partial({credentialRef:
+// true})`, resolve it, then call this service with the resolved value merged in). Exact
+// date-format validation is deliberately NOT duplicated here either -- `analyticsCore`'s own
+// schemas are the single source of truth for that; this module only checks presence/shape loosely
+// before forwarding, exactly as thin as a wrapper should be.
+// ---------------------------------------------------------------------------
+
+export const queryChannelAnalyticsInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+    startDate: z.string().min(1),
+    endDate: z.string().min(1),
+  })
+  .strict();
+
+const metricDefinitionSchema = z
+  .object({
+    name: z.string().min(1),
+    description: z.string().min(1),
+    unit: z.enum(["count", "minutes", "seconds", "ratio", "rate_percent"]),
+  })
+  .strict();
+
+const analyticsFreshnessSchema = z
+  .object({
+    source: z.enum(["live_youtube_analytics_api", "local_collected_data"]),
+    asOf: z.string(),
+    note: z.string().min(1),
+  })
+  .strict();
+
+const channelAnalyticsTotalsSchema = z
+  .object({
+    views: z.number(),
+    estimatedMinutesWatched: z.number(),
+    subscribersGained: z.number(),
+    subscribersLost: z.number(),
+  })
+  .strict();
+
+export const channelAnalyticsContextOutputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    period: z
+      .object({
+        startDate: z.string(),
+        endDate: z.string(),
+        previousStartDate: z.string(),
+        previousEndDate: z.string(),
+      })
+      .strict(),
+    metricDefinitions: z.array(metricDefinitionSchema),
+    freshness: analyticsFreshnessSchema,
+    daily: z.array(
+      z
+        .object({
+          date: z.string(),
+          views: z.number(),
+          estimatedMinutesWatched: z.number(),
+          subscribersGained: z.number(),
+          subscribersLost: z.number(),
+        })
+        .strict()
+    ),
+    currentTotals: channelAnalyticsTotalsSchema,
+    previousTotals: channelAnalyticsTotalsSchema,
+  })
+  .strict();
+
+export const queryVideoAnalyticsInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+    startDate: z.string().min(1).optional(),
+    endDate: z.string().min(1).optional(),
+    videoId: z.string().min(1).optional(),
+    metricNames: z.array(z.string().min(1)).min(1).optional(),
+  })
+  .strict();
+
+export const videoAnalyticsContextOutputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    period: z.object({ startDate: z.string().nullable(), endDate: z.string().nullable() }).strict(),
+    filters: z
+      .object({ videoId: z.string().nullable(), metricNames: z.array(z.string()).nullable() })
+      .strict(),
+    metricDefinitions: z.array(metricDefinitionSchema),
+    freshness: analyticsFreshnessSchema,
+    rows: z.array(
+      z
+        .object({
+          videoId: z.string(),
+          metricDate: z.string(),
+          metricName: z.string(),
+          metricValue: z.number(),
+        })
+        .strict()
+    ),
+  })
+  .strict();
+
+export type QueryChannelAnalyticsInput = z.infer<typeof queryChannelAnalyticsInputSchema>;
+export type ChannelAnalyticsContextOutput = z.infer<typeof channelAnalyticsContextOutputSchema>;
+export type QueryVideoAnalyticsInput = z.infer<typeof queryVideoAnalyticsInputSchema>;
+export type VideoAnalyticsContextOutput = z.infer<typeof videoAnalyticsContextOutputSchema>;

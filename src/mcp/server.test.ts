@@ -2663,7 +2663,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
 
   assert.equal(result.isError, undefined);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
-  assert.equal(payload.agentApiVersion, "0.1.0");
+  assert.equal(payload.agentApiVersion, "0.3.0");
   assert.deepEqual(payload.grantedPermissions, ["READ", "DRAFT"]);
   assert.ok(payload.capabilities.some((c: { id: string }) => c.id === "system.get_capabilities"));
 });
@@ -2704,7 +2704,10 @@ test("MCP agent_get_capabilities is never blocked by the operation lock (read-on
   }
 });
 
-function makeAgentOperationsCoreStub(): Pick<AgentOperationsCore, "getSystemCapabilities" | "getChannelContext" | "getVideoContext"> {
+function makeAgentOperationsCoreStub(): Pick<
+  AgentOperationsCore,
+  "getSystemCapabilities" | "getChannelContext" | "getVideoContext" | "queryChannelAnalytics" | "queryVideoAnalytics"
+> {
   return {
     getSystemCapabilities: async () => ({
       productVersion: "9.9.9",
@@ -2740,6 +2743,23 @@ function makeAgentOperationsCoreStub(): Pick<AgentOperationsCore, "getSystemCapa
         lastSyncedAt: "2026-09-20T00:00:00.000Z",
       },
       localizations: [],
+    }),
+    queryChannelAnalytics: async () => ({
+      channelId: "UC_1",
+      period: { startDate: "2026-09-01", endDate: "2026-09-07", previousStartDate: "2026-08-25", previousEndDate: "2026-08-31" },
+      metricDefinitions: [{ name: "views", description: "Number of times the video was viewed.", unit: "count" }],
+      freshness: { source: "live_youtube_analytics_api", asOf: "2026-09-24T12:00:00.000Z", note: "..." },
+      daily: [],
+      currentTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+      previousTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+    }),
+    queryVideoAnalytics: async () => ({
+      channelId: "UC_1",
+      period: { startDate: null, endDate: null },
+      filters: { videoId: null, metricNames: null },
+      metricDefinitions: [{ name: "views", description: "Number of times the video was viewed.", unit: "count" }],
+      freshness: { source: "local_collected_data", asOf: "2026-09-24T12:00:00.000Z", note: "..." },
+      rows: [],
     }),
   };
 }
@@ -2782,7 +2802,10 @@ test("MCP agent_get_channel_context rejects a channelId that is not the caller's
   // Uses a "must not be called" stub, not the ordinary makeAgentOperationsCoreStub(), so this
   // test proves the service is genuinely never reached on a channel-scoping failure -- not just
   // that the tool call ends in an error (found by independent review, 2026-09-24).
-  const agentOperationsCore: Pick<AgentOperationsCore, "getSystemCapabilities" | "getChannelContext" | "getVideoContext"> = {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    "getSystemCapabilities" | "getChannelContext" | "getVideoContext" | "queryChannelAnalytics" | "queryVideoAnalytics"
+  > = {
     ...makeAgentOperationsCoreStub(),
     getChannelContext: async () => {
       throw new Error("must not be called");
@@ -2845,7 +2868,10 @@ test("MCP agent_get_video_context forwards input including optional `include`, c
 });
 
 test("MCP agent_get_video_context rejects a channelId that is not the caller's active channel", async () => {
-  const agentOperationsCore: Pick<AgentOperationsCore, "getSystemCapabilities" | "getChannelContext" | "getVideoContext"> = {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    "getSystemCapabilities" | "getChannelContext" | "getVideoContext" | "queryChannelAnalytics" | "queryVideoAnalytics"
+  > = {
     ...makeAgentOperationsCoreStub(),
     getVideoContext: async () => {
       throw new Error("must not be called");
@@ -2903,6 +2929,101 @@ test("MCP agent_get_channel_context/agent_get_video_context are never blocked by
     const channelResult = await handlers.agentGetChannelContext({ channelId: "UC_1" });
     assert.notEqual(channelResult.isError, true);
     const videoResult = await handlers.agentGetVideoContext({ channelId: "UC_1", videoId: "v1" });
+    assert.notEqual(videoResult.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("MCP agent_query_channel_analytics forwards the resolved credentialRef and the caller's own input unchanged into queryChannelAnalytics", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.queryChannelAnalytics = async (input: unknown) => {
+    captured = input;
+    return {
+      channelId: "UC_1",
+      period: { startDate: "2026-09-01", endDate: "2026-09-07", previousStartDate: "2026-08-25", previousEndDate: "2026-08-31" },
+      metricDefinitions: [],
+      freshness: { source: "live_youtube_analytics_api", asOf: "2026-09-24T12:00:00.000Z", note: "..." },
+      daily: [],
+      currentTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+      previousTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentQueryChannelAnalytics({ channelId: "UC_1", startDate: "2026-09-01", endDate: "2026-09-07" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    startDate: "2026-09-01",
+    endDate: "2026-09-07",
+    credentialRef: { userId: "active-user" },
+  });
+});
+
+test("MCP agent_query_video_analytics forwards the resolved credentialRef and optional filters unchanged into queryVideoAnalytics", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.queryVideoAnalytics = async (input: unknown) => {
+    captured = input;
+    return {
+      channelId: "UC_1",
+      period: { startDate: null, endDate: null },
+      filters: { videoId: "v1", metricNames: ["views"] },
+      metricDefinitions: [],
+      freshness: { source: "local_collected_data", asOf: "2026-09-24T12:00:00.000Z", note: "..." },
+      rows: [],
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentQueryVideoAnalytics({ channelId: "UC_1", videoId: "v1", metricNames: ["views"] });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    videoId: "v1",
+    metricNames: ["views"],
+    credentialRef: { userId: "active-user" },
+  });
+});
+
+test("MCP agent_query_channel_analytics/agent_query_video_analytics are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      makeAgentOperationsCoreStub()
+    );
+    const channelResult = await handlers.agentQueryChannelAnalytics({ channelId: "UC_1", startDate: "2026-09-01", endDate: "2026-09-07" });
+    assert.notEqual(channelResult.isError, true);
+    const videoResult = await handlers.agentQueryVideoAnalytics({ channelId: "UC_1" });
     assert.notEqual(videoResult.isError, true);
   } finally {
     await releaseOperationLock(rawSqlClient);

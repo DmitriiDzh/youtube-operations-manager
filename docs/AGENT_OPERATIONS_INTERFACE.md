@@ -123,6 +123,62 @@ elsewhere in this codebase (schemas carry no `credentialRef`; the MCP/CLI layer 
 CLI parity: `agent channel-context --channelId <UC...>` / `agent video-context --channelId <UC...>
 --videoId <VIDEO_ID> [--include metadata,localizations]` (`docs/interfaces.md`).
 
+## 4b. Analytics interface (owner spec §9) -- IMPLEMENTED (slice C)
+
+`query_channel_analytics` / MCP `agent_query_channel_analytics` and `query_video_analytics` / MCP
+`agent_query_video_analytics` (`src/lib/agent-operations/services.ts`). Owner spec §9: "Create
+agent-oriented analytics queries rather than exposing raw database access... Every result must
+include metric definitions, period, dimensional filters... data freshness... Provide raw-enough
+structured data for independent agent reasoning."
+
+Both are thin wrappers -- `queryChannelAnalytics` forwards its input unchanged into
+`analyticsCore.getChannelOverview` (the existing `analytics_overview` capability, a **live**
+YouTube Analytics API read that counts against that API's quota), and `queryVideoAnalytics`
+forwards into `analyticsCore.listMetrics` (the existing `analytics_list` capability, a local read
+only). Neither introduces a new metric, a new table, or a new YouTube call of its own (`AGENTS.md`
+§D). Both responses add: `metricDefinitions` (one entry per metric name actually involved --
+sourced from a static, human-written glossary in `services.ts` covering exactly the metric-name
+literals `src/lib/analytics/contracts.ts` already defines, never an invented name -- owner spec §9:
+"Do not invent unavailable metrics"), `period`/`filters` (echoing the request back explicitly), and
+`freshness` (`{source, asOf, note}` -- `queryChannelAnalytics` states the live API's own known 1-2
+day reporting lag; `queryVideoAnalytics` states this is a local snapshot and points the caller at
+the existing `analytics_data_quality` capability for exact per-date coverage, rather than
+recomputing that same report inline on every call). Raw rows/daily series are `FACT`; `currentTotals`/
+`previousTotals` (sums over `daily`) are the first real `DERIVED METRIC` values this interface
+returns -- see §5 below.
+
+**Credential-threading design (found by an index.test.ts wiring test against the REAL
+`analyticsCore`, 2026-09-24, after an earlier draft of this slice made `credentialRef` optional in
+this module's own schema and let an unresolved call reach `analyticsCore` and fail there with a
+confusing error):** unlike `getChannelContext`/`getVideoContext` above (slice B's own
+no-`credentialRef`, MCP/CLI-does-`assertActiveChannel` convention), these two schemas require a
+REAL, already-resolved `credentialRef`, mirroring `src/lib/analytics/schemas.ts`'s own convention
+exactly -- because they forward straight into `analyticsCore`, which needs and validates exactly
+that shape, and already does its own internal `assertActiveChannel` check keyed off it
+(`docs/decisions/0004-active-channel-read-scoping.md`). The MCP/CLI layer resolves the caller's
+effective `credentialRef` (relaxing it to optional only for that layer's own input parse, via
+`.partial({credentialRef: true})`) before calling `agentOperationsCore`, exactly like the
+pre-existing `analytics_list`/`analytics_overview` MCP handlers already do for `analyticsCore`
+itself -- this module adds no second, redundant channel-scoping check of its own for these two
+capabilities. CLI parity: `agent channel-analytics --channelId <UC...> --startDate <YYYY-MM-DD>
+--endDate <YYYY-MM-DD>` / `agent video-analytics --channelId <UC...> [--videoId <ID>] [--startDate
+...] [--endDate ...] [--metricNames views,likes,...]` (`docs/interfaces.md`).
+
+**Capability-discovery honesty fix (owner spec §28, found by independent advisor review,
+2026-09-24):** `get_capabilities` previously omitted every already-implemented, already-MCP/CLI-
+exposed tool outside this module itself (`channel_list`, `channel_video_list`,
+`ai_localization_generate`, `ai_localization_create_change_set`, and four more `analytics_*`
+tools), contradicting its own claim to report "only what is actually reachable right now." This
+slice registers all of them in `AGENT_CAPABILITIES` (pointing at their real, pre-existing MCP tool
+names in each entry's own description) alongside the two new `query_*_analytics` wrappers -- no new
+function for any of the eight, purely a capability-discovery-completeness fix.
+
+**`AGENT_API_VERSION` correction:** slice B added two capabilities without bumping this constant, a
+real violation of its own doc comment's rule that went unnoticed through four rounds of independent
+review of that slice. Corrected in this slice to `0.3.0`, covering both the missed slice-B bump and
+this slice's own additions in one bump (see the constant's own doc comment in `contracts.ts` for
+the exact reasoning).
+
 ## 5. Context model (owner spec §6) -- design settled, mostly not yet implemented
 
 Every context object this interface returns is meant to carry: entity identity, source, data
@@ -140,9 +196,14 @@ rows: title, sync timestamps, existing localizations, tracked languages, the sav
 profile) -- every field is either a raw stored value or a `null` standing for "never observed",
 never a computed/interpreted one, so slice B's response shape does not yet need an explicit
 per-field classification tag to keep those classes visibly distinct from each other. Slice C
-(analytics) is the first slice that will actually mix `FACT` and `DERIVED METRIC` data in one
-response, and is where this section's tagging design gets exercised for the first time --
-**not yet implemented**.
+(analytics, IMPLEMENTED -- see §4b/§7) is the first slice that actually mixes `FACT` and `DERIVED
+METRIC` data in one response: raw daily/row-level data is `FACT`, `currentTotals`/`previousTotals`
+(sums over that data) are `DERIVED METRIC` -- distinguished by field naming and by each field's own
+doc comment in `src/lib/agent-operations/contracts.ts` (`ChannelAnalyticsContext`), not yet by an
+explicit per-field machine-readable tag in the response shape itself (that finer-grained tagging,
+if ever needed, remains a future refinement -- naming/doc-comment separation was judged sufficient
+for this slice's actual two response shapes). `HYPOTHESIS`/`DECISION`/`ACTION`/`OUTCOME` remain
+unexercised until a later slice (E: draft/proposal provenance) actually produces that kind of data.
 
 ## 6. Error vocabulary (owner spec §27) -- IMPLEMENTED
 
@@ -169,14 +230,14 @@ second error-code enum:
 |---|---|---|
 | A | Contracts + capability/version discovery | **IMPLEMENTED** -- `src/lib/agent-operations/`, MCP `agent_get_capabilities`, CLI `agent capabilities`, `GET /api/agent-operations/capabilities` |
 | B | Read-only channel/video context | **IMPLEMENTED** -- see §4a; MCP `agent_get_channel_context`/`agent_get_video_context`, CLI `agent channel-context`/`agent video-context`. No HTTP route yet. |
-| C | Analytics interface (agent-oriented wrapper over `src/lib/analytics/`) | PLANNED |
+| C | Analytics interface (agent-oriented wrapper over `src/lib/analytics/`) | **IMPLEMENTED** -- see §4b; MCP `agent_query_channel_analytics`/`agent_query_video_analytics`, CLI `agent channel-analytics`/`agent video-analytics`. No HTTP route yet. |
 | D | Asset catalog/context (new subsystem -- nothing to reuse) | PLANNED |
 | E | Agent draft/proposal provenance | PLANNED |
 | F | Bulk localization integration (wraps `src/lib/ai-localization/`, already has MCP/CLI tools from BL-078 -- this slice is about context/evidence enrichment around that existing workflow, not a new persistence path) | PLANNED |
 | G | Content Proposal / external artifact registration | PLANNED |
 | H | Full MCP/API surface (ongoing -- each slice above adds its own tools as it lands) | IN PROGRESS |
 | I | Codex operations-workspace template | PLANNED -- see `docs/CODEX_OPERATIONS_WORKSPACE.md` once slice I lands |
-| J | Independent security/integration review | ONGOING -- an independent-review cycle for slices A+B is in progress (round 2 as of this writing found real documentation-drift findings, since fixed; the cycle continues until a full round finds zero issues); `docs/roadmap/BACKLOG.md`'s BL-079/BL-080 rows are the authoritative record of when each slice's review cycle actually completed |
+| J | Independent security/integration review | ONGOING -- slices A+B's own review cycle closed 2026-09-24 (4 rounds, 1/4/2/0 findings, see BL-079/BL-080). Slice C has not yet had its own independent-review cycle as of this writing; `docs/roadmap/BACKLOG.md`'s rows are the authoritative record of when each slice's review cycle actually completed |
 
 Deliberately **not** implemented in this phase (owner spec §14/§29): the competitor/trend
 intelligence module (Phase 9) and the Experiment Engine (Phase 10). `plannedFutureCapabilities`

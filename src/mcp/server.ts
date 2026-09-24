@@ -42,6 +42,8 @@ import {
   getChannelContextInputSchema,
   getSystemCapabilitiesInputSchema,
   getVideoContextInputSchema,
+  queryChannelAnalyticsInputSchema,
+  queryVideoAnalyticsInputSchema,
 } from "@/lib/agent-operations/schemas";
 import {
   getChannelOverviewInputSchema,
@@ -115,10 +117,10 @@ type AnalyticsCoreSubset = Pick<
 // approve/reject/apply path -- "AI may propose, human approves" (AGENTS.md §G) is untouched.
 type AiLocalizationCoreSubset = Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration">;
 
-// Phase 7 (Agent Operations Interface, docs/AGENT_OPERATIONS_INTERFACE.md) -- slices A + B.
+// Phase 7 (Agent Operations Interface, docs/AGENT_OPERATIONS_INTERFACE.md) -- slices A + B + C.
 type AgentOperationsCoreSubset = Pick<
   AgentOperationsCore,
-  "getSystemCapabilities" | "getChannelContext" | "getVideoContext"
+  "getSystemCapabilities" | "getChannelContext" | "getVideoContext" | "queryChannelAnalytics" | "queryVideoAnalytics"
 >;
 
 type ToolResponse = {
@@ -163,6 +165,8 @@ type McpToolHandlers = {
   agentGetCapabilities: (input: unknown) => Promise<ToolResponse>;
   agentGetChannelContext: (input: unknown) => Promise<ToolResponse>;
   agentGetVideoContext: (input: unknown) => Promise<ToolResponse>;
+  agentQueryChannelAnalytics: (input: unknown) => Promise<ToolResponse>;
+  agentQueryVideoAnalytics: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -1042,6 +1046,47 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    /**
+     * Slice C, owner spec §9. UNLIKE `agentGetChannelContext`/`agentGetVideoContext` above, this
+     * does NOT call `channelAccessCore.assertActiveChannel` itself -- it mirrors
+     * `analyticsOverview`'s own pattern instead (`credentialRef` relaxed to optional for this
+     * tool's own input parse, resolved once, then forwarded to `agentOperationsCore
+     * .queryChannelAnalytics`, which forwards it unchanged into the REAL `analyticsCore
+     * .getChannelOverview` -- that function already does the identical active-channel check
+     * internally; a second check here would be redundant against the same fact, not a second
+     * layer of safety).
+     */
+    async agentQueryChannelAnalytics(input: unknown): Promise<ToolResponse> {
+      const parsedInput = queryChannelAnalyticsInputSchema.partial({ credentialRef: true }).safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await agentOperationsCore.queryChannelAnalytics({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** Slice C, owner spec §9. Same forwarding pattern as `agentQueryChannelAnalytics` above. */
+    async agentQueryVideoAnalytics(input: unknown): Promise<ToolResponse> {
+      const parsedInput = queryVideoAnalyticsInputSchema.partial({ credentialRef: true }).safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await agentOperationsCore.queryVideoAnalytics({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -1139,6 +1184,11 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // Pure local reads over the existing sync mirror -- ungated, same as changeset_list above.
     agentGetChannelContext: handlers.agentGetChannelContext,
     agentGetVideoContext: handlers.agentGetVideoContext,
+    // Slice C -- `queryChannelAnalytics` is a live YouTube Analytics API read (like
+    // `analyticsOverview`), `queryVideoAnalytics` a pure local read (like `analyticsList`); both
+    // mutate no local state, so both are ungated, same classification as their wrapped tools.
+    agentQueryChannelAnalytics: handlers.agentQueryChannelAnalytics,
+    agentQueryVideoAnalytics: handlers.agentQueryVideoAnalytics,
   };
 }
 
@@ -1545,6 +1595,26 @@ export function createMcpServer(
       inputSchema: getVideoContextInputSchema,
     },
     (args) => handlers.agentGetVideoContext(args)
+  );
+
+  registerTool(
+    "agent_query_channel_analytics",
+    {
+      description:
+        "Agent-oriented channel-level analytics for a date range: daily views/watch-time/subscriber-delta rows plus current- and previous-period totals, with explicit metric definitions and a data-freshness note. Wraps the existing analytics_overview capability -- a LIVE YouTube Analytics API read that counts against that API's quota (YouTube itself typically reports this data with a 1-2 day lag). Requires channelId to be the caller's currently-active channel. Raw daily rows are FACT; totals are DERIVED (summed).",
+      inputSchema: queryChannelAnalyticsInputSchema.partial({ credentialRef: true }),
+    },
+    (args) => handlers.agentQueryChannelAnalytics(args)
+  );
+
+  registerTool(
+    "agent_query_video_analytics",
+    {
+      description:
+        "Agent-oriented per-video daily analytics rows already collected locally (raw, un-aggregated FACT rows -- compute any sum/average yourself), with explicit metric definitions and a freshness note pointing at analytics_data_quality for exact per-date coverage. Wraps the existing analytics_list capability -- a local read only, never a live YouTube call. Optional videoId/startDate/endDate/metricNames narrow the result; omitting metricNames describes every metric this instance actually collects (never an invented one). Requires channelId to be the caller's currently-active channel.",
+      inputSchema: queryVideoAnalyticsInputSchema.partial({ credentialRef: true }),
+    },
+    (args) => handlers.agentQueryVideoAnalytics(args)
   );
 
   return server;

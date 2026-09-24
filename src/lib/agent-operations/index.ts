@@ -3,6 +3,7 @@ import path from "node:path";
 import { getChannelTargetLanguages, SCHEMA_CURRENT_VERSION } from "@/lib/db";
 import { createChangeSetChannelStoreAdapter } from "@/lib/changesets/adapters/store";
 import { createAiLocalizationCore } from "@/lib/ai-localization";
+import { createAnalyticsCore } from "@/lib/analytics";
 import { createAgentOperationsServices } from "./services";
 
 /**
@@ -30,6 +31,7 @@ export function createAgentOperationsCore() {
   // -- this module never re-reads `channel_editorial_profiles` or the video-sync tables itself.
   const channelStore = createChangeSetChannelStoreAdapter();
   const aiLocalizationCore = createAiLocalizationCore();
+  const analyticsCore = createAnalyticsCore();
 
   return createAgentOperationsServices({
     getProductVersion: readProductVersion,
@@ -40,6 +42,12 @@ export function createAgentOperationsCore() {
     // simpler `(channelId: string)` dependency shape.
     getEditorialProfile: (channelId: string) => aiLocalizationCore.getEditorialProfile({ channelId }),
     getTrackedLanguages: getChannelTargetLanguages,
+    // Slice C -- delegates unchanged to `analyticsCore`'s own already-existing, already-tested
+    // functions (AGENTS.md §D). Both accept `input: unknown` and do their own internal
+    // validation/credential-resolution/active-channel check.
+    getChannelOverview: analyticsCore.getChannelOverview,
+    listMetrics: analyticsCore.listMetrics,
+    now: () => new Date(),
   });
 }
 
@@ -56,10 +64,14 @@ export type {
   AgentDataDomain,
   AgentEditorialProfileContext,
   AgentLocalizationEntry,
+  AnalyticsFreshness,
+  ChannelAnalyticsContext,
   ChannelContext,
+  MetricDefinition,
   PermissionClass,
   PlannedFutureCapability,
   SystemCapabilities,
+  VideoAnalyticsContext,
   VideoContext,
   VideoContextSection,
   VideoMetadataContext,

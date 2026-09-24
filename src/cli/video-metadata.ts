@@ -49,7 +49,7 @@ type AiLocalizationCliCoreSubset = Pick<AiLocalizationCore, "generateProposals" 
 // Phase 7 (Agent Operations Interface) -- CLI parity for the MCP agent_get_capabilities tool.
 type AgentOperationsCliCoreSubset = Pick<
   AgentOperationsCore,
-  "getSystemCapabilities" | "getChannelContext" | "getVideoContext"
+  "getSystemCapabilities" | "getChannelContext" | "getVideoContext" | "queryChannelAnalytics" | "queryVideoAnalytics"
 >;
 
 loadEnvConfig(process.cwd());
@@ -100,7 +100,9 @@ export type ParsedArgs = {
     | "create-change-set"
     | "capabilities"
     | "channel-context"
-    | "video-context";
+    | "video-context"
+    | "channel-analytics"
+    | "video-analytics";
   flags: Record<string, string | boolean>;
 };
 
@@ -126,7 +128,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     channel: ["sync", "list", "video-list"],
     analytics: ["list", "overview", "data-quality", "comparable-age", "weekly-reports", "weekly-report-get"],
     "ai-localization": ["generate", "create-change-set"],
-    agent: ["capabilities", "channel-context", "video-context"],
+    agent: ["capabilities", "channel-context", "video-context", "channel-analytics", "video-analytics"],
   };
   const validMetadataCommands = ["list", "transcript", "preview", "apply"];
   const validCommands = hasExplicitNamespace
@@ -331,6 +333,11 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   "capabilities",
   "channel-context",
   "video-context",
+  // agent channel-analytics: a live YouTube Analytics API read (like "analytics overview"), but
+  // mutates no local state. agent video-analytics: a local read only (like "analytics list").
+  // Neither persists anything -- same classification as their wrapped tools above.
+  "channel-analytics",
+  "video-analytics",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -647,6 +654,46 @@ export async function runCliCommand(args: {
     if (parsedArgs.namespace === "agent") {
       if (parsedArgs.command === "capabilities") {
         const result = await agentOperationsCore.getSystemCapabilities({});
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Slice C, owner spec §9. UNLIKE "channel-context"/"video-context" below, these two do NOT
+      // call `channelAccessCore.assertActiveChannel` themselves -- mirroring the MCP
+      // `agentQueryChannelAnalytics`/`agentQueryVideoAnalytics` handlers' own pattern (and the
+      // pre-existing `analytics overview`/`analytics list` commands below), since
+      // `agentOperationsCore.queryChannelAnalytics`/`queryVideoAnalytics` forward `credentialRef`
+      // straight into the REAL `analyticsCore`, which already does that identical check
+      // internally -- a second check here would be redundant against the same fact.
+      if (parsedArgs.command === "channel-analytics") {
+        const analyticsCredentialRef = await auth.resolveEffectiveCredentialRef({
+          explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+        });
+        const result = await agentOperationsCore.queryChannelAnalytics({
+          credentialRef: analyticsCredentialRef,
+          channelId: requiredStringFlag(parsedArgs.flags, "channelId"),
+          startDate: requiredStringFlag(parsedArgs.flags, "startDate"),
+          endDate: requiredStringFlag(parsedArgs.flags, "endDate"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "video-analytics") {
+        const analyticsCredentialRef = await auth.resolveEffectiveCredentialRef({
+          explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+        });
+        const metricNamesFlag = optionalStringFlag(parsedArgs.flags, "metricNames");
+        const result = await agentOperationsCore.queryVideoAnalytics({
+          credentialRef: analyticsCredentialRef,
+          channelId: requiredStringFlag(parsedArgs.flags, "channelId"),
+          startDate: optionalStringFlag(parsedArgs.flags, "startDate"),
+          endDate: optionalStringFlag(parsedArgs.flags, "endDate"),
+          videoId: optionalStringFlag(parsedArgs.flags, "videoId"),
+          metricNames: metricNamesFlag
+            ? metricNamesFlag.split(",").map((entry) => entry.trim()).filter(Boolean)
+            : undefined,
+        });
         writeStdout(serializeSuccess(result));
         return 0;
       }

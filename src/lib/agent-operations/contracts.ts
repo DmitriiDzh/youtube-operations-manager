@@ -41,11 +41,20 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
 /**
  * Independently versioned from `package.json`'s product version -- the Agent API surface can
  * evolve (additively, per owner spec §4 "explicit versioning and backward-compatible evolution")
- * on a different cadence than the product itself. Bump the MINOR version when a new capability is
- * added; bump MAJOR only for a breaking change to an existing tool's contract (none is anticipated
- * in Phase 7's own additive slices).
+ * on a different cadence than the product itself. Bump the MINOR version once per slice/landing
+ * that adds one or more capabilities (not once per individual capability item within that slice);
+ * bump MAJOR only for a breaking change to an existing tool's contract (none is anticipated in
+ * Phase 7's own additive slices).
+ *
+ * **Correction (slice C, 2026-09-24, found by independent advisor review):** slice B added two
+ * capabilities (`channel_context.get_channel_context`/`video_context.get_video_context`) without
+ * bumping this constant -- a real violation of this doc comment's own rule, left unnoticed through
+ * four rounds of independent review of that slice (none of which happened to check this specific
+ * invariant). Corrected here to `0.3.0`, covering both the missed slice-B bump and this slice's own
+ * additions (four newly-registered pre-existing tools plus two new `query_*_analytics`
+ * capabilities) as a single bump, consistent with the "once per slice" rule stated above.
  */
-export const AGENT_API_VERSION = "0.1.0";
+export const AGENT_API_VERSION = "0.3.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
@@ -190,4 +199,67 @@ export type VideoContext = {
   includedSections: VideoContextSection[];
   metadata?: VideoMetadataContext;
   localizations?: AgentLocalizationEntry[];
+};
+
+// ---------------------------------------------------------------------------
+// Slice C -- analytics interface (owner spec §9): "Create agent-oriented analytics queries rather
+// than exposing raw database access... Every result must include metric definitions, period,
+// dimensional filters, sample/coverage information where meaningful, data freshness." Wraps
+// `src/lib/analytics/`'s own already-existing `getChannelOverview`/`listMetrics` service functions
+// unchanged (AGENTS.md §D) -- this module adds no new metric collection, no new table, no new
+// YouTube call of its own. "The exact metrics must follow the ACTUAL data currently collected. Do
+// not invent unavailable metrics" (owner spec §9) -- `METRIC_DEFINITIONS` below covers exactly the
+// metric-name literals `src/lib/analytics/contracts.ts` already defines (`ANALYTICS_METRIC_NAMES`/
+// `CHANNEL_OVERVIEW_METRIC_NAMES`), never a name invented here.
+// ---------------------------------------------------------------------------
+
+export type MetricDefinition = {
+  name: string;
+  description: string;
+  unit: "count" | "minutes" | "seconds" | "ratio" | "rate_percent";
+};
+
+/**
+ * What this response can and cannot tell the caller about how current the underlying data is
+ * (owner spec §24: "Expose timestamps and freshness... Do not silently trigger expensive or
+ * quota-heavy refreshes on every context request"). Deliberately does NOT compute a precise
+ * per-date coverage report inline (that would mean re-running `getDataQualityReport`'s own work on
+ * every analytics query) -- `note` points the caller at the existing `analytics_data_quality`
+ * tool/capability for that level of detail instead of duplicating it here.
+ */
+export type AnalyticsFreshness = {
+  source: "live_youtube_analytics_api" | "local_collected_data";
+  /** ISO instant this response was generated -- when `source` is the live API, this IS the
+   * effective freshness (the call just happened); when `source` is a local read, this is only
+   * "when we looked," not "when the data was collected" (see `note`). */
+  asOf: string;
+  note: string;
+};
+
+export type ChannelAnalyticsContext = {
+  channelId: string;
+  period: { startDate: string; endDate: string; previousStartDate: string; previousEndDate: string };
+  metricDefinitions: MetricDefinition[];
+  freshness: AnalyticsFreshness;
+  /** FACT: one row per day, as collected/reported -- never zero-filled to hide a real gap beyond
+   * what `getChannelOverview` itself already zero-fills (see that function's own doc comment). */
+  daily: Array<{ date: string; views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number }>;
+  /** DERIVED METRIC: a sum over `daily`, not a directly-observed value. */
+  currentTotals: { views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number };
+  /** DERIVED METRIC, over the immediately-preceding period of equal length (see
+   * `getChannelOverview`'s own `computePreviousPeriod`). */
+  previousTotals: { views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number };
+};
+
+export type VideoAnalyticsContext = {
+  channelId: string;
+  period: { startDate: string | null; endDate: string | null };
+  filters: { videoId: string | null; metricNames: string[] | null };
+  metricDefinitions: MetricDefinition[];
+  freshness: AnalyticsFreshness;
+  /** FACT: raw already-collected rows, exactly as `analyticsCore.listMetrics` returns them --
+   * never aggregated/derived here (an agent that needs a sum/average computes it itself from
+   * these rows, per owner spec §9: "Provide raw-enough structured data for independent agent
+   * reasoning. Do not only return pre-written human summaries"). */
+  rows: Array<{ videoId: string; metricDate: string; metricName: string; metricValue: number }>;
 };

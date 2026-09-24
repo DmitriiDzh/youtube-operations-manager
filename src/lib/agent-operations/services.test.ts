@@ -26,6 +26,21 @@ type FakeProfile = {
   updatedAt: string;
 };
 
+type FakeChannelOverview = {
+  channelId: string;
+  startDate: string;
+  endDate: string;
+  previousStartDate: string;
+  previousEndDate: string;
+  daily: Array<{ date: string; views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number }>;
+  currentTotals: { views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number };
+  previousTotals: { views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number };
+};
+type FakeListMetricsResult = {
+  channelId: string;
+  rows: Array<{ videoId: string; metricDate: string; metricName: string; metricValue: number }>;
+};
+
 function createFixture(
   overrides: Partial<{
     productVersion: string;
@@ -34,6 +49,9 @@ function createFixture(
     videosByChannel: Record<string, FakeVideo[]>;
     profilesByChannel: Record<string, FakeProfile | null>;
     trackedLanguagesByChannel: Record<string, string[]>;
+    getChannelOverview: (input: unknown) => Promise<FakeChannelOverview>;
+    listMetrics: (input: unknown) => Promise<FakeListMetricsResult>;
+    now: () => Date;
   }> = {}
 ) {
   const services = createAgentOperationsServices({
@@ -53,6 +71,9 @@ function createFixture(
     async getTrackedLanguages(channelId: string) {
       return overrides.trackedLanguagesByChannel?.[channelId] ?? [];
     },
+    getChannelOverview: overrides.getChannelOverview ?? (async () => { throw new Error("getChannelOverview not stubbed"); }),
+    listMetrics: overrides.listMetrics ?? (async () => { throw new Error("listMetrics not stubbed"); }),
+    now: overrides.now ?? (() => new Date("2026-09-24T12:00:00.000Z")),
   });
   return { services };
 }
@@ -65,7 +86,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   const result = await services.getSystemCapabilities({});
 
   assert.equal(result.productVersion, "9.9.9");
-  assert.equal(result.agentApiVersion, "0.1.0");
+  assert.equal(result.agentApiVersion, "0.3.0");
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -261,4 +282,130 @@ test("agent capabilities list includes the two new slice-B capabilities with cor
   assert.equal(channelCap!.permission, "READ");
   assert.ok(videoCap);
   assert.equal(videoCap!.domain, "video_context");
+});
+
+// AC-CAP-09 (slice C, owner spec §28): get_capabilities must now also report the pre-existing
+// tools it previously omitted (found by independent advisor review, 2026-09-24), plus the two new
+// query_*_analytics wrappers -- one representative check per registered id/domain/permission
+// combination named in the owner's own §25 initial capability set.
+test("agent capabilities list registers pre-existing tools (list_channels/list_videos/localization draft) and the two new analytics wrappers", async () => {
+  const { services } = createFixture();
+  const result = await services.getSystemCapabilities({});
+  const ids = result.capabilities.map((c) => c.id);
+
+  assert.ok(ids.includes("channel_context.list_channels"));
+  assert.ok(ids.includes("video_context.list_videos"));
+  assert.ok(ids.includes("localization_draft.create_localization_proposals"));
+  assert.ok(ids.includes("localization_draft.create_change_set_from_agent_proposals"));
+  assert.ok(ids.includes("analytics.query_channel_analytics"));
+  assert.ok(ids.includes("analytics.query_video_analytics"));
+
+  const draftCap = result.capabilities.find((c) => c.id === "localization_draft.create_change_set_from_agent_proposals");
+  assert.equal(draftCap!.permission, "DRAFT");
+});
+
+// AC-ANALYTICS-01/02/03 (slice C, owner spec §9): "Create agent-oriented analytics queries...
+// Every result must include metric definitions, period, dimensional filters... data freshness."
+test("queryChannelAnalytics forwards input unchanged to getChannelOverview and wraps the result with metric definitions + live-API freshness", async () => {
+  let captured: unknown;
+  const { services } = createFixture({
+    now: () => new Date("2026-09-24T15:00:00.000Z"),
+    getChannelOverview: async (input) => {
+      captured = input;
+      return {
+        channelId: "UC_A",
+        startDate: "2026-09-01",
+        endDate: "2026-09-07",
+        previousStartDate: "2026-08-25",
+        previousEndDate: "2026-08-31",
+        daily: [{ date: "2026-09-01", views: 10, estimatedMinutesWatched: 5, subscribersGained: 1, subscribersLost: 0 }],
+        currentTotals: { views: 10, estimatedMinutesWatched: 5, subscribersGained: 1, subscribersLost: 0 },
+        previousTotals: { views: 8, estimatedMinutesWatched: 4, subscribersGained: 0, subscribersLost: 1 },
+      };
+    },
+  });
+
+  const result = await services.queryChannelAnalytics({
+    credentialRef: { userId: "u1" },
+    channelId: "UC_A",
+    startDate: "2026-09-01",
+    endDate: "2026-09-07",
+  });
+
+  assert.deepEqual(captured, {
+    credentialRef: { userId: "u1" },
+    channelId: "UC_A",
+    startDate: "2026-09-01",
+    endDate: "2026-09-07",
+  });
+  assert.deepEqual(result.period, {
+    startDate: "2026-09-01",
+    endDate: "2026-09-07",
+    previousStartDate: "2026-08-25",
+    previousEndDate: "2026-08-31",
+  });
+  // Independently known (from src/lib/analytics/contracts.ts's own CHANNEL_OVERVIEW_METRIC_NAMES,
+  // not derived from this module's own output): exactly these 4 metric names, each with a
+  // definition present.
+  assert.deepEqual(
+    result.metricDefinitions.map((d) => d.name).sort(),
+    ["estimatedMinutesWatched", "subscribersGained", "subscribersLost", "views"].sort()
+  );
+  assert.ok(result.metricDefinitions.every((d) => d.description.length > 0));
+  assert.equal(result.freshness.source, "live_youtube_analytics_api");
+  assert.equal(result.freshness.asOf, "2026-09-24T15:00:00.000Z");
+  assert.deepEqual(result.currentTotals, { views: 10, estimatedMinutesWatched: 5, subscribersGained: 1, subscribersLost: 0 });
+  assert.deepEqual(result.daily, [{ date: "2026-09-01", views: 10, estimatedMinutesWatched: 5, subscribersGained: 1, subscribersLost: 0 }]);
+});
+
+test("queryChannelAnalytics rejects a missing credentialRef as validation_failed (required, not optional -- see schema's own doc comment)", async () => {
+  const { services } = createFixture();
+
+  await assert.rejects(
+    () => services.queryChannelAnalytics({ channelId: "UC_A", startDate: "2026-09-01", endDate: "2026-09-07" }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+test("queryVideoAnalytics forwards input unchanged to listMetrics and wraps the result with local-read freshness, defaulting metric definitions to the full known list when metricNames is omitted", async () => {
+  let captured: unknown;
+  const { services } = createFixture({
+    now: () => new Date("2026-09-24T15:00:00.000Z"),
+    listMetrics: async (input) => {
+      captured = input;
+      return {
+        channelId: "UC_A",
+        rows: [{ videoId: "v1", metricDate: "2026-09-01", metricName: "views", metricValue: 42 }],
+      };
+    },
+  });
+
+  const result = await services.queryVideoAnalytics({ credentialRef: { userId: "u1" }, channelId: "UC_A" });
+
+  assert.deepEqual(captured, { credentialRef: { userId: "u1" }, channelId: "UC_A" });
+  assert.deepEqual(result.period, { startDate: null, endDate: null });
+  assert.deepEqual(result.filters, { videoId: null, metricNames: null });
+  // Independently known: src/lib/analytics/contracts.ts's own ANALYTICS_METRIC_NAMES currently
+  // has exactly 28 entries -- omitting `metricNames` must describe all of them, not a subset.
+  assert.equal(result.metricDefinitions.length, 28);
+  assert.equal(result.freshness.source, "local_collected_data");
+  assert.deepEqual(result.rows, [{ videoId: "v1", metricDate: "2026-09-01", metricName: "views", metricValue: 42 }]);
+});
+
+test("queryVideoAnalytics narrows metricDefinitions to exactly the requested metricNames, and never fabricates a definition for an unrecognized name", async () => {
+  const { services } = createFixture({
+    listMetrics: async () => ({ channelId: "UC_A", rows: [] }),
+  });
+
+  const result = await services.queryVideoAnalytics({
+    credentialRef: { userId: "u1" },
+    channelId: "UC_A",
+    metricNames: ["views", "totally_made_up_metric"],
+  });
+
+  assert.deepEqual(result.metricDefinitions.map((d) => d.name), ["views", "totally_made_up_metric"]);
+  const viewsDefinition = result.metricDefinitions.find((d) => d.name === "views");
+  assert.equal(viewsDefinition!.unit, "count");
+  const unknownDefinition = result.metricDefinitions.find((d) => d.name === "totally_made_up_metric");
+  assert.equal(unknownDefinition!.description, "No definition recorded for this metric name.");
 });

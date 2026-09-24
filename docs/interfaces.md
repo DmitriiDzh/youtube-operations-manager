@@ -134,12 +134,14 @@ Sets above; there is also no CLI/MCP command for the channel editorial profile o
 provenance reads (see `docs/ARCHITECTURE.md` §11's BL-075/BL-078 entry for what this slice
 deliberately left out).
 
-### Agent Operations commands (CLI parity for the MCP `agent_*` tools, Phase 7 slices A-B)
+### Agent Operations commands (CLI parity for the MCP `agent_*` tools, Phase 7 -- see `docs/AGENT_OPERATIONS_INTERFACE.md` §7 for which slice is currently implemented)
 
 ```bash
 npm run cli:video-metadata -- agent capabilities
 npm run cli:video-metadata -- agent channel-context --channelId <UC...>
 npm run cli:video-metadata -- agent video-context --channelId <UC...> --videoId <VIDEO_ID> [--include metadata,localizations]
+npm run cli:video-metadata -- agent channel-analytics --channelId <UC...> --startDate <YYYY-MM-DD> --endDate <YYYY-MM-DD>
+npm run cli:video-metadata -- agent video-analytics --channelId <UC...> [--videoId <VIDEO_ID>] [--startDate <YYYY-MM-DD>] [--endDate <YYYY-MM-DD>] [--metricNames views,likes,...]
 ```
 
 `agent capabilities` is read-only with no channel/credential resolution at all (instance-level
@@ -148,13 +150,25 @@ capabilities actually reachable right now, the full permission-class vocabulary 
 actually granted (always `READ`+`DRAFT`), named future extension points, and the local schema
 version.
 
-`agent channel-context`/`agent video-context` (slice B) are channel-scoped reads: like
+`agent channel-context`/`agent video-context` are channel-scoped reads: like
 `ai-localization`/`changeset`/`batch` above, this CLI namespace resolves the local active-user
 identity and explicitly checks it against the requested `--channelId` before calling the
 underlying service (the service functions themselves do no such checking). Both are read-only —
 they read only already-synced local data, never a live YouTube call. `--include` on
 `video-context` takes a comma-separated subset of `metadata,localizations`; omitted, both
-sections are returned. See `docs/AGENT_OPERATIONS_INTERFACE.md` for the full design.
+sections are returned.
+
+`agent channel-analytics`/`agent video-analytics` are agent-oriented wrappers over the existing
+`analytics overview`/`analytics list` commands below -- same underlying data, same YouTube-call
+classification (`channel-analytics` is a **live** Analytics API read that counts against quota;
+`video-analytics` is a local read only), but the response additionally carries explicit metric
+definitions, the request's own period/filters echoed back, and a data-freshness note. Unlike
+`channel-context`/`video-context` above, these two do NOT get an explicit `assertActiveChannel`
+check from this CLI namespace itself -- they forward a resolved `credentialRef` straight into the
+existing `analyticsCore`, which already performs that check internally (mirrors this CLI's own
+pre-existing `analytics overview`/`analytics list` commands, not the `ai-localization` pattern).
+`--metricNames` on `video-analytics` is comma-separated; omitted, every metric this instance
+actually collects is described. See `docs/AGENT_OPERATIONS_INTERFACE.md` for the full design.
 
 ### Analytics commands (CLI parity for the MCP `analytics_*` tools, Phase 8 follow-up)
 
@@ -251,7 +265,7 @@ Key MCP tools:
   Deliberately **not** included in this slice: `getEditorialProfile`/`saveEditorialProfile`/
   `getGenerationProvenance` (no MCP/CLI tool for any of the three), and any approve/reject/apply
   path for a Change Set regardless of its source — same Gate-B-blocked gap RISK-04 already tracks.
-- Agent Operations Interface tools (Phase 7 slices A-B, `docs/AGENT_OPERATIONS_INTERFACE.md`):
+- Agent Operations Interface tools (Phase 7, `docs/AGENT_OPERATIONS_INTERFACE.md` §7 for current slice status):
   - `agent_get_capabilities` — `{}` (no parameters) → `SystemCapabilities` (product/agent-API
     version, implemented capabilities, data domains, the full permission vocabulary, what's
     actually granted today — always `["READ","DRAFT"]` — named future extension points, and the
@@ -272,9 +286,24 @@ Key MCP tools:
     `videoId` to actually belong to it (`DATA_NOT_SYNCED` otherwise — protects against a
     cross-channel `videoId` or a typo). Local read only.
 
-  Deliberately **not** included yet: analytics context, comparable videos, creative-asset
-  context, experiment history, or any draft/proposal/content-planning capability — those are
-  later slices (C-G) of this same phase, not yet implemented.
+  - `agent_query_channel_analytics` — `{ channelId, startDate, endDate, credentialRef? }` →
+    `ChannelAnalyticsContext` (daily rows, current-/previous-period totals, `metricDefinitions`,
+    `period`, `freshness`). Wraps `analytics_overview` unchanged — a **live** Analytics API read
+    that counts against that API's quota. Requires `channelId` to be the caller's active channel
+    (checked internally by the wrapped `analyticsCore` call, not a second check in this module).
+  - `agent_query_video_analytics` — `{ channelId, videoId?, startDate?, endDate?, metricNames?,
+    credentialRef? }` → `VideoAnalyticsContext` (raw already-collected rows, `metricDefinitions`,
+    `period`/`filters` echoed back, `freshness`). Wraps `analytics_list` unchanged — a local read
+    only. Omitting `metricNames` describes every metric this instance actually collects, never an
+    invented one.
+
+  Deliberately **not** included yet: comparable videos, creative-asset context, experiment
+  history, or any draft/proposal/content-planning capability — those are later slices (D-G) of
+  this same phase, not yet implemented. Note `get_capabilities` also now registers several
+  already-existing tools it previously omitted (`channel_list`, `channel_video_list`,
+  `ai_localization_generate`, `ai_localization_create_change_set`, and four more `analytics_*`
+  tools) so its own capability list is honest about everything actually reachable today, not just
+  what this module itself implements.
 - Analytics read tools (`docs/roadmap/BACKLOG.md`, "machine-readable analytics for operational
   agents to consume" — `docs/roadmap/FUTURE_PHASES.md` §4 / `docs/PROJECT_SPEC.md` §33):
   - `analytics_list` — `{ channelId, startDate?, endDate?, videoId?, metricNames?, credentialRef? }`
