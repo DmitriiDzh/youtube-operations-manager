@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -226,40 +227,53 @@ test("content_proposals: inserts and lists by channel, enforcing the channel for
   }));
 
 // Regression: `listContentProposalsByChannel` claims "newest first" (docs/interfaces.md,
-// agent-operations' own capability description) -- proven here with two rows whose `createdAt`
-// genuinely differs (inserted directly via the Drizzle table, bypassing `insertContentProposal`'s
-// own `$defaultFn(() => new Date())`, which cannot be overridden through that function's public
-// signature). The row with the LATER `createdAt` is deliberately inserted FIRST (and given an id
-// that sorts alphabetically/by-rowid BEFORE the other row) -- so this test can only pass if the
-// query genuinely orders by `createdAt`, not by insertion order or id, which a weaker version of
-// this test (inserting in chronological order) would not have discriminated. Same-second ties
-// are a known, accepted limitation shared with every other `orderBy(desc(...createdAt))` list
-// function in this file (creative_assets, batches, ai_connections) -- not a new gap introduced by
-// this table.
+// agent-operations' own capability description) -- proven here with three rows whose `createdAt`
+// order is deliberately DECOUPLED from both insertion order (rowid) and id (a random UUID, not a
+// hand-picked string this test could accidentally make sort the "right" way). With only two rows,
+// a `createdAt`-DESC-correct expectation is mathematically indistinguishable from at least one of
+// {rowid ascending, rowid descending, id ascending, id descending} -- a prior version of this test
+// (independent review, two earlier rounds) kept accidentally coinciding with one of those wrong
+// orderings while believing it had ruled all of them out. Three rows, with createdAt order equal
+// to neither insertion order nor its reverse, closes that gap: inserted in order first/second/
+// third, but createdAt-newest-to-oldest is second, first, third -- a sequence no rowid-based or
+// id-based ordering can reproduce by coincidence. Same-second ties are a known, accepted
+// limitation shared with every other `orderBy(desc(...createdAt))` list function in this file
+// (creative_assets, batches, ai_connections) -- not a new gap introduced by this table.
 test("content_proposals: listContentProposalsByChannel actually orders by createdAt, newest first", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
     await seedChannel(isolatedDb, "UC_A");
 
+    const first = randomUUID();
+    const second = randomUUID();
+    const third = randomUUID();
+
+    // Insertion order: first, second, third (ascending rowid). createdAt order (newest to
+    // oldest): second, first, third -- a permutation matching neither rowid ascending
+    // ([first, second, third]) nor descending ([third, second, first]), and unrelated to the ids'
+    // own (random) lexical order.
     await isolatedDb.insert(contentProposals).values({
-      id: "a-proposal-inserted-first-but-newer",
+      id: first,
+      channelId: "UC_A",
+      createdVia: "web_ui",
+      createdAt: new Date("2026-09-10T00:00:00.000Z"),
+    });
+    await isolatedDb.insert(contentProposals).values({
+      id: second,
       channelId: "UC_A",
       createdVia: "web_ui",
       createdAt: new Date("2026-09-20T00:00:00.000Z"),
     });
     await isolatedDb.insert(contentProposals).values({
-      id: "z-proposal-inserted-second-but-older",
+      id: third,
       channelId: "UC_A",
       createdVia: "web_ui",
       createdAt: new Date("2026-09-01T00:00:00.000Z"),
     });
 
     const all = await listContentProposalsByChannel("UC_A", isolatedDb);
-    assert.deepEqual(all.map((p) => p.id), [
-      "a-proposal-inserted-first-but-newer",
-      "z-proposal-inserted-second-but-older",
-    ]);
+    assert.deepEqual(all.map((p) => p.id), [second, first, third]);
   }));
 
 // Phase 8 follow-up, slice 2 (docs/roadmap/FUTURE_PHASES.md §4, data-quality diagnostics).
