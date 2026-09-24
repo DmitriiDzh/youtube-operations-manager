@@ -79,6 +79,16 @@ type FakeContentProposal = {
   agentApiVersion: string | null;
 };
 
+type FakeProposalArtifactLink = {
+  linkId: string;
+  proposalId: string;
+  channelId: string;
+  asset: FakeCreativeAsset;
+  createdAt: string;
+  createdVia: "mcp" | "cli" | "web_ui";
+  agentApiVersion: string | null;
+};
+
 function createFixture(
   overrides: Partial<{
     productVersion: string;
@@ -99,6 +109,11 @@ function createFixture(
     ) => Promise<FakeContentProposal>;
     contentProposalGetContentProposal: (input: unknown) => Promise<FakeContentProposal>;
     contentProposalListContentProposals: (input: unknown) => Promise<{ proposals: FakeContentProposal[] }>;
+    contentProposalRegisterExternalArtifact: (
+      input: unknown,
+      callOrigin: { createdVia: "mcp" | "cli" | "web_ui"; agentApiVersion?: string | null }
+    ) => Promise<FakeProposalArtifactLink>;
+    contentProposalListProposalArtifacts: (input: unknown) => Promise<{ artifacts: FakeProposalArtifactLink[] }>;
   }> = {}
 ) {
   const services = createAgentOperationsServices({
@@ -131,6 +146,10 @@ function createFixture(
       overrides.contentProposalGetContentProposal ?? (async () => { throw new Error("contentProposalGetContentProposal not stubbed"); }),
     contentProposalListContentProposals:
       overrides.contentProposalListContentProposals ?? (async () => { throw new Error("contentProposalListContentProposals not stubbed"); }),
+    contentProposalRegisterExternalArtifact:
+      overrides.contentProposalRegisterExternalArtifact ?? (async () => { throw new Error("contentProposalRegisterExternalArtifact not stubbed"); }),
+    contentProposalListProposalArtifacts:
+      overrides.contentProposalListProposalArtifacts ?? (async () => { throw new Error("contentProposalListProposalArtifacts not stubbed"); }),
   });
   return { services };
 }
@@ -143,7 +162,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   const result = await services.getSystemCapabilities({});
 
   assert.equal(result.productVersion, "9.9.9");
-  assert.equal(result.agentApiVersion, "0.6.0");
+  assert.equal(result.agentApiVersion, "0.7.0");
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -405,6 +424,21 @@ test("agent capabilities list registers the three content_proposal capabilities 
   assert.equal(listCap!.permission, "READ");
 
   assert.ok(result.dataDomains.includes("content_proposal_metadata"));
+});
+
+// Phase 7 slice G2 (owner spec §19/§25): register is DRAFT (an agent may register one), list is
+// READ.
+test("agent capabilities list registers the two slice G2 artifact-registration capabilities with correct domain/permission", async () => {
+  const { services } = createFixture();
+  const result = await services.getSystemCapabilities({});
+
+  const registerCap = result.capabilities.find((c) => c.id === "content_proposal.register_external_artifact");
+  const listCap = result.capabilities.find((c) => c.id === "content_proposal.list_proposal_artifacts");
+  assert.ok(registerCap);
+  assert.equal(registerCap!.domain, "content_proposal");
+  assert.equal(registerCap!.permission, "DRAFT");
+  assert.ok(listCap);
+  assert.equal(listCap!.permission, "READ");
 });
 
 // AC-PROVENANCE-01/02: forwards input unchanged, returns the stored record including the
@@ -680,4 +714,65 @@ test("getContentProposal forwards its input unchanged and returns the stored rec
   const result = await services.getContentProposal({ channelId: "UC_A", proposalId: "proposal-1" });
   assert.deepEqual(captured, { channelId: "UC_A", proposalId: "proposal-1" });
   assert.equal(result.proposalId, "proposal-1");
+});
+
+// Phase 7 slice G2: registerExternalArtifact forwards input AND callOrigin unchanged.
+test("registerExternalArtifact forwards input and callOrigin unchanged to contentProposalRegisterExternalArtifact", async () => {
+  let capturedInput: unknown;
+  let capturedCallOrigin: unknown;
+  const { services } = createFixture({
+    contentProposalRegisterExternalArtifact: async (input, callOrigin) => {
+      capturedInput = input;
+      capturedCallOrigin = callOrigin;
+      return {
+        linkId: "link-1",
+        proposalId: "proposal-1",
+        channelId: "UC_A",
+        asset: {
+          assetId: "asset-1",
+          channelId: "UC_A",
+          assetType: "thumbnail",
+          referenceKind: "url",
+          referenceValue: "https://example.com/a.png",
+          title: null,
+          description: null,
+          linkedVideoId: null,
+          provenance: null,
+          createdAt: "2026-09-24T00:00:00.000Z",
+        },
+        createdAt: "2026-09-24T00:00:00.000Z",
+        createdVia: "mcp",
+        agentApiVersion: "0.7.0",
+      };
+    },
+  });
+
+  const result = await services.registerExternalArtifact(
+    { channelId: "UC_A", proposalId: "proposal-1", assetType: "thumbnail", referenceKind: "url", referenceValue: "https://example.com/a.png" },
+    { createdVia: "mcp", agentApiVersion: "0.7.0" }
+  );
+
+  assert.deepEqual(capturedInput, {
+    channelId: "UC_A",
+    proposalId: "proposal-1",
+    assetType: "thumbnail",
+    referenceKind: "url",
+    referenceValue: "https://example.com/a.png",
+  });
+  assert.deepEqual(capturedCallOrigin, { createdVia: "mcp", agentApiVersion: "0.7.0" });
+  assert.equal(result.linkId, "link-1");
+});
+
+test("listProposalArtifacts forwards its input unchanged to contentProposalListProposalArtifacts", async () => {
+  let captured: unknown;
+  const { services } = createFixture({
+    contentProposalListProposalArtifacts: async (input) => {
+      captured = input;
+      return { artifacts: [] };
+    },
+  });
+
+  const result = await services.listProposalArtifacts({ channelId: "UC_A", proposalId: "proposal-1" });
+  assert.deepEqual(captured, { channelId: "UC_A", proposalId: "proposal-1" });
+  assert.deepEqual(result.artifacts, []);
 });

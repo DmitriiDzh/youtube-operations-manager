@@ -1,5 +1,6 @@
 import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
 import type { CreatedVia, EvidenceReference } from "@/lib/shared-provenance";
+import type { CreativeAsset } from "@/lib/asset-catalog";
 
 export type { DomainErrorCode, DomainErrorShape };
 export { DomainError, isDomainError };
@@ -70,6 +71,30 @@ export type ContentProposal = {
    * same attestation discipline as `ai-localization`'s `DraftProvenance.createdVia`. Unlike that
    * field, this is NOT NULL from the start: `content_proposals` is a brand-new table with no
    * pre-existing rows created before this field existed. */
+  createdVia: CreatedVia;
+  agentApiVersion: string | null;
+};
+
+/**
+ * Owner spec §19 -- "a lightweight way for external agent workflows to return created artifacts
+ * to the system": links an artifact already catalogued via `asset-catalog`'s own `registerAsset`
+ * (AGENTS.md §D: this module never inserts into `creative_assets` itself, never a second,
+ * parallel asset-insert path) back to the Content Proposal that requested it. This module owns
+ * only the LINK -- the actual asset row, and everything about `referenceValue`/`referenceKind`
+ * resolution, remains entirely `asset-catalog`'s own responsibility.
+ *
+ * Agent-callable registration (unlike the pre-existing, operator-only `asset register` CLI
+ * command) is deliberately restricted to `referenceKind` values `"url"`/`"external_artifact_id"`
+ * -- never `"local_path"` (owner spec §17: "the agent should receive only explicitly
+ * cataloged/authorized assets"; an agent that could register its own `local_path` would be
+ * self-authorizing filesystem access this application never explicitly granted it).
+ */
+export type ProposalArtifactLink = {
+  linkId: string;
+  proposalId: string;
+  channelId: string;
+  asset: CreativeAsset;
+  createdAt: string;
   createdVia: CreatedVia;
   agentApiVersion: string | null;
 };

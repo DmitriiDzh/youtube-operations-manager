@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { CreativeAsset } from "@/lib/asset-catalog";
 import { DomainError } from "./contracts";
 import { createContentProposalServices } from "./services";
 
@@ -18,6 +19,17 @@ type FakeProposal = {
   agentApiVersion: string | null;
 };
 
+type FakeCreativeAsset = CreativeAsset;
+
+type FakeArtifactLink = {
+  id: string;
+  proposalId: string;
+  assetId: string;
+  createdAt: Date;
+  createdVia: string;
+  agentApiVersion: string | null;
+};
+
 const WEB_UI_ORIGIN = { createdVia: "web_ui" as const, agentApiVersion: null };
 
 function createFixture(
@@ -25,14 +37,32 @@ function createFixture(
     videosByChannel: Record<string, string[]>;
     assetsByChannel: Record<string, string[]>;
     idSequence: string[];
+    assetIdSequence: string[];
+    linkIdSequence: string[];
   }> = {}
 ) {
   const store = new Map<string, FakeProposal>();
+  const assetStore = new Map<string, FakeCreativeAsset>();
+  const linkStore = new Map<string, FakeArtifactLink>();
   let idIndex = 0;
+  let assetIdIndex = 0;
+  let linkIdIndex = 0;
   const idSequence = overrides.idSequence ?? ["proposal-1", "proposal-2", "proposal-3"];
+  const assetIdSequence = overrides.assetIdSequence ?? ["asset-1", "asset-2", "asset-3"];
+  const linkIdSequence = overrides.linkIdSequence ?? ["link-1", "link-2", "link-3"];
 
   const services = createContentProposalServices({
-    idGenerator: () => idSequence[idIndex++] ?? `proposal-${idIndex}`,
+    idGenerator: () => {
+      // Shared id generator across proposals/links, same as the real (single) `randomUUID`
+      // generator this module's real store adapter uses -- distinguished here only by which
+      // sequence has entries left, mirroring how a real UUID generator can't tell callers apart.
+      const next = idSequence[idIndex] ?? linkIdSequence[linkIdIndex];
+      if (idIndex < idSequence.length) {
+        idIndex++;
+        return next ?? `proposal-${idIndex}`;
+      }
+      return linkIdSequence[linkIdIndex++] ?? `link-${linkIdIndex}`;
+    },
     async insertProposal(input) {
       store.set(input.id, {
         id: input.id,
@@ -61,9 +91,46 @@ function createFixture(
     async assetBelongsToChannel(channelId, assetId) {
       return (overrides.assetsByChannel?.[channelId] ?? []).includes(assetId);
     },
+    async registerAsset(input) {
+      const assetId = assetIdSequence[assetIdIndex++] ?? `asset-${assetIdIndex}`;
+      const asset = {
+        assetId,
+        channelId: input.channelId,
+        assetType: input.assetType,
+        referenceKind: input.referenceKind,
+        referenceValue: input.referenceValue,
+        title: input.title ?? null,
+        description: input.description ?? null,
+        linkedVideoId: input.linkedVideoId ?? null,
+        provenance: input.provenance ?? null,
+        createdAt: "2026-09-24T00:00:00.000Z",
+      } as FakeCreativeAsset;
+      assetStore.set(assetId, asset);
+      return asset;
+    },
+    async insertArtifactLink(input) {
+      linkStore.set(input.id, {
+        id: input.id,
+        proposalId: input.proposalId,
+        assetId: input.assetId,
+        createdAt: new Date("2026-09-24T00:00:00.000Z"),
+        createdVia: input.createdVia,
+        agentApiVersion: input.agentApiVersion ?? null,
+      });
+    },
+    async getArtifactLinkById(linkId) {
+      return linkStore.get(linkId) ?? null;
+    },
+    async listArtifactLinksByProposal(proposalId) {
+      return [...linkStore.values()].filter((l) => l.proposalId === proposalId);
+    },
+    async getAssetById(channelId, assetId) {
+      const asset = assetStore.get(assetId);
+      return asset && asset.channelId === channelId ? asset : null;
+    },
   });
 
-  return { services, store };
+  return { services, store, assetStore, linkStore };
 }
 
 // Owner spec §18: a created proposal round-trips with every field it was given.
@@ -280,9 +347,145 @@ test("getContentProposal reports evidence/brief as null, not a crash, when the s
     async assetBelongsToChannel() {
       return false;
     },
+    async registerAsset() {
+      throw new Error("not used");
+    },
+    async insertArtifactLink() {},
+    async getArtifactLinkById() {
+      return null;
+    },
+    async listArtifactLinksByProposal() {
+      return [];
+    },
+    async getAssetById() {
+      return null;
+    },
   });
 
   const result = await services.getContentProposal({ channelId: "UC_A", proposalId: "proposal-1" });
   assert.equal(result.evidence, null);
   assert.equal(result.brief, null);
+});
+
+// Owner spec §19: registers an externally-produced artifact and links it back to the proposal.
+test("registerExternalArtifact registers the asset via asset-catalog and links it to the proposal", async () => {
+  const { services, assetStore, linkStore } = createFixture();
+  const proposal = await services.createContentProposal({ channelId: "UC_A" }, WEB_UI_ORIGIN);
+
+  const result = await services.registerExternalArtifact(
+    {
+      channelId: "UC_A",
+      proposalId: proposal.proposalId,
+      assetType: "thumbnail",
+      referenceKind: "url",
+      referenceValue: "https://example.com/thumb.png",
+    },
+    { createdVia: "mcp", agentApiVersion: "0.6.0" }
+  );
+
+  assert.equal(result.proposalId, proposal.proposalId);
+  assert.equal(result.channelId, "UC_A");
+  assert.equal(result.asset.referenceValue, "https://example.com/thumb.png");
+  assert.equal(result.createdVia, "mcp");
+  assert.equal(result.agentApiVersion, "0.6.0");
+  assert.equal(assetStore.size, 1);
+  assert.equal(linkStore.size, 1);
+});
+
+// Owner spec §17: agent-callable registration must never accept `local_path` -- that stays
+// operator-only via the pre-existing `asset register` CLI command.
+test("registerExternalArtifact rejects referenceKind local_path as validation_failed", async () => {
+  const { services, assetStore, linkStore } = createFixture();
+  const proposal = await services.createContentProposal({ channelId: "UC_A" }, WEB_UI_ORIGIN);
+
+  await assert.rejects(
+    () =>
+      services.registerExternalArtifact(
+        {
+          channelId: "UC_A",
+          proposalId: proposal.proposalId,
+          assetType: "thumbnail",
+          referenceKind: "local_path",
+          referenceValue: "/tmp/x.png",
+        },
+        WEB_UI_ORIGIN
+      ),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+  // The schema rejection must happen before any write -- no asset or link row is created for a
+  // rejected `local_path` attempt (owner spec §17's restriction is not merely cosmetic).
+  assert.equal(assetStore.size, 0);
+  assert.equal(linkStore.size, 0);
+});
+
+test("registerExternalArtifact throws CONTENT_PROPOSAL_NOT_AVAILABLE for a proposalId that belongs to a different channel", async () => {
+  const { services } = createFixture();
+  const proposal = await services.createContentProposal({ channelId: "UC_A" }, WEB_UI_ORIGIN);
+
+  await assert.rejects(
+    () =>
+      services.registerExternalArtifact(
+        {
+          channelId: "UC_B",
+          proposalId: proposal.proposalId,
+          assetType: "thumbnail",
+          referenceKind: "url",
+          referenceValue: "https://example.com/thumb.png",
+        },
+        WEB_UI_ORIGIN
+      ),
+    (error: unknown) => error instanceof DomainError && error.code === "CONTENT_PROPOSAL_NOT_AVAILABLE"
+  );
+});
+
+// callOrigin must be an attestation, never a caller-suppliable input field.
+test("registerExternalArtifact rejects a request body that tries to smuggle createdVia/agentApiVersion as input fields", async () => {
+  const { services } = createFixture();
+  const proposal = await services.createContentProposal({ channelId: "UC_A" }, WEB_UI_ORIGIN);
+
+  await assert.rejects(
+    () =>
+      services.registerExternalArtifact(
+        {
+          channelId: "UC_A",
+          proposalId: proposal.proposalId,
+          assetType: "thumbnail",
+          referenceKind: "url",
+          referenceValue: "https://example.com/thumb.png",
+          createdVia: "mcp",
+        },
+        WEB_UI_ORIGIN
+      ),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+test("listProposalArtifacts returns every artifact registered against the proposal", async () => {
+  const { services } = createFixture();
+  const proposal = await services.createContentProposal({ channelId: "UC_A" }, WEB_UI_ORIGIN);
+  await services.registerExternalArtifact(
+    { channelId: "UC_A", proposalId: proposal.proposalId, assetType: "thumbnail", referenceKind: "url", referenceValue: "a" },
+    WEB_UI_ORIGIN
+  );
+  await services.registerExternalArtifact(
+    { channelId: "UC_A", proposalId: proposal.proposalId, assetType: "script", referenceKind: "external_artifact_id", referenceValue: "artifact-1" },
+    WEB_UI_ORIGIN
+  );
+
+  const result = await services.listProposalArtifacts({ channelId: "UC_A", proposalId: proposal.proposalId });
+  assert.equal(result.artifacts.length, 2);
+  assert.deepEqual(
+    result.artifacts.map((a) => a.asset.referenceValue).sort(),
+    ["a", "artifact-1"]
+  );
+});
+
+test("listProposalArtifacts throws CONTENT_PROPOSAL_NOT_AVAILABLE for a proposalId that belongs to a different channel", async () => {
+  const { services } = createFixture();
+  const proposal = await services.createContentProposal({ channelId: "UC_A" }, WEB_UI_ORIGIN);
+
+  await assert.rejects(
+    () => services.listProposalArtifacts({ channelId: "UC_B", proposalId: proposal.proposalId }),
+    (error: unknown) => error instanceof DomainError && error.code === "CONTENT_PROPOSAL_NOT_AVAILABLE"
+  );
 });

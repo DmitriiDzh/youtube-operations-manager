@@ -31,8 +31,23 @@ export function createContentProposalCore() {
         throw error;
       }
     },
+    // Phase 7 slice G2 -- delegates unchanged to `asset-catalog`'s own `registerAsset`
+    // (AGENTS.md §D): this module never inserts into `creative_assets` itself.
+    registerAsset: assetCatalog.registerAsset,
+    insertArtifactLink: store.insertArtifactLink,
+    getArtifactLinkById: store.getArtifactLinkById,
+    listArtifactLinksByProposal: store.listArtifactLinksByProposal,
+    async getAssetById(channelId: string, assetId: string) {
+      try {
+        return await assetCatalog.getAssetContext({ channelId, assetId });
+      } catch (error) {
+        if (isDomainError(error) && error.code === "ASSET_NOT_AVAILABLE") return null;
+        throw error;
+      }
+    },
   });
 }
 
 export type ContentProposalCore = ReturnType<typeof createContentProposalCore>;
-export type { ContentProposal, ContentProposalBrief } from "./contracts";
+export type { ContentProposal, ContentProposalBrief, ProposalArtifactLink } from "./contracts";
+export { AGENT_ARTIFACT_REFERENCE_KINDS } from "./schemas";

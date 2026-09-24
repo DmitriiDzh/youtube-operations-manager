@@ -2848,6 +2848,8 @@ test("CLI agent capabilities returns version/capabilities with no auth/channel r
     createContentProposal: async () => { throw new Error("not used"); },
     getContentProposal: async () => { throw new Error("not used"); },
     listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -2889,6 +2891,8 @@ test("CLI agent capabilities is never blocked by the operation lock (read-only)"
       createContentProposal: async () => { throw new Error("not used"); },
       getContentProposal: async () => { throw new Error("not used"); },
       listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
     };
 
     const exitCode = await runCliCommand({
@@ -2928,6 +2932,8 @@ test("CLI agent channel-context forwards channelId after checking it against the
     createContentProposal: async () => { throw new Error("not used"); },
     getContentProposal: async () => { throw new Error("not used"); },
     listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -2976,6 +2982,8 @@ test("CLI agent channel-context rejects a channelId that is not the caller's act
       createContentProposal: async () => { throw new Error("not used"); },
       getContentProposal: async () => { throw new Error("not used"); },
       listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3015,6 +3023,8 @@ test("CLI agent video-context rejects a channelId that is not the caller's activ
       createContentProposal: async () => { throw new Error("not used"); },
       getContentProposal: async () => { throw new Error("not used"); },
       listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3056,6 +3066,8 @@ test("CLI agent video-context forwards channelId/videoId and parses --include in
     createContentProposal: async () => { throw new Error("not used"); },
     getContentProposal: async () => { throw new Error("not used"); },
     listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3091,6 +3103,8 @@ test("CLI agent video-context omits `include` entirely when --include is not pas
     createContentProposal: async () => { throw new Error("not used"); },
     getContentProposal: async () => { throw new Error("not used"); },
     listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
   };
 
   const exitCode = await runCliCommand({
@@ -3128,6 +3142,8 @@ test("CLI agent channel-context/video-context are never blocked by the operation
       createContentProposal: async () => { throw new Error("not used"); },
       getContentProposal: async () => { throw new Error("not used"); },
       listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
     };
 
     const channelContextExit = await runCliCommand({
@@ -3180,6 +3196,8 @@ test("CLI agent channel-analytics forwards resolved credentialRef, channelId, st
     createContentProposal: async () => { throw new Error("not used"); },
     getContentProposal: async () => { throw new Error("not used"); },
     listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3220,6 +3238,8 @@ test("CLI agent channel-analytics requires --startDate/--endDate", async () => {
       createContentProposal: async () => { throw new Error("not used"); },
       getContentProposal: async () => { throw new Error("not used"); },
       listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3253,6 +3273,8 @@ test("CLI agent video-analytics forwards resolved credentialRef, channelId, and 
     createContentProposal: async () => { throw new Error("not used"); },
     getContentProposal: async () => { throw new Error("not used"); },
     listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3308,6 +3330,8 @@ test("CLI agent channel-analytics/video-analytics are never blocked by the opera
       createContentProposal: async () => { throw new Error("not used"); },
       getContentProposal: async () => { throw new Error("not used"); },
       listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
     };
 
     const channelAnalyticsExit = await runCliCommand({
@@ -3349,6 +3373,8 @@ test("CLI agent list-assets forwards channelId/videoId/assetType after checking 
     createContentProposal: async () => { throw new Error("not used"); },
     getContentProposal: async () => { throw new Error("not used"); },
     listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3397,6 +3423,8 @@ test("CLI agent list-assets rejects a channelId that is not the caller's active 
       createContentProposal: async () => { throw new Error("not used"); },
       getContentProposal: async () => { throw new Error("not used"); },
       listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3434,6 +3462,8 @@ test("CLI agent get-asset-context forwards channelId/assetId after checking it a
     createContentProposal: async () => { throw new Error("not used"); },
     getContentProposal: async () => { throw new Error("not used"); },
     listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3604,6 +3634,8 @@ test("CLI agent list-assets/get-asset-context are never blocked by the operation
       createContentProposal: async () => { throw new Error("not used"); },
       getContentProposal: async () => { throw new Error("not used"); },
       listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
     };
 
     const listExit = await runCliCommand({
@@ -3683,6 +3715,8 @@ test("CLI agent get-generation-provenance forwards channelId/changeSetId after c
     createContentProposal: async () => { throw new Error("not used"); },
     getContentProposal: async () => { throw new Error("not used"); },
     listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3714,6 +3748,8 @@ test("CLI agent get-generation-provenance reports { provenance: null } when the 
     createContentProposal: async () => { throw new Error("not used"); },
     getContentProposal: async () => { throw new Error("not used"); },
     listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3761,6 +3797,8 @@ test("CLI agent get-generation-provenance rejects a channelId that is not the ca
       createContentProposal: async () => { throw new Error("not used"); },
       getContentProposal: async () => { throw new Error("not used"); },
       listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3785,6 +3823,8 @@ test("CLI agent get-generation-provenance is never blocked by the operation lock
       createContentProposal: async () => { throw new Error("not used"); },
       getContentProposal: async () => { throw new Error("not used"); },
       listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
     };
 
     const exitCode = await runCliCommand({
@@ -3833,6 +3873,8 @@ test("CLI agent create-content-proposal forwards channelId/objective/evidenceJso
     },
     getContentProposal: async () => { throw new Error("not used"); },
     listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -3897,6 +3939,8 @@ test("CLI agent create-content-proposal rejects malformed --evidenceJson/--brief
       createContentProposal: async () => { throw new Error("must not be called"); },
       getContentProposal: async () => { throw new Error("not used"); },
       listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3936,6 +3980,8 @@ test("CLI agent create-content-proposal rejects a channelId that is not the call
       createContentProposal: async () => { throw new Error("must not be called"); },
       getContentProposal: async () => { throw new Error("not used"); },
       listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
     },
     writeStderr: (line) => stderr.push(line),
   });
@@ -3973,6 +4019,8 @@ test("CLI agent create-content-proposal is rejected while the operation lock is 
         agentApiVersion: null,
       }),
       listContentProposals: async () => ({ proposals: [] }),
+      registerExternalArtifact: async () => { throw new Error("not used"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
     };
 
     const createExitCode = await runCliCommand({
@@ -4040,6 +4088,8 @@ test("CLI agent get-content-proposal forwards channelId/proposalId after checkin
       };
     },
     listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -4075,6 +4125,8 @@ test("CLI agent list-content-proposals forwards channelId after checking active 
       captured = input;
       return { proposals: [] };
     },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
   };
 
   const stdout: string[] = [];
@@ -4091,4 +4143,289 @@ test("CLI agent list-content-proposals forwards channelId after checking active 
   assert.deepEqual(captured, { channelId: "UC_1" });
   const envelope = JSON.parse(stdout[0] ?? "{}");
   assert.deepEqual(envelope.data.proposals, []);
+});
+
+test("CLI agent register-external-artifact forwards channelId/proposalId/assetType/referenceKind/referenceValue/provenanceJson after checking active channel, stamping cli identity", async () => {
+  let capturedInput: unknown;
+  let capturedCallOrigin: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async (input: unknown, callOrigin: unknown) => {
+      capturedInput = input;
+      capturedCallOrigin = callOrigin;
+      return {
+        linkId: "link-1",
+        proposalId: "proposal-1",
+        channelId: "UC_1",
+        asset: {
+          assetId: "asset-1",
+          channelId: "UC_1",
+          assetType: "thumbnail" as const,
+          referenceKind: "url" as const,
+          referenceValue: "https://example.com/a.png",
+          title: null,
+          description: null,
+          linkedVideoId: null,
+          provenance: { generator: "midjourney" },
+          createdAt: "2026-09-24T00:00:00.000Z",
+        },
+        createdAt: "2026-09-24T00:00:00.000Z",
+        createdVia: "cli" as const,
+        agentApiVersion: null,
+      };
+    },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "agent",
+      "register-external-artifact",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--proposalId",
+      "proposal-1",
+      "--assetType",
+      "thumbnail",
+      "--referenceKind",
+      "url",
+      "--referenceValue",
+      "https://example.com/a.png",
+      "--provenanceJson",
+      JSON.stringify({ generator: "midjourney" }),
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(capturedInput, {
+    channelId: "UC_1",
+    proposalId: "proposal-1",
+    assetType: "thumbnail",
+    referenceKind: "url",
+    referenceValue: "https://example.com/a.png",
+    title: undefined,
+    description: undefined,
+    linkedVideoId: undefined,
+    provenance: { generator: "midjourney" },
+  });
+  // Phase 7 slice G2 (owner spec §22): the CLI transport must SERVER-STAMP its own identity, with
+  // no agentApiVersion (that field only ever applies to the MCP transport).
+  assert.deepEqual(capturedCallOrigin, { createdVia: "cli", agentApiVersion: null });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.linkId, "link-1");
+});
+
+test("CLI agent register-external-artifact rejects malformed --provenanceJson", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "agent",
+      "register-external-artifact",
+      "--channelId",
+      "UC_1",
+      "--userId",
+      "u1",
+      "--proposalId",
+      "proposal-1",
+      "--assetType",
+      "thumbnail",
+      "--referenceKind",
+      "url",
+      "--referenceValue",
+      "https://example.com/a.png",
+      "--provenanceJson",
+      "{not valid json",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("must not be called"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI agent register-external-artifact rejects a channelId that is not the caller's active channel", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "agent",
+      "register-external-artifact",
+      "--channelId",
+      "UC_1",
+      "--proposalId",
+      "proposal-1",
+      "--assetType",
+      "thumbnail",
+      "--referenceKind",
+      "url",
+      "--referenceValue",
+      "https://example.com/a.png",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async (args: { channelId: string }) => {
+        throw new DomainError({
+          code: "CHANNEL_NOT_ACTIVE",
+          message: "not active",
+          details: { channelId: args.channelId, activeChannelId: null },
+        });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    agentOperationsCore: {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("must not be called"); },
+      listProposalArtifacts: async () => { throw new Error("not used"); },
+    },
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI agent list-proposal-artifacts forwards channelId/proposalId after checking active channel", async () => {
+  let captured: unknown;
+  const agentOperationsCore = {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("not used"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("not used"); },
+    listProposalArtifacts: async (input: unknown) => {
+      captured = input;
+      return { artifacts: [] };
+    },
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "list-proposal-artifacts", "--channelId", "UC_1", "--userId", "u1", "--proposalId", "proposal-1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1", proposalId: "proposal-1" });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.deepEqual(envelope.data.artifacts, []);
+});
+
+test("CLI agent register-external-artifact is rejected while the operation lock is held; list-proposal-artifacts is not", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const agentOperationsCore = {
+      getSystemCapabilities: async () => { throw new Error("not used"); },
+      getChannelContext: async () => { throw new Error("not used"); },
+      getVideoContext: async () => { throw new Error("not used"); },
+      queryChannelAnalytics: async () => { throw new Error("not used"); },
+      queryVideoAnalytics: async () => { throw new Error("not used"); },
+      listAssets: async () => { throw new Error("not used"); },
+      getAssetContext: async () => { throw new Error("not used"); },
+      getGenerationProvenance: async () => { throw new Error("not used"); },
+      createContentProposal: async () => { throw new Error("not used"); },
+      getContentProposal: async () => { throw new Error("not used"); },
+      listContentProposals: async () => { throw new Error("not used"); },
+      registerExternalArtifact: async () => { throw new Error("must not be called"); },
+      listProposalArtifacts: async () => ({ artifacts: [] }),
+    };
+
+    const registerExitCode = await runCliCommand({
+      argv: [
+        "agent",
+        "register-external-artifact",
+        "--channelId",
+        "UC_1",
+        "--userId",
+        "u1",
+        "--proposalId",
+        "proposal-1",
+        "--assetType",
+        "thumbnail",
+        "--referenceKind",
+        "url",
+        "--referenceValue",
+        "https://example.com/a.png",
+      ],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+      writeStderr: () => {},
+    });
+    assert.equal(registerExitCode, 1);
+
+    const listExitCode = await runCliCommand({
+      argv: ["agent", "list-proposal-artifacts", "--channelId", "UC_1", "--userId", "u1", "--proposalId", "proposal-1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      agentOperationsCore,
+      writeStdout: () => {},
+    });
+    assert.equal(listExitCode, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
 });

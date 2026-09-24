@@ -64,6 +64,10 @@ export function createAgentOperationsCore() {
     contentProposalCreateContentProposal: contentProposalCore.createContentProposal,
     contentProposalGetContentProposal: contentProposalCore.getContentProposal,
     contentProposalListContentProposals: contentProposalCore.listContentProposals,
+    // Slice G2 -- delegates unchanged to `contentProposalCore`'s own already-tested functions
+    // (AGENTS.md §D).
+    contentProposalRegisterExternalArtifact: contentProposalCore.registerExternalArtifact,
+    contentProposalListProposalArtifacts: contentProposalCore.listProposalArtifacts,
   });
 }
 
@@ -94,4 +98,4 @@ export type {
 } from "./contracts";
 export type { CreativeAsset } from "@/lib/asset-catalog";
 export type { StoredGenerationProvenance } from "@/lib/ai-localization/contracts";
-export type { ContentProposal, ContentProposalBrief } from "@/lib/content-proposals";
+export type { ContentProposal, ContentProposalBrief, ProposalArtifactLink } from "@/lib/content-proposals";

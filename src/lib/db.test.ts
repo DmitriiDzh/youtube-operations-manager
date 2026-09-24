@@ -15,6 +15,7 @@ import {
   gatewayCallEvents,
   getAnalyticsReadsEnabled,
   getAnalyticsSyncSettings,
+  getContentProposalArtifactLinkById,
   getContentProposalById,
   getCreativeAssetById,
   getDataApiReadsEnabled,
@@ -23,8 +24,10 @@ import {
   getWeeklyReportByWeek,
   initializeDatabaseSchema,
   insertContentProposal,
+  insertContentProposalArtifactLink,
   insertCreativeAsset,
   listAnalyticsCollectionRunsByChannel,
+  listContentProposalArtifactLinksByProposal,
   listContentProposalsByChannel,
   listCreativeAssetsByChannel,
   listVideoMetricsByChannel,
@@ -118,6 +121,7 @@ test("initializeDatabaseSchema: a fresh database ends stamped at SCHEMA_CURRENT_
     assert.equal(await tableExists(client, "analytics_weekly_reports"), true);
     assert.equal(await tableExists(client, "creative_assets"), true);
     assert.equal(await tableExists(client, "content_proposals"), true);
+    assert.equal(await tableExists(client, "content_proposal_artifacts"), true);
   }));
 
 // Phase 7 slice D (docs/AGENT_OPERATIONS_INTERFACE.md §4c).
@@ -274,6 +278,50 @@ test("content_proposals: listContentProposalsByChannel actually orders by create
 
     const all = await listContentProposalsByChannel("UC_A", isolatedDb);
     assert.deepEqual(all.map((p) => p.id), [second, first, third]);
+  }));
+
+// Phase 7 slice G2 (docs/AGENT_OPERATIONS_INTERFACE.md §4f, owner spec §19).
+test("content_proposal_artifacts: inserts and lists by proposal, enforcing the proposal/asset foreign keys", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannel(isolatedDb, "UC_A");
+
+    await insertContentProposal({ id: "proposal-1", channelId: "UC_A", createdVia: "web_ui" }, isolatedDb);
+    await insertCreativeAsset(
+      { id: "asset-1", channelId: "UC_A", assetType: "thumbnail", referenceKind: "url", referenceValue: "https://example.com/a.png" },
+      isolatedDb
+    );
+
+    await insertContentProposalArtifactLink(
+      { id: "link-1", proposalId: "proposal-1", assetId: "asset-1", createdVia: "mcp", agentApiVersion: "0.6.0" },
+      isolatedDb
+    );
+
+    const links = await listContentProposalArtifactLinksByProposal("proposal-1", isolatedDb);
+    assert.equal(links.length, 1);
+    assert.equal(links[0].assetId, "asset-1");
+    assert.equal(links[0].createdVia, "mcp");
+    assert.equal(links[0].agentApiVersion, "0.6.0");
+
+    const fetched = await getContentProposalArtifactLinkById("link-1", isolatedDb);
+    assert.equal(fetched?.proposalId, "proposal-1");
+
+    // A proposal that doesn't exist must fail the FK, not silently create an orphaned link.
+    await assert.rejects(() =>
+      insertContentProposalArtifactLink(
+        { id: "link-2", proposalId: "proposal-never-created", assetId: "asset-1", createdVia: "web_ui" },
+        isolatedDb
+      )
+    );
+
+    // Same for an asset that doesn't exist.
+    await assert.rejects(() =>
+      insertContentProposalArtifactLink(
+        { id: "link-3", proposalId: "proposal-1", assetId: "asset-never-created", createdVia: "web_ui" },
+        isolatedDb
+      )
+    );
   }));
 
 // Phase 8 follow-up, slice 2 (docs/roadmap/FUTURE_PHASES.md §4, data-quality diagnostics).

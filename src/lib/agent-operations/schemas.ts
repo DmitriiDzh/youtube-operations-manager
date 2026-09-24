@@ -24,6 +24,10 @@ import {
   getContentProposalOutputSchema as contentProposalGetContentProposalOutputSchema,
   listContentProposalsInputSchema as contentProposalListContentProposalsInputSchema,
   listContentProposalsOutputSchema as contentProposalListContentProposalsOutputSchema,
+  registerExternalArtifactInputSchema as contentProposalRegisterExternalArtifactInputSchema,
+  registerExternalArtifactOutputSchema as contentProposalRegisterExternalArtifactOutputSchema,
+  listProposalArtifactsInputSchema as contentProposalListProposalArtifactsInputSchema,
+  listProposalArtifactsOutputSchema as contentProposalListProposalArtifactsOutputSchema,
 } from "@/lib/content-proposals/schemas";
 
 export { parseWithSchema };
@@ -329,3 +333,17 @@ export type GetContentProposalInput = z.infer<typeof getContentProposalInputSche
 export type GetContentProposalOutput = z.infer<typeof getContentProposalOutputSchema>;
 export type ListContentProposalsInput = z.infer<typeof listContentProposalsInputSchema>;
 export type ListContentProposalsOutput = z.infer<typeof listContentProposalsOutputSchema>;
+
+// ---------------------------------------------------------------------------
+// Slice G2 -- external artifact registration (owner spec §19). Same reuse discipline as above.
+// ---------------------------------------------------------------------------
+
+export const registerExternalArtifactInputSchema = contentProposalRegisterExternalArtifactInputSchema;
+export const registerExternalArtifactOutputSchema = contentProposalRegisterExternalArtifactOutputSchema;
+export const listProposalArtifactsInputSchema = contentProposalListProposalArtifactsInputSchema;
+export const listProposalArtifactsOutputSchema = contentProposalListProposalArtifactsOutputSchema;
+
+export type RegisterExternalArtifactInput = z.infer<typeof registerExternalArtifactInputSchema>;
+export type RegisterExternalArtifactOutput = z.infer<typeof registerExternalArtifactOutputSchema>;
+export type ListProposalArtifactsInput = z.infer<typeof listProposalArtifactsInputSchema>;
+export type ListProposalArtifactsOutput = z.infer<typeof listProposalArtifactsOutputSchema>;

@@ -136,3 +136,76 @@ test("createContentProposalCore.createContentProposal accepts and persists a ref
   const created = await core.createContentProposal({ channelId, referenceAssetIds: [asset.assetId] }, WEB_UI_ORIGIN);
   assert.deepEqual(created.referenceAssetIds, [asset.assetId]);
 });
+
+// Wiring test for slice G2 (owner spec §19) -- real database, real asset-catalog core, proving
+// the two modules genuinely connect end to end, not just against injected fakes.
+test("createContentProposalCore.registerExternalArtifact registers a real asset and links it, round-trips through listProposalArtifacts", async () => {
+  const core = createContentProposalCore();
+  const channelId = `UC_TEST_${randomUUID()}`;
+
+  await upsertChannel({
+    channelId,
+    title: "Content proposal wiring test channel 6",
+    thumbnailUrl: null,
+    uploadsPlaylistId: `UU_${randomUUID()}`,
+    connectedUserId: null,
+  });
+
+  const proposal = await core.createContentProposal({ channelId }, WEB_UI_ORIGIN);
+
+  const link = await core.registerExternalArtifact(
+    {
+      channelId,
+      proposalId: proposal.proposalId,
+      assetType: "thumbnail",
+      referenceKind: "url",
+      referenceValue: "https://example.com/real-thumb.png",
+    },
+    { createdVia: "mcp", agentApiVersion: "0.6.0" }
+  );
+
+  assert.equal(link.asset.referenceValue, "https://example.com/real-thumb.png");
+  assert.equal(link.createdVia, "mcp");
+
+  const listed = await core.listProposalArtifacts({ channelId, proposalId: proposal.proposalId });
+  assert.equal(listed.artifacts.length, 1);
+  assert.equal(listed.artifacts[0].asset.referenceValue, "https://example.com/real-thumb.png");
+});
+
+test("createContentProposalCore.registerExternalArtifact rejects a proposalId that does not belong to the requested channel", async () => {
+  const core = createContentProposalCore();
+  const channelId = `UC_TEST_${randomUUID()}`;
+  const otherChannelId = `UC_TEST_${randomUUID()}`;
+
+  await upsertChannel({
+    channelId,
+    title: "Content proposal wiring test channel 7",
+    thumbnailUrl: null,
+    uploadsPlaylistId: `UU_${randomUUID()}`,
+    connectedUserId: null,
+  });
+  await upsertChannel({
+    channelId: otherChannelId,
+    title: "Content proposal wiring test channel 8",
+    thumbnailUrl: null,
+    uploadsPlaylistId: `UU_${randomUUID()}`,
+    connectedUserId: null,
+  });
+
+  const proposal = await core.createContentProposal({ channelId }, WEB_UI_ORIGIN);
+
+  await assert.rejects(
+    () =>
+      core.registerExternalArtifact(
+        {
+          channelId: otherChannelId,
+          proposalId: proposal.proposalId,
+          assetType: "thumbnail",
+          referenceKind: "url",
+          referenceValue: "https://example.com/real-thumb.png",
+        },
+        WEB_UI_ORIGIN
+      ),
+    (error: unknown) => error instanceof DomainError && error.code === "CONTENT_PROPOSAL_NOT_AVAILABLE"
+  );
+});

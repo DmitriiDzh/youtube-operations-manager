@@ -61,6 +61,8 @@ type AgentOperationsCliCoreSubset = Pick<
   | "createContentProposal"
   | "getContentProposal"
   | "listContentProposals"
+  | "registerExternalArtifact"
+  | "listProposalArtifacts"
 >;
 type AssetCatalogCliCoreSubset = Pick<AssetCatalogCore, "registerAsset">;
 
@@ -121,7 +123,9 @@ export type ParsedArgs = {
     | "get-generation-provenance"
     | "create-content-proposal"
     | "get-content-proposal"
-    | "list-content-proposals";
+    | "list-content-proposals"
+    | "register-external-artifact"
+    | "list-proposal-artifacts";
   flags: Record<string, string | boolean>;
 };
 
@@ -159,6 +163,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
       "create-content-proposal",
       "get-content-proposal",
       "list-content-proposals",
+      "register-external-artifact",
+      "list-proposal-artifacts",
     ],
     asset: ["register"],
   };
@@ -382,6 +388,9 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   // is deliberately NOT here -- it persists a new row.
   "get-content-proposal",
   "list-content-proposals",
+  // agent list-proposal-artifacts: a local read over already-registered artifact links.
+  // "register-external-artifact" is deliberately NOT here -- it persists a new asset AND link row.
+  "list-proposal-artifacts",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -851,6 +860,49 @@ export async function runCliCommand(args: {
 
       if (parsedArgs.command === "list-content-proposals") {
         const result = await agentOperationsCore.listContentProposals({ channelId });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Phase 7 slice G2 (owner spec §19). --provenanceJson takes a JSON-encoded object, same
+      // convention as "asset register" above. referenceKind is restricted to
+      // url/external_artifact_id by the schema itself -- local_path stays available only via the
+      // operator-facing "asset register" command.
+      if (parsedArgs.command === "register-external-artifact") {
+        const provenanceJsonFlag = optionalStringFlag(parsedArgs.flags, "provenanceJson");
+        let provenance: unknown;
+        try {
+          provenance = provenanceJsonFlag ? JSON.parse(provenanceJsonFlag) : undefined;
+        } catch {
+          throw new DomainError({
+            code: "validation_failed",
+            message: "--provenanceJson must be valid JSON",
+          });
+        }
+
+        const result = await agentOperationsCore.registerExternalArtifact(
+          {
+            channelId,
+            proposalId: requiredStringFlag(parsedArgs.flags, "proposalId"),
+            assetType: requiredStringFlag(parsedArgs.flags, "assetType"),
+            referenceKind: requiredStringFlag(parsedArgs.flags, "referenceKind"),
+            referenceValue: requiredStringFlag(parsedArgs.flags, "referenceValue"),
+            title: optionalStringFlag(parsedArgs.flags, "title"),
+            description: optionalStringFlag(parsedArgs.flags, "description"),
+            linkedVideoId: optionalStringFlag(parsedArgs.flags, "linkedVideoId"),
+            provenance,
+          },
+          { createdVia: "cli", agentApiVersion: null }
+        );
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "list-proposal-artifacts") {
+        const result = await agentOperationsCore.listProposalArtifacts({
+          channelId,
+          proposalId: requiredStringFlag(parsedArgs.flags, "proposalId"),
+        });
         writeStdout(serializeSuccess(result));
         return 0;
       }

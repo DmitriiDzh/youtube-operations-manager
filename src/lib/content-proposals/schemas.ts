@@ -1,6 +1,7 @@
 import { z, ZodError } from "zod";
 import { DomainError } from "./contracts";
 import { CREATED_VIA_VALUES, MAX_EVIDENCE_LIST_ITEMS, evidenceReferenceSchema } from "@/lib/shared-provenance";
+import { creativeAssetSchema, registerAssetInputSchema } from "@/lib/asset-catalog/schemas";
 
 export function formatZodError(error: ZodError) {
   return error.issues.map((issue) => ({
@@ -100,6 +101,46 @@ export const createContentProposalOutputSchema = contentProposalSchema;
 export const getContentProposalOutputSchema = contentProposalSchema;
 export const listContentProposalsOutputSchema = z.object({ proposals: z.array(contentProposalSchema) }).strict();
 
+// Owner spec §19/§17: agent-callable artifact registration is deliberately restricted to
+// `"url"`/`"external_artifact_id"` -- NOT the full `ASSET_REFERENCE_KINDS` (which also includes
+// `"local_path"`, kept operator-only via the pre-existing `asset register` CLI command). Derived
+// from asset-catalog's own `registerAssetInputSchema` (`.omit`/`.extend`, never a hand-copied
+// second definition of `assetType`/`referenceValue`/etc. -- the RISK-53 duplication pattern) with
+// only `referenceKind` narrowed and `proposalId` added.
+export const AGENT_ARTIFACT_REFERENCE_KINDS = ["url", "external_artifact_id"] as const;
+const agentArtifactReferenceKindSchema = z.enum(AGENT_ARTIFACT_REFERENCE_KINDS);
+
+export const registerExternalArtifactInputSchema = registerAssetInputSchema
+  .omit({ referenceKind: true })
+  .extend({
+    proposalId: z.string().min(1),
+    referenceKind: agentArtifactReferenceKindSchema,
+  });
+
+export const listProposalArtifactsInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    proposalId: z.string().min(1),
+  })
+  .strict();
+
+const proposalArtifactLinkSchema = z
+  .object({
+    linkId: z.string().min(1),
+    proposalId: z.string().min(1),
+    channelId: z.string().min(1),
+    asset: creativeAssetSchema,
+    createdAt: z.string(),
+    createdVia: z.enum(CREATED_VIA_VALUES),
+    agentApiVersion: z.string().nullable(),
+  })
+  .strict();
+
+export const registerExternalArtifactOutputSchema = proposalArtifactLinkSchema;
+export const listProposalArtifactsOutputSchema = z.object({ artifacts: z.array(proposalArtifactLinkSchema) }).strict();
+
 export type CreateContentProposalInput = z.infer<typeof createContentProposalInputSchema>;
 export type GetContentProposalInput = z.infer<typeof getContentProposalInputSchema>;
 export type ListContentProposalsInput = z.infer<typeof listContentProposalsInputSchema>;
+export type RegisterExternalArtifactInput = z.infer<typeof registerExternalArtifactInputSchema>;
+export type ListProposalArtifactsInput = z.infer<typeof listProposalArtifactsInputSchema>;

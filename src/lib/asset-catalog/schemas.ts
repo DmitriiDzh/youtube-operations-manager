@@ -58,7 +58,7 @@ export const getAssetContextInputSchema = z
   })
   .strict();
 
-const creativeAssetSchema = z
+export const creativeAssetSchema = z
   .object({
     assetId: z.string().min(1),
     channelId: z.string().min(1),

@@ -48,8 +48,10 @@ import {
   getVideoContextInputSchema,
   listAssetsInputSchema,
   listContentProposalsInputSchema,
+  listProposalArtifactsInputSchema,
   queryChannelAnalyticsInputSchema,
   queryVideoAnalyticsInputSchema,
+  registerExternalArtifactInputSchema,
 } from "@/lib/agent-operations/schemas";
 import {
   getChannelOverviewInputSchema,
@@ -137,6 +139,8 @@ type AgentOperationsCoreSubset = Pick<
   | "createContentProposal"
   | "getContentProposal"
   | "listContentProposals"
+  | "registerExternalArtifact"
+  | "listProposalArtifacts"
 >;
 
 type ToolResponse = {
@@ -189,6 +193,8 @@ type McpToolHandlers = {
   agentCreateContentProposal: (input: unknown) => Promise<ToolResponse>;
   agentGetContentProposal: (input: unknown) => Promise<ToolResponse>;
   agentListContentProposals: (input: unknown) => Promise<ToolResponse>;
+  agentRegisterExternalArtifact: (input: unknown) => Promise<ToolResponse>;
+  agentListProposalArtifacts: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -1248,6 +1254,56 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    /**
+     * Slice G2 (owner spec §19). Mutates local application state (a new artifact-link row, and
+     * -- via the underlying `asset-catalog.registerAsset` -- a new catalogued asset row) --
+     * gated by the same device-availability/recovery-mode check as `agentCreateContentProposal`.
+     * Same explicit channel-scoping pattern as `agentGetAssetContext` above.
+     */
+    async agentRegisterExternalArtifact(input: unknown): Promise<ToolResponse> {
+      const parsedInput = registerExternalArtifactInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        // Phase 7 slice G2 (owner spec §22): same attestation discipline as
+        // `agentCreateContentProposal` above.
+        const result = await agentOperationsCore.registerExternalArtifact(parsedInput.data, {
+          createdVia: "mcp",
+          agentApiVersion: AGENT_API_VERSION,
+        });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** Slice G2. Same explicit channel-scoping note as `agentListAssets` above. */
+    async agentListProposalArtifacts(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listProposalArtifactsInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.listProposalArtifacts(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -1362,6 +1418,12 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
       (await assertMcpDeviceAvailable()) ?? handlers.agentCreateContentProposal(input),
     agentGetContentProposal: handlers.agentGetContentProposal,
     agentListContentProposals: handlers.agentListContentProposals,
+    // Slice G2 -- `registerExternalArtifact` mutates local state (a new artifact-link row, and
+    // via `asset-catalog` a new catalogued asset row) -- gated, like `agentCreateContentProposal`
+    // above. `listProposalArtifacts` is a pure local read -- ungated.
+    agentRegisterExternalArtifact: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.agentRegisterExternalArtifact(input),
+    agentListProposalArtifacts: handlers.agentListProposalArtifacts,
   };
 }
 
@@ -1848,6 +1910,26 @@ export function createMcpServer(
       inputSchema: listContentProposalsInputSchema,
     },
     (args) => handlers.agentListContentProposals(args)
+  );
+
+  registerTool(
+    "agent_register_external_artifact",
+    {
+      description:
+        "Register an externally-produced artifact (owner spec §19 -- a thumbnail, source image, audio file, rendered video, script, production manifest, etc. produced by Codex or an external tool) and link it back to the Content Proposal that requested it. channelId, proposalId, assetType, referenceKind, referenceValue are required; title/description/linkedVideoId/provenance optional. referenceKind is restricted to 'url'/'external_artifact_id' only -- never 'local_path' (owner spec §17: an agent may only receive/register explicitly authorized assets, never self-authorize filesystem access; local_path registration stays available only via the operator-facing 'asset register' CLI command). createdVia/agentApiVersion (owner spec §22) are SERVER-STAMPED: 'mcp' with the real agent API version, never caller-supplied. Requires channelId to be the caller's currently-active channel and proposalId to actually belong to it. Mutates local application state, so this tool is gated by the same device-availability/recovery-mode check as agent_create_content_proposal.",
+      inputSchema: registerExternalArtifactInputSchema,
+    },
+    (args) => handlers.agentRegisterExternalArtifact(args)
+  );
+
+  registerTool(
+    "agent_list_proposal_artifacts",
+    {
+      description:
+        "List every artifact registered against a Content Proposal, newest first, each with its full catalogued asset record. Requires channelId to be the caller's currently-active channel and proposalId to actually belong to it.",
+      inputSchema: listProposalArtifactsInputSchema,
+    },
+    (args) => handlers.agentListProposalArtifacts(args)
   );
 
   return server;

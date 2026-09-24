@@ -33,9 +33,13 @@ import {
   listAssetsOutputSchema,
   listContentProposalsInputSchema,
   listContentProposalsOutputSchema,
+  listProposalArtifactsInputSchema,
+  listProposalArtifactsOutputSchema,
   parseWithSchema,
   queryChannelAnalyticsInputSchema,
   queryVideoAnalyticsInputSchema,
+  registerExternalArtifactInputSchema,
+  registerExternalArtifactOutputSchema,
   systemCapabilitiesOutputSchema,
   videoAnalyticsContextOutputSchema,
   videoContextOutputSchema,
@@ -43,7 +47,7 @@ import {
 import { ANALYTICS_METRIC_NAMES, CHANNEL_OVERVIEW_METRIC_NAMES } from "@/lib/analytics";
 import type { CreativeAsset } from "@/lib/asset-catalog";
 import type { StoredGenerationProvenance } from "@/lib/ai-localization/contracts";
-import type { ContentProposal } from "@/lib/content-proposals";
+import type { ContentProposal, ProposalArtifactLink } from "@/lib/content-proposals";
 import type { CreatedVia } from "@/lib/shared-provenance";
 
 /**
@@ -195,6 +199,20 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "List Content Proposals for a channel, newest first. Read-only over the local proposal record -- never resolves referenced videos/assets itself. Requires channelId to be the caller's currently-active channel.",
   },
+  {
+    id: "content_proposal.register_external_artifact",
+    domain: "content_proposal",
+    permission: "DRAFT",
+    description:
+      "Register an externally-produced artifact (owner spec §19 -- a thumbnail, source image, audio file, rendered video, script, production manifest, etc. produced by Codex or an external tool) and link it back to the Content Proposal that requested it. Delegates the actual catalog entry to the same underlying mechanism as asset_catalog.list_assets/get_asset_context (no second, parallel asset store). referenceKind is restricted to \"url\"/\"external_artifact_id\" only -- never \"local_path\" (owner spec §17: an agent may only receive/register explicitly authorized assets, never self-authorize filesystem access). createdVia/agentApiVersion (owner spec §22) are SERVER-STAMPED, never caller-supplied. Requires channelId to be the caller's currently-active channel and proposalId to actually belong to it.",
+  },
+  {
+    id: "content_proposal.list_proposal_artifacts",
+    domain: "content_proposal",
+    permission: "READ",
+    description:
+      "List every artifact registered against a Content Proposal, newest first, each with its full catalogued asset record. Requires channelId to be the caller's currently-active channel and proposalId to actually belong to it.",
+  },
 ];
 
 
@@ -335,6 +353,13 @@ type ServiceDependencies = {
   ): Promise<ContentProposal>;
   contentProposalGetContentProposal(input: unknown): Promise<ContentProposal>;
   contentProposalListContentProposals(input: unknown): Promise<{ proposals: ContentProposal[] }>;
+  // Slice G2 -- delegates to `contentProposalCore`'s own `registerExternalArtifact`/
+  // `listProposalArtifacts` unchanged (AGENTS.md §D).
+  contentProposalRegisterExternalArtifact(
+    input: unknown,
+    callOrigin: { createdVia: CreatedVia; agentApiVersion?: string | null }
+  ): Promise<ProposalArtifactLink>;
+  contentProposalListProposalArtifacts(input: unknown): Promise<{ artifacts: ProposalArtifactLink[] }>;
 };
 
 export function createAgentOperationsServices(deps: ServiceDependencies) {
@@ -575,6 +600,24 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
       const parsedInput = parseWithSchema(listContentProposalsInputSchema, input, "list content proposals input");
       const result = await deps.contentProposalListContentProposals(parsedInput);
       return parseWithSchema(listContentProposalsOutputSchema, result, "list content proposals output");
+    },
+
+    /** Slice G2, owner spec §19. See this capability's own description in `AGENT_CAPABILITIES`
+     * above for what is and isn't validated/recorded. */
+    async registerExternalArtifact(
+      input: unknown,
+      callOrigin: { createdVia: CreatedVia; agentApiVersion?: string | null }
+    ): Promise<ProposalArtifactLink> {
+      const parsedInput = parseWithSchema(registerExternalArtifactInputSchema, input, "register external artifact input");
+      const result = await deps.contentProposalRegisterExternalArtifact(parsedInput, callOrigin);
+      return parseWithSchema(registerExternalArtifactOutputSchema, result, "register external artifact output");
+    },
+
+    /** Slice G2. Same channel-scoping note as `listContentProposals` above. */
+    async listProposalArtifacts(input: unknown): Promise<{ artifacts: ProposalArtifactLink[] }> {
+      const parsedInput = parseWithSchema(listProposalArtifactsInputSchema, input, "list proposal artifacts input");
+      const result = await deps.contentProposalListProposalArtifacts(parsedInput);
+      return parseWithSchema(listProposalArtifactsOutputSchema, result, "list proposal artifacts output");
     },
   };
 }

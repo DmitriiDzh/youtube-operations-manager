@@ -155,6 +155,8 @@ npm run cli:video-metadata -- agent get-generation-provenance --channelId <UC...
 npm run cli:video-metadata -- agent create-content-proposal --channelId <UC...> [--objective <text>] [--topicConcept <text>] [--rationale <text>] [--evidenceJson <json>] [--briefJson <json>] [--referenceVideoIds <id1,id2,...>] [--referenceAssetIds <id1,id2,...>]
 npm run cli:video-metadata -- agent get-content-proposal --channelId <UC...> --proposalId <PROPOSAL_ID>
 npm run cli:video-metadata -- agent list-content-proposals --channelId <UC...>
+npm run cli:video-metadata -- agent register-external-artifact --channelId <UC...> --proposalId <PROPOSAL_ID> --assetType <type> --referenceKind url|external_artifact_id --referenceValue <value> [--title <t>] [--description <d>] [--linkedVideoId <id>] [--provenanceJson <json>]
+npm run cli:video-metadata -- agent list-proposal-artifacts --channelId <UC...> --proposalId <PROPOSAL_ID>
 ```
 
 `agent capabilities` is read-only with no channel/credential resolution at all (instance-level
@@ -210,6 +212,21 @@ ids -- each validated to actually belong to `--channelId`. Mutates local state, 
 list-content-proposals` are the same `assertActiveChannel`-checked, read-only pattern as
 `agent get-asset-context`/`agent list-assets` above. See `docs/AGENT_OPERATIONS_INTERFACE.md`
 §4f for the full design.
+
+`agent register-external-artifact` (Phase 7 slice G2, owner spec §19) is "a lightweight way for
+external agent workflows to return created artifacts to the system" -- it registers a new asset
+(delegating to `asset-catalog`'s own `registerAsset`, never a second, parallel asset-insert path)
+and links it to an existing, channel-owned Content Proposal. `--referenceKind` accepts only
+`url`/`external_artifact_id` here -- **not** `local_path` (owner spec §17: the agent must receive
+only explicitly cataloged/authorized assets; `local_path` registration remains available only via
+the pre-existing, operator-only `asset register` command above). `--provenanceJson` takes a
+JSON-encoded object, same convention as `asset register`'s own flag. Mutates local state (a new
+asset row plus a new link row), gated like `create-content-proposal`. `createdVia`/
+`agentApiVersion` are SERVER-STAMPED (`"cli"`/`null`), never taken from flags. `agent
+list-proposal-artifacts` is the same `assertActiveChannel`-checked, read-only pattern as `agent
+get-asset-context`/`agent list-assets` -- it hydrates each link with its full `CreativeAsset` and
+silently drops a link whose asset is somehow missing rather than fabricating one. See
+`docs/AGENT_OPERATIONS_INTERFACE.md` §4f for the full design.
 
 ### Analytics commands (CLI parity for the MCP `analytics_*` tools, Phase 8 follow-up)
 
@@ -349,8 +366,11 @@ Key MCP tools:
     `referenceValue`. Requires `channelId` to be the caller's active channel.
   - `agent_get_asset_context` — `{ channelId, assetId }` → `CreativeAsset`. Same channel-scoping
     as `agent_list_assets`; `ASSET_NOT_AVAILABLE` for a nonexistent id or one belonging to another
-    channel (never distinguishable). There is no agent-callable way to add an asset in this
-    slice — the catalog is populated only via the `asset register` CLI command.
+    channel (never distinguishable). In this slice (D) there is still no agent-callable way to add
+    an asset directly — the catalog is populated only via the `asset register` CLI command. Slice
+    G2 (below) later adds an agent-callable way to register an asset, but only indirectly, tied to
+    a Content Proposal, and only for `referenceKind: url|external_artifact_id` — never
+    `local_path`, which remains reachable only via `asset register`.
   - `agent_get_generation_provenance` — `{ channelId, changeSetId }` → `{ provenance:
     StoredGenerationProvenance | null }`. Wraps the pre-existing `ai-localization` provenance
     record (previously only reachable via its own HTTP route, no MCP/CLI tool) — same
@@ -375,6 +395,20 @@ Key MCP tools:
     nonexistent id or one belonging to another channel (never distinguishable).
   - `agent_list_content_proposals` — `{ channelId }` → `{ proposals: ContentProposal[] }`. Local
     read only, newest first.
+  - `agent_register_external_artifact` (Phase 7 slice G2, owner spec §19) — `{ channelId,
+    proposalId, assetType, referenceKind, referenceValue, title?, description?, linkedVideoId?,
+    provenance? }` → `ProposalArtifactLink`. **Persists** a new asset row (via `asset-catalog`'s
+    own `registerAsset`, never a second, parallel asset-insert path) plus a new link row against
+    an existing, channel-owned proposal. `referenceKind` accepts only `url`/`external_artifact_id`
+    here — never `local_path` (owner spec §17: the agent must receive only explicitly
+    cataloged/authorized assets; an agent that could register its own `local_path` would be
+    self-authorizing filesystem access). `createdVia`/`agentApiVersion` are SERVER-STAMPED (`"mcp"`
+    + the real `AGENT_API_VERSION`), never taken from the request body. Mutates local state, gated
+    by the same device-availability check as `agent_create_content_proposal`.
+  - `agent_list_proposal_artifacts` — `{ channelId, proposalId }` → `{ artifacts:
+    ProposalArtifactLink[] }`. Same channel-scoping as `agent_get_content_proposal`; local read
+    only, hydrates each link with its full `CreativeAsset` and silently drops a link whose asset is
+    somehow missing rather than fabricating one.
 
   `get_capabilities` also now registers several already-existing, already-implemented tools it
   previously omitted (`channel_list`, `channel_video_list`, `ai_localization_generate`,

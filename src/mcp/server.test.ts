@@ -2675,7 +2675,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
 
   assert.equal(result.isError, undefined);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
-  assert.equal(payload.agentApiVersion, "0.6.0");
+  assert.equal(payload.agentApiVersion, "0.7.0");
   assert.deepEqual(payload.grantedPermissions, ["READ", "DRAFT"]);
   assert.ok(payload.capabilities.some((c: { id: string }) => c.id === "system.get_capabilities"));
 });
@@ -2729,6 +2729,8 @@ function makeAgentOperationsCoreStub(): Pick<
   | "createContentProposal"
   | "getContentProposal"
   | "listContentProposals"
+  | "registerExternalArtifact"
+  | "listProposalArtifacts"
 > {
   return {
     getSystemCapabilities: async () => ({
@@ -2837,6 +2839,27 @@ function makeAgentOperationsCoreStub(): Pick<
       agentApiVersion: null,
     }),
     listContentProposals: async () => ({ proposals: [] }),
+    registerExternalArtifact: async () => ({
+      linkId: "link-1",
+      proposalId: "proposal-1",
+      channelId: "UC_1",
+      asset: {
+        assetId: "asset-1",
+        channelId: "UC_1",
+        assetType: "thumbnail",
+        referenceKind: "url",
+        referenceValue: "https://example.com/a.png",
+        title: null,
+        description: null,
+        linkedVideoId: null,
+        provenance: null,
+        createdAt: "2026-09-24T00:00:00.000Z",
+      },
+      createdAt: "2026-09-24T00:00:00.000Z",
+      createdVia: "mcp",
+      agentApiVersion: AGENT_API_VERSION,
+    }),
+    listProposalArtifacts: async () => ({ artifacts: [] }),
   };
 }
 
@@ -2891,6 +2914,8 @@ test("MCP agent_get_channel_context rejects a channelId that is not the caller's
     | "createContentProposal"
     | "getContentProposal"
     | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
   > = {
     ...makeAgentOperationsCoreStub(),
     getChannelContext: async () => {
@@ -2967,6 +2992,8 @@ test("MCP agent_get_video_context rejects a channelId that is not the caller's a
     | "createContentProposal"
     | "getContentProposal"
     | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
   > = {
     ...makeAgentOperationsCoreStub(),
     getVideoContext: async () => {
@@ -3165,6 +3192,8 @@ test("MCP agent_list_assets rejects a channelId that is not the caller's active 
     | "createContentProposal"
     | "getContentProposal"
     | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
   > = {
     ...makeAgentOperationsCoreStub(),
     listAssets: async () => {
@@ -3238,6 +3267,8 @@ test("MCP agent_get_asset_context rejects a channelId that is not the caller's a
     | "createContentProposal"
     | "getContentProposal"
     | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
   > = {
     ...makeAgentOperationsCoreStub(),
     getAssetContext: async () => {
@@ -3324,6 +3355,8 @@ test("MCP agent_get_generation_provenance rejects a channelId that is not the ca
     | "createContentProposal"
     | "getContentProposal"
     | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
   > = {
     ...makeAgentOperationsCoreStub(),
     getGenerationProvenance: async () => {
@@ -3426,6 +3459,8 @@ test("MCP agent_create_content_proposal rejects a channelId that is not the call
     | "createContentProposal"
     | "getContentProposal"
     | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
   > = {
     ...makeAgentOperationsCoreStub(),
     createContentProposal: async () => {
@@ -3529,6 +3564,8 @@ test("MCP agent_get_content_proposal rejects a channelId that is not the caller'
     | "createContentProposal"
     | "getContentProposal"
     | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
   > = {
     ...makeAgentOperationsCoreStub(),
     getContentProposal: async () => {
@@ -3593,6 +3630,8 @@ test("MCP agent_list_content_proposals rejects a channelId that is not the calle
     | "createContentProposal"
     | "getContentProposal"
     | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
   > = {
     ...makeAgentOperationsCoreStub(),
     listContentProposals: async () => {
@@ -3611,6 +3650,244 @@ test("MCP agent_list_content_proposals rejects a channelId that is not the calle
     agentOperationsCore
   );
   const result = await handlers.agentListContentProposals({ channelId: "UC_OTHER" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_register_external_artifact forwards input, checks active-channel access, and stamps mcp identity", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let capturedInput: unknown;
+  let capturedCallOrigin: unknown;
+  agentOperationsCore.registerExternalArtifact = async (input: unknown, callOrigin: unknown) => {
+    capturedInput = input;
+    capturedCallOrigin = callOrigin;
+    return {
+      linkId: "link-1",
+      proposalId: "proposal-1",
+      channelId: "UC_1",
+      asset: {
+        assetId: "asset-1",
+        channelId: "UC_1",
+        assetType: "thumbnail",
+        referenceKind: "url",
+        referenceValue: "https://example.com/a.png",
+        title: null,
+        description: null,
+        linkedVideoId: null,
+        provenance: null,
+        createdAt: "2026-09-24T00:00:00.000Z",
+      },
+      createdAt: "2026-09-24T00:00:00.000Z",
+      createdVia: "mcp",
+      agentApiVersion: AGENT_API_VERSION,
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentRegisterExternalArtifact({
+    channelId: "UC_1",
+    proposalId: "proposal-1",
+    assetType: "thumbnail",
+    referenceKind: "url",
+    referenceValue: "https://example.com/a.png",
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(capturedInput, {
+    channelId: "UC_1",
+    proposalId: "proposal-1",
+    assetType: "thumbnail",
+    referenceKind: "url",
+    referenceValue: "https://example.com/a.png",
+  });
+  // Phase 7 slice G2 (owner spec §22): the MCP transport must SERVER-STAMP its own identity.
+  assert.deepEqual(capturedCallOrigin, { createdVia: "mcp", agentApiVersion: AGENT_API_VERSION });
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.linkId, "link-1");
+});
+
+// Owner spec §17: agent-callable registration must never accept `local_path` -- rejected by the
+// MCP tool's own schema validation before `agentOperationsCore.registerExternalArtifact` is even
+// called (the service layer independently enforces the same restriction, see
+// src/lib/content-proposals/services.test.ts).
+test("MCP agent_register_external_artifact rejects referenceKind local_path as validation_failed", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let called = false;
+  agentOperationsCore.registerExternalArtifact = async () => {
+    called = true;
+    throw new Error("should not be called");
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentRegisterExternalArtifact({
+    channelId: "UC_1",
+    proposalId: "proposal-1",
+    assetType: "thumbnail",
+    referenceKind: "local_path",
+    referenceValue: "/tmp/x.png",
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(called, false);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP agent_register_external_artifact rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+    | "getGenerationProvenance"
+    | "createContentProposal"
+    | "getContentProposal"
+    | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    registerExternalArtifact: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentRegisterExternalArtifact({
+    channelId: "UC_OTHER",
+    proposalId: "proposal-1",
+    assetType: "thumbnail",
+    referenceKind: "url",
+    referenceValue: "https://example.com/a.png",
+  });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_register_external_artifact is rejected while the operation lock is held; agent_list_proposal_artifacts is not", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      makeAgentOperationsCoreStub()
+    );
+    const registerResult = await handlers.agentRegisterExternalArtifact({
+      channelId: "UC_1",
+      proposalId: "proposal-1",
+      assetType: "thumbnail",
+      referenceKind: "url",
+      referenceValue: "https://example.com/a.png",
+    });
+    assert.equal(registerResult.isError, true);
+
+    const listResult = await handlers.agentListProposalArtifacts({ channelId: "UC_1", proposalId: "proposal-1" });
+    assert.notEqual(listResult.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("MCP agent_list_proposal_artifacts forwards input and checks active-channel access", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.listProposalArtifacts = async (input: unknown) => {
+    captured = input;
+    return { artifacts: [] };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListProposalArtifacts({ channelId: "UC_1", proposalId: "proposal-1" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, { channelId: "UC_1", proposalId: "proposal-1" });
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.deepEqual(payload.artifacts, []);
+});
+
+test("MCP agent_list_proposal_artifacts rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+    | "getGenerationProvenance"
+    | "createContentProposal"
+    | "getContentProposal"
+    | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    listProposalArtifacts: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListProposalArtifacts({ channelId: "UC_OTHER", proposalId: "proposal-1" });
 
   assert.equal(result.isError, true);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");

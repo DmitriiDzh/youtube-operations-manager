@@ -788,6 +788,40 @@ export const contentProposals = sqliteTable(
   (table) => [index("content_proposals_channel_id_idx").on(table.channelId)]
 );
 
+/**
+ * Phase 7 slice G2 (`src/lib/content-proposals/`) -- links an externally-produced artifact
+ * (registered via `asset-catalog`'s own `registerAsset`, AGENTS.md §D: never a second, parallel
+ * asset-insert path) back to the Content Proposal that requested it (owner spec §19: "register
+ * the artifact; associate it with a proposal/channel/video; record provenance; make it available
+ * as future agent context"). Owned by `content-proposals`, not `asset-catalog` -- `creative_assets`
+ * itself gained no new column for this; disabling/removing `content-proposals` leaves
+ * `asset-catalog`'s own schema and code completely untouched (`AGENTS.md` §M).
+ *
+ * `created_via` is NOT NULL from creation, same reasoning as `content_proposals` above -- a
+ * brand-new table with no pre-existing rows.
+ *
+ * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** -- same accepted, device-local limitation as
+ * `content_proposals`/`creative_assets` (`docs/TECHNICAL_DEBT.md` RISK-52).
+ */
+export const contentProposalArtifacts = sqliteTable(
+  "content_proposal_artifacts",
+  {
+    id: text("id").primaryKey(),
+    proposalId: text("proposal_id")
+      .notNull()
+      .references(() => contentProposals.id),
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => creativeAssets.id),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    createdVia: text("created_via").notNull(),
+    agentApiVersion: text("agent_api_version"),
+  },
+  (table) => [index("content_proposal_artifacts_proposal_id_idx").on(table.proposalId)]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -1092,6 +1126,25 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
       await client.execute(
         "CREATE INDEX IF NOT EXISTS content_proposals_channel_id_idx ON content_proposals(channel_id)"
+      );
+    },
+  },
+  {
+    version: 18,
+    description:
+      "content_proposal_artifacts -- link table for externally-produced artifacts registered against a Content Proposal, Phase 7 slice G2 (docs/AGENT_OPERATIONS_INTERFACE.md §4f, owner spec §19)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS content_proposal_artifacts (" +
+          "id TEXT PRIMARY KEY, " +
+          "proposal_id TEXT NOT NULL REFERENCES content_proposals(id), " +
+          "asset_id TEXT NOT NULL REFERENCES creative_assets(id), " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "created_via TEXT NOT NULL, " +
+          "agent_api_version TEXT)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS content_proposal_artifacts_proposal_id_idx ON content_proposal_artifacts(proposal_id)"
       );
     },
   },
@@ -3780,6 +3833,53 @@ export async function getContentProposalById(
   database: AppDb = db
 ): Promise<StoredContentProposal | null> {
   const [row] = await database.select().from(contentProposals).where(eq(contentProposals.id, proposalId));
+  return row ?? null;
+}
+
+export type StoredContentProposalArtifactLink = {
+  id: string;
+  proposalId: string;
+  assetId: string;
+  createdAt: Date;
+  createdVia: string;
+  agentApiVersion: string | null;
+};
+
+export async function insertContentProposalArtifactLink(
+  input: {
+    id: string;
+    proposalId: string;
+    assetId: string;
+    createdVia: string;
+    agentApiVersion?: string | null;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(contentProposalArtifacts).values({
+    id: input.id,
+    proposalId: input.proposalId,
+    assetId: input.assetId,
+    createdVia: input.createdVia,
+    agentApiVersion: input.agentApiVersion ?? null,
+  });
+}
+
+export async function listContentProposalArtifactLinksByProposal(
+  proposalId: string,
+  database: AppDb = db
+): Promise<StoredContentProposalArtifactLink[]> {
+  return database
+    .select()
+    .from(contentProposalArtifacts)
+    .where(eq(contentProposalArtifacts.proposalId, proposalId))
+    .orderBy(desc(contentProposalArtifacts.createdAt));
+}
+
+export async function getContentProposalArtifactLinkById(
+  linkId: string,
+  database: AppDb = db
+): Promise<StoredContentProposalArtifactLink | null> {
+  const [row] = await database.select().from(contentProposalArtifacts).where(eq(contentProposalArtifacts.id, linkId));
   return row ?? null;
 }
 
