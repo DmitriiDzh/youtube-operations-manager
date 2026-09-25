@@ -2,7 +2,7 @@ import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import { pickWritableSnippetFields } from "@/lib/youtube-write-gateway";
 import {
   DomainError,
-  isDomainError,
+  mapUnknownError,
   type MetadataLanguageSource,
   type MetadataApplyResult,
   type MetadataDraft,
@@ -85,15 +85,6 @@ type ServiceDependencies = {
 };
 
 export type { ServiceDependencies };
-
-function mapUnknownError(error: unknown, fallbackCode: DomainError["code"]) {
-  if (isDomainError(error)) return error;
-
-  return new DomainError({
-    code: fallbackCode,
-    message: error instanceof Error ? error.message : "Unknown error",
-  });
-}
 
 /**
  * RISK-11 (extended to this legacy single-item write path, 2026-09-18): previously

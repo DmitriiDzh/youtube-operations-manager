@@ -2,7 +2,7 @@ import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import type { ResolvedCredentials } from "@/lib/video-metadata/contracts";
 import {
   DomainError,
-  isDomainError,
+  mapUnknownError,
   type ApplyFieldsUpdateResult,
   type PreviewFieldsUpdateResult,
   type VideoDetailsDiff,
@@ -71,14 +71,6 @@ export type ServiceDependencies = {
   };
   idGenerator: () => string;
 };
-
-function mapUnknownError(error: unknown, fallbackCode: DomainError["code"]) {
-  if (isDomainError(error)) return error;
-  return new DomainError({
-    code: fallbackCode,
-    message: error instanceof Error ? error.message : "Unknown error",
-  });
-}
 
 function computeDiff(before: VideoDetailsSnapshot, patch: VideoDetailsPatch): VideoDetailsDiff[] {
   return (Object.keys(patch) as Array<keyof VideoDetailsPatch>).map((field) => ({

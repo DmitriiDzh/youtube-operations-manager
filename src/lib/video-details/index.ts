@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createIdGenerator } from "@/lib/video-metadata/contracts";
 import { setSelectedChannelId } from "@/lib/db";
 import { createWriteContextCore } from "@/lib/write-context";
 import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
@@ -18,7 +18,7 @@ export function createVideoDetailsCore() {
     backup: createBackupCore(),
     auditStore: createVideoDetailsAuditStoreAdapter(),
     localCache: createVideoDetailsLocalCacheAdapter(),
-    idGenerator: () => randomUUID(),
+    idGenerator: createIdGenerator(),
   });
 }
 

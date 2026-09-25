@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
 import { getStoredChannel, listStoredVideosByChannel } from "@/lib/db";
+import { createIdGenerator } from "../contracts";
 
 export function createChangeSetChannelStoreAdapter() {
   return {
@@ -8,6 +8,4 @@ export function createChangeSetChannelStoreAdapter() {
   };
 }
 
-export function createIdGenerator() {
-  return () => randomUUID();
-}
+export { createIdGenerator };

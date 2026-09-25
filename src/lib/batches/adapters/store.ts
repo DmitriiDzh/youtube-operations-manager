@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   acquireVideoExecutionLock,
   beginAttemptIntent,
@@ -18,7 +17,7 @@ import {
   releaseVideoExecutionLock,
   transitionLedgerRowStatus,
 } from "@/lib/db";
-import type { PendingChangeRecord } from "../contracts";
+import { createIdGenerator, type PendingChangeRecord } from "../contracts";
 
 export function createBatchStoreAdapter() {
   return {
@@ -41,9 +40,7 @@ export function createBatchStoreAdapter() {
   };
 }
 
-export function createIdGenerator() {
-  return () => randomUUID();
-}
+export { createIdGenerator };
 
 /**
  * Deliberately narrow: batches/ only ever needs to re-check the exact fields relevant to

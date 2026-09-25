@@ -1,6 +1,6 @@
-import { z, ZodError } from "zod";
-import { DomainError } from "./contracts";
+import { z } from "zod";
 import { credentialRefSchema } from "@/lib/video-metadata/schemas";
+export { parseWithSchema, formatZodError } from "./contracts";
 
 const localizationOverviewRowSchema = z
   .object({
@@ -84,24 +84,3 @@ export type VideoLocalizationDetailInput = z.infer<typeof videoLocalizationDetai
 export type VideoLocalizationDetailOutput = z.infer<typeof videoLocalizationDetailOutputSchema>;
 export type ExportLocalizationsInput = z.infer<typeof exportLocalizationsInputSchema>;
 export type ManageTrackedLanguageInput = z.infer<typeof manageTrackedLanguageInputSchema>;
-
-export function formatZodError(error: ZodError) {
-  return error.issues.map((issue) => ({
-    path: issue.path.join("."),
-    message: issue.message,
-    code: issue.code,
-  }));
-}
-
-export function parseWithSchema<T>(schema: z.ZodType<T>, payload: unknown, context: string): T {
-  const parsed = schema.safeParse(payload);
-  if (!parsed.success) {
-    throw new DomainError({
-      code: "validation_failed",
-      message: `Invalid ${context}`,
-      details: formatZodError(parsed.error),
-    });
-  }
-
-  return parsed.data;
-}

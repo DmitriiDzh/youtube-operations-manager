@@ -1,6 +1,6 @@
 import {
   DomainError,
-  isDomainError,
+  mapUnknownError,
   type LocalizationExportResult,
   type LocalizationOverview,
   type LocalizationOverviewRow,
@@ -36,15 +36,6 @@ type ServiceDependencies = {
     }): Promise<{ buffer: Buffer; rowCount: number }>;
   };
 };
-
-function mapUnknownError(error: unknown, fallbackCode: DomainError["code"]) {
-  if (isDomainError(error)) return error;
-
-  return new DomainError({
-    code: fallbackCode,
-    message: error instanceof Error ? error.message : "Unknown error",
-  });
-}
 
 function computeOverviewRow(video: StoredVideoRecord, languages: string[]): LocalizationOverviewRow {
   const present = new Set(Object.keys(video.existingLocalizations));

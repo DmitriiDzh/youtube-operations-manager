@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   deleteStoredAiConnectionCredential,
   getStoredAiConnection,
@@ -7,6 +6,7 @@ import {
   upsertStoredAiConnectionCredential,
   type StoredAiConnection,
 } from "@/lib/db";
+import { createIdGenerator } from "../contracts";
 import { createAiConnectionsCatalogCoreForProduction, type AiConnectionEntry } from "@/lib/sync-gateway";
 
 function toStoredAiConnection(entry: AiConnectionEntry): StoredAiConnection {
@@ -84,6 +84,4 @@ export function createAiConnectionCredentialStoreAdapter() {
   };
 }
 
-export function createIdGenerator() {
-  return () => randomUUID();
-}
+export { createIdGenerator };

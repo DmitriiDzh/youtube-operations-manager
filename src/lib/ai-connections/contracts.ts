@@ -1,8 +1,15 @@
-import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
+import {
+  DomainError,
+  isDomainError,
+  mapUnknownError,
+  createIdGenerator,
+  type DomainErrorCode,
+  type DomainErrorShape,
+} from "@/lib/video-metadata/contracts";
 import type { LocalizationGenerationOutcome, LocalizationGenerationRequest, LocalizationProvider } from "@/lib/ai-localization/contracts";
 
 export type { DomainErrorCode, DomainErrorShape, LocalizationGenerationOutcome, LocalizationGenerationRequest, LocalizationProvider };
-export { DomainError, isDomainError };
+export { DomainError, isDomainError, mapUnknownError, createIdGenerator };
 
 // ---------------------------------------------------------------------------
 // Phase 6 -- AI Connections (provider-agnostic).

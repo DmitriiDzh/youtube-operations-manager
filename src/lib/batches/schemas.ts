@@ -1,26 +1,6 @@
-import { z, ZodError } from "zod";
-import { DomainError } from "./contracts";
+import { z } from "zod";
+export { parseWithSchema, formatZodError } from "./contracts";
 
-export function formatZodError(error: ZodError) {
-  return error.issues.map((issue) => ({
-    path: issue.path.join("."),
-    message: issue.message,
-    code: issue.code,
-  }));
-}
-
-export function parseWithSchema<T>(schema: z.ZodType<T>, payload: unknown, context: string): T {
-  const parsed = schema.safeParse(payload);
-  if (!parsed.success) {
-    throw new DomainError({
-      code: "validation_failed",
-      message: `Invalid ${context}`,
-      details: formatZodError(parsed.error),
-    });
-  }
-
-  return parsed.data;
-}
 
 // Concurrency range confirmed as part of the Phase 5 acceptance contract's §0.D
 // (configurable 1-5, default 1) -- see docs/acceptance/PHASE_5_ACCEPTANCE.md.

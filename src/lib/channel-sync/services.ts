@@ -2,7 +2,7 @@ import { YOUTUBE_READ_SCOPE } from "@/lib/auth";
 import type { ChannelAccessService } from "@/lib/channel-access";
 import {
   DomainError,
-  isDomainError,
+  mapUnknownError,
   type ChannelForSync,
   type LocaleMetadata,
   type ResolvedCredentials,
@@ -111,15 +111,6 @@ type ServiceDependencies = {
   };
   channelAccess: ChannelAccessService;
 };
-
-function mapUnknownError(error: unknown, fallbackCode: DomainError["code"]) {
-  if (isDomainError(error)) return error;
-
-  return new DomainError({
-    code: fallbackCode,
-    message: error instanceof Error ? error.message : "Unknown error",
-  });
-}
 
 function mapStoredChannel(record: StoredChannelRecord): SyncedChannel {
   return {

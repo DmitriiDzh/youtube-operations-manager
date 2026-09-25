@@ -2,7 +2,7 @@ import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import {
   DomainError,
   type DeletePlaylistResult,
-  isDomainError,
+  mapUnknownError,
   type AddVideosResult,
   type Playlist,
   type PlaylistMutationFailure,
@@ -92,15 +92,6 @@ type ServiceDependencies = {
     setSelectedChannelId(userId: string, channelId: string): Promise<void>;
   };
 };
-
-function mapUnknownError(error: unknown, fallbackCode: DomainError["code"]) {
-  if (isDomainError(error)) return error;
-
-  return new DomainError({
-    code: fallbackCode,
-    message: error instanceof Error ? error.message : "Unknown error",
-  });
-}
 
 function classifyYoutubeMutationError(
   error: unknown,
