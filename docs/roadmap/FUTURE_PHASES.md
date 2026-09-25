@@ -297,9 +297,10 @@ implemented during Phases 7-10 unless separately approved:
   зону ответственности дать обоим"). This work is **not** the same as `docs/TECHNICAL_DEBT.md`
   RISK-32 (device-availability-gate consistency, separately OPEN, untouched by this feature); it
   separately tracks its own `RISK-60` (`write_channel_select`/`auth_user_select` mutate global,
-  not per-connection, active-channel state). Remaining: close the independent-review cycle
-  (status: `docs/roadmap/BACKLOG.md` BL-091 row), then the owner's "yes, merge" before this
-  feature reaches `dev`.
+  not per-connection, active-channel state). The independent-review cycle ran 13 rounds and was
+  stopped by explicit owner instruction, 2026-09-25 (not because a round found zero issues) --
+  see `docs/roadmap/BACKLOG.md` BL-091 row for the tally. Remaining: the owner's "yes, merge"
+  before this feature reaches `dev`.
 
 ## 8. How to use this roadmap in future sessions
 

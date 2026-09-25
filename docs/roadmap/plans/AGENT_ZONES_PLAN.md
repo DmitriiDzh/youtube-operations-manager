@@ -2,9 +2,10 @@
 
 **Status, 2026-09-25: all three slices (data model, enforcement, Settings UI) implemented on
 `feature/agent-connections`.** Both open scope questions in §9 were answered by the owner the same
-day. Remaining before merge: close the independent-review cycle, then the owner's explicit "yes,
-merge" (`AGENTS.md` §K.2). Current review status: `docs/roadmap/BACKLOG.md` BL-091 row (the single
-place this is tracked -- not restated elsewhere in this document).
+day. The independent-review cycle ran 13 rounds and was stopped by explicit owner instruction
+(not because a round found zero issues) — see `docs/roadmap/BACKLOG.md` BL-091 row (the single
+place review status is tracked -- not restated elsewhere in this document) for the full tally.
+Remaining before merge: the owner's explicit "yes, merge" (`AGENTS.md` §K.2).
 
 ## 1. Origin and problem statement
 
@@ -233,5 +234,6 @@ using this application directly was never meant to be constrained by agent zonin
 
 **Remaining before this feature is ready to present as finished:**
 
-- A full independent-review cycle (§8 item 4) — in progress, not yet closed.
 - The owner's explicit "yes, merge" for `feature/agent-connections` → `dev` (`AGENTS.md` §K.2).
+  The independent-review cycle (§8 item 4) ran 13 rounds and was stopped by explicit owner
+  instruction, 2026-09-25 -- see `docs/roadmap/BACKLOG.md` BL-091 row for the tally.
