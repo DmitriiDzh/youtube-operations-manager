@@ -1,5 +1,5 @@
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
-import { createChangeSetChannelStoreAdapter } from "@/lib/changesets/adapters/store";
+import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { createAnalyticsCore } from "@/lib/analytics";
 import { createAssetPerformanceServices } from "./services";
 import { isDomainError } from "./contracts";
@@ -10,7 +10,7 @@ export function createAssetPerformanceCore() {
   // call, no parallel age-alignment implementation (`getCumulativeValueAtDayOffset` is imported
   // directly by `services.ts`, shared with slice K, not reimplemented here).
   const assetCatalogCore = createAssetCatalogCore();
-  const channelStore = createChangeSetChannelStoreAdapter();
+  const channelStore = createChannelVideoStoreAdapter();
   const analyticsCore = createAnalyticsCore();
 
   return createAssetPerformanceServices({

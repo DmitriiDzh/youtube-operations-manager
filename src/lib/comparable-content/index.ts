@@ -1,4 +1,4 @@
-import { createChangeSetChannelStoreAdapter } from "@/lib/changesets/adapters/store";
+import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { createAnalyticsCore } from "@/lib/analytics";
 import { createComparableContentServices } from "./services";
 import { isDomainError } from "./contracts";
@@ -8,7 +8,7 @@ export function createComparableContentCore() {
   // `content-proposals`/`agent-operations` already use, and `analyticsCore`'s own already-tested
   // `listMetrics`. No new store, no new YouTube call, no parallel age-alignment implementation
   // (`computeComparableAgeSeries` is imported directly by `services.ts`, not reimplemented here).
-  const channelStore = createChangeSetChannelStoreAdapter();
+  const channelStore = createChannelVideoStoreAdapter();
   const analyticsCore = createAnalyticsCore();
 
   return createComparableContentServices({
