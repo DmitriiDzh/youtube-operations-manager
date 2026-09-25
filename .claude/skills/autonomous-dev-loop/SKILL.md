@@ -57,11 +57,10 @@ first having to go find and cross-reference another document.
 
 **Never, under any circumstance this skill produces on its own:**
 
-- Merge into `main`, push `main`, create a git tag, cut or publish a release, or merge/rebase from
-  the `upstream` remote. Each needs the project owner's own separate, explicit, per-action
-  approval. A completed phase, a clean independent-review cycle (section 4), or this skill's own
-  next-phase exception (section 3) **never** supplies that approval by itself, no matter how many
-  cycles have passed clean.
+- Merge into `main`, push `main`, or create a git tag / cut or publish a release. Each needs the
+  project owner's own separate, explicit, per-action approval. A completed phase, a clean
+  independent-review cycle (section 4), or this skill's own next-phase exception (section 3)
+  **never** supplies that approval by itself, no matter how many cycles have passed clean.
 - Perform a real (non-dry-run) YouTube write, a real paid AI-provider API call, or a production
   deployment. None of these is ever inferred from a git permission, a phase assignment, or a
   backlog item's status -- each has its own separate authorization requirement this skill cannot

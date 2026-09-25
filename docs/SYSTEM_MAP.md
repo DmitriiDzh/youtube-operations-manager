@@ -14,8 +14,6 @@
 - `docs/DEVELOPMENT_PLAYBOOK.md` — практическое руководство «как расширять» эту архитектуру.
 - `docs/TECHNICAL_DEBT.md` — реестр рисков и release-gates.
 - `docs/decisions/` — ADR для значимых архитектурных решений.
-- `docs/UPSTREAM_ANALYSIS.md` — анализ архитектуры унаследованного от TubeMaster кода (Phase 0).
-- `docs/UPSTREAM_BASELINE.md` — верификация baseline (тесты/lint/build), состояние npm audit.
 
 ---
 
@@ -85,7 +83,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Точки входа:** прямой импорт функций из `db.ts` внутри адаптеров каждого модуля (`channel-sync/adapters/store.ts`, `write-context`'s `channelSelectionStore` и т.д.).
 - **Зависимости:** нет (нижний уровень).
 - **Read/Write:** и то, и другое (это и есть хранилище).
-- **Важные ограничения безопасности:** OAuth-токены хранятся в открытом виде — приемлемо только для локального однопользовательского инструмента (см. `docs/UPSTREAM_ANALYSIS.md` §9, риск №1). Схема создаётся идемпотентно при старте (`CREATE TABLE IF NOT EXISTS` + `ALTER TABLE` в try/catch) — **это осознанное решение, не миграционный инструмент**; решение и условие его пересмотра задокументированы в `docs/ARCHITECTURE.md` §6.2.
+- **Важные ограничения безопасности:** OAuth-токены хранятся в открытом виде — приемлемо только для локального однопользовательского инструмента (известный, осознанно принятый риск с самого начала проекта). Схема создаётся идемпотентно при старте (`CREATE TABLE IF NOT EXISTS` + `ALTER TABLE` в try/catch) — **это осознанное решение, не миграционный инструмент**; решение и условие его пересмотра задокументированы в `docs/ARCHITECTURE.md` §6.2.
 
 ### 2.6 Channel synchronization (Phase 2) — **IMPLEMENTED**
 
@@ -500,4 +498,4 @@ AI-генерация метаданных, publishing/upload видео, thumbn
 
 ## 5. Замечание про безопасность записи (сквозной инвариант)
 
-Единственный существующий write-путь для метаданных — `video-metadata/services.ts` → `applyMetadata` (identity check + guardrail + diff + опциональный dry-run, без backup/audit/verification — это уже задокументированный пробел в `docs/UPSTREAM_ANALYSIS.md` §7). Любой новый write-путь **обязан** проходить через `write-context.assertWriteChannel`, а не через собственную проверку канала.
+Единственный существующий write-путь для метаданных — `video-metadata/services.ts` → `applyMetadata` (identity check + guardrail + diff + опциональный dry-run, без backup/audit/verification — это известный, задокументированный пробел, см. `docs/TECHNICAL_DEBT.md` RISK-09). Любой новый write-путь **обязан** проходить через `write-context.assertWriteChannel`, а не через собственную проверку канала.

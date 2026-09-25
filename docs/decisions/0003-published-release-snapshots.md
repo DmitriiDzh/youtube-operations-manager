@@ -70,8 +70,8 @@ Two things need deciding that are not obvious from "a slice of `main`":
   `docs/RELEASE_LAYOUT.md`, `docs/FIRST_LOCAL_TEST_BUILD.md`). Everything else — `AGENTS.md`,
   `CLAUDE.md`, `docs/PROJECT_SPEC.md`, `docs/ROADMAP_STATUS.md`, `docs/SYSTEM_MAP.md`,
   `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT_PLAYBOOK.md`, `docs/TECHNICAL_DEBT.md`,
-  `docs/UPSTREAM_*`, `docs/decisions/`, `docs/reports/`, `docs/acceptance/`,
-  `docs/ai-localization/`, `docs/validation/`, `openspec/`, `data/`, `node_modules/`, `.next/`,
+  `docs/decisions/`, `docs/reports/`, `docs/acceptance/`,
+  `docs/ai-localization/`, `docs/validation/`, `data/`, `node_modules/`, `.next/`,
   `.git/`, and every `.env*` file except `.env.example` — is excluded by construction, since it is
   simply never on the allowlist. A future new top-level doc/dir is excluded by default until a
   reviewer deliberately adds it.

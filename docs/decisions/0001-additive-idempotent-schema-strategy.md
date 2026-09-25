@@ -30,7 +30,7 @@ Keep the additive idempotent boot-time pattern. Do not introduce Drizzle Kit mig
 ## Consequences
 
 - Easier: adding a new additive table or nullable column stays a one-line change to `initializeDatabase()`, with no separate migration-file bookkeeping.
-- Harder: there is no formal rollback mechanism, and the pattern will become error-prone as more tables accumulate without a real migration history (flagged as a known risk since `docs/UPSTREAM_ANALYSIS.md` §9, risk #2 — tracked as `docs/TECHNICAL_DEBT.md` RISK 08).
+- Harder: there is no formal rollback mechanism, and the pattern will become error-prone as more tables accumulate without a real migration history (flagged as a known risk during the project's original architecture review — tracked as `docs/TECHNICAL_DEBT.md` RISK 08).
 
 ## Compatibility / migration impact
 
