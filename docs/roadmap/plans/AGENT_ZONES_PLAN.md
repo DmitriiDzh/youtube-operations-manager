@@ -108,10 +108,14 @@ Standard domain-module pattern (`AGENTS.md` §D, `DEVELOPMENT_PLAYBOOK.md` §6.2
   `assignedConnectionId` (nullable FK to `agent_connections.id`). **Zoned per capability, not per
   domain** — this is what actually lets `content_proposal.create_content_proposal` (drafting the
   brief) and `content_proposal.register_external_artifact` (registering the produced artifact) go
-  to two different agents if the owner ever wants that split, without a later schema change. The
-  Web UI (slice 3) presents this grouped by domain with a "split this domain's actions
-  individually" expand option, so the common case ("Codex owns the whole assets domain") is a
-  single click, matching how the owner actually described it ("по домену").
+  to two different agents if the owner ever wants that split, without a later schema change. **As
+  actually implemented (slice 3, correcting this paragraph's original design intent)**: the Web UI
+  groups capabilities visually under a domain heading, but assigns each one individually via its
+  own dropdown — there is no domain-level bulk-assign/"split individually" control. Putting an
+  entire domain on one connection ("Codex owns the whole assets domain") still works, just via one
+  click per capability in that domain rather than a single domain-wide action — the owner's "по
+  домену" framing is satisfied in the resulting state, not via a dedicated bulk-assign affordance.
+  A one-click domain-level assign, if ever wanted, would be a separate, later UI enhancement.
 
 **Services**: `registerConnection`, `listConnections`, `setConnectionEnabled`,
 `assignCapabilityZone(capabilityId, connectionId | null)`, `listZoneAssignments`, and the

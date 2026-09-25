@@ -853,7 +853,8 @@ export const agentConnections = sqliteTable("agent_connections", {
  * BL-091 -- which `agent_connections.id` (if any) exclusively owns a given capability id (e.g.
  * `"content_proposal.create_content_proposal"`). Zoned per capability, not per domain, so two
  * DRAFT actions in the same domain can go to different connections if the owner ever wants that
- * split; the Web UI groups by domain with a "split individually" option. `assignedConnectionId
+ * split; the Web UI groups capabilities visually by domain but assigns each one individually (no
+ * domain-level bulk-assign control). `assignedConnectionId
  * IS NULL` means "unassigned" -- read by `assertAgentAllowedForCapability`
  * (`src/lib/agent-connections/services.ts`), which resolves it to "open to the sole caller" while
  * exactly one connection is enabled, or "rejected for everyone" once two or more are (the owner's
