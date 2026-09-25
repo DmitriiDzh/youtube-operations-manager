@@ -138,16 +138,11 @@ hatch back to today's single-agent, zero-behavior-change state):**
   env var must never quietly bypass zoning). Read-tier capabilities are never gated by this at all,
   per §2.
 - A capability with **no zone assigned** (`assignedConnectionId IS NULL`) is rejected for EVERY
-  connection once one or more are enabled — including when only one connection exists.
-  **Corrected, 2026-09-25 (owner, Telegram):** an earlier version of this policy treated exactly
-  one enabled connection as an unambiguous implicit grant ("only one possible caller"); the owner
-  explicitly rejected this: *"Любое действие должно быть заблокировано до тех пор, пока его не
-  назначат агенту. Не важно в каком порядке и сколько агентов было добавлено. Добавление одного
-  агента не должно автоматом давать ему авторство над всеми модулями"* (any action must stay
-  blocked until explicitly assigned to an agent, regardless of order or how many agents exist;
-  adding one agent must never implicitly grant it authorship over everything). Assignment is
-  always a deliberate, explicit act — there is no implicit "first/only agent gets everything"
-  default, and registration order never matters.
+  connection once one or more are enabled — including when only one connection exists. Assignment
+  is always a deliberate, explicit act; there is no implicit "the only agent gets everything"
+  default, and registration order never matters (owner, Telegram 2026-09-25: "нельзя одну и ту же
+  зону ответственности дать обоим... добавление одного агента не должно автоматом давать ему
+  авторство над всеми модулями").
 - A capability **assigned** to a specific connection rejects every other connection's calls,
   regardless of how many connections are enabled, including an unregistered/unknown caller.
 
