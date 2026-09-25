@@ -307,12 +307,16 @@ test("collectMetrics: refuses a same-day repeat, but a genuine next-day re-colle
   });
   await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
 
+  // Requests a range covering "yesterday" (2026-09-21, relative to `now` below) -- the canonical
+  // date the 2026-09-25 mark-vs-run-history check verifies against, not an arbitrary unrelated
+  // date -- so this test continues to exercise the gate the way a real caller (the auto-trigger,
+  // or the manual "Collect now" button's own `computeDefaultPeriodRange`) actually would.
   const collect = () =>
     services.collectMetrics({
       credentialRef: { userId: "user-1" },
       channelId: "UC_A",
-      startDate: "2026-09-01",
-      endDate: "2026-09-01",
+      startDate: "2026-09-21",
+      endDate: "2026-09-21",
     });
 
   await collect();
@@ -330,6 +334,39 @@ test("collectMetrics: refuses a same-day repeat, but a genuine next-day re-colle
   assert.equal(metricRowsByKey.get("v1|2026-09-01|views"), 100);
 });
 
+// The owner's actual live bug (2026-09-25): a real, genuinely successful run set the mark, but its
+// own requested window never actually covered "yesterday" (e.g. an old run predating the
+// mark-on-success fix, or one that only ever targeted an older range) -- the mark alone must not
+// be trusted; the gate must notice no genuine run covers the expected date and retry for real.
+test("collectMetrics: a fresh mark backed only by a run that never covered yesterday is treated as stale and retried", async () => {
+  const { services, channelAccess, analyticsCalls, lastAutoCollectedAtByChannel, collectionRuns } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+    now: new Date("2026-09-22T13:00:00Z"), // "yesterday" = 2026-09-21
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  lastAutoCollectedAtByChannel.set("UC_A", new Date("2026-09-22T12:30:00Z")); // today, after the boundary
+  collectionRuns.push({
+    channelId: "UC_A",
+    requestedStartDate: "2026-08-01",
+    requestedEndDate: "2026-08-07", // a genuine success, but nowhere near yesterday (2026-09-21)
+    videoCount: 1,
+    upsertsIssued: 1,
+    skippedVideoIds: [],
+    ranAt: new Date("2026-09-22T12:30:00Z"),
+  });
+
+  const result = await services.collectMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-15",
+    endDate: "2026-09-21",
+  });
+
+  assert.equal(result.videoCount, 1, "the mark was not trusted -- a real collection ran instead of being refused");
+  assert.equal(analyticsCalls.length, 1);
+});
+
 // The daily-freshness gate must apply no matter WHICH caller triggers the second attempt (owner
 // instruction: "ни человеку, ни агенту, ни каким-то скриптам") -- exercised here as an
 // auto-collection marking the channel fresh, then a manual "Collect now" call for the same
@@ -345,13 +382,17 @@ test("collectMetrics: a manual call is refused if an auto-collection already ran
   await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
   assert.equal(analyticsCalls.length, 1, "sanity check -- the auto-trigger actually ran once");
 
+  // The manual call's own requested range ("2026-09-15".."2026-09-21") is deliberately different
+  // from the auto-trigger's default 7-day window, but both cover "yesterday" (2026-09-21) -- the
+  // gate must still refuse it purely on "a genuine run already covered yesterday for this
+  // channel today," regardless of which specific range this particular caller asks for.
   await assert.rejects(
     () =>
       services.collectMetrics({
         credentialRef: { userId: "user-1" },
         channelId: "UC_A",
-        startDate: "2026-09-01",
-        endDate: "2026-09-01",
+        startDate: "2026-09-15",
+        endDate: "2026-09-21",
       }),
     (error: unknown) => error instanceof DomainError && error.code === "analytics_data_current"
   );
@@ -764,6 +805,40 @@ test("runAutoCollectionIfStale: never collected before -> runs collection and ma
 });
 
 test("runAutoCollectionIfStale: already collected today after the boundary -> no-ops, never calls the Analytics API", async () => {
+  const { services, channelAccess, analyticsCalls, lastAutoCollectedAtByChannel, collectionRuns } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+    syncSettings: { localTime: "12:00", timezone: "UTC" },
+    now: new Date("2026-09-22T15:00:00Z"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  lastAutoCollectedAtByChannel.set("UC_A", new Date("2026-09-22T12:30:00Z")); // today, after the 12:00 boundary
+  // The mark alone is no longer trusted (2026-09-25 fix) -- it must be backed by a genuine run
+  // whose window actually covers yesterday ("2026-09-21", the canonical date the boundary
+  // promises is ready). Without this, the mark is treated as a stale leftover and the collection
+  // would run for real instead of no-oping, per the dedicated "mark disagrees with run history"
+  // test below.
+  collectionRuns.push({
+    channelId: "UC_A",
+    requestedStartDate: "2026-09-14",
+    requestedEndDate: "2026-09-21",
+    videoCount: 1,
+    upsertsIssued: 1,
+    skippedVideoIds: [],
+    ranAt: new Date("2026-09-22T12:30:00Z"),
+  });
+
+  const result = await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+
+  assert.deepEqual(result, { ranCollection: false });
+  assert.equal(analyticsCalls.length, 0);
+});
+
+// 2026-09-25 fix: a mark alone is not enough -- if `collectionRunStore` has no genuine run
+// covering yesterday (the canonical date the boundary promises is ready), the mark is treated as
+// a stale leftover (e.g. from a run predating the mark-on-success fix) rather than trusted
+// blindly, and the collection is retried instead of silently staying stuck until tomorrow.
+test("runAutoCollectionIfStale: a mark with no backing run history is treated as stale and retried", async () => {
   const { services, channelAccess, analyticsCalls, lastAutoCollectedAtByChannel } = createServicesFixture({
     videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
     analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
@@ -775,8 +850,8 @@ test("runAutoCollectionIfStale: already collected today after the boundary -> no
 
   const result = await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
 
-  assert.deepEqual(result, { ranCollection: false });
-  assert.equal(analyticsCalls.length, 0);
+  assert.equal(result.ranCollection, true);
+  assert.equal(analyticsCalls.length, 1);
 });
 
 // Advisor review: mark-then-run, not run-then-mark, so two near-simultaneous callers (e.g. two
