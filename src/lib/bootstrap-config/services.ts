@@ -6,7 +6,7 @@ import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
 /**
  * Device-local bootstrap configuration: which Syncthing-shared directory this device uses for
  * snapshot handoff, plus a stable per-device id. Uses the same shared atomic-write
- * implementation as `src/lib/cli-auth/storage.ts` (`writeJsonFileAtomic`) rather than a
+ * implementation as `src/lib/cli-auth/adapters/active-auth-storage.ts` (`writeJsonFileAtomic`) rather than a
  * copy-pasted duplicate (found by independent review; AGENTS.md §D).
  */
 export function createBootstrapConfigStore(configPath: string) {

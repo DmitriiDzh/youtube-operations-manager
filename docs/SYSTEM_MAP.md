@@ -50,7 +50,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 ### 2.2 Credential resolution — **IMPLEMENTED**
 
 - **Ответственность:** превращение `CredentialRef` (`{ userId }` или явные токены) в `ResolvedCredentials` с проверкой достаточности OAuth-скоупов и автообновлением истёкшего access token.
-- **Файлы:** `src/lib/video-metadata/adapters/google-auth.ts` (`resolveGoogleCredentials`, используется всеми доменными модулями, включая `channel-sync`), `src/lib/cli-auth/*` (для CLI/MCP: `service.ts`, `storage.ts` — файл `data/auth-context.json` с активным локальным пользователем, `errors.ts` — типизированные коды ошибок `AUTH_*`).
+- **Файлы:** `src/lib/video-metadata/adapters/google-auth.ts` (`resolveGoogleCredentials`, используется всеми доменными модулями, включая `channel-sync`), `src/lib/cli-auth/*` (для CLI/MCP: contracts/schemas/services/adapters/index паттерн — `services.ts`, `adapters/active-auth-storage.ts` — файл `data/auth-context.json` с активным локальным пользователем, `contracts.ts` — типизированные коды ошибок `AUTH_*` и доменные типы).
 - **Точки входа:** `authResolver.resolve({ credentialRef, requiredScopes })` — вызывается из `services.ts` каждого доменного модуля.
 - **Зависимости:** `src/lib/db.ts` (чтение/обновление токенов), `src/lib/auth.ts` (OAuth2-клиент).
 - **Read/Write:** может обновлять (refresh) и персистить токены; не пишет в YouTube.

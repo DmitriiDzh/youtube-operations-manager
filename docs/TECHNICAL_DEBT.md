@@ -450,7 +450,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 
 ## RISK-22 — `writeJsonFileAtomic` has no Windows EBUSY/EPERM retry, unlike the sibling snapshot-publish path — FIXED, 2026-09-19
 
-- **Affected components:** `src/lib/atomic-json-file/services.ts` (`writeJsonFileAtomic`); consumers `src/lib/cli-auth/storage.ts` (auth-context.json) and bootstrap-config's save path.
+- **Affected components:** `src/lib/atomic-json-file/services.ts` (`writeJsonFileAtomic`); consumers `src/lib/cli-auth/adapters/active-auth-storage.ts` (auth-context.json) and bootstrap-config's save path.
 - **Current behavior:** This module's own doc comment cites the Windows EBUSY/EPERM retry-with-backoff fix already applied in `src/lib/snapshot/adapters/filesystem.ts`'s `publishSnapshot` as the pattern it consolidates, but `writeJsonFileAtomic`'s own `rename(tmpPath, targetPath)` has no such retry.
 - **Actual risk:** On Windows — the primary platform for the just-shipped first local test build (`docs/FIRST_LOCAL_TEST_BUILD.md`) — a transiently-held file handle (antivirus, indexer, a just-closed handle) can make a bare `rename()` fail even with nothing genuinely holding a competing lock, throwing unhandled on every login (`auth-context.json`) or bootstrap-config save.
 - **Required remediation:** Apply the same retry-with-backoff already used by `filesystem.ts`'s `publishSnapshot`, in the one shared `writeJsonFileAtomic` implementation rather than a second copy.
@@ -461,7 +461,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 
 ## RISK-23 — `createActiveAuthStorage`'s single string parameter silently changed meaning (breaking change with no type signal) — OPEN, 2026-09-19
 
-- **Affected components:** `src/lib/cli-auth/storage.ts` (`createActiveAuthStorage`).
+- **Affected components:** `src/lib/cli-auth/adapters/active-auth-storage.ts` (`createActiveAuthStorage`).
 - **Current behavior:** On `main`, the parameter is a base directory (`createActiveAuthStorage(baseDir = process.cwd())`, internally joined with `data/auth-context.json`). On this branch, the same parameter position now means "the full context file path" (`createActiveAuthStorage(contextPath = getProductionAppPaths().authContextPath)`), with no type-level signal that the meaning changed.
 - **Actual risk:** A caller written against the old convention that still passes a directory would get a file written literally named after that directory, and reads would silently return `null`, making "no active user" indistinguishable from "context file genuinely absent." Currently only two in-repo call sites exist and both use the default, so this is latent rather than actively triggered.
 - **Required remediation:** Rename the parameter/add a type distinguishing "directory" from "full path," or provide a migration note for any external caller.
@@ -472,7 +472,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 ## RISK-24 — App-data directory no longer locked to `0700` on every boot for Web-UI-only installs — FIXED, 2026-09-19
 
 - **Affected components:** `src/lib/db.ts` (unconditional `mkdirSync(appPaths.appDataDir, { recursive: true })` at module load).
-- **Current behavior:** On `main`, `ensureDataDir` (`cli-auth/storage.ts`) did `mkdir` + `chmod(dataDir, 0o700)` on the directory holding the DB file. On this branch, that `chmod` only happens as a side effect of `writeJsonFileAtomic` (used for `auth-context.json`/`bootstrap-config.json`), reached only via CLI-auth flows — confirmed via grep that no file under `src/app/` (the Web/NextAuth login path) references cli-auth at all.
+- **Current behavior:** On `main`, `ensureDataDir` (`cli-auth/adapters/active-auth-storage.ts`) did `mkdir` + `chmod(dataDir, 0o700)` on the directory holding the DB file. On this branch, that `chmod` only happens as a side effect of `writeJsonFileAtomic` (used for `auth-context.json`/`bootstrap-config.json`), reached only via CLI-auth flows — confirmed via grep that no file under `src/app/` (the Web/NextAuth login path) references cli-auth at all.
 - **Actual risk:** `db.ts`'s unguarded `mkdirSync` now runs first on every boot, including pure-Web-UI-only installs. RISK-07's accepted plaintext-OAuth-token-storage tradeoff assumed directory-level (`0700`) protection; a Web-UI-only operator's app-data directory (holding that same plaintext-token DB) never gets locked down for the life of the installation.
 - **Required remediation:** Apply the same `chmod(appDataDir, 0o700)` unconditionally in `db.ts`'s own directory-creation path, not only as an incidental side effect of an unrelated CLI-only write helper.
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE`, `BLOCKS_NETWORK_DEPLOYMENT` — directly weakens RISK-07's stated mitigation.

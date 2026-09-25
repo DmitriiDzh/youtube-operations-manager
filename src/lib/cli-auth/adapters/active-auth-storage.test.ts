@@ -3,7 +3,7 @@ import { mkdtemp, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
-import { createActiveAuthStorage } from "./storage";
+import { createActiveAuthStorage } from "./active-auth-storage";
 
 test("active auth storage writes atomically and reads context", async () => {
   const baseDir = await mkdtemp(path.join(tmpdir(), "auth-storage-"));
