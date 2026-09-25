@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { AnalyticsBreakdownCard } from "./analytics-breakdown-card";
 import { labelTrafficSource } from "@/lib/analytics/breakdown-labels";
+import { useTopVideos } from "./use-top-videos";
 
 type SyncedChannel = { channelId: string; title: string };
 
@@ -22,6 +23,7 @@ export function ContentAnalyticsPanel() {
   const [channel, setChannel] = useState<SyncedChannel | null>(null);
   const [loadingChannel, setLoadingChannel] = useState(true);
   const [periodDays, setPeriodDays] = useState<number>(28);
+  const { topVideos, loading: loadingTopVideos } = useTopVideos(channel?.channelId ?? null, periodDays, 10);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,6 +84,32 @@ export function ContentAnalyticsPanel() {
         labelFor={labelTrafficSource}
         formatValue={(v) => `${v.toLocaleString()} views`}
       />
+
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+        <h4 className="mb-3 text-sm font-medium text-zinc-300">Top videos</h4>
+        {loadingTopVideos && topVideos.length === 0 ? (
+          <p className="text-sm text-zinc-500">Loading...</p>
+        ) : topVideos.length === 0 ? (
+          <p className="text-sm text-zinc-500">
+            No collected data for this period yet — use &ldquo;Collect now&rdquo; in the Overview tab to fetch it.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {topVideos.map((item) => (
+              <li key={item.videoId} className="flex items-center gap-3 text-sm">
+                {item.thumbnail ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={item.thumbnail} alt="" className="h-9 w-16 rounded object-cover" />
+                ) : (
+                  <div className="h-9 w-16 rounded bg-zinc-800" />
+                )}
+                <span className="flex-1 truncate text-zinc-300">{item.title}</span>
+                <span className="text-zinc-400">{item.views.toLocaleString()} views</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

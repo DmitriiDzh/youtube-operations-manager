@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { computeDefaultPeriodRange, computePercentChange, formatWatchTimeHours } from "@/lib/analytics/period";
 import { AnalyticsLineChart } from "./analytics-line-chart";
 import { MetricDelta } from "./metric-delta";
+import { useTopVideos } from "./use-top-videos";
 
 /**
  * Studio-parity Slice O1 (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §2.4) -- real
@@ -61,19 +62,6 @@ type ChannelOverview = {
   };
 };
 
-type MetricRow = {
-  videoId: string;
-  metricDate: string;
-  metricName: string;
-  metricValue: number;
-};
-
-type SyncedVideo = {
-  videoId: string;
-  title: string;
-  thumbnails: Record<string, { url: string }>;
-};
-
 type DataQualityReport = {
   coveredDates: string[];
   uncoveredDates: string[];
@@ -97,8 +85,10 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
   const [loadingOverview, setLoadingOverview] = useState(false);
   const [overviewError, setOverviewError] = useState<string | null>(null);
 
-  const [topContent, setTopContent] = useState<Array<{ videoId: string; title: string; thumbnail: string | null; views: number }>>([]);
-  const [loadingTopContent, setLoadingTopContent] = useState(false);
+  const { topVideos: topContent, loading: loadingTopContent, refetch: refetchTopVideos } = useTopVideos(
+    channel?.channelId ?? null,
+    periodDays
+  );
 
   const [dataQuality, setDataQuality] = useState<DataQualityReport | null>(null);
 
@@ -167,45 +157,6 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     }
   }, []);
 
-  const fetchTopContent = useCallback(async (channelId: string, days: number) => {
-    setLoadingTopContent(true);
-    try {
-      const { startDate, endDate } = computeDefaultPeriodRange(days);
-      const [metricsRes, videosRes] = await Promise.all([
-        fetch(`/api/channels/${encodeURIComponent(channelId)}/analytics`),
-        fetch(`/api/channels/${encodeURIComponent(channelId)}/videos`),
-      ]);
-      const metricsData = await metricsRes.json();
-      const videosData = await videosRes.json();
-      if (!metricsRes.ok || !videosRes.ok || !Array.isArray(metricsData.rows) || !Array.isArray(videosData.videos)) {
-        setTopContent([]);
-        return;
-      }
-
-      const viewsByVideo = new Map<string, number>();
-      for (const row of metricsData.rows as MetricRow[]) {
-        if (row.metricName !== "views") continue;
-        if (row.metricDate < startDate || row.metricDate > endDate) continue;
-        viewsByVideo.set(row.videoId, (viewsByVideo.get(row.videoId) ?? 0) + row.metricValue);
-      }
-
-      const videosById = new Map((videosData.videos as SyncedVideo[]).map((v) => [v.videoId, v]));
-      const ranked = [...viewsByVideo.entries()]
-        .map(([videoId, views]) => ({
-          videoId,
-          views,
-          title: videosById.get(videoId)?.title ?? videoId,
-          thumbnail: Object.values(videosById.get(videoId)?.thumbnails ?? {})[0]?.url ?? null,
-        }))
-        .sort((a, b) => b.views - a.views)
-        .slice(0, 5);
-
-      setTopContent(ranked);
-    } finally {
-      setLoadingTopContent(false);
-    }
-  }, []);
-
   // Read-only diagnostic (Phase 8 follow-up, slice 2) -- scoped to the same range "Top content"
   // uses (the locally-collected data window), since that's what this is actually answering:
   // "can I trust the numbers 'Top content' just showed for this period." Failure is silent
@@ -236,9 +187,8 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
   useEffect(() => {
     if (!channel) return;
     void fetchOverview(channel.channelId, periodDays);
-    void fetchTopContent(channel.channelId, periodDays);
     void fetchDataQuality(channel.channelId, periodDays);
-  }, [channel, periodDays, fetchOverview, fetchTopContent, fetchDataQuality]);
+  }, [channel, periodDays, fetchOverview, fetchDataQuality]);
 
   // Manual counterpart to the daily background auto-collect (dashboard.tsx's own mount effect) --
   // same underlying endpoint `AnalyticsManager`'s own "Collect now" button already calls
@@ -254,9 +204,9 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     try {
       // startDate/endDate are required by collectMetricsInputSchema -- reuse the exact same
       // "ends yesterday, spans the currently-selected period" range already computed for
-      // fetchOverview/fetchTopContent/fetchDataQuality above, so a manual collect covers what's
-      // actually being viewed (found live, 2026-09-25: an empty body failed schema validation
-      // with "Invalid collect metrics input", since these two fields have no default).
+      // fetchOverview/fetchDataQuality above, so a manual collect covers what's actually being
+      // viewed (found live, 2026-09-25: an empty body failed schema validation with "Invalid
+      // collect metrics input", since these two fields have no default).
       const { startDate, endDate } = computeDefaultPeriodRange(periodDays);
       const res = await fetch(`/api/channels/${encodeURIComponent(channel.channelId)}/analytics/collect`, {
         method: "POST",
@@ -282,7 +232,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
       });
       await Promise.all([
         fetchOverview(channel.channelId, periodDays),
-        fetchTopContent(channel.channelId, periodDays),
+        refetchTopVideos(),
         fetchDataQuality(channel.channelId, periodDays),
       ]);
     } catch {
@@ -290,7 +240,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     } finally {
       setCollecting(false);
     }
-  }, [channel, periodDays, fetchOverview, fetchTopContent, fetchDataQuality]);
+  }, [channel, periodDays, fetchOverview, refetchTopVideos, fetchDataQuality]);
 
   const chartData = useMemo(() => {
     if (!overview) return [];
