@@ -37,7 +37,7 @@ function createServicesFixture(opts: {
   const channelAccess = createFakeChannelAccess();
   const analyticsCalls: Array<{ channelId: string; videoId: string }> = [];
   const channelAnalyticsCalls: Array<{ channelId: string; startDate: string; endDate: string }> = [];
-  const channelBreakdownCalls: Array<{ channelId: string; dimensions: string; startDate: string; endDate: string }> = [];
+  const channelBreakdownCalls: Array<{ channelId: string; dimensions: string; startDate: string; endDate: string; filters?: string }> = [];
   const upsertedRows: Array<{
     channelId: string;
     videoId: string;
@@ -81,8 +81,15 @@ function createServicesFixture(opts: {
       endDate: string;
       dimensions: string;
       metricNames: readonly string[];
+      filters?: string;
     }) {
-      channelBreakdownCalls.push({ channelId: args.channelId, dimensions: args.dimensions, startDate: args.startDate, endDate: args.endDate });
+      channelBreakdownCalls.push({
+        channelId: args.channelId,
+        dimensions: args.dimensions,
+        startDate: args.startDate,
+        endDate: args.endDate,
+        filters: args.filters,
+      });
       const response = (opts.channelBreakdownResponses ?? {})[args.dimensions];
       if (response instanceof Error) throw response;
       return response ?? [];
@@ -1251,6 +1258,10 @@ test("getVideoRetentionCurve propagates a credential-resolution failure (e.g. mi
   assert.equal(channelBreakdownCalls.length, 0, "no real Analytics API call was made once credentials failed to resolve");
 });
 
+// Independent review round 2 (2026-09-26): the original version of this test asserted only
+// `dimensions`, never the actual `filters` value passed to the gateway -- a regression that
+// dropped or malformed the per-video filter (e.g. silently returning a channel-wide curve) would
+// not have been caught despite the test's own name claiming to verify exactly this.
 test("getVideoRetentionCurve queries with a video filter and returns points sorted by elapsed ratio", async () => {
   const { services, channelAccess, channelBreakdownCalls } = createServicesFixture({
     videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
@@ -1279,6 +1290,7 @@ test("getVideoRetentionCurve queries with a video filter and returns points sort
   );
   assert.equal(result.points[0].audienceWatchRatio, 0.97);
   assert.equal(channelBreakdownCalls[0]?.dimensions, "elapsedVideoTimeRatio");
+  assert.equal(channelBreakdownCalls[0]?.filters, "video==v1", "must scope the query to exactly the requested video, never a channel-wide curve");
 });
 
 test("getComparableAgeComparison fails closed when the requested channel is not the caller's active channel", async () => {

@@ -853,10 +853,17 @@ activity), not the same "silently defaulted a missing per-day-per-metric value t
 
 Also confirmed live and worth recording here since it corrects §7 of `contracts.ts`'s own
 provenance note: `impressions`/`impressionClickThroughRate` (Studio's thumbnail-impressions/CTR
-widgets, both on Home and on Analytics' Content sub-tab) are rejected by the real API as unknown
-metric identifiers. These are not the same as the `annotation*`/`card*` legacy metrics already in
-`ANALYTICS_METRIC_NAMES` (dead since 2019, always zero) — they are a structurally different,
-genuinely unavailable-via-public-API capability. No code path in this repository requests them.
+widgets, both on Home and on Analytics' Content sub-tab), under those exact names, are rejected by
+the real API as unknown metric identifiers. These are not the same as the `annotation*`/`card*`
+legacy metrics already in `ANALYTICS_METRIC_NAMES` (dead since 2019, always zero) — they are a
+structurally different capability. **Corrected 2026-09-26 (§14.12 below, found during the deep-
+parity plan's own research):** the real identifiers Google actually shipped
+(`videoThumbnailImpressions`/`videoThumbnailImpressionsClickThroughRate`, added 2026-01-15) *are*
+recognized by the API — the 2026-09-23 rejection above was the wrong names, not a capability gap —
+but they belong to a structurally different YouTube Reporting API v1 "Reach report" (a bulk,
+scheduled-job system), never this ad-hoc `reports.query` endpoint, so the practical conclusion is
+unchanged: no code path in this repository requests them, and none can via this endpoint regardless
+of naming.
 
 **Totals will not exactly match Studio's own displayed numbers for the same nominal date range,
 and this is expected, not a bug.** Cross-checked live 2026-09-23 against the real "Rural Japan
@@ -1058,8 +1065,65 @@ MCP `analytics_weekly_reports_list`/`analytics_weekly_report_get`, CLI `analytic
 
 **Known, tracked duplication (`docs/TECHNICAL_DEBT.md` RISK-50):** the report's own `topContent`
 ranking (group `views` by video, sum, sort, top 5) is a second implementation of the same
-aggregation `channel-overview-panel.tsx`'s client-side `fetchTopContent` already does for the
-Analytics "Overview" tab -- not unified in this slice (see RISK-50 for why).
+aggregation the client-side `use-top-videos.ts` hook already does for the Analytics
+Overview/Content tabs (§14.12 below) -- not unified in this slice (see RISK-50 for why; that entry
+itself needed a 2026-09-26 correction since the client-side implementation it names moved from
+`channel-overview-panel.tsx`'s own inline `fetchTopContent` into that shared hook).
+
+### 14.12 Content/Audience breakdown cards + video retention curve (deep-parity plan, BL-092..098) — **IMPLEMENTED, not yet in `dev`**
+
+`docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md` -- extends §14.8's Overview-only Studio
+parity to the Content and Audience sub-tabs, plus closes §14.8's own impressions/CTR question
+(corrected above, not merely repeated).
+
+**One new report shape, one new gateway function, reused six ways.** Every capability this slice
+adds -- traffic sources, device type, age/gender, geography, subscribed status, content format,
+and the video retention curve -- shares an identical wire shape once dimension/metric names differ:
+a single date range, no `day` dimension, one row per distinct dimension-value combination, an
+optional `filters=video==<id>` for the one per-video case (retention). `queryChannelBreakdownReport`
+(`youtube-read-gateway/analytics-api.ts`) is the single function for all seven, live-confirmed
+against a real channel for each one individually before being written (not assumed from
+documentation) -- the same "never trust a documented name until a real response confirms it"
+discipline `CHANNEL_OVERVIEW_METRIC_NAMES`'s own doc comment (§14.8) already established, now paying
+off in the other direction: six of seven confirmed clean on the first try.
+
+**Two service methods, both live reads, never persisted** (same `getChannelOverview` precedent as
+§14.8, not `collectMetrics`'s daily-collection model): `getChannelBreakdown` (parameterized by
+`CHANNEL_BREAKDOWN_PRESETS`, `contracts.ts` -- the dimension/metric pair for each of the six
+breakdown kinds) and `getVideoRetentionCurve` (the one case needing a `videoId`, which it verifies
+belongs to `channelId` via `videoStore.listVideosByChannel` before querying -- the same discipline
+§14.10's `getComparableAgeComparison` already uses for its own `videoIds` input).
+
+**Impressions/CTR, corrected (see §14.8's own updated paragraph above for the full story):** the
+real identifiers Google shipped 2026-01-15 are recognized by the API but belong to a structurally
+different Reporting API v1 bulk-job "Reach report," never this app's ad-hoc query gateway --
+confirmed by exhausting every plausible request shape against the real API (channel-level, with
+`dimensions=day`, paired with `views`, filtered to one video) and getting "query not supported" for
+every one once the metric name itself stopped being rejected outright. This capability is
+**out of scope**, not merely unbuilt -- reaching it would need a second, structurally different
+Google API integration this repository has never built (a scheduled-job model: create a job, then
+poll/download generated report files, rather than a single request/response call).
+
+**Realtime panel, also confirmed out of scope:** a direct probe for "today"/"the last 48 hours"
+against the same query endpoint returned empty rows -- the documented 48-72 hour processing delay
+(already the reason `computeDefaultAutoCollectionRange`, §14.6, targets "yesterday" rather than
+"today") applies uniformly to both the ad-hoc query API and the bulk Reporting API. Studio's own
+live-updating 48h/hourly panel and live subscriber ticker are built on infrastructure neither public
+surface exposes.
+
+**Content-format label casing, genuinely unresolved (independent review, round 1, 2026-09-26):**
+this session directly observed a real API response returning `"videoOnDemand"` (lowerCamelCase) for
+`creatorContentType`, but a later review round found Google's own published dimension docs state
+uppercase-snake-case values (`VIDEO_ON_DEMAND`, `SHORTS`, `LIVE_STREAM`, `STORY`). A live re-probe to
+settle the discrepancy hit an unrelated OAuth token-refresh failure and could not complete this
+session. `breakdown-labels.ts` maps both casings rather than picking one, with the discrepancy
+documented in a code comment -- treat this as open until re-probed against a real response.
+
+**Traffic-source label accuracy (independent review, round 2, 2026-09-26):** `SUBSCRIBER`
+(`insightTrafficSourceType`) was initially labeled "Subscription feed," but Google's own docs
+describe it as views referred from either the YouTube homepage feed *or* subscription features --
+homepage-feed views are commonly the larger share of this bucket for many channels. Corrected to
+match the documented scope of the value, not just its most suggestive-sounding name.
 
 ## 15. Cloud connection (`src/lib/cloud-connection/`) — slice 1 of 3, not yet in `dev`
 

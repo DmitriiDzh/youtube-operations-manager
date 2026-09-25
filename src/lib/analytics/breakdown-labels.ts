@@ -9,7 +9,11 @@
 // what that specific enum value means, per the API's own documented semantics.
 const TRAFFIC_SOURCE_LABELS: Record<string, string> = {
   NO_LINK_OTHER: "Direct or unknown",
-  SUBSCRIBER: "Subscription feed",
+  // Independent review round 2 (2026-09-26) found the original "Subscription feed" label was too
+  // narrow: Google's own dimension docs describe SUBSCRIBER as views referred from either the
+  // YouTube homepage feed OR subscription features -- homepage-feed views are commonly the larger
+  // share of this bucket, so a pure "subscription" label would materially mislead a channel owner.
+  SUBSCRIBER: "Home feed or subscriptions",
   YT_CHANNEL: "Channel page",
   YT_SEARCH: "YouTube search",
   RELATED_VIDEO: "Suggested videos",
@@ -21,8 +25,12 @@ const TRAFFIC_SOURCE_LABELS: Record<string, string> = {
   SHORTS: "Shorts feed",
   END_SCREEN: "End screen",
   ANNOTATION: "Annotation",
-  CAMPAIGN_CARD: "Campaign card",
-  CAMPAIGN_CARD_EXTERNAL: "External campaign",
+  // Same review: Google's docs describe this as views from a claimed, user-uploaded video the
+  // content owner used to promote the viewed content (a Content ID promotion mechanism), not a
+  // literal UI "card" -- relabeled to match that documented meaning, not the enum name's own
+  // surface resemblance to "cardImpressions"/"cardClicks" (an unrelated, legacy end-screen metric).
+  CAMPAIGN_CARD: "Content ID promotion",
+  CAMPAIGN_CARD_EXTERNAL: "External Content ID promotion",
   PROMOTED: "Promoted content",
   ADVERTISING: "Advertising",
 };

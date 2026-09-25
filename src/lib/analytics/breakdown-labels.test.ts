@@ -16,7 +16,12 @@ import {
 
 test("labelTrafficSource maps every raw value the live probe actually observed", () => {
   assert.equal(labelTrafficSource(["RELATED_VIDEO"]), "Suggested videos");
-  assert.equal(labelTrafficSource(["SUBSCRIBER"]), "Subscription feed");
+  // Independent review round 2 (2026-09-26): this test originally asserted "Subscription feed",
+  // copied from the implementation's own (then-inaccurate) map rather than independently checked
+  // against SUBSCRIBER's documented meaning -- exactly the §L failure mode this test claims to
+  // avoid. Google's own docs describe SUBSCRIBER as the YouTube home feed OR subscription
+  // features, so the expected value here is corrected to match that documented scope.
+  assert.equal(labelTrafficSource(["SUBSCRIBER"]), "Home feed or subscriptions");
   assert.equal(labelTrafficSource(["YT_SEARCH"]), "YouTube search");
   assert.equal(labelTrafficSource(["NO_LINK_OTHER"]), "Direct or unknown");
 });

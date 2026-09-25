@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { computeDefaultPeriodRange } from "@/lib/analytics/period";
 
 type MetricRow = { videoId: string; metricDate: string; metricName: string; metricValue: number };
@@ -18,8 +18,18 @@ export function useTopVideos(channelId: string | null, periodDays: number, limit
   const [topVideos, setTopVideos] = useState<TopVideoRow[]>([]);
   const [loading, setLoading] = useState(false);
 
+  // Independent review round 2 (2026-09-26): a plain effect-scoped `cancelled` flag (the pattern
+  // `AnalyticsBreakdownCard` uses) does not protect the exposed `refetch()` -- it is called from
+  // outside this hook's own effect (`channel-overview-panel.tsx`'s `handleCollect`, after a
+  // multi-second `collectMetrics` run), so a period switch that starts and resolves its own fetch
+  // while an earlier `refetch()` is still in flight could let the stale `refetch()` response
+  // overwrite the newer period's data. A shared request-sequence ref covers both call paths: only
+  // the response from whichever call started last is ever applied.
+  const latestRequestId = useRef(0);
+
   const fetchTopVideos = useCallback(async () => {
     if (!channelId) return;
+    const requestId = ++latestRequestId.current;
     setLoading(true);
     try {
       const { startDate, endDate } = computeDefaultPeriodRange(periodDays);
@@ -29,6 +39,7 @@ export function useTopVideos(channelId: string | null, periodDays: number, limit
       ]);
       const metricsData = await metricsRes.json();
       const videosData = await videosRes.json();
+      if (requestId !== latestRequestId.current) return; // a newer request has since started
       if (!metricsRes.ok || !videosRes.ok || !Array.isArray(metricsData.rows) || !Array.isArray(videosData.videos)) {
         setTopVideos([]);
         return;
@@ -54,7 +65,7 @@ export function useTopVideos(channelId: string | null, periodDays: number, limit
 
       setTopVideos(ranked);
     } finally {
-      setLoading(false);
+      if (requestId === latestRequestId.current) setLoading(false);
     }
   }, [channelId, periodDays, limit]);
 
