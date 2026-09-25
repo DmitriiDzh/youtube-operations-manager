@@ -2,9 +2,10 @@
 
 **Status, 2026-09-25: all three slices (data model, enforcement, Settings UI) implemented on
 `feature/agent-connections`.** Both open scope questions in §9 were answered by the owner the same
-day. An independent-review pass found the initial enforcement policy violated the owner's own
-exclusivity rule (an unassigned capability stayed open to any enabled connection even with 2+
-active) -- fixed; see §5/§7's "as actually implemented" notes. Remaining before merge: a full
+day. An `advisor()` consultation (not the independent-review cycle, which had not started yet)
+found the initial enforcement policy violated the owner's own exclusivity rule (an unassigned
+capability stayed open to any enabled connection even with 2+ active) -- fixed before slice 2 was
+presented as complete; see §5/§7's "as actually implemented" notes. Remaining before merge: a full
 independent-review cycle, then the owner's explicit "yes, merge" (`AGENTS.md` §K.2).
 
 ## 1. Origin and problem statement
@@ -141,12 +142,12 @@ hatch back to today's single-agent, zero-behavior-change state):**
 - A capability with **no zone assigned** (`assignedConnectionId IS NULL`) is open to the caller
   **only while exactly one connection is enabled** — trivially unambiguous, since there is only
   one possible caller. **Once two or more connections are enabled, an unassigned capability is
-  rejected for every connection, not shared.** A first implementation (and a first
-  independent-review round) both missed this and left an unassigned capability open to any
-  enabled connection regardless of count — this directly contradicted the owner's own exclusivity
-  requirement ("нельзя одну и ту же зону ответственности дать обоим") and was fixed before this
-  feature was presented as complete, together with regression tests for both the 1-enabled and
-  2-plus-enabled cases.
+  rejected for every connection, not shared.** A first implementation missed this and left an
+  unassigned capability open to any enabled connection regardless of count, caught by an
+  `advisor()` consultation before the independent-review cycle even started — this directly
+  contradicted the owner's own exclusivity requirement ("нельзя одну и ту же зону ответственности
+  дать обоим") and was fixed before this feature was presented as complete, together with
+  regression tests for both the 1-enabled and 2-plus-enabled cases.
 - A capability **assigned** to a specific connection rejects every other connection's calls,
   regardless of how many connections are enabled, including an unregistered/unknown caller.
 

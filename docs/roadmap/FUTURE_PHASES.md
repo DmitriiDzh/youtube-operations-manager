@@ -292,8 +292,9 @@ implemented during Phases 7-10 unless separately approved:
   `ai_localization_*`: "Согласен"; keep the new tables device-local, not synced: "Оставим
   локально"). All three slices (data model, enforcement at the 6 approved MCP tools + CLI
   equivalents, Settings UI) are done on `feature/agent-connections`, not yet merged to `dev`. An
-  independent-review pass found the initial enforcement policy left an unassigned capability open
-  to any enabled connection even with 2+ connections active, contradicting the owner's own
+  `advisor()` consultation (before the independent-review cycle started) found the initial
+  enforcement policy left an unassigned capability open to any enabled connection even with 2+
+  connections active, contradicting the owner's own
   exclusivity rule ("нельзя одну и ту же зону ответственности дать обоим") -- fixed before this
   feature was presented as complete: an unassigned capability is now open only while exactly one
   connection is enabled, rejected for everyone once 2+ are enabled. This work is **not** the same
