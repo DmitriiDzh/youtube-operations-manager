@@ -1,4 +1,4 @@
-# TubeMaster Troubleshooting
+# YouTube Operations Manager -- Troubleshooting
 
 <- [Back to README](../README.md)
 
@@ -72,7 +72,7 @@ Fix:
 
 ## Write guardrail errors
 
-TubeMaster protects sensitive writes with expected channel checks.
+The app protects sensitive writes with expected channel checks.
 
 ### `WRITE_CHANNEL_REQUIRED`
 

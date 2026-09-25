@@ -1,4 +1,4 @@
-# TubeMaster Interfaces: Web UI, CLI, MCP, API
+# YouTube Operations Manager -- Interfaces: Web UI, CLI, MCP, API
 
 <- [Back to README](../README.md)
 

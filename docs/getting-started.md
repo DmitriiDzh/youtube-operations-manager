@@ -1,8 +1,8 @@
-# TubeMaster Getting Started (zero → working)
+# YouTube Operations Manager -- Getting Started (zero → working)
 
 <- [Back to README](../README.md)
 
-This guide gets you from a fresh machine to a working TubeMaster setup for **Web UI + CLI + MCP** channel operations.
+This guide gets you from a fresh machine to a working setup for **Web UI + CLI + MCP** channel operations.
 
 Running the app on more than one machine (e.g. alternating between Windows and macOS) via
 Syncthing? See `docs/RELEASE_LAYOUT.md` for the platform-aware app-data location, first-run
@@ -10,12 +10,12 @@ setup, and the device-switching (export/import handoff) procedure.
 
 ## 1) Google Cloud Console setup
 
-TubeMaster uses Google OAuth + YouTube Data API v3. You must configure both.
+The app uses Google OAuth + YouTube Data API v3. You must configure both.
 
 ### 1.1 Create or select a Google Cloud project
 
 1. Open Google Cloud Console.
-2. Create a new project (or use an existing one for TubeMaster).
+2. Create a new project (or use an existing one).
 3. Keep this project selected for the next steps.
 
 ### 1.2 Enable YouTube Data API v3
@@ -28,7 +28,7 @@ TubeMaster uses Google OAuth + YouTube Data API v3. You must configure both.
 1. Go to **APIs & Services → OAuth consent screen**.
 2. Choose **External** (or Internal if your org requires it).
 3. Complete required app fields.
-4. Add the scopes TubeMaster requests:
+4. Add the scopes the app requests:
    - `openid`
    - `email`
    - `profile`
@@ -141,7 +141,7 @@ npm run cli:video-metadata -- playlist list
 npm run cli:video-metadata -- apply --videoId <VIDEO_ID> --finalTitle "Draft title" --description "Draft description" --expectedChannelId <UC...> --dryRun
 ```
 
-When `--dryRun` is present, TubeMaster returns the proposed metadata without calling the write mutation.
+When `--dryRun` is present, the app returns the proposed metadata without calling the write mutation.
 
 ---
 
@@ -167,7 +167,7 @@ exists there.
 ## Common setup pitfalls
 
 - **OAuth redirect mismatch** → verify both redirect URIs exactly.
-- **Scope-related errors** (`AUTH_SCOPE_INSUFFICIENT`) → include all TubeMaster YouTube scopes (`youtube.readonly`, `youtube`, `youtube.force-ssl`) in consent/client, then revoke or logout and re-auth.
+- **Scope-related errors** (`AUTH_SCOPE_INSUFFICIENT`) → include all of the app's YouTube scopes (`youtube.readonly`, `youtube`, `youtube.force-ssl`) in consent/client, then revoke or logout and re-auth.
 - **No active auth context** (`AUTH_USER_NOT_FOUND`) → run `auth login` and retry.
 - **Write guardrail failures** (`WRITE_CHANNEL_*`) → set/select expected channel and ensure OAuth account matches it.
 
