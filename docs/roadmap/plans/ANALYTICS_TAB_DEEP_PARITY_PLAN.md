@@ -169,13 +169,25 @@ the existing channel-info read (`youtube-read-gateway/data-api.ts`), not the Ana
   clickable; store which is selected; redraw the existing `AnalyticsLineChart` using the selected
   metric's own data/axis scale/units; add the explanation tooltip (static per-metric copy, no new
   API call — the numbers are already fetched). Smallest, highest-value, zero new API surface.
-- **Slice O2 — Chart hover tooltip (exact value + date).** `AnalyticsLineChart` currently has no
-  hover interaction at all (confirm by reading that component before starting) — add a crosshair +
-  point tooltip, matching this app's own `dataviz` skill conventions rather than copying Studio's
-  markup.
-- **Slice O3 — Realtime panel.** New adapter function for the 48h/hourly report (own live probe
-  first), a new small "Realtime" card component, live subscriber count (check whether an existing
-  read already has this before adding a call). Independent of O1/O2.
+- ~~**Slice O2 — Chart hover tooltip.**~~ **DONE, smaller than planned (2026-09-26).** This plan's
+  own first-draft note above was wrong: `AnalyticsLineChart` already had a crosshair + point
+  tooltip before this round (built earlier, BL-072) — never actually re-read before this line was
+  written. The real remaining gap was just date formatting: the tooltip showed a raw `YYYY-MM-DD`
+  string, not Studio's own "Weekday, Mon D, YYYY" wording. Added `formatChartDate` (`period.ts`,
+  parses the date's own UTC components directly so the weekday never shifts with the viewer's local
+  timezone) and wired it into the Overview chart. 2 new tests.
+- **Slice O3 — Realtime panel — CONFIRMED INFEASIBLE via the public API (2026-09-26 probe +
+  research), not merely unconfirmed.** A direct probe against a real channel for "today"/"the last
+  48 hours" via the same `youtubeAnalytics/v2 reports:query` endpoint this app already uses
+  returned genuinely empty rows — confirming (again) the documented 48-72 hour processing delay
+  this app's own `computeDefaultAutoCollectionRange` already works around. Further research found
+  this delay applies to **both** the ad-hoc query API and the bulk Reporting API — neither public
+  surface can produce Studio's live, updating-every-few-seconds 48h hourly bar chart or live
+  subscriber ticker; that panel is built on Studio's own internal, non-public infrastructure, the
+  same class of gap as C3's impressions/CTR funnel (§3.3) and the cross-channel-affinity cards
+  (§4.3). The one genuinely-public piece of this panel — an all-time subscriber count via
+  `channels.list` — is not new: `ChannelOverviewPanel` already displays it ("Current subscribers
+  (all-time)"). **Nothing to build here; moved to permanently out of scope, not merely deferred.**
 - **Slice O4-stub — Advanced-mode explorer.** Explicitly deferred, not part of this plan's
   recommended first assignment (§5) — flag as a future, separately-scoped item only.
 
@@ -345,21 +357,28 @@ Nothing today.
 ## 5. Recommended first assignment, if the owner wants to start now
 
 Smallest-risk-first, mirroring `STUDIO_PARITY_PLAN.md` §6's own reasoning style. **Updated
-2026-09-25 after O1/C1/A1 were actually built/run** (held un-merged pending the owner's own
-end-of-batch approval, per their instruction):
+2026-09-26 — every slice this section originally recommended is now either done or definitively
+resolved as out of scope** (all held un-merged as one batch pending the owner's own end-of-batch
+approval, per their instruction):
 
-1. ~~O1, C1, A1~~ **DONE** — card-click chart switching built and live-verified; both probe slices
-   run against real data. See §0/§3.3/§4.3 for the two corrected findings (impressions/CTR needs a
-   structurally different API; five of the eight Audience dimensions are now confirmed, not just
-   documented).
-2. **Next up, all now confirmed-feasible with no remaining open question: O2, O3, C2, C4, C5, A2,
-   A3, A4, A6.** Any subset of these can proceed in any order without blocking each other — none
-   depend on anything still unresolved.
-3. **Still blocked on their own unresolved research question (not answered by this round's probe):
-   A5** (new/casual/regular segmentation) **and A7-deferred** (heatmap, cross-channel affinity) —
-   do not assign until a further, more targeted research pass answers those specific questions.
-4. **Moved out of this round entirely: C3 (impressions/CTR funnel)** — confirmed to need a new
-   YouTube Reporting API v1 integration, not a slice-sized addition to the existing gateway pattern;
-   treat as its own future scoping decision, separate from the rest of this plan.
-5. **O4-stub, C6-deferred** — still not recommended for this round (Advanced-mode explorer scoping,
-   Shorts-remix data respectively), unchanged from the original assessment.
+1. **DONE: O1, O2, C1, A1, C2, C4 ("Intro" mode only), C5, A2, A3, A4, A6.** Card-click chart
+   switching + tooltip date formatting (Overview); both research probes; traffic sources, retention
+   curve, and top videos (Content); device type, age/gender, geography, subscribed status, and
+   content format (Audience). All live-verified in the browser against the real "Tropico Jazz"
+   channel with real data; `npm test` clean at every step (final count: 1444/1444); no console
+   errors. Nine backlog rows (BL-092 through BL-097 plus this line's own O2/O3 follow-up) record
+   the detailed history.
+2. **CONFIRMED OUT OF SCOPE, not merely deferred: O3 (realtime panel) and C3 (impressions/CTR
+   funnel).** Both need infrastructure this app's existing gateway pattern cannot reach at all —
+   O3 needs Studio's own non-public real-time system (the public API's 48-72h processing delay
+   applies uniformly, confirmed by a direct probe); C3 needs a structurally different API (YouTube
+   Reporting API v1's bulk job system, not the ad-hoc query endpoint). Neither should be assigned
+   as a normal slice of this plan; each would need its own separate scoping decision if ever
+   pursued.
+3. **Still genuinely blocked on an unresolved research question: A5** (new/casual/regular
+   segmentation) **and A7-deferred** (hour-of-day heatmap, cross-channel affinity, "videos growing
+   your audience"). Unlike O3/C3 above, these were never actually probed this round (no obvious
+   dimension name existed to try) — a real, separate research pass could still resolve them; do not
+   assign until one does.
+4. **O4-stub (Advanced-mode explorer), C6-deferred (Top Remixed)** — still not recommended for this
+   round, unchanged from the original assessment.

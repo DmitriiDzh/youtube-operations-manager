@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { computeDefaultPeriodRange, computePercentChange, formatWatchTimeHours } from "@/lib/analytics/period";
+import { computeDefaultPeriodRange, computePercentChange, formatChartDate, formatWatchTimeHours } from "@/lib/analytics/period";
 import { AnalyticsLineChart } from "./analytics-line-chart";
 import { MetricDelta } from "./metric-delta";
 import { useTopVideos } from "./use-top-videos";
@@ -409,7 +409,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
           )}
 
           <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-            <AnalyticsLineChart data={chartData} formatValue={chartFormatValue} />
+            <AnalyticsLineChart data={chartData} formatValue={chartFormatValue} formatDate={formatChartDate} />
           </div>
 
           <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
