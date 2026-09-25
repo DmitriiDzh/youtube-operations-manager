@@ -208,10 +208,16 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     setCollecting(true);
     setCollectMessage(null);
     try {
+      // startDate/endDate are required by collectMetricsInputSchema -- reuse the exact same
+      // "ends yesterday, spans the currently-selected period" range already computed for
+      // fetchOverview/fetchTopContent/fetchDataQuality above, so a manual collect covers what's
+      // actually being viewed (found live, 2026-09-25: an empty body failed schema validation
+      // with "Invalid collect metrics input", since these two fields have no default).
+      const { startDate, endDate } = computeDefaultPeriodRange(periodDays);
       const res = await fetch(`/api/channels/${encodeURIComponent(channel.channelId)}/analytics/collect`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ startDate, endDate }),
       });
       const data = await res.json();
       if (!res.ok) {
