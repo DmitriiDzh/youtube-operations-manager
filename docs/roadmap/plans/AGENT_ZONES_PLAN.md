@@ -74,7 +74,8 @@ effect.
 
 ## 4. Concurrency hazard found during design — active-channel state
 
-`getActiveChannelId(userId)` (`src/lib/channel-sync/services.ts`) is keyed by the **OAuth user**,
+`getActiveChannelId(userId)` (defined in `src/lib/channel-access/service.ts`, called from
+`src/lib/channel-sync/services.ts` via `deps.channelAccess`) is keyed by the **OAuth user**,
 not by agent connection. In this app's actual deployment model (single local operator, one real
 Google identity — `AGENTS.md` §F's own accepted "no per-user ownership boundary" tradeoff), two
 agent connections sharing that one identity would also share one global "active channel." If
@@ -178,8 +179,10 @@ owner actually approved zoning for (§9's answer), rather than touching all ~46
   `AGENT_ZONE_VIOLATION` is converted to the same `isError` tool-response shape every other
   `DomainError` in this file already uses (`toolErrorResult`), never a raw thrown exception.
 - **CLI** (`src/cli/video-metadata.ts`): each of the same 6 actions calls
-  `assertAgentAllowedForCapability` as its own first line, immediately after resolving
-  `channelId`/`credentialRef` where applicable. This is deliberately *not* a single blanket
+  `assertAgentAllowedForCapability` before its own mutation runs (immediately after resolving
+  `channelId`/`credentialRef` where applicable, for 5 of the 6; `changeset import` reads the
+  uploaded workbook into memory first, a non-persisting read with no side effect, before its own
+  zone check). This is deliberately *not* a single blanket
   `command`-string gate the way the device-availability check above it is — `parsedArgs.command`
   alone is ambiguous across namespaces here (e.g. `"create"` is both `changeset create` and
   `playlist create`), so each zoned call site names its own capability id explicitly instead.

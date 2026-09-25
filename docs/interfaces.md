@@ -655,7 +655,9 @@ not a second permission tier.
 - **Identity**: each MCP server process resolves its own agent-connection id once at startup from
   the `AGENT_CONNECTION_ID` environment variable (set in that client's own MCP launch config); the
   CLI resolves the same identity per invocation from `--agentConnectionId` (priority) or the same
-  env var, resolving an empty string to `null` rather than a literal empty-string identity.
+  env var. Either way, an empty value never becomes a real identity: the env var resolves an empty
+  value to `null`, while an empty `--agentConnectionId` flag value is rejected outright as
+  `validation_failed`.
 - **Management UI**: Settings → AI Agent → "Agent connections & responsibility zones"
   (`src/components/agent-connections-manager.tsx`) — register a connection (id + label, no
   secret), enable/disable it, and assign each of the 6 actions above to exactly one connection (or
