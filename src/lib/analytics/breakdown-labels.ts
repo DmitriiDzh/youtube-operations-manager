@@ -71,14 +71,27 @@ export function labelSubscribedStatus([value]: string[]): string {
   return SUBSCRIBED_STATUS_LABELS[value] ?? value;
 }
 
-// "videoOnDemand" is confirmed against a real response (BL-093/BL-094 probe, 2026-09-25); this
-// channel has no Shorts/Live content, so the other two values are unconfirmed guesses -- a
-// mismatch here just falls through to the raw string below, never breaks anything.
+// "videoOnDemand" (lowerCamelCase) is directly confirmed against a real API response body this
+// session (BL-093/BL-094 probe, 2026-09-25 -- the literal JSON `"rows": [["videoOnDemand", ...]]`
+// was observed, not inferred). An independent review round then found Google's own dimension docs
+// state uppercase-snake-case values (`LIVE_STREAM`/`SHORTS`/`STORY`/`VIDEO_ON_DEMAND`) for this
+// same dimension -- a genuine, unresolved discrepancy between a real observed response and the
+// current published docs (docs can lag or describe a different report family). A live re-probe to
+// settle it hit an unrelated OAuth refresh failure and could not be completed this session. Rather
+// than pick one source over the other, both casings are mapped -- this channel has no Shorts/Live
+// content to confirm either casing for those two values specifically, so `label` for them remains
+// unconfirmed either way; the raw-string fallback below means a genuine mismatch degrades to a
+// readable-enough raw value, never a crash or a wrong label.
 const CONTENT_FORMAT_LABELS: Record<string, string> = {
   videoOnDemand: "Videos",
+  VIDEO_ON_DEMAND: "Videos",
   shorts: "Shorts",
+  SHORTS: "Shorts",
   liveStream: "Live",
   live: "Live",
+  LIVE_STREAM: "Live",
+  story: "Story",
+  STORY: "Story",
 };
 
 export function labelContentFormat([value]: string[]): string {

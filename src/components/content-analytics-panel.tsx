@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { computeDefaultPeriodRange } from "@/lib/analytics/period";
 import { AnalyticsBreakdownCard } from "./analytics-breakdown-card";
 import { AnalyticsLineChart } from "./analytics-line-chart";
@@ -32,29 +32,35 @@ export function ContentAnalyticsPanel() {
   const [retentionPoints, setRetentionPoints] = useState<RetentionPoint[] | null>(null);
   const [retentionError, setRetentionError] = useState<string | null>(null);
 
-  const fetchRetention = useCallback(async (channelId: string, videoId: string, days: number) => {
-    setRetentionPoints(null);
-    setRetentionError(null);
-    try {
-      const { startDate, endDate } = computeDefaultPeriodRange(days);
-      const res = await fetch(
-        `/api/channels/${encodeURIComponent(channelId)}/videos/${encodeURIComponent(videoId)}/analytics/retention?startDate=${startDate}&endDate=${endDate}`
-      );
-      const data = await res.json();
-      if (!res.ok) {
-        setRetentionError(data.message ?? "Failed to load retention data");
-        return;
-      }
-      setRetentionPoints(data.points as RetentionPoint[]);
-    } catch {
-      setRetentionError("Failed to load retention data");
-    }
-  }, []);
-
+  // Independent review round 1 finding (2026-09-26): a `cancelled` guard is required here, same as
+  // `AnalyticsBreakdownCard` already has -- without it, switching the selected video or period
+  // quickly enough could let an older in-flight response overwrite a newer one's curve.
   useEffect(() => {
     if (!channel || !selectedVideoId) return;
-    void fetchRetention(channel.channelId, selectedVideoId, periodDays);
-  }, [channel, selectedVideoId, periodDays, fetchRetention]);
+    let cancelled = false;
+    setRetentionPoints(null);
+    setRetentionError(null);
+    (async () => {
+      try {
+        const { startDate, endDate } = computeDefaultPeriodRange(periodDays);
+        const res = await fetch(
+          `/api/channels/${encodeURIComponent(channel.channelId)}/videos/${encodeURIComponent(selectedVideoId)}/analytics/retention?startDate=${startDate}&endDate=${endDate}`
+        );
+        const data = await res.json();
+        if (cancelled) return;
+        if (!res.ok) {
+          setRetentionError(data.message ?? "Failed to load retention data");
+          return;
+        }
+        setRetentionPoints(data.points as RetentionPoint[]);
+      } catch {
+        if (!cancelled) setRetentionError("Failed to load retention data");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [channel, selectedVideoId, periodDays]);
 
   useEffect(() => {
     let cancelled = false;
