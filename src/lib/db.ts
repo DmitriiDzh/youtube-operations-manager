@@ -506,8 +506,11 @@ export const appSettings = sqliteTable("app_settings", {
  * which calls are still "in the window," which a simple incrementing counter can never answer
  * once time has passed. See `getGatewayTrafficLast24h` below for the windowed read and
  * `pruneOldGatewayCallEvents` for why this table does not grow unboundedly forever.
- * `mcp_tool_calls` never records a `blocked` outcome: when MCP connection is off, a tool is
- * never registered at all, so there is no failed call to log, only an absent one.
+ * `mcp_tool_calls` never records a `blocked` outcome for the "MCP connection off" case: a tool is
+ * never registered at all then, so there is no failed call to log, only an absent one. It DOES
+ * record `blocked` for a BL-091 agent-zone rejection (`src/mcp/server.ts`'s `registerTool`
+ * wrapper) -- that is a real, counted call attempt through an actually-registered tool, unlike the
+ * "connection off" case.
  *
  * `cloud_monitoring_reads` (added 2026-09-22, owner instruction, Telegram, after being told
  * checking Google Cloud's own quota numbers is itself a real API call: "в таком случае на него

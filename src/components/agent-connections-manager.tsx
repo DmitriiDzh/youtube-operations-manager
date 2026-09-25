@@ -177,7 +177,23 @@ export function AgentConnectionsManager() {
               {ZONED_CAPABILITIES.filter((c) => c.domain === domain).map((c) => {
                 const assignedConnectionId = zoneByCapabilityId.get(c.capabilityId) ?? null;
                 const assignedConnection = connections.find((conn) => conn.id === assignedConnectionId) ?? null;
+                const enabledCount = connections.filter((conn) => conn.enabled).length;
                 const assignedToDisabled = assignedConnection !== null && !assignedConnection.enabled;
+                // Mirrors assertAgentAllowedForCapability's own policy exactly (services.ts) --
+                // a round-5 independent review found the original version of this warning stated
+                // "blocked for everyone" even when zero connections are enabled in total, which is
+                // the OPPOSITE of reality: with zero enabled, the whole mechanism is a no-op and
+                // this action is open to any caller, assigned-to-a-disabled-connection or not.
+                let statusNote: string | null = null;
+                if (enabledCount === 0) {
+                  statusNote =
+                    "No connections are currently enabled -- zoning has no effect right now; this action is open to any caller.";
+                } else if (assignedToDisabled) {
+                  statusNote = `Assigned to "${assignedConnection.label}", which is currently disabled -- this action is blocked for every ENABLED connection until you reassign it or re-enable ${assignedConnection.label}.`;
+                } else if (assignedConnectionId === null && enabledCount >= 2) {
+                  statusNote =
+                    "Unassigned with 2+ connections enabled -- this action is currently blocked for all of them until assigned to exactly one.";
+                }
                 return (
                   <div key={c.capabilityId} className="rounded-lg border border-zinc-800 p-3">
                     <div className="flex items-center justify-between">
@@ -187,11 +203,7 @@ export function AgentConnectionsManager() {
                         onChange={(e) => handleAssignZone(c.capabilityId, e.target.value || null)}
                         className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-200"
                       >
-                        <option value="">
-                          {connections.filter((conn) => conn.enabled).length >= 2
-                            ? "Unassigned (blocked for everyone until assigned -- 2+ connections enabled)"
-                            : "Unassigned (open to the sole enabled connection)"}
-                        </option>
+                        <option value="">Unassigned</option>
                         {connections.map((conn) => (
                           <option key={conn.id} value={conn.id}>
                             {conn.label}
@@ -200,24 +212,12 @@ export function AgentConnectionsManager() {
                         ))}
                       </select>
                     </div>
-                    {assignedToDisabled && (
-                      <p className="mt-2 text-xs text-amber-300">
-                        Assigned to &quot;{assignedConnection.label}&quot;, which is currently disabled --
-                        this action is blocked for EVERY connection until you reassign it or
-                        re-enable {assignedConnection.label}.
-                      </p>
-                    )}
+                    {statusNote && <p className="mt-2 text-xs text-amber-300">{statusNote}</p>}
                   </div>
                 );
               })}
             </div>
           ))}
-          {connections.filter((c) => c.enabled).length >= 2 && (
-            <p className="text-xs text-amber-300">
-              2 or more connections are enabled -- every action above marked &quot;Unassigned&quot; is
-              currently blocked for ALL of them until you assign it to exactly one connection.
-            </p>
-          )}
         </div>
       )}
     </div>

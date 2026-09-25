@@ -1272,9 +1272,11 @@ extended to call `recordGatewayCallOutcome("cloud_monitoring_reads", "allowed")`
 attempt, mirroring `assertDataApiReadsAuthorized`'s own pattern
 (`src/lib/youtube-read-gateway/data-api.ts`). A fifth `GatewayTrafficCategory` value
 (`src/lib/db.ts`) means it renders through the exact same `GatewayTrafficStats` component the
-other three gateways already use -- shown in the "Google Cloud connection" Settings card. Like
-`mcp_tool_calls`, it never records a `blocked` outcome: there is no enable/disable toggle for this
-category, so every attempt is allowed by definition.
+other three gateways already use -- shown in the "Google Cloud connection" Settings card. It never
+records a `blocked` outcome: there is no enable/disable toggle for this category, so every
+attempt is allowed by definition (unlike `mcp_tool_calls`, which since BL-091 does record
+`blocked` for an agent-zone rejection -- see `src/lib/db.ts`'s own doc comment on
+`gatewayCallEvents`).
 
 **Mechanical enforcement is a literal-string check, not an import check**, unlike
 `read-gateway-inventory.test.ts`: this module never imports `googleapis` at all (§16.2), so there
