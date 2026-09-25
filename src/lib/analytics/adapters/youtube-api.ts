@@ -2,6 +2,7 @@ import { createGoogleOAuthClient } from "@/lib/auth";
 import {
   createYoutubeAnalyticsClient,
   queryChannelAnalyticsReport,
+  queryChannelBreakdownReport,
   queryVideoAnalyticsReport,
 } from "@/lib/youtube-read-gateway";
 import type { ResolvedCredentials } from "../contracts";
@@ -48,6 +49,24 @@ export function createAnalyticsYoutubeApiAdapter() {
         channelId: args.channelId,
         startDate: args.startDate,
         endDate: args.endDate,
+        metricNames: args.metricNames,
+      });
+    },
+
+    async queryChannelBreakdownReport(args: {
+      credentials: ResolvedCredentials;
+      channelId: string;
+      startDate: string;
+      endDate: string;
+      dimensions: string;
+      metricNames: readonly string[];
+    }) {
+      const youtubeAnalytics = await createAuthorizedClient(args.credentials);
+      return queryChannelBreakdownReport(youtubeAnalytics, {
+        channelId: args.channelId,
+        startDate: args.startDate,
+        endDate: args.endDate,
+        dimensions: args.dimensions,
         metricNames: args.metricNames,
       });
     },

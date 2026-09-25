@@ -22,10 +22,13 @@ type FakeVideo = { videoId: string; channelId: string };
 type FakeVideoDetail = { videoId: string; title: string; publishedAt: string };
 type FakeAnalyticsRow = { date: string; metrics: Record<string, number> };
 
+type FakeBreakdownRow = { dimensionValues: string[]; metrics: Record<string, number> };
+
 function createServicesFixture(opts: {
   videosByChannel: Record<string, FakeVideo[]>;
   analyticsResponses: Record<string, FakeAnalyticsRow[] | Error>;
   channelAnalyticsResponses?: Record<string, FakeAnalyticsRow[] | Error>;
+  channelBreakdownResponses?: Record<string, FakeBreakdownRow[] | Error>;
   videoDetailsByChannel?: Record<string, FakeVideoDetail[]>;
   syncSettings?: { localTime: string; timezone: string };
   now?: Date;
@@ -34,6 +37,7 @@ function createServicesFixture(opts: {
   const channelAccess = createFakeChannelAccess();
   const analyticsCalls: Array<{ channelId: string; videoId: string }> = [];
   const channelAnalyticsCalls: Array<{ channelId: string; startDate: string; endDate: string }> = [];
+  const channelBreakdownCalls: Array<{ channelId: string; dimensions: string; startDate: string; endDate: string }> = [];
   const upsertedRows: Array<{
     channelId: string;
     videoId: string;
@@ -67,6 +71,19 @@ function createServicesFixture(opts: {
       channelAnalyticsCalls.push({ channelId: args.channelId, startDate: args.startDate, endDate: args.endDate });
       const key = `${args.startDate}|${args.endDate}`;
       const response = (opts.channelAnalyticsResponses ?? {})[key];
+      if (response instanceof Error) throw response;
+      return response ?? [];
+    },
+    async queryChannelBreakdownReport(args: {
+      credentials: ResolvedCredentials;
+      channelId: string;
+      startDate: string;
+      endDate: string;
+      dimensions: string;
+      metricNames: readonly string[];
+    }) {
+      channelBreakdownCalls.push({ channelId: args.channelId, dimensions: args.dimensions, startDate: args.startDate, endDate: args.endDate });
+      const response = (opts.channelBreakdownResponses ?? {})[args.dimensions];
       if (response instanceof Error) throw response;
       return response ?? [];
     },
@@ -203,6 +220,7 @@ function createServicesFixture(opts: {
     channelAccess,
     analyticsCalls,
     channelAnalyticsCalls,
+    channelBreakdownCalls,
     upsertedRows,
     metricRowsByKey,
     lastAutoCollectedAtByChannel,
@@ -612,6 +630,9 @@ test("collectMetrics defaults to the full ANALYTICS_METRIC_NAMES list when metri
         return [];
       },
       async queryChannelAnalyticsReport() {
+        return [];
+      },
+      async queryChannelBreakdownReport() {
         return [];
       },
     },
@@ -1033,6 +1054,121 @@ test("getChannelOverview zero-fills an interior gap in the daily series but neve
     ["2026-09-01", "2026-09-02", "2026-09-03"]
   );
   assert.equal(result.daily[1].views, 0, "the interior gap (09-02) must be filled with a real zero row");
+});
+
+// Studio-Parity deep-parity plan (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §3.4/§4.4,
+// slices C2/A2/A3/A4/A6) -- getChannelBreakdown. Same guard structure as getChannelOverview above
+// (fail-closed channel check, validation_failed on an invalid range, credential-failure
+// propagation), plus its own dimension/metric dispatch by `breakdown`.
+test("getChannelBreakdown fails closed when the requested channel is not the caller's active channel", async () => {
+  const { services } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+
+  await assert.rejects(
+    () =>
+      services.getChannelBreakdown({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-08-26",
+        endDate: "2026-09-22",
+        breakdown: "trafficSources",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "CHANNEL_NOT_ACTIVE"
+  );
+});
+
+test("getChannelBreakdown rejects an inverted date range as validation_failed, not unauthorized", async () => {
+  const { services, channelAccess } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getChannelBreakdown({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-09-22",
+        endDate: "2026-08-26",
+        breakdown: "trafficSources",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+test("getChannelBreakdown rejects an unknown breakdown kind as validation_failed", async () => {
+  const { services, channelAccess } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getChannelBreakdown({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-08-26",
+        endDate: "2026-09-22",
+        breakdown: "notARealBreakdown",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+test("getChannelBreakdown propagates a credential-resolution failure (e.g. missing OAuth scope) as a DomainError", async () => {
+  const { services, channelAccess, channelBreakdownCalls } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    authResolverError: new Error("Credentials are missing required OAuth scopes"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getChannelBreakdown({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-08-26",
+        endDate: "2026-09-22",
+        breakdown: "trafficSources",
+      }),
+    (error: unknown) => error instanceof DomainError
+  );
+  assert.equal(channelBreakdownCalls.length, 0, "no real Analytics API call was made once credentials failed to resolve");
+});
+
+test("getChannelBreakdown dispatches the correct dimensions/metrics per breakdown kind and returns real rows", async () => {
+  const { services, channelAccess, channelBreakdownCalls } = createServicesFixture({
+    videosByChannel: {},
+    analyticsResponses: {},
+    channelBreakdownResponses: {
+      insightTrafficSourceType: [
+        { dimensionValues: ["RELATED_VIDEO"], metrics: { views: 3462 } },
+        { dimensionValues: ["YT_SEARCH"], metrics: { views: 90 } },
+      ],
+      deviceType: [{ dimensionValues: ["DESKTOP"], metrics: { estimatedMinutesWatched: 68501 } }],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const traffic = await services.getChannelBreakdown({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-08-26",
+    endDate: "2026-09-22",
+    breakdown: "trafficSources",
+  });
+  assert.equal(traffic.breakdown, "trafficSources");
+  assert.deepEqual(traffic.rows, [
+    { dimensionValues: ["RELATED_VIDEO"], metrics: { views: 3462 } },
+    { dimensionValues: ["YT_SEARCH"], metrics: { views: 90 } },
+  ]);
+  assert.equal(channelBreakdownCalls[0]?.dimensions, "insightTrafficSourceType");
+
+  const device = await services.getChannelBreakdown({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-08-26",
+    endDate: "2026-09-22",
+    breakdown: "deviceType",
+  });
+  assert.equal(device.rows[0]?.metrics.estimatedMinutesWatched, 68501);
+  assert.equal(channelBreakdownCalls[1]?.dimensions, "deviceType");
 });
 
 test("getComparableAgeComparison fails closed when the requested channel is not the caller's active channel", async () => {

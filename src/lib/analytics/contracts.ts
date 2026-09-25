@@ -135,6 +135,39 @@ export const CHANNEL_OVERVIEW_METRIC_NAMES = [
 
 export type ChannelOverviewMetricName = (typeof CHANNEL_OVERVIEW_METRIC_NAMES)[number];
 
+/**
+ * Studio-Parity deep-parity plan (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §3.4/§4.4,
+ * slices C2/A2/A3/A4/A6) -- the exact `dimensions`/`metricNames` request shape for each channel-
+ * level breakdown card, confirmed against real API responses for every one of these six kinds
+ * (BL-093/BL-094 live probe, 2026-09-25) before this constant was written. One shared preset table
+ * rather than one bespoke service method per card -- every breakdown card uses the identical
+ * `getChannelBreakdown` service method and `queryChannelBreakdownReport` gateway function below,
+ * parameterized only by which preset to use.
+ */
+export const CHANNEL_BREAKDOWN_PRESETS = {
+  trafficSources: { dimensions: "insightTrafficSourceType", metricNames: ["views"] },
+  deviceType: { dimensions: "deviceType", metricNames: ["estimatedMinutesWatched"] },
+  ageGender: { dimensions: "ageGroup,gender", metricNames: ["viewerPercentage"] },
+  geography: { dimensions: "country", metricNames: ["views"] },
+  subscribedStatus: { dimensions: "subscribedStatus", metricNames: ["estimatedMinutesWatched"] },
+  contentFormat: { dimensions: "creatorContentType", metricNames: ["estimatedMinutesWatched"] },
+} as const satisfies Record<string, { dimensions: string; metricNames: readonly string[] }>;
+
+export type ChannelBreakdownKind = keyof typeof CHANNEL_BREAKDOWN_PRESETS;
+
+export type ChannelBreakdownRow = {
+  dimensionValues: string[];
+  metrics: Record<string, number>;
+};
+
+export type GetChannelBreakdownResult = {
+  channelId: string;
+  breakdown: ChannelBreakdownKind;
+  startDate: string;
+  endDate: string;
+  rows: ChannelBreakdownRow[];
+};
+
 export type ChannelOverviewDailyRow = {
   date: string;
   views: number;

@@ -8,13 +8,16 @@ import { computeDueReportWeek, computeWeeklyReportContent } from "./weekly-repor
 import {
   ANALYTICS_METRIC_NAMES,
   AUTO_COLLECTION_RANGE_DAYS,
+  CHANNEL_BREAKDOWN_PRESETS,
   CHANNEL_OVERVIEW_METRIC_NAMES,
   DomainError,
   isDomainError,
   type AutoCollectResult,
+  type ChannelBreakdownKind,
   type ChannelOverviewTotals,
   type CollectMetricsResult,
   type DataQualityReportResult,
+  type GetChannelBreakdownResult,
   type GetChannelOverviewResult,
   type GetComparableAgeComparisonResult,
   type GetWeeklyReportResult,
@@ -28,6 +31,8 @@ import {
 import {
   collectMetricsInputSchema,
   collectMetricsOutputSchema,
+  getChannelBreakdownInputSchema,
+  getChannelBreakdownOutputSchema,
   getChannelOverviewInputSchema,
   getChannelOverviewOutputSchema,
   getComparableAgeComparisonInputSchema,
@@ -76,6 +81,18 @@ type ServiceDependencies = {
       endDate: string;
       metricNames: readonly string[];
     }): Promise<Array<{ date: string; metrics: Record<string, number> }>>;
+    // Studio-Parity deep-parity plan (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §1) --
+    // one shared shape for every non-`day` channel-level breakdown (traffic sources, device type,
+    // age/gender, geography, subscribed status, content format), confirmed against real API
+    // responses (BL-093/BL-094) before this was added, not merely documented.
+    queryChannelBreakdownReport(args: {
+      credentials: ResolvedCredentials;
+      channelId: string;
+      startDate: string;
+      endDate: string;
+      dimensions: string;
+      metricNames: readonly string[];
+    }): Promise<Array<{ dimensionValues: string[]; metrics: Record<string, number> }>>;
   };
   videoStore: {
     listVideosByChannel(channelId: string): Promise<StoredVideoRef[]>;
@@ -697,6 +714,63 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         };
 
         return parseWithSchema(getChannelOverviewOutputSchema, output, "get channel overview output");
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
+      }
+    },
+
+    /**
+     * Studio-Parity deep-parity plan (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §1's
+     * cross-cutting note, slices C2/A2/A3/A4/A6) -- one shared method for every channel-level,
+     * non-`day` breakdown card (traffic sources, device type, age/gender, geography, subscribed
+     * status, content format), parameterized by `breakdown` (`CHANNEL_BREAKDOWN_PRESETS`). A live
+     * read for the selected period only, never persisted -- same precedent as `getChannelOverview`
+     * above, not `collectMetrics`'s daily-collection-and-store model (see the plan's own §1 note on
+     * why these two persistence models are deliberately different).
+     */
+    async getChannelBreakdown(input: unknown): Promise<GetChannelBreakdownResult> {
+      const parsedInput = parseWithSchema(getChannelBreakdownInputSchema, input, "get channel breakdown input");
+
+      try {
+        assertValidDateRange(parsedInput.startDate, parsedInput.endDate);
+      } catch (error) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: error instanceof Error ? error.message : "Invalid date range",
+        });
+      }
+
+      try {
+        const userId = getCredentialUserId(parsedInput.credentialRef);
+        await deps.channelAccess.assertActiveChannel({
+          userId,
+          channelId: parsedInput.channelId,
+        });
+
+        const credentials = await deps.authResolver.resolve({
+          credentialRef: parsedInput.credentialRef,
+          requiredScopes: [YOUTUBE_ANALYTICS_READ_SCOPE],
+        });
+
+        const preset = CHANNEL_BREAKDOWN_PRESETS[parsedInput.breakdown as ChannelBreakdownKind];
+        const rows = await deps.youtubeApi.queryChannelBreakdownReport({
+          credentials,
+          channelId: parsedInput.channelId,
+          startDate: parsedInput.startDate,
+          endDate: parsedInput.endDate,
+          dimensions: preset.dimensions,
+          metricNames: preset.metricNames,
+        });
+
+        const output = {
+          channelId: parsedInput.channelId,
+          breakdown: parsedInput.breakdown,
+          startDate: parsedInput.startDate,
+          endDate: parsedInput.endDate,
+          rows,
+        };
+
+        return parseWithSchema(getChannelBreakdownOutputSchema, output, "get channel breakdown output");
       } catch (error) {
         throw mapUnknownError(error, "unauthorized");
       }
