@@ -1,9 +1,33 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { computeDefaultPeriodRange, computePercentChange, formatWatchTimeHours } from "@/lib/analytics/period";
 import { AnalyticsLineChart } from "./analytics-line-chart";
 import { MetricDelta } from "./metric-delta";
+
+/**
+ * Studio-parity Slice O1 (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §2.4) -- real
+ * Studio's own 3 Overview cards act as a tab strip: clicking one selects it (redraws the single
+ * chart below using that metric) and reveals a short explanation of what it means. No new API call
+ * -- every number here is already fetched by `fetchOverview`, this only changes what's plotted.
+ */
+type OverviewMetricKey = "views" | "watchTimeHours" | "subscribers";
+
+const OVERVIEW_METRIC_INFO: Record<OverviewMetricKey, { label: string; explain: string }> = {
+  views: {
+    label: "Views",
+    explain: "How many times your videos were watched in this period, compared with the previous period of the same length.",
+  },
+  watchTimeHours: {
+    label: "Watch time (hours)",
+    explain:
+      "Total time viewers spent watching your videos in this period, compared with the previous period. Includes public, private, unlisted, and deleted videos.",
+  },
+  subscribers: {
+    label: "Subscribers",
+    explain: "Net change in subscribers (gained minus lost) in this period, compared with the previous period.",
+  },
+};
 
 type SyncedChannel = {
   channelId: string;
@@ -80,6 +104,26 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
 
   const [collecting, setCollecting] = useState(false);
   const [collectMessage, setCollectMessage] = useState<{ kind: "info" | "error"; text: string } | null>(null);
+
+  const [selectedMetric, setSelectedMetric] = useState<OverviewMetricKey>("views");
+  const [openMetricInfo, setOpenMetricInfo] = useState<OverviewMetricKey | null>(null);
+  const metricCardsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!openMetricInfo) return;
+    function handleClickOutside(event: MouseEvent) {
+      if (metricCardsRef.current && !metricCardsRef.current.contains(event.target as Node)) {
+        setOpenMetricInfo(null);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [openMetricInfo]);
+
+  const selectMetricCard = useCallback((metric: OverviewMetricKey) => {
+    setSelectedMetric(metric);
+    setOpenMetricInfo((current) => (current === metric ? null : metric));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -248,9 +292,34 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     }
   }, [channel, periodDays, fetchOverview, fetchTopContent, fetchDataQuality]);
 
-  const chartData = useMemo(
-    () => overview?.daily.map((row) => ({ date: row.date, value: row.views })) ?? [],
-    [overview]
+  const chartData = useMemo(() => {
+    if (!overview) return [];
+    return overview.daily.map((row) => {
+      switch (selectedMetric) {
+        case "watchTimeHours":
+          return { date: row.date, value: row.estimatedMinutesWatched / 60 };
+        case "subscribers":
+          return { date: row.date, value: row.subscribersGained - row.subscribersLost };
+        case "views":
+        default:
+          return { date: row.date, value: row.views };
+      }
+    });
+  }, [overview, selectedMetric]);
+
+  const chartFormatValue = useCallback(
+    (value: number) => {
+      switch (selectedMetric) {
+        case "watchTimeHours":
+          return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} hours`;
+        case "subscribers":
+          return `${value >= 0 ? "+" : ""}${value.toLocaleString()} subscribers`;
+        case "views":
+        default:
+          return `${value.toLocaleString()} views`;
+      }
+    },
+    [selectedMetric]
   );
 
   const periodLabel = PERIOD_OPTIONS.find((p) => p.days === periodDays)?.label.toLowerCase().replace("last ", "previous ") ?? "previous period";
@@ -315,16 +384,30 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
         <p className="text-sm text-zinc-400">Loading...</p>
       ) : overview ? (
         <>
-          <div className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-zinc-800 bg-zinc-800 sm:grid-cols-3">
-            <div className="space-y-1 bg-zinc-900 p-4">
+          <div ref={metricCardsRef} className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-zinc-800 bg-zinc-800 sm:grid-cols-3">
+            <button
+              type="button"
+              onClick={() => selectMetricCard("views")}
+              aria-pressed={selectedMetric === "views"}
+              className={`space-y-1 p-4 text-left transition-colors ${
+                selectedMetric === "views" ? "bg-zinc-800 ring-1 ring-inset ring-indigo-500/60" : "bg-zinc-900 hover:bg-zinc-800/60"
+              }`}
+            >
               <div className="text-xs text-zinc-500">Views</div>
               <div className="text-2xl font-semibold text-zinc-100">{overview.currentTotals.views.toLocaleString()}</div>
               <MetricDelta
                 percent={computePercentChange(overview.currentTotals.views, overview.previousTotals.views)}
                 periodLabel={periodLabel}
               />
-            </div>
-            <div className="space-y-1 bg-zinc-900 p-4">
+            </button>
+            <button
+              type="button"
+              onClick={() => selectMetricCard("watchTimeHours")}
+              aria-pressed={selectedMetric === "watchTimeHours"}
+              className={`space-y-1 p-4 text-left transition-colors ${
+                selectedMetric === "watchTimeHours" ? "bg-zinc-800 ring-1 ring-inset ring-indigo-500/60" : "bg-zinc-900 hover:bg-zinc-800/60"
+              }`}
+            >
               <div className="text-xs text-zinc-500">Watch time (hours)</div>
               <div className="text-2xl font-semibold text-zinc-100">
                 {formatWatchTimeHours(overview.currentTotals.estimatedMinutesWatched)}
@@ -336,8 +419,15 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
                 )}
                 periodLabel={periodLabel}
               />
-            </div>
-            <div className="space-y-1 bg-zinc-900 p-4">
+            </button>
+            <button
+              type="button"
+              onClick={() => selectMetricCard("subscribers")}
+              aria-pressed={selectedMetric === "subscribers"}
+              className={`space-y-1 p-4 text-left transition-colors ${
+                selectedMetric === "subscribers" ? "bg-zinc-800 ring-1 ring-inset ring-indigo-500/60" : "bg-zinc-900 hover:bg-zinc-800/60"
+              }`}
+            >
               <div className="text-xs text-zinc-500">Subscribers</div>
               <div className="text-2xl font-semibold text-zinc-100">
                 {(() => {
@@ -352,8 +442,15 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
                 )}
                 periodLabel={periodLabel}
               />
-            </div>
+            </button>
           </div>
+
+          {openMetricInfo && (
+            <div className="rounded-xl border border-zinc-700 bg-zinc-800 p-3 text-xs leading-relaxed text-zinc-300">
+              <span className="font-medium text-zinc-100">{OVERVIEW_METRIC_INFO[openMetricInfo].label}:</span>{" "}
+              {OVERVIEW_METRIC_INFO[openMetricInfo].explain}
+            </div>
+          )}
 
           {subscriberCount && (
             <p className="text-xs text-zinc-500">
@@ -362,7 +459,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
           )}
 
           <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-            <AnalyticsLineChart data={chartData} formatValue={(v) => `${v.toLocaleString()} views`} />
+            <AnalyticsLineChart data={chartData} formatValue={chartFormatValue} />
           </div>
 
           <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
