@@ -76,7 +76,11 @@ export type DomainErrorCode =
   // `OperationsWorkspaceFileResult`'s own `configured: false` discriminant): these two cover the
   // "configured, but something about the actual request/directory is wrong" cases.
   | "OPERATIONS_WORKSPACE_UNAVAILABLE"
-  | "OPERATIONS_FILE_NOT_AVAILABLE";
+  | "OPERATIONS_FILE_NOT_AVAILABLE"
+  // BL-091 (docs/roadmap/plans/AGENT_ZONES_PLAN.md) -- multi-agent responsibility zones, slice 1
+  // (registry/assignment only; no enforcement uses these yet).
+  | "AGENT_CONNECTION_NOT_AVAILABLE"
+  | "AGENT_CONNECTION_ID_CONFLICT";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;
