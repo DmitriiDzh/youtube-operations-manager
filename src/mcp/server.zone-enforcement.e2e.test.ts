@@ -12,10 +12,11 @@ import { getGatewayTrafficLast24h } from "@/lib/db";
 // registered" assumption). Deliberately in its own file, not appended to server.test.ts, for
 // exactly that isolation.
 //
-// Every other MCP zone test (server.test.ts) uses fake AgentConnectionsCoreSubset stubs to prove
-// wiring in isolation; this file is the one place that proves the real module's fail-closed/
-// exclusivity logic (src/lib/agent-connections/services.ts) actually reaches a real MCP tool call
-// end to end, not just via its own unit tests.
+// Most other MCP zone tests (server.test.ts) use fake AgentConnectionsCoreSubset stubs to prove
+// wiring in isolation; this file (alongside its sibling
+// server.zone-enforcement-disable-reverts.e2e.test.ts) instead proves the real module's
+// fail-closed/exclusivity logic (src/lib/agent-connections/services.ts) reaches a real MCP tool
+// call end to end, registering real connections and real zone assignments rather than fakes.
 
 test("real agent-connections core: an unassigned zoned tool is rejected once 2 connections are enabled, then allowed for the one it's assigned to", async () => {
   const core = createAgentConnectionsCore();

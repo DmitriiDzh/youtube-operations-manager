@@ -34,10 +34,11 @@ export type AgentConnection = {
  * owner's own exclusivity rule -- an unassigned zone must never be silently shared). Zoned per
  * capability id (e.g. `"content_proposal.create_content_proposal"`), not per domain, so two DRAFT
  * actions in the same domain can be split between different connections if the owner ever wants
- * that -- the enforcement layer (`assertAgentAllowedForCapability`) owns what a "capability id"
- * actually is (an `AGENT_CAPABILITIES` entry id, an MCP tool name, or both); this module treats it
- * as an opaque string and validates nothing about it beyond shape, to stay decoupled from
- * whichever tool registries end up zoned (`AGENTS.md` §M).
+ * that. `assertAgentAllowedForCapability` itself treats a capability id as a fully opaque string
+ * (no interpretation, no validation beyond shape) -- what each id actually corresponds to (an
+ * `AGENT_CAPABILITIES` entry id, an MCP tool name, or both) is determined by this file's own
+ * `CAPABILITY_*` constants and their call sites, kept deliberately decoupled from whichever tool
+ * registries end up zoned (`AGENTS.md` §M).
  */
 export type AgentCapabilityZone = {
   capabilityId: string;

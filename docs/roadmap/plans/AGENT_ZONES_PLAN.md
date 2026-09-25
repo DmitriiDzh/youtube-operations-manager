@@ -45,7 +45,11 @@ Requirement 2 is a non-issue as long as zone enforcement (below) never touches R
 
 `grep registerTool src/mcp/server.ts` gives dozens of registered tools. They fall into three, not two, families — this matters because a plan scoped only to the new Phase 7 `agent_*` namespace would miss most of the actual local-mutation surface an agent can already reach:
 
-| Family | Tools | Current gate |
+This table describes the pre-implementation baseline (why the owner-approved scope needed to be
+wider than the Phase 7 agent-operations module alone) — see §7 ("as actually implemented") for
+which of these gained `assertAgentAllowedForCapability` zoning.
+
+| Family | Tools | Gate before this feature |
 |---|---|---|
 | **Real YouTube writes** (barrier-disabled today, Gate B/RISK-09) | `apply`, `playlist_create/update/delete/add_videos/remove_videos` | `assertLiveWritesAuthorized` (single gateway choke point, `AGENTS.md` §G) — already agent-agnostic and already fails closed. Zoning these is moot while Gate B stays closed, but the classification should still cover them for when it opens. |
 | **Local-mutation, pre-Phase-7 general MCP surface** (designed for one operator-grade client, no permission tiering beyond the single `connectionEnabled` toggle) | `write_channel_select`, `auth_user_select`, `changeset_create_from_import`, `channel_sync`, `ai_localization_create_change_set` | Only `assertMcpDeviceAvailable` (operation-lock/device-availability gate) + `connectionEnabled`. No per-capability permission concept at all. |
