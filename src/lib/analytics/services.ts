@@ -20,6 +20,7 @@ import {
   type GetChannelBreakdownResult,
   type GetChannelOverviewResult,
   type GetComparableAgeComparisonResult,
+  type GetVideoRetentionCurveResult,
   type GetWeeklyReportResult,
   type ListMetricsResult,
   type ListWeeklyReportsResult,
@@ -39,6 +40,8 @@ import {
   getComparableAgeComparisonOutputSchema,
   getDataQualityReportInputSchema,
   getDataQualityReportOutputSchema,
+  getVideoRetentionCurveInputSchema,
+  getVideoRetentionCurveOutputSchema,
   getWeeklyReportInputSchema,
   getWeeklyReportOutputSchema,
   listMetricsInputSchema,
@@ -92,6 +95,7 @@ type ServiceDependencies = {
       endDate: string;
       dimensions: string;
       metricNames: readonly string[];
+      filters?: string;
     }): Promise<Array<{ dimensionValues: string[]; metrics: Record<string, number> }>>;
   };
   videoStore: {
@@ -771,6 +775,81 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         };
 
         return parseWithSchema(getChannelBreakdownOutputSchema, output, "get channel breakdown output");
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
+      }
+    },
+
+    /**
+     * Studio-Parity deep-parity plan (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §3.4,
+     * Slice C4, "Intro" mode) -- one video's own audience-retention curve
+     * (`elapsedVideoTimeRatio` dimension, confirmed against a real response, BL-093). A live read,
+     * same persistence model as `getChannelOverview`/`getChannelBreakdown` (never stored).
+     *
+     * `videoId` must belong to `channelId` (`docs/DEVELOPMENT_PLAYBOOK.md` §6.6) -- checked against
+     * `videoStore.listVideosByChannel`, the same discipline `getComparableAgeComparison` already
+     * uses, never assumed from the caller's own input.
+     */
+    async getVideoRetentionCurve(input: unknown): Promise<GetVideoRetentionCurveResult> {
+      const parsedInput = parseWithSchema(getVideoRetentionCurveInputSchema, input, "get video retention curve input");
+
+      try {
+        assertValidDateRange(parsedInput.startDate, parsedInput.endDate);
+      } catch (error) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: error instanceof Error ? error.message : "Invalid date range",
+        });
+      }
+
+      try {
+        const userId = getCredentialUserId(parsedInput.credentialRef);
+        await deps.channelAccess.assertActiveChannel({
+          userId,
+          channelId: parsedInput.channelId,
+        });
+
+        const videos = await deps.videoStore.listVideosByChannel(parsedInput.channelId);
+        if (!videos.some((video) => video.videoId === parsedInput.videoId)) {
+          throw new DomainError({
+            code: "validation_failed",
+            message: `videoId ${parsedInput.videoId} does not belong to channel ${parsedInput.channelId}`,
+            details: { videoId: parsedInput.videoId },
+          });
+        }
+
+        const credentials = await deps.authResolver.resolve({
+          credentialRef: parsedInput.credentialRef,
+          requiredScopes: [YOUTUBE_ANALYTICS_READ_SCOPE],
+        });
+
+        const rows = await deps.youtubeApi.queryChannelBreakdownReport({
+          credentials,
+          channelId: parsedInput.channelId,
+          startDate: parsedInput.startDate,
+          endDate: parsedInput.endDate,
+          dimensions: "elapsedVideoTimeRatio",
+          metricNames: ["audienceWatchRatio", "relativeRetentionPerformance"],
+          filters: `video==${parsedInput.videoId}`,
+        });
+
+        const points = rows
+          .map((row) => ({
+            elapsedVideoTimeRatio: Number(row.dimensionValues[0]),
+            audienceWatchRatio: row.metrics.audienceWatchRatio ?? 0,
+            relativeRetentionPerformance: row.metrics.relativeRetentionPerformance ?? 0,
+          }))
+          .sort((a, b) => a.elapsedVideoTimeRatio - b.elapsedVideoTimeRatio);
+
+        const output = {
+          channelId: parsedInput.channelId,
+          videoId: parsedInput.videoId,
+          startDate: parsedInput.startDate,
+          endDate: parsedInput.endDate,
+          points,
+        };
+
+        return parseWithSchema(getVideoRetentionCurveOutputSchema, output, "get video retention curve output");
       } catch (error) {
         throw mapUnknownError(error, "unauthorized");
       }

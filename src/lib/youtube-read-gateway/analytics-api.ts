@@ -166,6 +166,12 @@ export type ChannelBreakdownRow = {
  * (`{ date, metrics }`) is specific to a `day` dimension and used by callers (`collectMetrics`)
  * that genuinely need date-keyed rows; this one's callers need dimension-value-keyed rows instead,
  * and the two response shapes should not be forced into one type.
+ *
+ * Optional `filters` (e.g. `video==<id>`) reuses this same shape for a **per-video** breakdown --
+ * the audience-retention curve (`dimensions: "elapsedVideoTimeRatio"`, confirmed against a real
+ * response, BL-093) is structurally identical to a channel-level breakdown once scoped to one
+ * video, exactly the same relationship `queryVideoAnalyticsReport` above already has to
+ * `queryChannelAnalyticsReport`.
  */
 export async function queryChannelBreakdownReport(
   youtubeAnalytics: youtubeAnalytics_v2.Youtubeanalytics,
@@ -175,6 +181,7 @@ export async function queryChannelBreakdownReport(
     endDate: string;
     dimensions: string;
     metricNames: readonly string[];
+    filters?: string;
   }
 ): Promise<ChannelBreakdownRow[]> {
   const res = await youtubeAnalytics.reports.query({
@@ -183,6 +190,7 @@ export async function queryChannelBreakdownReport(
     endDate: args.endDate,
     metrics: args.metricNames.join(","),
     dimensions: args.dimensions,
+    ...(args.filters ? { filters: args.filters } : {}),
   });
 
   const columnHeaders = res.data.columnHeaders ?? [];

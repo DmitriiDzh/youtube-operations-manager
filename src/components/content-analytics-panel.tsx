@@ -1,11 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { computeDefaultPeriodRange } from "@/lib/analytics/period";
 import { AnalyticsBreakdownCard } from "./analytics-breakdown-card";
+import { AnalyticsLineChart } from "./analytics-line-chart";
 import { labelTrafficSource } from "@/lib/analytics/breakdown-labels";
 import { useTopVideos } from "./use-top-videos";
 
 type SyncedChannel = { channelId: string; title: string };
+type RetentionPoint = { elapsedVideoTimeRatio: number; audienceWatchRatio: number; relativeRetentionPerformance: number };
 
 const PERIOD_OPTIONS = [
   { days: 7, label: "Last 7 days" },
@@ -24,6 +27,34 @@ export function ContentAnalyticsPanel() {
   const [loadingChannel, setLoadingChannel] = useState(true);
   const [periodDays, setPeriodDays] = useState<number>(28);
   const { topVideos, loading: loadingTopVideos } = useTopVideos(channel?.channelId ?? null, periodDays, 10);
+
+  const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
+  const [retentionPoints, setRetentionPoints] = useState<RetentionPoint[] | null>(null);
+  const [retentionError, setRetentionError] = useState<string | null>(null);
+
+  const fetchRetention = useCallback(async (channelId: string, videoId: string, days: number) => {
+    setRetentionPoints(null);
+    setRetentionError(null);
+    try {
+      const { startDate, endDate } = computeDefaultPeriodRange(days);
+      const res = await fetch(
+        `/api/channels/${encodeURIComponent(channelId)}/videos/${encodeURIComponent(videoId)}/analytics/retention?startDate=${startDate}&endDate=${endDate}`
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setRetentionError(data.message ?? "Failed to load retention data");
+        return;
+      }
+      setRetentionPoints(data.points as RetentionPoint[]);
+    } catch {
+      setRetentionError("Failed to load retention data");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!channel || !selectedVideoId) return;
+    void fetchRetention(channel.channelId, selectedVideoId, periodDays);
+  }, [channel, selectedVideoId, periodDays, fetchRetention]);
 
   useEffect(() => {
     let cancelled = false;
@@ -96,20 +127,52 @@ export function ContentAnalyticsPanel() {
         ) : (
           <ul className="space-y-2">
             {topVideos.map((item) => (
-              <li key={item.videoId} className="flex items-center gap-3 text-sm">
-                {item.thumbnail ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={item.thumbnail} alt="" className="h-9 w-16 rounded object-cover" />
-                ) : (
-                  <div className="h-9 w-16 rounded bg-zinc-800" />
-                )}
-                <span className="flex-1 truncate text-zinc-300">{item.title}</span>
-                <span className="text-zinc-400">{item.views.toLocaleString()} views</span>
+              <li key={item.videoId}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedVideoId(item.videoId)}
+                  className={`flex w-full items-center gap-3 rounded-lg p-1.5 text-left text-sm transition-colors ${
+                    selectedVideoId === item.videoId ? "bg-zinc-800 ring-1 ring-inset ring-indigo-500/60" : "hover:bg-zinc-800/60"
+                  }`}
+                >
+                  {item.thumbnail ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={item.thumbnail} alt="" className="h-9 w-16 rounded object-cover" />
+                  ) : (
+                    <div className="h-9 w-16 rounded bg-zinc-800" />
+                  )}
+                  <span className="flex-1 truncate text-zinc-300">{item.title}</span>
+                  <span className="text-zinc-400">{item.views.toLocaleString()} views</span>
+                </button>
               </li>
             ))}
           </ul>
         )}
       </div>
+
+      {selectedVideoId && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+          <h4 className="mb-1 text-sm font-medium text-zinc-300">Audience retention</h4>
+          <p className="mb-3 text-xs text-zinc-500">
+            {topVideos.find((v) => v.videoId === selectedVideoId)?.title ?? selectedVideoId}
+          </p>
+          {retentionError ? (
+            <p className="text-sm text-red-400">{retentionError}</p>
+          ) : retentionPoints === null ? (
+            <p className="text-sm text-zinc-500">Loading...</p>
+          ) : retentionPoints.length === 0 ? (
+            <p className="text-sm text-zinc-500">No retention data for this video/period yet.</p>
+          ) : (
+            <AnalyticsLineChart
+              data={retentionPoints.map((p) => ({
+                date: `${Math.round(p.elapsedVideoTimeRatio * 100)}%`,
+                value: Math.round(p.audienceWatchRatio * 100),
+              }))}
+              formatValue={(v) => `${v}% watching`}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }

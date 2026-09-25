@@ -1171,6 +1171,116 @@ test("getChannelBreakdown dispatches the correct dimensions/metrics per breakdow
   assert.equal(channelBreakdownCalls[1]?.dimensions, "deviceType");
 });
 
+// Studio-Parity deep-parity plan (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §3.4, Slice
+// C4, "Intro" mode) -- getVideoRetentionCurve.
+test("getVideoRetentionCurve fails closed when the requested channel is not the caller's active channel", async () => {
+  const { services } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
+
+  await assert.rejects(
+    () =>
+      services.getVideoRetentionCurve({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        videoId: "v1",
+        startDate: "2026-08-26",
+        endDate: "2026-09-22",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "CHANNEL_NOT_ACTIVE"
+  );
+});
+
+test("getVideoRetentionCurve rejects an inverted date range as validation_failed, not unauthorized", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: {},
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getVideoRetentionCurve({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        videoId: "v1",
+        startDate: "2026-09-22",
+        endDate: "2026-08-26",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+test("getVideoRetentionCurve rejects a videoId that does not belong to the channel, without silently returning an empty curve", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: {},
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getVideoRetentionCurve({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        videoId: "v-not-on-channel",
+        startDate: "2026-08-26",
+        endDate: "2026-09-22",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
+});
+
+test("getVideoRetentionCurve propagates a credential-resolution failure (e.g. missing OAuth scope) as a DomainError", async () => {
+  const { services, channelAccess, channelBreakdownCalls } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: {},
+    authResolverError: new Error("Credentials are missing required OAuth scopes"),
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  await assert.rejects(
+    () =>
+      services.getVideoRetentionCurve({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        videoId: "v1",
+        startDate: "2026-08-26",
+        endDate: "2026-09-22",
+      }),
+    (error: unknown) => error instanceof DomainError
+  );
+  assert.equal(channelBreakdownCalls.length, 0, "no real Analytics API call was made once credentials failed to resolve");
+});
+
+test("getVideoRetentionCurve queries with a video filter and returns points sorted by elapsed ratio", async () => {
+  const { services, channelAccess, channelBreakdownCalls } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: {},
+    channelBreakdownResponses: {
+      elapsedVideoTimeRatio: [
+        { dimensionValues: ["0.02"], metrics: { audienceWatchRatio: 0.58, relativeRetentionPerformance: 0.42 } },
+        { dimensionValues: ["0.01"], metrics: { audienceWatchRatio: 0.97, relativeRetentionPerformance: 0.37 } },
+      ],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const result = await services.getVideoRetentionCurve({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    videoId: "v1",
+    startDate: "2026-08-26",
+    endDate: "2026-09-22",
+  });
+
+  assert.deepEqual(
+    result.points.map((p) => p.elapsedVideoTimeRatio),
+    [0.01, 0.02],
+    "points must be sorted ascending by elapsed ratio, regardless of API response order"
+  );
+  assert.equal(result.points[0].audienceWatchRatio, 0.97);
+  assert.equal(channelBreakdownCalls[0]?.dimensions, "elapsedVideoTimeRatio");
+});
+
 test("getComparableAgeComparison fails closed when the requested channel is not the caller's active channel", async () => {
   const { services } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
 

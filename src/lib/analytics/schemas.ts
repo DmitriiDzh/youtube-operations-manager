@@ -172,6 +172,37 @@ export const getChannelBreakdownOutputSchema = z
 export type GetChannelBreakdownInput = z.infer<typeof getChannelBreakdownInputSchema>;
 export type GetChannelBreakdownOutput = z.infer<typeof getChannelBreakdownOutputSchema>;
 
+export const getVideoRetentionCurveInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+    videoId: z.string().min(1),
+    startDate: isoDateSchema,
+    endDate: isoDateSchema,
+  })
+  .strict();
+
+export const getVideoRetentionCurveOutputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    videoId: z.string().min(1),
+    startDate: z.string(),
+    endDate: z.string(),
+    points: z.array(
+      z
+        .object({
+          elapsedVideoTimeRatio: z.number(),
+          audienceWatchRatio: z.number(),
+          relativeRetentionPerformance: z.number(),
+        })
+        .strict()
+    ),
+  })
+  .strict();
+
+export type GetVideoRetentionCurveInput = z.infer<typeof getVideoRetentionCurveInputSchema>;
+export type GetVideoRetentionCurveOutput = z.infer<typeof getVideoRetentionCurveOutputSchema>;
+
 export const getDataQualityReportInputSchema = z
   .object({
     credentialRef: credentialRefSchema,

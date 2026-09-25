@@ -168,6 +168,31 @@ export type GetChannelBreakdownResult = {
   rows: ChannelBreakdownRow[];
 };
 
+/**
+ * Studio-Parity deep-parity plan (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §3.4, Slice
+ * C4, "Intro" mode) -- one point per `elapsedVideoTimeRatio` value the API returns (confirmed
+ * against a real response, BL-093). Deliberately scoped to just the raw curve for now, not
+ * Studio's own "This video vs. typical retention" two-series comparison or its Top
+ * moments/Spikes/Dips classification -- the exact relationship between `audienceWatchRatio` and
+ * `relativeRetentionPerformance` needed to reconstruct Studio's own "typical" baseline was never
+ * confirmed this session; inventing one would be exactly the "reading the implementation and
+ * writing down what it happens to do" `AGENTS.md` §L warns against, applied to an external API
+ * instead of this app's own code.
+ */
+export type VideoRetentionPoint = {
+  elapsedVideoTimeRatio: number;
+  audienceWatchRatio: number;
+  relativeRetentionPerformance: number;
+};
+
+export type GetVideoRetentionCurveResult = {
+  channelId: string;
+  videoId: string;
+  startDate: string;
+  endDate: string;
+  points: VideoRetentionPoint[];
+};
+
 export type ChannelOverviewDailyRow = {
   date: string;
   views: number;
