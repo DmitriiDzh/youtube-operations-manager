@@ -160,7 +160,10 @@ manual trigger, no chrome) as its own first step, then grown in further sub-slic
   S6b–S6d each deserve their own acceptance criteria once S6a's foundation actually exists and
   has been validated against real data — writing detailed specs for them now, before S6a is even
   assigned, would be planning ahead of the evidence `FUTURE_PHASES.md` §4's own constraint warns
-  against ("distinguish observed facts from interpretations/hypotheses explicitly").
+  against ("distinguish observed facts from interpretations/hypotheses explicitly"). **That
+  condition is now satisfied (2026-09-25) — see `docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md`
+  for the detailed, acceptance-oriented slice breakdown superseding this paragraph's sketch of
+  S6b/S6c/S6d.**
 
 ## 5. Open questions — resolved 2026-09-20 (project owner, Telegram msg 125)
 
