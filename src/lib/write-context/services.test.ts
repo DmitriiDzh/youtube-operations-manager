@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DomainError } from "@/lib/video-metadata/contracts";
-import { createWriteContextService } from "./service";
+import { createWriteContextService } from "./services";
 
 function makeCredentials() {
   return {

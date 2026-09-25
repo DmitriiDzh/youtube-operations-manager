@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { isDomainError } from "@/lib/video-metadata/contracts";
-import { createChannelAccessService } from "./service";
+import { createChannelAccessService } from "./services";
 
 function makeService(selections: Record<string, string | null>) {
   return createChannelAccessService({

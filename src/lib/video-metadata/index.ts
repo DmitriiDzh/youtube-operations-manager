@@ -1,6 +1,5 @@
-import { getSelectedChannelId, setSelectedChannelId } from "@/lib/db";
-import { createWriteContextYoutubeApiAdapter } from "@/lib/write-context/adapters/youtube-api";
-import { createWriteContextService } from "@/lib/write-context/service";
+import { setSelectedChannelId } from "@/lib/db";
+import { createWriteContextCore } from "@/lib/write-context";
 import { createMetadataGenerator } from "./adapters/metadata-generator";
 import { createDefaultLogger } from "./adapters/logger";
 import { createTranscriptProvider } from "./adapters/transcript-provider";
@@ -15,13 +14,7 @@ function defaultAuthResolver() {
 }
 
 export function createVideoMetadataCore() {
-  const writeContext = createWriteContextService({
-    youtubeApi: createWriteContextYoutubeApiAdapter(),
-    channelSelectionStore: {
-      getSelectedChannelId,
-      setSelectedChannelId,
-    },
-  });
+  const writeContext = createWriteContextCore();
 
   const services = createVideoMetadataServices({
     authResolver: defaultAuthResolver(),

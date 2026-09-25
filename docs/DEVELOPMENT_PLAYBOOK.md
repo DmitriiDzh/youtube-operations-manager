@@ -97,7 +97,7 @@ This section documents the **mandatory future pipeline** for bulk localization w
 
 | Step | Status | Where |
 |---|---|---|
-| 1. Identity verification | **IMPLEMENTED** (for single-item metadata/playlist writes) | `src/lib/write-context/service.ts` (`assertWriteChannel`) — reuse this unchanged for Phase 5, do not reimplement |
+| 1. Identity verification | **IMPLEMENTED** (for single-item metadata/playlist writes) | `src/lib/write-context/services.ts` (`assertWriteChannel`) — reuse this unchanged for Phase 5, do not reimplement |
 | 2. Input validation | **IMPLEMENTED** (Phase 4 import validation; single-item apply validation) | `src/lib/changesets/import.ts`, `src/lib/video-metadata/schemas.ts` |
 | 3. Fresh remote-state retrieval (immediately before write) | **PARTIALLY IMPLEMENTED** (Slice 2: `fetchFreshVideoContext`, single-video, used for merge/conflict/backup during batch *preparation*; not yet exercised immediately before an actual send, since no send exists until Slice 4) | `src/lib/batches/adapters/youtube-api.ts`, `services.ts`'s `prepareLedgerRow` |
 | 4. Conflict detection (fresh vs. approved) | **PARTIALLY IMPLEMENTED** (Slice 2: `detectPreWriteConflict` in `merge.ts`, wired into `prepareLedgerRow`, compares approval baseline against the Slice-2 fresh fetch — closes RISK-03 for the *preparation* pipeline; post-write verification, AC-CONFLICT-02, is still Slice 3) | `src/lib/batches/merge.ts` |
