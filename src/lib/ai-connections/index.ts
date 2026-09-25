@@ -1,4 +1,4 @@
-import { createDefaultLogger } from "@/lib/channel-sync/adapters/logger";
+import { createDefaultLogger } from "@/lib/shared-logger";
 import { createProtocolAdapterRegistry } from "./adapters/registry";
 import { createAiConnectionCredentialStoreAdapter, createAiConnectionStoreAdapter, createIdGenerator } from "./adapters/store";
 import { resolveEncryptionKeyFromEnv } from "./crypto";

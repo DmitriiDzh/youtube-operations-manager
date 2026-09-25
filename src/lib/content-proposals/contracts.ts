@@ -1,9 +1,17 @@
-import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
+import {
+  DomainError,
+  isDomainError,
+  parseWithSchema,
+  formatZodError,
+  createIdGenerator,
+  type DomainErrorCode,
+  type DomainErrorShape,
+} from "@/lib/video-metadata/contracts";
 import type { CreatedVia, EvidenceReference } from "@/lib/shared-provenance";
 import type { CreativeAsset } from "@/lib/asset-catalog";
 
 export type { DomainErrorCode, DomainErrorShape };
-export { DomainError, isDomainError };
+export { DomainError, isDomainError, parseWithSchema, formatZodError, createIdGenerator };
 // Reused as-is from `@/lib/shared-provenance` (AGENTS.md §D/§M) -- shared with `ai-localization`
 // (Phase 7 slice F), not a second copy of the same vocabulary.
 export type { CreatedVia, EvidenceReference };

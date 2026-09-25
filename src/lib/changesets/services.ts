@@ -1,6 +1,6 @@
 import {
   DomainError,
-  isDomainError,
+  mapUnknownError,
   type Change,
   type ChangeSet,
   type ChangeType,
@@ -99,14 +99,6 @@ type ServiceDependencies = {
     error(payload: { event: string; context?: Record<string, unknown> }): void;
   };
 };
-
-function mapUnknownError(error: unknown, fallbackCode: DomainError["code"]) {
-  if (isDomainError(error)) return error;
-  return new DomainError({
-    code: fallbackCode,
-    message: error instanceof Error ? error.message : "Unknown error",
-  });
-}
 
 function toIso(date: Date): string {
   return date.toISOString();

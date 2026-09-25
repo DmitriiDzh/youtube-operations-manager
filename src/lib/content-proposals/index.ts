@@ -1,4 +1,4 @@
-import { createChangeSetChannelStoreAdapter } from "@/lib/changesets/adapters/store";
+import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
 import { createContentProposalStoreAdapter } from "./adapters/store";
 import { isDomainError } from "./contracts";
@@ -8,7 +8,7 @@ export function createContentProposalCore() {
   const store = createContentProposalStoreAdapter();
   // Reused unchanged from `changesets`' own channel/video store adapter (AGENTS.md §D) -- the
   // same local-sync mirror `asset-catalog`/`ai-localization`/`agent-operations` already read.
-  const channelStore = createChangeSetChannelStoreAdapter();
+  const channelStore = createChannelVideoStoreAdapter();
   // Reused unchanged from `asset-catalog`'s own channel-scoped `getAssetContext` (AGENTS.md §D)
   // -- never a second, parallel asset-ownership check.
   const assetCatalog = createAssetCatalogCore();

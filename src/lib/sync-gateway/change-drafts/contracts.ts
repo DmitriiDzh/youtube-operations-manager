@@ -1,4 +1,11 @@
-import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
+import {
+  DomainError,
+  isDomainError,
+  parseWithSchema,
+  formatZodError,
+  type DomainErrorCode,
+  type DomainErrorShape,
+} from "@/lib/video-metadata/contracts";
 import type {
   ChangeApprovalStatus,
   ChangeConflictStatus,
@@ -11,7 +18,7 @@ import type {
 import type { CreatedVia } from "@/lib/shared-provenance";
 
 export type { DomainErrorCode, DomainErrorShape };
-export { DomainError, isDomainError };
+export { DomainError, isDomainError, parseWithSchema, formatZodError };
 
 // Reused as-is from src/lib/changesets/contracts.ts (AGENTS.md §D) -- this module is a new
 // *storage/sync* layer for the same draft concepts, not a new vocabulary for them.

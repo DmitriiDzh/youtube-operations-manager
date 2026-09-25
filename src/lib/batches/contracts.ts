@@ -1,8 +1,16 @@
-import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
+import {
+  DomainError,
+  isDomainError,
+  parseWithSchema,
+  formatZodError,
+  createIdGenerator,
+  type DomainErrorCode,
+  type DomainErrorShape,
+} from "@/lib/video-metadata/contracts";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "./ledger-state";
 
 export type { DomainErrorCode, DomainErrorShape };
-export { DomainError, isDomainError };
+export { DomainError, isDomainError, parseWithSchema, formatZodError, createIdGenerator };
 export type { AttemptOutcome, AttemptPhase, LedgerStatus };
 
 // ---------------------------------------------------------------------------

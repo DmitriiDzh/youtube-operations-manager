@@ -1,4 +1,4 @@
-import { createDefaultLogger } from "@/lib/channel-sync/adapters/logger";
+import { createDefaultLogger } from "@/lib/shared-logger";
 import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
 import { createWriteContextCore } from "@/lib/write-context";
 import { createBackupCore } from "@/lib/backup";

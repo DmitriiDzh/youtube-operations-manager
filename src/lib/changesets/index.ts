@@ -1,6 +1,7 @@
-import { createDefaultLogger } from "@/lib/channel-sync/adapters/logger";
+import { createDefaultLogger } from "@/lib/shared-logger";
 import { createChangeDraftsCoreForProduction, isDomainError } from "@/lib/sync-gateway";
-import { createChangeSetChannelStoreAdapter, createIdGenerator } from "./adapters/store";
+import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
+import { createIdGenerator } from "./adapters/store";
 import { createAutomergeBackedChangeSetStoreAdapter } from "./adapters/change-drafts-store";
 import { createChangeSetServices } from "./services";
 
@@ -13,7 +14,7 @@ export function createChangeSetCore() {
   const changeDrafts = createChangeDraftsCoreForProduction();
 
   return createChangeSetServices({
-    channelStore: createChangeSetChannelStoreAdapter(),
+    channelStore: createChannelVideoStoreAdapter(),
     changeSetStore: createAutomergeBackedChangeSetStoreAdapter(),
     // RISK-47 (docs/TECHNICAL_DEBT.md): approve must refuse a change with an open CRDT field
     // conflict, not just this module's own `conflictStatus`. A channel with no Automerge document

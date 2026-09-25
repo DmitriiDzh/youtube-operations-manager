@@ -1,6 +1,9 @@
 import {
   DomainError,
   isDomainError,
+  parseWithSchema,
+  formatZodError,
+  mapUnknownError,
   type CredentialRef,
   type DomainErrorCode,
   type DomainErrorShape,
@@ -14,7 +17,7 @@ export type {
   ResolvedCredentials,
 };
 
-export { DomainError, isDomainError };
+export { DomainError, isDomainError, parseWithSchema, formatZodError, mapUnknownError };
 
 export type Playlist = {
   id: string;

@@ -1,6 +1,9 @@
 import {
   DomainError,
   isDomainError,
+  parseWithSchema,
+  formatZodError,
+  mapUnknownError,
   type CredentialRef,
   type DomainErrorCode,
   type DomainErrorShape,
@@ -8,7 +11,7 @@ import {
 } from "@/lib/video-metadata/contracts";
 
 export type { CredentialRef, DomainErrorCode, DomainErrorShape, ResolvedCredentials };
-export { DomainError, isDomainError };
+export { DomainError, isDomainError, parseWithSchema, formatZodError, mapUnknownError };
 
 export type ThumbnailInfo = {
   url: string;

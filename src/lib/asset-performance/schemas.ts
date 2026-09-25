@@ -1,30 +1,10 @@
-import { z, ZodError } from "zod";
-import { DomainError } from "./contracts";
+import { z } from "zod";
 import { ASSET_PERFORMANCE_SORT_MODES } from "./contracts";
 import { ASSET_REFERENCE_KINDS, ASSET_TYPES } from "@/lib/asset-catalog";
 import { CUMULATIVE_COMPARISON_METRIC_NAMES } from "@/lib/analytics/comparable-age";
 import { credentialRefSchema } from "@/lib/video-metadata/schemas";
+export { parseWithSchema, formatZodError } from "./contracts";
 
-export function formatZodError(error: ZodError) {
-  return error.issues.map((issue) => ({
-    path: issue.path.join("."),
-    message: issue.message,
-    code: issue.code,
-  }));
-}
-
-export function parseWithSchema<T>(schema: z.ZodType<T>, payload: unknown, context: string): T {
-  const parsed = schema.safeParse(payload);
-  if (!parsed.success) {
-    throw new DomainError({
-      code: "validation_failed",
-      message: `Invalid ${context}`,
-      details: formatZodError(parsed.error),
-    });
-  }
-
-  return parsed.data;
-}
 
 export const MAX_ASSET_PERFORMANCE_LIMIT = 50;
 const DEFAULT_ASSET_PERFORMANCE_LIMIT = 20;

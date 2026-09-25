@@ -1,7 +1,15 @@
-import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
+import {
+  DomainError,
+  isDomainError,
+  parseWithSchema,
+  formatZodError,
+  mapUnknownError,
+  type DomainErrorCode,
+  type DomainErrorShape,
+} from "@/lib/video-metadata/contracts";
 
 export type { DomainErrorCode, DomainErrorShape };
-export { DomainError, isDomainError };
+export { DomainError, isDomainError, parseWithSchema, formatZodError, mapUnknownError };
 
 /**
  * Studio-parity "Details" edit (2026-09-20, owner-authorized real-write feature). A patch is a

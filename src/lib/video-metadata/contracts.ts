@@ -1,3 +1,10 @@
+import { randomUUID } from "node:crypto";
+import type { ZodError, ZodType } from "zod";
+
+export function createIdGenerator() {
+  return () => randomUUID();
+}
+
 export type CredentialRef =
   | { userId: string }
   | {
@@ -105,6 +112,36 @@ export class DomainError extends Error {
 
 export function isDomainError(value: unknown): value is DomainError {
   return value instanceof DomainError;
+}
+
+export function formatZodError(error: ZodError) {
+  return error.issues.map((issue) => ({
+    path: issue.path.join("."),
+    message: issue.message,
+    code: issue.code,
+  }));
+}
+
+export function parseWithSchema<T>(schema: ZodType<T>, payload: unknown, context: string): T {
+  const parsed = schema.safeParse(payload);
+  if (!parsed.success) {
+    throw new DomainError({
+      code: "validation_failed",
+      message: `Invalid ${context}`,
+      details: formatZodError(parsed.error),
+    });
+  }
+
+  return parsed.data;
+}
+
+export function mapUnknownError(error: unknown, fallbackCode: DomainErrorCode): DomainError {
+  if (isDomainError(error)) return error;
+
+  return new DomainError({
+    code: fallbackCode,
+    message: error instanceof Error ? error.message : "Unknown error",
+  });
 }
 
 export type ResolvedCredentials = {

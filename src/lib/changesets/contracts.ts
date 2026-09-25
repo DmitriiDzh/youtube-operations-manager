@@ -1,7 +1,16 @@
-import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
+import {
+  DomainError,
+  isDomainError,
+  parseWithSchema,
+  formatZodError,
+  mapUnknownError,
+  createIdGenerator,
+  type DomainErrorCode,
+  type DomainErrorShape,
+} from "@/lib/video-metadata/contracts";
 
 export type { DomainErrorCode, DomainErrorShape };
-export { DomainError, isDomainError };
+export { DomainError, isDomainError, parseWithSchema, formatZodError, mapUnknownError, createIdGenerator };
 
 export type ChangeField = "title" | "description";
 // "delete" (added 2026-09-21, docs/PROJECT_SPEC.md §16's 2026-09-20 deletion-policy

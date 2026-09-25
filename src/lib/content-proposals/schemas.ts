@@ -1,28 +1,8 @@
-import { z, ZodError } from "zod";
-import { DomainError } from "./contracts";
+import { z } from "zod";
 import { CREATED_VIA_VALUES, MAX_EVIDENCE_LIST_ITEMS, evidenceReferenceSchema } from "@/lib/shared-provenance";
 import { creativeAssetSchema, registerAssetInputSchema } from "@/lib/asset-catalog/schemas";
+export { parseWithSchema, formatZodError } from "./contracts";
 
-export function formatZodError(error: ZodError) {
-  return error.issues.map((issue) => ({
-    path: issue.path.join("."),
-    message: issue.message,
-    code: issue.code,
-  }));
-}
-
-export function parseWithSchema<T>(schema: z.ZodType<T>, payload: unknown, context: string): T {
-  const parsed = schema.safeParse(payload);
-  if (!parsed.success) {
-    throw new DomainError({
-      code: "validation_failed",
-      message: `Invalid ${context}`,
-      details: formatZodError(parsed.error),
-    });
-  }
-
-  return parsed.data;
-}
 
 // Bounded-length only, never a validation of the CONTENT (AGENTS.md §B) -- same discipline as
 // every other free-text field in this codebase (generationContextSchema, evidenceReferenceSchema).

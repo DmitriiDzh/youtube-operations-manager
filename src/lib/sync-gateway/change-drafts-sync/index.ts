@@ -1,6 +1,6 @@
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
 import { createChangeDraftsCoreForProduction } from "../change-drafts";
-import { createDefaultLogger } from "@/lib/channel-sync/adapters/logger";
+import { createDefaultLogger } from "@/lib/shared-logger";
 import { listStoredChannels } from "@/lib/db";
 import { getProductionAppPaths } from "@/lib/platform-paths/runtime";
 import { createFilesystemTransportAdapter } from "./adapters/filesystem-transport";

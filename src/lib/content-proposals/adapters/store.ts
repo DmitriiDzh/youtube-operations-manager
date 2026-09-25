@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   getContentProposalById,
   insertContentProposal,
@@ -7,6 +6,7 @@ import {
   insertContentProposalArtifactLink,
   listContentProposalArtifactLinksByProposal,
 } from "@/lib/db";
+import { createIdGenerator } from "../contracts";
 
 // Deliberately thin: only wraps the db.ts functions this module needs, never touches
 // channels/videos/assets directly (channel/video/asset-ownership scoping is the caller's job --
@@ -14,7 +14,7 @@ import {
 // injected dependencies).
 export function createContentProposalStoreAdapter() {
   return {
-    idGenerator: (): string => randomUUID(),
+    idGenerator: createIdGenerator(),
     insertProposal: insertContentProposal,
     listProposalsByChannel: listContentProposalsByChannel,
     getProposalById: getContentProposalById,
