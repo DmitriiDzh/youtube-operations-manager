@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,17 +9,28 @@ import { eq } from "drizzle-orm";
 import {
   channels,
   clearStoredCloudConnection,
+  contentProposalArtifacts,
+  contentProposals,
   copyLegacyDatabaseInto,
   createIsolatedDb,
   gatewayCallEvents,
   getAnalyticsReadsEnabled,
   getAnalyticsSyncSettings,
+  getContentProposalArtifactLinkById,
+  getContentProposalById,
+  getCreativeAssetById,
   getDataApiReadsEnabled,
   getGatewayTrafficLast24h,
   getStoredCloudConnection,
   getWeeklyReportByWeek,
   initializeDatabaseSchema,
+  insertContentProposal,
+  insertContentProposalArtifactLink,
+  insertCreativeAsset,
   listAnalyticsCollectionRunsByChannel,
+  listContentProposalArtifactLinksByProposal,
+  listContentProposalsByChannel,
+  listCreativeAssetsByChannel,
   listVideoMetricsByChannel,
   listVideoMetricsByVideo,
   listWeeklyReportsByChannel,
@@ -108,6 +120,268 @@ test("initializeDatabaseSchema: a fresh database ends stamped at SCHEMA_CURRENT_
     assert.equal(await tableExists(client, "video_metrics_daily"), true);
     assert.equal(await tableExists(client, "analytics_collection_runs"), true);
     assert.equal(await tableExists(client, "analytics_weekly_reports"), true);
+    assert.equal(await tableExists(client, "creative_assets"), true);
+    assert.equal(await tableExists(client, "content_proposals"), true);
+    assert.equal(await tableExists(client, "content_proposal_artifacts"), true);
+  }));
+
+// Phase 7 slice D (docs/AGENT_OPERATIONS_INTERFACE.md §4c).
+test("creative_assets: inserts and lists by channel, filtered by videoId/assetType, enforcing the channel/video foreign keys", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannelAndVideo(isolatedDb, "UC_A", "vid1");
+
+    await insertCreativeAsset(
+      {
+        id: "asset-1",
+        channelId: "UC_A",
+        assetType: "thumbnail",
+        referenceKind: "local_path",
+        referenceValue: "/tmp/does-not-matter.png",
+        title: "Cover art v1",
+        linkedVideoId: "vid1",
+      },
+      isolatedDb
+    );
+    await insertCreativeAsset(
+      {
+        id: "asset-2",
+        channelId: "UC_A",
+        assetType: "script",
+        referenceKind: "url",
+        referenceValue: "https://example.com/script.txt",
+      },
+      isolatedDb
+    );
+
+    const all = await listCreativeAssetsByChannel("UC_A", {}, isolatedDb);
+    assert.equal(all.length, 2);
+
+    const byVideo = await listCreativeAssetsByChannel("UC_A", { videoId: "vid1" }, isolatedDb);
+    assert.deepEqual(byVideo.map((a) => a.id), ["asset-1"]);
+
+    const byType = await listCreativeAssetsByChannel("UC_A", { assetType: "script" }, isolatedDb);
+    assert.deepEqual(byType.map((a) => a.id), ["asset-2"]);
+
+    const fetched = await getCreativeAssetById("asset-1", isolatedDb);
+    assert.equal(fetched?.title, "Cover art v1");
+    assert.equal(fetched?.description, null);
+
+    // A channel that was never synced must fail the FK, not silently create an orphaned row.
+    await assert.rejects(() =>
+      insertCreativeAsset(
+        {
+          id: "asset-3",
+          channelId: "UC_NEVER_SYNCED",
+          assetType: "other",
+          referenceKind: "external_artifact_id",
+          referenceValue: "artifact-123",
+        },
+        isolatedDb
+      )
+    );
+  }));
+
+// Phase 7 slice G (docs/AGENT_OPERATIONS_INTERFACE.md §4f).
+test("content_proposals: inserts and lists by channel, enforcing the channel foreign key", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannel(isolatedDb, "UC_A");
+
+    await insertContentProposal(
+      {
+        id: "proposal-1",
+        channelId: "UC_A",
+        objective: "Grow subscribers",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+    await insertContentProposal(
+      {
+        id: "proposal-2",
+        channelId: "UC_A",
+        objective: "Increase watch time",
+        createdVia: "mcp",
+        agentApiVersion: "0.6.0",
+      },
+      isolatedDb
+    );
+
+    const all = await listContentProposalsByChannel("UC_A", isolatedDb);
+    assert.deepEqual(all.map((p) => p.id).sort(), ["proposal-1", "proposal-2"]);
+
+    const fetched = await getContentProposalById("proposal-2", isolatedDb);
+    assert.equal(fetched?.objective, "Increase watch time");
+    assert.equal(fetched?.createdVia, "mcp");
+    assert.equal(fetched?.agentApiVersion, "0.6.0");
+
+    // A channel that was never synced must fail the FK, not silently create an orphaned row.
+    await assert.rejects(() =>
+      insertContentProposal(
+        {
+          id: "proposal-3",
+          channelId: "UC_NEVER_SYNCED",
+          createdVia: "web_ui",
+        },
+        isolatedDb
+      )
+    );
+  }));
+
+// Regression: `listContentProposalsByChannel` claims "newest first" (docs/interfaces.md,
+// agent-operations' own capability description) -- proven here with three rows whose `createdAt`
+// order is deliberately DECOUPLED from both insertion order (rowid) and id (a random UUID, not a
+// hand-picked string this test could accidentally make sort the "right" way). With only two rows,
+// a `createdAt`-DESC-correct expectation is mathematically indistinguishable from at least one of
+// {rowid ascending, rowid descending, id ascending, id descending} -- a prior version of this test
+// (independent review, two earlier rounds) kept accidentally coinciding with one of those wrong
+// orderings while believing it had ruled all of them out. Three rows, with createdAt order equal
+// to neither insertion order nor its reverse, closes that gap: inserted in order first/second/
+// third, but createdAt-newest-to-oldest is second, first, third -- a sequence no rowid-based or
+// id-based ordering can reproduce by coincidence. Same-second ties are a known, accepted
+// limitation shared with every other `orderBy(desc(...createdAt))` list function in this file
+// (creative_assets, batches, ai_connections) -- not a new gap introduced by this table.
+test("content_proposals: listContentProposalsByChannel actually orders by createdAt, newest first", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannel(isolatedDb, "UC_A");
+
+    const first = randomUUID();
+    const second = randomUUID();
+    const third = randomUUID();
+
+    // Insertion order: first, second, third (ascending rowid). createdAt order (newest to
+    // oldest): second, first, third -- a permutation matching neither rowid ascending
+    // ([first, second, third]) nor descending ([third, second, first]), and unrelated to the ids'
+    // own (random) lexical order.
+    await isolatedDb.insert(contentProposals).values({
+      id: first,
+      channelId: "UC_A",
+      createdVia: "web_ui",
+      createdAt: new Date("2026-09-10T00:00:00.000Z"),
+    });
+    await isolatedDb.insert(contentProposals).values({
+      id: second,
+      channelId: "UC_A",
+      createdVia: "web_ui",
+      createdAt: new Date("2026-09-20T00:00:00.000Z"),
+    });
+    await isolatedDb.insert(contentProposals).values({
+      id: third,
+      channelId: "UC_A",
+      createdVia: "web_ui",
+      createdAt: new Date("2026-09-01T00:00:00.000Z"),
+    });
+
+    const all = await listContentProposalsByChannel("UC_A", isolatedDb);
+    assert.deepEqual(all.map((p) => p.id), [second, first, third]);
+  }));
+
+// Phase 7 slice G2 (docs/AGENT_OPERATIONS_INTERFACE.md §4f, owner spec §19).
+test("content_proposal_artifacts: inserts and lists by proposal, enforcing the proposal/asset foreign keys", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannel(isolatedDb, "UC_A");
+
+    await insertContentProposal({ id: "proposal-1", channelId: "UC_A", createdVia: "web_ui" }, isolatedDb);
+    await insertCreativeAsset(
+      { id: "asset-1", channelId: "UC_A", assetType: "thumbnail", referenceKind: "url", referenceValue: "https://example.com/a.png" },
+      isolatedDb
+    );
+
+    await insertContentProposalArtifactLink(
+      { id: "link-1", proposalId: "proposal-1", assetId: "asset-1", createdVia: "mcp", agentApiVersion: "0.6.0" },
+      isolatedDb
+    );
+
+    const links = await listContentProposalArtifactLinksByProposal("proposal-1", isolatedDb);
+    assert.equal(links.length, 1);
+    assert.equal(links[0].assetId, "asset-1");
+    assert.equal(links[0].createdVia, "mcp");
+    assert.equal(links[0].agentApiVersion, "0.6.0");
+
+    const fetched = await getContentProposalArtifactLinkById("link-1", isolatedDb);
+    assert.equal(fetched?.proposalId, "proposal-1");
+
+    // A proposal that doesn't exist must fail the FK, not silently create an orphaned link.
+    await assert.rejects(() =>
+      insertContentProposalArtifactLink(
+        { id: "link-2", proposalId: "proposal-never-created", assetId: "asset-1", createdVia: "web_ui" },
+        isolatedDb
+      )
+    );
+
+    // Same for an asset that doesn't exist.
+    await assert.rejects(() =>
+      insertContentProposalArtifactLink(
+        { id: "link-3", proposalId: "proposal-1", assetId: "asset-never-created", createdVia: "web_ui" },
+        isolatedDb
+      )
+    );
+  }));
+
+// Regression: `listContentProposalArtifactLinksByProposal` claims "newest first"
+// (docs/interfaces.md, agent-operations' own capability description) -- same discrimination
+// requirement, and same fix shape, as the `content_proposals` ordering test above (three rows,
+// random-UUID ids, a createdAt permutation matching neither insertion order nor its reverse).
+// With only one or two rows, a `createdAt`-DESC-correct expectation cannot be distinguished from
+// rowid- or id-based ordering by coincidence.
+test("content_proposal_artifacts: listContentProposalArtifactLinksByProposal actually orders by createdAt, newest first", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await seedChannel(isolatedDb, "UC_A");
+    await insertContentProposal({ id: "proposal-1", channelId: "UC_A", createdVia: "web_ui" }, isolatedDb);
+
+    const firstAsset = randomUUID();
+    const secondAsset = randomUUID();
+    const thirdAsset = randomUUID();
+    for (const assetId of [firstAsset, secondAsset, thirdAsset]) {
+      await insertCreativeAsset(
+        { id: assetId, channelId: "UC_A", assetType: "thumbnail", referenceKind: "url", referenceValue: `https://example.com/${assetId}.png` },
+        isolatedDb
+      );
+    }
+
+    const firstLink = randomUUID();
+    const secondLink = randomUUID();
+    const thirdLink = randomUUID();
+
+    // Insertion order: firstLink, secondLink, thirdLink (ascending rowid). createdAt order
+    // (newest to oldest): secondLink, firstLink, thirdLink -- a permutation matching neither
+    // rowid ascending nor descending, and unrelated to the ids' own (random) lexical order.
+    await isolatedDb.insert(contentProposalArtifacts).values({
+      id: firstLink,
+      proposalId: "proposal-1",
+      assetId: firstAsset,
+      createdVia: "web_ui",
+      createdAt: new Date("2026-09-10T00:00:00.000Z"),
+    });
+    await isolatedDb.insert(contentProposalArtifacts).values({
+      id: secondLink,
+      proposalId: "proposal-1",
+      assetId: secondAsset,
+      createdVia: "web_ui",
+      createdAt: new Date("2026-09-20T00:00:00.000Z"),
+    });
+    await isolatedDb.insert(contentProposalArtifacts).values({
+      id: thirdLink,
+      proposalId: "proposal-1",
+      assetId: thirdAsset,
+      createdVia: "web_ui",
+      createdAt: new Date("2026-09-01T00:00:00.000Z"),
+    });
+
+    const links = await listContentProposalArtifactLinksByProposal("proposal-1", isolatedDb);
+    assert.deepEqual(
+      links.map((l) => l.id),
+      [secondLink, firstLink, thirdLink]
+    );
   }));
 
 // Phase 8 follow-up, slice 2 (docs/roadmap/FUTURE_PHASES.md §4, data-quality diagnostics).
@@ -709,6 +983,69 @@ test("initializeDatabaseSchema: an existing pre-versioning database (baseline ta
       true,
       "a later migration (v14) must still apply correctly on the pre-versioning re-apply path"
     );
+    // Phase 7 slice K, AC-DUR-05: a later ADD-COLUMN migration (v19, not just a CREATE TABLE
+    // migration like v13/v14 above) must also survive the pre-versioning re-apply path -- this
+    // is exactly the `isDuplicateColumnError`-tolerance scenario RISK-33 already documents for
+    // v4's own view_count/comment_count/like_count columns.
+    await client.execute(
+      "INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('UC_PREV', 'x', 'UU_PREV')"
+    );
+    await client.execute(
+      "INSERT INTO videos (id, channel_id, title, description, published_at, privacy_status, thumbnails_json, localizations_json, duration_seconds) " +
+        "VALUES ('v_prev', 'UC_PREV', 't', '', '2026-01-01T00:00:00Z', 'public', '{}', '{}', 630)"
+    );
+    const durationRow = await client.execute("SELECT duration_seconds FROM videos WHERE id = 'v_prev'");
+    assert.equal(
+      durationRow.rows[0]?.duration_seconds,
+      630,
+      "a later migration (v19, ADD COLUMN) must still apply correctly on the pre-versioning re-apply path"
+    );
+  }));
+
+// Phase 7 slice K (owner spec §10 -- AC-DUR-01). `upsertVideos`/`listStoredVideosByChannel`
+// always use the module-level singleton `db`, not an injectable one (a pre-existing gap, not
+// introduced by this slice, and out of this slice's own scope to retrofit) -- so this proves the
+// same round trip directly against an isolated temp database via Drizzle, the same way this
+// file's own `seedVideo` helper already does, confirming the schema column and its mapping
+// (`mapStoredVideo`'s `durationSeconds: row.durationSeconds`) actually round-trip correctly.
+test("videos.duration_seconds round-trips through the real Drizzle schema, and stays null when never provided (never a fabricated 0)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(channels).values({
+      id: "UC_A",
+      title: "Test Channel",
+      thumbnailUrl: null,
+      uploadsPlaylistId: "UU_TEST",
+      connectedUserId: null,
+    });
+
+    await isolatedDb.insert(videos).values({
+      id: "v_with_duration",
+      channelId: "UC_A",
+      title: "Title",
+      description: "",
+      publishedAt: "2026-01-01T00:00:00.000Z",
+      privacyStatus: "public",
+      thumbnailsJson: "{}",
+      localizationsJson: "{}",
+      durationSeconds: 630,
+    });
+    await isolatedDb.insert(videos).values({
+      id: "v_without_duration",
+      channelId: "UC_A",
+      title: "Title",
+      description: "",
+      publishedAt: "2026-01-01T00:00:00.000Z",
+      privacyStatus: "public",
+      thumbnailsJson: "{}",
+      localizationsJson: "{}",
+    });
+
+    const rows = await isolatedDb.select().from(videos).where(eq(videos.channelId, "UC_A"));
+    const byId = new Map(rows.map((v) => [v.id, v]));
+    assert.equal(byId.get("v_with_duration")?.durationSeconds, 630);
+    assert.equal(byId.get("v_without_duration")?.durationSeconds, null);
   }));
 
 // AC-SCHEMA-04

@@ -217,6 +217,9 @@ export const videos = sqliteTable("videos", {
   viewCount: integer("view_count"),
   commentCount: integer("comment_count"),
   likeCount: integer("like_count"),
+  // Additive, schema version 19 (Phase 7 slice K, owner spec §10 "similar duration" filter) --
+  // same nullable-until-next-sync convention as the three columns above.
+  durationSeconds: integer("duration_seconds"),
   lastSyncedAt: integer("last_synced_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),
@@ -285,10 +288,15 @@ export const channelEditorialProfiles = sqliteTable("channel_editorial_profiles"
     .$defaultFn(() => new Date()),
 });
 
-// Immutable, append-only: one row per successful `createChangeSetFromGeneration` call,
-// recording exactly which profile version and/or per-request editorialBrief actually
-// produced that Change Set's proposals -- so editing or deleting the profile afterward
-// never loses this record (the reproducibility requirement). Never updated after insert.
+// Write-once in spirit, one row unconditionally recorded per successful
+// `createChangeSetFromGeneration` call (see that function's own doc comment), recording exactly
+// which profile version and/or per-request editorialBrief actually produced that Change Set's
+// proposals -- so editing or deleting the profile afterward never loses this record (the
+// reproducibility requirement).
+// Its CONTENT never changes after insert through this application's own API, but the SQL row
+// itself CAN be rewritten by a later re-projection of the same CRDT document (e.g. to backfill
+// columns added by a later app version) -- see `setStoredGenerationProvenanceRow`'s own doc
+// comment below for why that update path exists.
 export const aiLocalizationGenerationProvenance = sqliteTable("ai_localization_generation_provenance", {
   id: text("id").primaryKey(),
   changeSetId: text("change_set_id")
@@ -303,6 +311,13 @@ export const aiLocalizationGenerationProvenance = sqliteTable("ai_localization_g
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),
+  // Phase 7 slice F (SCHEMA_MIGRATIONS version 16) -- additive columns on this same baseline
+  // table via `ALTER TABLE ... ADD COLUMN`. See `DraftProvenance`'s own doc comment
+  // (`src/lib/sync-gateway/change-drafts/contracts.ts`) for what each field means.
+  evidenceJson: text("evidence_json"),
+  rationale: text("rationale"),
+  createdVia: text("created_via"),
+  agentApiVersion: text("agent_api_version"),
 });
 
 // Phase 6, AI Connections (provider-agnostic). Purely additive (ADR 0001), owned
@@ -695,6 +710,121 @@ export const analyticsWeeklyReports = sqliteTable(
   ]
 );
 
+/**
+ * Phase 7 slice D (`src/lib/asset-catalog/`) -- a portable metadata catalog for pre-existing
+ * production files (owner spec §15: "The agent needs access to files previously used in
+ * production... Do not necessarily copy large binary files into API/MCP responses. Expose
+ * metadata plus controlled file/resource handles."). `referenceValue` is stored and returned as
+ * an opaque string only -- this module never reads/fetches it (no path-traversal/filesystem-
+ * exposure surface, since the value is never resolved to an actual file).
+ *
+ * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`) as of this slice --
+ * a registered asset stays device-local and does not travel with a device handoff/snapshot,
+ * the same accepted limitation `video_metrics_daily` already has (`docs/ARCHITECTURE.md` §14.7).
+ * Tracked in `docs/TECHNICAL_DEBT.md`.
+ */
+export const creativeAssets = sqliteTable(
+  "creative_assets",
+  {
+    id: text("id").primaryKey(),
+    channelId: text("channel_id")
+      .notNull()
+      .references(() => channels.id),
+    assetType: text("asset_type").notNull(),
+    referenceKind: text("reference_kind").notNull(),
+    referenceValue: text("reference_value").notNull(),
+    title: text("title"),
+    description: text("description"),
+    linkedVideoId: text("linked_video_id").references(() => videos.id),
+    provenanceJson: text("provenance_json"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [index("creative_assets_channel_id_idx").on(table.channelId)]
+);
+
+/**
+ * Phase 7 slice G (`src/lib/content-proposals/`) -- a structured Content Proposal (owner spec
+ * §18): "Codex should be able to create a structured Content Proposal using application
+ * context... The application does not need to generate every resulting asset." Write-once
+ * (create/get/list only through this module's own API) -- there is no update/status/approval
+ * concept for this domain (see `content-proposals/contracts.ts`'s own doc comment for why one
+ * was deliberately not invented).
+ *
+ * `evidence_json`/`brief_json`/`reference_video_ids_json`/`reference_asset_ids_json` are bounded,
+ * `.strict()`-validated JSON at the application layer (`content-proposals/schemas.ts`) -- the
+ * heterogeneous remainder of owner spec §18's field list (title/thumbnail/visual/audio direction,
+ * duration, publication hypothesis, localization strategy, experiment design, expected metrics,
+ * required production outputs) is collapsed into `brief_json` rather than ~10 speculative
+ * dedicated columns, since none of those fields is queried structurally anywhere in this
+ * codebase yet.
+ *
+ * `created_via` is NOT NULL from creation (unlike `ai_localization_generation_provenance`'s own
+ * nullable column) -- this is a brand-new table with no pre-existing rows created before this
+ * field existed, so there is no backward-compatibility case to accommodate (owner spec §22,
+ * SERVER-STAMPED, never taken from caller input).
+ *
+ * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`) -- same accepted,
+ * device-local limitation `creative_assets` already has (`docs/TECHNICAL_DEBT.md` RISK-52).
+ */
+export const contentProposals = sqliteTable(
+  "content_proposals",
+  {
+    id: text("id").primaryKey(),
+    channelId: text("channel_id")
+      .notNull()
+      .references(() => channels.id),
+    objective: text("objective"),
+    topicConcept: text("topic_concept"),
+    rationale: text("rationale"),
+    evidenceJson: text("evidence_json"),
+    briefJson: text("brief_json"),
+    referenceVideoIdsJson: text("reference_video_ids_json"),
+    referenceAssetIdsJson: text("reference_asset_ids_json"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    createdVia: text("created_via").notNull(),
+    agentApiVersion: text("agent_api_version"),
+  },
+  (table) => [index("content_proposals_channel_id_idx").on(table.channelId)]
+);
+
+/**
+ * Phase 7 slice G2 (`src/lib/content-proposals/`) -- links an externally-produced artifact
+ * (registered via `asset-catalog`'s own `registerAsset`, AGENTS.md §D: never a second, parallel
+ * asset-insert path) back to the Content Proposal that requested it (owner spec §19: "register
+ * the artifact; associate it with a proposal/channel/video; record provenance; make it available
+ * as future agent context"). Owned by `content-proposals`, not `asset-catalog` -- `creative_assets`
+ * itself gained no new column for this; disabling/removing `content-proposals` leaves
+ * `asset-catalog`'s own schema and code completely untouched (`AGENTS.md` §M).
+ *
+ * `created_via` is NOT NULL from creation, same reasoning as `content_proposals` above -- a
+ * brand-new table with no pre-existing rows.
+ *
+ * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** -- same accepted, device-local limitation as
+ * `content_proposals`/`creative_assets` (`docs/TECHNICAL_DEBT.md` RISK-52).
+ */
+export const contentProposalArtifacts = sqliteTable(
+  "content_proposal_artifacts",
+  {
+    id: text("id").primaryKey(),
+    proposalId: text("proposal_id")
+      .notNull()
+      .references(() => contentProposals.id),
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => creativeAssets.id),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    createdVia: text("created_via").notNull(),
+    agentApiVersion: text("agent_api_version"),
+  },
+  (table) => [index("content_proposal_artifacts_proposal_id_idx").on(table.proposalId)]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -932,6 +1062,105 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute(
         "CREATE INDEX IF NOT EXISTS analytics_weekly_reports_channel_id_idx ON analytics_weekly_reports(channel_id)"
       );
+    },
+  },
+  {
+    version: 15,
+    description:
+      "creative_assets -- portable metadata catalog for pre-existing production files, Phase 7 slice D (docs/AGENT_OPERATIONS_INTERFACE.md §4c)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS creative_assets (" +
+          "id TEXT PRIMARY KEY, " +
+          "channel_id TEXT NOT NULL REFERENCES channels(id), " +
+          "asset_type TEXT NOT NULL, " +
+          "reference_kind TEXT NOT NULL, " +
+          "reference_value TEXT NOT NULL, " +
+          "title TEXT, " +
+          "description TEXT, " +
+          "linked_video_id TEXT REFERENCES videos(id), " +
+          "provenance_json TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS creative_assets_channel_id_idx ON creative_assets(channel_id)"
+      );
+    },
+  },
+  {
+    version: 16,
+    description:
+      "ai_localization_generation_provenance -- additive evidence/rationale/createdVia/agentApiVersion columns, Phase 7 slice F (docs/AGENT_OPERATIONS_INTERFACE.md §4e, owner spec §12/§13/§22)",
+    apply: async (client) => {
+      // SQLite only supports one column per ALTER TABLE ... ADD COLUMN statement -- four
+      // separate calls, each additive and nullable (no backfill needed/possible for existing
+      // rows, which simply have no evidence/rationale/creator-identity recorded, same "never
+      // fabricate" discipline this codebase already applies elsewhere). Each wrapped in the same
+      // isDuplicateColumnError tolerance as every other ADD-COLUMN migration above (RISK-33) --
+      // required here too, since a pre-versioning database can already carry these columns.
+      for (const column of ["evidence_json", "rationale", "created_via", "agent_api_version"]) {
+        try {
+          await client.execute(`ALTER TABLE ai_localization_generation_provenance ADD COLUMN ${column} TEXT`);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+    },
+  },
+  {
+    version: 17,
+    description:
+      "content_proposals -- structured Content Proposal records, Phase 7 slice G (docs/AGENT_OPERATIONS_INTERFACE.md §4f, owner spec §18/§19/§20)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS content_proposals (" +
+          "id TEXT PRIMARY KEY, " +
+          "channel_id TEXT NOT NULL REFERENCES channels(id), " +
+          "objective TEXT, " +
+          "topic_concept TEXT, " +
+          "rationale TEXT, " +
+          "evidence_json TEXT, " +
+          "brief_json TEXT, " +
+          "reference_video_ids_json TEXT, " +
+          "reference_asset_ids_json TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "created_via TEXT NOT NULL, " +
+          "agent_api_version TEXT)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS content_proposals_channel_id_idx ON content_proposals(channel_id)"
+      );
+    },
+  },
+  {
+    version: 18,
+    description:
+      "content_proposal_artifacts -- link table for externally-produced artifacts registered against a Content Proposal, Phase 7 slice G2 (docs/AGENT_OPERATIONS_INTERFACE.md §4f, owner spec §19)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS content_proposal_artifacts (" +
+          "id TEXT PRIMARY KEY, " +
+          "proposal_id TEXT NOT NULL REFERENCES content_proposals(id), " +
+          "asset_id TEXT NOT NULL REFERENCES creative_assets(id), " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "created_via TEXT NOT NULL, " +
+          "agent_api_version TEXT)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS content_proposal_artifacts_proposal_id_idx ON content_proposal_artifacts(proposal_id)"
+      );
+    },
+  },
+  {
+    version: 19,
+    description:
+      "videos.duration_seconds -- Phase 7 slice K, owner spec §10 comparable-content 'similar duration' filter (docs/AGENT_OPERATIONS_INTERFACE.md §4g)",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE videos ADD COLUMN duration_seconds INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
     },
   },
 ];
@@ -1597,6 +1826,7 @@ export type StoredVideo = {
   viewCount: number | null;
   commentCount: number | null;
   likeCount: number | null;
+  durationSeconds: number | null;
   lastSyncedAt: Date;
 };
 
@@ -1632,6 +1862,7 @@ function mapStoredVideo(row: typeof videos.$inferSelect): StoredVideo {
     viewCount: row.viewCount,
     commentCount: row.commentCount,
     likeCount: row.likeCount,
+    durationSeconds: row.durationSeconds,
     lastSyncedAt: row.lastSyncedAt,
   };
 }
@@ -1819,6 +2050,29 @@ export async function getAnalyticsReadsEnabled(database: AppDb = db): Promise<bo
 
 export async function setAnalyticsReadsEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
   await setAppSetting(ANALYTICS_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
+}
+
+const OPERATIONS_WORKSPACE_PATH_SETTING_KEY = "operations_workspace_path";
+
+/**
+ * Phase 7 slice I (owner spec §3/§30, `docs/AGENT_OPERATIONS_INTERFACE.md` §4i, project owner
+ * clarification via Telegram 2026-09-24): an absolute filesystem path to a folder OUTSIDE this
+ * repository holding Codex's own operating/editorial instructions -- this application never
+ * generates, templates, or commits anything into that folder (`AGENTS.md` §B), it only stores
+ * where it is and surfaces its contents to the connected agent on request. Only ever set through
+ * the operator-facing Settings API (`POST /api/settings`), never through any `agent`-namespaced
+ * MCP tool or CLI command -- an agent that could choose its own instructions directory would be
+ * self-authorizing filesystem access, the exact `local_path`/owner-spec-§17 logic slice G2
+ * already established for asset registration. `null`/empty string both mean "not configured" --
+ * this is not a boolean toggle like the settings above, so no separate "enabled" flag exists.
+ */
+export async function getOperationsWorkspacePath(database: AppDb = db): Promise<string | null> {
+  const value = await getAppSetting(OPERATIONS_WORKSPACE_PATH_SETTING_KEY, database);
+  return value && value.length > 0 ? value : null;
+}
+
+export async function setOperationsWorkspacePath(path: string | null, database: AppDb = db): Promise<void> {
+  await setAppSetting(OPERATIONS_WORKSPACE_PATH_SETTING_KEY, path ?? "", database);
 }
 
 export type GatewayTrafficCategory =
@@ -2025,6 +2279,7 @@ export async function upsertVideos(
     viewCount?: number | null;
     commentCount?: number | null;
     likeCount?: number | null;
+    durationSeconds?: number | null;
   }>,
   syncedAt: Date
 ): Promise<void> {
@@ -2044,6 +2299,7 @@ export async function upsertVideos(
       viewCount: entry.viewCount ?? null,
       commentCount: entry.commentCount ?? null,
       likeCount: entry.likeCount ?? null,
+      durationSeconds: entry.durationSeconds ?? null,
       lastSyncedAt: syncedAt,
     };
 
@@ -2408,6 +2664,10 @@ export type StoredGenerationProvenance = {
   profileVersion: number | null;
   effectiveContextJson: string | null;
   createdAt: Date;
+  evidenceJson: string | null;
+  rationale: string | null;
+  createdVia: string | null;
+  agentApiVersion: string | null;
 };
 
 function mapStoredGenerationProvenance(
@@ -2420,6 +2680,10 @@ function mapStoredGenerationProvenance(
     profileVersion: row.profileVersion,
     effectiveContextJson: row.effectiveContextJson,
     createdAt: row.createdAt,
+    evidenceJson: row.evidenceJson,
+    rationale: row.rationale,
+    createdVia: row.createdVia,
+    agentApiVersion: row.agentApiVersion,
   };
 }
 
@@ -2434,15 +2698,21 @@ export async function getGenerationProvenanceByChangeSetId(
 }
 
 /**
- * Raw write-once insert -- writes exactly the row it is given (including `createdAt`, preserving
- * the moment it was actually created, which may be on another device). No-ops on a duplicate `id`
- * rather than throwing, since a `mergeIncoming`/re-projection can legitimately re-project an
- * already-projected provenance entry. Used only as the SQL read-projection target for
- * `src/lib/sync-gateway/change-drafts/` (2026-09-22, `docs/roadmap/plans/
- * FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M4) -- that module's per-channel Automerge document
- * is now the source of truth for provenance. The old direct-SQL `createGenerationProvenance` was
- * deleted the same day once its only caller was repointed at that module -- confirmed zero
- * remaining callers anywhere in `src/`.
+ * Write-once-in-spirit upsert -- the CRDT document (`src/lib/sync-gateway/change-drafts/`) is the
+ * real source of truth for provenance and never changes an entry's *content* after creation, but
+ * this SQL projection itself must still be updateable: `projectToSql` re-projects the WHOLE
+ * document (including every provenance entry) on every local save AND every remote merge, so a
+ * stale or partially-written SQL row for a given `id` -- e.g. one inserted by an older app
+ * version whose schema/entry shape predated Phase 7 slice F's evidence/rationale/createdVia/
+ * agentApiVersion columns -- must be correctable by a LATER re-projection that writes the CRDT
+ * entry's actual current values. `onConflictDoNothing()` would silently skip every later
+ * re-projection attempt for that same `id` once a row already existed, permanently freezing it;
+ * `onConflictDoUpdate` fixes this: re-writing a row on every re-projection is a safe no-op when
+ * nothing actually changed, and a real correction whenever it did.
+ * Used only as the SQL read-projection target for `src/lib/sync-gateway/change-drafts/`
+ * (2026-09-22, `docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4/M4) -- the old
+ * direct-SQL `createGenerationProvenance` was deleted the same day once its only caller was
+ * repointed at that module.
  */
 export async function setStoredGenerationProvenanceRow(input: {
   id: string;
@@ -2451,8 +2721,28 @@ export async function setStoredGenerationProvenanceRow(input: {
   profileVersion: number | null;
   effectiveContextJson: string | null;
   createdAt: Date;
+  evidenceJson: string | null;
+  rationale: string | null;
+  createdVia: string | null;
+  agentApiVersion: string | null;
 }): Promise<void> {
-  await db.insert(aiLocalizationGenerationProvenance).values(input).onConflictDoNothing();
+  await db
+    .insert(aiLocalizationGenerationProvenance)
+    .values(input)
+    .onConflictDoUpdate({
+      target: aiLocalizationGenerationProvenance.id,
+      set: {
+        changeSetId: input.changeSetId,
+        channelId: input.channelId,
+        profileVersion: input.profileVersion,
+        effectiveContextJson: input.effectiveContextJson,
+        createdAt: input.createdAt,
+        evidenceJson: input.evidenceJson,
+        rationale: input.rationale,
+        createdVia: input.createdVia,
+        agentApiVersion: input.agentApiVersion,
+      },
+    });
 }
 
 /**
@@ -3453,6 +3743,186 @@ export async function listWeeklyReportsByChannel(
     .from(analyticsWeeklyReports)
     .where(eq(analyticsWeeklyReports.channelId, channelId))
     .orderBy(desc(analyticsWeeklyReports.weekStartDate));
+}
+
+export type StoredCreativeAsset = {
+  id: string;
+  channelId: string;
+  assetType: string;
+  referenceKind: string;
+  referenceValue: string;
+  title: string | null;
+  description: string | null;
+  linkedVideoId: string | null;
+  provenanceJson: string | null;
+  createdAt: Date;
+};
+
+export async function insertCreativeAsset(
+  input: {
+    id: string;
+    channelId: string;
+    assetType: string;
+    referenceKind: string;
+    referenceValue: string;
+    title?: string | null;
+    description?: string | null;
+    linkedVideoId?: string | null;
+    provenanceJson?: string | null;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(creativeAssets).values({
+    id: input.id,
+    channelId: input.channelId,
+    assetType: input.assetType,
+    referenceKind: input.referenceKind,
+    referenceValue: input.referenceValue,
+    title: input.title ?? null,
+    description: input.description ?? null,
+    linkedVideoId: input.linkedVideoId ?? null,
+    provenanceJson: input.provenanceJson ?? null,
+  });
+}
+
+export async function listCreativeAssetsByChannel(
+  channelId: string,
+  filters: { videoId?: string; assetType?: string } = {},
+  database: AppDb = db
+): Promise<StoredCreativeAsset[]> {
+  const conditions = [eq(creativeAssets.channelId, channelId)];
+  if (filters.videoId) {
+    conditions.push(eq(creativeAssets.linkedVideoId, filters.videoId));
+  }
+  if (filters.assetType) {
+    conditions.push(eq(creativeAssets.assetType, filters.assetType));
+  }
+
+  return database
+    .select()
+    .from(creativeAssets)
+    .where(and(...conditions))
+    .orderBy(desc(creativeAssets.createdAt));
+}
+
+export async function getCreativeAssetById(
+  assetId: string,
+  database: AppDb = db
+): Promise<StoredCreativeAsset | null> {
+  const [row] = await database.select().from(creativeAssets).where(eq(creativeAssets.id, assetId));
+  return row ?? null;
+}
+
+export type StoredContentProposal = {
+  id: string;
+  channelId: string;
+  objective: string | null;
+  topicConcept: string | null;
+  rationale: string | null;
+  evidenceJson: string | null;
+  briefJson: string | null;
+  referenceVideoIdsJson: string | null;
+  referenceAssetIdsJson: string | null;
+  createdAt: Date;
+  createdVia: string;
+  agentApiVersion: string | null;
+};
+
+export async function insertContentProposal(
+  input: {
+    id: string;
+    channelId: string;
+    objective?: string | null;
+    topicConcept?: string | null;
+    rationale?: string | null;
+    evidenceJson?: string | null;
+    briefJson?: string | null;
+    referenceVideoIdsJson?: string | null;
+    referenceAssetIdsJson?: string | null;
+    createdVia: string;
+    agentApiVersion?: string | null;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(contentProposals).values({
+    id: input.id,
+    channelId: input.channelId,
+    objective: input.objective ?? null,
+    topicConcept: input.topicConcept ?? null,
+    rationale: input.rationale ?? null,
+    evidenceJson: input.evidenceJson ?? null,
+    briefJson: input.briefJson ?? null,
+    referenceVideoIdsJson: input.referenceVideoIdsJson ?? null,
+    referenceAssetIdsJson: input.referenceAssetIdsJson ?? null,
+    createdVia: input.createdVia,
+    agentApiVersion: input.agentApiVersion ?? null,
+  });
+}
+
+export async function listContentProposalsByChannel(
+  channelId: string,
+  database: AppDb = db
+): Promise<StoredContentProposal[]> {
+  return database
+    .select()
+    .from(contentProposals)
+    .where(eq(contentProposals.channelId, channelId))
+    .orderBy(desc(contentProposals.createdAt));
+}
+
+export async function getContentProposalById(
+  proposalId: string,
+  database: AppDb = db
+): Promise<StoredContentProposal | null> {
+  const [row] = await database.select().from(contentProposals).where(eq(contentProposals.id, proposalId));
+  return row ?? null;
+}
+
+export type StoredContentProposalArtifactLink = {
+  id: string;
+  proposalId: string;
+  assetId: string;
+  createdAt: Date;
+  createdVia: string;
+  agentApiVersion: string | null;
+};
+
+export async function insertContentProposalArtifactLink(
+  input: {
+    id: string;
+    proposalId: string;
+    assetId: string;
+    createdVia: string;
+    agentApiVersion?: string | null;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(contentProposalArtifacts).values({
+    id: input.id,
+    proposalId: input.proposalId,
+    assetId: input.assetId,
+    createdVia: input.createdVia,
+    agentApiVersion: input.agentApiVersion ?? null,
+  });
+}
+
+export async function listContentProposalArtifactLinksByProposal(
+  proposalId: string,
+  database: AppDb = db
+): Promise<StoredContentProposalArtifactLink[]> {
+  return database
+    .select()
+    .from(contentProposalArtifacts)
+    .where(eq(contentProposalArtifacts.proposalId, proposalId))
+    .orderBy(desc(contentProposalArtifacts.createdAt));
+}
+
+export async function getContentProposalArtifactLinkById(
+  linkId: string,
+  database: AppDb = db
+): Promise<StoredContentProposalArtifactLink | null> {
+  const [row] = await database.select().from(contentProposalArtifacts).where(eq(contentProposalArtifacts.id, linkId));
+  return row ?? null;
 }
 
 // The one and only row this table ever holds -- see `cloudConnection`'s own doc comment above.

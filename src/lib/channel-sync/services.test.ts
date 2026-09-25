@@ -69,6 +69,7 @@ function createFakeStore() {
         viewCount: number | null;
         commentCount: number | null;
         likeCount: number | null;
+        durationSeconds: number | null;
       }>,
       syncedAt: Date
     ) {
@@ -130,6 +131,7 @@ function createServicesFixture(
           viewCount: 100,
           commentCount: 10,
           likeCount: 20,
+          durationSeconds: 630,
         }));
       },
     },

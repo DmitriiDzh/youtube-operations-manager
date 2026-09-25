@@ -97,7 +97,17 @@ credentials.
 data, and prepare localization Change Sets — with no development-repository access. Real YouTube
 mutations remain gated by their own, separate safety/approval requirements throughout.
 
-## 4. Phase 8 — Intelligence Foundation
+**Status update (2026-09-23, owner instruction via Telegram, full 34-section spec, "Phase 7 —
+Agent Operations Interface for Codex"):** this phase's original scope above (MCP/CLI tools for
+Change Sets/Batches/channel-sync/analytics/ai-localization) is fully delivered — see
+`docs/ROADMAP_STATUS.md` BL-073/074/076/077/078. The owner then substantially expanded this same
+phase with a full, detailed design covering channel/video context, an agent-oriented analytics
+wrapper, a new creative-asset catalog, bulk-localization draft integration, content-proposal/
+external-artifact registration, and audit/provenance tracking, explicitly authorizing design and
+incremental implementation without per-slice approval (only the final merge to `dev` needs the
+owner's sign-off). The authoritative, continuously-updated technical design and implementation-
+status document for this expanded scope is `docs/AGENT_OPERATIONS_INTERFACE.md` — this bullet
+records that the assignment happened and points there rather than duplicating the design here.
 
 **Objective:** give the product a reliable analytical foundation built on actual owned-channel
 data.

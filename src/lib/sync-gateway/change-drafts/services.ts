@@ -399,6 +399,10 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
         profileVersion: parsed.profileVersion,
         effectiveContextJson: parsed.effectiveContextJson,
         createdAt: new Date().toISOString(),
+        evidenceJson: parsed.evidenceJson ?? null,
+        rationale: parsed.rationale ?? null,
+        createdVia: parsed.createdVia ?? null,
+        agentApiVersion: parsed.agentApiVersion ?? null,
       };
 
       const next = Automerge.change(doc, `create provenance ${parsed.id}`, (draft) => {

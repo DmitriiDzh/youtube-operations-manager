@@ -1,8 +1,13 @@
 import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
 import type { ChangeValidationStatus, StoredChannelRecord, StoredVideoRecord } from "@/lib/changesets/contracts";
+import type { CreatedVia, EvidenceReference, EvidenceSourceType } from "@/lib/shared-provenance";
 
 export type { DomainErrorCode, DomainErrorShape, StoredChannelRecord, StoredVideoRecord };
 export { DomainError, isDomainError };
+// Reused as-is from `@/lib/shared-provenance` (AGENTS.md §D/§M) -- the single, canonical
+// definition of this vocabulary, shared with `content-proposals` (Phase 7 slice G); neither
+// module owns the other, so this vocabulary lives in its own dependency-free module.
+export type { CreatedVia, EvidenceReference, EvidenceSourceType };
 
 // ---------------------------------------------------------------------------
 // Phase 6, Slice 1 -- AI LOCALIZATION (vertical feature).
@@ -175,6 +180,32 @@ export type EditorialProfile = {
 export type GenerationProvenance = {
   profileVersion: number | null;
   effectiveContext: GenerationContext | null;
+};
+
+/**
+ * `getGenerationProvenance`'s own return shape -- a STORED provenance record read back after a
+ * Change Set already exists, distinct from `GenerationProvenance` above (which `generateProposals`
+ * also returns mid-preview, before any Change Set exists, so it cannot carry `changeSetId`/
+ * `createdAt`). `createdAt` here is the real moment `createChangeSetFromGeneration` recorded this
+ * row (`DraftProvenance.createdAt`, `src/lib/sync-gateway/change-drafts/contracts.ts`) -- not a
+ * later device's own projection/sync time, verified by reading `createProvenance`'s own
+ * implementation before adding this field.
+ *
+ * `evidence`/`rationale` (Phase 7 slice F, owner spec §12/§13) are recorded once per Change Set,
+ * not per individual proposal within it -- a deliberate, coarser granularity than the owner
+ * spec's own per-draft phrasing (`docs/TECHNICAL_DEBT.md` RISK-55 tracks this as a known,
+ * accepted limitation). `createdVia`/`agentApiVersion` (owner spec §22) are SERVER-STAMPED at the
+ * MCP/CLI/Web-route call site, never taken from caller input -- see `DraftProvenance`'s own doc
+ * comment (`src/lib/sync-gateway/change-drafts/contracts.ts`) for why that distinction matters.
+ */
+export type StoredGenerationProvenance = GenerationProvenance & {
+  changeSetId: string;
+  channelId: string;
+  createdAt: string;
+  evidence: EvidenceReference[] | null;
+  rationale: string | null;
+  createdVia: CreatedVia | null;
+  agentApiVersion: string | null;
 };
 
 /** A proposal the human has inspected and, optionally, edited before it is persisted

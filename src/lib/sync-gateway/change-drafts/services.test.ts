@@ -142,6 +142,36 @@ test("createProvenance: stored alongside the change set and projected to SQL", a
   assert.equal(projection.projectedProvenance.get("prov-1")?.effectiveContextJson, '{"tone":"warm"}');
 });
 
+// Phase 7 slice F (owner spec §12/§13/§22): the four new fields are additive and optional --
+// omitting them (the 5 pre-existing call sites in this file) must keep working, and supplying
+// them must round-trip through the document and its SQL projection unchanged.
+test("createProvenance: evidence/rationale/createdVia/agentApiVersion round-trip when supplied", async () => {
+  const projection = fakeProjection();
+  const core = createChangeDraftsCore(makeDeps({ projection }));
+  await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "ai_localization" });
+
+  const provenance = await core.createProvenance({
+    channelId: CHANNEL,
+    id: "prov-1",
+    changeSetId: "cs-1",
+    profileVersion: 3,
+    effectiveContextJson: '{"tone":"warm"}',
+    evidenceJson: '[{"url":"https://example.com","sourceType":"external_research"}]',
+    rationale: "Comparable videos with shorter titles performed better.",
+    createdVia: "mcp",
+    agentApiVersion: "0.6.0",
+  });
+
+  assert.equal(provenance.evidenceJson, '[{"url":"https://example.com","sourceType":"external_research"}]');
+  assert.equal(provenance.rationale, "Comparable videos with shorter titles performed better.");
+  assert.equal(provenance.createdVia, "mcp");
+  assert.equal(provenance.agentApiVersion, "0.6.0");
+
+  const doc = await core.getDocument({ channelId: CHANNEL });
+  assert.equal(doc.provenance?.["prov-1"]?.createdVia, "mcp");
+  assert.equal(projection.projectedProvenance.get("prov-1")?.agentApiVersion, "0.6.0");
+});
+
 test("createProvenance rejects a duplicate id", async () => {
   const core = createChangeDraftsCore(makeDeps());
   await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "ai_localization" });

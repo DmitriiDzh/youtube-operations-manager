@@ -12,6 +12,8 @@ import type { ChannelSyncCore } from "@/lib/channel-sync";
 import type { ChannelAccessCore } from "@/lib/channel-access";
 import type { AnalyticsCore } from "@/lib/analytics";
 import type { AiLocalizationCore } from "@/lib/ai-localization";
+import type { AgentOperationsCore } from "@/lib/agent-operations";
+import { AGENT_API_VERSION } from "@/lib/agent-operations";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { createMcpServer, createMcpToolHandlers } from "./server";
@@ -324,6 +326,45 @@ test("MCP server registers auth_user_select tool", () => {
   assert.equal(Boolean(tools?.auth_user_select), true);
 });
 
+// The SDK validates an incoming tool call against the REGISTERED inputSchema, using its OWN
+// parsed output as what the handler actually receives -- BEFORE agentFindComparableVideos ever
+// runs (McpServer.validateToolInput -> executeToolHandler, node_modules/@modelcontextprotocol/
+// sdk's own server/mcp.js). Registering the full, refined findComparableVideosInputSchema here
+// would let the SDK itself reject a real call requesting performanceMetric without an explicit
+// credentialRef -- before the handler's own resolve-then-inject logic (tested above via the
+// handler directly, which bypasses the SDK) ever gets a chance to run. This test exercises the
+// REAL registered schema object, not the handler, to prove that specific gap is actually closed.
+test("MCP server registers agent_find_comparable_videos with an SDK-facing schema that does not itself require credentialRef when performanceMetric is set", () => {
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
+  const tools = (server as unknown as { _registeredTools?: Record<string, { inputSchema?: { safeParse: (input: unknown) => { success: boolean } } }> })
+    ._registeredTools;
+  const tool = tools?.agent_find_comparable_videos;
+  assert.ok(tool?.inputSchema);
+
+  const result = tool.inputSchema.safeParse({
+    channelId: "UC_1",
+    anchorVideoId: "v1",
+    performanceMetric: "views",
+    sort: "performanceMetric",
+  });
+  assert.equal(result.success, true);
+});
+
+test("MCP server registers agent_list_asset_performance with an SDK-facing schema that does not itself require credentialRef when performanceMetric is set", () => {
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
+  const tools = (server as unknown as { _registeredTools?: Record<string, { inputSchema?: { safeParse: (input: unknown) => { success: boolean } } }> })
+    ._registeredTools;
+  const tool = tools?.agent_list_asset_performance;
+  assert.ok(tool?.inputSchema);
+
+  const result = tool.inputSchema.safeParse({
+    channelId: "UC_1",
+    performanceMetric: "views",
+    performanceDayOffset: 5,
+  });
+  assert.equal(result.success, true);
+});
+
 // "MCP connection" gate (owner instruction, 2026-09-21, renamed and inverted from the earlier
 // "MCP restricted mode"): a single boolean now decides whether ANY tool is registered at all,
 // not a per-tool exclusion list. Default (no option passed) must be fully disconnected -- zero
@@ -397,6 +438,12 @@ test("MCP server (connectionEnabled: true) registers every tool, including write
     "write_channel_select",
     "auth_user_select",
     "write_context",
+    // Slice K: proves the real MCP SDK's own server.registerTool() accepts
+    // findComparableVideosInputSchema (a ZodEffects, via .refine()) without throwing --
+    // registration itself is real here, unlike the handler-level tests above which bypass the SDK.
+    "agent_find_comparable_videos",
+    // Slice L: same proof for listAssetPerformanceSdkInputSchema.
+    "agent_list_asset_performance",
   ]) {
     assert.equal(names.includes(tool), true, `expected ${tool} to be registered once connected`);
   }
@@ -2465,7 +2512,9 @@ test("MCP analytics_weekly_report_get rejects a missing weekStartDate", async ()
   assert.equal(payload.error.code, "validation_failed");
 });
 
-function makeAiLocalizationCoreStub(): Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration"> {
+function makeAiLocalizationCoreStub(
+  captureCreateChangeSetCallOrigin?: (callOrigin: unknown) => void
+): Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration"> {
   return {
     generateProposals: async () => ({
       results: [
@@ -2499,7 +2548,10 @@ function makeAiLocalizationCoreStub(): Pick<AiLocalizationCore, "generateProposa
       },
       generationContext: { profileVersion: null, effectiveContext: null },
     }),
-    createChangeSetFromGeneration: async () => makeChangeSet({ source: "ai_localization" }),
+    createChangeSetFromGeneration: async (_input, callOrigin) => {
+      captureCreateChangeSetCallOrigin?.(callOrigin);
+      return makeChangeSet({ source: "ai_localization" });
+    },
   };
 }
 
@@ -2580,6 +2632,7 @@ test("MCP ai_localization_generate rejects a missing channelId", async () => {
 });
 
 test("MCP ai_localization_create_change_set persists via createChangeSetFromGeneration, source ai_localization", async () => {
+  let capturedCallOrigin: unknown;
   const handlers = createMcpToolHandlers(
     makeCoreStub(),
     makeAuthStub(),
@@ -2587,7 +2640,9 @@ test("MCP ai_localization_create_change_set persists via createChangeSetFromGene
     undefined,
     makeChannelAccessCoreStub(),
     undefined,
-    makeAiLocalizationCoreStub()
+    makeAiLocalizationCoreStub((callOrigin) => {
+      capturedCallOrigin = callOrigin;
+    })
   );
   const result = await handlers.aiLocalizationCreateChangeSet({
     channelId: "UC_1",
@@ -2597,6 +2652,9 @@ test("MCP ai_localization_create_change_set persists via createChangeSetFromGene
   assert.equal(result.isError, undefined);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
   assert.equal(payload.source, "ai_localization");
+  // Phase 7 slice F (owner spec §22): the MCP transport must SERVER-STAMP its own identity --
+  // never left to default to "web_ui", and never taken from the caller's input.
+  assert.deepEqual(capturedCallOrigin, { createdVia: "mcp", agentApiVersion: AGENT_API_VERSION });
 });
 
 test("MCP ai_localization_create_change_set is rejected while the operation lock is held; ai_localization_generate is not", async () => {
@@ -2646,4 +2704,1835 @@ test("MCP ai_localization_create_change_set rejects an empty proposals array", a
   assert.equal(result.isError, true);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
   assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP agent_get_capabilities returns version/capabilities/permission-model with no channel scoping required", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined
+  );
+  const result = await handlers.agentGetCapabilities({});
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.agentApiVersion, "0.10.0");
+  assert.deepEqual(payload.grantedPermissions, ["READ", "DRAFT"]);
+  assert.ok(payload.capabilities.some((c: { id: string }) => c.id === "system.get_capabilities"));
+});
+
+test("MCP agent_get_capabilities rejects an unexpected input field", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined
+  );
+  const result = await handlers.agentGetCapabilities({ unexpected: true });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP agent_get_capabilities is never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined
+    );
+    const result = await handlers.agentGetCapabilities({});
+    assert.notEqual(result.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+function makeAgentOperationsCoreStub(): Pick<
+  AgentOperationsCore,
+  | "getSystemCapabilities"
+  | "getChannelContext"
+  | "getVideoContext"
+  | "queryChannelAnalytics"
+  | "queryVideoAnalytics"
+  | "listAssets"
+  | "getAssetContext"
+  | "getGenerationProvenance"
+  | "createContentProposal"
+  | "getContentProposal"
+  | "listContentProposals"
+  | "registerExternalArtifact"
+  | "listProposalArtifacts"
+  | "operationsWorkspaceListFiles"
+  | "operationsWorkspaceGetFile"
+  | "findComparableVideos"
+  | "listAssetPerformance"
+> {
+  return {
+    getSystemCapabilities: async () => ({
+      productVersion: "9.9.9",
+      agentApiVersion: "0.1.0",
+      capabilities: [],
+      dataDomains: [],
+      actionClasses: ["READ", "DRAFT", "APPROVE", "EXECUTE"],
+      grantedPermissions: ["READ", "DRAFT"],
+      plannedFutureCapabilities: ["query_market_intelligence", "query_competitors", "create_experiment_proposal"],
+      schemaVersions: { app: 14 },
+    }),
+    getChannelContext: async () => ({
+      channelId: "UC_1",
+      title: "Test Channel",
+      lastSyncedAt: "2026-09-20T00:00:00.000Z",
+      syncedVideoCount: 5,
+      editorialProfile: null,
+      trackedLanguages: ["es"],
+    }),
+    getVideoContext: async () => ({
+      videoId: "v1",
+      channelId: "UC_1",
+      includedSections: ["metadata", "localizations"],
+      metadata: {
+        videoId: "v1",
+        channelId: "UC_1",
+        title: "Title",
+        description: "Description",
+        publishedAt: "2026-09-01T00:00:00Z",
+        privacyStatus: "public",
+        defaultLanguage: "en",
+        defaultAudioLanguage: "en",
+        lastSyncedAt: "2026-09-20T00:00:00.000Z",
+      },
+      localizations: [],
+    }),
+    queryChannelAnalytics: async () => ({
+      channelId: "UC_1",
+      period: { startDate: "2026-09-01", endDate: "2026-09-07", previousStartDate: "2026-08-25", previousEndDate: "2026-08-31" },
+      filters: {},
+      metricDefinitions: [{ name: "views", description: "Number of times the video was viewed.", unit: "count" }],
+      freshness: { source: "live_youtube_analytics_api", asOf: "2026-09-24T12:00:00.000Z", note: "..." },
+      daily: [],
+      currentTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+      previousTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+    }),
+    queryVideoAnalytics: async () => ({
+      channelId: "UC_1",
+      period: { startDate: null, endDate: null },
+      filters: { videoId: null, metricNames: null },
+      metricDefinitions: [{ name: "views", description: "Number of times the video was viewed.", unit: "count" }],
+      freshness: { source: "local_collected_data", asOf: "2026-09-24T12:00:00.000Z", note: "..." },
+      rows: [],
+    }),
+    listAssets: async () => ({ assets: [] }),
+    getAssetContext: async () => ({
+      assetId: "asset-1",
+      channelId: "UC_1",
+      assetType: "thumbnail",
+      referenceKind: "url",
+      referenceValue: "https://example.com/a.png",
+      title: null,
+      description: null,
+      linkedVideoId: null,
+      provenance: null,
+      createdAt: "2026-09-24T00:00:00.000Z",
+    }),
+    getGenerationProvenance: async () => ({
+      profileVersion: 1,
+      effectiveContext: null,
+      changeSetId: "cs-1",
+      channelId: "UC_1",
+      createdAt: "2026-09-24T00:00:00.000Z",
+      evidence: null,
+      rationale: null,
+      createdVia: null,
+      agentApiVersion: null,
+    }),
+    createContentProposal: async () => ({
+      proposalId: "proposal-1",
+      channelId: "UC_1",
+      objective: null,
+      topicConcept: null,
+      rationale: null,
+      evidence: null,
+      brief: null,
+      referenceVideoIds: null,
+      referenceAssetIds: null,
+      createdAt: "2026-09-24T00:00:00.000Z",
+      createdVia: "mcp",
+      agentApiVersion: "0.1.0",
+    }),
+    getContentProposal: async () => ({
+      proposalId: "proposal-1",
+      channelId: "UC_1",
+      objective: null,
+      topicConcept: null,
+      rationale: null,
+      evidence: null,
+      brief: null,
+      referenceVideoIds: null,
+      referenceAssetIds: null,
+      createdAt: "2026-09-24T00:00:00.000Z",
+      createdVia: "web_ui",
+      agentApiVersion: null,
+    }),
+    listContentProposals: async () => ({ proposals: [] }),
+    registerExternalArtifact: async () => ({
+      linkId: "link-1",
+      proposalId: "proposal-1",
+      channelId: "UC_1",
+      asset: {
+        assetId: "asset-1",
+        channelId: "UC_1",
+        assetType: "thumbnail",
+        referenceKind: "url",
+        referenceValue: "https://example.com/a.png",
+        title: null,
+        description: null,
+        linkedVideoId: null,
+        provenance: null,
+        createdAt: "2026-09-24T00:00:00.000Z",
+      },
+      createdAt: "2026-09-24T00:00:00.000Z",
+      createdVia: "mcp",
+      agentApiVersion: AGENT_API_VERSION,
+    }),
+    listProposalArtifacts: async () => ({ artifacts: [] }),
+    operationsWorkspaceListFiles: async () => ({ configured: false }),
+    operationsWorkspaceGetFile: async () => ({ configured: false }),
+    findComparableVideos: async () => ({
+      anchorVideoId: "v1",
+      anchor: { videoId: "v1", title: "Anchor", publishedAt: "2026-05-01T20:00:00.000Z", durationSeconds: null, performanceMetricValue: null },
+      performanceAlignment: null,
+      candidates: [],
+      excludedForMissingData: { duration: 0, performance: 0 },
+      truncated: false,
+      metricDefinitions: null,
+      freshness: null,
+    }),
+    listAssetPerformance: async () => ({
+      assets: [],
+      performanceAlignment: null,
+      excludedForMissingLink: { unlinked: 0, linkedVideoNotOnChannel: 0 },
+      truncated: false,
+      metricDefinitions: null,
+      freshness: null,
+    }),
+  };
+}
+
+test("MCP agent_get_channel_context forwards input and checks active-channel access", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    makeAgentOperationsCoreStub()
+  );
+  const result = await handlers.agentGetChannelContext({ channelId: "UC_1" });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.channelId, "UC_1");
+  assert.equal(payload.syncedVideoCount, 5);
+});
+
+function makeRestrictiveChannelAccessStub() {
+  return {
+    async assertActiveChannel() {
+      throw new DomainError({ code: "CHANNEL_NOT_ACTIVE", message: "not active" });
+    },
+    async getActiveChannelId() {
+      return null;
+    },
+    filterToActiveChannel<T>(items: readonly T[]) {
+      return [...items];
+    },
+    async activateChannel() {},
+  };
+}
+
+test("MCP agent_get_channel_context rejects a channelId that is not the caller's active channel", async () => {
+  // Uses a "must not be called" stub, not the ordinary makeAgentOperationsCoreStub(), so this
+  // test proves the service is genuinely never reached on a channel-scoping failure -- not just
+  // that the tool call ends in an error.
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+    | "getGenerationProvenance"
+    | "createContentProposal"
+    | "getContentProposal"
+    | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
+    | "findComparableVideos"
+    | "listAssetPerformance"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    getChannelContext: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentGetChannelContext({ channelId: "UC_OTHER" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_get_video_context forwards input including optional `include`, checks active-channel access", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.getVideoContext = async (input: unknown) => {
+    captured = input;
+    return {
+      videoId: "v1",
+      channelId: "UC_1",
+      includedSections: ["metadata"],
+      metadata: {
+        videoId: "v1",
+        channelId: "UC_1",
+        title: "Title",
+        description: "Description",
+        publishedAt: "2026-09-01T00:00:00Z",
+        privacyStatus: "public",
+        defaultLanguage: "en",
+        defaultAudioLanguage: "en",
+        lastSyncedAt: "2026-09-20T00:00:00.000Z",
+      },
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  await handlers.agentGetVideoContext({ channelId: "UC_1", videoId: "v1", include: ["metadata"] });
+
+  assert.deepEqual(captured, { channelId: "UC_1", videoId: "v1", include: ["metadata"] });
+});
+
+test("MCP agent_get_video_context rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+    | "getGenerationProvenance"
+    | "createContentProposal"
+    | "getContentProposal"
+    | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
+    | "findComparableVideos"
+    | "listAssetPerformance"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    getVideoContext: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentGetVideoContext({ channelId: "UC_OTHER", videoId: "v1" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_get_video_context rejects a missing videoId", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    makeAgentOperationsCoreStub()
+  );
+  const result = await handlers.agentGetVideoContext({ channelId: "UC_1" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP agent_get_channel_context/agent_get_video_context are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      makeAgentOperationsCoreStub()
+    );
+    const channelResult = await handlers.agentGetChannelContext({ channelId: "UC_1" });
+    assert.notEqual(channelResult.isError, true);
+    const videoResult = await handlers.agentGetVideoContext({ channelId: "UC_1", videoId: "v1" });
+    assert.notEqual(videoResult.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("MCP agent_query_channel_analytics forwards the resolved credentialRef and the caller's own input unchanged into queryChannelAnalytics", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.queryChannelAnalytics = async (input: unknown) => {
+    captured = input;
+    return {
+      channelId: "UC_1",
+      period: { startDate: "2026-09-01", endDate: "2026-09-07", previousStartDate: "2026-08-25", previousEndDate: "2026-08-31" },
+      filters: {},
+      metricDefinitions: [],
+      freshness: { source: "live_youtube_analytics_api", asOf: "2026-09-24T12:00:00.000Z", note: "..." },
+      daily: [],
+      currentTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+      previousTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentQueryChannelAnalytics({ channelId: "UC_1", startDate: "2026-09-01", endDate: "2026-09-07" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    startDate: "2026-09-01",
+    endDate: "2026-09-07",
+    credentialRef: { userId: "active-user" },
+  });
+});
+
+test("MCP agent_query_video_analytics forwards the resolved credentialRef and optional filters unchanged into queryVideoAnalytics", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.queryVideoAnalytics = async (input: unknown) => {
+    captured = input;
+    return {
+      channelId: "UC_1",
+      period: { startDate: null, endDate: null },
+      filters: { videoId: "v1", metricNames: ["views"] },
+      metricDefinitions: [],
+      freshness: { source: "local_collected_data", asOf: "2026-09-24T12:00:00.000Z", note: "..." },
+      rows: [],
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentQueryVideoAnalytics({ channelId: "UC_1", videoId: "v1", metricNames: ["views"] });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    videoId: "v1",
+    metricNames: ["views"],
+    credentialRef: { userId: "active-user" },
+  });
+});
+
+test("MCP agent_query_channel_analytics/agent_query_video_analytics are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      makeAgentOperationsCoreStub()
+    );
+    const channelResult = await handlers.agentQueryChannelAnalytics({ channelId: "UC_1", startDate: "2026-09-01", endDate: "2026-09-07" });
+    assert.notEqual(channelResult.isError, true);
+    const videoResult = await handlers.agentQueryVideoAnalytics({ channelId: "UC_1" });
+    assert.notEqual(videoResult.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("MCP agent_list_assets forwards input and checks active-channel access", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.listAssets = async (input: unknown) => {
+    captured = input;
+    return { assets: [] };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListAssets({ channelId: "UC_1", assetType: "thumbnail" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, { channelId: "UC_1", assetType: "thumbnail" });
+});
+
+test("MCP agent_list_assets rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+    | "getGenerationProvenance"
+    | "createContentProposal"
+    | "getContentProposal"
+    | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
+    | "findComparableVideos"
+    | "listAssetPerformance"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    listAssets: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListAssets({ channelId: "UC_OTHER" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_get_asset_context forwards input and checks active-channel access", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.getAssetContext = async (input: unknown) => {
+    captured = input;
+    return {
+      assetId: "asset-1",
+      channelId: "UC_1",
+      assetType: "thumbnail",
+      referenceKind: "url",
+      referenceValue: "https://example.com/a.png",
+      title: null,
+      description: null,
+      linkedVideoId: null,
+      provenance: null,
+      createdAt: "2026-09-24T00:00:00.000Z",
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentGetAssetContext({ channelId: "UC_1", assetId: "asset-1" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, { channelId: "UC_1", assetId: "asset-1" });
+});
+
+test("MCP agent_get_asset_context rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+    | "getGenerationProvenance"
+    | "createContentProposal"
+    | "getContentProposal"
+    | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
+    | "findComparableVideos"
+    | "listAssetPerformance"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    getAssetContext: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentGetAssetContext({ channelId: "UC_OTHER", assetId: "asset-1" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_list_assets/agent_get_asset_context are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      makeAgentOperationsCoreStub()
+    );
+    const listResult = await handlers.agentListAssets({ channelId: "UC_1" });
+    assert.notEqual(listResult.isError, true);
+    const getResult = await handlers.agentGetAssetContext({ channelId: "UC_1", assetId: "asset-1" });
+    assert.notEqual(getResult.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("MCP agent_get_generation_provenance forwards input and checks active-channel access", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.getGenerationProvenance = async (input: unknown) => {
+    captured = input;
+    return null;
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentGetGenerationProvenance({ channelId: "UC_1", changeSetId: "cs-1" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, { channelId: "UC_1", changeSetId: "cs-1" });
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.provenance, null);
+});
+
+test("MCP agent_get_generation_provenance rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+    | "getGenerationProvenance"
+    | "createContentProposal"
+    | "getContentProposal"
+    | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
+    | "findComparableVideos"
+    | "listAssetPerformance"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    getGenerationProvenance: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentGetGenerationProvenance({ channelId: "UC_OTHER", changeSetId: "cs-1" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_get_generation_provenance is never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      makeAgentOperationsCoreStub()
+    );
+    const result = await handlers.agentGetGenerationProvenance({ channelId: "UC_1", changeSetId: "cs-1" });
+    assert.notEqual(result.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("MCP agent_create_content_proposal forwards input, checks active-channel access, and stamps mcp identity", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let capturedInput: unknown;
+  let capturedCallOrigin: unknown;
+  agentOperationsCore.createContentProposal = async (input: unknown, callOrigin: unknown) => {
+    capturedInput = input;
+    capturedCallOrigin = callOrigin;
+    return {
+      proposalId: "proposal-1",
+      channelId: "UC_1",
+      objective: "Grow",
+      topicConcept: null,
+      rationale: null,
+      evidence: null,
+      brief: null,
+      referenceVideoIds: null,
+      referenceAssetIds: null,
+      createdAt: "2026-09-24T00:00:00.000Z",
+      createdVia: "mcp",
+      agentApiVersion: AGENT_API_VERSION,
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentCreateContentProposal({ channelId: "UC_1", objective: "Grow" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(capturedInput, { channelId: "UC_1", objective: "Grow" });
+  // Phase 7 slice G (owner spec §22): the MCP transport must SERVER-STAMP its own identity --
+  // never left to default, and never taken from the caller's input.
+  assert.deepEqual(capturedCallOrigin, { createdVia: "mcp", agentApiVersion: AGENT_API_VERSION });
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.proposalId, "proposal-1");
+});
+
+test("MCP agent_create_content_proposal rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+    | "getGenerationProvenance"
+    | "createContentProposal"
+    | "getContentProposal"
+    | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
+    | "findComparableVideos"
+    | "listAssetPerformance"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    createContentProposal: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentCreateContentProposal({ channelId: "UC_OTHER" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_create_content_proposal is rejected while the operation lock is held; agent_get_content_proposal/agent_list_content_proposals are not", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      makeAgentOperationsCoreStub()
+    );
+    const createResult = await handlers.agentCreateContentProposal({ channelId: "UC_1" });
+    assert.equal(createResult.isError, true);
+
+    const getResult = await handlers.agentGetContentProposal({ channelId: "UC_1", proposalId: "proposal-1" });
+    assert.notEqual(getResult.isError, true);
+
+    const listResult = await handlers.agentListContentProposals({ channelId: "UC_1" });
+    assert.notEqual(listResult.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("MCP agent_get_content_proposal forwards input and checks active-channel access", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.getContentProposal = async (input: unknown) => {
+    captured = input;
+    return {
+      proposalId: "proposal-1",
+      channelId: "UC_1",
+      objective: null,
+      topicConcept: null,
+      rationale: null,
+      evidence: null,
+      brief: null,
+      referenceVideoIds: null,
+      referenceAssetIds: null,
+      createdAt: "2026-09-24T00:00:00.000Z",
+      createdVia: "web_ui",
+      agentApiVersion: null,
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentGetContentProposal({ channelId: "UC_1", proposalId: "proposal-1" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, { channelId: "UC_1", proposalId: "proposal-1" });
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.proposalId, "proposal-1");
+});
+
+test("MCP agent_get_content_proposal rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+    | "getGenerationProvenance"
+    | "createContentProposal"
+    | "getContentProposal"
+    | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
+    | "findComparableVideos"
+    | "listAssetPerformance"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    getContentProposal: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentGetContentProposal({ channelId: "UC_OTHER", proposalId: "proposal-1" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_list_content_proposals forwards input and checks active-channel access", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.listContentProposals = async (input: unknown) => {
+    captured = input;
+    return { proposals: [] };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListContentProposals({ channelId: "UC_1" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, { channelId: "UC_1" });
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.deepEqual(payload.proposals, []);
+});
+
+test("MCP agent_list_content_proposals rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+    | "getGenerationProvenance"
+    | "createContentProposal"
+    | "getContentProposal"
+    | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
+    | "findComparableVideos"
+    | "listAssetPerformance"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    listContentProposals: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListContentProposals({ channelId: "UC_OTHER" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_register_external_artifact forwards input, checks active-channel access, and stamps mcp identity", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let capturedInput: unknown;
+  let capturedCallOrigin: unknown;
+  agentOperationsCore.registerExternalArtifact = async (input: unknown, callOrigin: unknown) => {
+    capturedInput = input;
+    capturedCallOrigin = callOrigin;
+    return {
+      linkId: "link-1",
+      proposalId: "proposal-1",
+      channelId: "UC_1",
+      asset: {
+        assetId: "asset-1",
+        channelId: "UC_1",
+        assetType: "thumbnail",
+        referenceKind: "url",
+        referenceValue: "https://example.com/a.png",
+        title: null,
+        description: null,
+        linkedVideoId: null,
+        provenance: null,
+        createdAt: "2026-09-24T00:00:00.000Z",
+      },
+      createdAt: "2026-09-24T00:00:00.000Z",
+      createdVia: "mcp",
+      agentApiVersion: AGENT_API_VERSION,
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentRegisterExternalArtifact({
+    channelId: "UC_1",
+    proposalId: "proposal-1",
+    assetType: "thumbnail",
+    referenceKind: "url",
+    referenceValue: "https://example.com/a.png",
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(capturedInput, {
+    channelId: "UC_1",
+    proposalId: "proposal-1",
+    assetType: "thumbnail",
+    referenceKind: "url",
+    referenceValue: "https://example.com/a.png",
+  });
+  // Phase 7 slice G2 (owner spec §22): the MCP transport must SERVER-STAMP its own identity.
+  assert.deepEqual(capturedCallOrigin, { createdVia: "mcp", agentApiVersion: AGENT_API_VERSION });
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.linkId, "link-1");
+});
+
+// Owner spec §17: agent-callable registration must never accept `local_path` -- rejected by the
+// MCP tool's own schema validation before `agentOperationsCore.registerExternalArtifact` is even
+// called (the service layer independently enforces the same restriction, see
+// src/lib/content-proposals/services.test.ts).
+test("MCP agent_register_external_artifact rejects referenceKind local_path as validation_failed", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let called = false;
+  agentOperationsCore.registerExternalArtifact = async () => {
+    called = true;
+    throw new Error("should not be called");
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentRegisterExternalArtifact({
+    channelId: "UC_1",
+    proposalId: "proposal-1",
+    assetType: "thumbnail",
+    referenceKind: "local_path",
+    referenceValue: "/tmp/x.png",
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(called, false);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+// RISK-58 (docs/TECHNICAL_DEBT.md): the `referenceKind: "url"` enum value alone was only a label
+// -- an independent review round found the schema originally accepted any non-empty string under
+// it, including a filesystem path. This must be rejected at the MCP tool's own schema validation,
+// exactly like `local_path` above.
+test("MCP agent_register_external_artifact rejects a filesystem path under referenceKind url as validation_failed", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let called = false;
+  agentOperationsCore.registerExternalArtifact = async () => {
+    called = true;
+    throw new Error("should not be called");
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentRegisterExternalArtifact({
+    channelId: "UC_1",
+    proposalId: "proposal-1",
+    assetType: "thumbnail",
+    referenceKind: "url",
+    referenceValue: "/Users/x/secret",
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(called, false);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP agent_register_external_artifact rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+    | "getGenerationProvenance"
+    | "createContentProposal"
+    | "getContentProposal"
+    | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
+    | "findComparableVideos"
+    | "listAssetPerformance"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    registerExternalArtifact: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentRegisterExternalArtifact({
+    channelId: "UC_OTHER",
+    proposalId: "proposal-1",
+    assetType: "thumbnail",
+    referenceKind: "url",
+    referenceValue: "https://example.com/a.png",
+  });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_register_external_artifact is rejected while the operation lock is held; agent_list_proposal_artifacts is not", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      makeAgentOperationsCoreStub()
+    );
+    const registerResult = await handlers.agentRegisterExternalArtifact({
+      channelId: "UC_1",
+      proposalId: "proposal-1",
+      assetType: "thumbnail",
+      referenceKind: "url",
+      referenceValue: "https://example.com/a.png",
+    });
+    assert.equal(registerResult.isError, true);
+
+    const listResult = await handlers.agentListProposalArtifacts({ channelId: "UC_1", proposalId: "proposal-1" });
+    assert.notEqual(listResult.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("MCP agent_list_proposal_artifacts forwards input and checks active-channel access", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.listProposalArtifacts = async (input: unknown) => {
+    captured = input;
+    return { artifacts: [] };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListProposalArtifacts({ channelId: "UC_1", proposalId: "proposal-1" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, { channelId: "UC_1", proposalId: "proposal-1" });
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.deepEqual(payload.artifacts, []);
+});
+
+test("MCP agent_list_proposal_artifacts rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+    | "getGenerationProvenance"
+    | "createContentProposal"
+    | "getContentProposal"
+    | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
+    | "findComparableVideos"
+    | "listAssetPerformance"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    listProposalArtifacts: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListProposalArtifacts({ channelId: "UC_OTHER", proposalId: "proposal-1" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_list_operations_files forwards its input unchanged, no channel scoping required", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.operationsWorkspaceListFiles = async (input: unknown) => {
+    captured = input;
+    return { configured: true, files: [{ path: "AGENTS.md", isDirectory: false, sizeBytes: 42 }], truncated: false };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListOperationsFiles({});
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, {});
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.deepEqual(payload, { configured: true, files: [{ path: "AGENTS.md", isDirectory: false, sizeBytes: 42 }], truncated: false });
+});
+
+test("MCP agent_list_operations_files rejects an unexpected input field", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    makeAgentOperationsCoreStub()
+  );
+  const result = await handlers.agentListOperationsFiles({ unexpected: true });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP agent_get_operations_file forwards its input unchanged, no channel scoping required", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.operationsWorkspaceGetFile = async (input: unknown) => {
+    captured = input;
+    return { configured: true, path: "AGENTS.md", content: "# hi", truncated: false };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentGetOperationsFile({ path: "AGENTS.md" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, { path: "AGENTS.md" });
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.deepEqual(payload, { configured: true, path: "AGENTS.md", content: "# hi", truncated: false });
+});
+
+test("MCP agent_get_operations_file rejects a missing path field", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    makeAgentOperationsCoreStub()
+  );
+  const result = await handlers.agentGetOperationsFile({});
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP agent_list_operations_files/agent_get_operations_file are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      makeAgentOperationsCoreStub()
+    );
+    const listResult = await handlers.agentListOperationsFiles({});
+    assert.notEqual(listResult.isError, true);
+    const getResult = await handlers.agentGetOperationsFile({ path: "AGENTS.md" });
+    assert.notEqual(getResult.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("MCP agent_find_comparable_videos forwards input and checks active-channel access", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.findComparableVideos = async (input: unknown) => {
+    captured = input;
+    return {
+      anchorVideoId: "v1",
+      anchor: { videoId: "v1", title: "Anchor", publishedAt: "2026-05-01T20:00:00.000Z", durationSeconds: null, performanceMetricValue: null },
+      performanceAlignment: null,
+      candidates: [],
+      excludedForMissingData: { duration: 0, performance: 0 },
+      truncated: false,
+      metricDefinitions: null,
+      freshness: null,
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentFindComparableVideos({ channelId: "UC_1", anchorVideoId: "v1", sort: "publicationProximity" });
+
+  assert.equal(result.isError, undefined);
+  // credentialRef is always auto-resolved and forwarded (cheap, local identity lookup, same as
+  // every other channel-scoped handler already does for its own assertActiveChannel check) --
+  // even though this request never actually needed it (no performanceMetric).
+  assert.deepEqual(captured, { channelId: "UC_1", anchorVideoId: "v1", sort: "publicationProximity", credentialRef: { userId: "active-user" } });
+});
+
+test("MCP agent_find_comparable_videos auto-resolves credentialRef to the caller's own active identity when performanceMetric is requested but no credentialRef was supplied", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.findComparableVideos = async (input: unknown) => {
+    captured = input;
+    return {
+      anchorVideoId: "v1",
+      anchor: { videoId: "v1", title: "Anchor", publishedAt: "2026-05-01T20:00:00.000Z", durationSeconds: null, performanceMetricValue: 10 },
+      performanceAlignment: { metricName: "views", dayOffset: 5 },
+      candidates: [],
+      excludedForMissingData: { duration: 0, performance: 0 },
+      truncated: false,
+      metricDefinitions: null,
+      freshness: null,
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentFindComparableVideos({
+    channelId: "UC_1",
+    anchorVideoId: "v1",
+    performanceMetric: "views",
+    sort: "performanceMetric",
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    anchorVideoId: "v1",
+    performanceMetric: "views",
+    sort: "performanceMetric",
+    credentialRef: { userId: "active-user" },
+  });
+});
+
+// This capability lets the caller pick which locally-stored identity's credentialRef governs the
+// active-channel check, deliberately -- the same as agent_query_channel_analytics/
+// agent_query_video_analytics already do for their own downstream calls (no per-user ownership
+// boundary exists in this app's security model, docs/TECHNICAL_DEBT.md), unlike
+// agent_list_assets/agent_get_asset_context above, which always use the local active identity
+// regardless of input (their own schemas don't even accept a credentialRef field).
+test("MCP agent_find_comparable_videos uses an explicitly caller-supplied credentialRef for the active-channel check, not just for forwarding", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  agentOperationsCore.findComparableVideos = async () => ({
+    anchorVideoId: "v1",
+    anchor: { videoId: "v1", title: "Anchor", publishedAt: "2026-05-01T20:00:00.000Z", durationSeconds: null, performanceMetricValue: null },
+    performanceAlignment: null,
+    candidates: [],
+    excludedForMissingData: { duration: 0, performance: 0 },
+    truncated: false,
+    metricDefinitions: null,
+    freshness: null,
+  });
+
+  let capturedUserId: string | null = null;
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    {
+      assertActiveChannel: async (args) => {
+        capturedUserId = args.userId ?? null;
+        return args.channelId;
+      },
+      getActiveChannelId: async () => "UC_1",
+      filterToActiveChannel: (items) => [...items],
+      activateChannel: async () => undefined,
+    } satisfies ChannelAccessCore,
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentFindComparableVideos({
+    channelId: "UC_1",
+    anchorVideoId: "v1",
+    sort: "publicationProximity",
+    credentialRef: { userId: "explicit-caller" },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(capturedUserId, "explicit-caller");
+});
+
+test("MCP agent_find_comparable_videos rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+    | "getGenerationProvenance"
+    | "createContentProposal"
+    | "getContentProposal"
+    | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
+    | "findComparableVideos"
+    | "listAssetPerformance"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    findComparableVideos: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentFindComparableVideos({ channelId: "UC_OTHER", anchorVideoId: "v1", sort: "publicationProximity" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_find_comparable_videos rejects input that fails its own schema (e.g. missing sort)", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    makeAgentOperationsCoreStub()
+  );
+  const result = await handlers.agentFindComparableVideos({ channelId: "UC_1", anchorVideoId: "v1" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP agent_find_comparable_videos propagates a real domain error thrown by the underlying service (e.g. DATA_NOT_SYNCED for an unknown anchor)", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  agentOperationsCore.findComparableVideos = async () => {
+    throw new DomainError({
+      code: "DATA_NOT_SYNCED",
+      message: "anchorVideoId does not belong to the requested channel",
+      details: { channelId: "UC_1", anchorVideoId: "nonexistent" },
+    });
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentFindComparableVideos({ channelId: "UC_1", anchorVideoId: "nonexistent", sort: "publicationProximity" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "DATA_NOT_SYNCED");
+});
+
+test("MCP agent_find_comparable_videos is never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      makeAgentOperationsCoreStub()
+    );
+    const result = await handlers.agentFindComparableVideos({ channelId: "UC_1", anchorVideoId: "v1", sort: "publicationProximity" });
+    assert.notEqual(result.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("MCP agent_list_asset_performance forwards input and checks active-channel access", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.listAssetPerformance = async (input: unknown) => {
+    captured = input;
+    return {
+      assets: [],
+      performanceAlignment: null,
+      excludedForMissingLink: { unlinked: 0, linkedVideoNotOnChannel: 0 },
+      truncated: false,
+      metricDefinitions: null,
+      freshness: null,
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListAssetPerformance({ channelId: "UC_1" });
+
+  assert.equal(result.isError, undefined);
+  // credentialRef is always auto-resolved and forwarded, same as agent_find_comparable_videos.
+  assert.deepEqual(captured, { channelId: "UC_1", credentialRef: { userId: "active-user" } });
+});
+
+test("MCP agent_list_asset_performance auto-resolves credentialRef to the caller's own active identity when performanceMetric is requested but no credentialRef was supplied", async () => {
+  const agentOperationsCore = makeAgentOperationsCoreStub();
+  let captured: unknown;
+  agentOperationsCore.listAssetPerformance = async (input: unknown) => {
+    captured = input;
+    return {
+      assets: [],
+      performanceAlignment: { metricName: "views", dayOffset: 3 },
+      excludedForMissingLink: { unlinked: 0, linkedVideoNotOnChannel: 0 },
+      truncated: false,
+      metricDefinitions: null,
+      freshness: null,
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListAssetPerformance({ channelId: "UC_1", performanceMetric: "views", performanceDayOffset: 3 });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(captured, {
+    channelId: "UC_1",
+    performanceMetric: "views",
+    performanceDayOffset: 3,
+    credentialRef: { userId: "active-user" },
+  });
+});
+
+test("MCP agent_list_asset_performance rejects a channelId that is not the caller's active channel", async () => {
+  const agentOperationsCore: Pick<
+    AgentOperationsCore,
+    | "getSystemCapabilities"
+    | "getChannelContext"
+    | "getVideoContext"
+    | "queryChannelAnalytics"
+    | "queryVideoAnalytics"
+    | "listAssets"
+    | "getAssetContext"
+    | "getGenerationProvenance"
+    | "createContentProposal"
+    | "getContentProposal"
+    | "listContentProposals"
+    | "registerExternalArtifact"
+    | "listProposalArtifacts"
+    | "operationsWorkspaceListFiles"
+    | "operationsWorkspaceGetFile"
+    | "findComparableVideos"
+    | "listAssetPerformance"
+  > = {
+    ...makeAgentOperationsCoreStub(),
+    listAssetPerformance: async () => {
+      throw new Error("must not be called");
+    },
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeRestrictiveChannelAccessStub(),
+    undefined,
+    undefined,
+    agentOperationsCore
+  );
+  const result = await handlers.agentListAssetPerformance({ channelId: "UC_OTHER" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_list_asset_performance rejects input that fails its own schema (e.g. performanceMetric without performanceDayOffset)", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    makeAgentOperationsCoreStub()
+  );
+  const result = await handlers.agentListAssetPerformance({ channelId: "UC_1", performanceMetric: "views" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP agent_list_asset_performance is never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      makeAgentOperationsCoreStub()
+    );
+    const result = await handlers.agentListAssetPerformance({ channelId: "UC_1" });
+    assert.notEqual(result.isError, true);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
 });

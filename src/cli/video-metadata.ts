@@ -20,6 +20,8 @@ import { createChannelSyncCore, type ChannelSyncCore } from "@/lib/channel-sync"
 import { createChannelAccessCore, type ChannelAccessCore } from "@/lib/channel-access";
 import { createAnalyticsCore, type AnalyticsCore } from "@/lib/analytics";
 import { createAiLocalizationCore, type AiLocalizationCore } from "@/lib/ai-localization";
+import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent-operations";
+import { createAssetCatalogCore, type AssetCatalogCore } from "@/lib/asset-catalog";
 
 // CLI parity for the read/propose/create MCP tools (docs/roadmap/plans/PHASE_7_PLAN.md,
 // docs/TECHNICAL_DEBT.md RISK-04) -- same core factories, same "smallest safe slice" as
@@ -45,6 +47,28 @@ type AnalyticsCliCoreSubset = Pick<
 // (BL-075/BL-078, docs/roadmap/BACKLOG.md) -- same two existing service functions the Web UI's
 // own ai-localization routes already call, never a parallel implementation.
 type AiLocalizationCliCoreSubset = Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration">;
+// Phase 7 (Agent Operations Interface) -- CLI parity for the MCP agent_get_capabilities tool.
+type AgentOperationsCliCoreSubset = Pick<
+  AgentOperationsCore,
+  | "getSystemCapabilities"
+  | "getChannelContext"
+  | "getVideoContext"
+  | "queryChannelAnalytics"
+  | "queryVideoAnalytics"
+  | "listAssets"
+  | "getAssetContext"
+  | "getGenerationProvenance"
+  | "createContentProposal"
+  | "getContentProposal"
+  | "listContentProposals"
+  | "registerExternalArtifact"
+  | "listProposalArtifacts"
+  | "operationsWorkspaceListFiles"
+  | "operationsWorkspaceGetFile"
+  | "findComparableVideos"
+  | "listAssetPerformance"
+>;
+type AssetCatalogCliCoreSubset = Pick<AssetCatalogCore, "registerAsset">;
 
 loadEnvConfig(process.cwd());
 
@@ -62,7 +86,7 @@ type CliAuthAdapter = {
 };
 
 export type ParsedArgs = {
-  namespace: "metadata" | "auth" | "playlist" | "changeset" | "batch" | "channel" | "analytics" | "ai-localization";
+  namespace: "metadata" | "auth" | "playlist" | "changeset" | "batch" | "channel" | "analytics" | "ai-localization" | "agent" | "asset";
   command:
     | "list"
     | "transcript"
@@ -91,11 +115,29 @@ export type ParsedArgs = {
     | "weekly-reports"
     | "weekly-report-get"
     | "generate"
-    | "create-change-set";
+    | "create-change-set"
+    | "capabilities"
+    | "channel-context"
+    | "video-context"
+    | "channel-analytics"
+    | "video-analytics"
+    | "list-assets"
+    | "get-asset-context"
+    | "register"
+    | "get-generation-provenance"
+    | "create-content-proposal"
+    | "get-content-proposal"
+    | "list-content-proposals"
+    | "register-external-artifact"
+    | "list-proposal-artifacts"
+    | "list-operations-files"
+    | "get-operations-file"
+    | "find-comparable-videos"
+    | "list-asset-performance";
   flags: Record<string, string | boolean>;
 };
 
-const EXPLICIT_NAMESPACES = ["auth", "playlist", "changeset", "batch", "channel", "analytics", "ai-localization"] as const;
+const EXPLICIT_NAMESPACES = ["auth", "playlist", "changeset", "batch", "channel", "analytics", "ai-localization", "agent", "asset"] as const;
 type ExplicitNamespace = (typeof EXPLICIT_NAMESPACES)[number];
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -117,6 +159,26 @@ export function parseArgs(argv: string[]): ParsedArgs {
     channel: ["sync", "list", "video-list"],
     analytics: ["list", "overview", "data-quality", "comparable-age", "weekly-reports", "weekly-report-get"],
     "ai-localization": ["generate", "create-change-set"],
+    agent: [
+      "capabilities",
+      "channel-context",
+      "video-context",
+      "channel-analytics",
+      "video-analytics",
+      "list-assets",
+      "get-asset-context",
+      "get-generation-provenance",
+      "create-content-proposal",
+      "get-content-proposal",
+      "list-content-proposals",
+      "register-external-artifact",
+      "list-proposal-artifacts",
+      "list-operations-files",
+      "get-operations-file",
+      "find-comparable-videos",
+      "list-asset-performance",
+    ],
+    asset: ["register"],
   };
   const validMetadataCommands = ["list", "transcript", "preview", "apply"];
   const validCommands = hasExplicitNamespace
@@ -315,6 +377,46 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   // service's own internal device-availability check, RISK-30, not by this CLI gate).
   // "create-change-set" is deliberately NOT here -- it persists a new Change Set.
   "generate",
+  // agent capabilities: a pure local read (instance metadata + a static capability list).
+  // agent channel-context/video-context (slice B): both read only already-synced local data,
+  // mutate nothing -- same classification as "get"/"video-list" above.
+  "capabilities",
+  "channel-context",
+  "video-context",
+  // agent channel-analytics: a live YouTube Analytics API read (like "analytics overview"), but
+  // mutates no local state. agent video-analytics: a local read only (like "analytics list").
+  // Neither persists anything -- same classification as their wrapped tools above.
+  "channel-analytics",
+  "video-analytics",
+  // agent list-assets/get-asset-context: pure local reads over the asset catalog -- never
+  // resolves referenceValue to an actual file, never mutates. "asset register" is deliberately
+  // NOT here -- it persists a new row.
+  "list-assets",
+  "get-asset-context",
+  // agent get-generation-provenance: a local read over an immutable, already-persisted row.
+  "get-generation-provenance",
+  // agent get-content-proposal/list-content-proposals: pure local reads over the proposal
+  // record -- never resolves referenced videos/assets, never mutates. "create-content-proposal"
+  // is deliberately NOT here -- it persists a new row.
+  "get-content-proposal",
+  "list-content-proposals",
+  // agent list-proposal-artifacts: a local read over already-registered artifact links.
+  // "register-external-artifact" is deliberately NOT here -- it persists a new asset AND link row.
+  "list-proposal-artifacts",
+  // agent list-operations-files/get-operations-file: pure filesystem reads over the
+  // operator-configured operations-workspace directory -- never mutate anything. There is no
+  // "set-operations-workspace-path" CLI command in this (or any) namespace -- that path can only
+  // be set through the Web UI's Settings tab (owner spec §17's self-authorization concern:
+  // an agent that could choose its own instructions directory would be authorizing its own
+  // filesystem access).
+  "list-operations-files",
+  "get-operations-file",
+  // agent find-comparable-videos (slice K, owner spec §10): local reads only (sync mirror +
+  // local analytics rows), never a live YouTube call, never mutates anything.
+  "find-comparable-videos",
+  // agent list-asset-performance (slice L, owner spec §16): local reads only (asset catalog +
+  // sync mirror + local analytics rows), never a live YouTube call, never mutates anything.
+  "list-asset-performance",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -392,6 +494,8 @@ export async function runCliCommand(args: {
   channelAccessCore?: ChannelAccessCore;
   analyticsCore?: AnalyticsCliCoreSubset;
   aiLocalizationCore?: AiLocalizationCliCoreSubset;
+  agentOperationsCore?: AgentOperationsCliCoreSubset;
+  assetCatalogCore?: AssetCatalogCliCoreSubset;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
 }): Promise<number> {
@@ -405,6 +509,8 @@ export async function runCliCommand(args: {
   const channelAccessCore = args.channelAccessCore ?? createChannelAccessCore();
   const analyticsCore = args.analyticsCore ?? createAnalyticsCore();
   const aiLocalizationCore = args.aiLocalizationCore ?? createAiLocalizationCore();
+  const agentOperationsCore = args.agentOperationsCore ?? createAgentOperationsCore();
+  const assetCatalogCore = args.assetCatalogCore ?? createAssetCatalogCore();
   const writeStdout =
     args.writeStdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const writeStderr =
@@ -593,26 +699,377 @@ export async function runCliCommand(args: {
 
       // "create-change-set" -- persists a new Change Set (source: "ai_localization"). Never
       // writes to YouTube; gated above like changeset import (mutates the local database).
-      // --proposalsJson/--provenanceJson take a JSON-encoded value, the same shape
-      // generateProposals's own response already returns for a caller to echo back --
-      // there is no reasonable flat-flag equivalent for an array of {videoId, language,
-      // title?, description?} objects.
+      // --proposalsJson/--provenanceJson/--evidenceJson take a JSON-encoded value, the same
+      // shape generateProposals's own response already returns for a caller to echo back (or,
+      // for --evidenceJson, owner spec §13's EvidenceReference[] shape) -- there is no
+      // reasonable flat-flag equivalent for either. --rationale is plain free text (Phase 7
+      // slice F, owner spec §12).
       const proposalsJson = requiredStringFlag(parsedArgs.flags, "proposalsJson");
       const provenanceJsonFlag = optionalStringFlag(parsedArgs.flags, "provenanceJson");
+      const evidenceJsonFlag = optionalStringFlag(parsedArgs.flags, "evidenceJson");
+      const rationaleFlag = optionalStringFlag(parsedArgs.flags, "rationale");
       let proposals: unknown;
       let provenance: unknown;
+      let evidence: unknown;
       try {
         proposals = JSON.parse(proposalsJson);
         provenance = provenanceJsonFlag ? JSON.parse(provenanceJsonFlag) : undefined;
+        evidence = evidenceJsonFlag ? JSON.parse(evidenceJsonFlag) : undefined;
       } catch {
         throw new DomainError({
           code: "validation_failed",
-          message: "--proposalsJson/--provenanceJson must each be valid JSON",
+          message: "--proposalsJson/--provenanceJson/--evidenceJson must each be valid JSON",
         });
       }
-      const result = await aiLocalizationCore.createChangeSetFromGeneration({
+      const result = await aiLocalizationCore.createChangeSetFromGeneration(
+        {
+          channelId,
+          proposals,
+          provenance,
+          evidence,
+          rationale: rationaleFlag,
+        },
+        { createdVia: "cli", agentApiVersion: null }
+      );
+      writeStdout(serializeSuccess(result));
+      return 0;
+    }
+
+    // Phase 7 (Agent Operations Interface). "capabilities" is instance-level information, no
+    // channel/credential resolution needed at all. "channel-context"/"video-context" (slice B)
+    // are channel-scoped reads whose service functions do no active-channel checking themselves
+    // (same convention as ai-localization/changeset/batch above) -- so this CLI namespace
+    // resolves the local active-user identity and checks it against the requested channelId
+    // explicitly, mirroring the ai-localization dispatch block above, not the simpler
+    // "capabilities" case.
+    if (parsedArgs.namespace === "agent") {
+      if (parsedArgs.command === "capabilities") {
+        const result = await agentOperationsCore.getSystemCapabilities({});
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Slice I, owner spec §3/§30. No channelId/assertActiveChannel -- like "capabilities"
+      // above, this is instance-level (one global, operator-configured workspace path), not
+      // channel-scoped.
+      if (parsedArgs.command === "list-operations-files") {
+        const result = await agentOperationsCore.operationsWorkspaceListFiles({});
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "get-operations-file") {
+        const result = await agentOperationsCore.operationsWorkspaceGetFile({
+          path: requiredStringFlag(parsedArgs.flags, "path"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Slice C, owner spec §9. UNLIKE "channel-context"/"video-context" below, these two do NOT
+      // call `channelAccessCore.assertActiveChannel` themselves -- mirroring the MCP
+      // `agentQueryChannelAnalytics`/`agentQueryVideoAnalytics` handlers' own pattern (and the
+      // pre-existing `analytics overview`/`analytics list` commands below), since
+      // `agentOperationsCore.queryChannelAnalytics`/`queryVideoAnalytics` forward `credentialRef`
+      // straight into the REAL `analyticsCore`, which already does that identical check
+      // internally -- a second check here would be redundant against the same fact.
+      if (parsedArgs.command === "channel-analytics") {
+        const analyticsCredentialRef = await auth.resolveEffectiveCredentialRef({
+          explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+        });
+        const result = await agentOperationsCore.queryChannelAnalytics({
+          credentialRef: analyticsCredentialRef,
+          channelId: requiredStringFlag(parsedArgs.flags, "channelId"),
+          startDate: requiredStringFlag(parsedArgs.flags, "startDate"),
+          endDate: requiredStringFlag(parsedArgs.flags, "endDate"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "video-analytics") {
+        const analyticsCredentialRef = await auth.resolveEffectiveCredentialRef({
+          explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+        });
+        const metricNamesFlag = optionalStringFlag(parsedArgs.flags, "metricNames");
+        const result = await agentOperationsCore.queryVideoAnalytics({
+          credentialRef: analyticsCredentialRef,
+          channelId: requiredStringFlag(parsedArgs.flags, "channelId"),
+          startDate: optionalStringFlag(parsedArgs.flags, "startDate"),
+          endDate: optionalStringFlag(parsedArgs.flags, "endDate"),
+          videoId: optionalStringFlag(parsedArgs.flags, "videoId"),
+          metricNames: metricNamesFlag
+            ? metricNamesFlag.split(",").map((entry) => entry.trim()).filter(Boolean)
+            : undefined,
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
+      const agentCredentialRef = await auth.resolveEffectiveCredentialRef({
+        explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+      });
+      await channelAccessCore.assertActiveChannel({
+        userId: "userId" in agentCredentialRef ? agentCredentialRef.userId : null,
         channelId,
-        proposals,
+      });
+
+      if (parsedArgs.command === "channel-context") {
+        const result = await agentOperationsCore.getChannelContext({ channelId });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "list-assets") {
+        const result = await agentOperationsCore.listAssets({
+          channelId,
+          videoId: optionalStringFlag(parsedArgs.flags, "videoId"),
+          assetType: optionalStringFlag(parsedArgs.flags, "assetType"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "get-asset-context") {
+        const result = await agentOperationsCore.getAssetContext({
+          channelId,
+          assetId: requiredStringFlag(parsedArgs.flags, "assetId"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "get-generation-provenance") {
+        const result = await agentOperationsCore.getGenerationProvenance({
+          channelId,
+          changeSetId: requiredStringFlag(parsedArgs.flags, "changeSetId"),
+        });
+        writeStdout(serializeSuccess({ provenance: result }));
+        return 0;
+      }
+
+      // Phase 7 slice G (owner spec §18). --evidenceJson/--briefJson take a JSON-encoded value
+      // (EvidenceReference[] / ContentProposalBrief respectively) -- same reasoning as
+      // ai-localization create-change-set's own --evidenceJson above: there is no reasonable
+      // flat-flag equivalent for either shape. --referenceVideoIds/--referenceAssetIds take a
+      // comma-separated list of ids, same convention as --metricNames above.
+      if (parsedArgs.command === "create-content-proposal") {
+        const evidenceJsonFlag = optionalStringFlag(parsedArgs.flags, "evidenceJson");
+        const briefJsonFlag = optionalStringFlag(parsedArgs.flags, "briefJson");
+        const referenceVideoIdsFlag = optionalStringFlag(parsedArgs.flags, "referenceVideoIds");
+        const referenceAssetIdsFlag = optionalStringFlag(parsedArgs.flags, "referenceAssetIds");
+        let evidence: unknown;
+        let brief: unknown;
+        try {
+          evidence = evidenceJsonFlag ? JSON.parse(evidenceJsonFlag) : undefined;
+          brief = briefJsonFlag ? JSON.parse(briefJsonFlag) : undefined;
+        } catch {
+          throw new DomainError({
+            code: "validation_failed",
+            message: "--evidenceJson/--briefJson must each be valid JSON",
+          });
+        }
+
+        const result = await agentOperationsCore.createContentProposal(
+          {
+            channelId,
+            objective: optionalStringFlag(parsedArgs.flags, "objective"),
+            topicConcept: optionalStringFlag(parsedArgs.flags, "topicConcept"),
+            rationale: optionalStringFlag(parsedArgs.flags, "rationale"),
+            evidence,
+            brief,
+            referenceVideoIds: referenceVideoIdsFlag
+              ? referenceVideoIdsFlag.split(",").map((entry) => entry.trim()).filter(Boolean)
+              : undefined,
+            referenceAssetIds: referenceAssetIdsFlag
+              ? referenceAssetIdsFlag.split(",").map((entry) => entry.trim()).filter(Boolean)
+              : undefined,
+          },
+          { createdVia: "cli", agentApiVersion: null }
+        );
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "get-content-proposal") {
+        const result = await agentOperationsCore.getContentProposal({
+          channelId,
+          proposalId: requiredStringFlag(parsedArgs.flags, "proposalId"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "list-content-proposals") {
+        const result = await agentOperationsCore.listContentProposals({ channelId });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Phase 7 slice G2 (owner spec §19). --provenanceJson takes a JSON-encoded object, same
+      // convention as "asset register" above. referenceKind is restricted to
+      // url/external_artifact_id by the schema itself -- local_path stays available only via the
+      // operator-facing "asset register" command.
+      if (parsedArgs.command === "register-external-artifact") {
+        const provenanceJsonFlag = optionalStringFlag(parsedArgs.flags, "provenanceJson");
+        let provenance: unknown;
+        try {
+          provenance = provenanceJsonFlag ? JSON.parse(provenanceJsonFlag) : undefined;
+        } catch {
+          throw new DomainError({
+            code: "validation_failed",
+            message: "--provenanceJson must be valid JSON",
+          });
+        }
+
+        const result = await agentOperationsCore.registerExternalArtifact(
+          {
+            channelId,
+            proposalId: requiredStringFlag(parsedArgs.flags, "proposalId"),
+            assetType: requiredStringFlag(parsedArgs.flags, "assetType"),
+            referenceKind: requiredStringFlag(parsedArgs.flags, "referenceKind"),
+            referenceValue: requiredStringFlag(parsedArgs.flags, "referenceValue"),
+            title: optionalStringFlag(parsedArgs.flags, "title"),
+            description: optionalStringFlag(parsedArgs.flags, "description"),
+            linkedVideoId: optionalStringFlag(parsedArgs.flags, "linkedVideoId"),
+            provenance,
+          },
+          { createdVia: "cli", agentApiVersion: null }
+        );
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "list-proposal-artifacts") {
+        const result = await agentOperationsCore.listProposalArtifacts({
+          channelId,
+          proposalId: requiredStringFlag(parsedArgs.flags, "proposalId"),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Phase 7 slice K (owner spec §10). --performanceMetric/--performanceThresholdOperator/
+      // --performanceThresholdValue/--sort=performanceMetric each require a credentialRef, so this
+      // reuses the same `agentCredentialRef` already resolved above for `assertActiveChannel` --
+      // but only forwards it when a performance metric was actually requested, mirroring
+      // `findComparableVideos`'s own "only resolve/use credentials when actually needed" design.
+      if (parsedArgs.command === "find-comparable-videos") {
+        const performanceMetric = optionalStringFlag(parsedArgs.flags, "performanceMetric");
+        const publicationWindowDaysFlag = optionalStringFlag(parsedArgs.flags, "publicationWindowDays");
+        const durationToleranceSecondsFlag = optionalStringFlag(parsedArgs.flags, "durationToleranceSeconds");
+        const performanceThresholdOperator = optionalStringFlag(parsedArgs.flags, "performanceThresholdOperator");
+        const performanceThresholdValueFlag = optionalStringFlag(parsedArgs.flags, "performanceThresholdValue");
+        const limitFlag = optionalStringFlag(parsedArgs.flags, "limit");
+
+        // Never silently drop half of a threshold request (this codebase's own "never silently
+        // shrink/ignore a request" convention, e.g. excludedForMissingData below) -- giving only
+        // one of the pair is always a typo, not "no threshold requested".
+        if ((performanceThresholdOperator === undefined) !== (performanceThresholdValueFlag === undefined)) {
+          throw new DomainError({
+            code: "validation_failed",
+            message: "--performanceThresholdOperator and --performanceThresholdValue must be given together",
+          });
+        }
+
+        const result = await agentOperationsCore.findComparableVideos({
+          channelId,
+          anchorVideoId: requiredStringFlag(parsedArgs.flags, "anchorVideoId"),
+          credentialRef: performanceMetric ? agentCredentialRef : undefined,
+          publicationWindowDays: publicationWindowDaysFlag === undefined ? undefined : Number(publicationWindowDaysFlag),
+          durationToleranceSeconds: durationToleranceSecondsFlag === undefined ? undefined : Number(durationToleranceSecondsFlag),
+          performanceMetric,
+          performanceThreshold:
+            performanceThresholdOperator !== undefined && performanceThresholdValueFlag !== undefined
+              ? { operator: performanceThresholdOperator, value: Number(performanceThresholdValueFlag) }
+              : undefined,
+          sort: requiredStringFlag(parsedArgs.flags, "sort"),
+          limit: limitFlag === undefined ? undefined : Number(limitFlag),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Phase 7 slice L (owner spec §16). --performanceMetric/--performanceDayOffset each require
+      // a credentialRef -- same "only resolve/use credentials when actually needed" pattern as
+      // find-comparable-videos above. --performanceMetric/--performanceDayOffset must be given
+      // together; the domain schema itself already enforces this (no redundant CLI-side check).
+      if (parsedArgs.command === "list-asset-performance") {
+        const performanceMetric = optionalStringFlag(parsedArgs.flags, "performanceMetric");
+        const performanceDayOffsetFlag = optionalStringFlag(parsedArgs.flags, "performanceDayOffset");
+        const limitFlag = optionalStringFlag(parsedArgs.flags, "limit");
+
+        const result = await agentOperationsCore.listAssetPerformance({
+          channelId,
+          assetType: optionalStringFlag(parsedArgs.flags, "assetType"),
+          credentialRef: performanceMetric ? agentCredentialRef : undefined,
+          performanceMetric,
+          performanceDayOffset: performanceDayOffsetFlag === undefined ? undefined : Number(performanceDayOffsetFlag),
+          sort: optionalStringFlag(parsedArgs.flags, "sort"),
+          limit: limitFlag === undefined ? undefined : Number(limitFlag),
+        });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // "video-context" -- --include takes a comma-separated subset of metadata,localizations
+      // (same convention as --videoIds/--targetLanguages above); omitted means "both sections",
+      // exactly as agentOperationsCore.getVideoContext's own default already handles.
+      const videoId = requiredStringFlag(parsedArgs.flags, "videoId");
+      const includeFlag = optionalStringFlag(parsedArgs.flags, "include");
+      const include = includeFlag
+        ? includeFlag.split(",").map((entry) => entry.trim()).filter(Boolean)
+        : undefined;
+      const result = await agentOperationsCore.getVideoContext({
+        channelId,
+        videoId,
+        ...(include ? { include } : {}),
+      });
+      writeStdout(serializeSuccess(result));
+      return 0;
+    }
+
+    // Slice D, owner spec §15/§25. "asset register" itself is NOT an agent-operations capability
+    // (owner spec §25 lists only list_assets/get_asset_context as READ for this domain), so it
+    // goes straight to `assetCatalogCore`, not through `agentOperationsCore` -- this is still the
+    // only DIRECT, operator-facing way to populate the catalog, and the only way to register
+    // `local_path`. Slice G2 later adds an INDIRECT, agent-callable way to populate the catalog,
+    // tied to a Content Proposal and restricted to referenceKind url/external_artifact_id (see
+    // "register-external-artifact" below) -- this comment is not stale, just narrower in scope
+    // than "no agent can ever add an asset." Same channel-scoping pattern as `ai-localization`/
+    // `changeset` above: this module's own service functions do no such checking themselves.
+    if (parsedArgs.namespace === "asset") {
+      const channelId = requiredStringFlag(parsedArgs.flags, "channelId");
+      const assetCredentialRef = await auth.resolveEffectiveCredentialRef({
+        explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+      });
+      await channelAccessCore.assertActiveChannel({
+        userId: "userId" in assetCredentialRef ? assetCredentialRef.userId : null,
+        channelId,
+      });
+
+      // "register" -- persists a new catalog row. Never touches YouTube; gated above like
+      // changeset import (mutates the local database). --provenanceJson takes a JSON-encoded
+      // object, the same shape registerAsset's own response echoes back -- no reasonable
+      // flat-flag equivalent for an arbitrary provenance record.
+      const provenanceJsonFlag = optionalStringFlag(parsedArgs.flags, "provenanceJson");
+      let provenance: unknown;
+      if (provenanceJsonFlag) {
+        try {
+          provenance = JSON.parse(provenanceJsonFlag);
+        } catch {
+          throw new DomainError({ code: "validation_failed", message: "--provenanceJson must be valid JSON" });
+        }
+      }
+      const result = await assetCatalogCore.registerAsset({
+        channelId,
+        assetType: requiredStringFlag(parsedArgs.flags, "assetType"),
+        referenceKind: requiredStringFlag(parsedArgs.flags, "referenceKind"),
+        referenceValue: requiredStringFlag(parsedArgs.flags, "referenceValue"),
+        title: optionalStringFlag(parsedArgs.flags, "title"),
+        description: optionalStringFlag(parsedArgs.flags, "description"),
+        linkedVideoId: optionalStringFlag(parsedArgs.flags, "linkedVideoId"),
         provenance,
       });
       writeStdout(serializeSuccess(result));

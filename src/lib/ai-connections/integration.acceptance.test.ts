@@ -338,10 +338,13 @@ test("AC-CONN-17: a connection-backed generation preserves the entire AI Localiz
   const title = target.fields.find((f) => f.field === "title")!;
   assert.equal(title.proposedValue, "Gatos do Mundo");
 
-  const changeSet = await ai.createChangeSetFromGeneration({
-    channelId: "UC_TEST",
-    proposals: [{ videoId: "v1", language: "pt-BR", title: "Gatos do Mundo", description: "Um tour." }],
-  });
+  const changeSet = await ai.createChangeSetFromGeneration(
+    {
+      channelId: "UC_TEST",
+      proposals: [{ videoId: "v1", language: "pt-BR", title: "Gatos do Mundo", description: "Um tour." }],
+    },
+    { createdVia: "web_ui", agentApiVersion: null }
+  );
   assert.equal(changeSet.source, "ai_localization");
 
   const { changes } = await changesetsFixture.changeSetServices.getChangeSet({ channelId: "UC_TEST", changeSetId: changeSet.id });

@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { parseWithSchema } from "@/lib/changesets/schemas";
+import { CREATED_VIA_VALUES, MAX_EVIDENCE_LIST_ITEMS, evidenceReferenceSchema, evidenceSourceTypeSchema } from "@/lib/shared-provenance";
 
 export { parseWithSchema };
+// Reused as-is from `@/lib/shared-provenance` (AGENTS.md §D/§M) -- shared with
+// `content-proposals` (Phase 7 slice G), not a second copy of the same schema.
+export { evidenceSourceTypeSchema, evidenceReferenceSchema };
 
 // Bounded-length, purely structural -- this repository never validates or supplies
 // the CONTENT of editorial context (AGENTS.md §B); the length cap only prevents an
@@ -56,11 +60,19 @@ export const generationProvenanceSchema = z
   })
   .strict();
 
+const MAX_RATIONALE_LENGTH = 4000;
+
 export const createChangeSetFromGenerationInputSchema = z
   .object({
     channelId: z.string().min(1),
     proposals: z.array(reviewedProposalSchema).min(1).max(10_000),
     provenance: generationProvenanceSchema.optional(),
+    // Phase 7 slice F (owner spec §12/§13) -- agent-supplied, caller-echoed evidence/rationale for
+    // this Change Set's proposals, recorded once per Change Set (see `StoredGenerationProvenance`'s
+    // own doc comment in contracts.ts for why per-Change-Set rather than per-proposal). Never
+    // required, never verified by this server.
+    evidence: z.array(evidenceReferenceSchema).max(MAX_EVIDENCE_LIST_ITEMS).nullable().optional(),
+    rationale: z.string().max(MAX_RATIONALE_LENGTH).nullable().optional(),
   })
   .strict();
 
@@ -81,6 +93,20 @@ export const getGenerationProvenanceInputSchema = z
     changeSetId: z.string().min(1),
   })
   .strict();
+
+// `getGenerationProvenance`'s own return shape (Phase 7 slice E) -- adds the fields only a
+// STORED row can carry (changeSetId/channelId/createdAt), on top of `generationProvenanceSchema`'s
+// base shape. See `StoredGenerationProvenance`'s own doc comment in contracts.ts for why this is
+// a distinct type from the plain echo `generationProvenanceSchema` validates on the way in.
+export const storedGenerationProvenanceSchema = generationProvenanceSchema.extend({
+  changeSetId: z.string().min(1),
+  channelId: z.string().min(1),
+  createdAt: z.string(),
+  evidence: z.array(evidenceReferenceSchema).nullable(),
+  rationale: z.string().nullable(),
+  createdVia: z.enum(CREATED_VIA_VALUES).nullable(),
+  agentApiVersion: z.string().nullable(),
+});
 
 export const saveEditorialProfileInputSchema = z
   .object({

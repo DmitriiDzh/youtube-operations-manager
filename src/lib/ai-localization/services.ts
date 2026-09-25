@@ -9,7 +9,9 @@ import type { ChangeSet } from "@/lib/changesets/contracts";
 import {
   DomainError,
   isDomainError,
+  type CreatedVia,
   type EditorialProfile,
+  type EvidenceReference,
   type GeneratedFieldOutcome,
   type GeneratedTargetResult,
   type GenerationContext,
@@ -21,6 +23,7 @@ import {
   type LocalizationProvider,
   type ReviewedProposal,
   type StoredChannelRecord,
+  type StoredGenerationProvenance,
   type StoredVideoRecord,
 } from "./contracts";
 import { OperationLockError } from "@/lib/operation-lock";
@@ -151,6 +154,10 @@ type ServiceDependencies = {
       channelId: string;
       profileVersion: number | null;
       effectiveContextJson: string | null;
+      evidenceJson: string | null;
+      rationale: string | null;
+      createdVia: CreatedVia | null;
+      agentApiVersion: string | null;
     }): Promise<void>;
     getByChangeSetId(changeSetId: string): Promise<{
       id: string;
@@ -159,6 +166,10 @@ type ServiceDependencies = {
       profileVersion: number | null;
       effectiveContextJson: string | null;
       createdAt: Date;
+      evidenceJson: string | null;
+      rationale: string | null;
+      createdVia: string | null;
+      agentApiVersion: string | null;
     } | null>;
   };
   idGenerator: () => string;
@@ -399,7 +410,19 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
      * creation, dry-run -- is the exact same Phase 4/5 pipeline XLSX-imported
      * changes already go through (AGENTS.md §D).
      */
-    async createChangeSetFromGeneration(input: unknown): Promise<ChangeSet> {
+    async createChangeSetFromGeneration(
+      input: unknown,
+      // Phase 7 slice F (owner spec §22) -- which transport actually called this, and which
+      // AGENT_API_VERSION was in effect. SERVER-STAMPED by the caller (the Web route, the MCP
+      // handler, or the CLI dispatch), never taken from `input` itself -- a caller-supplied value
+      // would be a claim, not an attestation (see `DraftProvenance.createdVia`'s own doc comment,
+      // `src/lib/sync-gateway/change-drafts/contracts.ts`). Deliberately REQUIRED, no default --
+      // a default of `"web_ui"` would silently mislabel any future call site that forgot to pass
+      // it, which is exactly the kind of fail-open attestation gap this field exists to prevent.
+      // `tsc` enforces that every call site (Web route, MCP handler, CLI dispatch, and tests)
+      // states its own identity explicitly.
+      callOrigin: { createdVia: CreatedVia; agentApiVersion?: string | null }
+    ): Promise<ChangeSet> {
       const parsedInput = parseWithSchema(createChangeSetFromGenerationInputSchema, input, "create change set from generation input");
 
       try {
@@ -485,24 +508,27 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
           changes: changesToPersist,
         });
 
-        // Provenance is optional and purely additive: it is an echo, supplied by the
-        // caller, of exactly what a prior `generateProposals` call returned (see
-        // GenerationResult.generationContext) -- never re-derived from the LIVE
-        // profile here, since the whole point is to survive the profile later being
-        // edited or deleted (docs/acceptance/PHASE_6_ACCEPTANCE.md AC-PROFILE-08/09).
-        // A client that omits it simply gets no provenance row; nothing else about
-        // Change Set creation depends on it.
-        if (parsedInput.provenance) {
-          await deps.provenanceStore.create({
-            id: deps.idGenerator(),
-            changeSetId: changeSet.id,
-            channelId: channel.channelId,
-            profileVersion: parsedInput.provenance.profileVersion,
-            effectiveContextJson: parsedInput.provenance.effectiveContext
-              ? JSON.stringify(parsedInput.provenance.effectiveContext)
-              : null,
-          });
-        }
+        // A provenance row is always recorded, unconditionally (owner spec §22) -- every
+        // agent-created object must be traceable, and `callOrigin`'s `createdVia`/
+        // `agentApiVersion` are SERVER-STAMPED identity, not a caller-supplied claim, so they
+        // must be recorded even when the caller echoes no `provenance`/`evidence`/`rationale` at
+        // all. `provenance`/`evidence`/`rationale` remain optional, caller-echoed, never-
+        // independently-verified claims (`docs/acceptance/PHASE_6_ACCEPTANCE.md` AC-PROFILE-08/09's
+        // "frozen at generation time" guarantee is unaffected -- they're simply `null` when
+        // omitted).
+        await deps.provenanceStore.create({
+          id: deps.idGenerator(),
+          changeSetId: changeSet.id,
+          channelId: channel.channelId,
+          profileVersion: parsedInput.provenance?.profileVersion ?? null,
+          effectiveContextJson: parsedInput.provenance?.effectiveContext
+            ? JSON.stringify(parsedInput.provenance.effectiveContext)
+            : null,
+          evidenceJson: parsedInput.evidence ? JSON.stringify(parsedInput.evidence) : null,
+          rationale: parsedInput.rationale ?? null,
+          createdVia: callOrigin.createdVia,
+          agentApiVersion: callOrigin.agentApiVersion ?? null,
+        });
 
         deps.logger.info({
           event: "ai_localization.create_change_set.success",
@@ -576,7 +602,7 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
      * not found, exactly like every other channel-scoped resource in this codebase
      * (`AGENTS.md` §F).
      */
-    async getGenerationProvenance(input: unknown): Promise<GenerationProvenance | null> {
+    async getGenerationProvenance(input: unknown): Promise<StoredGenerationProvenance | null> {
       const parsedInput = parseWithSchema(getGenerationProvenanceInputSchema, input, "get generation provenance input");
 
       try {
@@ -587,6 +613,16 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
         return {
           profileVersion: stored.profileVersion,
           effectiveContext: stored.effectiveContextJson ? (JSON.parse(stored.effectiveContextJson) as GenerationContext) : null,
+          changeSetId: stored.changeSetId,
+          channelId: stored.channelId,
+          createdAt: stored.createdAt.toISOString(),
+          evidence: stored.evidenceJson ? (JSON.parse(stored.evidenceJson) as EvidenceReference[]) : null,
+          rationale: stored.rationale,
+          // Stored as a plain `text` column (db.ts) -- narrowed back to the known literal union
+          // here, since every writer of this column (this module's own `createdVia` parameter)
+          // only ever supplies one of these three values or `null`.
+          createdVia: stored.createdVia as CreatedVia | null,
+          agentApiVersion: stored.agentApiVersion,
         };
       } catch (error) {
         throw mapUnknownError(error, "not_found");

@@ -55,7 +55,28 @@ export type DomainErrorCode =
   | "deletion_targets_default_language"
   | "divergent_document_lineage"
   | "crdt_conflict_open"
-  | "channel_not_connected";
+  | "channel_not_connected"
+  // Phase 7 (Agent Operations Interface, docs/AGENT_OPERATIONS_INTERFACE.md) -- structured
+  // errors an external operational agent needs to make a deterministic decision on, per that
+  // document's own §27 "Failure behavior" requirement. Shared here (not a separate error type)
+  // so every domain module's existing DomainError handling (toolErrorResult, CLI serializeError,
+  // API route catch blocks) already knows how to surface these without new plumbing.
+  | "CAPABILITY_NOT_AVAILABLE"
+  | "DATA_NOT_SYNCED"
+  | "ANALYTICS_STALE"
+  | "CHANNEL_NOT_AUTHORIZED"
+  | "ASSET_NOT_AVAILABLE"
+  | "CONTENT_PROPOSAL_NOT_AVAILABLE"
+  | "INVALID_CONTEXT_REQUEST"
+  | "DRAFT_VALIDATION_FAILED"
+  | "APPROVAL_REQUIRED"
+  | "EXECUTION_NOT_AUTHORIZED"
+  // Phase 7 slice I (owner spec §3/§30, operations-workspace path surfacing). Distinct from
+  // "not configured" (which is not an error -- see `OperationsWorkspaceListResult`/
+  // `OperationsWorkspaceFileResult`'s own `configured: false` discriminant): these two cover the
+  // "configured, but something about the actual request/directory is wrong" cases.
+  | "OPERATIONS_WORKSPACE_UNAVAILABLE"
+  | "OPERATIONS_FILE_NOT_AVAILABLE";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

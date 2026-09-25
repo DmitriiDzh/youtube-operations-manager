@@ -1322,3 +1322,23 @@ Google Cloud"/"Save / Apply" buttons (owner instruction: "можем и цвет
 как у кнопки соединения с Cloud"), so it reads as structurally different from the other three red
 24h bars at a glance, not a fourth copy of the same thing. `ProgressBar` itself gained an optional
 `color` prop (`"red" | "indigo"`, default `"red"`) to support this without forking the component.
+
+## 17. Agent Operations Interface (`src/lib/agent-operations/`) — Phase 7, in progress, not yet in `dev`
+
+Owner instruction, Telegram 2026-09-23: a full 34-section spec ("Phase 7 — Agent Operations
+Interface for Codex") authorizing design and incremental implementation of a versioned interface
+external operational agents consume, without per-slice approval (only the final `dev` merge needs
+explicit sign-off). **The full technical design, permission model, error vocabulary, and
+per-slice implementation status live exclusively in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's
+status table -- this heading deliberately never names which slice is implemented**, so it never
+needs updating as slices land; consult §7 of that document instead, every time.
+
+In one sentence: this application remains the sole source of truth for owned-channel data,
+analytics, and the write-safety pipeline; the agent is a reasoning/proposal layer that must
+re-request context rather than cache a private copy, and can only ever hold `READ`+`DRAFT`
+permissions (never `APPROVE`/`EXECUTE`) until a future, separate, explicit owner decision widens
+that. This phase's planned scope spans contracts/capability-discovery, channel/video context, an
+analytics wrapper, a new creative-asset catalog, draft provenance, bulk-localization integration,
+content-proposal/artifact registration, a Codex operations-workspace template, and independent
+review -- **which of these is actually implemented as of any given moment is tracked exclusively
+in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here**.

@@ -1,5 +1,6 @@
 import { z, ZodError } from "zod";
 import { DomainError } from "./contracts";
+import { CREATED_VIA_VALUES } from "@/lib/shared-provenance";
 
 export function formatZodError(error: ZodError) {
   return error.issues.map((issue) => ({
@@ -48,6 +49,15 @@ export const createProvenanceInputSchema = z
     changeSetId: z.string().min(1),
     profileVersion: z.number().nullable(),
     effectiveContextJson: z.string().nullable(),
+    // Phase 7 slice F -- additive and optional (omitted defaults to `null` in the service
+    // function below, same as every pre-existing caller/test that predates this field).
+    // `evidenceJson`/`rationale` are caller-supplied (agent-authored claims); `createdVia`/
+    // `agentApiVersion` are stamped by the caller layer (MCP/CLI/Web route), never by this module
+    // itself -- this schema just carries whatever it's given through.
+    evidenceJson: z.string().nullable().optional(),
+    rationale: z.string().nullable().optional(),
+    createdVia: z.enum(CREATED_VIA_VALUES).nullable().optional(),
+    agentApiVersion: z.string().nullable().optional(),
   })
   .strict();
 

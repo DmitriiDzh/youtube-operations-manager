@@ -37,7 +37,10 @@ export async function POST(
       );
     }
 
-    const changeSet = await core.createChangeSetFromGeneration({ ...body, channelId });
+    const changeSet = await core.createChangeSetFromGeneration(
+      { ...body, channelId },
+      { createdVia: "web_ui", agentApiVersion: null }
+    );
     return NextResponse.json({ changeSet }, { status: 201 });
   } catch (error) {
     if (error instanceof DomainError) {

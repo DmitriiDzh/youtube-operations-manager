@@ -37,6 +37,28 @@ import {
   createChangeSetFromGenerationInputSchema,
   generateProposalsInputSchema,
 } from "@/lib/ai-localization/schemas";
+import { createAgentOperationsCore, type AgentOperationsCore, AGENT_API_VERSION } from "@/lib/agent-operations";
+import {
+  createContentProposalInputSchema,
+  findComparableVideosInputSchema,
+  findComparableVideosSdkInputSchema,
+  getAssetContextInputSchema,
+  getChannelContextInputSchema,
+  getContentProposalInputSchema,
+  getGenerationProvenanceInputSchema,
+  getSystemCapabilitiesInputSchema,
+  getVideoContextInputSchema,
+  listAssetPerformanceInputSchema,
+  listAssetPerformanceSdkInputSchema,
+  listAssetsInputSchema,
+  listContentProposalsInputSchema,
+  listProposalArtifactsInputSchema,
+  operationsWorkspaceGetFileInputSchema,
+  operationsWorkspaceListFilesInputSchema,
+  queryChannelAnalyticsInputSchema,
+  queryVideoAnalyticsInputSchema,
+  registerExternalArtifactInputSchema,
+} from "@/lib/agent-operations/schemas";
 import {
   getChannelOverviewInputSchema,
   getComparableAgeComparisonInputSchema,
@@ -109,6 +131,28 @@ type AnalyticsCoreSubset = Pick<
 // approve/reject/apply path -- "AI may propose, human approves" (AGENTS.md §G) is untouched.
 type AiLocalizationCoreSubset = Pick<AiLocalizationCore, "generateProposals" | "createChangeSetFromGeneration">;
 
+// Phase 7 (Agent Operations Interface, docs/AGENT_OPERATIONS_INTERFACE.md) -- slices A-E.
+type AgentOperationsCoreSubset = Pick<
+  AgentOperationsCore,
+  | "getSystemCapabilities"
+  | "getChannelContext"
+  | "getVideoContext"
+  | "queryChannelAnalytics"
+  | "queryVideoAnalytics"
+  | "listAssets"
+  | "getAssetContext"
+  | "getGenerationProvenance"
+  | "createContentProposal"
+  | "getContentProposal"
+  | "listContentProposals"
+  | "registerExternalArtifact"
+  | "listProposalArtifacts"
+  | "operationsWorkspaceListFiles"
+  | "operationsWorkspaceGetFile"
+  | "findComparableVideos"
+  | "listAssetPerformance"
+>;
+
 type ToolResponse = {
   content: Array<{ type: "text"; text: string }>;
   structuredContent?: Record<string, unknown>;
@@ -148,6 +192,23 @@ type McpToolHandlers = {
   analyticsWeeklyReportGet: (input: unknown) => Promise<ToolResponse>;
   aiLocalizationGenerate: (input: unknown) => Promise<ToolResponse>;
   aiLocalizationCreateChangeSet: (input: unknown) => Promise<ToolResponse>;
+  agentGetCapabilities: (input: unknown) => Promise<ToolResponse>;
+  agentGetChannelContext: (input: unknown) => Promise<ToolResponse>;
+  agentGetVideoContext: (input: unknown) => Promise<ToolResponse>;
+  agentQueryChannelAnalytics: (input: unknown) => Promise<ToolResponse>;
+  agentQueryVideoAnalytics: (input: unknown) => Promise<ToolResponse>;
+  agentListAssets: (input: unknown) => Promise<ToolResponse>;
+  agentGetAssetContext: (input: unknown) => Promise<ToolResponse>;
+  agentGetGenerationProvenance: (input: unknown) => Promise<ToolResponse>;
+  agentCreateContentProposal: (input: unknown) => Promise<ToolResponse>;
+  agentGetContentProposal: (input: unknown) => Promise<ToolResponse>;
+  agentListContentProposals: (input: unknown) => Promise<ToolResponse>;
+  agentRegisterExternalArtifact: (input: unknown) => Promise<ToolResponse>;
+  agentListProposalArtifacts: (input: unknown) => Promise<ToolResponse>;
+  agentListOperationsFiles: (input: unknown) => Promise<ToolResponse>;
+  agentGetOperationsFile: (input: unknown) => Promise<ToolResponse>;
+  agentFindComparableVideos: (input: unknown) => Promise<ToolResponse>;
+  agentListAssetPerformance: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -363,7 +424,8 @@ export function createMcpToolHandlers(
   channelSyncCore: ChannelSyncCoreSubset = createChannelSyncCore(),
   channelAccessCore: ChannelAccessCore = createChannelAccessCore(),
   analyticsCore: AnalyticsCoreSubset = createAnalyticsCore(),
-  aiLocalizationCore: AiLocalizationCoreSubset = createAiLocalizationCore()
+  aiLocalizationCore: AiLocalizationCoreSubset = createAiLocalizationCore(),
+  agentOperationsCore: AgentOperationsCoreSubset = createAgentOperationsCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -958,7 +1020,402 @@ export function createMcpToolHandlers(
           userId: getCredentialUserId(credentialRef),
           channelId: parsedInput.data.channelId,
         });
-        const result = await aiLocalizationCore.createChangeSetFromGeneration(parsedInput.data);
+        // Phase 7 slice F (owner spec §22): this is the one transport an agent-operations-
+        // versioned surface actually mediates, so it is the only one that stamps a real
+        // `agentApiVersion` alongside `createdVia: "mcp"`.
+        const result = await aiLocalizationCore.createChangeSetFromGeneration(parsedInput.data, {
+          createdVia: "mcp",
+          agentApiVersion: AGENT_API_VERSION,
+        });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * Phase 7 (Agent Operations Interface) slice A. Pure local read -- no channel scoping (this
+     * is instance-level, not channel-level, information), no YouTube call, no credentialRef.
+     */
+    async agentGetCapabilities(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getSystemCapabilitiesInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const result = await agentOperationsCore.getSystemCapabilities(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * Phase 7 slice B. Channel-scoping is checked explicitly here, mirroring `ai_localization_*`'s
+     * own pattern -- `agent-operations`' own service functions carry no `credentialRef` and do no
+     * such check themselves (see that module's own `getChannelContext` doc comment).
+     */
+    async agentGetChannelContext(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getChannelContextInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.getChannelContext(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** Phase 7 slice B. Same explicit channel-scoping note as `agentGetChannelContext` above. */
+    async agentGetVideoContext(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getVideoContextInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.getVideoContext(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * Slice C, owner spec §9. UNLIKE `agentGetChannelContext`/`agentGetVideoContext` above, this
+     * does NOT call `channelAccessCore.assertActiveChannel` itself -- it mirrors
+     * `analyticsOverview`'s own pattern instead (`credentialRef` relaxed to optional for this
+     * tool's own input parse, resolved once, then forwarded to `agentOperationsCore
+     * .queryChannelAnalytics`, which forwards it unchanged into the REAL `analyticsCore
+     * .getChannelOverview` -- that function already does the identical active-channel check
+     * internally; a second check here would be redundant against the same fact, not a second
+     * layer of safety).
+     */
+    async agentQueryChannelAnalytics(input: unknown): Promise<ToolResponse> {
+      const parsedInput = queryChannelAnalyticsInputSchema.partial({ credentialRef: true }).safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await agentOperationsCore.queryChannelAnalytics({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** Slice C, owner spec §9. Same forwarding pattern as `agentQueryChannelAnalytics` above. */
+    async agentQueryVideoAnalytics(input: unknown): Promise<ToolResponse> {
+      const parsedInput = queryVideoAnalyticsInputSchema.partial({ credentialRef: true }).safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await agentOperationsCore.queryVideoAnalytics({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** Slice D. Same explicit channel-scoping pattern as `agentGetChannelContext`/
+     * `agentGetVideoContext` -- the service function itself does no such check. */
+    async agentListAssets(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listAssetsInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.listAssets(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** Slice D. Same explicit channel-scoping note as `agentListAssets` above. */
+    async agentGetAssetContext(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getAssetContextInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.getAssetContext(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** Slice E. Same explicit channel-scoping pattern as `agentGetAssetContext` above -- the
+     * service function itself does no such check. */
+    async agentGetGenerationProvenance(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getGenerationProvenanceInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.getGenerationProvenance(parsedInput.data);
+        return toolSuccessResult({ provenance: result } as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * Slice G (owner spec §18). Mutates local application state (a new proposal row, never a
+     * Change Set) -- gated by the same device-availability/recovery-mode check as
+     * `ai_localization_create_change_set`. Same explicit channel-scoping pattern as
+     * `agentGetAssetContext` above -- the service function itself does no such check.
+     */
+    async agentCreateContentProposal(input: unknown): Promise<ToolResponse> {
+      const parsedInput = createContentProposalInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        // Phase 7 slice G (owner spec §22): this is the one transport an agent-operations-
+        // versioned surface actually mediates, so it is the only one that stamps a real
+        // `agentApiVersion` alongside `createdVia: "mcp"`.
+        const result = await agentOperationsCore.createContentProposal(parsedInput.data, {
+          createdVia: "mcp",
+          agentApiVersion: AGENT_API_VERSION,
+        });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** Slice G. Same explicit channel-scoping note as `agentGetAssetContext` above. */
+    async agentGetContentProposal(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getContentProposalInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.getContentProposal(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** Slice G. Same explicit channel-scoping note as `agentListAssets` above. */
+    async agentListContentProposals(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listContentProposalsInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.listContentProposals(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * Slice G2 (owner spec §19). Mutates local application state (a new artifact-link row, and
+     * -- via the underlying `asset-catalog.registerAsset` -- a new catalogued asset row) --
+     * gated by the same device-availability/recovery-mode check as `agentCreateContentProposal`.
+     * Same explicit channel-scoping pattern as `agentGetAssetContext` above.
+     */
+    async agentRegisterExternalArtifact(input: unknown): Promise<ToolResponse> {
+      const parsedInput = registerExternalArtifactInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        // Phase 7 slice G2 (owner spec §22): same attestation discipline as
+        // `agentCreateContentProposal` above.
+        const result = await agentOperationsCore.registerExternalArtifact(parsedInput.data, {
+          createdVia: "mcp",
+          agentApiVersion: AGENT_API_VERSION,
+        });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** Slice G2. Same explicit channel-scoping note as `agentListAssets` above. */
+    async agentListProposalArtifacts(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listProposalArtifactsInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.listProposalArtifacts(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * Phase 7 slice I (owner spec §3/§30). No channel/credential resolution at all -- like
+     * `agentGetCapabilities` above, this is instance-level (one global, operator-configured
+     * workspace path), not channel-scoped.
+     */
+    async agentListOperationsFiles(input: unknown): Promise<ToolResponse> {
+      const parsedInput = operationsWorkspaceListFilesInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const result = await agentOperationsCore.operationsWorkspaceListFiles(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** Slice I. Same non-channel-scoped note as `agentListOperationsFiles` above. */
+    async agentGetOperationsFile(input: unknown): Promise<ToolResponse> {
+      const parsedInput = operationsWorkspaceGetFileInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const result = await agentOperationsCore.operationsWorkspaceGetFile(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * Phase 7 slice K (owner spec §10). Same explicit channel-scoping pattern as
+     * `agentListAssets` above -- the service function itself does no such check.
+     *
+     * UNLIKE `agentListAssets`, this tool's own domain schema (`findComparableVideosInputSchema`)
+     * requires `credentialRef` whenever `performanceMetric` is requested -- but the caller should
+     * never have to pass one explicitly just to satisfy that refinement (every other
+     * credential-bearing tool in this file, e.g. `agentQueryChannelAnalytics`, resolves a fallback
+     * server-side). So `credentialRef` is resolved from the caller's own value if given, else the
+     * local active identity, BEFORE schema validation -- injected into the object so the schema's
+     * refine sees it regardless of whether the caller supplied one. The same resolved value is
+     * then reused for `assertActiveChannel` and forwarded into the actual call, never resolved
+     * twice with two different results.
+     */
+    async agentFindComparableVideos(input: unknown): Promise<ToolResponse> {
+      try {
+        const rawCredentialRef =
+          typeof input === "object" && input !== null ? (input as { credentialRef?: unknown }).credentialRef : undefined;
+        const credentialRef = await resolveCredentialRef(rawCredentialRef);
+        const inputWithCredentialRef =
+          typeof input === "object" && input !== null ? { ...(input as Record<string, unknown>), credentialRef } : input;
+
+        const parsedInput = findComparableVideosInputSchema.safeParse(inputWithCredentialRef);
+        if (!parsedInput.success) {
+          return mapValidationErrorResult(parsedInput.error);
+        }
+
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.findComparableVideos(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * Phase 7 slice L (owner spec §16). Same explicit channel-scoping and credentialRef
+     * resolve-then-inject-then-validate pattern as `agentFindComparableVideos` above -- this
+     * tool's own domain schema requires `credentialRef` whenever `performanceMetric` is set, so
+     * it is resolved (caller-supplied, else the local active identity) and injected into the
+     * input BEFORE schema validation, then reused for `assertActiveChannel`.
+     */
+    async agentListAssetPerformance(input: unknown): Promise<ToolResponse> {
+      try {
+        const rawCredentialRef =
+          typeof input === "object" && input !== null ? (input as { credentialRef?: unknown }).credentialRef : undefined;
+        const credentialRef = await resolveCredentialRef(rawCredentialRef);
+        const inputWithCredentialRef =
+          typeof input === "object" && input !== null ? { ...(input as Record<string, unknown>), credentialRef } : input;
+
+        const parsedInput = listAssetPerformanceInputSchema.safeParse(inputWithCredentialRef);
+        if (!parsedInput.success) {
+          return mapValidationErrorResult(parsedInput.error);
+        }
+
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await agentOperationsCore.listAssetPerformance(parsedInput.data);
         return toolSuccessResult(result as unknown as Record<string, unknown>);
       } catch (error) {
         return toolErrorResult(error);
@@ -1056,6 +1513,44 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // changesetCreateFromImport above.
     aiLocalizationCreateChangeSet: async (input) =>
       (await assertMcpDeviceAvailable()) ?? handlers.aiLocalizationCreateChangeSet(input),
+    // Pure local read (instance metadata + a static capability list) -- ungated.
+    agentGetCapabilities: handlers.agentGetCapabilities,
+    // Pure local reads over the existing sync mirror -- ungated, same as changeset_list above.
+    agentGetChannelContext: handlers.agentGetChannelContext,
+    agentGetVideoContext: handlers.agentGetVideoContext,
+    // Slice C -- `queryChannelAnalytics` is a live YouTube Analytics API read (like
+    // `analyticsOverview`), `queryVideoAnalytics` a pure local read (like `analyticsList`); both
+    // mutate no local state, so both are ungated, same classification as their wrapped tools.
+    agentQueryChannelAnalytics: handlers.agentQueryChannelAnalytics,
+    agentQueryVideoAnalytics: handlers.agentQueryVideoAnalytics,
+    // Slice D -- pure local reads over the asset catalog, ungated.
+    agentListAssets: handlers.agentListAssets,
+    agentGetAssetContext: handlers.agentGetAssetContext,
+    // Slice E -- a pure local read over an immutable, already-persisted provenance row; ungated.
+    agentGetGenerationProvenance: handlers.agentGetGenerationProvenance,
+    // Slice G -- `createContentProposal` is a real local-persistence mutation (a new proposal
+    // row) -- gated, like `aiLocalizationCreateChangeSet` above. `getContentProposal`/
+    // `listContentProposals` are pure local reads -- ungated, like `agentListAssets` above.
+    agentCreateContentProposal: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.agentCreateContentProposal(input),
+    agentGetContentProposal: handlers.agentGetContentProposal,
+    agentListContentProposals: handlers.agentListContentProposals,
+    // Slice G2 -- `registerExternalArtifact` mutates local state (a new artifact-link row, and
+    // via `asset-catalog` a new catalogued asset row) -- gated, like `agentCreateContentProposal`
+    // above. `listProposalArtifacts` is a pure local read -- ungated.
+    agentRegisterExternalArtifact: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.agentRegisterExternalArtifact(input),
+    agentListProposalArtifacts: handlers.agentListProposalArtifacts,
+    // Slice I -- both are pure filesystem reads over the operator-configured workspace path,
+    // never a mutation of any kind -- ungated, like `agentListAssets` above.
+    agentListOperationsFiles: handlers.agentListOperationsFiles,
+    agentGetOperationsFile: handlers.agentGetOperationsFile,
+    // Slice K -- a pure local read (local sync mirror + local analytics rows, never a live
+    // YouTube call) -- ungated, like `agentListAssets` above.
+    agentFindComparableVideos: handlers.agentFindComparableVideos,
+    // Slice L -- a pure local read (asset catalog + local sync mirror + local analytics rows,
+    // never a live YouTube call) -- ungated, like `agentFindComparableVideos` above.
+    agentListAssetPerformance: handlers.agentListAssetPerformance,
   };
 }
 
@@ -1428,10 +1923,187 @@ export function createMcpServer(
     "ai_localization_create_change_set",
     {
       description:
-        "Persist a reviewed (optionally edited) set of AI localization proposals as a new Change Set, source 'ai_localization' -- the exact same persistence path createChangeSetFromImport (XLSX) already uses, so approval, conflict revalidation, Batch creation, and the live-write barrier are completely unchanged. The resulting Change Set and every Change on it always start 'pending' -- there is no code path, here or anywhere else, that can mark an AI-authored proposal already-approved; a human must still approve it via the Web UI before it can ever be included in a Batch. Optionally echo back the generationContext a prior ai_localization_generate call returned as `provenance`, to have it durably recorded against the resulting Change Set. Mutates local application state (never YouTube directly), so this tool is gated by the same device-availability/recovery-mode check as changeset_create_from_import. No credentialRef parameter -- always uses the active local auth context.",
+        "Persist a reviewed (optionally edited) set of AI localization proposals as a new Change Set, source 'ai_localization' -- the exact same persistence path createChangeSetFromImport (XLSX) already uses, so approval, conflict revalidation, Batch creation, and the live-write barrier are completely unchanged. The resulting Change Set and every Change on it always start 'pending' -- there is no code path, here or anywhere else, that can mark an AI-authored proposal already-approved; a human must still approve it via the Web UI before it can ever be included in a Batch. Optionally echo back the generationContext a prior ai_localization_generate call returned as `provenance`, to have it durably recorded against the resulting Change Set. Also optionally accepts `evidence` (an array of external-research/comparable-video citations -- url, retrievedAt, description, claimSupported, sourceType, optional excerpt) and `rationale` (free text), recorded once per Change Set, not per individual proposal; neither is independently verified by this server. Every call also has its calling transport (this MCP surface) and the current agent API version durably recorded against the resulting provenance record -- retrievable via agent_get_generation_provenance. Mutates local application state (never YouTube directly), so this tool is gated by the same device-availability/recovery-mode check as changeset_create_from_import. No credentialRef parameter -- always uses the active local auth context.",
       inputSchema: createChangeSetFromGenerationInputSchema,
     },
     (args) => handlers.aiLocalizationCreateChangeSet(args)
+  );
+
+  registerTool(
+    "agent_get_capabilities",
+    {
+      description:
+        "Report this running instance's product version, Agent API version, the capabilities actually implemented and reachable right now, the data domains they cover, the full permission-class vocabulary (READ/DRAFT/APPROVE/EXECUTE), the permissions actually GRANTED to this caller today (currently always READ+DRAFT -- never APPROVE/EXECUTE, since no proposal an agent creates is ever auto-approved), the future capabilities named in the Agent Operations Interface design that are not implemented yet (so an unavailable-capability error can be told apart from a typo or a hallucinated tool name), and the local database schema version. Call this first, before assuming any other Agent Operations tool exists -- this list only ever contains what is actually callable in this instance. A local read only, no channel scoping (this is instance-level information), no YouTube call.",
+      inputSchema: getSystemCapabilitiesInputSchema,
+    },
+    (args) => handlers.agentGetCapabilities(args)
+  );
+
+  registerTool(
+    "agent_get_channel_context",
+    {
+      description:
+        "Read-only channel context for an operational agent: channel title, last local sync time (null if never synced), synced video count, the channel's editorial profile (null if none was ever saved -- never a default/invented one), and its explicitly tracked languages. Requires channelId to be the caller's currently-active channel. Reads only already-synced local data -- never a live YouTube call.",
+      inputSchema: getChannelContextInputSchema,
+    },
+    (args) => handlers.agentGetChannelContext(args)
+  );
+
+  registerTool(
+    "agent_get_video_context",
+    {
+      description:
+        "Task-oriented, section-selectable context for one video: 'metadata' (title, description, publish date, privacy status, default language, last sync time) and/or 'localizations' (every existing per-language title/description already synced locally). Omit `include` to get both sections; pass e.g. `include: [\"metadata\"]` to fetch only what you need. Requires channelId to be the caller's currently-active channel, and videoId to actually belong to it. Reads only already-synced local data -- never a live YouTube call. Does not include analytics (see the separate analytics tools), comparable videos, experiment history, or creative assets -- those are separate, later capabilities, not yet implemented for some of them.",
+      inputSchema: getVideoContextInputSchema,
+    },
+    (args) => handlers.agentGetVideoContext(args)
+  );
+
+  registerTool(
+    "agent_query_channel_analytics",
+    {
+      description:
+        "Agent-oriented channel-level analytics for a date range: daily views/watch-time/subscriber-delta rows plus current- and previous-period totals, with explicit metric definitions and a data-freshness note. Wraps the existing analytics_overview capability -- a LIVE YouTube Analytics API read that counts against that API's quota (YouTube itself typically reports this data with a 1-2 day lag). Requires channelId to be the caller's currently-active channel. Raw daily rows are FACT; totals are DERIVED (summed).",
+      inputSchema: queryChannelAnalyticsInputSchema.partial({ credentialRef: true }),
+    },
+    (args) => handlers.agentQueryChannelAnalytics(args)
+  );
+
+  registerTool(
+    "agent_query_video_analytics",
+    {
+      description:
+        "Agent-oriented per-video daily analytics rows already collected locally (raw, un-aggregated FACT rows -- compute any sum/average yourself), with explicit metric definitions and a freshness note pointing at analytics_data_quality for exact per-date coverage. Wraps the existing analytics_list capability -- a local read only, never a live YouTube call. Optional videoId/startDate/endDate/metricNames narrow the result; omitting metricNames describes every metric this instance actually collects (never an invented one). Requires channelId to be the caller's currently-active channel.",
+      inputSchema: queryVideoAnalyticsInputSchema.partial({ credentialRef: true }),
+    },
+    (args) => handlers.agentQueryVideoAnalytics(args)
+  );
+
+  registerTool(
+    "agent_list_assets",
+    {
+      description:
+        "List catalogued creative assets (thumbnails, source images, scripts, prompts, project files, etc.) for a channel, optionally narrowed by a linked videoId or assetType. Metadata only -- never returns/fetches the actual file behind referenceValue. Requires channelId to be the caller's currently-active channel. Directly populated only via the operator-facing 'asset register' CLI command (which also allows local_path); agent_register_external_artifact adds an asset indirectly, tied to a Content Proposal, restricted to referenceKind url/external_artifact_id.",
+      inputSchema: listAssetsInputSchema,
+    },
+    (args) => handlers.agentListAssets(args)
+  );
+
+  registerTool(
+    "agent_get_asset_context",
+    {
+      description:
+        "Fetch one catalogued asset's full metadata record by assetId (type, reference kind/value, linked video, provenance, creation date). Requires channelId to be the caller's currently-active channel and assetId to actually belong to it -- otherwise fails with ASSET_NOT_AVAILABLE, the same error for 'does not exist' and 'belongs to another channel'.",
+      inputSchema: getAssetContextInputSchema,
+    },
+    (args) => handlers.agentGetAssetContext(args)
+  );
+
+  registerTool(
+    "agent_get_generation_provenance",
+    {
+      description:
+        "Read back the provenance recorded for a localization Change Set at creation time -- editorial-profile version, effective context, evidence, rationale, changeSetId/channelId, and real creation timestamp. Returns { provenance: null } if the Change Set was created without one (e.g. XLSX import) -- never an error. profileVersion/effectiveContext/evidence/rationale were supplied by whoever created the Change Set, not independently verified by this server -- treat those as a claimed, not attested, fact. createdVia/agentApiVersion ARE server-stamped, never caller-supplied: 'mcp' with the real agent API version for a Change Set created through this MCP surface, 'cli'/null for the CLI, 'web_ui'/null for the Web UI's own 'Generate with AI', and null/null only for a row created before this field existed. Requires channelId to be the caller's currently-active channel; a changeSetId belonging to another channel returns the same null as a nonexistent one.",
+      inputSchema: getGenerationProvenanceInputSchema,
+    },
+    (args) => handlers.agentGetGenerationProvenance(args)
+  );
+
+  registerTool(
+    "agent_create_content_proposal",
+    {
+      description:
+        "Create a structured Content Proposal (owner spec §18) -- optional objective, topicConcept, rationale, evidence (external-research/comparable-video citations: url, retrievedAt, description, claimSupported, sourceType, optional excerpt), a bounded free-form brief (proposedTitleDirection, thumbnailDirection, visualBrief, audioBrief, durationHint, publicationHypothesis, localizationStrategy, experimentDesign, expectedMetrics, requiredProductionOutputs), and referenceVideoIds/referenceAssetIds (each validated to actually belong to the requesting channel). Write-once -- there is no update or approval workflow for this domain; a proposal is a DRAFT object, full stop. createdVia/agentApiVersion (owner spec §22) are SERVER-STAMPED: 'mcp' with the real agent API version for a proposal created through this MCP surface, never caller-supplied. The application does not generate any of the proposed content itself. Requires channelId to be the caller's currently-active channel. Mutates local application state, so this tool is gated by the same device-availability/recovery-mode check as ai_localization_create_change_set.",
+      inputSchema: createContentProposalInputSchema,
+    },
+    (args) => handlers.agentCreateContentProposal(args)
+  );
+
+  registerTool(
+    "agent_get_content_proposal",
+    {
+      description:
+        "Fetch one Content Proposal's full record by proposalId. Requires channelId to be the caller's currently-active channel and proposalId to actually belong to it -- otherwise fails with CONTENT_PROPOSAL_NOT_AVAILABLE, the same error for 'does not exist' and 'belongs to another channel'.",
+      inputSchema: getContentProposalInputSchema,
+    },
+    (args) => handlers.agentGetContentProposal(args)
+  );
+
+  registerTool(
+    "agent_list_content_proposals",
+    {
+      description:
+        "List Content Proposals for a channel, newest first. Metadata only -- never resolves referenced videos/assets itself. Requires channelId to be the caller's currently-active channel.",
+      inputSchema: listContentProposalsInputSchema,
+    },
+    (args) => handlers.agentListContentProposals(args)
+  );
+
+  registerTool(
+    "agent_register_external_artifact",
+    {
+      description:
+        "Register an externally-produced artifact (owner spec §19 -- a thumbnail, source image, audio file, rendered video, script, production manifest, etc. produced by Codex or an external tool) and link it back to the Content Proposal that requested it. channelId, proposalId, assetType, referenceKind, referenceValue are required; title/description/linkedVideoId/provenance optional. referenceKind is restricted to 'url'/'external_artifact_id' only -- never 'local_path' (owner spec §17: an agent may only receive/register explicitly authorized assets, never self-authorize filesystem access; local_path registration stays available only via the operator-facing 'asset register' CLI command). When referenceKind is 'url', referenceValue must actually be an http(s) URL (validated, not just labeled) -- a filesystem path or file:// URI is rejected. 'external_artifact_id' remains an intentionally opaque identifier with no structural validation beyond non-empty; this application never resolves it. createdVia/agentApiVersion (owner spec §22) are SERVER-STAMPED: 'mcp' with the real agent API version, never caller-supplied. Requires channelId to be the caller's currently-active channel and proposalId to actually belong to it. Mutates local application state, so this tool is gated by the same device-availability/recovery-mode check as agent_create_content_proposal.",
+      inputSchema: registerExternalArtifactInputSchema,
+    },
+    (args) => handlers.agentRegisterExternalArtifact(args)
+  );
+
+  registerTool(
+    "agent_list_proposal_artifacts",
+    {
+      description:
+        "List every artifact registered against a Content Proposal, newest first, each with its full catalogued asset record. Requires channelId to be the caller's currently-active channel and proposalId to actually belong to it.",
+      inputSchema: listProposalArtifactsInputSchema,
+    },
+    (args) => handlers.agentListProposalArtifacts(args)
+  );
+
+  registerTool(
+    "agent_list_operations_files",
+    {
+      description:
+        "List files/folders under the operator-configured operations-workspace directory (owner spec §3/§30) -- a folder OUTSIDE this repository holding Codex's own operating/editorial instructions, never generated or stored by this application itself. Returns { configured: false } if the operator has not set a path yet, never a silently empty list. Only .md/.txt/.json/.yaml/.yml files are listed; dotfiles/dot-directories are always excluded. Bounded by a fixed depth/file-count cap, reporting truncated: true if either was hit. Not channel-scoped -- one global path. The path itself can only be set through the Web UI's Settings tab, never through any MCP tool or CLI command.",
+      inputSchema: operationsWorkspaceListFilesInputSchema,
+    },
+    (args) => handlers.agentListOperationsFiles(args)
+  );
+
+  registerTool(
+    "agent_get_operations_file",
+    {
+      description:
+        "Read one file's content from the operator-configured operations-workspace directory, by its path as returned from agent_list_operations_files. Returns { configured: false } if no path is set. A path attempting to escape the configured directory (.. segments, an absolute path, or a symlink resolving outside it) is rejected with the same OPERATIONS_FILE_NOT_AVAILABLE error as a genuinely nonexistent file -- never distinguishable. Content is capped at 200,000 bytes per file, reporting truncated: true if the real file is larger. Not channel-scoped.",
+      inputSchema: operationsWorkspaceGetFileInputSchema,
+    },
+    (args) => handlers.agentGetOperationsFile(args)
+  );
+
+  registerTool(
+    "agent_find_comparable_videos",
+    {
+      description:
+        "Owner spec §10: find already-synced videos on the same channel comparable to an anchor video, by publication proximity, duration proximity, and/or an age-aligned (days-since-publish, capped at 365) already-collected performance metric threshold. Local reads only -- never a live YouTube call. Does NOT support 'same content family', 'similar target audience', or 'similar metadata pattern' matching -- no data source for any of those exists in this application. sharedTitleTokens is a literal lowercase word-overlap set, never topic/semantic similarity, never an embedding model. credentialRef is optional and, if omitted, resolved automatically to the caller's own active identity -- only actually used (for the local analytics read) when performanceMetric is requested. The response's anchor block and performanceAlignment report the exact reference point results were compared against. Videos missing data a requested duration/performance filter needs are counted in excludedForMissingData, never fabricated or silently dropped. Requires channelId to be the caller's currently-active channel and anchorVideoId to actually belong to it.",
+      // SDK-facing schema deliberately relaxes the "performanceMetric requires credentialRef"
+      // cross-field rule (same reasoning as agent_query_channel_analytics's own
+      // .partial({credentialRef: true}) above) -- the handler resolves/injects credentialRef and
+      // re-validates against the FULL findComparableVideosInputSchema before ever calling the
+      // domain service, so this never weakens the actual rule, only defers it past the SDK's own
+      // pre-handler validation.
+      inputSchema: findComparableVideosSdkInputSchema,
+    },
+    (args) => handlers.agentFindComparableVideos(args)
+  );
+
+  registerTool(
+    "agent_list_asset_performance",
+    {
+      description:
+        "Owner spec §16: joins the existing asset catalog (linkedVideoId -- an operator/agent-asserted 'this asset was used on this video' association, never verified against YouTube, no time range) against each linked video's own already-collected performance data. Always reports each video's LIFETIME totals (viewCount/likeCount/commentCount/durationSeconds, each independently null if never synced, plus lifetimeCountersAsOf -- when the channel sync last refreshed them, NOT when analytics were collected); an OPTIONAL age-aligned value (performanceMetric + a REQUIRED, caller-supplied performanceDayOffset -- never derived from wall-clock 'now', reusing the same shared age-alignment helper as agent_find_comparable_videos) is additionally computed only when both are given, and is honestly null (never excluded, never fabricated) for a video with real data at later days but no day-0 coverage. sort: 'lifetimeViewCount' ranks by a NON-age-fair total that structurally favors older videos -- never itself a 'performed better' signal. This is a JOIN, not a FILTER -- a null performance value is still a reportable row; only an asset's own broken link (unlinked, or its linkedVideoId not resolving to a video on the SAME channel -- one combined count) is excluded, counted in excludedForMissingLink. Does NOT support thumbnail-CTR/impressions-based questions (this application's own analytics collection never fetches YouTube's impressions/CTR metrics at all, never approximated via card/annotation click-through metrics), metadata/version linkage (no temporal precision on linkedVideoId), or experiment/outcome linkage (Phase 10, not built yet). Never reads Content Proposal reference associations -- a structurally different, draft/unactioned relationship. credentialRef is optional and, if omitted, resolved automatically to the caller's own active identity -- only actually used when performanceMetric is requested. limit is silently clamped, never rejected. Requires channelId to be the caller's currently-active channel.",
+      // Same SDK-facing relaxed-schema pattern as agent_find_comparable_videos above.
+      inputSchema: listAssetPerformanceSdkInputSchema,
+    },
+    (args) => handlers.agentListAssetPerformance(args)
   );
 
   return server;

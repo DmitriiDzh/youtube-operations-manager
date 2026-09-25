@@ -88,6 +88,13 @@ export function createSqlProjectionAdapter(): SqlProjectionAdapter {
         profileVersion: provenance.profileVersion,
         effectiveContextJson: provenance.effectiveContextJson,
         createdAt: new Date(provenance.createdAt),
+        // `?? null`, not a direct pass-through: an entry saved before Phase 7 slice F added
+        // these fields (Automerge has no schema migration) simply lacks the key, reading as
+        // `undefined` -- normalized to `null` here so this SQL write never receives `undefined`.
+        evidenceJson: provenance.evidenceJson ?? null,
+        rationale: provenance.rationale ?? null,
+        createdVia: provenance.createdVia ?? null,
+        agentApiVersion: provenance.agentApiVersion ?? null,
       });
     },
 
