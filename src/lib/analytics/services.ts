@@ -120,6 +120,7 @@ type ServiceDependencies = {
         requestedStartDate: string;
         requestedEndDate: string;
         videoCount: number;
+        upsertsIssued: number;
         skippedVideoIds: string[];
         ranAt: Date;
       }>
@@ -289,6 +290,21 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
      * real day's worth of Analytics quota instead of none. This is the same tradeoff direction
      * fix 1 above already accepted, extended one step further: a rare double-collection is still
      * strictly better than a full-day lockout from a single failed attempt.
+     *
+     * 3. Fix 2 stops a NEW bad mark from being set, but cannot retroactively correct one a run
+     *    from BEFORE that fix already left behind -- the gate would otherwise keep trusting that
+     *    stale, incorrect mark and block every real attempt until tomorrow's boundary, even though
+     *    the actual displayed data was, in the owner's own real case, three days old (owner's own
+     *    proposed principle, 2026-09-25, Telegram: "если сейчас время уже после этой даты, а у нас
+     *    все еще нету данных за прошлый день -- значит синхронизация... не была успешно
+     *    завершена"). So the mark is never trusted blindly: if it says "already fresh," this
+     *    function additionally checks `collectionRunStore`'s own run history for a genuine
+     *    (non-total-failure) run whose requested window covers yesterday (local to `timezone` --
+     *    the same canonical date `computeDefaultAutoCollectionRange` itself targets, not
+     *    whatever range this specific call happens to request) before honoring the mark -- if no
+     *    such run is on record, the mark is treated as wrong and the collection proceeds anyway
+     *    (logged as `mark_disagrees_with_run_history`, a real, reportable inconsistency, not a
+     *    silent override).
      */
     async collectMetrics(input: unknown): Promise<CollectMetricsResult> {
       const parsedInput = parseWithSchema(collectMetricsInputSchema, input, "collect metrics input");
@@ -307,7 +323,53 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           deps.settingsStore.getAnalyticsSyncSettings(),
         ]);
 
-        if (!isAnalyticsCollectionStale({ now, lastAutoCollectedAt: lastCollectedAt, timezone, localTime })) {
+        const markedFresh = !isAnalyticsCollectionStale({ now, lastAutoCollectedAt: lastCollectedAt, timezone, localTime });
+        // Owner's own proposed principle (2026-09-25): don't just trust the "already collected"
+        // mark -- verify a genuine run backs it up. Found necessary live: the mark-on-success fix
+        // above stops the bug going forward, but cannot retroactively correct a mark a PRIOR
+        // (pre-fix) run already set incorrectly, which would otherwise keep this gate blocking
+        // real attempts, with stale data on screen, until tomorrow's boundary purely on the
+        // strength of an internal flag that no longer matches reality.
+        //
+        // Checked against the *canonical* expected-fresh-through date (yesterday, local to
+        // `timezone` -- the same "yesterday" `computeDefaultAutoCollectionRange` itself picks for
+        // the unattended auto-trigger, i.e. exactly the day the owner's boundary setting promises
+        // will be ready), never against `parsedInput.endDate` as such -- a manual call is free to
+        // request any date range (a custom period selector, an MCP backfill, ...) and must still
+        // be refused once today's real collection genuinely happened, regardless of what range
+        // that specific call itself asked for (see the "manual call is refused if an
+        // auto-collection already ran today" test, a pre-existing, deliberate invariant this
+        // must not break).
+        //
+        // A run "covers" that date when the date falls inside its own requested window
+        // (`requestedStartDate`..`requestedEndDate`) and the run was not a total failure --
+        // deliberately NOT whether a raw metric row exists for that date, since a genuinely
+        // successful run can still leave zero rows for a specific day if activity was truly zero
+        // that day (the Analytics API silently omits zero-activity days from its own response,
+        // per `getDataQualityReport`'s own doc comment), which would otherwise misclassify a
+        // perfectly good "nothing happened that day" result as "the mark is lying."
+        const { endDate: expectedFreshThroughDate } = computeDefaultAutoCollectionRange({ now, timezone, rangeDays: 0 });
+        const genuineRunCoversExpectedDate = markedFresh
+          ? (await deps.collectionRunStore.listByChannel(parsedInput.channelId)).some(
+              (run) =>
+                run.requestedStartDate <= expectedFreshThroughDate &&
+                run.requestedEndDate >= expectedFreshThroughDate &&
+                (run.videoCount === 0 || run.upsertsIssued > 0)
+            )
+          : false;
+
+        if (markedFresh && !genuineRunCoversExpectedDate) {
+          deps.logger.error({
+            event: "analytics.collect_metrics.mark_disagrees_with_run_history",
+            context: {
+              channelId: parsedInput.channelId,
+              expectedFreshThroughDate,
+              lastCollectedAt: lastCollectedAt?.toISOString() ?? null,
+            },
+          });
+        }
+
+        if (markedFresh && genuineRunCoversExpectedDate) {
           const nextRefreshAt = computeNextRefreshAt({ now, timezone, localTime });
           throw new DomainError({
             code: "analytics_data_current",
