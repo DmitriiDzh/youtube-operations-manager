@@ -4110,3 +4110,14 @@ export async function upsertAgentCapabilityZone(
 export async function listAgentCapabilityZones(database: AppDb = db): Promise<StoredAgentCapabilityZone[]> {
   return database.select().from(agentCapabilityZones).orderBy(agentCapabilityZones.capabilityId);
 }
+
+export async function getAgentCapabilityZoneById(
+  capabilityId: string,
+  database: AppDb = db
+): Promise<StoredAgentCapabilityZone | null> {
+  const [row] = await database
+    .select()
+    .from(agentCapabilityZones)
+    .where(eq(agentCapabilityZones.capabilityId, capabilityId));
+  return row ?? null;
+}

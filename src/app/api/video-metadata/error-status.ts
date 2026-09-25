@@ -65,6 +65,7 @@ const DOMAIN_ERROR_STATUS = {
   OPERATIONS_FILE_NOT_AVAILABLE: 404,
   AGENT_CONNECTION_NOT_AVAILABLE: 404,
   AGENT_CONNECTION_ID_CONFLICT: 409,
+  AGENT_ZONE_VIOLATION: 403,
 } as const satisfies Partial<Record<DomainErrorCode, number>>;
 
 export function getVideoMetadataErrorStatus(code: DomainErrorCode) {

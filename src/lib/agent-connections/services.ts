@@ -25,6 +25,7 @@ export type ServiceDependencies = {
   updateConnectionEnabled: (id: string, enabled: boolean) => Promise<void>;
   upsertZone: (input: { capabilityId: string; assignedConnectionId: string | null }) => Promise<void>;
   listZones: () => Promise<StoredAgentCapabilityZoneForService[]>;
+  getZoneByCapabilityId: (capabilityId: string) => Promise<StoredAgentCapabilityZoneForService | null>;
 };
 
 function toAgentConnection(row: StoredAgentConnectionForService): AgentConnection {
@@ -107,6 +108,52 @@ export function createAgentConnectionsServices(deps: ServiceDependencies) {
     async listCapabilityZones(): Promise<AgentCapabilityZone[]> {
       const rows = await deps.listZones();
       return rows.map(toAgentCapabilityZone);
+    },
+
+    /**
+     * Slice 2 -- the single enforcement primitive every zoned MCP tool/CLI command calls
+     * immediately before its own domain logic runs (`docs/roadmap/plans/AGENT_ZONES_PLAN.md` §7,
+     * mirrors the write/read gateway's own single-choke-point pattern, `AGENTS.md` §G).
+     *
+     * Fail-closed policy: while zero connections are registered, this is a no-op (identical to
+     * today's single-agent behavior). Once one or more connections exist, a resolvable, enabled,
+     * registered `callerConnectionId` is required for every zoned capability -- an unknown or
+     * missing one is rejected, never silently treated as "anyone" (closes the exact gap an
+     * advisor review flagged: a forgotten `AGENT_CONNECTION_ID` must never quietly bypass
+     * zoning). A capability with no zone row, or a zone row whose `assignedConnectionId` is
+     * `null`, is open to any registered+enabled connection. A capability assigned to a specific
+     * connection rejects every other connection's calls.
+     */
+    async assertAgentAllowedForCapability(args: { capabilityId: string; callerConnectionId: string | null }): Promise<void> {
+      const anyConnectionRegistered = (await deps.listConnections()).length > 0;
+      if (!anyConnectionRegistered) return;
+
+      if (!args.callerConnectionId) {
+        throw new DomainError({
+          code: "AGENT_ZONE_VIOLATION",
+          message:
+            `Capability "${args.capabilityId}" requires a resolvable agent connection identity ` +
+            "once at least one agent connection is registered, but none was supplied.",
+        });
+      }
+
+      const caller = await deps.getConnectionById(args.callerConnectionId);
+      if (!caller || !caller.enabled) {
+        throw new DomainError({
+          code: "AGENT_ZONE_VIOLATION",
+          message: `Agent connection "${args.callerConnectionId}" is not a known, enabled connection.`,
+        });
+      }
+
+      const zone = await deps.getZoneByCapabilityId(args.capabilityId);
+      if (zone && zone.assignedConnectionId !== null && zone.assignedConnectionId !== args.callerConnectionId) {
+        throw new DomainError({
+          code: "AGENT_ZONE_VIOLATION",
+          message:
+            `Capability "${args.capabilityId}" is assigned exclusively to agent connection ` +
+            `"${zone.assignedConnectionId}", not "${args.callerConnectionId}".`,
+        });
+      }
     },
   };
 }

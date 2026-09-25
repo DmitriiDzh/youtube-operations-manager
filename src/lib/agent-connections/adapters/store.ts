@@ -5,6 +5,7 @@ import {
   updateAgentConnectionEnabled,
   upsertAgentCapabilityZone,
   listAgentCapabilityZones,
+  getAgentCapabilityZoneById,
 } from "@/lib/db";
 
 // Deliberately thin: only wraps the db.ts functions this module needs (AGENTS.md §D pattern,
@@ -17,6 +18,7 @@ export function createAgentConnectionsStoreAdapter() {
     updateConnectionEnabled: updateAgentConnectionEnabled,
     upsertZone: upsertAgentCapabilityZone,
     listZones: listAgentCapabilityZones,
+    getZoneByCapabilityId: getAgentCapabilityZoneById,
   };
 }
 

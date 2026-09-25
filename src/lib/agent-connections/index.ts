@@ -10,8 +10,14 @@ export function createAgentConnectionsCore() {
     updateConnectionEnabled: store.updateConnectionEnabled,
     upsertZone: store.upsertZone,
     listZones: store.listZones,
+    getZoneByCapabilityId: store.getZoneByCapabilityId,
   });
 }
+
+export type AgentConnectionsCoreSubset = Pick<
+  ReturnType<typeof createAgentConnectionsCore>,
+  "assertAgentAllowedForCapability"
+>;
 
 export type { AgentConnection, AgentCapabilityZone } from "./contracts";
 export type { AgentConnectionsServices } from "./services";

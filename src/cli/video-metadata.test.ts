@@ -16,6 +16,7 @@ import type { AnalyticsCore } from "@/lib/analytics";
 import type { AiLocalizationCore } from "@/lib/ai-localization";
 import type { AssetCatalogCore } from "@/lib/asset-catalog";
 import type { VideoContextSection } from "@/lib/agent-operations";
+import type { AgentConnectionsCoreSubset } from "@/lib/agent-connections";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { parseWithSchema, registerExternalArtifactInputSchema } from "@/lib/content-proposals/schemas";
@@ -5371,4 +5372,214 @@ test("CLI agent list-asset-performance is never blocked by the operation lock (r
   } finally {
     await releaseOperationLock(rawSqlClient);
   }
+});
+
+// --- END OF PRE-EXISTING TESTS -- BL-091 slice 2 tests follow ---
+
+// BL-091 slice 2 (docs/roadmap/plans/AGENT_ZONES_PLAN.md) -- proves the zone-enforcement wiring
+// itself (does the CLI command actually call assertAgentAllowedForCapability at all), not the
+// zone matching logic (exhaustively covered by src/lib/agent-connections/services.test.ts).
+function makeAlwaysDenyingAgentConnectionsCoreStub(): AgentConnectionsCoreSubset {
+  return {
+    async assertAgentAllowedForCapability() {
+      throw new DomainError({ code: "AGENT_ZONE_VIOLATION", message: "denied by test stub" });
+    },
+  };
+}
+
+function makeUnusedAgentOperationsCoreStub() {
+  return {
+    getSystemCapabilities: async () => { throw new Error("not used"); },
+    getChannelContext: async () => { throw new Error("not used"); },
+    getVideoContext: async () => { throw new Error("not used"); },
+    queryChannelAnalytics: async () => { throw new Error("not used"); },
+    queryVideoAnalytics: async () => { throw new Error("not used"); },
+    listAssets: async () => { throw new Error("not used"); },
+    getAssetContext: async () => { throw new Error("not used"); },
+    getGenerationProvenance: async () => { throw new Error("not used"); },
+    createContentProposal: async () => { throw new Error("must not be called: zone check should fire first"); },
+    getContentProposal: async () => { throw new Error("not used"); },
+    listContentProposals: async () => { throw new Error("not used"); },
+    registerExternalArtifact: async () => { throw new Error("must not be called: zone check should fire first"); },
+    listProposalArtifacts: async () => { throw new Error("not used"); },
+    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
+    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
+    findComparableVideos: async () => { throw new Error("not used"); },
+    listAssetPerformance: async () => { throw new Error("not used"); },
+  };
+}
+
+test("CLI channel sync is actually wired through agent-zone enforcement (rejected when the stub always denies)", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["channel", "sync", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelSyncCore: {
+      syncChannel: async () => { throw new Error("must not be called: zone check should fire first"); },
+      listChannels: async () => { throw new Error("not used"); },
+      listSyncedVideos: async () => { throw new Error("not used"); },
+    },
+    agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "AGENT_ZONE_VIOLATION");
+});
+
+test("CLI changeset import is actually wired through agent-zone enforcement (rejected when the stub always denies)", async () => {
+  const stderr: string[] = [];
+  const tempDir = await mkdtemp(join(tmpdir(), "agent-zones-changeset-"));
+  try {
+    const filePath = join(tempDir, "workbook.xlsx");
+    await writeFile(filePath, Buffer.from("fake"));
+
+    const exitCode = await runCliCommand({
+      argv: ["changeset", "import", "--channelId", "UC_1", "--file", filePath],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      channelAccessCore: makeChannelAccessCoreStub(),
+      operationsCore: {
+        ...makeOperationsCoreStub(),
+        createChangeSetFromImport: async () => { throw new Error("must not be called: zone check should fire first"); },
+      },
+      agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
+      writeStderr: (line) => stderr.push(line),
+    });
+
+    assert.equal(exitCode, 1);
+    const envelope = JSON.parse(stderr[0] ?? "{}");
+    assert.equal(envelope.error.code, "AGENT_ZONE_VIOLATION");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("CLI ai-localization generate is actually wired through agent-zone enforcement (rejected when the stub always denies)", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "ai-localization",
+      "generate",
+      "--channelId",
+      "UC_1",
+      "--videoIds",
+      "v1",
+      "--targetLanguages",
+      "es",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    aiLocalizationCore: {
+      ...makeAiLocalizationCliCoreStub(),
+      generateProposals: async () => { throw new Error("must not be called: zone check should fire first"); },
+    },
+    agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "AGENT_ZONE_VIOLATION");
+});
+
+test("CLI ai-localization create-change-set is actually wired through agent-zone enforcement (rejected when the stub always denies)", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["ai-localization", "create-change-set", "--channelId", "UC_1", "--proposalsJson", "[]"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    aiLocalizationCore: {
+      ...makeAiLocalizationCliCoreStub(),
+      createChangeSetFromGeneration: async () => { throw new Error("must not be called: zone check should fire first"); },
+    },
+    agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "AGENT_ZONE_VIOLATION");
+});
+
+test("CLI agent create-content-proposal is actually wired through agent-zone enforcement (rejected when the stub always denies)", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "create-content-proposal", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore: makeUnusedAgentOperationsCoreStub(),
+    agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "AGENT_ZONE_VIOLATION");
+});
+
+test("CLI agent register-external-artifact is actually wired through agent-zone enforcement (rejected when the stub always denies)", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "agent",
+      "register-external-artifact",
+      "--channelId",
+      "UC_1",
+      "--proposalId",
+      "proposal-1",
+      "--assetType",
+      "thumbnail",
+      "--referenceKind",
+      "url",
+      "--referenceValue",
+      "https://example.com/a.png",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore: makeUnusedAgentOperationsCoreStub(),
+    agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "AGENT_ZONE_VIOLATION");
+});
+
+test("CLI agent get-content-proposal (an unzoned command) is never affected by agent-zone enforcement, even when the stub always denies", async () => {
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "get-content-proposal", "--channelId", "UC_1", "--proposalId", "proposal-1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    agentOperationsCore: {
+      ...makeUnusedAgentOperationsCoreStub(),
+      getContentProposal: async () => ({
+        proposalId: "proposal-1",
+        channelId: "UC_1",
+        objective: null,
+        topicConcept: null,
+        rationale: null,
+        evidence: null,
+        brief: null,
+        referenceVideoIds: null,
+        referenceAssetIds: null,
+        createdAt: "2026-09-01T00:00:00.000Z",
+        createdVia: "cli" as const,
+        agentApiVersion: null,
+      }),
+    },
+    agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
 });

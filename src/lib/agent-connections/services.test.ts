@@ -35,6 +35,9 @@ function createFakeDeps(): ServiceDependencies & {
     async listZones() {
       return [...zones.values()];
     },
+    async getZoneByCapabilityId(capabilityId) {
+      return zones.get(capabilityId) ?? null;
+    },
   };
 }
 
@@ -160,6 +163,77 @@ test("assignCapabilityZone re-assigning the same capability id overwrites the pr
   const zones = await services.listCapabilityZones();
   assert.equal(zones.length, 1);
   assert.equal(zones[0].assignedConnectionId, "codex");
+});
+
+test("assertAgentAllowedForCapability is a no-op when zero connections are registered (identical to today's single-agent behavior)", async () => {
+  const deps = createFakeDeps();
+  const services = createAgentConnectionsServices(deps);
+
+  await assert.doesNotReject(() =>
+    services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.create_content_proposal", callerConnectionId: null })
+  );
+});
+
+test("assertAgentAllowedForCapability rejects a missing caller identity once at least one connection is registered (fail-closed)", async () => {
+  const deps = createFakeDeps();
+  const services = createAgentConnectionsServices(deps);
+  await services.registerConnection({ id: "claude", label: "Claude" });
+
+  await assert.rejects(
+    () => services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.create_content_proposal", callerConnectionId: null }),
+    (error: unknown) => error instanceof DomainError && error.code === "AGENT_ZONE_VIOLATION"
+  );
+});
+
+test("assertAgentAllowedForCapability rejects an unknown callerConnectionId once at least one connection is registered", async () => {
+  const deps = createFakeDeps();
+  const services = createAgentConnectionsServices(deps);
+  await services.registerConnection({ id: "claude", label: "Claude" });
+
+  await assert.rejects(
+    () => services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.create_content_proposal", callerConnectionId: "codex" }),
+    (error: unknown) => error instanceof DomainError && error.code === "AGENT_ZONE_VIOLATION"
+  );
+});
+
+test("assertAgentAllowedForCapability rejects a disabled connection", async () => {
+  const deps = createFakeDeps();
+  const services = createAgentConnectionsServices(deps);
+  await services.registerConnection({ id: "claude", label: "Claude" });
+  await services.setConnectionEnabled({ id: "claude", enabled: false });
+
+  await assert.rejects(
+    () => services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.create_content_proposal", callerConnectionId: "claude" }),
+    (error: unknown) => error instanceof DomainError && error.code === "AGENT_ZONE_VIOLATION"
+  );
+});
+
+test("assertAgentAllowedForCapability allows any registered, enabled connection when the capability has no zone assigned", async () => {
+  const deps = createFakeDeps();
+  const services = createAgentConnectionsServices(deps);
+  await services.registerConnection({ id: "claude", label: "Claude" });
+  await services.registerConnection({ id: "codex", label: "Codex" });
+
+  await assert.doesNotReject(() =>
+    services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.create_content_proposal", callerConnectionId: "codex" })
+  );
+});
+
+test("assertAgentAllowedForCapability allows the assigned connection and rejects every other one", async () => {
+  const deps = createFakeDeps();
+  const services = createAgentConnectionsServices(deps);
+  await services.registerConnection({ id: "claude", label: "Claude" });
+  await services.registerConnection({ id: "codex", label: "Codex" });
+  await services.assignCapabilityZone({ capabilityId: "content_proposal.register_external_artifact", assignedConnectionId: "codex" });
+
+  await assert.doesNotReject(() =>
+    services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.register_external_artifact", callerConnectionId: "codex" })
+  );
+  await assert.rejects(
+    () =>
+      services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.register_external_artifact", callerConnectionId: "claude" }),
+    (error: unknown) => error instanceof DomainError && error.code === "AGENT_ZONE_VIOLATION"
+  );
 });
 
 test("listCapabilityZones returns every assigned zone", async () => {

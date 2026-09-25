@@ -641,6 +641,31 @@ access to application data" (`docs/roadmap/FUTURE_PHASES.md` §3) taken to its s
 conclusion — no MCP client, including a future Codex operations connection, gets any access
 until the project owner deliberately opts in.
 
+### Multi-agent responsibility zones (BL-091, `docs/roadmap/plans/AGENT_ZONES_PLAN.md`)
+
+Independent of the connection-level toggle above, six specific mutating actions can additionally
+be restricted to exactly one *named* agent connection when more than one is registered (e.g.
+Claude and Codex connected at once): `channel_sync`, `changeset_create_from_import`,
+`ai_localization_generate`, `ai_localization_create_change_set`, `agent_create_content_proposal`
+(capability id `content_proposal.create_content_proposal`), and `agent_register_external_artifact`
+(`content_proposal.register_external_artifact`). Every other tool, including every READ-only one,
+is never affected by this — the point is a shared information field with exclusive write zones,
+not a second permission tier.
+
+- **Identity**: each MCP server process resolves its own agent-connection id once at startup from
+  the `AGENT_CONNECTION_ID` environment variable (set in that client's own MCP launch config); the
+  CLI resolves the same identity per invocation from `--agentConnectionId` or the same env var.
+- **Fail-closed policy**: while zero agent connections are registered (`src/lib/agent-connections/`,
+  Settings-tab management not yet built as of slice 2), this is entirely a no-op — identical to
+  today's single-agent behavior. Once one or more connections are registered, every one of the 6
+  actions above requires a resolvable, enabled, registered connection id; an unknown or missing one
+  is rejected with `AGENT_ZONE_VIOLATION`, never silently allowed. A capability with no explicit
+  zone assignment stays open to any registered, enabled connection; one assigned to a specific
+  connection rejects every other connection's calls to that same action.
+- **Not the same as the "MCP connection" toggle above** — that toggle is the all-or-nothing gate
+  deciding whether an MCP client sees any tool at all; this mechanism only matters once the toggle
+  is already on and coordinates *which* connected agent may perform *which* of these 6 actions.
+
 ---
 
 ## API Route Handlers (selected)

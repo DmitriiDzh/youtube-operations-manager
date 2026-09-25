@@ -77,10 +77,13 @@ export type DomainErrorCode =
   // "configured, but something about the actual request/directory is wrong" cases.
   | "OPERATIONS_WORKSPACE_UNAVAILABLE"
   | "OPERATIONS_FILE_NOT_AVAILABLE"
-  // BL-091 (docs/roadmap/plans/AGENT_ZONES_PLAN.md) -- multi-agent responsibility zones, slice 1
-  // (registry/assignment only; no enforcement uses these yet).
+  // BL-091 (docs/roadmap/plans/AGENT_ZONES_PLAN.md) -- multi-agent responsibility zones.
   | "AGENT_CONNECTION_NOT_AVAILABLE"
-  | "AGENT_CONNECTION_ID_CONFLICT";
+  | "AGENT_CONNECTION_ID_CONFLICT"
+  // Slice 2 -- thrown by assertAgentAllowedForCapability for both "no/unknown caller identity
+  // once zoning is in use" and "caller identity does not match this capability's assigned zone",
+  // same one-code-covers-related-reasons convention as CONTENT_PROPOSAL_NOT_AVAILABLE.
+  | "AGENT_ZONE_VIOLATION";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;
