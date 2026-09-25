@@ -266,13 +266,11 @@ test("assertAgentAllowedForCapability allows an explicitly assigned capability e
 });
 
 test("assertAgentAllowedForCapability rejects EVERYONE (including the assignee itself) once a capability's assigned connection is disabled, with another connection still enabled", async () => {
-  // A round-4 independent review flagged this exact scenario as untested (though verified correct
-  // by inspection): assigning a zone never "locks in" a snapshot of the assignee's enabled state
-  // -- assertAgentAllowedForCapability re-checks `enabled` on every call, so a capability assigned
+  // Assigning a zone never "locks in" a snapshot of the assignee's enabled state --
+  // assertAgentAllowedForCapability re-checks `enabled` on every call, so a capability assigned
   // to a connection that is later disabled fails closed for everyone, not just for that one
-  // connection. This is intentional (a disabled assignee is exactly the same as no working
-  // assignee -- there is no implicit fallback to "open to anyone else" once one has been named),
-  // not a bug, but it deserved its own explicit regression test.
+  // connection. A disabled assignee is exactly the same as no working assignee -- there is no
+  // implicit fallback to "open to anyone else" once one has been named.
   const deps = createFakeDeps();
   const services = createAgentConnectionsServices(deps);
   await services.registerConnection({ id: "claude", label: "Claude" });

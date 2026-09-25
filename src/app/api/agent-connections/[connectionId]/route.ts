@@ -25,11 +25,9 @@ export async function PUT(request: Request, { params }: { params: Promise<{ conn
       return NextResponse.json({ error: "validation_failed", message: "Request body must be valid JSON" }, { status: 400 });
     }
 
-    // A round-4 independent review found that a JSON body of literal `null` (valid JSON, so the
-    // catch above never fires) used to throw a raw TypeError on `body.enabled`, surfacing as a
-    // generic 500 instead of a proper validation_failed 400 -- fixed by never dereferencing a
-    // field on `body` directly; the whole (possibly non-object) value is merged in and left for
-    // `setConnectionEnabled`'s own schema validation to reject cleanly, same as the sibling routes.
+    // Never dereference a field on `body` directly -- a non-object body (e.g. literal `null`)
+    // must reach `setConnectionEnabled`'s own schema validation and fail cleanly there, same as
+    // the sibling routes, rather than throwing a raw TypeError.
     const input = typeof body === "object" && body !== null ? { ...body, id: connectionId } : { id: connectionId };
     const connection = await core.setConnectionEnabled(input);
     return NextResponse.json({ connection });

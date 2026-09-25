@@ -122,8 +122,7 @@ export function createAgentConnectionsServices(deps: ServiceDependencies) {
      * - **Zero enabled connections**: no-op.
      * - **One or more enabled connections**: a resolvable, enabled, registered
      *   `callerConnectionId` is required -- an unknown or missing one is rejected, never silently
-     *   treated as "anyone" (an advisor review flagged that a forgotten `AGENT_CONNECTION_ID`
-     *   must never quietly bypass zoning).
+     *   treated as "anyone" (a forgotten `AGENT_CONNECTION_ID` must never quietly bypass zoning).
      * - **A capability with an explicit zone assignment** always rejects every connection except
      *   the assigned one, regardless of how many connections are enabled.
      * - **A capability with NO explicit zone assignment** (no row, or `assignedConnectionId:
@@ -132,9 +131,7 @@ export function createAgentConnectionsServices(deps: ServiceDependencies) {
      *   enabled, an unassigned capability is rejected for everyone**, not silently shared --
      *   the owner's own exclusivity requirement ("нельзя одну и ту же зону ответственности дать
      *   обоим") means an unassigned zone with multiple active agents is a configuration gap that
-     *   must be fixed by an explicit assignment, not a default multi-agent grant. A first advisor
-     *   review missed this and left unassigned capabilities open to any enabled connection even
-     *   with 2+ active -- fixed here, before this feature was presented as complete.
+     *   must be fixed by an explicit assignment, not a default multi-agent grant.
      */
     async assertAgentAllowedForCapability(args: { capabilityId: string; callerConnectionId: string | null }): Promise<void> {
       const enabledConnections = (await deps.listConnections()).filter((c) => c.enabled);

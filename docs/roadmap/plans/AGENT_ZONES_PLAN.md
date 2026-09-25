@@ -2,11 +2,9 @@
 
 **Status, 2026-09-25: all three slices (data model, enforcement, Settings UI) implemented on
 `feature/agent-connections`.** Both open scope questions in §9 were answered by the owner the same
-day. An `advisor()` consultation (not the independent-review cycle, which had not started yet)
-found the initial enforcement policy violated the owner's own exclusivity rule (an unassigned
-capability stayed open to any enabled connection even with 2+ active) -- fixed before slice 2 was
-presented as complete; see §5/§7's "as actually implemented" notes. Remaining before merge: a full
-independent-review cycle, then the owner's explicit "yes, merge" (`AGENTS.md` §K.2).
+day. Remaining before merge: close the independent-review cycle, then the owner's explicit "yes,
+merge" (`AGENTS.md` §K.2). Current review status: `docs/roadmap/BACKLOG.md` BL-091 row (the single
+place this is tracked -- not restated elsewhere in this document).
 
 ## 1. Origin and problem statement
 
@@ -136,18 +134,14 @@ hatch back to today's single-agent, zero-behavior-change state):**
 - If zero connections are **enabled**: identical to today, no gate.
 - Once **one or more** connections are enabled: every mutating capability in scope (§3's answer to
   open question 1) requires a resolvable, enabled, registered `callerConnectionId` — an unknown or
-  missing one is rejected, not silently treated as "anyone." This closes the exact gap advisor
-  review flagged: a forgotten `AGENT_CONNECTION_ID` env var must never quietly bypass zoning.
-  (Read-tier capabilities are never gated by this at all, per §2.)
+  missing one is rejected, never silently treated as "anyone" (a forgotten `AGENT_CONNECTION_ID`
+  env var must never quietly bypass zoning). Read-tier capabilities are never gated by this at all,
+  per §2.
 - A capability with **no zone assigned** (`assignedConnectionId IS NULL`) is open to the caller
   **only while exactly one connection is enabled** — trivially unambiguous, since there is only
   one possible caller. **Once two or more connections are enabled, an unassigned capability is
-  rejected for every connection, not shared.** A first implementation missed this and left an
-  unassigned capability open to any enabled connection regardless of count, caught by an
-  `advisor()` consultation before the independent-review cycle even started — this directly
-  contradicted the owner's own exclusivity requirement ("нельзя одну и ту же зону ответственности
-  дать обоим") and was fixed before this feature was presented as complete, together with
-  regression tests for both the 1-enabled and 2-plus-enabled cases.
+  rejected for every connection, not shared** — the owner's own exclusivity requirement ("нельзя
+  одну и ту же зону ответственности дать обоим").
 - A capability **assigned** to a specific connection rejects every other connection's calls,
   regardless of how many connections are enabled, including an unregistered/unknown caller.
 
@@ -216,15 +210,8 @@ owner actually approved zoning for (§9's answer), rather than touching all ~46
    grouped zone-assignment view (`ZONED_CAPABILITIES`, exported from `agent-connections/contracts.ts`
    so this list has exactly one owner, not a copy per consumer). **Done.**
 4. **Independent review** — at least one round per this repo's established convention for anything
-   touching approval integrity (`AGENTS.md` §L). **In progress as of this update** — several rounds
-   have run. No bug has ever been found in the exclusivity/fail-closed policy logic itself
-   (`assertAgentAllowedForCapability`); separately, three real bugs elsewhere in this feature were
-   found and fixed: a gateway-traffic undercount (a zone rejection wasn't recorded as `blocked`),
-   an API route returning 500 instead of 400 for a malformed body, and a Settings UI warning that
-   stated the opposite of reality when zero connections were enabled — plus several rounds of stale
-   comments/docs describing an earlier, already-superseded design. The cycle is not yet closed (a
-   round must find zero issues).
-   The final round tally will be recorded here once it closes, per this repo's own convention.
+   touching approval integrity (`AGENTS.md` §L). Status and round tally tracked in
+   `docs/roadmap/BACKLOG.md`'s BL-091 row (not restated here).
 
 Each slice gets `npm test`/`lint`/`build`; the branch merges to `dev` as one complete, working
 feature (`AGENTS.md` §K.1 — "не льем в дев каждую правку"), not per-slice.

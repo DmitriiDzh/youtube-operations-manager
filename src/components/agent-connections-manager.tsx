@@ -179,11 +179,9 @@ export function AgentConnectionsManager() {
                 const assignedConnection = connections.find((conn) => conn.id === assignedConnectionId) ?? null;
                 const enabledCount = connections.filter((conn) => conn.enabled).length;
                 const assignedToDisabled = assignedConnection !== null && !assignedConnection.enabled;
-                // Mirrors assertAgentAllowedForCapability's own policy exactly (services.ts) --
-                // a round-5 independent review found the original version of this warning stated
-                // "blocked for everyone" even when zero connections are enabled in total, which is
-                // the OPPOSITE of reality: with zero enabled, the whole mechanism is a no-op and
-                // this action is open to any caller, assigned-to-a-disabled-connection or not.
+                // Mirrors assertAgentAllowedForCapability's own policy exactly (services.ts): with
+                // zero connections enabled, the whole mechanism is a no-op and this action is open
+                // to any caller, assigned-to-a-disabled-connection or not.
                 let statusNote: string | null = null;
                 if (enabledCount === 0) {
                   statusNote =

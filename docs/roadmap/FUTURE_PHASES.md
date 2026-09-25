@@ -292,17 +292,13 @@ implemented during Phases 7-10 unless separately approved:
   `ai_localization_*`: "Согласен"; keep the new tables device-local, not synced: "Оставим
   локально"). All three slices (data model, enforcement at the 6 approved MCP tools + CLI
   equivalents, Settings UI) are done on `feature/agent-connections`, not yet merged to `dev`. An
-  `advisor()` consultation (before the independent-review cycle started) found the initial
-  enforcement policy left an unassigned capability open to any enabled connection even with 2+
-  connections active, contradicting the owner's own
-  exclusivity rule ("нельзя одну и ту же зону ответственности дать обоим") -- fixed before this
-  feature was presented as complete: an unassigned capability is now open only while exactly one
-  connection is enabled, rejected for everyone once 2+ are enabled. This work is **not** the same
-  as `docs/TECHNICAL_DEBT.md` RISK-32 (an earlier draft of the plan mistakenly conflated the two)
-  -- RISK-32 is about device-availability-gate consistency and remains separately OPEN, untouched
-  by this feature. A new risk was found and recorded instead, RISK-60
-  (`write_channel_select`/`auth_user_select` mutate global, not per-connection, active-channel
-  state). Remaining: an independent-review cycle, then the owner's "yes, merge" before this
+  unassigned capability is open only while exactly one connection is enabled, rejected for
+  everyone once two or more are enabled -- the owner's own exclusivity rule ("нельзя одну и ту же
+  зону ответственности дать обоим"). This work is **not** the same as `docs/TECHNICAL_DEBT.md`
+  RISK-32 (device-availability-gate consistency, separately OPEN, untouched by this feature); it
+  separately tracks its own `RISK-60` (`write_channel_select`/`auth_user_select` mutate global,
+  not per-connection, active-channel state). Remaining: close the independent-review cycle
+  (status: `docs/roadmap/BACKLOG.md` BL-091 row), then the owner's "yes, merge" before this
   feature reaches `dev`.
 
 ## 8. How to use this roadmap in future sessions

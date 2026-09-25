@@ -2,10 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveAgentConnectionIdFromEnv } from "./contracts";
 
-// An independent review found this function's shared callers (MCP's env-var parsing at
-// startMcpServer, CLI's fallback after --agentConnectionId) had asymmetric test coverage -- CLI
-// had dedicated tests, MCP's copy had none. Extracting the logic here, with these direct tests,
-// covers both call sites at once regardless of which transport invokes it.
+// Both callers (MCP's env-var parsing at startMcpServer, CLI's fallback after
+// --agentConnectionId) share this single implementation, so testing it here covers both
+// transports regardless of which one invokes it.
 
 test("resolveAgentConnectionIdFromEnv returns the trimmed value for a real non-empty string", () => {
   assert.equal(resolveAgentConnectionIdFromEnv("claude"), "claude");

@@ -1629,9 +1629,7 @@ export function createMcpServer(
     // 2026-09-22). When MCP connection is off, this wrapper never even runs (registerTool
     // returns above), so there is no failed call to count there, only an absent tool -- but a
     // BL-091 zone rejection below IS a real, counted "blocked" attempt through this gateway
-    // category, exactly like the other three gateways record their own rejections (an
-    // independent review flagged that this branch previously recorded neither outcome, silently
-    // undercounting the traffic stat once zoning is actually in use).
+    // category, exactly like the other three gateways record their own rejections.
     const countedHandler = (async (args: never) => {
       if (zoneCapabilityId) {
         try {

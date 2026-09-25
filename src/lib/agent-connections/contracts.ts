@@ -64,10 +64,8 @@ export const CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT = "content_proposal.r
 
 /**
  * Shared by both MCP (`startMcpServer`, reads `process.env.AGENT_CONNECTION_ID` once at startup)
- * and CLI (`runCliCommand`, falls back to this after checking `--agentConnectionId`) -- a pure,
- * directly unit-testable function so neither call site's own env-var-to-identity parsing needs
- * its own separate test (an independent review found MCP's copy had none, unlike CLI's). An empty
- * string is never a real connection id.
+ * and CLI (`runCliCommand`, falls back to this after checking `--agentConnectionId`) -- a single,
+ * directly unit-testable implementation for both. An empty string is never a real connection id.
  */
 export function resolveAgentConnectionIdFromEnv(value: string | undefined): string | null {
   const trimmed = value?.trim();

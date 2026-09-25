@@ -25,9 +25,7 @@ test("real agent-connections core: an unassigned zoned tool is rejected once 2 c
   await core.registerConnection({ id: codexId, label: "Codex (test)" });
 
   // Unassigned zone, 2 real enabled connections -- must reject BOTH callers per the owner's
-  // exclusivity rule (a round-5 independent review found this comment/variable naming previously
-  // overclaimed testing "no identity" while actually only exercising claude's real identity; now
-  // exercises both).
+  // exclusivity rule.
   const claudeServerBeforeAssignment = createMcpServer(undefined, { connectionEnabled: true, callerConnectionId: claudeId }, core);
   const claudeToolsBeforeAssignment = (claudeServerBeforeAssignment as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: { text: string }[] }> }> })._registeredTools;
   const beforeAssignment = await claudeToolsBeforeAssignment.channel_sync.handler({});
@@ -40,9 +38,7 @@ test("real agent-connections core: an unassigned zoned tool is rejected once 2 c
   assert.equal(codexBeforeAssignment.isError, true);
   assert.equal(JSON.parse(codexBeforeAssignment.content[0]?.text ?? "{}").error.code, "AGENT_ZONE_VIOLATION");
 
-  // A zone rejection is a real, countable "blocked" attempt through the mcp_tool_calls gateway
-  // (an independent review found this branch previously recorded neither outcome, undercounting
-  // the Settings tab's traffic stats).
+  // A zone rejection is a real, countable "blocked" attempt through the mcp_tool_calls gateway.
   const trafficAfterRejection = await getGatewayTrafficLast24h();
   const mcpTrafficAfterRejection = trafficAfterRejection.find((c) => c.category === "mcp_tool_calls");
   assert.ok(mcpTrafficAfterRejection && mcpTrafficAfterRejection.totalAttempts >= 1);
