@@ -26,7 +26,7 @@ import {
 } from "./schemas";
 import type { ChangeDraftsStoreAdapter } from "./adapters/automerge-store";
 import type { DiscardedDocumentBackupStore } from "./adapters/discarded-backup-store";
-import { createDefaultLogger, type ChangeDraftsLogger } from "./adapters/logger";
+import { createDefaultLogger, type Logger as ChangeDraftsLogger } from "@/lib/shared-logger";
 import type { SqlProjectionAdapter } from "./adapters/sql-projection";
 import type { SqlSourceAdapter } from "./adapters/sql-source";
 

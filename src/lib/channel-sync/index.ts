@@ -2,7 +2,7 @@ import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-a
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createChannelSyncStoreAdapter } from "./adapters/store";
 import { createChannelSyncYoutubeApiAdapter } from "./adapters/youtube-api";
-import { createDefaultLogger } from "./adapters/logger";
+import { createDefaultLogger } from "@/lib/shared-logger";
 import { createChannelSyncServices } from "./services";
 
 function defaultAuthResolver() {

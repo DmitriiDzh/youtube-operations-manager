@@ -1,4 +1,4 @@
-import { createDefaultLogger } from "@/lib/channel-sync/adapters/logger";
+import { createDefaultLogger } from "@/lib/shared-logger";
 import { createChangeDraftsCoreForProduction, isDomainError } from "@/lib/sync-gateway";
 import { createChangeSetChannelStoreAdapter, createIdGenerator } from "./adapters/store";
 import { createAutomergeBackedChangeSetStoreAdapter } from "./adapters/change-drafts-store";

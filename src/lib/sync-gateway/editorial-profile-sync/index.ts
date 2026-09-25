@@ -1,5 +1,5 @@
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
-import { createDefaultLogger } from "@/lib/channel-sync/adapters/logger";
+import { createDefaultLogger } from "@/lib/shared-logger";
 import { listStoredChannels } from "@/lib/db";
 import { getProductionAppPaths } from "@/lib/platform-paths/runtime";
 import { createPerChannelFilesystemTransport, createSyncRunner, type SyncRunner } from "../automerge-core";
