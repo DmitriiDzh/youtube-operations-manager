@@ -697,21 +697,22 @@ wall-clock `now`; round 3: `limit` is always silently clamped, never rejected) f
   found zero issues, closing the cycle at the same 4-round shape as slice K's own closure
   (3/4/4/0).
 
-## 4i. Dedicated Phase 7 acceptance-contract document (owner spec §28) -- NOT PRODUCED
+## 4i. Dedicated Phase 7 acceptance-contract document (owner spec §28) -- CLOSED (slice J, 2026-09-25)
 
 Owner spec §28 asks for "a dedicated Phase 7 acceptance contract" produced **before**
 implementation, covering an explicit list of scenarios (version/capability discovery, channel
-isolation, no dev-repo dependency, no direct DB access, no secret exposure, and more -- see the
-recovered spec text). Every prior phase in this repository that reached this maturity got its own
-`docs/acceptance/PHASE_N_ACCEPTANCE.md` (Phase 5, Phase 6, Phase 6 AI Connections, the
-cross-platform pre-release work) -- Phase 7 has not. Acceptance criteria WERE derived from the
-spec per slice, before each slice's own implementation (`AGENTS.md` §L's discipline was followed
-throughout, and independent review cycles verified this repeatedly), so the substantive intent of
-§28 was not skipped -- but no single, consolidated document exists recording that contract the way
-`docs/acceptance/PHASE_6_ACCEPTANCE.md` does for Phase 6. Producing one retroactively (from the
-now-recovered spec text plus the acceptance criteria already implicit in each slice's own test
-suite) is appropriate work for slice J (independent security/integration review) or immediately
-before the final `dev` merge, not urgent before slice I.
+isolation, no dev-repo dependency, no direct DB access, no secret exposure, and more). Slices A-I
+were implemented and independently reviewed before `docs/acceptance/PHASE_7_ACCEPTANCE.md` existed
+-- acceptance criteria WERE derived from the spec per slice at the time (`AGENTS.md` §L's discipline
+was followed throughout), just never consolidated into one document. Slice J closed this gap
+retroactively: `docs/acceptance/PHASE_7_ACCEPTANCE.md` §8-§9 quotes owner spec §28 verbatim and maps
+every one of its 20 named scenario categories to the slice/capability that covers it and the actual
+test that exercises it -- explicitly marked as a **retroactive** backfill for A-I (weaker evidentiary
+standing than a criterion written before its own implementation, and the document says so plainly),
+while §10's cross-cutting checks (channel isolation across every tool, capability parity re-run with
+K/L included, secrets, DB access, dev-repo dependency, approval separation, zero live writes in
+tests) were derived fresh for J itself, not backfilled from anything. See §7's row J below and
+`docs/acceptance/PHASE_7_ACCEPTANCE.md` §8-§11 for the full result.
 
 ## 4j. Codex operations-workspace path surfacing (owner spec §3/§30) -- IMPLEMENTED (slice I)
 
@@ -896,7 +897,7 @@ second error-code enum:
 | I | Codex operations-workspace path surfacing | **IMPLEMENTED** -- see §4j; owner decision, Telegram 2026-09-24, narrowed this slice to a path-configuration/surfacing mechanism only (never an operations-workspace template or editorial-guideline document committed here, per `AGENTS.md` §B). New `src/lib/operations-instructions/` module, Settings-only `operationsWorkspacePath` setting, MCP `agent_list_operations_files`/`agent_get_operations_file`, CLI `agent list-operations-files`/`agent get-operations-file`. `AGENT_API_VERSION` → `0.8.0`. |
 | K | Comparable-content context (`find_comparable_videos`, owner spec §10) | **IMPLEMENTED, independent-review cycle closed (4 rounds, findings 3/4/4/0)** -- see §4g; found by the slice-H spec recovery, 2026-09-24, then explicitly assigned into this phase by the owner the same day ("Да, такие находки как BL 88 и 89 тоже включай в список тасков текущей 7 фазы", Telegram). New `src/lib/comparable-content/` module (K1) plus `videos.durationSeconds` sync (K0, schema v19). MCP `agent_find_comparable_videos`, CLI `agent find-comparable-videos`. `AGENT_API_VERSION` → `0.9.0`. `BL-088`. |
 | L | Performance ↔ asset linkage (owner spec §16) | **IMPLEMENTED, independent-review cycle closed (4 rounds, findings 5/1/1/0)** -- see §4h; found and assigned the same way and same day as slice K. New `src/lib/asset-performance/` module. MCP `agent_list_asset_performance`, CLI `agent list-asset-performance`. `AGENT_API_VERSION` → `0.10.0`. `BL-089`. |
-| J | Independent security/integration review | ONGOING per slice -- `docs/roadmap/BACKLOG.md`'s BL-079/BL-080/BL-081 (and later rows, as slices land) are the authoritative record of each slice's own review-cycle status; not restated here as a round tally, since that would just be a second, driftable copy of the same fact. Covers the WHOLE phase, including slices K/L once they land -- deliberately kept last in the recommended order even though K/L were assigned after it was originally listed. |
+| J | Independent security/integration review | **Per-slice review cycles: covered by each slice's own `docs/roadmap/BACKLOG.md` row (BL-079 onward through BL-089) -- not restated here as a round tally.** Slice J's own NEW, phase-wide work (owner spec §28's acceptance contract, backfilled for A-I plus fresh cross-cutting checks for the assembled whole) is done -- see §4i and `docs/acceptance/PHASE_7_ACCEPTANCE.md` §8-§11, `BL-090`. Remaining before this phase can be considered fully closed: the owner's own explicit "yes, merge" approval (`AGENTS.md` §K.2) -- never inferred from a clean review, and never granted by this document. |
 
 Deliberately **not** implemented in this phase (owner spec §14/§29): the competitor/trend
 intelligence module (Phase 9) and the Experiment Engine (Phase 10). `plannedFutureCapabilities`

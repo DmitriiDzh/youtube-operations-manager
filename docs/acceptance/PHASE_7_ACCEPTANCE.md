@@ -1,6 +1,6 @@
 # PHASE_7_ACCEPTANCE.md
 
-**Status: retroactive/incremental acceptance contract, started 2026-09-24.** Owner spec §28 asks for a dedicated Phase 7 acceptance contract, produced before implementation. Slices A-I were implemented before this document existed; their acceptance criteria WERE derived from the spec per slice (each slice's own commit history and `docs/AGENT_OPERATIONS_INTERFACE.md` sections record this), just never consolidated into one document (`docs/AGENT_OPERATIONS_INTERFACE.md` §4i tracks this gap). Per that same §4i note, backfilling A-I's own scenarios into this document is deferred to slice J (independent security/integration review), not done here. **This document covers slice K (implemented, independent-review cycle closed) and slice L (§5-§7 below, written before L's implementation, per `AGENTS.md` §L).**
+**Status: retroactive/incremental acceptance contract, started 2026-09-24, slice J section added 2026-09-25.** Owner spec §28 asks for a dedicated Phase 7 acceptance contract, produced before implementation. Slices A-I were implemented before this document existed; their acceptance criteria WERE derived from the spec per slice (each slice's own commit history and `docs/AGENT_OPERATIONS_INTERFACE.md` sections record this), just never consolidated into one document (`docs/AGENT_OPERATIONS_INTERFACE.md` §4i tracked this gap; §8-§9 below now close it retroactively for A-I, and fully for J's own new cross-cutting work). **This document covers slice K (§1-§4, implemented, independent-review cycle closed 4 rounds 3/4/4/0), slice L (§5-§7, implemented, independent-review cycle closed 4 rounds 5/1/1/0), and slice J (§8-§11, the final phase-wide security/integration review, §28's own scenario checklist plus fresh cross-cutting checks).**
 
 This document is derived strictly from:
 
@@ -99,3 +99,244 @@ This directly answers "which production assets belonged to videos that underperf
 
 - Real YouTube OAuth/live API behavior (no live Google login available in this environment, `AGENTS.md` §G).
 - A-I's backfilled scenarios (deferred to slice J, unchanged from §4 above).
+
+---
+
+## 8. Slice J — independent security/integration review of the WHOLE phase (owner spec §28)
+
+Unlike slices K/L's own acceptance sections above (each written before that slice's own
+implementation, per `AGENTS.md` §L in its strictest form), slice J's own acceptance criteria are
+**retroactive** for slices A-I -- those slices were implemented and independently reviewed before
+this document existed at all (`docs/AGENT_OPERATIONS_INTERFACE.md` §4i's own tracked gap). This
+section states that plainly rather than presenting a backfill as if it had the same evidentiary
+weight as a criterion written before its own implementation: for A-I, "does a test cover this" is
+verified against tests that already existed, not tests written from this checklist. For K/L
+(already covered by their own §1-§7 sections above) and for J's own new work (the cross-cutting
+checks in §10), the criteria below were derived from the spec text first, per the normal rule.
+
+**Owner spec §28, quoted verbatim (recovered from this session's own pre-compaction transcript,
+`docs/AGENT_OPERATIONS_INTERFACE.md` §7 row H's own note on how the full 34-section spec was
+recovered):**
+
+> 28. Acceptance-first implementation
+>
+> Before implementation, create a dedicated Phase 7 acceptance contract.
+>
+> Derive tests independently of implementation.
+>
+> Cover at least:
+>
+> • version/capability discovery;
+> • channel isolation;
+> • no development-repository dependency;
+> • no direct DB access;
+> • no secret exposure;
+> • analytics queries;
+> • video context;
+> • context freshness;
+> • asset catalog access;
+> • controlled asset retrieval;
+> • bulk localization context;
+> • agent-created draft;
+> • Change Set integration;
+> • proposal provenance;
+> • external evidence references;
+>
+> • unsupported future competitor capability;
+> • structured errors;
+> • token/context-efficient selective retrieval;
+> • audit;
+> • approval separation;
+> • zero real YouTube writes during automated tests.
+>
+> Use mocks/isolated databases.
+>
+> Conduct adversarial review.
+
+This is the only place in this repository the full text of owner spec §28 is recorded (the
+34-section spec itself was never committed here -- `docs/AGENT_OPERATIONS_INTERFACE.md` §7 row H
+already notes it lives only in this session's own transcript; whether to commit the full spec text
+into this repository going forward is the project owner's own decision, not made here).
+
+## 9. §28's 20 scenario categories, mapped against what actually exists
+
+Each row: the category as named in §28, which slice/capability covers it, and whether an actual
+test exercises it (checked by reading the real test file, not inferred from the capability's
+existence).
+
+| # | §28 category | Covered by | Test coverage |
+|---|---|---|---|
+| 1 | version/capability discovery | Slice A, `get_system_capabilities` | `agent-operations/services.test.ts` -- "getSystemCapabilities returns every field the spec requires" |
+| 2 | channel isolation | B/C/D/E/F/G/G2/K/L (I is deliberately NOT channel-scoped, §4j) | See §10.1's own cross-slice table below -- checked freshly for J, not just per-slice |
+| 3 | no development-repository dependency | `AGENTS.md` §B (dev/ops separation); `readProductVersion` reads `package.json` via `process.cwd()`, not this repo's source | See §10.5 below -- checked freshly for J |
+| 4 | no direct DB access | `AGENTS.md` §D (single owner per capability); `agent-operations` never imports `@/lib/db` directly, only domain-service functions | See §10.4 below -- checked freshly for J |
+| 5 | no secret exposure | `AGENTS.md` §F; `credentialRef`/tokens never included in any agent-facing response or error `details` | See §10.3 below -- checked freshly for J |
+| 6 | analytics queries | Slice C, `query_channel_analytics`/`query_video_analytics` | `agent-operations/services.test.ts` -- multiple `queryChannelAnalytics`/`queryVideoAnalytics` tests |
+| 7 | video context | Slice B, `get_video_context` | `agent-operations/services.test.ts` -- `getVideoContext` tests, including section-narrowing |
+| 8 | context freshness | Slice C's `freshness` field, reused by K/L's own wrappers | `agent-operations/services.test.ts` -- freshness assertions in `queryChannelAnalytics`/`queryVideoAnalytics`/`findComparableVideos`/`listAssetPerformance` tests |
+| 9 | asset catalog access | Slice D, `list_assets`/`get_asset_context` | `agent-operations/services.test.ts` -- `listAssets`/`getAssetContext` tests |
+| 10 | controlled asset retrieval | Slice D/G2 -- `referenceKind` restricted, `local_path` never agent-reachable via `register_external_artifact` | `content-proposals/services.test.ts`, MCP/CLI tests -- "rejects referenceKind local_path" |
+| 11 | bulk localization context | Slice F, widened `ai_localization_create_change_set` | `ai-localization/services.test.ts` -- Change-Set-from-generation tests |
+| 12 | agent-created draft | Slice F/G -- every AI/agent-authored object starts as a draft, no auto-approve path | See §10.6 below (approval separation) -- checked freshly for J |
+| 13 | Change Set integration | Slice F -- same persistence path as the pre-existing XLSX-import Change Set flow, `AGENTS.md` §D | `ai-localization/services.test.ts` |
+| 14 | proposal provenance | Slice E, `get_generation_provenance` | `agent-operations/services.test.ts` -- `getGenerationProvenance` tests |
+| 15 | external evidence references | Slice F/G -- `evidence` field on Change Set provenance and Content Proposals | `ai-localization/services.test.ts`, `content-proposals/services.test.ts` |
+| 16 | unsupported future competitor capability | `plannedFutureCapabilities` in `get_system_capabilities` names Phase 9/10 extension points, no code exists for either | `agent-operations/services.test.ts` -- capabilities-list assertions include `plannedFutureCapabilities` |
+| 17 | structured errors | Owner spec §27, `docs/AGENT_OPERATIONS_INTERFACE.md` §6 -- IMPLEMENTED | Every domain module's own `DomainError` tests; MCP `toolErrorResult`/CLI `serializeError` tests |
+| 18 | token/context-efficient selective retrieval | Slice B's `include` param on `get_video_context`; K/L's `limit`/`truncated` | `agent-operations/services.test.ts` (`include`), `comparable-content`/`asset-performance` tests (`limit`/`truncated`) |
+| 19 | audit | `createdVia`/`agentApiVersion` server-stamped on every agent-created write (slice E/F/G/G2) | `content-proposals/services.test.ts`, MCP/CLI tests asserting stamped identity |
+| 20 | approval separation | "AI proposes, human approves" -- no code path anywhere marks an agent-authored proposal already-approved | See §10.6 below -- checked freshly for J |
+| — | zero real YouTube writes during automated tests | Every test in this repository uses fakes/mocks for `youtube-write-gateway`/`youtube-read-gateway`; `AGENTS.md` §G's live-write barrier (`assertLiveWritesAuthorized`) additionally fails closed even if a test somehow reached a real call | See §10.7 below -- checked freshly for J |
+
+## 10. Cross-cutting checks (slice J's own new work, not re-derived from any single slice's own review)
+
+These checks were run fresh for slice J, each against the CURRENT, final state of the whole
+interface (all of slices A-L), not re-trusted from any earlier per-slice review (each of which,
+by construction, only ever looked at its own slice).
+
+### 10.1 Channel isolation (§28 category 2)
+
+Every `agent_*` MCP tool and `agent` CLI command that takes a `channelId`, checked for how
+channel-scoping is actually enforced:
+
+| MCP tool | CLI command | Takes channelId? | Channel-check mechanism | credentialRef source |
+|---|---|---|---|---|
+| `agent_get_capabilities` | `capabilities` | No | N/A (instance-level) | N/A |
+| `agent_get_channel_context` | `channel-context` | Yes | Handler calls `assertActiveChannel` | Server-resolved only |
+| `agent_get_video_context` | `video-context` | Yes | Handler calls `assertActiveChannel` | Server-resolved only |
+| `agent_query_channel_analytics` | `channel-analytics` | Yes | Forwards to `analyticsCore.getChannelOverview`, checked internally | Caller-suppliable |
+| `agent_query_video_analytics` | `video-analytics` | Yes | Forwards to `analyticsCore.listMetrics`, checked internally | Caller-suppliable |
+| `agent_list_assets` | `list-assets` | Yes | Handler calls `assertActiveChannel` | Server-resolved only |
+| `agent_get_asset_context` | `get-asset-context` | Yes | Handler calls `assertActiveChannel` | Server-resolved only |
+| `agent_get_generation_provenance` | `get-generation-provenance` | Yes | Handler calls `assertActiveChannel` | Server-resolved only |
+| `agent_create_content_proposal` | `create-content-proposal` | Yes | Handler calls `assertActiveChannel` | Server-resolved only |
+| `agent_get_content_proposal` | `get-content-proposal` | Yes | Handler calls `assertActiveChannel` | Server-resolved only |
+| `agent_list_content_proposals` | `list-content-proposals` | Yes | Handler calls `assertActiveChannel` | Server-resolved only |
+| `agent_register_external_artifact` | `register-external-artifact` | Yes | Handler calls `assertActiveChannel` | Server-resolved only |
+| `agent_list_proposal_artifacts` | `list-proposal-artifacts` | Yes | Handler calls `assertActiveChannel` | Server-resolved only |
+| `agent_list_operations_files` | `list-operations-files` | No | N/A (global workspace path, deliberate, §4j) | N/A |
+| `agent_get_operations_file` | `get-operations-file` | No | N/A (deliberate) | N/A |
+| `agent_find_comparable_videos` | `find-comparable-videos` | Yes | Handler calls `assertActiveChannel` | **Caller-suppliable**, drives the check itself |
+| `agent_list_asset_performance` | `list-asset-performance` | Yes | Handler calls `assertActiveChannel` | **Caller-suppliable**, drives the check itself |
+
+**Result: no gaps.** Every `channelId`-taking tool/command has a channel check, either directly or
+via a domain function that performs the identical check internally. No tool/command takes
+`channelId` with zero enforcement anywhere.
+
+**Design asymmetry noted (not a gap, but worth recording explicitly):** three different trust
+models for "whose identity drives the channel check" coexist across this one interface: B/D/E/G/G2
+always resolve server-side only (ignore any caller-supplied `credentialRef` for the check itself);
+C forwards a caller-suppliable `credentialRef` into a downstream check; K/L explicitly let a
+caller-supplied `credentialRef` drive the check directly. This is a deliberate, not accidental,
+difference (K/L's own design docs, §4g/§4h, state the reasoning), but three distinct models in one
+interface is worth a single owner-facing note rather than silent variation -- flagged here, not
+treated as something to unify without an explicit decision.
+
+### 10.2 Capability parity (§28 category 1, re-run now that K/L exist)
+
+Slice H verified this before K/L existed. Re-run for J: **24 `AGENT_CAPABILITIES` entries, zero
+drift** in either direction -- every entry has both a registered MCP tool (or explicitly documented
+pre-existing one) and a CLI command; every `agent_*`-prefixed MCP tool has a corresponding
+`AGENT_CAPABILITIES` entry. Full table omitted here (see the slice J review notes); the count and
+zero-drift result is the acceptance-relevant fact.
+
+### 10.3 No secret exposure (§28 category 5)
+
+**PASS.** `credentialRef` appears only in input schemas/internal call parameters across
+`agent-operations/`, `comparable-content/`, `asset-performance/` -- never in an output schema.
+Every `DomainError` `details` object across these modules carries only identifiers
+(`channelId`/`videoId`/`anchorVideoId`/etc.), never tokens or paths. The shared `formatZodError`
+helper emits only `{path, message, code}` from zod issues, never the raw invalid input, so even a
+malformed-`credentialRef` validation error cannot leak a token value. `get_system_capabilities`'s
+response is built only from static version/capability/permission/schema-version constants.
+
+### 10.4 No direct DB access (§28 category 4)
+
+**PASS for slices K/L; one pre-existing exception noted, not introduced by Phase 7.**
+`comparable-content/` and `asset-performance/` have zero `@/lib/db` imports. `agent-operations/
+index.ts` does import `getChannelTargetLanguages`/`SCHEMA_CURRENT_VERSION` directly from `@/lib/db`
+-- `SCHEMA_CURRENT_VERSION` is a plain constant (no query), but `getChannelTargetLanguages` is a
+real Drizzle query, called without a domain-service wrapper. This is a **pre-existing pattern from
+slice B**, not something introduced later: its own inline comment states it reuses "the same
+function `src/lib/localization/` itself reads" -- i.e. this one `db.ts` accessor is already treated
+as a shared, cross-domain primitive elsewhere in this codebase, the same way `videos`/`channels`
+table reads are. Not remediated here (out of scope for a retroactive review to redesign an
+already-shipped, already-reviewed slice B decision); recorded so it isn't mistaken for a new gap.
+
+### 10.5 No development-repository dependency (§28 category 3)
+
+**PASS.** `readProductVersion()` (`agent-operations/index.ts`) reads `package.json` via
+`process.cwd()` -- confirmed against `docs/decisions/0003-published-release-snapshots.md`'s own
+allowlist that `package.json` is included in every `published/<version>/` release snapshot, so this
+resolves identically in a released build, not just in this development checkout.
+`operations-instructions/` (slice I) never hardcodes any path inside this repo -- its filesystem
+adapter only ever operates on the operator-configured `operationsWorkspacePath`, which is the whole
+point of that slice (pointing outside this repo, `AGENTS.md` §B).
+
+### 10.6 Approval separation / agent-created draft (§28 categories 12, 20)
+
+**PASS, all 5 sub-checks:**
+
+1. **Content Proposals:** `content-proposals/contracts.ts` documents "create, get, list only. No
+   update, no status field." Confirmed zero `approvalStatus`/`approve` fields anywhere in the
+   module (create, and `registerExternalArtifact`, both write-once).
+2. **AI Localization Change Sets:** the single shared `persistChangeSet` function (one creation
+   path per `AGENTS.md` §D, used by XLSX import, AI-generated proposals, and any future source)
+   hardcodes `approvalStatus: "pending"` as a literal, never derived from caller input. No alternate
+   creation path exists.
+3. **No approve/reject reachable via MCP or CLI at all:** grepped every `agent_*` MCP tool
+   registration and every `agent` CLI command for `approve`/`reject` -- zero hits for an actual
+   tool/command (only descriptive prose stating the opposite). Approval exists exclusively behind
+   the Web UI's own HTTP routes -- not just unreachable from the `agent` namespace, unreachable
+   from MCP/CLI entirely.
+4. **YouTube write-gateway/Batches unreachable:** zero references to `youtube-write-gateway`/
+   `batches`/`createBatch`/`batchCore` anywhere in `agent-operations/`, `content-proposals/`,
+   `comparable-content/`, `asset-performance/`, `operations-instructions/`, or `ai-localization/`
+   (excluding tests).
+5. **Mutation-gate membership matches exactly between MCP and CLI:** MCP's
+   `wrapMcpHandlersWithMutationGate` gates exactly `agentCreateContentProposal`,
+   `agentRegisterExternalArtifact`, `aiLocalizationCreateChangeSet`; every other `agent_*` handler
+   is ungated. CLI's `READ_ONLY_CLI_COMMANDS` set explicitly excludes the same three
+   (`create-content-proposal`, `register-external-artifact`, `create-change-set`) and explicitly
+   includes `find-comparable-videos`/`list-asset-performance` as read-only. Both surfaces agree
+   exactly on which agent-reachable operations mutate local state.
+
+### 10.7 Zero real YouTube writes during automated tests (§28's own final bullet)
+
+**PASS.** Mechanically enforced project-wide, not just for this phase:
+`youtube-write-gateway/gateway-inventory.test.ts` and `youtube-read-gateway/
+read-gateway-inventory.test.ts` fail the whole suite if any file outside the two gateways imports
+`googleapis` at runtime -- neither `agent-operations/`, `comparable-content/`, nor
+`asset-performance/` does (confirmed in §10.4's own grep). Every test in this repository, including
+every test added for slices K and L, injects fake/local dependencies -- none constructs a real
+`googleapis` client. `AGENTS.md` §G's live-write barrier (`assertLiveWritesAuthorized`, Gate B)
+additionally fails closed even if a test somehow reached a real write call, as a second, independent
+layer.
+
+### 10.8 RISK-59 (MCP `tools/list` rendering) -- RESOLVED during slice J
+
+Built a real `createMcpServer({ connectionEnabled: true })` instance in this environment and called
+the SDK's own `tools/list`-rendering code path directly against `agent_register_external_artifact`'s
+real, registered, full `.superRefine`-based schema (empirical, not just reading SDK source). The
+result is a complete, correct, non-degenerate JSON Schema -- every property, enum, and the correct
+`required` array render exactly as expected; only the cross-field `.superRefine` constraint itself
+is absent from the JSON Schema (expected -- JSON Schema has no native way to express it). See
+`docs/TECHNICAL_DEBT.md` RISK-59 for the full writeup. No fix was needed.
+
+## 11. Deliberately not verified here (slice J)
+
+- **A live, end-to-end run of `find_comparable_videos`/`list_asset_performance` against a real,
+  OAuth-synced YouTube channel.** No live Google login is available in this environment
+  (`AGENTS.md` §G's own standing constraint, restated here rather than re-litigated). Attempted to
+  verify what CAN be verified without one: confirmed the local dev database itself is healthy and
+  the CLI's own auth/error path behaves correctly against an empty (no active user) local database.
+  Did not seed fabricated, production-shaped rows (fake channels/videos/assets) directly into the
+  local dev database to simulate a "real" run -- that would risk being mistaken for genuine synced
+  data by whoever next uses this same local environment, and owner spec §28 itself only asks for
+  "mocks/isolated databases" for the acceptance tests, not a live-data dry run. K0's own
+  `contentDetails.duration` ISO-8601 parsing similarly remains verified only against this
+  codebase's own parsing logic and the documented ISO-8601 grammar, not a real API response (already
+  stated as a limitation in §4).
+- **`docs/PROJECT_SPEC.md`'s own broader acceptance criteria** (this document covers Phase 7's own
+  owner-spec-§28 contract specifically, not a re-verification of every earlier phase's own already-
+  closed acceptance work).
