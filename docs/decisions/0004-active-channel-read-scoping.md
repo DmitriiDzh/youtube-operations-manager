@@ -28,7 +28,7 @@ the Sync picker.
 Two things needed deciding that RISK-02 itself left open:
 
 1. **What does "active channel" mean?** The codebase already had a `selectedChannelId` concept
-   (`users.selectedChannelId`, `src/lib/write-context/service.ts`), but it was used *only* by the
+   (`users.selectedChannelId`, `src/lib/write-context/services.ts`), but it was used *only* by the
    write-safety guardrail (`assertWriteChannel`) and *only* ever set via MCP/CLI's
    `auth select-channel` — the Web UI never called it. A pure Web UI user's `selectedChannelId`
    would be permanently `NULL`. Meanwhile, the Web UI's own intuitive notion of "active channel"

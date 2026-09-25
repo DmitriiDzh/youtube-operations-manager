@@ -1,6 +1,5 @@
-import { getSelectedChannelId, setSelectedChannelId } from "@/lib/db";
-import { createWriteContextYoutubeApiAdapter } from "@/lib/write-context/adapters/youtube-api";
-import { createWriteContextService } from "@/lib/write-context/service";
+import { setSelectedChannelId } from "@/lib/db";
+import { createWriteContextCore } from "@/lib/write-context";
 import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
 import { createPlaylistYoutubeApiAdapter } from "./adapters/youtube-api";
 import { createPlaylistManagementServices } from "./services";
@@ -12,13 +11,7 @@ function defaultAuthResolver() {
 }
 
 export function createPlaylistManagementCore() {
-  const writeContext = createWriteContextService({
-    youtubeApi: createWriteContextYoutubeApiAdapter(),
-    channelSelectionStore: {
-      getSelectedChannelId,
-      setSelectedChannelId,
-    },
-  });
+  const writeContext = createWriteContextCore();
 
   return createPlaylistManagementServices({
     authResolver: defaultAuthResolver(),

@@ -1,8 +1,6 @@
 import { createDefaultLogger } from "@/lib/channel-sync/adapters/logger";
-import { getSelectedChannelId, setSelectedChannelId } from "@/lib/db";
 import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
-import { createWriteContextYoutubeApiAdapter } from "@/lib/write-context/adapters/youtube-api";
-import { createWriteContextService } from "@/lib/write-context/service";
+import { createWriteContextCore } from "@/lib/write-context";
 import { createBackupCore } from "@/lib/backup";
 import { createAuditCore } from "@/lib/audit";
 import { createBatchStoreAdapter, createChangeSetStoreAdapter, createIdGenerator } from "./adapters/store";
@@ -27,10 +25,7 @@ function createRealClock() {
 // call exists anywhere in this repository outside of tests. Wiring a real YouTube adapter
 // behind WriteExecutor is Slice 4's explicit, separately-authorized job.
 export function createBatchCore() {
-  const writeContext = createWriteContextService({
-    youtubeApi: createWriteContextYoutubeApiAdapter(),
-    channelSelectionStore: { getSelectedChannelId, setSelectedChannelId },
-  });
+  const writeContext = createWriteContextCore();
 
   return createBatchServices({
     batchStore: createBatchStoreAdapter(),

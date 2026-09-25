@@ -7,7 +7,7 @@ import type { ChannelAccessDependencies } from "./contracts";
  * information a session can see must be scoped exclusively to whichever channel is active for
  * it, closing docs/TECHNICAL_DEBT.md RISK-02.
  *
- * Deliberately reuses the same `selectedChannelId` storage as `write-context/service.ts`
+ * Deliberately reuses the same `selectedChannelId` storage as `write-context/services.ts`
  * (single source of truth per AGENTS.md §D's "one guardrail per domain"), but NOT
  * `assertWriteChannel`'s live-YouTube-API cross-check -- that check exists because a write must
  * never fire against the wrong channel even if local storage is stale, which justifies its cost.

@@ -25,9 +25,7 @@ import {
   upsertOAuthUserFromCli,
   type OAuthUserSummary,
 } from "@/lib/db";
-import { createWriteContextYoutubeApiAdapter } from "@/lib/write-context/adapters/youtube-api";
-import { createWriteContextService } from "@/lib/write-context/service";
-import type { WriteChannelContext } from "@/lib/write-context/contracts";
+import { createWriteContextCore, type WriteChannelContext } from "@/lib/write-context";
 import type { CredentialRef, ResolvedCredentials } from "@/lib/video-metadata/contracts";
 import { DomainError } from "@/lib/video-metadata/contracts";
 import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
@@ -343,15 +341,7 @@ export function createCliAuthService(
       revokeToken: revokeGoogleToken,
     },
     credentialResolver: deps.credentialResolver ?? resolveGoogleCredentials,
-    writeContext:
-      deps.writeContext ??
-      createWriteContextService({
-        youtubeApi: createWriteContextYoutubeApiAdapter(),
-        channelSelectionStore: {
-          getSelectedChannelId,
-          setSelectedChannelId,
-        },
-      }),
+    writeContext: deps.writeContext ?? createWriteContextCore(),
     db: deps.db ?? {
       upsertUser: upsertOAuthUserFromCli,
       listUsers: listOAuthUsers,

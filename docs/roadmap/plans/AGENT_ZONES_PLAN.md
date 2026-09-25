@@ -80,7 +80,7 @@ effect.
 
 ## 4. Concurrency hazard found during design — active-channel state
 
-`getActiveChannelId(userId)` (defined in `src/lib/channel-access/service.ts`, called from
+`getActiveChannelId(userId)` (defined in `src/lib/channel-access/services.ts`, called from
 `src/lib/channel-sync/services.ts` via `deps.channelAccess`) is keyed by the **OAuth user**,
 not by agent connection. In this app's actual deployment model (single local operator, one real
 Google identity — `AGENTS.md` §F's own accepted "no per-user ownership boundary" tradeoff), two
