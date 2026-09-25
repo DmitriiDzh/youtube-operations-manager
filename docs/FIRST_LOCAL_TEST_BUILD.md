@@ -110,14 +110,16 @@ network, or your working tree — no `git pull`, nothing (see §3's note on why,
 
 Prefer not to use a terminal? Double-click `scripts/macos/start.command` in Finder instead — it
 just delegates to `start.sh` above (same checks, same behavior), for parity with the Windows
-`.bat`'s native double-click support.
+`.bat`'s native double-click support. `stop.command` and `update.command` are the same kind of
+double-clickable delegate for `stop.sh`/`update.sh` below.
 
-**To stop safely:** run `./scripts/macos/stop.sh` (or Ctrl+C the running `start.sh`).
+**To stop safely:** run `./scripts/macos/stop.sh` (or Ctrl+C the running `start.sh`), or
+double-click `stop.command`.
 
-**To update a standalone `published/<version>/` copy:** run `./scripts/macos/update.sh`, then
-`./scripts/macos/start.sh`. A git checkout running directly from `dev` doesn't need this manual
-step either — `git pull` yourself, then just run `start.sh`; `update.sh` still works there too, if
-you ever want to force a rebuild by hand.
+**To update a standalone `published/<version>/` copy:** run `./scripts/macos/update.sh` (or
+double-click `update.command`), then `start.sh`/`start.command`. A git checkout running directly
+from `dev` doesn't need this manual step either — `git pull` yourself, then just run `start.sh`;
+`update.sh` still works there too, if you ever want to force a rebuild by hand.
 
 > **Status of this procedure:** unlike the Windows launcher, this one **was actually executed** on
 > real macOS hardware during this task's implementation — `start.sh` (server came up, returned
