@@ -1588,7 +1588,7 @@ export function createMcpServer(
     // agent-connection identity. Production (`startMcpServer` below) resolves this once from the
     // `AGENT_CONNECTION_ID` env var the owner sets in each client's own MCP launch config; passed
     // explicitly here (not read from `process.env` deeper inside) so it stays trivially testable.
-    // `null`/undefined means "no identity" -- fine while zero connections are registered
+    // `null`/undefined means "no identity" -- fine while zero connections are enabled
     // (`assertAgentAllowedForCapability`'s own no-op fast path), rejected once any are.
     callerConnectionId?: string | null;
   } = {},

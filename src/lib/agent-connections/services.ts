@@ -42,10 +42,10 @@ function toAgentCapabilityZone(row: StoredAgentCapabilityZoneForService): AgentC
 }
 
 /**
- * BL-091 slice 1 -- registry/assignment CRUD only. Nothing here is called by any MCP tool, CLI
- * command, or API route yet; enforcement (slice 2) is a separate, not-yet-built consumer of
- * `listZones`/`getConnectionById`, pending the open scope question in
- * `docs/roadmap/plans/AGENT_ZONES_PLAN.md` §9.
+ * BL-091 -- registry/assignment CRUD plus the `assertAgentAllowedForCapability` enforcement
+ * primitive (see its own doc comment below). Called from `src/mcp/server.ts`'s `registerTool`
+ * wrapper and `src/cli/video-metadata.ts`'s zoned command handlers, and from
+ * `src/app/api/agent-connections/**` for connection/zone management.
  */
 export function createAgentConnectionsServices(deps: ServiceDependencies) {
   return {

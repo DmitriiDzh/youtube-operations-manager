@@ -830,7 +830,8 @@ export const contentProposalArtifacts = sqliteTable(
  * (e.g. "claude"/"codex"), identified by an operator-chosen slug `id`. **No secret/token field**
  * -- this is a coordination guardrail between agent clients the project owner already controls
  * both ends of, never an authentication boundary (`AGENTS.md` §F only governs real credentials).
- * Slice 1 only: this table has no reader or enforcement wired anywhere yet.
+ * Read by `assertAgentAllowedForCapability` (`src/lib/agent-connections/services.ts`) -- the
+ * enabled-connection count and identity this table holds directly drives the fail-closed policy.
  *
  * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`) -- deliberately
  * per-device, same reasoning as `creative_assets`/`content_proposals` (RISK-52): an MCP client's
@@ -850,10 +851,11 @@ export const agentConnections = sqliteTable("agent_connections", {
  * `"content_proposal.create_content_proposal"`). Zoned per capability, not per domain, so two
  * DRAFT actions in the same domain can go to different connections if the owner ever wants that
  * split; the Web UI groups by domain with a "split individually" option. `assignedConnectionId
- * IS NULL` means "open to any registered, enabled connection" (see the enforcement policy in
- * `docs/roadmap/plans/AGENT_ZONES_PLAN.md` §5) -- there is deliberately no "assigned to nobody,
- * rejected for everyone" state; that is what deleting the row (or never creating it) already means.
- * Slice 1 only: no enforcement reads this table yet.
+ * IS NULL` means "unassigned" -- read by `assertAgentAllowedForCapability`
+ * (`src/lib/agent-connections/services.ts`), which resolves it to "open to the sole caller" while
+ * exactly one connection is enabled, or "rejected for everyone" once two or more are (the owner's
+ * exclusivity rule -- an unassigned zone must never be silently shared between active agents; see
+ * `docs/roadmap/plans/AGENT_ZONES_PLAN.md` §5 for the full policy).
  *
  * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** -- same per-device reasoning as `agent_connections`
  * above (a zone assignment is only meaningful together with the connection ids it references).
@@ -4048,7 +4050,7 @@ export async function clearStoredCloudConnection(database: AppDb = db): Promise<
 
 // ---------------------------------------------------------------------------
 // BL-091 (`docs/roadmap/plans/AGENT_ZONES_PLAN.md`) -- agent connections + capability zones.
-// Slice 1 only: plain storage, no enforcement anywhere reads these yet.
+// Read by `assertAgentAllowedForCapability` (`src/lib/agent-connections/services.ts`).
 // ---------------------------------------------------------------------------
 
 export type StoredAgentConnection = {

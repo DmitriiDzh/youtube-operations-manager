@@ -68,20 +68,32 @@ export function AgentConnectionsManager() {
   }
 
   async function handleToggleEnabled(connection: AgentConnection) {
-    await fetch(`/api/agent-connections/${encodeURIComponent(connection.id)}`, {
+    setError(null);
+    const res = await fetch(`/api/agent-connections/${encodeURIComponent(connection.id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled: !connection.enabled }),
     });
+    if (!res.ok) {
+      const data = await res.json();
+      setError(data.message ?? "Failed to update connection");
+      return;
+    }
     await fetchAll();
   }
 
   async function handleAssignZone(capabilityId: string, assignedConnectionId: string | null) {
-    await fetch("/api/agent-connections/zones", {
+    setError(null);
+    const res = await fetch("/api/agent-connections/zones", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ capabilityId, assignedConnectionId }),
     });
+    if (!res.ok) {
+      const data = await res.json();
+      setError(data.message ?? "Failed to assign zone");
+      return;
+    }
     await fetchAll();
   }
 
@@ -98,10 +110,13 @@ export function AgentConnectionsManager() {
             exclusively responsible for its own set of actions, while all connected agents still
             see the same underlying data. Each client sets its own AGENT_CONNECTION_ID (env
             variable) in its own MCP launch config, or --agentConnectionId for the CLI, matching a
-            connection id registered here. While no connection is registered below, this has zero
-            effect -- identical to today&rsquo;s single-agent behavior. Once one or more are
-            registered, every zoned action requires a resolvable, registered, enabled connection
-            id -- an unrecognized one is rejected, never silently allowed.
+            connection id registered here. While no connection below is ENABLED, this has zero
+            effect -- identical to today&rsquo;s single-agent behavior (a registered-but-disabled
+            connection does not count). Once one or more are enabled, every zoned action requires a
+            resolvable, enabled, registered connection id -- an unrecognized one is rejected, never
+            silently allowed. An action left &quot;Unassigned&quot; below is only usable while
+            exactly one connection is enabled -- once two or more are enabled, an unassigned action
+            is blocked for everyone until you assign it to exactly one connection.
           </InfoTooltip>
         </h3>
       </div>
