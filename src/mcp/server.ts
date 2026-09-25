@@ -39,6 +39,17 @@ import {
 } from "@/lib/ai-localization/schemas";
 import { createAgentOperationsCore, type AgentOperationsCore, AGENT_API_VERSION } from "@/lib/agent-operations";
 import {
+  createAgentConnectionsCore,
+  type AgentConnectionsCoreSubset,
+  CAPABILITY_CHANNEL_SYNC,
+  CAPABILITY_CHANGESET_CREATE_FROM_IMPORT,
+  CAPABILITY_AI_LOCALIZATION_GENERATE,
+  CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET,
+  CAPABILITY_CONTENT_PROPOSAL_CREATE,
+  CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT,
+  resolveAgentConnectionIdFromEnv,
+} from "@/lib/agent-connections";
+import {
   createContentProposalInputSchema,
   findComparableVideosInputSchema,
   findComparableVideosSdkInputSchema,
@@ -1571,9 +1582,20 @@ export function createMcpServer(
     ...createVideoMetadataCore(),
     ...createPlaylistManagementCore(),
   },
-  options: { connectionEnabled?: boolean } = {}
+  options: {
+    connectionEnabled?: boolean;
+    // BL-091 slice 2 (docs/roadmap/plans/AGENT_ZONES_PLAN.md §6) -- this MCP server process's own
+    // agent-connection identity. Production (`startMcpServer` below) resolves this once from the
+    // `AGENT_CONNECTION_ID` env var the owner sets in each client's own MCP launch config; passed
+    // explicitly here (not read from `process.env` deeper inside) so it stays trivially testable.
+    // `null`/undefined means "no identity" -- fine while zero connections are enabled
+    // (`assertAgentAllowedForCapability`'s own no-op fast path), rejected once any are.
+    callerConnectionId?: string | null;
+  } = {},
+  agentConnectionsCore: AgentConnectionsCoreSubset = createAgentConnectionsCore()
 ) {
   const connectionEnabled = options.connectionEnabled ?? false;
+  const callerConnectionId = options.callerConnectionId ?? null;
 
   const server = new McpServer({
     name: "youtube-video-metadata",
@@ -1591,16 +1613,38 @@ export function createMcpServer(
   function registerTool(
     name: string,
     config: { description: string; inputSchema: z.ZodTypeAny },
-    handler: (args: never) => Promise<ToolResponse> | ToolResponse | ReturnType<typeof handlers.whoami>
+    handler: (args: never) => Promise<ToolResponse> | ToolResponse | ReturnType<typeof handlers.whoami>,
+    // BL-091 slice 2 -- present only for the specific capabilities the owner approved zoning for
+    // (Telegram 2026-09-25: content_proposal's two DRAFT actions, channel_sync,
+    // changeset_create_from_import, ai_localization_generate/create_change_set). Every other
+    // tool is left unzoned deliberately (see docs/roadmap/plans/AGENT_ZONES_PLAN.md §3/§9) --
+    // this is an opt-in parameter, not a mandatory classification, so this slice's diff stays
+    // scoped to the tools actually in scope rather than touching every other registration.
+    zoneCapabilityId?: string
   ) {
     if (!connectionEnabled) {
       return;
     }
     // Counts real tool invocations for the Settings tab's traffic stats (owner instruction,
-    // 2026-09-22) -- there is no meaningful "blocked" count here, unlike the other three
-    // gateways: when MCP connection is off, this wrapper never even runs (registerTool
-    // returns above), so there is no failed call to count, only an absent tool.
+    // 2026-09-22). When MCP connection is off, this wrapper never even runs (registerTool
+    // returns above), so there is no failed call to count there, only an absent tool -- but a
+    // BL-091 zone rejection below IS a real, counted "blocked" attempt through this gateway
+    // category, exactly like the other three gateways record their own rejections.
     const countedHandler = (async (args: never) => {
+      if (zoneCapabilityId) {
+        try {
+          await agentConnectionsCore.assertAgentAllowedForCapability({
+            capabilityId: zoneCapabilityId,
+            callerConnectionId,
+          });
+        } catch (error) {
+          await recordGatewayCallOutcome("mcp_tool_calls", "blocked");
+          // Matches every other DomainError's surfacing convention in this file -- an isError
+          // tool response, never a thrown exception escaping this callback (each individual
+          // handler function below already does the same in its own try/catch).
+          return toolErrorResult(error);
+        }
+      }
       await recordGatewayCallOutcome("mcp_tool_calls", "allowed");
       return handler(args);
     }) as typeof handler;
@@ -1797,7 +1841,8 @@ export function createMcpServer(
         "Parse an XLSX localization workbook (base64-encoded) and persist a new Change Set from it -- the same local-only persistence the Web UI's POST .../localizations/import route performs. Never writes to YouTube; mutating locally, so it is gated exactly like channel_sync.",
       inputSchema: localizationImportPreviewInputSchema,
     },
-    (args) => handlers.changesetCreateFromImport(args)
+    (args) => handlers.changesetCreateFromImport(args),
+    CAPABILITY_CHANGESET_CREATE_FROM_IMPORT
   );
 
   registerTool(
@@ -1827,7 +1872,8 @@ export function createMcpServer(
         "Synchronize a channel's videos into the local database (read from YouTube, write to local SQLite only -- never a YouTube write). channelId is OPTIONAL and defaults to the authenticated account's own channel. credentialRef is OPTIONAL and falls back to active local auth context.",
       inputSchema: syncChannelInputSchema.partial({ credentialRef: true }),
     },
-    (args) => handlers.channelSync(args)
+    (args) => handlers.channelSync(args),
+    CAPABILITY_CHANNEL_SYNC
   );
 
   registerTool(
@@ -1916,7 +1962,13 @@ export function createMcpServer(
         "Generate AI localization proposals (title/description) for (videoId, targetLanguage) pairs on a channel, using the same provider/validation logic as the Web UI's 'Generate with AI' step. Persists nothing -- the caller (human or agent) reviews/edits the returned proposals, then calls ai_localization_create_change_set to persist the reviewed set. Omitting both providerName and connectionId uses the deterministic mock provider (no network call, no cost). Passing connectionId routes through a real, user-configured AI Connection and makes a genuine outbound network call to that provider -- this can incur real cost and is capped at 50 (video, language) targets per call, well below the plain schema limit. Requires channelId to be the caller's currently-active channel. No credentialRef parameter -- always uses the active local auth context, matching changeset_list/changeset_get's own convention in this server.",
       inputSchema: generateProposalsInputSchema,
     },
-    (args) => handlers.aiLocalizationGenerate(args)
+    (args) => handlers.aiLocalizationGenerate(args),
+    // Zoned for coordination/cost-control, not because it mutates local state (it persists
+    // nothing) -- a real `connectionId` call makes a genuine, potentially paid outbound request,
+    // exactly the kind of action the owner's "Claude owns localization" split is meant to reserve
+    // for one agent (docs/roadmap/plans/AGENT_ZONES_PLAN.md §3, owner-approved scope, Telegram
+    // 2026-09-25: "Согласен").
+    CAPABILITY_AI_LOCALIZATION_GENERATE
   );
 
   registerTool(
@@ -1926,7 +1978,8 @@ export function createMcpServer(
         "Persist a reviewed (optionally edited) set of AI localization proposals as a new Change Set, source 'ai_localization' -- the exact same persistence path createChangeSetFromImport (XLSX) already uses, so approval, conflict revalidation, Batch creation, and the live-write barrier are completely unchanged. The resulting Change Set and every Change on it always start 'pending' -- there is no code path, here or anywhere else, that can mark an AI-authored proposal already-approved; a human must still approve it via the Web UI before it can ever be included in a Batch. Optionally echo back the generationContext a prior ai_localization_generate call returned as `provenance`, to have it durably recorded against the resulting Change Set. Also optionally accepts `evidence` (an array of external-research/comparable-video citations -- url, retrievedAt, description, claimSupported, sourceType, optional excerpt) and `rationale` (free text), recorded once per Change Set, not per individual proposal; neither is independently verified by this server. Every call also has its calling transport (this MCP surface) and the current agent API version durably recorded against the resulting provenance record -- retrievable via agent_get_generation_provenance. Mutates local application state (never YouTube directly), so this tool is gated by the same device-availability/recovery-mode check as changeset_create_from_import. No credentialRef parameter -- always uses the active local auth context.",
       inputSchema: createChangeSetFromGenerationInputSchema,
     },
-    (args) => handlers.aiLocalizationCreateChangeSet(args)
+    (args) => handlers.aiLocalizationCreateChangeSet(args),
+    CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET
   );
 
   registerTool(
@@ -2016,7 +2069,8 @@ export function createMcpServer(
         "Create a structured Content Proposal (owner spec §18) -- optional objective, topicConcept, rationale, evidence (external-research/comparable-video citations: url, retrievedAt, description, claimSupported, sourceType, optional excerpt), a bounded free-form brief (proposedTitleDirection, thumbnailDirection, visualBrief, audioBrief, durationHint, publicationHypothesis, localizationStrategy, experimentDesign, expectedMetrics, requiredProductionOutputs), and referenceVideoIds/referenceAssetIds (each validated to actually belong to the requesting channel). Write-once -- there is no update or approval workflow for this domain; a proposal is a DRAFT object, full stop. createdVia/agentApiVersion (owner spec §22) are SERVER-STAMPED: 'mcp' with the real agent API version for a proposal created through this MCP surface, never caller-supplied. The application does not generate any of the proposed content itself. Requires channelId to be the caller's currently-active channel. Mutates local application state, so this tool is gated by the same device-availability/recovery-mode check as ai_localization_create_change_set.",
       inputSchema: createContentProposalInputSchema,
     },
-    (args) => handlers.agentCreateContentProposal(args)
+    (args) => handlers.agentCreateContentProposal(args),
+    CAPABILITY_CONTENT_PROPOSAL_CREATE
   );
 
   registerTool(
@@ -2046,7 +2100,8 @@ export function createMcpServer(
         "Register an externally-produced artifact (owner spec §19 -- a thumbnail, source image, audio file, rendered video, script, production manifest, etc. produced by Codex or an external tool) and link it back to the Content Proposal that requested it. channelId, proposalId, assetType, referenceKind, referenceValue are required; title/description/linkedVideoId/provenance optional. referenceKind is restricted to 'url'/'external_artifact_id' only -- never 'local_path' (owner spec §17: an agent may only receive/register explicitly authorized assets, never self-authorize filesystem access; local_path registration stays available only via the operator-facing 'asset register' CLI command). When referenceKind is 'url', referenceValue must actually be an http(s) URL (validated, not just labeled) -- a filesystem path or file:// URI is rejected. 'external_artifact_id' remains an intentionally opaque identifier with no structural validation beyond non-empty; this application never resolves it. createdVia/agentApiVersion (owner spec §22) are SERVER-STAMPED: 'mcp' with the real agent API version, never caller-supplied. Requires channelId to be the caller's currently-active channel and proposalId to actually belong to it. Mutates local application state, so this tool is gated by the same device-availability/recovery-mode check as agent_create_content_proposal.",
       inputSchema: registerExternalArtifactInputSchema,
     },
-    (args) => handlers.agentRegisterExternalArtifact(args)
+    (args) => handlers.agentRegisterExternalArtifact(args),
+    CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT
   );
 
   registerTool(
@@ -2115,7 +2170,11 @@ export async function startMcpServer() {
   // at construction time, so an already-running MCP connection keeps its existing tool set
   // until it reconnects; this is never hot-swapped mid-session.
   const connectionEnabled = await getMcpConnectionEnabled();
-  const server = createMcpServer(undefined, { connectionEnabled });
+  // BL-091 slice 2 -- this process's own agent-connection identity, set by whichever client's
+  // MCP launch config spawned it (docs/roadmap/plans/AGENT_ZONES_PLAN.md §6). An empty string is
+  // treated the same as unset, not as a literal empty-string connection id.
+  const callerConnectionId = resolveAgentConnectionIdFromEnv(process.env.AGENT_CONNECTION_ID);
+  const server = createMcpServer(undefined, { connectionEnabled, callerConnectionId });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

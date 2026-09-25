@@ -13,6 +13,7 @@ import type { ChannelAccessCore } from "@/lib/channel-access";
 import type { AnalyticsCore } from "@/lib/analytics";
 import type { AiLocalizationCore } from "@/lib/ai-localization";
 import type { AgentOperationsCore } from "@/lib/agent-operations";
+import type { AgentConnectionsCoreSubset } from "@/lib/agent-connections";
 import { AGENT_API_VERSION } from "@/lib/agent-operations";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
@@ -4535,4 +4536,104 @@ test("MCP agent_list_asset_performance is never blocked by the operation lock (r
   } finally {
     await releaseOperationLock(rawSqlClient);
   }
+});
+
+// BL-091 slice 2 (docs/roadmap/plans/AGENT_ZONES_PLAN.md) -- proves the zone-enforcement wiring
+// itself (does the tool actually call assertAgentAllowedForCapability at all), not the zone
+// matching logic (exhaustively covered by src/lib/agent-connections/services.test.ts). Uses a
+// fake AgentConnectionsCoreSubset that unconditionally rejects, isolated from the real DB.
+function makeAlwaysDenyingAgentConnectionsCoreStub(): AgentConnectionsCoreSubset {
+  return {
+    async assertAgentAllowedForCapability() {
+      throw new DomainError({ code: "AGENT_ZONE_VIOLATION", message: "denied by test stub" });
+    },
+  };
+}
+
+// Expected `capabilityId` per tool name -- deliberately hand-verified once here against the real
+// call sites in src/mcp/server.ts (which import the same shared constants from
+// src/lib/agent-connections), rather than importing those constants into this map, so a typo'd
+// literal at a call site cannot silently match a typo'd literal here.
+const EXPECTED_ZONE_CAPABILITY_IDS: Record<string, string> = {
+  channel_sync: "channel_sync",
+  changeset_create_from_import: "changeset_create_from_import",
+  ai_localization_generate: "ai_localization_generate",
+  ai_localization_create_change_set: "ai_localization_create_change_set",
+  agent_create_content_proposal: "content_proposal.create_content_proposal",
+  agent_register_external_artifact: "content_proposal.register_external_artifact",
+};
+
+const ZONED_MCP_TOOL_NAMES = Object.keys(EXPECTED_ZONE_CAPABILITY_IDS) as (keyof typeof EXPECTED_ZONE_CAPABILITY_IDS)[];
+
+function makeCapturingAgentConnectionsCoreStub(): AgentConnectionsCoreSubset & {
+  calls: { capabilityId: string; callerConnectionId: string | null }[];
+} {
+  const calls: { capabilityId: string; callerConnectionId: string | null }[] = [];
+  return {
+    calls,
+    async assertAgentAllowedForCapability(args) {
+      calls.push(args);
+    },
+  };
+}
+
+for (const toolName of ZONED_MCP_TOOL_NAMES) {
+  test(`MCP ${toolName} is actually wired through agent-zone enforcement (rejected when the stub always denies)`, async () => {
+    const server = createMcpServer(makeCoreStub(), { connectionEnabled: true }, makeAlwaysDenyingAgentConnectionsCoreStub());
+    const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: { text: string }[] }> }> })
+      ._registeredTools;
+
+    const result = await tools[toolName].handler({});
+
+    assert.equal(result.isError, true);
+    const payload = JSON.parse(result.content[0]?.text ?? "{}");
+    assert.equal(payload.error.code, "AGENT_ZONE_VIOLATION");
+  });
+
+  test(`MCP ${toolName} passes exactly its own capabilityId ("${EXPECTED_ZONE_CAPABILITY_IDS[toolName]}") and this server's callerConnectionId to assertAgentAllowedForCapability`, async () => {
+    const capturing = makeCapturingAgentConnectionsCoreStub();
+    const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, callerConnectionId: "test-caller" }, capturing);
+    const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<unknown> }> })._registeredTools;
+
+    await tools[toolName].handler({});
+
+    assert.equal(capturing.calls.length, 1);
+    assert.deepEqual(capturing.calls[0], { capabilityId: EXPECTED_ZONE_CAPABILITY_IDS[toolName], callerConnectionId: "test-caller" });
+  });
+}
+
+test("MCP createMcpServer forwards options.callerConnectionId: null (the default) when not explicitly set", async () => {
+  const capturing = makeCapturingAgentConnectionsCoreStub();
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true }, capturing);
+  const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<unknown> }> })._registeredTools;
+
+  await tools.channel_sync.handler({});
+
+  assert.equal(capturing.calls[0]?.callerConnectionId, null);
+});
+
+test("MCP whoami (an unzoned tool) is never affected by agent-zone enforcement, even when the stub always denies", async () => {
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true }, makeAlwaysDenyingAgentConnectionsCoreStub());
+  const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: { text: string }[] }> }> })
+    ._registeredTools;
+
+  const result = await tools.whoami.handler({});
+
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.notEqual(payload?.error?.code, "AGENT_ZONE_VIOLATION");
+});
+
+test("MCP channel_sync passes through to the real handler when zoning allows the call (zero connections registered, real default agent-connections core)", async () => {
+  // No 3rd arg -- uses createMcpServer's own real default (createAgentConnectionsCore()), which
+  // is a no-op while zero connections are registered (this test's actual DB state).
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
+  const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: { text: string }[] }> }> })
+    ._registeredTools;
+
+  const result = await tools.channel_sync.handler({ channelId: "UC_does_not_exist" });
+
+  // Reaches the real channelSync handler and fails for an UNRELATED reason (no such channel) --
+  // proving the zone check did not block it, not that the whole call succeeded.
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.notEqual(payload?.error?.code, "AGENT_ZONE_VIOLATION");
 });

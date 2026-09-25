@@ -506,8 +506,11 @@ export const appSettings = sqliteTable("app_settings", {
  * which calls are still "in the window," which a simple incrementing counter can never answer
  * once time has passed. See `getGatewayTrafficLast24h` below for the windowed read and
  * `pruneOldGatewayCallEvents` for why this table does not grow unboundedly forever.
- * `mcp_tool_calls` never records a `blocked` outcome: when MCP connection is off, a tool is
- * never registered at all, so there is no failed call to log, only an absent one.
+ * `mcp_tool_calls` never records a `blocked` outcome for the "MCP connection off" case: a tool is
+ * never registered at all then, so there is no failed call to log, only an absent one. It DOES
+ * record `blocked` for a BL-091 agent-zone rejection (`src/mcp/server.ts`'s `registerTool`
+ * wrapper) -- that is a real, counted call attempt through an actually-registered tool, unlike the
+ * "connection off" case.
  *
  * `cloud_monitoring_reads` (added 2026-09-22, owner instruction, Telegram, after being told
  * checking Google Cloud's own quota numbers is itself a real API call: "в таком случае на него
@@ -824,6 +827,47 @@ export const contentProposalArtifacts = sqliteTable(
   },
   (table) => [index("content_proposal_artifacts_proposal_id_idx").on(table.proposalId)]
 );
+
+/**
+ * BL-091 (`docs/roadmap/plans/AGENT_ZONES_PLAN.md`) -- registry of distinct agent connections
+ * (e.g. "claude"/"codex"), identified by an operator-chosen slug `id`. **No secret/token field**
+ * -- this is a coordination guardrail between agent clients the project owner already controls
+ * both ends of, never an authentication boundary (`AGENTS.md` §F only governs real credentials).
+ * Read by `assertAgentAllowedForCapability` (`src/lib/agent-connections/services.ts`) -- the
+ * enabled-connection count and identity this table holds directly drives the fail-closed policy.
+ *
+ * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`) -- deliberately
+ * per-device, same reasoning as `creative_assets`/`content_proposals` (RISK-52): an MCP client's
+ * own launch config (and the `AGENT_CONNECTION_ID` it sets) is inherently per-machine.
+ */
+export const agentConnections = sqliteTable("agent_connections", {
+  id: text("id").primaryKey(),
+  label: text("label").notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+/**
+ * BL-091 -- which `agent_connections.id` (if any) exclusively owns a given capability id (e.g.
+ * `"content_proposal.create_content_proposal"`). Zoned per capability, not per domain, so two
+ * DRAFT actions in the same domain can go to different connections if the owner ever wants that
+ * split; the Web UI groups capabilities visually by domain but assigns each one individually (no
+ * domain-level bulk-assign control). `assignedConnectionId IS NULL` means "unassigned" -- read by
+ * `assertAgentAllowedForCapability` (`src/lib/agent-connections/services.ts`), which rejects it
+ * for EVERY connection once one or more are enabled, with no exception for exactly one enabled
+ * connection (the owner's exclusivity rule -- an unassigned zone must never be silently granted
+ * to anyone, even the only connection that exists; see
+ * `docs/roadmap/plans/AGENT_ZONES_PLAN.md` §5 for the full policy).
+ *
+ * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** -- same per-device reasoning as `agent_connections`
+ * above (a zone assignment is only meaningful together with the connection ids it references).
+ */
+export const agentCapabilityZones = sqliteTable("agent_capability_zones", {
+  capabilityId: text("capability_id").primaryKey(),
+  assignedConnectionId: text("assigned_connection_id").references(() => agentConnections.id),
+});
 
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
@@ -1161,6 +1205,25 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
+    },
+  },
+  {
+    version: 20,
+    description:
+      "agent_connections, agent_capability_zones -- multi-agent responsibility zones (docs/roadmap/plans/AGENT_ZONES_PLAN.md, BL-091)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS agent_connections (" +
+          "id TEXT PRIMARY KEY, " +
+          "label TEXT NOT NULL, " +
+          "enabled INTEGER NOT NULL DEFAULT 1, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS agent_capability_zones (" +
+          "capability_id TEXT PRIMARY KEY, " +
+          "assigned_connection_id TEXT REFERENCES agent_connections(id))"
+      );
     },
   },
 ];
@@ -3987,4 +4050,80 @@ export async function upsertStoredCloudConnection(
 
 export async function clearStoredCloudConnection(database: AppDb = db): Promise<void> {
   await database.delete(cloudConnection).where(eq(cloudConnection.id, CLOUD_CONNECTION_SINGLETON_ID));
+}
+
+// ---------------------------------------------------------------------------
+// BL-091 (`docs/roadmap/plans/AGENT_ZONES_PLAN.md`) -- agent connections + capability zones.
+// Read by `assertAgentAllowedForCapability` (`src/lib/agent-connections/services.ts`).
+// ---------------------------------------------------------------------------
+
+export type StoredAgentConnection = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  createdAt: Date;
+};
+
+export async function insertAgentConnection(
+  input: { id: string; label: string; enabled: boolean },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(agentConnections).values({
+    id: input.id,
+    label: input.label,
+    enabled: input.enabled,
+  });
+}
+
+export async function listAgentConnections(database: AppDb = db): Promise<StoredAgentConnection[]> {
+  return database.select().from(agentConnections).orderBy(agentConnections.id);
+}
+
+export async function getAgentConnectionById(
+  id: string,
+  database: AppDb = db
+): Promise<StoredAgentConnection | null> {
+  const [row] = await database.select().from(agentConnections).where(eq(agentConnections.id, id));
+  return row ?? null;
+}
+
+export async function updateAgentConnectionEnabled(
+  id: string,
+  enabled: boolean,
+  database: AppDb = db
+): Promise<void> {
+  await database.update(agentConnections).set({ enabled }).where(eq(agentConnections.id, id));
+}
+
+export type StoredAgentCapabilityZone = {
+  capabilityId: string;
+  assignedConnectionId: string | null;
+};
+
+export async function upsertAgentCapabilityZone(
+  input: { capabilityId: string; assignedConnectionId: string | null },
+  database: AppDb = db
+): Promise<void> {
+  await database
+    .insert(agentCapabilityZones)
+    .values({ capabilityId: input.capabilityId, assignedConnectionId: input.assignedConnectionId })
+    .onConflictDoUpdate({
+      target: agentCapabilityZones.capabilityId,
+      set: { assignedConnectionId: input.assignedConnectionId },
+    });
+}
+
+export async function listAgentCapabilityZones(database: AppDb = db): Promise<StoredAgentCapabilityZone[]> {
+  return database.select().from(agentCapabilityZones).orderBy(agentCapabilityZones.capabilityId);
+}
+
+export async function getAgentCapabilityZoneById(
+  capabilityId: string,
+  database: AppDb = db
+): Promise<StoredAgentCapabilityZone | null> {
+  const [row] = await database
+    .select()
+    .from(agentCapabilityZones)
+    .where(eq(agentCapabilityZones.capabilityId, capabilityId));
+  return row ?? null;
 }

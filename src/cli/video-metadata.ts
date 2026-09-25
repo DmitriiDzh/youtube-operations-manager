@@ -22,6 +22,17 @@ import { createAnalyticsCore, type AnalyticsCore } from "@/lib/analytics";
 import { createAiLocalizationCore, type AiLocalizationCore } from "@/lib/ai-localization";
 import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent-operations";
 import { createAssetCatalogCore, type AssetCatalogCore } from "@/lib/asset-catalog";
+import {
+  createAgentConnectionsCore,
+  type AgentConnectionsCoreSubset,
+  CAPABILITY_CHANNEL_SYNC,
+  CAPABILITY_CHANGESET_CREATE_FROM_IMPORT,
+  CAPABILITY_AI_LOCALIZATION_GENERATE,
+  CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET,
+  CAPABILITY_CONTENT_PROPOSAL_CREATE,
+  CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT,
+  resolveAgentConnectionIdFromEnv,
+} from "@/lib/agent-connections";
 
 // CLI parity for the read/propose/create MCP tools (docs/roadmap/plans/PHASE_7_PLAN.md,
 // docs/TECHNICAL_DEBT.md RISK-04) -- same core factories, same "smallest safe slice" as
@@ -496,6 +507,7 @@ export async function runCliCommand(args: {
   aiLocalizationCore?: AiLocalizationCliCoreSubset;
   agentOperationsCore?: AgentOperationsCliCoreSubset;
   assetCatalogCore?: AssetCatalogCliCoreSubset;
+  agentConnectionsCore?: AgentConnectionsCoreSubset;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
 }): Promise<number> {
@@ -511,6 +523,7 @@ export async function runCliCommand(args: {
   const aiLocalizationCore = args.aiLocalizationCore ?? createAiLocalizationCore();
   const agentOperationsCore = args.agentOperationsCore ?? createAgentOperationsCore();
   const assetCatalogCore = args.assetCatalogCore ?? createAssetCatalogCore();
+  const agentConnectionsCore = args.agentConnectionsCore ?? createAgentConnectionsCore();
   const writeStdout =
     args.writeStdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const writeStderr =
@@ -529,6 +542,19 @@ export async function runCliCommand(args: {
     ) {
       await assertDeviceAvailableForMutation(rawSqlClient);
     }
+
+    // BL-091 slice 2 (docs/roadmap/plans/AGENT_ZONES_PLAN.md §6) -- this CLI invocation's own
+    // agent-connection identity: --agentConnectionId flag takes priority, falling back to the
+    // same AGENT_CONNECTION_ID env var MCP resolves at spawn time, so a script that already sets
+    // the env var for its MCP client needs no CLI-specific change. Deliberately resolved here,
+    // once, rather than inside each of the (few) zoned command blocks below -- keeps every zoned
+    // call site's own check a single, uniform one-liner, even though it is not literally the same
+    // blanket `command`-only gate as the device-availability check above (a bare `command` string
+    // is ambiguous across namespaces here -- e.g. "create" is both `changeset create` and
+    // `playlist create` -- so each zoned call site names its own capability id explicitly).
+    const callerConnectionId =
+      optionalStringFlag(parsedArgs.flags, "agentConnectionId") ??
+      resolveAgentConnectionIdFromEnv(process.env.AGENT_CONNECTION_ID);
 
     if (parsedArgs.namespace === "auth") {
       if (parsedArgs.command === "login") {
@@ -634,6 +660,10 @@ export async function runCliCommand(args: {
 
       // "import" -- persists a new Change Set. Never writes to YouTube; gated above like
       // playlist_create/apply (mutates the local database).
+      await agentConnectionsCore.assertAgentAllowedForCapability({
+        capabilityId: CAPABILITY_CHANGESET_CREATE_FROM_IMPORT,
+        callerConnectionId,
+      });
       const result = await operationsCore.createChangeSetFromImport({ channelId, filename, buffer });
       writeStdout(serializeSuccess(result));
       return 0;
@@ -678,6 +708,10 @@ export async function runCliCommand(args: {
       });
 
       if (parsedArgs.command === "generate") {
+        await agentConnectionsCore.assertAgentAllowedForCapability({
+          capabilityId: CAPABILITY_AI_LOCALIZATION_GENERATE,
+          callerConnectionId,
+        });
         const videoIds = requiredStringFlag(parsedArgs.flags, "videoIds")
           .split(",")
           .map((entry) => entry.trim())
@@ -704,6 +738,10 @@ export async function runCliCommand(args: {
       // for --evidenceJson, owner spec §13's EvidenceReference[] shape) -- there is no
       // reasonable flat-flag equivalent for either. --rationale is plain free text (Phase 7
       // slice F, owner spec §12).
+      await agentConnectionsCore.assertAgentAllowedForCapability({
+        capabilityId: CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET,
+        callerConnectionId,
+      });
       const proposalsJson = requiredStringFlag(parsedArgs.flags, "proposalsJson");
       const provenanceJsonFlag = optionalStringFlag(parsedArgs.flags, "provenanceJson");
       const evidenceJsonFlag = optionalStringFlag(parsedArgs.flags, "evidenceJson");
@@ -855,6 +893,10 @@ export async function runCliCommand(args: {
       // flat-flag equivalent for either shape. --referenceVideoIds/--referenceAssetIds take a
       // comma-separated list of ids, same convention as --metricNames above.
       if (parsedArgs.command === "create-content-proposal") {
+        await agentConnectionsCore.assertAgentAllowedForCapability({
+          capabilityId: CAPABILITY_CONTENT_PROPOSAL_CREATE,
+          callerConnectionId,
+        });
         const evidenceJsonFlag = optionalStringFlag(parsedArgs.flags, "evidenceJson");
         const briefJsonFlag = optionalStringFlag(parsedArgs.flags, "briefJson");
         const referenceVideoIdsFlag = optionalStringFlag(parsedArgs.flags, "referenceVideoIds");
@@ -912,6 +954,10 @@ export async function runCliCommand(args: {
       // url/external_artifact_id by the schema itself -- local_path stays available only via the
       // operator-facing "asset register" command.
       if (parsedArgs.command === "register-external-artifact") {
+        await agentConnectionsCore.assertAgentAllowedForCapability({
+          capabilityId: CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT,
+          callerConnectionId,
+        });
         const provenanceJsonFlag = optionalStringFlag(parsedArgs.flags, "provenanceJson");
         let provenance: unknown;
         try {
@@ -1083,6 +1129,7 @@ export async function runCliCommand(args: {
 
     if (parsedArgs.namespace === "channel") {
       if (parsedArgs.command === "sync") {
+        await agentConnectionsCore.assertAgentAllowedForCapability({ capabilityId: CAPABILITY_CHANNEL_SYNC, callerConnectionId });
         const channelId = optionalStringFlag(parsedArgs.flags, "channelId");
         const result = await channelSyncCore.syncChannel({
           credentialRef,

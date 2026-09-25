@@ -883,6 +883,8 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-56 | `createChangeSetFromGeneration` (Phase 7 slice F) persists the Change Set, then separately writes its now-unconditional provenance row -- not one atomic operation | none blocking | OPEN |
 | RISK-57 | Owner spec §22's "operation type" is now structurally implied by which table a record lives on (slice G added a second); "originating task"/owner spec §21's task-envelope model remain unstarted | none blocking | OPEN |
 | RISK-58 | `registerExternalArtifact`'s `referenceKind: "url"` accepted any non-empty string, not just an actual URL (label-only enforcement); `external_artifact_id` remains intentionally opaque | none blocking | `url` half RESOLVED, 2026-09-24; `external_artifact_id` half OPEN by design |
+| RISK-59 | MCP `tools/list` rendering of a ZodEffects (`.refine()`-based) `inputSchema` had not been verified end-to-end | none blocking | RESOLVED, 2026-09-25 |
+| RISK-60 | `write_channel_select`/`auth_user_select` mutate global, not per-connection, active-channel state -- a race once multiple agent connections (BL-091) operate concurrently | none blocking yet | OPEN |
 
 ## RISK-53 — `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` — RESOLVED, 2026-09-24
 
@@ -959,5 +961,17 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Gate(s):** none. Resolved before slice J's own review cycle began, per this risk entry's own stated intent.
 - **Approval required from:** none.
 - **Status:** RESOLVED, 2026-09-25.
+
+## RISK-60 — `write_channel_select`/`auth_user_select` mutate global, not per-connection, state — a race once multiple agent connections operate concurrently (BL-091) — OPEN, 2026-09-25
+
+- **Affected components:** `src/mcp/server.ts`'s `write_channel_select`/`auth_user_select` MCP tools; `getActiveChannelId(userId)` (defined in `src/lib/channel-access/service.ts`, called from `src/lib/channel-sync/services.ts` via `deps.channelAccess`); `src/lib/write-context/`.
+- **Found during:** BL-091 (`docs/roadmap/plans/AGENT_ZONES_PLAN.md`) slice 2 design, while working out which mutating MCP tools needed agent-zone enforcement.
+- **Current behavior:** the "active channel"/active-identity state these two tools switch is keyed by OAuth user, not by which MCP client (Codex, Claude, or any future connection) is calling. In this app's actual deployment model (single local operator, one real Google identity, `AGENTS.md` §F's accepted "no per-user ownership boundary" tradeoff), two simultaneously-connected agent processes therefore share one mutable "active channel."
+- **Actual risk:** if Codex is mid-task on channel A and a concurrently-connected Claude connection calls `write_channel_select` to switch to channel B, Codex's next call can silently resolve against the wrong channel — a real correctness hazard once BL-091 makes multiple simultaneous agent connections an intended, supported scenario (today, with a single de facto agent, this is latent and unobserved).
+- **Why not fixed as part of BL-091 slice 2:** the plan's design pass proposed making these two tools operator-only (excluded from every agent connection's callable surface), but the project owner's actual confirmation (Telegram, 2026-09-25: "1. Согласен", "2. Оставим локально") only addressed the two explicitly numbered scope questions in `docs/roadmap/plans/AGENT_ZONES_PLAN.md` §9 — not this specific proposal. Changing `write_channel_select`/`auth_user_select`'s availability without that explicit confirmation would have been an unauthorized scope expansion (`AGENTS.md` §C).
+- **Required remediation (not yet scheduled):** either (a) make active-channel/active-identity state per-connection rather than a single global row, or (b) restrict `write_channel_select`/`auth_user_select` to an operator-only surface (never callable by a zoned agent connection). Needs an explicit owner decision — this entry exists so that decision is not lost, not to imply either option is already chosen.
+- **Gate(s):** none yet assigned; relevant once genuinely concurrent multi-agent operation is in real use.
+- **Approval required from:** project owner, before either remediation option is implemented.
+- **Status:** OPEN, tracked.
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

@@ -641,6 +641,56 @@ access to application data" (`docs/roadmap/FUTURE_PHASES.md` §3) taken to its s
 conclusion — no MCP client, including a future Codex operations connection, gets any access
 until the project owner deliberately opts in.
 
+### Multi-agent responsibility zones (BL-091, `docs/roadmap/plans/AGENT_ZONES_PLAN.md`)
+
+Independent of the connection-level toggle above, six specific actions can additionally be
+restricted to exactly one *named* agent connection once one or more connections are enabled (e.g.
+Claude and Codex connected at once): `channel_sync`, `changeset_create_from_import`,
+`ai_localization_generate` (persists nothing itself, but zoned for cost/coordination — a real,
+non-mock call makes a genuine outbound request to a configured AI provider),
+`ai_localization_create_change_set`, `agent_create_content_proposal` (capability id
+`content_proposal.create_content_proposal`), and `agent_register_external_artifact`
+(`content_proposal.register_external_artifact`). Every other tool, including every READ-only one,
+is never affected by this — the point is a shared information field with exclusive write zones,
+not a second permission tier.
+
+- **Identity**: each MCP server process resolves its own agent-connection id once at startup from
+  the `AGENT_CONNECTION_ID` environment variable (set in that client's own MCP launch config); the
+  CLI resolves the same identity per invocation from `--agentConnectionId` (priority) or the same
+  env var. Either way, an empty value never becomes a real identity: the env var resolves an empty
+  value to `null`, while an empty `--agentConnectionId` flag value is rejected outright as
+  `validation_failed`.
+- **Management UI**: Settings → AI Agent → "Agent connections & responsibility zones"
+  (`src/components/agent-connections-manager.tsx`) — register a connection (id + label, no
+  secret), enable/disable it, and assign each of the 6 actions above to exactly one connection (or
+  leave it unassigned). Backed by `GET/POST /api/agent-connections`,
+  `PUT /api/agent-connections/[connectionId]`, `GET/PUT /api/agent-connections/zones`.
+- **Fail-closed policy, keyed on ENABLED connections** (a disabled one does not count):
+  - **Zero enabled connections**: entirely a no-op — identical to today's single-agent behavior.
+  - **One or more enabled connections**: every one of the 6 actions requires a resolvable,
+    enabled, registered connection id; an unknown or missing one is rejected with
+    `AGENT_ZONE_VIOLATION`, never silently allowed.
+  - **A capability with an explicit zone assignment** always rejects every connection except the
+    assigned one, regardless of how many are enabled.
+  - **A capability with NO explicit zone assignment is rejected for every connection**, once one or
+    more are enabled — including when only one connection exists. Assignment is always an explicit
+    act; there is no implicit "the only connection gets it by default" grant, and registration
+    order never matters (owner, Telegram 2026-09-25: "нельзя одну и ту же зону ответственности
+    дать обоим... добавление одного агента не должно автоматом давать ему авторство над всеми
+    модулями").
+- **Not the same as the "MCP connection" toggle above** — that toggle is the all-or-nothing gate
+  deciding whether an MCP client sees any tool at all; this mechanism only matters once the toggle
+  is already on and coordinates *which* connected agent may perform *which* of these 6 actions.
+- **Resolved, not a gap**: the operator-only `asset register` CLI command (creative-asset catalog,
+  `docs/AGENT_OPERATIONS_INTERFACE.md` §4c) is intentionally never gated by this mechanism —
+  raised as an open question and explicitly resolved by the project owner (Telegram, 2026-09-25):
+  "Если она не доступна агентам, то не вижу проблемы. Это интерфейс пользователя и пользователь
+  может дополнять работу агентов по своему усмотрению" (if it isn't available to agents, there's
+  no problem — this is a human-operator interface, and the operator may supplement the agents'
+  work at their own discretion, e.g. adding assets directly or proposing test hypotheses). Zoning
+  governs *agent* actions; a human operator directly using this application was never meant to be
+  constrained by it.
+
 ---
 
 ## API Route Handlers (selected)

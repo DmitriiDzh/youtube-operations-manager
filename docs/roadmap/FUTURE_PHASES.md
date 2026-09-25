@@ -286,11 +286,23 @@ implemented during Phases 7-10 unless separately approved:
   produce a plan and start executing it, built as its own module per `AGENTS.md` §M ("составь
   план выполнения... чтобы это было отдельным модулем отвечающим за подключение агентов + доп
   модули если требуется"). See `docs/roadmap/plans/AGENT_ZONES_PLAN.md` for the full design (new
-  `src/lib/agent-connections/` module, per-capability zone assignment, fail-closed-once-in-use
-  policy, and the tie-in to `docs/TECHNICAL_DEBT.md` RISK-32's own long-deferred "shared
-  mutating-operation registry" gap). Two open scope questions recorded there need the owner's
-  answer before enforcement (slice 2) starts; the data-model slice (1) does not depend on either
-  and may start immediately.
+  `src/lib/agent-connections/` module, per-capability zone assignment, fail-closed-once-enabled
+  policy). **Update, 2026-09-25:** owner confirmed both open scope questions (expand zoning beyond
+  the Phase 7 `agent_*` DRAFT tier to `channel_sync`/`changeset_create_from_import`/
+  `ai_localization_*`: "Согласен"; keep the new tables device-local, not synced: "Оставим
+  локально"). All three slices (data model, enforcement at the 6 approved MCP tools + CLI
+  equivalents, Settings UI) are done on `feature/agent-connections`, not yet merged to `dev`. An
+  unassigned capability is rejected for everyone once one or more connections are enabled -- even
+  with only one connection, since the owner explicitly rejected treating a sole connection as an
+  implicit grant ("нельзя одну и ту же зону ответственности дать обоим... добавление одного
+  агента не должно автоматом давать ему авторство над всеми модулями", Telegram 2026-09-25).
+  This work is **not** the same as `docs/TECHNICAL_DEBT.md`
+  RISK-32 (device-availability-gate consistency, separately OPEN, untouched by this feature); it
+  separately tracks its own `RISK-60` (`write_channel_select`/`auth_user_select` mutate global,
+  not per-connection, active-channel state). The independent-review cycle ran 13 rounds and was
+  stopped by explicit owner instruction, 2026-09-25 (not because a round found zero issues) --
+  see `docs/roadmap/BACKLOG.md` BL-091 row for the tally. Remaining: the owner's "yes, merge"
+  before this feature reaches `dev`.
 
 ## 8. How to use this roadmap in future sessions
 
