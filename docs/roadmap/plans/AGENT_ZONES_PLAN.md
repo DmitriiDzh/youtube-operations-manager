@@ -216,8 +216,13 @@ owner actually approved zoning for (§9's answer), rather than touching all ~46
    so this list has exactly one owner, not a copy per consumer). **Done.**
 4. **Independent review** — at least one round per this repo's established convention for anything
    touching approval integrity (`AGENTS.md` §L). **In progress as of this update** — several rounds
-   have run, no correctness bugs found in the exclusivity/fail-closed logic itself, only stale
-   comments/docs (fixed each round); the cycle is not yet closed (a round must find zero issues).
+   have run. No bug has ever been found in the exclusivity/fail-closed policy logic itself
+   (`assertAgentAllowedForCapability`); separately, three real bugs elsewhere in this feature were
+   found and fixed: a gateway-traffic undercount (a zone rejection wasn't recorded as `blocked`),
+   an API route returning 500 instead of 400 for a malformed body, and a Settings UI warning that
+   stated the opposite of reality when zero connections were enabled — plus several rounds of stale
+   comments/docs describing an earlier, already-superseded design. The cycle is not yet closed (a
+   round must find zero issues).
    The final round tally will be recorded here once it closes, per this repo's own convention.
 
 Each slice gets `npm test`/`lint`/`build`; the branch merges to `dev` as one complete, working
