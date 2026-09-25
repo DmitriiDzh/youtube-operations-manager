@@ -4,6 +4,7 @@ import { rawSqlClient } from "@/lib/db";
 import { assertDeviceAvailableForMutation } from "@/lib/device-handoff";
 import { OperationLockError } from "@/lib/operation-lock";
 import { RecoveryModeError } from "@/lib/device-handoff";
+import { recordActivity } from "@/lib/idle-shutdown";
 
 // Next.js 16 renamed `middleware.ts` to `proxy.ts` (functionally identical) --
 // node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md. Proxy
@@ -44,6 +45,11 @@ function isExemptReadOnlyPath(pathname: string): boolean {
 }
 
 export async function proxy(request: NextRequest) {
+  // Every `/api/*` request (this function's own matcher below) counts as real use of this
+  // server process, regardless of method or which specific route -- see idle-shutdown.ts's own
+  // doc comment for why this single choke point is sufficient (no separate heartbeat needed).
+  recordActivity();
+
   const { pathname } = request.nextUrl;
 
   if (!pathname.startsWith("/api/")) return NextResponse.next();
