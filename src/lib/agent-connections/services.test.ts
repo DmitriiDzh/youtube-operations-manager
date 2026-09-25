@@ -278,6 +278,34 @@ test("assertAgentAllowedForCapability: a third, unassigned capability stays reje
   );
 });
 
+test("assertAgentAllowedForCapability with 3 enabled connections: an unassigned capability is rejected for all three, an assigned one is allowed only for the assigned one", async () => {
+  const deps = createFakeDeps();
+  const services = createAgentConnectionsServices(deps);
+  await services.registerConnection({ id: "claude", label: "Claude" });
+  await services.registerConnection({ id: "codex", label: "Codex" });
+  await services.registerConnection({ id: "gemini", label: "Gemini" });
+  await services.assignCapabilityZone({ capabilityId: "content_proposal.register_external_artifact", assignedConnectionId: "codex" });
+
+  for (const callerConnectionId of ["claude", "codex", "gemini"]) {
+    await assert.rejects(
+      () => services.assertAgentAllowedForCapability({ capabilityId: "channel_sync", callerConnectionId }),
+      (error: unknown) => error instanceof DomainError && error.code === "AGENT_ZONE_VIOLATION",
+      `expected "${callerConnectionId}" to be rejected for the unassigned capability with 3 enabled connections`
+    );
+  }
+
+  await assert.doesNotReject(() =>
+    services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.register_external_artifact", callerConnectionId: "codex" })
+  );
+  for (const callerConnectionId of ["claude", "gemini"]) {
+    await assert.rejects(
+      () => services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.register_external_artifact", callerConnectionId }),
+      (error: unknown) => error instanceof DomainError && error.code === "AGENT_ZONE_VIOLATION",
+      `expected "${callerConnectionId}" to be rejected for a capability assigned to codex`
+    );
+  }
+});
+
 test("listCapabilityZones returns every assigned zone", async () => {
   const deps = createFakeDeps();
   const services = createAgentConnectionsServices(deps);

@@ -59,19 +59,3 @@ export const assignAgentCapabilityZoneInputSchema = z
   })
   .strict();
 export type AssignAgentCapabilityZoneInput = z.infer<typeof assignAgentCapabilityZoneInputSchema>;
-
-export const agentConnectionSchema = z
-  .object({
-    id: agentConnectionIdSchema,
-    label: z.string(),
-    enabled: z.boolean(),
-    createdAt: z.string(),
-  })
-  .strict();
-
-export const agentCapabilityZoneSchema = z
-  .object({
-    capabilityId: capabilityIdSchema,
-    assignedConnectionId: agentConnectionIdSchema.nullable(),
-  })
-  .strict();

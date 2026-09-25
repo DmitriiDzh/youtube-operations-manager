@@ -60,6 +60,18 @@ export const CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET = "ai_localization_cre
 export const CAPABILITY_CONTENT_PROPOSAL_CREATE = "content_proposal.create_content_proposal";
 export const CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT = "content_proposal.register_external_artifact";
 
+/**
+ * Shared by both MCP (`startMcpServer`, reads `process.env.AGENT_CONNECTION_ID` once at startup)
+ * and CLI (`runCliCommand`, falls back to this after checking `--agentConnectionId`) -- a pure,
+ * directly unit-testable function so neither call site's own env-var-to-identity parsing needs
+ * its own separate test (an independent review found MCP's copy had none, unlike CLI's). An empty
+ * string is never a real connection id.
+ */
+export function resolveAgentConnectionIdFromEnv(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
 export const ZONED_CAPABILITIES: ReadonlyArray<{ capabilityId: string; label: string; domain: string }> = [
   { capabilityId: CAPABILITY_CHANNEL_SYNC, label: "Sync channel from YouTube", domain: "Channel sync" },
   { capabilityId: CAPABILITY_CHANGESET_CREATE_FROM_IMPORT, label: "Create Change Set from XLSX import", domain: "Localization" },

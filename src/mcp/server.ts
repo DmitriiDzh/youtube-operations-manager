@@ -47,6 +47,7 @@ import {
   CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET,
   CAPABILITY_CONTENT_PROPOSAL_CREATE,
   CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT,
+  resolveAgentConnectionIdFromEnv,
 } from "@/lib/agent-connections";
 import {
   createContentProposalInputSchema,
@@ -2170,7 +2171,7 @@ export async function startMcpServer() {
   // BL-091 slice 2 -- this process's own agent-connection identity, set by whichever client's
   // MCP launch config spawned it (docs/roadmap/plans/AGENT_ZONES_PLAN.md §6). An empty string is
   // treated the same as unset, not as a literal empty-string connection id.
-  const callerConnectionId = process.env.AGENT_CONNECTION_ID?.trim() || null;
+  const callerConnectionId = resolveAgentConnectionIdFromEnv(process.env.AGENT_CONNECTION_ID);
   const server = createMcpServer(undefined, { connectionEnabled, callerConnectionId });
   const transport = new StdioServerTransport();
   await server.connect(transport);

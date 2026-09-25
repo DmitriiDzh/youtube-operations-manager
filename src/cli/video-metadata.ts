@@ -31,6 +31,7 @@ import {
   CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET,
   CAPABILITY_CONTENT_PROPOSAL_CREATE,
   CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT,
+  resolveAgentConnectionIdFromEnv,
 } from "@/lib/agent-connections";
 
 // CLI parity for the read/propose/create MCP tools (docs/roadmap/plans/PHASE_7_PLAN.md,
@@ -553,7 +554,7 @@ export async function runCliCommand(args: {
     // `playlist create` -- so each zoned call site names its own capability id explicitly).
     const callerConnectionId =
       optionalStringFlag(parsedArgs.flags, "agentConnectionId") ??
-      (process.env.AGENT_CONNECTION_ID?.trim() || null);
+      resolveAgentConnectionIdFromEnv(process.env.AGENT_CONNECTION_ID);
 
     if (parsedArgs.namespace === "auth") {
       if (parsedArgs.command === "login") {
