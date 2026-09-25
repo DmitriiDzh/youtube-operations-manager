@@ -1210,7 +1210,7 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 20,
     description:
-      "agent_connections, agent_capability_zones -- multi-agent responsibility zones, slice 1 (docs/roadmap/plans/AGENT_ZONES_PLAN.md, BL-091), no enforcement wired yet",
+      "agent_connections, agent_capability_zones -- multi-agent responsibility zones (docs/roadmap/plans/AGENT_ZONES_PLAN.md, BL-091)",
     apply: async (client) => {
       await client.execute(
         "CREATE TABLE IF NOT EXISTS agent_connections (" +

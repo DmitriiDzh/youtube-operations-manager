@@ -643,11 +643,13 @@ until the project owner deliberately opts in.
 
 ### Multi-agent responsibility zones (BL-091, `docs/roadmap/plans/AGENT_ZONES_PLAN.md`)
 
-Independent of the connection-level toggle above, six specific mutating actions can additionally
-be restricted to exactly one *named* agent connection once one or more connections are enabled
-(e.g. Claude and Codex connected at once): `channel_sync`, `changeset_create_from_import`,
-`ai_localization_generate`, `ai_localization_create_change_set`, `agent_create_content_proposal`
-(capability id `content_proposal.create_content_proposal`), and `agent_register_external_artifact`
+Independent of the connection-level toggle above, six specific actions can additionally be
+restricted to exactly one *named* agent connection once one or more connections are enabled (e.g.
+Claude and Codex connected at once): `channel_sync`, `changeset_create_from_import`,
+`ai_localization_generate` (persists nothing itself, but zoned for cost/coordination — a real,
+non-mock call makes a genuine outbound request to a configured AI provider),
+`ai_localization_create_change_set`, `agent_create_content_proposal` (capability id
+`content_proposal.create_content_proposal`), and `agent_register_external_artifact`
 (`content_proposal.register_external_artifact`). Every other tool, including every READ-only one,
 is never affected by this — the point is a shared information field with exclusive write zones,
 not a second permission tier.

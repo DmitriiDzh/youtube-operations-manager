@@ -43,15 +43,16 @@ Requirement 2 is a non-issue as long as zone enforcement (below) never touches R
 
 ## 3. Full mutating/DRAFT tool inventory (why this is bigger than the agent-operations module alone)
 
-`grep registerTool src/mcp/server.ts` gives 46 registered tools. They fall into three, not two, families — this matters because a plan scoped only to the new Phase 7 `agent_*` namespace would miss most of the actual local-mutation surface an agent can already reach:
+`grep registerTool src/mcp/server.ts` gives dozens of registered tools. They fall into three, not two, families — this matters because a plan scoped only to the new Phase 7 `agent_*` namespace would miss most of the actual local-mutation surface an agent can already reach:
 
 | Family | Tools | Current gate |
 |---|---|---|
 | **Real YouTube writes** (barrier-disabled today, Gate B/RISK-09) | `apply`, `playlist_create/update/delete/add_videos/remove_videos` | `assertLiveWritesAuthorized` (single gateway choke point, `AGENTS.md` §G) — already agent-agnostic and already fails closed. Zoning these is moot while Gate B stays closed, but the classification should still cover them for when it opens. |
-| **Local-mutation, pre-Phase-7 general MCP surface** (designed for one operator-grade client, no permission tiering beyond the single `connectionEnabled` toggle) | `write_channel_select`, `auth_user_select`, `changeset_create_from_import`, `channel_sync`, `ai_localization_generate`, `ai_localization_create_change_set` | Only `assertMcpDeviceAvailable` (operation-lock/device-availability gate) + `connectionEnabled`. No per-capability permission concept at all. |
+| **Local-mutation, pre-Phase-7 general MCP surface** (designed for one operator-grade client, no permission tiering beyond the single `connectionEnabled` toggle) | `write_channel_select`, `auth_user_select`, `changeset_create_from_import`, `channel_sync`, `ai_localization_create_change_set` | Only `assertMcpDeviceAvailable` (operation-lock/device-availability gate) + `connectionEnabled`. No per-capability permission concept at all. |
+| **Persists nothing, but a real outbound cost/coordination surface** | `ai_localization_generate` | Only `connectionEnabled` — not gated by `assertMcpDeviceAvailable` at all (it never mutates local state; a real, non-mock call does make a genuine outbound network request to a configured AI provider). Grouped with the row above for zoning purposes (§9) because the owner's split is about who gets to *use* the workflow, not which row a device gate happens to apply to. |
 | **Phase 7 agent-operations DRAFT tier** (the only family with an actual permission model) | `content_proposal.create_content_proposal`, `content_proposal.register_external_artifact` (the only two `AGENT_CAPABILITIES` entries with `permission: "DRAFT"`) | `GRANTED_PERMISSIONS = ["READ","DRAFT"]`, uniform, no per-agent identity. |
 
-**Correction (post-implementation): this is adjacent to, but not the same gap as, `docs/TECHNICAL_DEBT.md` RISK-32.** RISK-32 is specifically about `proxy.ts`/CLI/MCP each independently classifying which operations need the *device-availability/recovery-mode* gate (`assertDeviceAvailableForMutation`) — a different concern (data-integrity-during-migration/recovery) from agent-identity zoning. The actual implementation below does not build an exhaustive, mechanically-enforced classification of all ~46 MCP tools (an earlier draft of this plan mistakenly claimed it would, and that it would close RISK-32) — it adds an *opt-in* `zoneCapabilityId` parameter used only at the 6 call sites the owner approved zoning for (§9's scope answer), verified by name-specific behavioral tests, not a repo-wide static inventory. RISK-32 remains OPEN and untouched by this work; do not cite this plan as having resolved it.
+**Correction (post-implementation): this is adjacent to, but not the same gap as, `docs/TECHNICAL_DEBT.md` RISK-32.** RISK-32 is specifically about `proxy.ts`/CLI/MCP each independently classifying which operations need the *device-availability/recovery-mode* gate (`assertDeviceAvailableForMutation`) — a different concern (data-integrity-during-migration/recovery) from agent-identity zoning. The actual implementation below does not build an exhaustive, mechanically-enforced classification of every registered MCP tool (an earlier draft of this plan mistakenly claimed it would, and that it would close RISK-32) — it adds an *opt-in* `zoneCapabilityId` parameter used only at the 6 call sites the owner approved zoning for (§9's scope answer), verified by name-specific behavioral tests, not a repo-wide static inventory. RISK-32 remains OPEN and untouched by this work; do not cite this plan as having resolved it.
 
 ### Open scope question 1 (needs owner answer before slice 2)
 
@@ -117,16 +118,9 @@ Standard domain-module pattern (`AGENTS.md` §D, `DEVELOPMENT_PLAYBOOK.md` §6.2
   домену" framing is satisfied in the resulting state, not via a dedicated bulk-assign affordance.
   A one-click domain-level assign, if ever wanted, would be a separate, later UI enhancement.
 
-**Services**: `registerConnection`, `listConnections`, `setConnectionEnabled`,
-`assignCapabilityZone(capabilityId, connectionId | null)`, `listZoneAssignments`, and the
-enforcement primitive:
-
-```ts
-assertAgentAllowedForCapability(args: {
-  capabilityId: string;
-  callerConnectionId: string | null;
-}): void // throws AgentZoneViolationError, a new DomainErrorCode entry
-```
+**Services**: registry CRUD (register/list/enable connections, assign/list zones) plus the
+enforcement primitive `assertAgentAllowedForCapability` — see `src/lib/agent-connections/services.ts`
+for the exact function names and signatures, and §7 below for how it's actually used.
 
 **Default policy, as actually implemented (keyed on ENABLED connections, not merely registered
 ones — a disabled connection does not count, so disabling every connection is an explicit escape
@@ -168,8 +162,8 @@ single implementation every zoned call site invokes — never a second copy of t
 logic itself. Unlike the write/read gateways (ADR 0005/0007), this is **not** a mandatory
 classification enforced by a repo-wide static inventory test — an earlier draft of this plan
 described that approach and was not followed, to keep the diff scoped to the 6 capabilities the
-owner actually approved zoning for (§9's answer), rather than touching all ~46
-`registerTool`/CLI-dispatch call sites:
+owner actually approved zoning for (§9's answer), rather than touching every other
+`registerTool`/CLI-dispatch call site:
 
 - **MCP** (`src/mcp/server.ts`): `registerTool`'s wrapper takes an *optional* `zoneCapabilityId`
   parameter, passed only at the 6 approved call sites (`channel_sync`,

@@ -1619,7 +1619,7 @@ export function createMcpServer(
     // changeset_create_from_import, ai_localization_generate/create_change_set). Every other
     // tool is left unzoned deliberately (see docs/roadmap/plans/AGENT_ZONES_PLAN.md §3/§9) --
     // this is an opt-in parameter, not a mandatory classification, so this slice's diff stays
-    // scoped to the tools actually in scope rather than touching all ~46 registrations.
+    // scoped to the tools actually in scope rather than touching every other registration.
     zoneCapabilityId?: string
   ) {
     if (!connectionEnabled) {
