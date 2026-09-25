@@ -108,6 +108,10 @@ the server, opens your default browser, and prints where its data lives. Never t
 network, or your working tree — no `git pull`, nothing (see §3's note on why, and what changed
 2026-09-21).
 
+Prefer not to use a terminal? Double-click `scripts/macos/start.command` in Finder instead — it
+just delegates to `start.sh` above (same checks, same behavior), for parity with the Windows
+`.bat`'s native double-click support.
+
 **To stop safely:** run `./scripts/macos/stop.sh` (or Ctrl+C the running `start.sh`).
 
 **To update a standalone `published/<version>/` copy:** run `./scripts/macos/update.sh`, then
