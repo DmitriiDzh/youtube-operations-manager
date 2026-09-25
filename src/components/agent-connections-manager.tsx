@@ -176,25 +176,37 @@ export function AgentConnectionsManager() {
               <p className="text-xs font-medium uppercase text-zinc-500">{domain}</p>
               {ZONED_CAPABILITIES.filter((c) => c.domain === domain).map((c) => {
                 const assignedConnectionId = zoneByCapabilityId.get(c.capabilityId) ?? null;
+                const assignedConnection = connections.find((conn) => conn.id === assignedConnectionId) ?? null;
+                const assignedToDisabled = assignedConnection !== null && !assignedConnection.enabled;
                 return (
-                  <div key={c.capabilityId} className="flex items-center justify-between rounded-lg border border-zinc-800 p-3">
-                    <span className="text-sm text-zinc-300">{c.label}</span>
-                    <select
-                      value={assignedConnectionId ?? ""}
-                      onChange={(e) => handleAssignZone(c.capabilityId, e.target.value || null)}
-                      className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-200"
-                    >
-                      <option value="">
-                        {connections.filter((conn) => conn.enabled).length >= 2
-                          ? "Unassigned (blocked for everyone until assigned -- 2+ connections enabled)"
-                          : "Unassigned (open to the sole enabled connection)"}
-                      </option>
-                      {connections.map((conn) => (
-                        <option key={conn.id} value={conn.id}>
-                          {conn.label}
+                  <div key={c.capabilityId} className="rounded-lg border border-zinc-800 p-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-zinc-300">{c.label}</span>
+                      <select
+                        value={assignedConnectionId ?? ""}
+                        onChange={(e) => handleAssignZone(c.capabilityId, e.target.value || null)}
+                        className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-200"
+                      >
+                        <option value="">
+                          {connections.filter((conn) => conn.enabled).length >= 2
+                            ? "Unassigned (blocked for everyone until assigned -- 2+ connections enabled)"
+                            : "Unassigned (open to the sole enabled connection)"}
                         </option>
-                      ))}
-                    </select>
+                        {connections.map((conn) => (
+                          <option key={conn.id} value={conn.id}>
+                            {conn.label}
+                            {conn.enabled ? "" : " (disabled)"}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {assignedToDisabled && (
+                      <p className="mt-2 text-xs text-amber-300">
+                        Assigned to &quot;{assignedConnection.label}&quot;, which is currently disabled --
+                        this action is blocked for EVERY connection until you reassign it or
+                        re-enable {assignedConnection.label}.
+                      </p>
+                    )}
                   </div>
                 );
               })}

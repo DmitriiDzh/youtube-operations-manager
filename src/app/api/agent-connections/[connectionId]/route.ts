@@ -18,14 +18,20 @@ export async function PUT(request: Request, { params }: { params: Promise<{ conn
   try {
     const { connectionId } = await params;
 
-    let body: Record<string, unknown>;
+    let body: unknown;
     try {
-      body = (await request.json()) as Record<string, unknown>;
+      body = await request.json();
     } catch {
       return NextResponse.json({ error: "validation_failed", message: "Request body must be valid JSON" }, { status: 400 });
     }
 
-    const connection = await core.setConnectionEnabled({ id: connectionId, enabled: body.enabled });
+    // A round-4 independent review found that a JSON body of literal `null` (valid JSON, so the
+    // catch above never fires) used to throw a raw TypeError on `body.enabled`, surfacing as a
+    // generic 500 instead of a proper validation_failed 400 -- fixed by never dereferencing a
+    // field on `body` directly; the whole (possibly non-object) value is merged in and left for
+    // `setConnectionEnabled`'s own schema validation to reject cleanly, same as the sibling routes.
+    const input = typeof body === "object" && body !== null ? { ...body, id: connectionId } : { id: connectionId };
+    const connection = await core.setConnectionEnabled(input);
     return NextResponse.json({ connection });
   } catch (error) {
     if (error instanceof DomainError) {

@@ -265,6 +265,36 @@ test("assertAgentAllowedForCapability allows an explicitly assigned capability e
   );
 });
 
+test("assertAgentAllowedForCapability rejects EVERYONE (including the assignee itself) once a capability's assigned connection is disabled, with another connection still enabled", async () => {
+  // A round-4 independent review flagged this exact scenario as untested (though verified correct
+  // by inspection): assigning a zone never "locks in" a snapshot of the assignee's enabled state
+  // -- assertAgentAllowedForCapability re-checks `enabled` on every call, so a capability assigned
+  // to a connection that is later disabled fails closed for everyone, not just for that one
+  // connection. This is intentional (a disabled assignee is exactly the same as no working
+  // assignee -- there is no implicit fallback to "open to anyone else" once one has been named),
+  // not a bug, but it deserved its own explicit regression test.
+  const deps = createFakeDeps();
+  const services = createAgentConnectionsServices(deps);
+  await services.registerConnection({ id: "claude", label: "Claude" });
+  await services.registerConnection({ id: "codex", label: "Codex" });
+  await services.assignCapabilityZone({ capabilityId: "content_proposal.register_external_artifact", assignedConnectionId: "codex" });
+
+  await services.setConnectionEnabled({ id: "codex", enabled: false });
+
+  await assert.rejects(
+    () =>
+      services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.register_external_artifact", callerConnectionId: "codex" }),
+    (error: unknown) => error instanceof DomainError && error.code === "AGENT_ZONE_VIOLATION",
+    "the disabled assignee itself must still be rejected (not-enabled check runs before the assignment check)"
+  );
+  await assert.rejects(
+    () =>
+      services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.register_external_artifact", callerConnectionId: "claude" }),
+    (error: unknown) => error instanceof DomainError && error.code === "AGENT_ZONE_VIOLATION",
+    "an otherwise-enabled connection must still be rejected -- a disabled assignee never implicitly reopens the zone to someone else"
+  );
+});
+
 test("assertAgentAllowedForCapability: a third, unassigned capability stays rejected for both while a second one is explicitly assigned (assignments are independent per capability)", async () => {
   const deps = createFakeDeps();
   const services = createAgentConnectionsServices(deps);

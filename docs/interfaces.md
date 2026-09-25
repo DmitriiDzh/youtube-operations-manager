@@ -677,11 +677,15 @@ not a second permission tier.
 - **Not the same as the "MCP connection" toggle above** — that toggle is the all-or-nothing gate
   deciding whether an MCP client sees any tool at all; this mechanism only matters once the toggle
   is already on and coordinates *which* connected agent may perform *which* of these 6 actions.
-- **Known gap, not yet resolved**: the operator-only `asset register` CLI command (creative-asset
-  catalog, `docs/AGENT_OPERATIONS_INTERFACE.md` §4c) is not gated by this mechanism at all — if an
-  entire "assets" responsibility is ever assigned to one connection, this one command remains an
-  ungated side door. Left for the project owner to decide whether it matters, not resolved
-  unilaterally.
+- **Resolved, not a gap**: the operator-only `asset register` CLI command (creative-asset catalog,
+  `docs/AGENT_OPERATIONS_INTERFACE.md` §4c) is intentionally never gated by this mechanism —
+  raised as an open question and explicitly resolved by the project owner (Telegram, 2026-09-25):
+  "Если она не доступна агентам, то не вижу проблемы. Это интерфейс пользователя и пользователь
+  может дополнять работу агентов по своему усмотрению" (if it isn't available to agents, there's
+  no problem — this is a human-operator interface, and the operator may supplement the agents'
+  work at their own discretion, e.g. adding assets directly or proposing test hypotheses). Zoning
+  governs *agent* actions; a human operator directly using this application was never meant to be
+  constrained by it.
 
 ---
 

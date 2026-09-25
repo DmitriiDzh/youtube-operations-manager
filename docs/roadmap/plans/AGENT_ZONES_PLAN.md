@@ -228,10 +228,12 @@ Both original open questions were answered by the owner the same day (Telegram, 
 2. **Snapshot/sync inclusion**: "2. Оставим локально" — `agent_connections`/`agent_capability_zones`
    stay per-device, excluded from `SNAPSHOT_TRANSFERRED_TABLES`, as this plan recommended.
 
+**Resolved same day:** the `asset register` CLI gap (§4/`interfaces.md`) — the project owner
+confirmed (Telegram, 2026-09-25) it is not a gap: "Если она не доступна агентам, то не вижу
+проблемы... пользователь может дополнять работу агентов по своему усмотрению" (a human operator
+using this application directly was never meant to be constrained by agent zoning).
+
 **Remaining before this feature is ready to present as finished:**
 
 - A full independent-review cycle (§8 item 4) — in progress, not yet closed.
-- The owner's own decision on the `asset register` CLI gap (§4/interfaces.md's "Known gap" note)
-  — an ungated side door into the "assets" domain even when that whole domain is assigned to one
-  connection. Not resolved unilaterally; surfaced for the owner to decide.
 - The owner's explicit "yes, merge" for `feature/agent-connections` → `dev` (`AGENTS.md` §K.2).
