@@ -445,6 +445,46 @@ test("collectMetrics records a collection run, including skipped videos, even wh
   assert.deepEqual(collectionRuns[0].skippedVideoIds, ["v1"]);
 });
 
+// Regression test for a real bug the project owner hit live (2026-09-25): every video in a
+// channel failing (a systemic issue, e.g. a token that resolves but is rejected by the Analytics
+// API itself) used to still mark the channel collected-for-today (credentials had resolved, and
+// the mark happened before the per-video loop ran), silently locking out the daily auto-trigger
+// AND the manual "Collect now" button until tomorrow's boundary -- with zero real data fetched
+// and nothing visible anywhere. The channel must stay exactly as stale as before a total-failure
+// run, so an immediate retry (once whatever was actually wrong is fixed) can succeed right away.
+test("collectMetrics: a run where every video fails does not mark the channel as collected -- an immediate retry is still allowed", async () => {
+  const { services, channelAccess, lastAutoCollectedAtByChannel } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: new Error("simulated systemic failure") },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const result = await services.collectMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-01",
+    endDate: "2026-09-05",
+  });
+
+  assert.equal(result.upsertsIssued, 0);
+  assert.deepEqual(result.skippedVideoIds, ["v1"]);
+  assert.equal(
+    lastAutoCollectedAtByChannel.get("UC_A") ?? null,
+    null,
+    "a total-failure run must not mark the channel as collected"
+  );
+
+  // An immediate retry (still the same instant/day) must be allowed to actually attempt real
+  // work again, not refused as `analytics_data_current`.
+  const retry = await services.collectMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-01",
+    endDate: "2026-09-05",
+  });
+  assert.deepEqual(retry.skippedVideoIds, ["v1"], "the retry must have actually attempted the real call again, not been refused");
+});
+
 test("getDataQualityReport fails closed when the requested channel is not the caller's active channel", async () => {
   const { services } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
 

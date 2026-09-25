@@ -78,6 +78,9 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
 
   const [dataQuality, setDataQuality] = useState<DataQualityReport | null>(null);
 
+  const [collecting, setCollecting] = useState(false);
+  const [collectMessage, setCollectMessage] = useState<{ kind: "info" | "error"; text: string } | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -193,6 +196,52 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     void fetchDataQuality(channel.channelId, periodDays);
   }, [channel, periodDays, fetchOverview, fetchTopContent, fetchDataQuality]);
 
+  // Manual counterpart to the daily background auto-collect (dashboard.tsx's own mount effect) --
+  // same underlying endpoint `AnalyticsManager`'s own "Collect now" button already calls
+  // (`AGENTS.md` §D, one collection implementation), just surfaced here in the primary Overview
+  // view instead of only behind the "Show raw collected data" disclosure (owner request,
+  // 2026-09-25: a visible manual trigger here, matching Content's own "Sync now" button).
+  // `analytics_data_current` (YouTube itself hasn't refreshed since the last real collection) is
+  // shown as an informational, not an error, message -- it isn't something to "fix."
+  const handleCollect = useCallback(async () => {
+    if (!channel) return;
+    setCollecting(true);
+    setCollectMessage(null);
+    try {
+      const res = await fetch(`/api/channels/${encodeURIComponent(channel.channelId)}/analytics/collect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (data.error === "analytics_data_current") {
+          setCollectMessage({ kind: "info", text: data.message ?? "Analytics data is already up to date for today." });
+        } else {
+          setCollectMessage({ kind: "error", text: data.message ?? data.error ?? `Error ${res.status}` });
+        }
+        return;
+      }
+      const skipped = Array.isArray(data.skippedVideoIds) ? data.skippedVideoIds.length : 0;
+      setCollectMessage({
+        kind: skipped > 0 && data.upsertsIssued === 0 ? "error" : "info",
+        text:
+          skipped > 0
+            ? `Collected with ${skipped} video${skipped === 1 ? "" : "s"} skipped (see details below).`
+            : "Data refreshed.",
+      });
+      await Promise.all([
+        fetchOverview(channel.channelId, periodDays),
+        fetchTopContent(channel.channelId, periodDays),
+        fetchDataQuality(channel.channelId, periodDays),
+      ]);
+    } catch {
+      setCollectMessage({ kind: "error", text: "Failed to collect analytics data." });
+    } finally {
+      setCollecting(false);
+    }
+  }, [channel, periodDays, fetchOverview, fetchTopContent, fetchDataQuality]);
+
   const chartData = useMemo(
     () => overview?.daily.map((row) => ({ date: row.date, value: row.views })) ?? [],
     [overview]
@@ -216,20 +265,41 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-sm font-medium text-zinc-300">Overview</h3>
-        <div className="flex gap-1 rounded-lg border border-zinc-800 bg-zinc-900 p-1">
-          {PERIOD_OPTIONS.map((option) => (
-            <button
-              key={option.days}
-              onClick={() => setPeriodDays(option.days)}
-              className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-                periodDays === option.days ? "bg-indigo-600 text-white" : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              {option.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex gap-1 rounded-lg border border-zinc-800 bg-zinc-900 p-1">
+            {PERIOD_OPTIONS.map((option) => (
+              <button
+                key={option.days}
+                onClick={() => setPeriodDays(option.days)}
+                className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                  periodDays === option.days ? "bg-indigo-600 text-white" : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={handleCollect}
+            disabled={collecting}
+            className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+          >
+            {collecting ? "Collecting..." : "Collect now"}
+          </button>
         </div>
       </div>
+
+      {collectMessage && (
+        <div
+          className={`rounded-lg border p-3 text-sm ${
+            collectMessage.kind === "error"
+              ? "border-red-900 bg-red-950/50 text-red-400"
+              : "border-zinc-800 bg-zinc-900 text-zinc-300"
+          }`}
+        >
+          {collectMessage.text}
+        </div>
+      )}
 
       {overviewError && (
         <div className="rounded-lg border border-red-900 bg-red-950/50 p-3 text-sm text-red-400">{overviewError}</div>
