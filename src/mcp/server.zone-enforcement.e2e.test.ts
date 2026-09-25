@@ -62,4 +62,3 @@ test("real agent-connections core: an unassigned zoned tool is rejected once 2 c
   const codexPayload = JSON.parse(codexResult.content[0]?.text ?? "{}");
   assert.notEqual(codexPayload?.error?.code, "AGENT_ZONE_VIOLATION");
 });
-
