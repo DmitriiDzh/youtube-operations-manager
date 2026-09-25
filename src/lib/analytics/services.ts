@@ -267,15 +267,28 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
      * no real API call made) rather than silently re-fetching data YouTube itself has not
      * refreshed yet.
      *
-     * The mark happens right after credentials resolve successfully -- deliberately NOT before
-     * (an earlier version of this gate marked the channel collected before resolving credentials,
-     * which meant a credential failure, e.g. the real "Credentials are missing required OAuth
-     * scopes" case this owner hit earlier, left the channel marked collected-for-today with zero
-     * data actually fetched, locking even the manual button until tomorrow's boundary with no UI
-     * way out). Marking after a successful resolve narrows, rather than removes, the concurrency
-     * window two callers (a manual click racing the auto-trigger, or two browser tabs) could both
-     * pass through in -- both would then spend one real day's worth of Analytics quota instead of
-     * none, which is strictly better than a 24h lockout from a single failed attempt.
+     * The mark happens AFTER the per-video collection loop, and only when the run actually
+     * accomplished something (`videos.length === 0` -- nothing to fetch -- or `upsertsIssued > 0`
+     * -- at least one real row landed). Two real, separately-found bugs shaped this:
+     *
+     * 1. An earlier version marked the channel collected before resolving credentials at all,
+     *    which meant a credential failure (e.g. the real "Credentials are missing required OAuth
+     *    scopes" case this owner hit once) left the channel marked collected-for-today with zero
+     *    data actually fetched, locking even the manual button until tomorrow's boundary with no
+     *    UI way out.
+     * 2. The next version fixed (1) but still marked right after credential resolve, before the
+     *    per-video loop ran at all -- so if EVERY video's own query then failed (a systemic issue,
+     *    e.g. a token that resolves but is rejected by the Analytics API itself), the channel was
+     *    still marked collected despite zero real data landing, silently locking out further
+     *    attempts (auto and manual alike) until tomorrow with no visible error anywhere (found
+     *    live, owner-reported, 2026-09-25 -- stale data for days with no error surfaced).
+     *
+     * Marking only after a real measure of success (rather than merely "credentials resolved")
+     * widens, rather than narrows, the concurrency window two callers (a manual click racing the
+     * auto-trigger, or two browser tabs) could both pass through in -- both would then spend one
+     * real day's worth of Analytics quota instead of none. This is the same tradeoff direction
+     * fix 1 above already accepted, extended one step further: a rare double-collection is still
+     * strictly better than a full-day lockout from a single failed attempt.
      */
     async collectMetrics(input: unknown): Promise<CollectMetricsResult> {
       const parsedInput = parseWithSchema(collectMetricsInputSchema, input, "collect metrics input");
@@ -307,8 +320,6 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           credentialRef: parsedInput.credentialRef,
           requiredScopes: [YOUTUBE_ANALYTICS_READ_SCOPE],
         });
-
-        await deps.channelStore.markAnalyticsAutoCollected(parsedInput.channelId, now);
 
         const videos = await deps.videoStore.listVideosByChannel(parsedInput.channelId);
 
@@ -359,6 +370,23 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           upsertsIssued,
           skippedVideoIds,
         };
+
+        // Mark AFTER the loop, and only on a run that actually accomplished something -- not
+        // merely because credentials resolved. Found live (owner-reported, 2026-09-25): every
+        // video failing (a systemic issue -- e.g. a token that resolves but is rejected by the
+        // Analytics API itself) used to still count as "collected today" (the old mark-before-the-
+        // loop placement), silently locking out both the daily auto-trigger and the manual
+        // "Collect now" button until tomorrow's boundary, with zero real data fetched and no
+        // visible error anywhere. A channel with no videos at all (`videos.length === 0`) still
+        // counts as fully, successfully processed -- there was nothing to fetch.
+        if (videos.length === 0 || upsertsIssued > 0) {
+          await deps.channelStore.markAnalyticsAutoCollected(parsedInput.channelId, now);
+        } else {
+          deps.logger.error({
+            event: "analytics.collect_metrics.total_failure_not_marked",
+            context: { channelId: output.channelId, videoCount: output.videoCount },
+          });
+        }
 
         // Phase 8 follow-up, slice 2 (data-quality diagnostics) -- the ground truth
         // `getDataQualityReport` reads. Recorded even when every video was skipped (an all-skip
