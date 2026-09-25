@@ -1272,7 +1272,7 @@ export async function initializeDatabaseSchema(
   // ever performs a read.
   const foundVersion = await assertSupportedSchemaVersion(client, SCHEMA_CURRENT_VERSION);
 
-  // The `rules` table (auto-playlisting engine, upstream TubeMaster baseline) is retired as of
+  // The `rules` table (auto-playlisting engine, from the project's original pre-rewrite baseline) is retired as of
   // 2026-09-20 -- its Drizzle definition, UI, and API routes are removed, per the project
   // owner's explicit instruction ("давай удалим их, т.к. пока не вижу им применения"). This
   // CREATE TABLE statement is deliberately left in place rather than replaced with a DROP TABLE

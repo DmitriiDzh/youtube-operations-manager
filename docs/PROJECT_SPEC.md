@@ -1,5 +1,5 @@
 # PROJECT_SPEC.md
-# YouTube Operations Manager — Independent Repository Based on TubeMaster
+# YouTube Operations Manager
 
 ## 0. Purpose of this document
 

@@ -33,7 +33,7 @@ Every interface (Web UI route handlers, CLI, MCP) calls the same domain-module c
 
 ## 3. Domain module layering (`src/lib/*`)
 
-Every domain module under `src/lib/` follows the same four-file layering, introduced with the original TubeMaster codebase and preserved for every module added since:
+Every domain module under `src/lib/` follows the same four-file layering, introduced early in this project and preserved for every module added since:
 
 ```text
 contracts.ts   — plain TS types + the shared DomainError class (stable error codes)
@@ -310,7 +310,7 @@ Merge semantics for an approved deletion: `buildSafeLocalizationsPayload` collec
 
 ## 7. Persistence (Phase 2/3)
 
-### 7.1 Schema (additive to the existing TubeMaster-derived tables)
+### 7.1 Schema (additive to the pre-existing baseline tables)
 
 ```text
 users     (unchanged)   — id, email, name, image, accessToken, refreshToken, tokenExpiry, oauthScope, selectedChannelId

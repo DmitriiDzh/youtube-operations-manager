@@ -25,7 +25,7 @@ export type { SqlExecutor };
  *   - `cloud_connection` (`docs/decisions/0008-cloud-connection.md`) -- device-local encrypted
  *     Google Cloud OAuth grant, same reasoning as `users`/`ai_connection_credentials`: never
  *     handed off, re-established per device via its own Connect flow.
- *   - `rules` (auto-add-to-playlist rules, upstream TubeMaster baseline) -- this feature's own
+ *   - `rules` (auto-add-to-playlist rules, from the project's original pre-rewrite baseline) -- this feature's own
  *     Drizzle definition/UI/API routes were already removed 2026-09-20 (see `src/lib/db.ts`'s
  *     `initializeDatabase` comment); the `CREATE TABLE IF NOT EXISTS rules` statement is
  *     deliberately kept rather than dropped (a subtractive schema change needs its own ADR per
