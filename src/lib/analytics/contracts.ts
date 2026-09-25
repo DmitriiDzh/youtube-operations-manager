@@ -113,7 +113,18 @@ export type AutoCollectResult =
  * rest of that list, whose own doc comment says it was never independently confirmed metric-by-
  * metric. "impressions"/"impressionClickThroughRate" (Studio's thumbnail-impressions/CTR widgets)
  * were also live-probed and confirmed **rejected** by the real API ("Unknown identifier") --
- * genuinely unavailable via the public Analytics API, not merely unimplemented here.
+ * genuinely unavailable via the `youtubeAnalytics/v2 reports:query` endpoint this app's gateway
+ * uses, though not for the reason first assumed here. **Follow-up (docs/roadmap/plans/
+ * ANALYTICS_TAB_DEEP_PARITY_PLAN.md §0, BL-093, 2026-09-25):** those two exact names were simply
+ * wrong -- the real identifiers are `videoThumbnailImpressions`/
+ * `videoThumbnailImpressionsClickThroughRate`, added to the public API 2026-01-15. A follow-up
+ * live probe confirmed those two names ARE recognized by the API, but every query shape tried
+ * against this same `reports:query` endpoint (channel-level, per-day, per-video, alone or paired
+ * with `views`) returned "The query is not supported," not a metric-name error -- these two
+ * metrics belong to a separate "Reach report" family (`channel_reach_basic_a1`/
+ * `channel_reach_combined_a1`) that only exists under the YouTube *Reporting* API v1's bulk,
+ * scheduled-job system, never this ad-hoc query endpoint. The original "genuinely unavailable"
+ * conclusion holds for this endpoint specifically; it was never really about the metric name.
  */
 export const CHANNEL_OVERVIEW_METRIC_NAMES = [
   "views",
