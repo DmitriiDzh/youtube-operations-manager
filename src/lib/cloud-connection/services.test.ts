@@ -117,7 +117,7 @@ test("completeConnect: state mismatch is refused before any token exchange side 
         expectedState: "fixed-state-value",
         redirectUri: "http://localhost:3000/api/cloud-connection/callback",
       }),
-    (error: unknown) => error instanceof DomainError && error.code === "unauthorized"
+    (error: unknown) => error instanceof DomainError && error.code === "AUTH_CALLBACK_INVALID"
   );
   assert.equal(getRow(), null);
 });
@@ -147,14 +147,39 @@ test("completeConnect: success stores the encrypted token set and returns the pu
 test("completeConnect: a token exchange with no access_token is refused", async () => {
   const { services } = createFixture({ getToken: async () => ({ tokens: {} }) });
 
-  await assert.rejects(() =>
-    services.completeConnect({
-      code: "auth-code",
-      state: "fixed-state-value",
-      expectedState: "fixed-state-value",
-      redirectUri: "http://localhost:3000/api/cloud-connection/callback",
-    })
+  await assert.rejects(
+    () =>
+      services.completeConnect({
+        code: "auth-code",
+        state: "fixed-state-value",
+        expectedState: "fixed-state-value",
+        redirectUri: "http://localhost:3000/api/cloud-connection/callback",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "CLOUD_CONNECTION_TOKEN_EXCHANGE_FAILED"
   );
+});
+
+test("completeConnect: Google rejecting the token exchange (e.g. unregistered redirect URI, expired code) is wrapped with a distinguishable code, not left as a raw thrown error", async () => {
+  const { services, getRow } = createFixture({
+    getToken: async () => {
+      throw new Error("invalid_grant");
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      services.completeConnect({
+        code: "auth-code",
+        state: "fixed-state-value",
+        expectedState: "fixed-state-value",
+        redirectUri: "http://localhost:3000/api/cloud-connection/callback",
+      }),
+    (error: unknown) =>
+      error instanceof DomainError &&
+      error.code === "CLOUD_CONNECTION_TOKEN_EXCHANGE_FAILED" &&
+      error.message.includes("invalid_grant")
+  );
+  assert.equal(getRow(), null);
 });
 
 test("disconnect: nothing connected -> no-op, never calls revoke", async () => {

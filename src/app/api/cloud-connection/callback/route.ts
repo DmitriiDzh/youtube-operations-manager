@@ -2,8 +2,35 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createCloudConnectionCore } from "@/lib/cloud-connection";
+import { isDomainError } from "@/lib/cloud-connection/contracts";
 import { cloudConnectionCallbackRedirectUri } from "@/lib/cloud-connection/redirect-uri";
 import { CLOUD_CONNECTION_STATE_COOKIE } from "../start/route";
+
+// A small, closed set of reasons the Settings card (cloud-connection-settings.tsx) maps to a
+// specific, actionable message -- the owner reported that one generic "Connection failed" message
+// for every possible failure gave no way to tell them apart. Anything not on this list (an
+// unclassified thrown error) falls back to `"unknown"`; the real error is always still logged
+// server-side below regardless of which reason is reported to the browser.
+type CloudConnectionFailureReason =
+  | "oauth_denied"
+  | "missing_callback_params"
+  | "state_cookie_missing"
+  | "AUTH_CALLBACK_INVALID"
+  | "CLOUD_CONNECTION_TOKEN_EXCHANGE_FAILED"
+  | "encryption_key_not_configured"
+  | "unknown";
+
+const KNOWN_DOMAIN_ERROR_FAILURE_REASONS: ReadonlySet<string> = new Set([
+  "AUTH_CALLBACK_INVALID",
+  "CLOUD_CONNECTION_TOKEN_EXCHANGE_FAILED",
+  "encryption_key_not_configured",
+] satisfies CloudConnectionFailureReason[]);
+
+function isKnownFailureReason(
+  code: string
+): code is "AUTH_CALLBACK_INVALID" | "CLOUD_CONNECTION_TOKEN_EXCHANGE_FAILED" | "encryption_key_not_configured" {
+  return KNOWN_DOMAIN_ERROR_FAILURE_REASONS.has(code);
+}
 
 /**
  * Completes the Cloud connection flow started by `/api/cloud-connection/start`
@@ -39,8 +66,27 @@ export async function GET(request: Request) {
 
   const redirectTo = new URL("/dashboard", url.origin);
 
-  if (oauthError || !code || !state || !expectedState) {
+  function fail(reason: CloudConnectionFailureReason) {
     redirectTo.searchParams.set("cloudConnection", "error");
+    redirectTo.searchParams.set("cloudConnectionReason", reason);
+  }
+
+  if (oauthError) {
+    // Google's own callback `error` param (e.g. "access_denied" when the operator declines
+    // consent) -- logged below for the rarer non-`access_denied` cases; the Settings card shows
+    // one message covering the common case without needing every possible OAuth error string.
+    console.error(JSON.stringify({
+      level: "error",
+      event: "cloud_connection.oauth_denied",
+      context: { oauthError },
+    }));
+    fail("oauth_denied");
+  } else if (!code || !state) {
+    fail("missing_callback_params");
+  } else if (!expectedState) {
+    // Most often: the state cookie expired (the flow took over 10 minutes), the browser blocked
+    // it, or this link was opened again after already completing/abandoning an earlier attempt.
+    fail("state_cookie_missing");
   } else {
     try {
       await createCloudConnectionCore().completeConnect({
@@ -56,7 +102,7 @@ export async function GET(request: Request) {
         event: "cloud_connection.complete_connect.failed",
         context: { message: error instanceof Error ? error.message : "Unknown error" },
       }));
-      redirectTo.searchParams.set("cloudConnection", "error");
+      fail(isDomainError(error) && isKnownFailureReason(error.code) ? error.code : "unknown");
     }
   }
 

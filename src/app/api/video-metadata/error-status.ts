@@ -66,6 +66,10 @@ const DOMAIN_ERROR_STATUS = {
   AGENT_CONNECTION_NOT_AVAILABLE: 404,
   AGENT_CONNECTION_ID_CONFLICT: 409,
   AGENT_ZONE_VIOLATION: 403,
+  // Cloud Connection OAuth callback (`src/lib/cloud-connection/`) -- never actually surfaced
+  // through a JSON API response (that route always redirects), but this table is indexed with the
+  // full `DomainErrorCode` union, so every code needs an entry.
+  CLOUD_CONNECTION_TOKEN_EXCHANGE_FAILED: 401,
 } as const satisfies Partial<Record<DomainErrorCode, number>>;
 
 export function getVideoMetadataErrorStatus(code: DomainErrorCode) {
