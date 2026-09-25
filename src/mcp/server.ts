@@ -1626,9 +1626,12 @@ export function createMcpServer(
       return;
     }
     // Counts real tool invocations for the Settings tab's traffic stats (owner instruction,
-    // 2026-09-22) -- there is no meaningful "blocked" count here, unlike the other three
-    // gateways: when MCP connection is off, this wrapper never even runs (registerTool
-    // returns above), so there is no failed call to count, only an absent tool.
+    // 2026-09-22). When MCP connection is off, this wrapper never even runs (registerTool
+    // returns above), so there is no failed call to count there, only an absent tool -- but a
+    // BL-091 zone rejection below IS a real, counted "blocked" attempt through this gateway
+    // category, exactly like the other three gateways record their own rejections (an
+    // independent review flagged that this branch previously recorded neither outcome, silently
+    // undercounting the traffic stat once zoning is actually in use).
     const countedHandler = (async (args: never) => {
       if (zoneCapabilityId) {
         try {
@@ -1637,6 +1640,7 @@ export function createMcpServer(
             callerConnectionId,
           });
         } catch (error) {
+          await recordGatewayCallOutcome("mcp_tool_calls", "blocked");
           // Matches every other DomainError's surfacing convention in this file -- an isError
           // tool response, never a thrown exception escaping this callback (each individual
           // handler function below already does the same in its own try/catch).

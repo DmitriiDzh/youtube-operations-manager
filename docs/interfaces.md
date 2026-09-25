@@ -644,8 +644,8 @@ until the project owner deliberately opts in.
 ### Multi-agent responsibility zones (BL-091, `docs/roadmap/plans/AGENT_ZONES_PLAN.md`)
 
 Independent of the connection-level toggle above, six specific mutating actions can additionally
-be restricted to exactly one *named* agent connection when more than one is registered (e.g.
-Claude and Codex connected at once): `channel_sync`, `changeset_create_from_import`,
+be restricted to exactly one *named* agent connection once one or more connections are enabled
+(e.g. Claude and Codex connected at once): `channel_sync`, `changeset_create_from_import`,
 `ai_localization_generate`, `ai_localization_create_change_set`, `agent_create_content_proposal`
 (capability id `content_proposal.create_content_proposal`), and `agent_register_external_artifact`
 (`content_proposal.register_external_artifact`). Every other tool, including every READ-only one,

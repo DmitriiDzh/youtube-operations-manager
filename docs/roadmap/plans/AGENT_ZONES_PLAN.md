@@ -211,8 +211,10 @@ owner actually approved zoning for (§9's answer), rather than touching all ~46
    grouped zone-assignment view (`ZONED_CAPABILITIES`, exported from `agent-connections/contracts.ts`
    so this list has exactly one owner, not a copy per consumer). **Done.**
 4. **Independent review** — at least one round per this repo's established convention for anything
-   touching approval integrity (`AGENTS.md` §L). **Not yet run as of this update** — required
-   before the final merge; §9 tracks this as the remaining step.
+   touching approval integrity (`AGENTS.md` §L). **In progress as of this update** — several rounds
+   have run, no correctness bugs found in the exclusivity/fail-closed logic itself, only stale
+   comments/docs (fixed each round); the cycle is not yet closed (a round must find zero issues).
+   The final round tally will be recorded here once it closes, per this repo's own convention.
 
 Each slice gets `npm test`/`lint`/`build`; the branch merges to `dev` as one complete, working
 feature (`AGENTS.md` §K.1 — "не льем в дев каждую правку"), not per-slice.
@@ -228,7 +230,7 @@ Both original open questions were answered by the owner the same day (Telegram, 
 
 **Remaining before this feature is ready to present as finished:**
 
-- A full independent-review cycle (§8 item 4) — not yet run.
+- A full independent-review cycle (§8 item 4) — in progress, not yet closed.
 - The owner's own decision on the `asset register` CLI gap (§4/interfaces.md's "Known gap" note)
   — an ungated side door into the "assets" domain even when that whole domain is assigned to one
   connection. Not resolved unilaterally; surfaced for the owner to decide.

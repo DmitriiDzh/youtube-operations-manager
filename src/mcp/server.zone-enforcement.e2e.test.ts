@@ -3,6 +3,7 @@ import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { createMcpServer } from "./server";
 import { createAgentConnectionsCore } from "@/lib/agent-connections";
+import { getGatewayTrafficLast24h } from "@/lib/db";
 
 // BL-091 (docs/roadmap/plans/AGENT_ZONES_PLAN.md) -- real, end-to-end cross-module test: the
 // REAL agent-connections core against this test file's own isolated real database (each test
@@ -29,6 +30,14 @@ test("real agent-connections core: an unassigned zoned tool is rejected once 2 c
   const beforeAssignment = await toolsNoIdentity.channel_sync.handler({});
   assert.equal(beforeAssignment.isError, true);
   assert.equal(JSON.parse(beforeAssignment.content[0]?.text ?? "{}").error.code, "AGENT_ZONE_VIOLATION");
+
+  // A zone rejection is a real, countable "blocked" attempt through the mcp_tool_calls gateway
+  // (an independent review found this branch previously recorded neither outcome, undercounting
+  // the Settings tab's traffic stats).
+  const trafficAfterRejection = await getGatewayTrafficLast24h();
+  const mcpTrafficAfterRejection = trafficAfterRejection.find((c) => c.category === "mcp_tool_calls");
+  assert.ok(mcpTrafficAfterRejection && mcpTrafficAfterRejection.totalAttempts >= 1);
+  assert.ok(mcpTrafficAfterRejection.totalAttempts > mcpTrafficAfterRejection.succeeded);
 
   // Assign channel_sync exclusively to codex.
   await core.assignCapabilityZone({ capabilityId: "channel_sync", assignedConnectionId: codexId });
