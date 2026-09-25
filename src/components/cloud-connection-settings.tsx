@@ -8,6 +8,29 @@ import { SettingsSectionRow } from "./settings-section-row";
 
 type Status = { connected: false } | { connected: true; connectedEmail: string; scope: string; connectedAt: string };
 
+// Mirrors the `CloudConnectionFailureReason` union the callback route
+// (`src/app/api/cloud-connection/callback/route.ts`) can set -- kept in sync manually since the
+// route is server-only and this component is client-only, so they cannot literally share the
+// type. An unrecognized/missing reason falls back to the generic message below.
+function cloudConnectionFailureMessage(reason: string | null): string {
+  switch (reason) {
+    case "oauth_denied":
+      return "Google declined or cancelled the request (e.g. consent was not granted).";
+    case "missing_callback_params":
+      return "Google's redirect back to this app was missing expected parameters. Try connecting again.";
+    case "state_cookie_missing":
+      return "The connection attempt expired or its cookie was blocked. Try connecting again (don't wait too long on Google's consent screen).";
+    case "AUTH_CALLBACK_INVALID":
+      return "The callback could not be verified (state mismatch). Try connecting again from a fresh click, not a reused/bookmarked link.";
+    case "CLOUD_CONNECTION_TOKEN_EXCHANGE_FAILED":
+      return "Google rejected the token exchange. This usually means this app's Cloud connection redirect URI isn't registered in Google Cloud Console's OAuth client yet (see docs/decisions/0008-cloud-connection.md), or the authorization code already expired.";
+    case "encryption_key_not_configured":
+      return "CLOUD_CONNECTION_ENCRYPTION_KEY is not configured on this server. Set it and restart the app.";
+    default:
+      return "Connection failed. Please try again.";
+  }
+}
+
 /**
  * Settings-tab card for the Google Cloud connection (`docs/decisions/0008-cloud-connection.md`,
  * owner instruction, 2026-09-22): a single, device-persistent grant, entirely decoupled from the
@@ -30,6 +53,7 @@ export function CloudConnectionSettings() {
   // Suspense boundary just for this one-time post-redirect banner. A plain client-side read after
   // mount has no such requirement.
   const [callbackResult, setCallbackResult] = useState<string | null>(null);
+  const [callbackReason, setCallbackReason] = useState<string | null>(null);
 
   const fetchStatus = useCallback(async () => {
     const res = await fetch("/api/cloud-connection/status");
@@ -51,7 +75,9 @@ export function CloudConnectionSettings() {
   useEffect(() => {
     fetchStatus();
     fetchGatewayTraffic();
-    setCallbackResult(new URLSearchParams(window.location.search).get("cloudConnection"));
+    const params = new URLSearchParams(window.location.search);
+    setCallbackResult(params.get("cloudConnection"));
+    setCallbackReason(params.get("cloudConnectionReason"));
   }, [fetchStatus, fetchGatewayTraffic]);
 
   async function handleDisconnect() {
@@ -92,7 +118,7 @@ export function CloudConnectionSettings() {
         <p className="text-xs text-emerald-400">Connected.</p>
       )}
       {callbackResult === "error" && (
-        <p className="text-xs text-red-400">Connection failed. Please try again.</p>
+        <p className="text-xs text-red-400">{cloudConnectionFailureMessage(callbackReason)}</p>
       )}
 
       {status.connected ? (

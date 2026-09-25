@@ -95,21 +95,35 @@ export function createCloudConnectionServices(deps: ServiceDependencies) {
 
       if (parsed.state !== parsed.expectedState) {
         throw new DomainError({
-          code: "unauthorized",
+          code: "AUTH_CALLBACK_INVALID",
           message: "Cloud connection callback state mismatch",
         });
       }
 
       const oauthClient = deps.oauth.createOAuthClient(parsed.redirectUri);
-      const tokenResponse = await oauthClient.getToken({
-        code: parsed.code,
-        redirect_uri: parsed.redirectUri,
-      });
+      let tokenResponse;
+      try {
+        tokenResponse = await oauthClient.getToken({
+          code: parsed.code,
+          redirect_uri: parsed.redirectUri,
+        });
+      } catch (error) {
+        // Most common real cause: `parsed.redirectUri` was never added to the OAuth client's own
+        // "Authorized redirect URIs" in Google Cloud Console (docs/decisions/0008-cloud-connection.md
+        // -- a separate redirect URI from the one NextAuth's channel-login flow already uses), or
+        // the authorization code already expired/was already used. Wrapped with its own code so the
+        // callback route (and, in turn, the Settings card) can say this specifically instead of a
+        // generic "Connection failed."
+        throw new DomainError({
+          code: "CLOUD_CONNECTION_TOKEN_EXCHANGE_FAILED",
+          message: `Cloud connection token exchange failed: ${error instanceof Error ? error.message : "unknown error"}`,
+        });
+      }
 
       const accessToken = tokenResponse.tokens.access_token;
       if (!accessToken) {
         throw new DomainError({
-          code: "unauthorized",
+          code: "CLOUD_CONNECTION_TOKEN_EXCHANGE_FAILED",
           message: "Cloud connection token exchange did not return an access token",
         });
       }
