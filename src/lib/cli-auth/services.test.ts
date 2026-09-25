@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DomainError } from "@/lib/video-metadata/contracts";
-import { createCliAuthService } from "./service";
-import type { ActiveAuthStorage } from "./storage";
+import { createCliAuthService } from "./services";
+import type { ActiveAuthStorage } from "./adapters/active-auth-storage";
 
 function makeStorageStub(initialUserId: string | null = null): ActiveAuthStorage {
   let current =

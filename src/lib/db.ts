@@ -19,7 +19,7 @@ import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock
 // Platform-aware app-data location (docs/decisions/0002-additive-schema-versioning.md's
 // companion task, "Pre-Release Cross-Platform Persistence"). getProductionAppPaths() is the
 // single shared implementation of "resolve the real app-data location, but redirect to an
-// isolated temp directory under Node's own test runner" -- src/lib/cli-auth/storage.ts and
+// isolated temp directory under Node's own test runner" -- src/lib/cli-auth/adapters/active-auth-storage.ts and
 // src/lib/backup/adapters/filesystem-store.ts use the exact same function for their own
 // defaults, so this test-runner guard exists in one place, not three (AGENTS.md §D).
 const appPaths = getProductionAppPaths();

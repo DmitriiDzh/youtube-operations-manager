@@ -9,7 +9,7 @@ import { createVideoMetadataCore } from "@/lib/video-metadata";
 import { DomainError } from "@/lib/video-metadata/contracts";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
-import { createCliAuthService } from "@/lib/cli-auth/service";
+import { createCliAuthService } from "@/lib/cli-auth";
 import type { CredentialRef } from "@/lib/video-metadata/contracts";
 import { rawSqlClient } from "@/lib/db";
 import { assertDeviceAvailableForMutation, RecoveryModeError } from "@/lib/device-handoff";

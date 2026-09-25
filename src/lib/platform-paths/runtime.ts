@@ -7,7 +7,7 @@ import type { AppPaths } from "./contracts";
  * Node's own built-in test runner sets this on every worker process it spawns (verified
  * empirically: `node --test` -> NODE_TEST_CONTEXT=child-v8, regardless of whether invoked via
  * `npm test` or directly). This is the single, shared signal every module that defaults to a
- * *real* app-data location (src/lib/db.ts, src/lib/cli-auth/storage.ts,
+ * *real* app-data location (src/lib/db.ts, src/lib/cli-auth/adapters/active-auth-storage.ts,
  * src/lib/backup/adapters/filesystem-store.ts) uses to avoid ever touching the operator's real
  * app-data directory or real legacy `data/` folder merely because `npm test` imported them --
  * per docs/DEVELOPMENT_PLAYBOOK.md §6.11. One implementation, not one per call site

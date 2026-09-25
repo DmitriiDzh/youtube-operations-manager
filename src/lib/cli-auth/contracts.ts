@@ -1,4 +1,21 @@
 import { DomainError } from "@/lib/video-metadata/contracts";
+import type { OAuthUserSummary } from "@/lib/db";
+import type { WriteChannelContext } from "@/lib/write-context/contracts";
+
+export type AuthUserSummary = OAuthUserSummary & { isActive: boolean };
+
+export type SelectUserResult = {
+  activeUser: AuthUserSummary;
+  previousActiveUserId: string | null;
+  changed: boolean;
+  effectiveCredentialRef: { userId: string };
+  writeChannel: WriteChannelContext;
+  activeWriteChannel: WriteChannelContext["activeWriteChannel"];
+  selectedChannelId: string | null;
+  alignment: WriteChannelContext["alignment"];
+  requiresReauth: boolean;
+  affectsRemoteOAuth: false;
+};
 
 export function authCallbackInvalid(message: string, details?: unknown) {
   return new DomainError({

@@ -13,7 +13,7 @@ import {
   authRefreshTokenMissing,
   authScopeInsufficient,
   authUserNotFound,
-} from "@/lib/cli-auth/errors";
+} from "@/lib/cli-auth/contracts";
 
 type ResolveCredentialDependencies = {
   createOAuthClient: typeof createGoogleOAuthClient;

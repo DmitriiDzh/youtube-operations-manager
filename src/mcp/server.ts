@@ -8,7 +8,7 @@ import { z } from "zod";
 import { createVideoMetadataCore } from "@/lib/video-metadata";
 import { DomainError } from "@/lib/video-metadata/contracts";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
-import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth/service";
+import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth";
 import { getMcpConnectionEnabled, recordGatewayCallOutcome } from "@/lib/db";
 import type { CredentialRef } from "@/lib/video-metadata/contracts";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
