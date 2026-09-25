@@ -1,10 +1,11 @@
 # AGENT_ZONES_PLAN.md — Multi-Agent Responsibility Zones
 
-Plan document only, per `AGENTS.md` §C ("produce a plan before implementing" for a substantial
-change) and `docs/roadmap/FUTURE_PHASES.md` §9. Not yet fully assigned — two scope questions
-below are open and need the project owner's answer before slice 2 (enforcement) starts. Slice 1
-(data model, no enforcement) is scope-independent and may proceed immediately per the owner's
-"приступай к его выполнению" (Telegram, 2026-09-25).
+**Status, 2026-09-25: all three slices (data model, enforcement, Settings UI) implemented on
+`feature/agent-connections`.** Both open scope questions in §9 were answered by the owner the same
+day. An independent-review pass found the initial enforcement policy violated the owner's own
+exclusivity rule (an unassigned capability stayed open to any enabled connection even with 2+
+active) -- fixed; see §5/§7's "as actually implemented" notes. Remaining before merge: a full
+independent-review cycle, then the owner's explicit "yes, merge" (`AGENTS.md` §K.2).
 
 ## 1. Origin and problem statement
 
@@ -123,21 +124,27 @@ assertAgentAllowedForCapability(args: {
 }): void // throws AgentZoneViolationError, a new DomainErrorCode entry
 ```
 
-**Default policy (fail-closed once zoning is actually in use, open until then — reconciles the
-owner's exclusivity requirement with zero behavior change for today's single-agent setup):**
+**Default policy, as actually implemented (keyed on ENABLED connections, not merely registered
+ones — a disabled connection does not count, so disabling every connection is an explicit escape
+hatch back to today's single-agent, zero-behavior-change state):**
 
-- If zero connections are registered: identical to today, no gate, nothing changes for the
-  current single-Codex setup.
-- Once **one or more** connections are registered: every mutating capability in scope (§3's answer
-  to open question 1) requires a resolvable, enabled, registered `callerConnectionId` — an unknown
-  or missing one is rejected, not silently treated as "anyone." This closes the exact gap advisor
+- If zero connections are **enabled**: identical to today, no gate.
+- Once **one or more** connections are enabled: every mutating capability in scope (§3's answer to
+  open question 1) requires a resolvable, enabled, registered `callerConnectionId` — an unknown or
+  missing one is rejected, not silently treated as "anyone." This closes the exact gap advisor
   review flagged: a forgotten `AGENT_CONNECTION_ID` env var must never quietly bypass zoning.
   (Read-tier capabilities are never gated by this at all, per §2.)
-- A capability with **no zone assigned** (`assignedConnectionId IS NULL`) is open to any
-  *registered, enabled* connection — lets the owner register connections gradually, domain by
-  domain, without having to assign every capability on day one.
+- A capability with **no zone assigned** (`assignedConnectionId IS NULL`) is open to the caller
+  **only while exactly one connection is enabled** — trivially unambiguous, since there is only
+  one possible caller. **Once two or more connections are enabled, an unassigned capability is
+  rejected for every connection, not shared.** A first implementation (and a first
+  independent-review round) both missed this and left an unassigned capability open to any
+  enabled connection regardless of count — this directly contradicted the owner's own exclusivity
+  requirement ("нельзя одну и ту же зону ответственности дать обоим") and was fixed before this
+  feature was presented as complete, together with regression tests for both the 1-enabled and
+  2-plus-enabled cases.
 - A capability **assigned** to a specific connection rejects every other connection's calls,
-  including an unregistered/unknown caller.
+  regardless of how many connections are enabled, including an unregistered/unknown caller.
 
 ## 6. Identity mechanism
 
@@ -199,27 +206,30 @@ owner actually approved zoning for (§9's answer), rather than touching all ~46
    call sites in both MCP and CLI, `AGENT_CONNECTION_ID`/`--agentConnectionId` identity resolution.
    See §7's "as actually implemented" note for what this did and did not end up covering. **Done**
    (owner confirmed scope question 1 as "(b)", Telegram 2026-09-25: "1. Согласен").
-3. **Web UI** — extends/replaces `mcp-connection-settings.tsx`'s single toggle with a connections
-   list (register/enable/disable, reusing `ToggleSwitch`) and a per-domain (default) / per-capability
-   (expandable) zone-assignment view, following `ai-connections-manager.tsx`'s existing CRUD-list
-   pattern.
+3. **Web UI** — new component `src/components/agent-connections-manager.tsx` (Settings → AI
+   Agent), a connections list (register/enable/disable, reusing `ToggleSwitch`) and a per-domain
+   grouped zone-assignment view (`ZONED_CAPABILITIES`, exported from `agent-connections/contracts.ts`
+   so this list has exactly one owner, not a copy per consumer). **Done.**
 4. **Independent review** — at least one round per this repo's established convention for anything
-   touching approval integrity (`AGENTS.md` §L), likely more given this closes a named
-   `TECHNICAL_DEBT.md` risk.
+   touching approval integrity (`AGENTS.md` §L). **Not yet run as of this update** — required
+   before the final merge; §9 tracks this as the remaining step.
 
 Each slice gets `npm test`/`lint`/`build`; the branch merges to `dev` as one complete, working
 feature (`AGENTS.md` §K.1 — "не льем в дев каждую правку"), not per-slice.
 
-## 9. Open questions for the project owner
+## 9. Open questions — resolved, plus what remains
 
-1. **Scope (§3)**: zone only the Phase 7 `agent_*` DRAFT tier, or the full local-mutation surface
-   (`channel_sync`, `changeset_create_from_import`, `ai_localization_*`) too? Recommendation: the
-   latter (b).
-2. **Snapshot/sync inclusion**: should `agent_connections`/`agent_capability_zones` travel with
-   device-handoff snapshots, or stay per-device (an MCP launch config, and therefore the
-   `AGENT_CONNECTION_ID` it sets, is inherently per-machine)? Recommendation: per-device only,
-   excluded from snapshot/sync-gateway, documented as a deliberate choice (mirrors how
-   `creative_assets` was already excluded, RISK-52) — revisit only if multi-device agent operation
-   becomes a real scenario.
+Both original open questions were answered by the owner the same day (Telegram, 2026-09-25):
 
-Slice 1 does not require either answer and may start now.
+1. **Scope**: "1. Согласен" — zoning covers the full local-mutation surface (b), not only the
+   Phase 7 `agent_*` DRAFT tier.
+2. **Snapshot/sync inclusion**: "2. Оставим локально" — `agent_connections`/`agent_capability_zones`
+   stay per-device, excluded from `SNAPSHOT_TRANSFERRED_TABLES`, as this plan recommended.
+
+**Remaining before this feature is ready to present as finished:**
+
+- A full independent-review cycle (§8 item 4) — not yet run.
+- The owner's own decision on the `asset register` CLI gap (§4/interfaces.md's "Known gap" note)
+  — an ungated side door into the "assets" domain even when that whole domain is assigned to one
+  connection. Not resolved unilaterally; surfaced for the owner to decide.
+- The owner's explicit "yes, merge" for `feature/agent-connections` → `dev` (`AGENTS.md` §K.2).

@@ -286,18 +286,23 @@ implemented during Phases 7-10 unless separately approved:
   produce a plan and start executing it, built as its own module per `AGENTS.md` §M ("составь
   план выполнения... чтобы это было отдельным модулем отвечающим за подключение агентов + доп
   модули если требуется"). See `docs/roadmap/plans/AGENT_ZONES_PLAN.md` for the full design (new
-  `src/lib/agent-connections/` module, per-capability zone assignment, fail-closed-once-any-
-  connection-is-registered policy). **Update, 2026-09-25:** owner confirmed both open scope
-  questions (expand zoning beyond the Phase 7 `agent_*` DRAFT tier to `channel_sync`/
-  `changeset_create_from_import`/`ai_localization_*`: "Согласен"; keep the new tables device-local,
-  not synced: "Оставим локально"). Slices 1 (data model) and 2 (enforcement wired at the 6
-  approved MCP tools + their CLI equivalents) are done on `feature/agent-connections`, not yet
-  merged to `dev`. This work is **not** the same as `docs/TECHNICAL_DEBT.md` RISK-32 (an earlier
-  draft of the plan mistakenly conflated the two) -- RISK-32 is about device-availability-gate
-  consistency and remains separately OPEN, untouched by this feature. A new risk was found and
-  recorded instead, RISK-60 (`write_channel_select`/`auth_user_select` mutate global, not
-  per-connection, active-channel state). Remaining: slice 3 (Web UI) and the owner's "yes, merge"
-  before this feature reaches `dev`.
+  `src/lib/agent-connections/` module, per-capability zone assignment, fail-closed-once-enabled
+  policy). **Update, 2026-09-25:** owner confirmed both open scope questions (expand zoning beyond
+  the Phase 7 `agent_*` DRAFT tier to `channel_sync`/`changeset_create_from_import`/
+  `ai_localization_*`: "Согласен"; keep the new tables device-local, not synced: "Оставим
+  локально"). All three slices (data model, enforcement at the 6 approved MCP tools + CLI
+  equivalents, Settings UI) are done on `feature/agent-connections`, not yet merged to `dev`. An
+  independent-review pass found the initial enforcement policy left an unassigned capability open
+  to any enabled connection even with 2+ connections active, contradicting the owner's own
+  exclusivity rule ("нельзя одну и ту же зону ответственности дать обоим") -- fixed before this
+  feature was presented as complete: an unassigned capability is now open only while exactly one
+  connection is enabled, rejected for everyone once 2+ are enabled. This work is **not** the same
+  as `docs/TECHNICAL_DEBT.md` RISK-32 (an earlier draft of the plan mistakenly conflated the two)
+  -- RISK-32 is about device-availability-gate consistency and remains separately OPEN, untouched
+  by this feature. A new risk was found and recorded instead, RISK-60
+  (`write_channel_select`/`auth_user_select` mutate global, not per-connection, active-channel
+  state). Remaining: an independent-review cycle, then the owner's "yes, merge" before this
+  feature reaches `dev`.
 
 ## 8. How to use this roadmap in future sessions
 

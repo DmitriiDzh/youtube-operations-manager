@@ -22,7 +22,16 @@ import { createAnalyticsCore, type AnalyticsCore } from "@/lib/analytics";
 import { createAiLocalizationCore, type AiLocalizationCore } from "@/lib/ai-localization";
 import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent-operations";
 import { createAssetCatalogCore, type AssetCatalogCore } from "@/lib/asset-catalog";
-import { createAgentConnectionsCore, type AgentConnectionsCoreSubset } from "@/lib/agent-connections";
+import {
+  createAgentConnectionsCore,
+  type AgentConnectionsCoreSubset,
+  CAPABILITY_CHANNEL_SYNC,
+  CAPABILITY_CHANGESET_CREATE_FROM_IMPORT,
+  CAPABILITY_AI_LOCALIZATION_GENERATE,
+  CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET,
+  CAPABILITY_CONTENT_PROPOSAL_CREATE,
+  CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT,
+} from "@/lib/agent-connections";
 
 // CLI parity for the read/propose/create MCP tools (docs/roadmap/plans/PHASE_7_PLAN.md,
 // docs/TECHNICAL_DEBT.md RISK-04) -- same core factories, same "smallest safe slice" as
@@ -651,7 +660,7 @@ export async function runCliCommand(args: {
       // "import" -- persists a new Change Set. Never writes to YouTube; gated above like
       // playlist_create/apply (mutates the local database).
       await agentConnectionsCore.assertAgentAllowedForCapability({
-        capabilityId: "changeset_create_from_import",
+        capabilityId: CAPABILITY_CHANGESET_CREATE_FROM_IMPORT,
         callerConnectionId,
       });
       const result = await operationsCore.createChangeSetFromImport({ channelId, filename, buffer });
@@ -699,7 +708,7 @@ export async function runCliCommand(args: {
 
       if (parsedArgs.command === "generate") {
         await agentConnectionsCore.assertAgentAllowedForCapability({
-          capabilityId: "ai_localization_generate",
+          capabilityId: CAPABILITY_AI_LOCALIZATION_GENERATE,
           callerConnectionId,
         });
         const videoIds = requiredStringFlag(parsedArgs.flags, "videoIds")
@@ -729,7 +738,7 @@ export async function runCliCommand(args: {
       // reasonable flat-flag equivalent for either. --rationale is plain free text (Phase 7
       // slice F, owner spec §12).
       await agentConnectionsCore.assertAgentAllowedForCapability({
-        capabilityId: "ai_localization_create_change_set",
+        capabilityId: CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET,
         callerConnectionId,
       });
       const proposalsJson = requiredStringFlag(parsedArgs.flags, "proposalsJson");
@@ -884,7 +893,7 @@ export async function runCliCommand(args: {
       // comma-separated list of ids, same convention as --metricNames above.
       if (parsedArgs.command === "create-content-proposal") {
         await agentConnectionsCore.assertAgentAllowedForCapability({
-          capabilityId: "content_proposal.create_content_proposal",
+          capabilityId: CAPABILITY_CONTENT_PROPOSAL_CREATE,
           callerConnectionId,
         });
         const evidenceJsonFlag = optionalStringFlag(parsedArgs.flags, "evidenceJson");
@@ -945,7 +954,7 @@ export async function runCliCommand(args: {
       // operator-facing "asset register" command.
       if (parsedArgs.command === "register-external-artifact") {
         await agentConnectionsCore.assertAgentAllowedForCapability({
-          capabilityId: "content_proposal.register_external_artifact",
+          capabilityId: CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT,
           callerConnectionId,
         });
         const provenanceJsonFlag = optionalStringFlag(parsedArgs.flags, "provenanceJson");
@@ -1119,7 +1128,7 @@ export async function runCliCommand(args: {
 
     if (parsedArgs.namespace === "channel") {
       if (parsedArgs.command === "sync") {
-        await agentConnectionsCore.assertAgentAllowedForCapability({ capabilityId: "channel_sync", callerConnectionId });
+        await agentConnectionsCore.assertAgentAllowedForCapability({ capabilityId: CAPABILITY_CHANNEL_SYNC, callerConnectionId });
         const channelId = optionalStringFlag(parsedArgs.flags, "channelId");
         const result = await channelSyncCore.syncChannel({
           credentialRef,

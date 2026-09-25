@@ -4550,14 +4550,32 @@ function makeAlwaysDenyingAgentConnectionsCoreStub(): AgentConnectionsCoreSubset
   };
 }
 
-const ZONED_MCP_TOOL_NAMES = [
-  "channel_sync",
-  "changeset_create_from_import",
-  "ai_localization_generate",
-  "ai_localization_create_change_set",
-  "agent_create_content_proposal",
-  "agent_register_external_artifact",
-] as const;
+// Expected `capabilityId` per tool name -- deliberately hand-verified once here against the real
+// call sites in src/mcp/server.ts (which import the same shared constants from
+// src/lib/agent-connections), rather than importing those constants into this map, so a typo'd
+// literal at a call site cannot silently match a typo'd literal here.
+const EXPECTED_ZONE_CAPABILITY_IDS: Record<string, string> = {
+  channel_sync: "channel_sync",
+  changeset_create_from_import: "changeset_create_from_import",
+  ai_localization_generate: "ai_localization_generate",
+  ai_localization_create_change_set: "ai_localization_create_change_set",
+  agent_create_content_proposal: "content_proposal.create_content_proposal",
+  agent_register_external_artifact: "content_proposal.register_external_artifact",
+};
+
+const ZONED_MCP_TOOL_NAMES = Object.keys(EXPECTED_ZONE_CAPABILITY_IDS) as (keyof typeof EXPECTED_ZONE_CAPABILITY_IDS)[];
+
+function makeCapturingAgentConnectionsCoreStub(): AgentConnectionsCoreSubset & {
+  calls: { capabilityId: string; callerConnectionId: string | null }[];
+} {
+  const calls: { capabilityId: string; callerConnectionId: string | null }[] = [];
+  return {
+    calls,
+    async assertAgentAllowedForCapability(args) {
+      calls.push(args);
+    },
+  };
+}
 
 for (const toolName of ZONED_MCP_TOOL_NAMES) {
   test(`MCP ${toolName} is actually wired through agent-zone enforcement (rejected when the stub always denies)`, async () => {
@@ -4571,7 +4589,28 @@ for (const toolName of ZONED_MCP_TOOL_NAMES) {
     const payload = JSON.parse(result.content[0]?.text ?? "{}");
     assert.equal(payload.error.code, "AGENT_ZONE_VIOLATION");
   });
+
+  test(`MCP ${toolName} passes exactly its own capabilityId ("${EXPECTED_ZONE_CAPABILITY_IDS[toolName]}") and this server's callerConnectionId to assertAgentAllowedForCapability`, async () => {
+    const capturing = makeCapturingAgentConnectionsCoreStub();
+    const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, callerConnectionId: "test-caller" }, capturing);
+    const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<unknown> }> })._registeredTools;
+
+    await tools[toolName].handler({});
+
+    assert.equal(capturing.calls.length, 1);
+    assert.deepEqual(capturing.calls[0], { capabilityId: EXPECTED_ZONE_CAPABILITY_IDS[toolName], callerConnectionId: "test-caller" });
+  });
 }
+
+test("MCP createMcpServer forwards options.callerConnectionId: null (the default) when not explicitly set", async () => {
+  const capturing = makeCapturingAgentConnectionsCoreStub();
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true }, capturing);
+  const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<unknown> }> })._registeredTools;
+
+  await tools.channel_sync.handler({});
+
+  assert.equal(capturing.calls[0]?.callerConnectionId, null);
+});
 
 test("MCP whoami (an unzoned tool) is never affected by agent-zone enforcement, even when the stub always denies", async () => {
   const server = createMcpServer(makeCoreStub(), { connectionEnabled: true }, makeAlwaysDenyingAgentConnectionsCoreStub());

@@ -881,6 +881,7 @@ second error-code enum:
 | `DRAFT_VALIDATION_FAILED` | 422 | a DRAFT object failed field-level validation |
 | `APPROVAL_REQUIRED` | 403 | an operation that needs human approval was attempted without it |
 | `EXECUTION_NOT_AUTHORIZED` | 403 | an EXECUTE-class operation attempted without that permission |
+| `AGENT_ZONE_VIOLATION` | 403 | **not from owner spec §27** -- added by BL-091 (`docs/roadmap/plans/AGENT_ZONES_PLAN.md`), a separate cross-cutting feature, not this phase. Can now be thrown by `content_proposal.create_content_proposal`/`content_proposal.register_external_artifact` (the two `AGENT_CAPABILITIES` entries this table otherwise covers) as well as by non-agent-operations tools (`channel_sync`, `changeset_create_from_import`, `ai_localization_generate`/`create_change_set`) once one or more agent connections are enabled and the calling connection is unknown or not authorized for that specific action's zone. See `docs/interfaces.md`'s "Multi-agent responsibility zones" section for the full policy. |
 
 ## 7. Implementation status by slice (owner spec §29's recommended order)
 

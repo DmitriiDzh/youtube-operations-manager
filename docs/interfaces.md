@@ -654,17 +654,34 @@ not a second permission tier.
 
 - **Identity**: each MCP server process resolves its own agent-connection id once at startup from
   the `AGENT_CONNECTION_ID` environment variable (set in that client's own MCP launch config); the
-  CLI resolves the same identity per invocation from `--agentConnectionId` or the same env var.
-- **Fail-closed policy**: while zero agent connections are registered (`src/lib/agent-connections/`,
-  Settings-tab management not yet built as of slice 2), this is entirely a no-op — identical to
-  today's single-agent behavior. Once one or more connections are registered, every one of the 6
-  actions above requires a resolvable, enabled, registered connection id; an unknown or missing one
-  is rejected with `AGENT_ZONE_VIOLATION`, never silently allowed. A capability with no explicit
-  zone assignment stays open to any registered, enabled connection; one assigned to a specific
-  connection rejects every other connection's calls to that same action.
+  CLI resolves the same identity per invocation from `--agentConnectionId` (priority) or the same
+  env var, resolving an empty string to `null` rather than a literal empty-string identity.
+- **Management UI**: Settings → AI Agent → "Agent connections & responsibility zones"
+  (`src/components/agent-connections-manager.tsx`) — register a connection (id + label, no
+  secret), enable/disable it, and assign each of the 6 actions above to exactly one connection (or
+  leave it unassigned). Backed by `GET/POST /api/agent-connections`,
+  `PUT /api/agent-connections/[connectionId]`, `GET/PUT /api/agent-connections/zones`.
+- **Fail-closed policy, keyed on ENABLED connections** (a disabled one does not count):
+  - **Zero enabled connections**: entirely a no-op — identical to today's single-agent behavior.
+  - **One or more enabled connections**: every one of the 6 actions requires a resolvable,
+    enabled, registered connection id; an unknown or missing one is rejected with
+    `AGENT_ZONE_VIOLATION`, never silently allowed.
+  - **A capability with an explicit zone assignment** always rejects every connection except the
+    assigned one, regardless of how many are enabled.
+  - **A capability with NO explicit zone assignment** is open only while exactly one connection is
+    enabled (trivially unambiguous). **Once two or more connections are enabled, an unassigned
+    capability is rejected for every connection**, not shared — the owner's own exclusivity
+    requirement ("нельзя одну и ту же зону ответственности дать обоим") means an unassigned zone
+    with multiple active agents is a configuration gap the operator must resolve with an explicit
+    assignment, never a default multi-agent grant.
 - **Not the same as the "MCP connection" toggle above** — that toggle is the all-or-nothing gate
   deciding whether an MCP client sees any tool at all; this mechanism only matters once the toggle
   is already on and coordinates *which* connected agent may perform *which* of these 6 actions.
+- **Known gap, not yet resolved**: the operator-only `asset register` CLI command (creative-asset
+  catalog, `docs/AGENT_OPERATIONS_INTERFACE.md` §4c) is not gated by this mechanism at all — if an
+  entire "assets" responsibility is ever assigned to one connection, this one command remains an
+  ungated side door. Left for the project owner to decide whether it matters, not resolved
+  unilaterally.
 
 ---
 

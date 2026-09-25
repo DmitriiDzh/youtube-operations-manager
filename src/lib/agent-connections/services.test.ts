@@ -174,7 +174,18 @@ test("assertAgentAllowedForCapability is a no-op when zero connections are regis
   );
 });
 
-test("assertAgentAllowedForCapability rejects a missing caller identity once at least one connection is registered (fail-closed)", async () => {
+test("assertAgentAllowedForCapability is a no-op again once every registered connection has been disabled (the escape hatch back to single-agent behavior)", async () => {
+  const deps = createFakeDeps();
+  const services = createAgentConnectionsServices(deps);
+  await services.registerConnection({ id: "claude", label: "Claude" });
+  await services.setConnectionEnabled({ id: "claude", enabled: false });
+
+  await assert.doesNotReject(() =>
+    services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.create_content_proposal", callerConnectionId: null })
+  );
+});
+
+test("assertAgentAllowedForCapability rejects a missing caller identity once at least one connection is enabled (fail-closed)", async () => {
   const deps = createFakeDeps();
   const services = createAgentConnectionsServices(deps);
   await services.registerConnection({ id: "claude", label: "Claude" });
@@ -185,7 +196,7 @@ test("assertAgentAllowedForCapability rejects a missing caller identity once at 
   );
 });
 
-test("assertAgentAllowedForCapability rejects an unknown callerConnectionId once at least one connection is registered", async () => {
+test("assertAgentAllowedForCapability rejects an unknown callerConnectionId once at least one connection is enabled", async () => {
   const deps = createFakeDeps();
   const services = createAgentConnectionsServices(deps);
   await services.registerConnection({ id: "claude", label: "Claude" });
@@ -196,11 +207,14 @@ test("assertAgentAllowedForCapability rejects an unknown callerConnectionId once
   );
 });
 
-test("assertAgentAllowedForCapability rejects a disabled connection", async () => {
+test("assertAgentAllowedForCapability rejects a disabled connection even when it supplies its own id", async () => {
   const deps = createFakeDeps();
   const services = createAgentConnectionsServices(deps);
   await services.registerConnection({ id: "claude", label: "Claude" });
   await services.setConnectionEnabled({ id: "claude", enabled: false });
+  // Register a second, enabled connection so the fail-closed gate is active for this assertion
+  // (a lone disabled connection alone would hit the no-op path above, not this rejection).
+  await services.registerConnection({ id: "codex", label: "Codex" });
 
   await assert.rejects(
     () => services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.create_content_proposal", callerConnectionId: "claude" }),
@@ -208,10 +222,9 @@ test("assertAgentAllowedForCapability rejects a disabled connection", async () =
   );
 });
 
-test("assertAgentAllowedForCapability allows any registered, enabled connection when the capability has no zone assigned", async () => {
+test("assertAgentAllowedForCapability allows the sole enabled connection when the capability has no zone assigned (unambiguous with only one possible caller)", async () => {
   const deps = createFakeDeps();
   const services = createAgentConnectionsServices(deps);
-  await services.registerConnection({ id: "claude", label: "Claude" });
   await services.registerConnection({ id: "codex", label: "Codex" });
 
   await assert.doesNotReject(() =>
@@ -219,7 +232,23 @@ test("assertAgentAllowedForCapability allows any registered, enabled connection 
   );
 });
 
-test("assertAgentAllowedForCapability allows the assigned connection and rejects every other one", async () => {
+test("assertAgentAllowedForCapability rejects EVERY caller for an unassigned capability once 2+ connections are enabled (owner's exclusivity rule: an unassigned zone must never be shared)", async () => {
+  const deps = createFakeDeps();
+  const services = createAgentConnectionsServices(deps);
+  await services.registerConnection({ id: "claude", label: "Claude" });
+  await services.registerConnection({ id: "codex", label: "Codex" });
+
+  await assert.rejects(
+    () => services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.create_content_proposal", callerConnectionId: "claude" }),
+    (error: unknown) => error instanceof DomainError && error.code === "AGENT_ZONE_VIOLATION"
+  );
+  await assert.rejects(
+    () => services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.create_content_proposal", callerConnectionId: "codex" }),
+    (error: unknown) => error instanceof DomainError && error.code === "AGENT_ZONE_VIOLATION"
+  );
+});
+
+test("assertAgentAllowedForCapability allows an explicitly assigned capability even with 2+ connections enabled, and still rejects every other one", async () => {
   const deps = createFakeDeps();
   const services = createAgentConnectionsServices(deps);
   await services.registerConnection({ id: "claude", label: "Claude" });
@@ -232,6 +261,19 @@ test("assertAgentAllowedForCapability allows the assigned connection and rejects
   await assert.rejects(
     () =>
       services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.register_external_artifact", callerConnectionId: "claude" }),
+    (error: unknown) => error instanceof DomainError && error.code === "AGENT_ZONE_VIOLATION"
+  );
+});
+
+test("assertAgentAllowedForCapability: a third, unassigned capability stays rejected for both while a second one is explicitly assigned (assignments are independent per capability)", async () => {
+  const deps = createFakeDeps();
+  const services = createAgentConnectionsServices(deps);
+  await services.registerConnection({ id: "claude", label: "Claude" });
+  await services.registerConnection({ id: "codex", label: "Codex" });
+  await services.assignCapabilityZone({ capabilityId: "content_proposal.register_external_artifact", assignedConnectionId: "codex" });
+
+  await assert.rejects(
+    () => services.assertAgentAllowedForCapability({ capabilityId: "channel_sync", callerConnectionId: "claude" }),
     (error: unknown) => error instanceof DomainError && error.code === "AGENT_ZONE_VIOLATION"
   );
 });

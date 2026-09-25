@@ -38,7 +38,16 @@ import {
   generateProposalsInputSchema,
 } from "@/lib/ai-localization/schemas";
 import { createAgentOperationsCore, type AgentOperationsCore, AGENT_API_VERSION } from "@/lib/agent-operations";
-import { createAgentConnectionsCore, type AgentConnectionsCoreSubset } from "@/lib/agent-connections";
+import {
+  createAgentConnectionsCore,
+  type AgentConnectionsCoreSubset,
+  CAPABILITY_CHANNEL_SYNC,
+  CAPABILITY_CHANGESET_CREATE_FROM_IMPORT,
+  CAPABILITY_AI_LOCALIZATION_GENERATE,
+  CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET,
+  CAPABILITY_CONTENT_PROPOSAL_CREATE,
+  CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT,
+} from "@/lib/agent-connections";
 import {
   createContentProposalInputSchema,
   findComparableVideosInputSchema,
@@ -1830,7 +1839,7 @@ export function createMcpServer(
       inputSchema: localizationImportPreviewInputSchema,
     },
     (args) => handlers.changesetCreateFromImport(args),
-    "changeset_create_from_import"
+    CAPABILITY_CHANGESET_CREATE_FROM_IMPORT
   );
 
   registerTool(
@@ -1861,7 +1870,7 @@ export function createMcpServer(
       inputSchema: syncChannelInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.channelSync(args),
-    "channel_sync"
+    CAPABILITY_CHANNEL_SYNC
   );
 
   registerTool(
@@ -1956,7 +1965,7 @@ export function createMcpServer(
     // exactly the kind of action the owner's "Claude owns localization" split is meant to reserve
     // for one agent (docs/roadmap/plans/AGENT_ZONES_PLAN.md §3, owner-approved scope, Telegram
     // 2026-09-25: "Согласен").
-    "ai_localization_generate"
+    CAPABILITY_AI_LOCALIZATION_GENERATE
   );
 
   registerTool(
@@ -1967,7 +1976,7 @@ export function createMcpServer(
       inputSchema: createChangeSetFromGenerationInputSchema,
     },
     (args) => handlers.aiLocalizationCreateChangeSet(args),
-    "ai_localization_create_change_set"
+    CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET
   );
 
   registerTool(
@@ -2058,7 +2067,7 @@ export function createMcpServer(
       inputSchema: createContentProposalInputSchema,
     },
     (args) => handlers.agentCreateContentProposal(args),
-    "content_proposal.create_content_proposal"
+    CAPABILITY_CONTENT_PROPOSAL_CREATE
   );
 
   registerTool(
@@ -2089,7 +2098,7 @@ export function createMcpServer(
       inputSchema: registerExternalArtifactInputSchema,
     },
     (args) => handlers.agentRegisterExternalArtifact(args),
-    "content_proposal.register_external_artifact"
+    CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT
   );
 
   registerTool(

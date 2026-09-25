@@ -3,6 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { ToggleSwitch } from "./toggle-switch";
+// Imported from the contracts submodule directly, NOT the `@/lib/agent-connections` barrel --
+// that barrel also re-exports `createAgentConnectionsCore` (pulls in the real db.ts-backed store
+// adapter), which broke the client bundle when this "use client" component imported it (a real
+// build failure, not a hypothetical one -- caught by `npm run build` before this was presented as
+// complete). `contracts.ts` itself has zero imports beyond the equally dependency-free
+// `video-metadata/contracts`, so this is safe to import directly into client code.
+import { ZONED_CAPABILITIES } from "@/lib/agent-connections/contracts";
 
 type AgentConnection = {
   id: string;
@@ -15,23 +22,6 @@ type AgentCapabilityZone = {
   capabilityId: string;
   assignedConnectionId: string | null;
 };
-
-/**
- * BL-091 (docs/roadmap/plans/AGENT_ZONES_PLAN.md) -- these 6 are exactly the capabilities wired
- * to `assertAgentAllowedForCapability` in src/mcp/server.ts/src/cli/video-metadata.ts (slice 2).
- * Kept as a hardcoded list here (not fetched from the backend) because src/lib/agent-connections/
- * deliberately does not know about any capability registry (AGENTS.md §M) -- this list must be
- * kept in sync by hand with the actual `zoneCapabilityId`/`assertAgentAllowedForCapability` call
- * sites if either changes.
- */
-const ZONEABLE_CAPABILITIES: { capabilityId: string; label: string; domain: string }[] = [
-  { capabilityId: "channel_sync", label: "Sync channel from YouTube", domain: "Channel sync" },
-  { capabilityId: "changeset_create_from_import", label: "Create Change Set from XLSX import", domain: "Localization" },
-  { capabilityId: "ai_localization_generate", label: "Generate AI localization proposals", domain: "Localization" },
-  { capabilityId: "ai_localization_create_change_set", label: "Create Change Set from AI generation", domain: "Localization" },
-  { capabilityId: "content_proposal.create_content_proposal", label: "Create Content Proposal", domain: "Content proposals" },
-  { capabilityId: "content_proposal.register_external_artifact", label: "Register external artifact", domain: "Content proposals" },
-];
 
 export function AgentConnectionsManager() {
   const [connections, setConnections] = useState<AgentConnection[]>([]);
@@ -96,7 +86,7 @@ export function AgentConnectionsManager() {
   }
 
   const zoneByCapabilityId = new Map(zones.map((z) => [z.capabilityId, z.assignedConnectionId]));
-  const domains = [...new Set(ZONEABLE_CAPABILITIES.map((c) => c.domain))];
+  const domains = [...new Set(ZONED_CAPABILITIES.map((c) => c.domain))];
 
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -169,7 +159,7 @@ export function AgentConnectionsManager() {
           {domains.map((domain) => (
             <div key={domain} className="space-y-2">
               <p className="text-xs font-medium uppercase text-zinc-500">{domain}</p>
-              {ZONEABLE_CAPABILITIES.filter((c) => c.domain === domain).map((c) => {
+              {ZONED_CAPABILITIES.filter((c) => c.domain === domain).map((c) => {
                 const assignedConnectionId = zoneByCapabilityId.get(c.capabilityId) ?? null;
                 return (
                   <div key={c.capabilityId} className="flex items-center justify-between rounded-lg border border-zinc-800 p-3">
@@ -179,7 +169,11 @@ export function AgentConnectionsManager() {
                       onChange={(e) => handleAssignZone(c.capabilityId, e.target.value || null)}
                       className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-200"
                     >
-                      <option value="">Any registered, enabled connection</option>
+                      <option value="">
+                        {connections.filter((conn) => conn.enabled).length >= 2
+                          ? "Unassigned (blocked for everyone until assigned -- 2+ connections enabled)"
+                          : "Unassigned (open to the sole enabled connection)"}
+                      </option>
                       {connections.map((conn) => (
                         <option key={conn.id} value={conn.id}>
                           {conn.label}
@@ -191,6 +185,12 @@ export function AgentConnectionsManager() {
               })}
             </div>
           ))}
+          {connections.filter((c) => c.enabled).length >= 2 && (
+            <p className="text-xs text-amber-300">
+              2 or more connections are enabled -- every action above marked &quot;Unassigned&quot; is
+              currently blocked for ALL of them until you assign it to exactly one connection.
+            </p>
+          )}
         </div>
       )}
     </div>

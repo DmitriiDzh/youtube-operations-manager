@@ -115,30 +115,42 @@ export function createAgentConnectionsServices(deps: ServiceDependencies) {
      * immediately before its own domain logic runs (`docs/roadmap/plans/AGENT_ZONES_PLAN.md` §7,
      * mirrors the write/read gateway's own single-choke-point pattern, `AGENTS.md` §G).
      *
-     * Fail-closed policy: while zero connections are registered, this is a no-op (identical to
-     * today's single-agent behavior). Once one or more connections exist, a resolvable, enabled,
-     * registered `callerConnectionId` is required for every zoned capability -- an unknown or
-     * missing one is rejected, never silently treated as "anyone" (closes the exact gap an
-     * advisor review flagged: a forgotten `AGENT_CONNECTION_ID` must never quietly bypass
-     * zoning). A capability with no zone row, or a zone row whose `assignedConnectionId` is
-     * `null`, is open to any registered+enabled connection. A capability assigned to a specific
-     * connection rejects every other connection's calls.
+     * Fail-closed policy, keyed on ENABLED connections (a disabled one does not count -- disabling
+     * every connection returns to today's single-agent, zero-behavior-change state, a deliberate
+     * escape hatch):
+     *
+     * - **Zero enabled connections**: no-op.
+     * - **One or more enabled connections**: a resolvable, enabled, registered
+     *   `callerConnectionId` is required -- an unknown or missing one is rejected, never silently
+     *   treated as "anyone" (an advisor review flagged that a forgotten `AGENT_CONNECTION_ID`
+     *   must never quietly bypass zoning).
+     * - **A capability with an explicit zone assignment** always rejects every connection except
+     *   the assigned one, regardless of how many connections are enabled.
+     * - **A capability with NO explicit zone assignment** (no row, or `assignedConnectionId:
+     *   null`) is open to the caller only while exactly one connection is enabled -- trivially
+     *   unambiguous, since there is only one possible caller. **Once two or more connections are
+     *   enabled, an unassigned capability is rejected for everyone**, not silently shared --
+     *   the owner's own exclusivity requirement ("нельзя одну и ту же зону ответственности дать
+     *   обоим") means an unassigned zone with multiple active agents is a configuration gap that
+     *   must be fixed by an explicit assignment, not a default multi-agent grant. A first advisor
+     *   review missed this and left unassigned capabilities open to any enabled connection even
+     *   with 2+ active -- fixed here, before this feature was presented as complete.
      */
     async assertAgentAllowedForCapability(args: { capabilityId: string; callerConnectionId: string | null }): Promise<void> {
-      const anyConnectionRegistered = (await deps.listConnections()).length > 0;
-      if (!anyConnectionRegistered) return;
+      const enabledConnections = (await deps.listConnections()).filter((c) => c.enabled);
+      if (enabledConnections.length === 0) return;
 
       if (!args.callerConnectionId) {
         throw new DomainError({
           code: "AGENT_ZONE_VIOLATION",
           message:
             `Capability "${args.capabilityId}" requires a resolvable agent connection identity ` +
-            "once at least one agent connection is registered, but none was supplied.",
+            "once at least one agent connection is enabled, but none was supplied.",
         });
       }
 
-      const caller = await deps.getConnectionById(args.callerConnectionId);
-      if (!caller || !caller.enabled) {
+      const caller = enabledConnections.find((c) => c.id === args.callerConnectionId);
+      if (!caller) {
         throw new DomainError({
           code: "AGENT_ZONE_VIOLATION",
           message: `Agent connection "${args.callerConnectionId}" is not a known, enabled connection.`,
@@ -146,12 +158,28 @@ export function createAgentConnectionsServices(deps: ServiceDependencies) {
       }
 
       const zone = await deps.getZoneByCapabilityId(args.capabilityId);
-      if (zone && zone.assignedConnectionId !== null && zone.assignedConnectionId !== args.callerConnectionId) {
+      const assignedConnectionId = zone?.assignedConnectionId ?? null;
+
+      if (assignedConnectionId === null) {
+        if (enabledConnections.length >= 2) {
+          throw new DomainError({
+            code: "AGENT_ZONE_VIOLATION",
+            message:
+              `Capability "${args.capabilityId}" has no explicit zone assignment, and ` +
+              `${enabledConnections.length} agent connections are enabled -- an unassigned ` +
+              "capability cannot be shared once more than one connection is active. Assign it " +
+              "to exactly one connection first.",
+          });
+        }
+        return;
+      }
+
+      if (assignedConnectionId !== args.callerConnectionId) {
         throw new DomainError({
           code: "AGENT_ZONE_VIOLATION",
           message:
             `Capability "${args.capabilityId}" is assigned exclusively to agent connection ` +
-            `"${zone.assignedConnectionId}", not "${args.callerConnectionId}".`,
+            `"${assignedConnectionId}", not "${args.callerConnectionId}".`,
         });
       }
     },

@@ -21,3 +21,12 @@ export type AgentConnectionsCoreSubset = Pick<
 
 export type { AgentConnection, AgentCapabilityZone } from "./contracts";
 export type { AgentConnectionsServices } from "./services";
+export {
+  CAPABILITY_CHANNEL_SYNC,
+  CAPABILITY_CHANGESET_CREATE_FROM_IMPORT,
+  CAPABILITY_AI_LOCALIZATION_GENERATE,
+  CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET,
+  CAPABILITY_CONTENT_PROPOSAL_CREATE,
+  CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT,
+  ZONED_CAPABILITIES,
+} from "./contracts";
