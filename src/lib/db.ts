@@ -854,11 +854,11 @@ export const agentConnections = sqliteTable("agent_connections", {
  * `"content_proposal.create_content_proposal"`). Zoned per capability, not per domain, so two
  * DRAFT actions in the same domain can go to different connections if the owner ever wants that
  * split; the Web UI groups capabilities visually by domain but assigns each one individually (no
- * domain-level bulk-assign control). `assignedConnectionId
- * IS NULL` means "unassigned" -- read by `assertAgentAllowedForCapability`
- * (`src/lib/agent-connections/services.ts`), which resolves it to "open to the sole caller" while
- * exactly one connection is enabled, or "rejected for everyone" once two or more are (the owner's
- * exclusivity rule -- an unassigned zone must never be silently shared between active agents; see
+ * domain-level bulk-assign control). `assignedConnectionId IS NULL` means "unassigned" -- read by
+ * `assertAgentAllowedForCapability` (`src/lib/agent-connections/services.ts`), which rejects it
+ * for EVERY connection once one or more are enabled, with no exception for exactly one enabled
+ * connection (the owner's exclusivity rule -- an unassigned zone must never be silently granted
+ * to anyone, even the only connection that exists; see
  * `docs/roadmap/plans/AGENT_ZONES_PLAN.md` §5 for the full policy).
  *
  * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** -- same per-device reasoning as `agent_connections`

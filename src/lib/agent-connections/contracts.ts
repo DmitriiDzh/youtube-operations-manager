@@ -27,11 +27,11 @@ export type AgentConnection = {
 };
 
 /**
- * `assignedConnectionId: null` means "unassigned" -- what that actually resolves to at
- * enforcement time depends on how many connections are enabled (see
- * `services.ts`'s `assertAgentAllowedForCapability`): open to the sole caller while exactly one
- * connection is enabled, but rejected for EVERY connection once two or more are enabled (the
- * owner's own exclusivity rule -- an unassigned zone must never be silently shared). Zoned per
+ * `assignedConnectionId: null` means "unassigned" -- rejected for EVERY connection once one or
+ * more are enabled (see `services.ts`'s `assertAgentAllowedForCapability`), with no exception for
+ * exactly one enabled connection: assignment is always an explicit, deliberate act, never an
+ * implicit "the only connection gets it" default (the owner's own exclusivity rule -- an
+ * unassigned zone must never be silently granted to anyone). Zoned per
  * capability id (e.g. `"content_proposal.create_content_proposal"`), not per domain, so two DRAFT
  * actions in the same domain can be split between different connections if the owner ever wants
  * that. `assertAgentAllowedForCapability` itself treats a capability id as a fully opaque string
