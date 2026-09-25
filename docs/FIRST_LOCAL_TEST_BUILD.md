@@ -114,7 +114,13 @@ just delegates to `start.sh` above (same checks, same behavior), for parity with
 double-clickable delegate for `stop.sh`/`update.sh` below.
 
 **To stop safely:** run `./scripts/macos/stop.sh` (or Ctrl+C the running `start.sh`), or
-double-click `stop.command`.
+double-click `stop.command`. You also don't strictly need to remember this: a production server
+(`start.sh`/`start.command`, i.e. `npm run start`) started via these scripts shuts itself down
+automatically after 5 minutes with no web request at all (owner instruction, 2026-09-25 --
+`src/lib/idle-shutdown.ts`) -- scoped to this one server process only; an MCP or CLI session stays
+unaffected either way, since neither depends on this server being up (each reads the local
+database directly). This auto-shutdown never arms during `next dev`, only in a real production
+process.
 
 **To update a standalone `published/<version>/` copy:** run `./scripts/macos/update.sh` (or
 double-click `update.command`), then `start.sh`/`start.command`. A git checkout running directly
