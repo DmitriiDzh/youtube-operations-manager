@@ -24,6 +24,7 @@ import { EditorialProfilePanel } from "@/components/editorial-profile-panel";
 import { DeviceHandoffPanel } from "@/components/device-handoff-panel";
 import { AppShell } from "@/components/app-shell";
 import { InfoTooltip } from "@/components/info-tooltip";
+import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
 import {
   AnalyticsIcon,
   BatchesIcon,
@@ -226,64 +227,74 @@ export default function Dashboard() {
         // `channelId` prop; each resolves "the active channel" itself, once, on its own mount
         // (server-side, via the session's `selectedChannelId`) -- remounting is what makes that
         // mount-time resolution re-run, without changing any of the five components themselves.
-        <div key={channel?.id ?? "no-channel"} className="space-y-6">
-          <p className="max-w-3xl text-sm text-zinc-400">
-            Channel dashboard (docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slices S4/S6b). Comments
-            and Recent-subscribers feeds are still open questions (public-API feasibility
-            unconfirmed) — everything else Studio&apos;s own Home shows from already-available
-            data is below.
-          </p>
-          <HomeDashboardPanel subscriberCount={channel?.subscriberCount} onViewAllContent={() => setTab("content")} />
-          <div className="max-w-3xl">
-            <EditorialProfilePanel />
+        <FeatureErrorBoundary label="Home">
+          <div key={channel?.id ?? "no-channel"} className="space-y-6">
+            <p className="max-w-3xl text-sm text-zinc-400">
+              Channel dashboard (docs/roadmap/plans/STUDIO_PARITY_PLAN.md Slices S4/S6b). Comments
+              and Recent-subscribers feeds are still open questions (public-API feasibility
+              unconfirmed) — everything else Studio&apos;s own Home shows from already-available
+              data is below.
+            </p>
+            <HomeDashboardPanel subscriberCount={channel?.subscriberCount} onViewAllContent={() => setTab("content")} />
+            <div className="max-w-3xl">
+              <EditorialProfilePanel />
+            </div>
           </div>
-        </div>
+        </FeatureErrorBoundary>
       )}
 
       {tab === "content" && (
-        <div key={channel?.id ?? "no-channel"}>
-          <p className="mb-4 text-sm text-zinc-400">
-            Your synchronized videos, Studio-style. Read-only: no metadata is written to
-            YouTube from this tab.
-          </p>
-          <ContentManager />
-        </div>
+        <FeatureErrorBoundary label="Content">
+          <div key={channel?.id ?? "no-channel"}>
+            <p className="mb-4 text-sm text-zinc-400">
+              Your synchronized videos, Studio-style. Read-only: no metadata is written to
+              YouTube from this tab.
+            </p>
+            <ContentManager />
+          </div>
+        </FeatureErrorBoundary>
       )}
 
       {tab === "analytics" && (
-        <div key={channel?.id ?? "no-channel"}>
-          <p className="mb-4 text-sm text-zinc-400">
-            Overview cards/chart are a live read from the Analytics API; the raw table below is
-            still fed by manual/daily-auto collection (BL-058/BL-059). Percentages here are
-            computed facts (period-over-period deltas from real numbers, same as Studio&apos;s own
-            cards) &mdash; AI-generated recommendations remain Phase 10&apos;s own, separate scope.
-          </p>
-          <AnalyticsTab subscriberCount={channel?.subscriberCount} />
-        </div>
+        <FeatureErrorBoundary label="Analytics">
+          <div key={channel?.id ?? "no-channel"}>
+            <p className="mb-4 text-sm text-zinc-400">
+              Overview cards/chart are a live read from the Analytics API; the raw table below is
+              still fed by manual/daily-auto collection (BL-058/BL-059). Percentages here are
+              computed facts (period-over-period deltas from real numbers, same as Studio&apos;s own
+              cards) &mdash; AI-generated recommendations remain Phase 10&apos;s own, separate scope.
+            </p>
+            <AnalyticsTab subscriberCount={channel?.subscriberCount} />
+          </div>
+        </FeatureErrorBoundary>
       )}
 
       {tab === "languages" && (
-        <div key={channel?.id ?? "no-channel"}>
-          <p className="mb-4 text-sm text-zinc-400">
-            Generating with AI is the primary way to add a language &mdash; review and edit
-            the agent&rsquo;s proposals before creating a Change Set. Importing an edited XLSX
-            workbook remains available as a secondary, bulk action. No metadata is written to
-            YouTube anywhere in this tab &mdash; approval here is a local decision only, and
-            &ldquo;Одобрено&rdquo; never means a real YouTube write happened.
-          </p>
-          <LanguagesManager />
-        </div>
+        <FeatureErrorBoundary label="Languages">
+          <div key={channel?.id ?? "no-channel"}>
+            <p className="mb-4 text-sm text-zinc-400">
+              Generating with AI is the primary way to add a language &mdash; review and edit
+              the agent&rsquo;s proposals before creating a Change Set. Importing an edited XLSX
+              workbook remains available as a secondary, bulk action. No metadata is written to
+              YouTube anywhere in this tab &mdash; approval here is a local decision only, and
+              &ldquo;Одобрено&rdquo; never means a real YouTube write happened.
+            </p>
+            <LanguagesManager />
+          </div>
+        </FeatureErrorBoundary>
       )}
 
       {tab === "batches" && (
-        <div>
-          <p className="mb-4 text-sm text-zinc-400">
-            Select approved changes into a Batch and preview it in dry-run mode. A real,
-            non-dry-run write is only possible when &ldquo;Live writes&rdquo; is turned on
-            in Settings &mdash; off by default every session.
-          </p>
-          <BatchManager channelId={channel?.id ?? null} channelTitle={channel?.title ?? null} />
-        </div>
+        <FeatureErrorBoundary label="Batches">
+          <div>
+            <p className="mb-4 text-sm text-zinc-400">
+              Select approved changes into a Batch and preview it in dry-run mode. A real,
+              non-dry-run write is only possible when &ldquo;Live writes&rdquo; is turned on
+              in Settings &mdash; off by default every session.
+            </p>
+            <BatchManager channelId={channel?.id ?? null} channelTitle={channel?.title ?? null} />
+          </div>
+        </FeatureErrorBoundary>
       )}
 
       {/* Unlike every other top-level tab (still conditionally mounted -- see AGENTS.md-documented
@@ -320,59 +331,71 @@ export default function Dashboard() {
             visited this session. Hidden-not-unmounted keeps each card's already-fetched state,
             so only the FIRST visit to a sub-tab shows a loading moment. */}
         <div className={settingsSubTab === "api" ? "space-y-6" : "hidden"}>
-          <LiveWritesSettings />
-          <ReadGatewaySettings />
-          <CloudConnectionSettings />
-          <AnalyticsCollectionSettings />
+          <FeatureErrorBoundary label="Settings — API">
+            <LiveWritesSettings />
+            <ReadGatewaySettings />
+            <CloudConnectionSettings />
+            <AnalyticsCollectionSettings />
+          </FeatureErrorBoundary>
         </div>
 
         <div className={settingsSubTab === "channels" ? "space-y-6" : "hidden"}>
-          <ChannelConnectionsSettings />
+          <FeatureErrorBoundary label="Settings — Channels">
+            <ChannelConnectionsSettings />
+          </FeatureErrorBoundary>
         </div>
 
         <div className={settingsSubTab === "ai-agent" ? "space-y-6" : "hidden"}>
-          <McpConnectionSettings />
-          <AgentConnectionsManager />
-          <OperationsWorkspaceSettings />
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-            <h3 className="mb-4 flex items-center gap-1.5 text-base font-semibold text-zinc-100">
-              AI provider connections
-              <InfoTooltip>
-                Configure AI provider connections for AI Localization. No specific vendor is
-                built into this app &mdash; every connection is a Base URL, model id, and
-                optional credential you supply. Credentials are encrypted at rest and never
-                shown again once saved. Testing a connection is an explicit action and may
-                incur cost for a real (non-mock) connection. Unrelated to the MCP connection
-                above (that&rsquo;s an external agent connecting TO this app; this is this app
-                connecting OUT to an AI provider) &mdash; grouped here for convenience.
-              </InfoTooltip>
-            </h3>
-            <AiConnectionsManager />
-          </div>
+          <FeatureErrorBoundary label="Settings — AI Agent">
+            <McpConnectionSettings />
+            <AgentConnectionsManager />
+            <OperationsWorkspaceSettings />
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+              <h3 className="mb-4 flex items-center gap-1.5 text-base font-semibold text-zinc-100">
+                AI provider connections
+                <InfoTooltip>
+                  Configure AI provider connections for AI Localization. No specific vendor is
+                  built into this app &mdash; every connection is a Base URL, model id, and
+                  optional credential you supply. Credentials are encrypted at rest and never
+                  shown again once saved. Testing a connection is an explicit action and may
+                  incur cost for a real (non-mock) connection. Unrelated to the MCP connection
+                  above (that&rsquo;s an external agent connecting TO this app; this is this app
+                  connecting OUT to an AI provider) &mdash; grouped here for convenience.
+                </InfoTooltip>
+              </h3>
+              <AiConnectionsManager />
+            </div>
+          </FeatureErrorBoundary>
         </div>
 
         <div className={settingsSubTab === "sync" ? "space-y-6" : "hidden"}>
-          <SyncFolderSettings />
+          <FeatureErrorBoundary label="Settings — Sync">
+            <SyncFolderSettings />
+          </FeatureErrorBoundary>
         </div>
 
         <div className={settingsSubTab === "about" ? "space-y-6" : "hidden"}>
-          <AppVersionInfo />
+          <FeatureErrorBoundary label="Settings — About">
+            <AppVersionInfo />
+          </FeatureErrorBoundary>
         </div>
       </div>
 
       {tab === "merge" && (
-        <div className="max-w-3xl">
-          <p className="mb-4 text-sm text-zinc-400">
-            Whole-database handoff (export/import) below is still one active device at a time.
-            Change drafts (Change Sets/AI proposals) are different: they now sync continuously in
-            the background between devices sharing the same Syncthing folder, and any conflicting
-            concurrent edit is listed here for you to review &mdash; nothing is ever silently
-            resolved by picking one side. Syncthing only ever carries files &mdash; it is never
-            treated as a database, and no OAuth token or AI connection credential ever leaves
-            this device.
-          </p>
-          <DeviceHandoffPanel channelId={channel?.id ?? null} />
-        </div>
+        <FeatureErrorBoundary label="Merge">
+          <div className="max-w-3xl">
+            <p className="mb-4 text-sm text-zinc-400">
+              Whole-database handoff (export/import) below is still one active device at a time.
+              Change drafts (Change Sets/AI proposals) are different: they now sync continuously in
+              the background between devices sharing the same Syncthing folder, and any conflicting
+              concurrent edit is listed here for you to review &mdash; nothing is ever silently
+              resolved by picking one side. Syncthing only ever carries files &mdash; it is never
+              treated as a database, and no OAuth token or AI connection credential ever leaves
+              this device.
+            </p>
+            <DeviceHandoffPanel channelId={channel?.id ?? null} />
+          </div>
+        </FeatureErrorBoundary>
       )}
     </AppShell>
   );
