@@ -8,15 +8,13 @@ This file intentionally does **not** duplicate `docs/PROJECT_SPEC.md` (product r
 
 Before making architectural, product, or safety-critical changes, read (in this order, skip only what is genuinely irrelevant to the task at hand):
 
-1. `docs/PROJECT_SPEC.md` — product roadmap, YouTube write-safety rules, upstream relationship, phases, acceptance criteria.
+1. `docs/PROJECT_SPEC.md` — product roadmap, YouTube write-safety rules, phases, acceptance criteria.
 2. `docs/ROADMAP_STATUS.md` — which phase is actually complete, as of which commit, and what is assigned next; check this before assuming a phase's status from `docs/PROJECT_SPEC.md`'s numbering alone.
 3. `docs/SYSTEM_MAP.md` — current, concise map of every subsystem (what exists, where, IMPLEMENTED/PLANNED/DEFERRED).
 4. `docs/ARCHITECTURE.md` — detailed internal architecture, data flows, and documented limitations.
 5. `docs/DEVELOPMENT_PLAYBOOK.md` — how to extend the actual codebase following established patterns.
 6. `docs/TECHNICAL_DEBT.md` — known risks and the release gates they block; check before touching anything a risk entry references.
 7. `docs/decisions/` — architectural decision records; check before replacing/altering anything an ADR governs.
-
-For historical/baseline context only (not requirements sources): `docs/UPSTREAM_ANALYSIS.md`, `docs/UPSTREAM_BASELINE.md`.
 
 **What counts as "architectural, product, or safety-critical" (added 2026-09-21, at the project owner's request to reduce unnecessary token spend on small slices).** This full seven-document pass is required when the change does at least one of the following: introduces a new subsystem, module boundary, or reusable pattern that other work will build on; touches write-safety, channel identity, conflict detection, approval integrity, or data preservation (the same category `docs/PROJECT_SPEC.md` §21/§27/§30 and `docs/TECHNICAL_DEBT.md`'s Gate B already single out for §L's own stricter testing rules); changes a persisted schema or a public API/MCP contract; or it is genuinely unclear whether the change is architectural. A small, additive slice within an already-assigned phase that extends an established pattern along lines the codebase already follows (a UI tweak, a narrow bug fix, one more field/route/test following an existing module's own conventions) does not require rereading the full list — read only the specific section(s) of `docs/SYSTEM_MAP.md`/`docs/ARCHITECTURE.md` that describe the subsystem being touched, plus whichever other entries in this list actually bear on the change. When genuinely unsure which category a change falls into, read more, not less — this note narrows the reading list for clearly small changes, it never creates a loophole to skip reading something safety-relevant.
 
@@ -68,14 +66,7 @@ Do not create `OPERATIONS_AGENT_GUIDE.md` or any equivalently-scoped document. O
 - Read the relevant existing code before replacing or duplicating a subsystem.
 - Preserve working OAuth, YouTube integration, Web UI, CLI, MCP, API, and safety behavior where practical.
 - Do not create parallel implementations of existing functionality without a documented reason (see `docs/DEVELOPMENT_PLAYBOOK.md` §6.2/§6.4 — one YouTube client, one guardrail, one contracts/schemas/services/adapters pattern per domain).
-- Do not treat this repository as a GitHub fork of TubeMaster. Git remotes follow this model:
-
-  ```text
-  origin   → independent private repository
-  upstream → optional reference to the original TubeMaster repository
-  ```
-
-  Do not automatically merge, rebase, or synchronize from `upstream`. Upstream changes may be reviewed manually and adopted selectively. Do not optimize the project around permanent upstream compatibility.
+- This repository has no upstream relationship to any other codebase — `origin` is its only git remote, and it is developed as a fully independent project.
 
 ## E. Mandatory test/lint/build validation
 
@@ -182,7 +173,6 @@ Established 2026-09-19 ("Git Branching and Release Policy"). This section is aut
 | Merge `dev` into `main` | Separate, explicit project-owner approval required every time |
 | `git push` of `main` | Separate, explicit project-owner approval required every time |
 | Create a git tag / GitHub release / publish a distributable build | Separate, explicit project-owner approval required every time |
-| `merge`/`rebase` from the `upstream` remote | Separate, explicit project-owner approval required every time (unchanged from prior policy, §D) |
 | Force push, destructive `reset`/`clean`, or any history rewrite of a shared branch | Never without explicit, action-specific authorization |
 | Real (non-dry-run) YouTube write; real paid AI API call; production deployment | Never inferred from any Git permission above — these each have their own, separate authorization requirement (§K.4, `docs/PROJECT_SPEC.md`) |
 

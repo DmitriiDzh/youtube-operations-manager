@@ -2,7 +2,7 @@
 
 A private/internal operations tool for managing one or more YouTube channels through the official YouTube APIs.
 
-The project is an **independent private repository initialized from the TubeMaster codebase** and is being extended into a broader YouTube operations platform for human operators and future AI agents.
+The project is a private repository being extended into a broader YouTube operations platform for human operators and future AI agents.
 
 Core goals:
 
@@ -24,7 +24,6 @@ It defines:
 - project roadmap;
 - YouTube write-safety requirements;
 - localization workflow;
-- upstream relationship;
 - agent rules;
 - implementation phases;
 - acceptance criteria.
@@ -161,39 +160,9 @@ For a coding agent picking up development work (see `AGENTS.md` for the persiste
 - Development playbook (how to extend it): [`docs/DEVELOPMENT_PLAYBOOK.md`](docs/DEVELOPMENT_PLAYBOOK.md)
 - Technical debt / risk register / release gates: [`docs/TECHNICAL_DEBT.md`](docs/TECHNICAL_DEBT.md)
 - Architectural decision records: [`docs/decisions/`](docs/decisions/README.md)
-- Historical baseline (Phase 0/1): [`docs/UPSTREAM_ANALYSIS.md`](docs/UPSTREAM_ANALYSIS.md), [`docs/UPSTREAM_BASELINE.md`](docs/UPSTREAM_BASELINE.md)
 
 Additional project documentation may be added under `docs/` as development progresses.
 
-## Repository relationship to TubeMaster
+## License
 
-This repository is **not a GitHub fork** and should not be treated as permanently coupled to the original TubeMaster repository.
-
-Recommended Git remote model:
-
-```text
-origin   → independent private repository
-upstream → original TubeMaster repository, optional reference only
-```
-
-The `upstream` remote is used only for explicit manual operations such as:
-
-```bash
-git fetch upstream
-git log main..upstream/<branch> --oneline
-git diff main..upstream/<branch>
-```
-
-No automatic merge, rebase, or synchronization from `upstream` is required.
-
-Useful upstream changes may be reviewed and adopted selectively.
-
-## Attribution and license
-
-This project contains code derived from TubeMaster.
-
-Code inherited from TubeMaster remains subject to the original MIT license and required copyright/license notices.
-
-Keep the repository's `LICENSE` file and any required attribution notices for inherited code.
-
-New project-specific code may evolve independently, but inherited MIT-licensed code must remain compliant with its original license terms.
+MIT license; see [`LICENSE`](LICENSE) for the exact terms.
