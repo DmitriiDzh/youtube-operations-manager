@@ -292,9 +292,11 @@ implemented during Phases 7-10 unless separately approved:
   `ai_localization_*`: "Согласен"; keep the new tables device-local, not synced: "Оставим
   локально"). All three slices (data model, enforcement at the 6 approved MCP tools + CLI
   equivalents, Settings UI) are done on `feature/agent-connections`, not yet merged to `dev`. An
-  unassigned capability is open only while exactly one connection is enabled, rejected for
-  everyone once two or more are enabled -- the owner's own exclusivity rule ("нельзя одну и ту же
-  зону ответственности дать обоим"). This work is **not** the same as `docs/TECHNICAL_DEBT.md`
+  unassigned capability is rejected for everyone once one or more connections are enabled -- even
+  with only one connection, since the owner explicitly rejected treating a sole connection as an
+  implicit grant ("нельзя одну и ту же зону ответственности дать обоим... добавление одного
+  агента не должно автоматом давать ему авторство над всеми модулями", Telegram 2026-09-25).
+  This work is **not** the same as `docs/TECHNICAL_DEBT.md`
   RISK-32 (device-availability-gate consistency, separately OPEN, untouched by this feature); it
   separately tracks its own `RISK-60` (`write_channel_select`/`auth_user_select` mutate global,
   not per-connection, active-channel state). The independent-review cycle ran 13 rounds and was

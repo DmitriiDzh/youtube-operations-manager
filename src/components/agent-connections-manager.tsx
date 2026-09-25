@@ -114,9 +114,10 @@ export function AgentConnectionsManager() {
             effect -- identical to today&rsquo;s single-agent behavior (a registered-but-disabled
             connection does not count). Once one or more are enabled, every zoned action requires a
             resolvable, enabled, registered connection id -- an unrecognized one is rejected, never
-            silently allowed. An action left &quot;Unassigned&quot; below is only usable while
-            exactly one connection is enabled -- once two or more are enabled, an unassigned action
-            is blocked for everyone until you assign it to exactly one connection.
+            silently allowed. An action left &quot;Unassigned&quot; below is blocked for every
+            connection once any are enabled, even if only one connection exists -- assignment is
+            always an explicit choice, never an implicit default just because there is currently
+            only one agent.
           </InfoTooltip>
         </h3>
       </div>
@@ -188,9 +189,9 @@ export function AgentConnectionsManager() {
                     "No connections are currently enabled -- zoning has no effect right now; this action is open to any caller.";
                 } else if (assignedToDisabled) {
                   statusNote = `Assigned to "${assignedConnection.label}", which is currently disabled -- this action is blocked for every ENABLED connection until you reassign it or re-enable ${assignedConnection.label}.`;
-                } else if (assignedConnectionId === null && enabledCount >= 2) {
+                } else if (assignedConnectionId === null && enabledCount >= 1) {
                   statusNote =
-                    "Unassigned with 2+ connections enabled -- this action is currently blocked for all of them until assigned to exactly one.";
+                    "Unassigned -- this action is currently blocked for every connection until assigned to exactly one (assignment is always explicit, even with only one connection enabled).";
                 }
                 return (
                   <div key={c.capabilityId} className="rounded-lg border border-zinc-800 p-3">

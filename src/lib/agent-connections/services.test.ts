@@ -222,17 +222,29 @@ test("assertAgentAllowedForCapability rejects a disabled connection even when it
   );
 });
 
-test("assertAgentAllowedForCapability allows the sole enabled connection when the capability has no zone assigned (unambiguous with only one possible caller)", async () => {
+test("assertAgentAllowedForCapability rejects the sole enabled connection too when the capability has no zone assigned (owner: assignment is always explicit, never implicit just because only one connection exists)", async () => {
   const deps = createFakeDeps();
   const services = createAgentConnectionsServices(deps);
   await services.registerConnection({ id: "codex", label: "Codex" });
+
+  await assert.rejects(
+    () => services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.create_content_proposal", callerConnectionId: "codex" }),
+    (error: unknown) => error instanceof DomainError && error.code === "AGENT_ZONE_VIOLATION"
+  );
+});
+
+test("assertAgentAllowedForCapability allows the sole enabled connection once the capability IS explicitly assigned to it", async () => {
+  const deps = createFakeDeps();
+  const services = createAgentConnectionsServices(deps);
+  await services.registerConnection({ id: "codex", label: "Codex" });
+  await services.assignCapabilityZone({ capabilityId: "content_proposal.create_content_proposal", assignedConnectionId: "codex" });
 
   await assert.doesNotReject(() =>
     services.assertAgentAllowedForCapability({ capabilityId: "content_proposal.create_content_proposal", callerConnectionId: "codex" })
   );
 });
 
-test("assertAgentAllowedForCapability rejects EVERY caller for an unassigned capability once 2+ connections are enabled (owner's exclusivity rule: an unassigned zone must never be shared)", async () => {
+test("assertAgentAllowedForCapability rejects EVERY caller for an unassigned capability with 2 connections enabled too (not just with 1) -- owner's exclusivity rule: an unassigned zone must never be shared", async () => {
   const deps = createFakeDeps();
   const services = createAgentConnectionsServices(deps);
   await services.registerConnection({ id: "claude", label: "Claude" });

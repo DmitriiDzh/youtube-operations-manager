@@ -126,12 +126,13 @@ export function createAgentConnectionsServices(deps: ServiceDependencies) {
      * - **A capability with an explicit zone assignment** always rejects every connection except
      *   the assigned one, regardless of how many connections are enabled.
      * - **A capability with NO explicit zone assignment** (no row, or `assignedConnectionId:
-     *   null`) is open to the caller only while exactly one connection is enabled -- trivially
-     *   unambiguous, since there is only one possible caller. **Once two or more connections are
-     *   enabled, an unassigned capability is rejected for everyone**, not silently shared --
-     *   the owner's own exclusivity requirement ("нельзя одну и ту же зону ответственности дать
-     *   обоим") means an unassigned zone with multiple active agents is a configuration gap that
-     *   must be fixed by an explicit assignment, not a default multi-agent grant.
+     *   null`) is rejected for EVERYONE once one or more connections are enabled, with no
+     *   exception for exactly one enabled connection: "любое действие должно быть заблокировано
+     *   до тех пор, пока его не назначат агенту -- не важно в каком порядке и сколько агентов
+     *   было добавлено. Добавление одного агента не должно автоматом давать ему авторство над
+     *   всеми модулями" (owner, Telegram 2026-09-25). Assignment is always an explicit, deliberate
+     *   act -- there is no implicit "first agent gets everything by default" convenience, and no
+     *   dependency on registration order.
      */
     async assertAgentAllowedForCapability(args: { capabilityId: string; callerConnectionId: string | null }): Promise<void> {
       const enabledConnections = (await deps.listConnections()).filter((c) => c.enabled);
@@ -158,17 +159,13 @@ export function createAgentConnectionsServices(deps: ServiceDependencies) {
       const assignedConnectionId = zone?.assignedConnectionId ?? null;
 
       if (assignedConnectionId === null) {
-        if (enabledConnections.length >= 2) {
-          throw new DomainError({
-            code: "AGENT_ZONE_VIOLATION",
-            message:
-              `Capability "${args.capabilityId}" has no explicit zone assignment, and ` +
-              `${enabledConnections.length} agent connections are enabled -- an unassigned ` +
-              "capability cannot be shared once more than one connection is active. Assign it " +
-              "to exactly one connection first.",
-          });
-        }
-        return;
+        throw new DomainError({
+          code: "AGENT_ZONE_VIOLATION",
+          message:
+            `Capability "${args.capabilityId}" has no explicit zone assignment, and one or more ` +
+            "agent connections are enabled -- an unassigned capability is never open by default " +
+            "once agent zoning is in use. Assign it to exactly one connection first.",
+        });
       }
 
       if (assignedConnectionId !== args.callerConnectionId) {

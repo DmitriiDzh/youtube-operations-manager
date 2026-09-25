@@ -672,12 +672,12 @@ not a second permission tier.
     `AGENT_ZONE_VIOLATION`, never silently allowed.
   - **A capability with an explicit zone assignment** always rejects every connection except the
     assigned one, regardless of how many are enabled.
-  - **A capability with NO explicit zone assignment** is open only while exactly one connection is
-    enabled (trivially unambiguous). **Once two or more connections are enabled, an unassigned
-    capability is rejected for every connection**, not shared — the owner's own exclusivity
-    requirement ("нельзя одну и ту же зону ответственности дать обоим") means an unassigned zone
-    with multiple active agents is a configuration gap the operator must resolve with an explicit
-    assignment, never a default multi-agent grant.
+  - **A capability with NO explicit zone assignment is rejected for every connection**, once one or
+    more are enabled — including when only one connection exists. Assignment is always an explicit
+    act; there is no implicit "the only connection gets it by default" grant, and registration
+    order never matters (owner, Telegram 2026-09-25: "нельзя одну и ту же зону ответственности
+    дать обоим... добавление одного агента не должно автоматом давать ему авторство над всеми
+    модулями").
 - **Not the same as the "MCP connection" toggle above** — that toggle is the all-or-nothing gate
   deciding whether an MCP client sees any tool at all; this mechanism only matters once the toggle
   is already on and coordinates *which* connected agent may perform *which* of these 6 actions.
