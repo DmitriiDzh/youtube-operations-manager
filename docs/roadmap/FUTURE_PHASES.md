@@ -274,6 +274,23 @@ implemented during Phases 7-10 unless separately approved:
   pipeline's primary *human*-editing interface — even if agent-driven generation no longer needs a
   spreadsheet intermediary, XLSX (or some other human-facing view) may still carry real value for a
   human reviewer/editor path, and this bullet does not decide whether or how that path is kept.
+- **Multi-agent responsibility zones** (recorded 2026-09-25, owner request via Telegram, same
+  conversation that assigned Phase 7's merge to `dev`). After Phase 7 established that any
+  MCP-compatible client (Claude, not only Codex) can already connect with zero code changes, the
+  owner asked for a way to run more than one agent connection at once, each exclusively
+  responsible for a domain (owner's own example: "Клод делает переводы и анализ аналитики. А
+  кодекс делает ассеты, тк Клод не может сгенерировать изображения"), while all connected agents
+  still see the same underlying data and each other's conclusions ("но при этом все должны
+  работать в одном информационном поле... создание новых ассетов... должно опираться на анализ
+  прошлых креативов, даже если этот анализ делал другой агент"). Owner's explicit instruction:
+  produce a plan and start executing it, built as its own module per `AGENTS.md` §M ("составь
+  план выполнения... чтобы это было отдельным модулем отвечающим за подключение агентов + доп
+  модули если требуется"). See `docs/roadmap/plans/AGENT_ZONES_PLAN.md` for the full design (new
+  `src/lib/agent-connections/` module, per-capability zone assignment, fail-closed-once-in-use
+  policy, and the tie-in to `docs/TECHNICAL_DEBT.md` RISK-32's own long-deferred "shared
+  mutating-operation registry" gap). Two open scope questions recorded there need the owner's
+  answer before enforcement (slice 2) starts; the data-model slice (1) does not depend on either
+  and may start immediately.
 
 ## 8. How to use this roadmap in future sessions
 
