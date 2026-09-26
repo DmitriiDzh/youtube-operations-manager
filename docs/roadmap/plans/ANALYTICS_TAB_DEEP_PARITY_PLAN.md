@@ -362,13 +362,16 @@ Smallest-risk-first, mirroring `STUDIO_PARITY_PLAN.md` §6's own reasoning style
 resolved as out of scope** (all held un-merged as one batch pending the owner's own end-of-batch
 approval, per their instruction):
 
-1. **DONE: O1, O2, C1, A1, C2, C4 ("Intro" mode only), C5, A2, A3, A4, A6.** Card-click chart
-   switching + tooltip date formatting (Overview); both research probes; traffic sources, retention
-   curve, and top videos (Content); device type, age/gender, geography, subscribed status, and
-   content format (Audience). All live-verified in the browser against the real "Tropico Jazz"
-   channel with real data; `npm test` clean at every step (final count, after 3 independent-review
-   rounds' own fixes: 1460/1460, dev's own baseline was 1432); no console errors. Seven backlog
-   rows (BL-092 through BL-098) record the detailed history.
+1. **DONE: O1, O2, C1, C2, C4 ("Intro" mode only), C5, A2, A3, A4, A6.** **PARTIALLY DONE: A1**
+   (independent review round 4, 2026-09-26 -- flagged for consistency with §4.4's own "PARTIALLY
+   DONE" label for this same slice: 5 of 8 Audience dimensions confirmed, 3 harder questions
+   unresolved, see §4.3/§4.4). Card-click chart switching + tooltip date formatting (Overview); both
+   research probes; traffic sources, retention curve, and top videos (Content); device type,
+   age/gender, geography, subscribed status, and content format (Audience). All live-verified in the
+   browser against the real "Tropico Jazz" channel with real data; `npm test` clean at every step
+   (final count, after 4 independent-review rounds' own fixes: 1464/1464, dev's own baseline was
+   1432); no console errors. Seven backlog rows (BL-092 through BL-098) record the detailed
+   history.
 2. **CONFIRMED OUT OF SCOPE, not merely deferred: O3 (realtime panel) and C3 (impressions/CTR
    funnel).** Both need infrastructure this app's existing gateway pattern cannot reach at all —
    O3 needs Studio's own non-public real-time system (the public API's 48-72h processing delay

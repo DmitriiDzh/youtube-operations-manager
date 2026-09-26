@@ -8,6 +8,10 @@
 // a real response in this session's research and is not guessed at here; each label below states
 // what that specific enum value means, per the API's own documented semantics.
 const TRAFFIC_SOURCE_LABELS: Record<string, string> = {
+  // NO_LINK_OTHER covers direct traffic AND mobile-app traffic with no referrer, per Google's own
+  // docs -- deliberately does not say "or app" the way EXT_URL used to (independent review round 4,
+  // 2026-09-26, found that wording had actually been borrowed from THIS value's own documented
+  // scope, not EXT_URL's).
   NO_LINK_OTHER: "Direct or unknown",
   // Independent review round 2 (2026-09-26) found the original "Subscription feed" label was too
   // narrow: Google's own dimension docs describe SUBSCRIBER as views referred from either the
@@ -18,9 +22,18 @@ const TRAFFIC_SOURCE_LABELS: Record<string, string> = {
   YT_SEARCH: "YouTube search",
   RELATED_VIDEO: "Suggested videos",
   YT_OTHER_PAGE: "Other YouTube features",
-  EXT_URL: "External website/app",
+  // Independent review round 4 (2026-09-26): the previous "External website/app" wording actually
+  // described NO_LINK_OTHER's own documented scope (see above), not this value's -- Google's docs
+  // scope EXT_URL to websites specifically (a link on another website, including Google Search
+  // results), not apps.
+  EXT_URL: "External website",
   PLAYLIST: "Playlist",
   NOTIFICATION: "Notification",
+  // Independent review round 4 (2026-09-26): confirmed via Google's own revision history (Dec 4,
+  // 2023 entry) that this value was merged into PLAYLIST project-wide -- "both types of views will
+  // be associated with the PLAYLIST dimension value" going forward. The current live API can never
+  // return this value; kept mapped only in case an older/cached report ever surfaces it, never
+  // expected to be exercised.
   YT_PLAYLIST_PAGE: "Playlist page",
   SHORTS: "Shorts feed",
   END_SCREEN: "End screen",
@@ -29,7 +42,12 @@ const TRAFFIC_SOURCE_LABELS: Record<string, string> = {
   // content owner used to promote the viewed content (a Content ID promotion mechanism), not a
   // literal UI "card" -- relabeled to match that documented meaning, not the enum name's own
   // surface resemblance to "cardImpressions"/"cardClicks" (an unrelated, legacy end-screen metric).
+  // Independent review round 4 (2026-09-26): also confirmed this value is documented as valid only
+  // for content-owner reports -- this app only ever issues channel-scoped queries (`AGENTS.md` §G),
+  // so it can never actually appear in a real response here; the label is accurate but moot.
   CAMPAIGN_CARD: "Content ID promotion",
+  // Does not appear in Google's current dimensions table at all (independent review round 4) --
+  // this label is an unverified guess by analogy to CAMPAIGN_CARD, not checked against real docs.
   CAMPAIGN_CARD_EXTERNAL: "External Content ID promotion",
   // Independent review round 3 (2026-09-26): "Promoted content" dropped the documented "unpaid"
   // qualifier that distinguishes this from ADVERTISING (the actual paid-promotion source) sitting
@@ -38,6 +56,17 @@ const TRAFFIC_SOURCE_LABELS: Record<string, string> = {
   // CAMPAIGN_CARD above.
   PROMOTED: "YouTube-promoted (unpaid)",
   ADVERTISING: "Advertising",
+  // Added independent review round 4 (2026-09-26) -- documented current values this map was
+  // missing entirely (a real, if less common, input would have silently fallen through to the raw
+  // API string). Labels below are this app's own plain-language gloss of each value's documented
+  // meaning, not a verbatim Studio label.
+  HASHTAGS: "Hashtag page",
+  LIVE_REDIRECT: "Live stream redirect",
+  NO_LINK_EMBEDDED: "Embedded player",
+  PRODUCT_PAGE: "Product page",
+  SOUND_PAGE: "Sound page",
+  VIDEO_REMIXES: "Video remixes",
+  WATCH_WITH: "Watch together",
 };
 
 export function labelTrafficSource([value]: string[]): string {
@@ -50,6 +79,11 @@ const DEVICE_TYPE_LABELS: Record<string, string> = {
   TABLET: "Tablet",
   TV: "TV",
   GAME_CONSOLE: "Game console",
+  // Added independent review round 4 (2026-09-26) -- documented current values this map was
+  // missing (see the same note on TRAFFIC_SOURCE_LABELS above).
+  AUTOMOTIVE: "Car",
+  WEARABLE: "Wearable device",
+  UNKNOWN_PLATFORM: "Unknown device",
 };
 
 export function labelDeviceType([value]: string[]): string {

@@ -1076,7 +1076,7 @@ itself needed a 2026-09-26 correction since the client-side implementation it na
 parity to the Content and Audience sub-tabs, plus closes §14.8's own impressions/CTR question
 (corrected above, not merely repeated).
 
-**One new report shape, one new gateway function, reused six ways.** Every capability this slice
+**One new report shape, one new gateway function, reused seven ways.** Every capability this slice
 adds -- traffic sources, device type, age/gender, geography, subscribed status, content format,
 and the video retention curve -- shares an identical wire shape once dimension/metric names differ:
 a single date range, no `day` dimension, one row per distinct dimension-value combination, an

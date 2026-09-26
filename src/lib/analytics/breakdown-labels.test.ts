@@ -38,11 +38,39 @@ test("labelTrafficSource falls back to the raw value for an unrecognized enum, n
   assert.equal(labelTrafficSource(["SOME_NEW_SOURCE_TYPE"]), "SOME_NEW_SOURCE_TYPE");
 });
 
+// Independent review round 4 (2026-09-26): the previous "External website/app" label had actually
+// borrowed NO_LINK_OTHER's own documented scope ("direct traffic... as well as traffic on mobile
+// apps") -- Google's docs scope EXT_URL to websites only.
+test("labelTrafficSource scopes EXT_URL to websites only, not apps (that's NO_LINK_OTHER's documented scope)", () => {
+  assert.equal(labelTrafficSource(["EXT_URL"]), "External website");
+});
+
+// Independent review round 4 (2026-09-26): these 7 values are all currently documented by Google
+// but were entirely missing from the map -- a real (if less common) response would have silently
+// fallen through to the raw API string.
+test("labelTrafficSource maps every previously-missing documented value to a human label, not a raw fallback", () => {
+  assert.equal(labelTrafficSource(["HASHTAGS"]), "Hashtag page");
+  assert.equal(labelTrafficSource(["LIVE_REDIRECT"]), "Live stream redirect");
+  assert.equal(labelTrafficSource(["NO_LINK_EMBEDDED"]), "Embedded player");
+  assert.equal(labelTrafficSource(["PRODUCT_PAGE"]), "Product page");
+  assert.equal(labelTrafficSource(["SOUND_PAGE"]), "Sound page");
+  assert.equal(labelTrafficSource(["VIDEO_REMIXES"]), "Video remixes");
+  assert.equal(labelTrafficSource(["WATCH_WITH"]), "Watch together");
+});
+
 test("labelDeviceType maps every raw value the live probe actually observed", () => {
   assert.equal(labelDeviceType(["DESKTOP"]), "Computer");
   assert.equal(labelDeviceType(["MOBILE"]), "Mobile phone");
   assert.equal(labelDeviceType(["TABLET"]), "Tablet");
   assert.equal(labelDeviceType(["TV"]), "TV");
+});
+
+// Independent review round 4 (2026-09-26): these 3 values are currently documented but were
+// entirely missing from the map.
+test("labelDeviceType maps every previously-missing documented value to a human label, not a raw fallback", () => {
+  assert.equal(labelDeviceType(["AUTOMOTIVE"]), "Car");
+  assert.equal(labelDeviceType(["WEARABLE"]), "Wearable device");
+  assert.equal(labelDeviceType(["UNKNOWN_PLATFORM"]), "Unknown device");
 });
 
 test("labelAgeGender formats a bounded age range with the gender as-is", () => {
