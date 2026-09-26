@@ -66,9 +66,10 @@ a real probe request:
   unconfirmed — its own job-creation/polling adapter, no live-request-response symmetry with every
   other slice in this plan) — a materially larger, differently-shaped effort than "add a metric
   name." **Recommend treating C3 as its own separately-scoped future decision, not part of this
-  round's assignable slices** (§5 updated accordingly). The `contracts.ts` doc comment's own
-  "genuinely unavailable" conclusion needs a one-line addition (not a reversal) once C3 is actually
-  picked up, citing this finding instead of the wrong-name theory.
+  round's assignable slices** (§5 updated accordingly, and since confirmed final -- C3 is
+  permanently out of scope, not merely deferred pending a future pickup). The `contracts.ts` doc
+  comment's own "genuinely unavailable" conclusion has already been corrected (commit `adea559`)
+  to cite this finding instead of the wrong-name theory -- done, not still pending.
 - Every other capability this plan flagged as "needs its own live probe" was **also confirmed
   working** in the same probe run, against real data: `elapsedVideoTimeRatio` (retention, paired
   with `audienceWatchRatio`/`relativeRetentionPerformance`), `insightTrafficSourceType` (traffic
@@ -365,9 +366,9 @@ approval, per their instruction):
    switching + tooltip date formatting (Overview); both research probes; traffic sources, retention
    curve, and top videos (Content); device type, age/gender, geography, subscribed status, and
    content format (Audience). All live-verified in the browser against the real "Tropico Jazz"
-   channel with real data; `npm test` clean at every step (final count: 1444/1444); no console
-   errors. Nine backlog rows (BL-092 through BL-097 plus this line's own O2/O3 follow-up) record
-   the detailed history.
+   channel with real data; `npm test` clean at every step (final count, after 3 independent-review
+   rounds' own fixes: 1460/1460, dev's own baseline was 1432); no console errors. Seven backlog
+   rows (BL-092 through BL-098) record the detailed history.
 2. **CONFIRMED OUT OF SCOPE, not merely deferred: O3 (realtime panel) and C3 (impressions/CTR
    funnel).** Both need infrastructure this app's existing gateway pattern cannot reach at all —
    O3 needs Studio's own non-public real-time system (the public API's 48-72h processing delay

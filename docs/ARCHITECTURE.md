@@ -1085,7 +1085,9 @@ optional `filters=video==<id>` for the one per-video case (retention). `queryCha
 against a real channel for each one individually before being written (not assumed from
 documentation) -- the same "never trust a documented name until a real response confirms it"
 discipline `CHANNEL_OVERVIEW_METRIC_NAMES`'s own doc comment (§14.8) already established, now paying
-off in the other direction: six of seven confirmed clean on the first try.
+off in the other direction: all seven confirmed clean on the first live-probe attempt, no retry
+needed for any of them (unlike impressions/CTR below, the one capability this research effort found
+genuinely needed correcting after a wrong initial assumption).
 
 **Two service methods, both live reads, never persisted** (same `getChannelOverview` precedent as
 §14.8, not `collectMetrics`'s daily-collection model): `getChannelBreakdown` (parameterized by
@@ -1119,11 +1121,19 @@ settle the discrepancy hit an unrelated OAuth token-refresh failure and could no
 session. `breakdown-labels.ts` maps both casings rather than picking one, with the discrepancy
 documented in a code comment -- treat this as open until re-probed against a real response.
 
-**Traffic-source label accuracy (independent review, round 2, 2026-09-26):** `SUBSCRIBER`
-(`insightTrafficSourceType`) was initially labeled "Subscription feed," but Google's own docs
+**Traffic-source label accuracy (independent review, rounds 2-3, 2026-09-26):** three
+`insightTrafficSourceType` labels were found copied from the enum name's own surface resemblance to
+a familiar term rather than checked against Google's documented meaning -- exactly the §L failure
+mode this whole plan's own research discipline was meant to avoid, caught this time by review
+rather than by a live probe. `SUBSCRIBER` was labeled "Subscription feed," but Google's own docs
 describe it as views referred from either the YouTube homepage feed *or* subscription features --
-homepage-feed views are commonly the larger share of this bucket for many channels. Corrected to
-match the documented scope of the value, not just its most suggestive-sounding name.
+homepage-feed views are commonly the larger share of this bucket for many channels. `CAMPAIGN_CARD`
+was labeled "Campaign card" (reading it as a UI card, by association with the unrelated legacy
+`card*` end-screen metrics), but Google's docs describe it as views from a claimed, user-uploaded
+video the content owner used to promote the viewed content -- a Content ID promotion mechanism, not
+a literal card. `PROMOTED` was labeled "Promoted content," dropping the documented "unpaid"
+qualifier that distinguishes it from `ADVERTISING` (the actual paid-promotion source) sitting right
+next to it in the same list. All three corrected to match their documented scope.
 
 ## 15. Cloud connection (`src/lib/cloud-connection/`) — slice 1 of 3, not yet in `dev`
 

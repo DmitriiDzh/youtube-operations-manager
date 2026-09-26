@@ -31,7 +31,12 @@ const TRAFFIC_SOURCE_LABELS: Record<string, string> = {
   // surface resemblance to "cardImpressions"/"cardClicks" (an unrelated, legacy end-screen metric).
   CAMPAIGN_CARD: "Content ID promotion",
   CAMPAIGN_CARD_EXTERNAL: "External Content ID promotion",
-  PROMOTED: "Promoted content",
+  // Independent review round 3 (2026-09-26): "Promoted content" dropped the documented "unpaid"
+  // qualifier that distinguishes this from ADVERTISING (the actual paid-promotion source) sitting
+  // right next to it in this same list -- the same "copied from the enum name's own surface
+  // resemblance, not checked against the documented meaning" failure class as SUBSCRIBER/
+  // CAMPAIGN_CARD above.
+  PROMOTED: "YouTube-promoted (unpaid)",
   ADVERTISING: "Advertising",
 };
 

@@ -833,6 +833,14 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           filters: `video==${parsedInput.videoId}`,
         });
 
+        // `?? 0` on a row missing one of these two metrics is a real, pre-existing pattern this
+        // file's own `getChannelOverview` already uses for its own daily rows (independent review
+        // round 3, 2026-09-26, flagged the same tension that function's own doc comment already
+        // has) -- not introduced fresh here. Low-risk in practice: every real response this
+        // session's live probe observed included both metrics on every row; `audienceWatchRatio`
+        // is the only one the UI currently renders, `relativeRetentionPerformance` is fetched but
+        // unused (Content-analytics-panel's "Intro" mode never displays a "typical retention"
+        // comparison, per this plan's own scoping).
         const points = rows
           .map((row) => ({
             elapsedVideoTimeRatio: Number(row.dimensionValues[0]),

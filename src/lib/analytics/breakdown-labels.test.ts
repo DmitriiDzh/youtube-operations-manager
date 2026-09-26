@@ -26,6 +26,14 @@ test("labelTrafficSource maps every raw value the live probe actually observed",
   assert.equal(labelTrafficSource(["NO_LINK_OTHER"]), "Direct or unknown");
 });
 
+// Independent review round 3 (2026-09-26): PROMOTED is documented as specifically an UNPAID
+// YouTube promotion mechanism, distinct from ADVERTISING (paid) -- a label that drops "unpaid"
+// invites exactly that confusion sitting next to ADVERTISING in the same list.
+test("labelTrafficSource keeps the documented \"unpaid\" distinction for PROMOTED vs. ADVERTISING", () => {
+  assert.equal(labelTrafficSource(["PROMOTED"]), "YouTube-promoted (unpaid)");
+  assert.equal(labelTrafficSource(["ADVERTISING"]), "Advertising");
+});
+
 test("labelTrafficSource falls back to the raw value for an unrecognized enum, never throwing", () => {
   assert.equal(labelTrafficSource(["SOME_NEW_SOURCE_TYPE"]), "SOME_NEW_SOURCE_TYPE");
 });
