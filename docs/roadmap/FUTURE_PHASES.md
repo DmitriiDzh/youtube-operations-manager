@@ -314,6 +314,12 @@ asset registry, provenance, workflow state, and approval boundaries — avoid bu
 model-specific generation logic into the core application. Supersedes/absorbs the older, terser
 "automated media production" bullet §7 used to carry — not duplicated there anymore.
 
+**Relationship to Phase 11 (below), added 2026-09-26:** Phase 11 — Channel Workspaces & Production
+Orchestration is the concrete foundation this direction depends on (channel-scoped production
+workspaces, an asset registry that can reference files inside one, a Workflow Registry describing
+external procedures). This bullet stays the higher-level "why," Phase 11 is the "what gets built" —
+see that section rather than duplicating scope here.
+
 ## 7. Future directions — not yet numbered phases
 
 Recorded as future opportunities only, not approved implementation work, and not to be
@@ -539,7 +545,63 @@ updating this roadmap never itself authorizes a push of `dev` beyond the standin
 `AGENTS.md` §K.2 already records, a merge into `main`, a tag, or a release — each remains
 separately gated exactly as before.
 
-## 11. Current next-action marker
+## 11. Phase 11 — Channel Workspaces & Production Orchestration
+
+**Recorded 2026-09-26, owner instruction (Telegram, after reviewing `docs/roadmap/plans/
+CHANNEL_WORKSPACES_WORKFLOW_RUNTIME_ANALYSIS.md`) — "Согласен, можешь сохранить как это как Phase
+11." Recording only; not assigned, not sequenced relative to Phase 9/10, and not authorized for
+implementation (`AGENTS.md` §C — recording a phase here is planning only).**
+
+**Objective:** let operational agents work not only with this product's own structured data, but
+also with channel-specific local production workspaces — filesystem locations holding a channel's
+branding, audio, video, and other production material, plus channel-specific agent-context
+documents — and with a registry of reusable production procedures ("workflows") that describe how
+known production tasks are carried out, without this phase implementing any actual media
+generation or execution.
+
+**Core concepts, kept distinct:**
+
+- **Global Operations Workspace** — the already-existing, human-configured, read-only,
+  text-file-only path (`docs/AGENT_OPERATIONS_INTERFACE.md` §4j, BL-087) stays exactly what it is:
+  shared operational-agent instructions applicable to every channel, never conflated with the
+  per-channel concept below.
+- **Channel Workspace** — a per-channel, device-local filesystem workspace, bound via a logical
+  workspace identity (never a portable absolute path — the same logical workspace may sit at a
+  different real path on each device, keyed on this app's existing `deviceId`,
+  `src/lib/bootstrap-config/`) plus a semantic map of named directory roles (branding, audio,
+  video, agent context, workflows, ...) that can grow without a schema migration for each new role.
+- **Workflow Registry** — a metadata-only catalog of registered production procedures (a thumbnail
+  generator, an audio mix, a full video render, ...), describing what a workflow needs and
+  produces and where to find it, without assuming or hard-coding one execution technology (a local
+  script, ComfyUI, RunPod, a future native module) and without executing anything in this phase.
+
+**Constraints:** never grant an agent unrestricted filesystem access merely because a workspace
+exists; validate every resolved path stays inside its authorized workspace root; never let a
+channel-workspace instruction override a product safety/permission decision
+(`docs/AGENT_OPERATIONS_INTERFACE.md` §8's existing invariants apply unchanged); never assume one
+channel's workspace/workflow shape (e.g. music-channel folder names) generalizes to another;
+respect existing multi-agent responsibility zoning (`src/lib/agent-connections/`) rather than
+building a parallel access-control mechanism.
+
+**Open, owner-level decision this phase does not resolve on its own:** the proposal's file-access
+model (per-channel, potentially read/write, binary media) is a substantial widening of the
+narrower, read-only, text-only, global boundary the owner deliberately drew for the Global
+Operations Workspace nine days before this phase was recorded (BL-087, 2026-09-24) — see the
+analysis document's TL;DR for the full reasoning, currently under discussion. This phase's own
+eventual acceptance criteria must state explicitly which parts of the original spec's file-access
+and future-execution sections are authorized versus left as extension points only, rather than
+inheriting an assumption either way.
+
+**Deliverable:** an operational agent can discover which channel workspace and which workflows
+exist for a channel it's authorized to work on, understand a workflow's declared inputs/outputs
+without executing it, and reference workspace-resident files from the existing asset catalog by
+logical workspace identity plus relative path — with channel scoping, multi-agent zoning, and
+every existing product safety boundary preserved unchanged.
+
+Full technical analysis, reusable-vs-new inventory, and the original spec's section-by-section
+feasibility assessment: `docs/roadmap/plans/CHANNEL_WORKSPACES_WORKFLOW_RUNTIME_ANALYSIS.md`.
+
+## 12. Current next-action marker
 
 Recorded 2026-09-26, owner instruction ("Strategic Roadmap Update — Post Phase 8") — kept short
 and updated in place rather than accumulating a new dated paragraph every time it changes, since
@@ -552,6 +614,11 @@ its whole purpose is to answer "what's next" at a glance:
 **DEPENDENCY:** Phase 10 (§6) depends on Phase 9 (§5) and Phase 8 (§4).
 
 **POST-PHASE-10 DIRECTIONS:** Publishing Pipeline (§6a) and Media Production Automation (§6b).
+
+**ALSO RECORDED, NOT YET SEQUENCED:** Phase 11 — Channel Workspaces & Production Orchestration
+(§11) — recorded 2026-09-26; whether it runs before, after, or alongside Phase 9/10 has not been
+decided, and its own file-access scope is still under discussion with the owner (see §11's "Open,
+owner-level decision").
 
 **DEFERRED:** simultaneous multi-device operation, application-managed synchronization,
 localization transport modernization, and other infrastructure improvements without immediate
