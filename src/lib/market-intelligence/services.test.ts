@@ -335,6 +335,16 @@ test("AC-MI-12: describePublicChannelSnapshot reports the title and every field,
   );
 });
 
+// Found by independent review, round 2 (2026-09-26): an empty title (YouTube's own response
+// omitted snippet.title -- the read gateway's `??` default is "") must never render as a
+// confusing `for ""` with nothing identifying the channel.
+test("AC-MI-12b: describePublicChannelSnapshot falls back to the channel id when title is empty", () => {
+  assert.equal(
+    describePublicChannelSnapshot({ channelId: VALID_CHANNEL_ID, title: "", subscriberCount: 100, viewCount: 200, videoCount: 3 }),
+    `Public snapshot for "${VALID_CHANNEL_ID}": ~100 subscribers (YouTube reports this rounded to 3 significant figures, not an exact count), 200 total views, 3 videos`
+  );
+});
+
 // ---------------------------------------------------------------------------
 // removeFromWatchlist -- added by independent review, 2026-09-26 (docs/roadmap/plans/PHASE_9_PLAN.md).
 // ---------------------------------------------------------------------------

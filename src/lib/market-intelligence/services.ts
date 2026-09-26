@@ -45,7 +45,12 @@ export function describePublicChannelSnapshot(snapshot: PublicChannelSnapshot): 
       : "subscriber count hidden";
   const views = snapshot.viewCount !== null ? `${snapshot.viewCount} total views` : "view count unavailable";
   const videos = snapshot.videoCount !== null ? `${snapshot.videoCount} videos` : "video count unavailable";
-  return `Public snapshot for "${snapshot.title}": ${subscribers}, ${views}, ${videos}`;
+  // Falls back to the channel id when YouTube's own response omits `snippet.title` (the read
+  // gateway's own `??` default is `""`, never fabricated -- found by independent review, round 2,
+  // 2026-09-26: an empty string interpolated directly here would have rendered a confusing
+  // `for ""` with nothing identifying the channel at all).
+  const title = snapshot.title || snapshot.channelId;
+  return `Public snapshot for "${title}": ${subscribers}, ${views}, ${videos}`;
 }
 
 type StoredResearchChannelForService = {
@@ -297,9 +302,13 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         source: "youtube.channels.list",
         // "high", not "confirmed" -- found by independent review (2026-09-26): subscriberCount is
         // YouTube's own rounded approximation (see describePublicChannelSnapshot's own doc
-        // comment), so labeling this evidence "confirmed" overstates its precision, including for
-        // the all-null case (e.g. a hidden subscriber count with no other stats), which described
-        // nothing concrete yet was still labeled as fully certain.
+        // comment), so labeling this evidence "confirmed" overstates its precision. This narrows
+        // but does not fully close the overstatement (found by round 2 of the same review): a
+        // fully-null snapshot (e.g. a hidden subscriber count with no other stats available)
+        // still gets stamped "high" today, even though it described nothing concrete. Not fixed
+        // here -- `docs/roadmap/plans/PHASE_9_PLAN.md` §8 already leaves the confidence
+        // vocabulary itself as an open question for a future revisit, and this specific edge case
+        // belongs to that same still-open decision, not to a silent partial fix here.
         confidence: "high",
         createdVia: callOrigin.createdVia,
       });

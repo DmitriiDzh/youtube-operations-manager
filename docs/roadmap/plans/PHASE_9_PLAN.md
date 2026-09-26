@@ -236,7 +236,11 @@ owner's explicit "yes, merge" (`AGENTS.md` §K.2).
 Still open, to be decided as each slice is actually reached (not blocking slice 1's own start):
 - What "confidence" values are meaningful for `research_evidence.confidence` (a fixed enum vs.
   free text) — free text for slice 1 (matches the schema above), revisit before any UI/agent
-  surface starts relying on specific values.
+  surface starts relying on specific values. **Known open edge case (independent review round 2,
+  2026-09-26):** `fetchPublicSnapshot` stamps every successful fetch `"high"` unconditionally,
+  including a fully-null snapshot (e.g. a hidden subscriber count with no other stats available)
+  that described nothing concrete — revisit this alongside the enum-vs-free-text decision, not as
+  a separate fix.
 - Exact Web UI placement for the watchlist panel (new dashboard tab vs. a Settings-adjacent
   panel) — decided at slice 2.
 - Whether slice 4 (agent-facing MCP/CLI surface) is in scope for this same assignment or its own

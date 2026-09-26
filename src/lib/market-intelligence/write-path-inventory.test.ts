@@ -59,12 +59,13 @@ test("PHASE9-INV-01: no file in src/lib/market-intelligence references a write-c
   assert.deepEqual(offenders, [], `Found forbidden write-path references:\n${offenders.join("\n")}`);
 });
 
-// Everything outside this module's own tree (and its eventual API routes / Web UI panel, which
-// legitimately need to call into it) must reach `research_channels`/`research_evidence` only
-// through this module's own exported core -- never a raw db.ts import of the research_* helpers,
-// and never a second, competing read of those tables from an unrelated domain module (AGENTS.md
-// §M: this module must be independently removable without breaking anything that doesn't
-// actually depend on it).
+// Everything outside this module's own tree must reach `research_channels`/`research_evidence`
+// only through this module's own exported core (`createMarketIntelligenceCore`) -- never a raw
+// db.ts import of the research_* helpers, and never a second, competing read of those tables from
+// an unrelated domain module (AGENTS.md §M: this module must be independently removable without
+// breaking anything that doesn't actually depend on it). This includes this module's own API
+// routes and the Web UI panel -- they call into `@/lib/market-intelligence`'s exported core, never
+// into `@/lib/db`'s research_* symbols directly, so neither is exempted below.
 //
 // Found by independent review (2026-09-26): `startsWith` on a raw path prefix is a real bypass --
 // "src/lib/market-intelligence-v2/x.ts".startsWith(".../market-intelligence") is true with no
@@ -75,31 +76,40 @@ function isInsideDir(file: string, dir: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-const ALLOWED_IMPORTER_DIRS = [
-  path.join(SRC_ROOT, "lib", "market-intelligence"),
-  path.join(SRC_ROOT, "app", "api", "market-intelligence"),
-];
-// The Web UI panel is a single file directly under src/components, not its own directory --
-// matched by exact path, not isInsideDir (there is no "market-intelligence" subdirectory there).
-const ALLOWED_IMPORTER_FILES = [path.join(SRC_ROOT, "components", "market-research-panel.tsx")];
+// Found by independent review, round 2 (2026-09-26): an earlier version of this allowlist also
+// exempted this module's own API-route directory and the UI panel file, on the theory that they
+// "legitimately need to call into it" -- but calling in means importing
+// `@/lib/market-intelligence`'s exported core, never reaching into `@/lib/db`'s research_*
+// symbols directly, which neither the routes nor the panel actually do today (confirmed by grep).
+// Exempting that directory anyway was a live loophole for tomorrow with no present-day need --
+// removed. Only this module's own tree needs these symbols (via its own adapter).
+const ALLOWED_IMPORTER_DIRS = [path.join(SRC_ROOT, "lib", "market-intelligence")];
 
-// Both the camelCase Drizzle identifiers AND the underlying snake_case SQL table names --
-// found by independent review (2026-09-26): a raw `sql\`... research_channels ...\`` escape
-// hatch (already used elsewhere in this codebase, e.g. migrations) would bypass a camelCase-only
-// list entirely.
-const FORBIDDEN_DB_SYMBOLS = [
-  "researchChannels",
-  "researchEvidence",
-  "insertResearchChannel",
-  "listResearchChannels",
-  "getResearchChannelById",
-  "insertResearchEvidence",
-  "listResearchEvidenceByChannel",
-  "research_channels",
-  "research_evidence",
-];
+// Derived from db.ts's own exports (rather than a hand-maintained literal list) so a future
+// research_*-named export can never be silently forgotten here the way `deleteResearchChannel`
+// was in the first version of this fix (found by independent review, round 2, 2026-09-26: this
+// exact function, added in the same commit that introduced this derivation's predecessor, was
+// never added to the old hardcoded list -- a probe file importing it directly from `@/lib/db`
+// passed PHASE9-INV-02 undetected). Plus the two underlying snake_case SQL table names, which
+// cannot be derived the same way (they are string literals inside `sqliteTable(...)` calls, not
+// exported identifiers) -- a raw `sql\`... research_channels ...\`` escape hatch (already used
+// elsewhere in this codebase, e.g. migrations) would bypass a camelCase-only list entirely.
+async function deriveForbiddenDbSymbols(): Promise<string[]> {
+  const dbTsContent = await readFile(path.join(SRC_ROOT, "lib", "db.ts"), "utf8");
+  const pattern = /\bexport\s+(?:async function|function|const)\s+(\w*[Rr]esearch(?:Channel|Evidence)\w*)\b/g;
+  const derived = new Set<string>();
+  for (const match of dbTsContent.matchAll(pattern)) derived.add(match[1]);
+  return [...derived, "research_channels", "research_evidence"];
+}
 
-test("PHASE9-INV-02: no file outside market-intelligence's own module/routes/UI references its db.ts symbols", async () => {
+test("PHASE9-INV-02: no file outside market-intelligence's own module references its db.ts symbols", async () => {
+  const forbiddenDbSymbols = await deriveForbiddenDbSymbols();
+  // Sanity check on the derivation itself -- if this ever comes back empty or missing a symbol
+  // this test itself already knows about, the derivation regex broke, not the invariant.
+  assert.ok(forbiddenDbSymbols.includes("deleteResearchChannel"), "derivation must find deleteResearchChannel");
+  assert.ok(forbiddenDbSymbols.includes("researchChannels"), "derivation must find the researchChannels table export");
+  assert.ok(forbiddenDbSymbols.length >= 8, "derivation returned suspiciously few symbols -- regex likely broke");
+
   // Also scans scripts/, not just src/ -- same same-day widening the read/write gateway
   // inventory tests already applied (found by independent review, 2026-09-26): a one-off script
   // is just as capable of a violation as production source.
@@ -108,10 +118,9 @@ test("PHASE9-INV-02: no file outside market-intelligence's own module/routes/UI 
 
   for (const file of files) {
     if (ALLOWED_IMPORTER_DIRS.some((dir) => isInsideDir(file, dir))) continue;
-    if (ALLOWED_IMPORTER_FILES.some((allowed) => path.resolve(file) === path.resolve(allowed))) continue;
     if (path.resolve(file) === path.resolve(SRC_ROOT, "lib", "db.ts")) continue;
     const content = await readFile(file, "utf8");
-    for (const symbol of FORBIDDEN_DB_SYMBOLS) {
+    for (const symbol of forbiddenDbSymbols) {
       // Word-boundary match -- avoids false positives from an unrelated identifier merely
       // containing one of these names as a substring.
       if (new RegExp(`\\b${symbol}\\b`).test(content)) {
