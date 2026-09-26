@@ -250,6 +250,25 @@ test("grantedPermissions is exactly READ+DRAFT -- never APPROVE or EXECUTE", asy
   assert.ok(!result.grantedPermissions.includes("EXECUTE" as never));
 });
 
+// Independent test-suite audit (2026-09-26): the test above only checks the top-level
+// grantedPermissions field -- nothing asserted that each individual capability descriptor's OWN
+// `.permission` is also restricted to {READ, DRAFT}. A future capability mistakenly declared
+// `permission: "APPROVE"`/`"EXECUTE"` would pass every existing test unnoticed, directly
+// undermining AGENTS.md §G's "AI-generated metadata must remain a draft" principle extended to
+// capability advertisement itself.
+test("AC-CAP-02 (structural invariant): every individual capability's own .permission is within grantedPermissions -- never APPROVE/EXECUTE per-capability either", async () => {
+  const { services } = createFixture();
+  const result = await services.getSystemCapabilities({});
+
+  assert.ok(result.capabilities.length > 0, "expected at least one capability to check");
+  for (const capability of result.capabilities) {
+    assert.ok(
+      result.grantedPermissions.includes(capability.permission),
+      `capability "${capability.id}" declares permission "${capability.permission}", which is not in grantedPermissions [${result.grantedPermissions.join(", ")}]`
+    );
+  }
+});
+
 // AC-CAP-03: actionClasses is the full 4-class vocabulary the permission MODEL recognizes,
 // deliberately a superset of what's actually granted -- an agent must be able to tell "this
 // system has an APPROVE concept, I just don't hold it" from "this system has no such concept."

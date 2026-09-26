@@ -196,6 +196,62 @@ test("AC-DETAILS-04: recordingDate is forwarded but deprecated location fields n
   assert.deepEqual(picked, { recordingDate: "2026-01-01T00:00:00Z" });
 });
 
+// Independent test-suite audit (2026-09-26): unlike pickWritableRecordingDetailsFields (which
+// has the negative test above), neither pickWritableSnippetFields nor pickWritableStatusFields
+// had a test proving they actually STRIP a non-whitelisted field -- every existing test's input
+// already contained only whitelisted fields, so a regression that made either function spread
+// its entire input unfiltered would have passed every test in this file undetected.
+test("RISK-11: pickWritableSnippetFields strips every read-only field the source's own doc comment names, keeping only WRITABLE_SNIPPET_FIELDS", () => {
+  const picked = pickWritableSnippetFields({
+    title: "Kept",
+    description: "Kept",
+    tags: ["a"],
+    categoryId: "22",
+    defaultLanguage: "en",
+    defaultAudioLanguage: "en",
+    publishedAt: "2026-01-01T00:00:00Z",
+    channelId: "UC_should_never_be_writable",
+    channelTitle: "Some Channel",
+    thumbnails: { default: { url: "https://example.com/x.jpg" } },
+    liveBroadcastContent: "none",
+    localized: { title: "Localized title", description: "Localized description" },
+  });
+
+  assert.deepEqual(picked, {
+    title: "Kept",
+    description: "Kept",
+    tags: ["a"],
+    categoryId: "22",
+    defaultLanguage: "en",
+    defaultAudioLanguage: "en",
+  });
+});
+
+test("RISK-11: pickWritableStatusFields strips every read-only field the source's own doc comment names, keeping only WRITABLE_STATUS_FIELDS", () => {
+  const picked = pickWritableStatusFields({
+    privacyStatus: "unlisted",
+    publishAt: "2026-01-01T00:00:00Z",
+    license: "youtube",
+    embeddable: true,
+    publicStatsViewable: true,
+    selfDeclaredMadeForKids: false,
+    containsSyntheticMedia: false,
+    madeForKids: true,
+    defaultAudioLanguage: "en",
+    contentDetails: { duration: "PT1M", dimension: "2d" },
+  });
+
+  assert.deepEqual(picked, {
+    privacyStatus: "unlisted",
+    publishAt: "2026-01-01T00:00:00Z",
+    license: "youtube",
+    embeddable: true,
+    publicStatsViewable: true,
+    selfDeclaredMadeForKids: false,
+    containsSyntheticMedia: false,
+  });
+});
+
 test("applyVideoDetailsUpdate makes no network call at all when no parts are touched", async () => {
   let called = false;
   const youtube = fakeYoutubeClient({
