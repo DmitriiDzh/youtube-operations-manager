@@ -543,7 +543,13 @@ test("addVideosToPlaylist returns stable partial result with per-item failures",
         description: description ?? "",
         privacyStatus,
       }),
-      getPlaylistForUpdate: async () => null,
+      getPlaylistForUpdate: async ({ playlistId }) => ({
+        id: playlistId,
+        title: "Playlist 1",
+        description: "Desc",
+        privacyStatus: "private",
+        channelId: "UC_ACTIVE",
+      }),
       updatePlaylist: async () => ({
         id: "p-updated",
         title: "Updated",
@@ -586,6 +592,7 @@ test("addVideosToPlaylist returns stable partial result with per-item failures",
   const result = await services.addVideosToPlaylist({
     credentialRef: { userId: "user-1" },
     playlistId: "playlist-1",
+    expectedChannelId: "UC_ACTIVE",
     videoIds: ["v1", "v2", "v3"],
   });
 
@@ -622,7 +629,13 @@ test("removeVideosFromPlaylist preserves order and returns not-found failures", 
         description: description ?? "",
         privacyStatus,
       }),
-      getPlaylistForUpdate: async () => null,
+      getPlaylistForUpdate: async ({ playlistId }) => ({
+        id: playlistId,
+        title: "Playlist 1",
+        description: "Desc",
+        privacyStatus: "private",
+        channelId: "UC_ACTIVE",
+      }),
       updatePlaylist: async () => ({
         id: "p-updated",
         title: "Updated",
@@ -664,6 +677,7 @@ test("removeVideosFromPlaylist preserves order and returns not-found failures", 
   const result = await services.removeVideosFromPlaylist({
     credentialRef: { userId: "user-1" },
     playlistId: "playlist-1",
+    expectedChannelId: "UC_ACTIVE",
     videoIds: ["v1", "v2", "v3", "v1"],
   });
 
@@ -686,6 +700,157 @@ test("removeVideosFromPlaylist preserves order and returns not-found failures", 
       },
     ],
   });
+});
+
+// Independent test-suite audit (2026-09-26, real production finding, not a test-only bug):
+// addVideosToPlaylist/removeVideosFromPlaylist never validated channel identity at all, unlike
+// every sibling write method in this file (createPlaylist/updatePlaylist/deletePlaylist), each of
+// which has its own dedicated "blocks mismatch"/"fails closed" test. These two tests close that
+// gap for real, now that the production fix (assertWriteChannel + an ownership preflight via
+// getPlaylistForUpdate, mirroring updatePlaylist's own pattern) is in place.
+test("addVideosToPlaylist fails closed when playlist ownership does not match active write channel", async () => {
+  const calls = { add: 0 };
+
+  const services = createPlaylistManagementServices({
+    authResolver: {
+      resolve: async (args) => ({
+        credentialRef: args.credentialRef as { userId: string },
+        accessToken: "access",
+        refreshToken: "refresh",
+        tokenExpiry: undefined,
+        scopeSet: new Set(args.requiredScopes),
+      }),
+    },
+    youtubeApi: {
+      listPlaylists: async () => [],
+      createPlaylist: async ({ title, description, privacyStatus }) => ({
+        id: "p-created",
+        title,
+        description: description ?? "",
+        privacyStatus,
+      }),
+      getPlaylistForUpdate: async ({ playlistId }) => ({
+        id: playlistId,
+        title: "Original",
+        description: "Original",
+        privacyStatus: "private",
+        channelId: "UC_OTHER",
+      }),
+      updatePlaylist: async () => ({ id: "p-updated", title: "Updated", description: "", privacyStatus: "private" }),
+      getPlaylistForDelete: async () => null,
+      deletePlaylist: async () => undefined,
+      addVideoToPlaylist: async () => {
+        calls.add += 1;
+      },
+      listPlaylistItemIdsByVideo: async () => new Map(),
+      deletePlaylistItem: async () => undefined,
+    },
+    writeContext: {
+      assertWriteChannel: async () => ({
+        expectedChannelId: "UC_ACTIVE",
+        activeWriteChannel: { id: "UC_ACTIVE", title: "Active" },
+        shouldPersistSelection: false,
+        userId: null,
+      }),
+    },
+    channelSelectionStore: {
+      setSelectedChannelId: async () => undefined,
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      services.addVideosToPlaylist({
+        credentialRef: { userId: "user-1" },
+        playlistId: "playlist-1",
+        expectedChannelId: "UC_ACTIVE",
+        videoIds: ["v1"],
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof DomainError);
+      assert.equal(error.code, "WRITE_CHANNEL_MISMATCH");
+      assert.deepEqual(error.details, {
+        expectedChannelId: "UC_ACTIVE",
+        activeWriteChannelId: "UC_OTHER",
+      });
+      return true;
+    }
+  );
+
+  assert.equal(calls.add, 0);
+});
+
+test("removeVideosFromPlaylist fails closed when playlist ownership does not match active write channel", async () => {
+  const calls = { delete: 0 };
+
+  const services = createPlaylistManagementServices({
+    authResolver: {
+      resolve: async (args) => ({
+        credentialRef: args.credentialRef as { userId: string },
+        accessToken: "access",
+        refreshToken: "refresh",
+        tokenExpiry: undefined,
+        scopeSet: new Set(args.requiredScopes),
+      }),
+    },
+    youtubeApi: {
+      listPlaylists: async () => [],
+      createPlaylist: async ({ title, description, privacyStatus }) => ({
+        id: "p-created",
+        title,
+        description: description ?? "",
+        privacyStatus,
+      }),
+      getPlaylistForUpdate: async ({ playlistId }) => ({
+        id: playlistId,
+        title: "Original",
+        description: "Original",
+        privacyStatus: "private",
+        channelId: "UC_OTHER",
+      }),
+      updatePlaylist: async () => ({ id: "p-updated", title: "Updated", description: "", privacyStatus: "private" }),
+      getPlaylistForDelete: async () => null,
+      deletePlaylist: async () => undefined,
+      addVideoToPlaylist: async () => undefined,
+      listPlaylistItemIdsByVideo: async () => new Map([["v1", ["pi-1"]]]),
+      deletePlaylistItem: async () => {
+        calls.delete += 1;
+      },
+    },
+    writeContext: {
+      assertWriteChannel: async () => ({
+        expectedChannelId: "UC_ACTIVE",
+        activeWriteChannel: { id: "UC_ACTIVE", title: "Active" },
+        shouldPersistSelection: false,
+        userId: null,
+      }),
+    },
+    channelSelectionStore: {
+      setSelectedChannelId: async () => undefined,
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      services.removeVideosFromPlaylist({
+        credentialRef: { userId: "user-1" },
+        playlistId: "playlist-1",
+        expectedChannelId: "UC_ACTIVE",
+        videoIds: ["v1"],
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof DomainError);
+      assert.equal(error.code, "WRITE_CHANNEL_MISMATCH");
+      assert.deepEqual(error.details, {
+        expectedChannelId: "UC_ACTIVE",
+        activeWriteChannelId: "UC_OTHER",
+      });
+      return true;
+    }
+  );
+
+  // Never even reached the point of listing/deleting playlist items.
+  assert.equal(calls.delete, 0);
 });
 
 test("deletePlaylist enforces guardrail and deletes when channel matches", async () => {

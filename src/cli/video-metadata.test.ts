@@ -1644,14 +1644,14 @@ test("CLI playlist add/remove commands return stable partial-result envelopes", 
   const stdout: string[] = [];
 
   const addExitCode = await runCliCommand({
-    argv: ["playlist", "add", "--playlistId", "p1", "--videoIds", "v1,v2"],
+    argv: ["playlist", "add", "--playlistId", "p1", "--expectedChannelId", "UC_ACTIVE", "--videoIds", "v1,v2"],
     core,
     auth: makeAuthStub(),
     writeStdout: (line) => stdout.push(line),
   });
 
   const removeExitCode = await runCliCommand({
-    argv: ["playlist", "remove", "--playlistId", "p1", "--videoIds", "v1,v2"],
+    argv: ["playlist", "remove", "--playlistId", "p1", "--expectedChannelId", "UC_ACTIVE", "--videoIds", "v1,v2"],
     core,
     auth: makeAuthStub(),
     writeStdout: (line) => stdout.push(line),
@@ -1688,7 +1688,7 @@ test("CLI playlist commands fail with non-zero exit on missing required flags", 
   const stderr: string[] = [];
 
   const exitCode = await runCliCommand({
-    argv: ["playlist", "add", "--playlistId", "p1"],
+    argv: ["playlist", "add", "--playlistId", "p1", "--expectedChannelId", "UC_ACTIVE"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
     writeStderr: (line) => stderr.push(line),
@@ -1699,6 +1699,26 @@ test("CLI playlist commands fail with non-zero exit on missing required flags", 
   assert.equal(envelope.ok, false);
   assert.equal(envelope.error.code, "validation_failed");
   assert.match(envelope.error.message, /Missing required --videoIds/);
+});
+
+// Independent test-suite audit (2026-09-26): playlist add/remove now require --expectedChannelId,
+// mirroring create/update/delete's own identity check -- this locks in that CLI users get a
+// clear, actionable error rather than a silent unguarded write if they omit it.
+test("CLI playlist add/remove commands fail with non-zero exit when --expectedChannelId is omitted", async () => {
+  const stderr: string[] = [];
+
+  const exitCode = await runCliCommand({
+    argv: ["playlist", "add", "--playlistId", "p1", "--videoIds", "v1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.ok, false);
+  assert.equal(envelope.error.code, "validation_failed");
+  assert.match(envelope.error.message, /Missing required --expectedChannelId/);
 });
 
 test("CLI playlist update fails with actionable validation error for empty patch", async () => {

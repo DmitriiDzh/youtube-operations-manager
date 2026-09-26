@@ -72,8 +72,8 @@ npm run cli:video-metadata -- playlist list [--userId <USER_ID>]
 npm run cli:video-metadata -- playlist create --title "..." --expectedChannelId <UC...> [--description "..."] [--privacyStatus private|public|unlisted] [--userId <USER_ID>]
 npm run cli:video-metadata -- playlist update --playlistId <PLAYLIST_ID> --expectedChannelId <UC...> [--title "..."] [--description "..."] [--privacyStatus private|public|unlisted] [--userId <USER_ID>]
 npm run cli:video-metadata -- playlist delete --playlistId <PLAYLIST_ID> --expectedChannelId <UC...> [--userId <USER_ID>]
-npm run cli:video-metadata -- playlist add --playlistId <PLAYLIST_ID> --videoIds <VIDEO1,VIDEO2,...> [--userId <USER_ID>]
-npm run cli:video-metadata -- playlist remove --playlistId <PLAYLIST_ID> --videoIds <VIDEO1,VIDEO2,...> [--userId <USER_ID>]
+npm run cli:video-metadata -- playlist add --playlistId <PLAYLIST_ID> --expectedChannelId <UC...> --videoIds <VIDEO1,VIDEO2,...> [--userId <USER_ID>]
+npm run cli:video-metadata -- playlist remove --playlistId <PLAYLIST_ID> --expectedChannelId <UC...> --videoIds <VIDEO1,VIDEO2,...> [--userId <USER_ID>]
 ```
 
 ### Channel-sync commands (CLI parity for the MCP `channel_*` tools, Phase 7)

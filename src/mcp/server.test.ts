@@ -1179,10 +1179,12 @@ test("MCP playlist add/remove tools return stable partial contracts", async () =
 
   const addResult = await handlers.playlistAddVideos({
     playlistId: "p1",
+    expectedChannelId: "UC_ACTIVE",
     videoIds: ["v1", "v2"],
   });
   const removeResult = await handlers.playlistRemoveVideos({
     playlistId: "p1",
+    expectedChannelId: "UC_ACTIVE",
     videoIds: ["v1", "v2"],
   });
 

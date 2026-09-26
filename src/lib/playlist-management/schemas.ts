@@ -99,6 +99,7 @@ export const playlistAddVideosInputSchema = z
   .object({
     credentialRef: credentialRefSchema,
     playlistId: z.string().min(1),
+    expectedChannelId: z.string().min(1),
     videoIds: z.array(z.string().min(1)).min(1),
   })
   .strict();
@@ -116,6 +117,7 @@ export const playlistRemoveVideosInputSchema = z
   .object({
     credentialRef: credentialRefSchema,
     playlistId: z.string().min(1),
+    expectedChannelId: z.string().min(1),
     videoIds: z.array(z.string().min(1)).min(1),
   })
   .strict();

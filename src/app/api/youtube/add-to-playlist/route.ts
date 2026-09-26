@@ -24,11 +24,15 @@ export function createAddToPlaylistPostHandler(
     }
 
     try {
-      const body = (await parseVideoMetadataJsonBody(request)) as { videoIds?: string[]; playlistId?: string };
-      const { videoIds, playlistId } = body;
-      if (!videoIds?.length || !playlistId) {
+      const body = (await parseVideoMetadataJsonBody(request)) as {
+        videoIds?: string[];
+        playlistId?: string;
+        expectedChannelId?: string;
+      };
+      const { videoIds, playlistId, expectedChannelId } = body;
+      if (!videoIds?.length || !playlistId || !expectedChannelId) {
         return NextResponse.json(
-          { error: "Missing videoIds or playlistId" },
+          { error: "Missing videoIds, playlistId, or expectedChannelId" },
           { status: 400 }
         );
       }
@@ -37,6 +41,7 @@ export function createAddToPlaylistPostHandler(
         credentialRef: { userId: session.user.id },
         videoIds,
         playlistId,
+        expectedChannelId,
       });
 
       return NextResponse.json({ added: result.added });

@@ -25,7 +25,7 @@ test("remove-from-playlist route preserves removed counter envelope", async () =
   });
 
   const response = await handler(
-    makeRequest({ playlistId: "p1", videoIds: ["v1", "v2"] })
+    makeRequest({ playlistId: "p1", expectedChannelId: "UC_TEST", videoIds: ["v1", "v2"] })
   );
   const payload = await response.json();
 
@@ -33,6 +33,10 @@ test("remove-from-playlist route preserves removed counter envelope", async () =
   assert.deepEqual(payload, { removed: 1 });
 });
 
+// Independent test-suite audit (2026-09-26): removeVideosFromPlaylist now requires
+// expectedChannelId, mirroring the identity check every sibling write method already had
+// (createPlaylist/updatePlaylist/deletePlaylist) -- this route's own "missing params" message
+// and test updated to match.
 test("remove-from-playlist route rejects missing params", async () => {
   const handler = createRemoveFromPlaylistPostHandler({
     getSession: async () => ({ user: { id: "user-1" } }),
@@ -46,11 +50,26 @@ test("remove-from-playlist route rejects missing params", async () => {
     },
   });
 
-  const response = await handler(makeRequest({ playlistId: "p1" }));
+  const response = await handler(makeRequest({ playlistId: "p1", expectedChannelId: "UC_TEST" }));
   const payload = await response.json();
 
   assert.equal(response.status, 400);
-  assert.deepEqual(payload, { error: "Missing videoIds or playlistId" });
+  assert.deepEqual(payload, { error: "Missing videoIds, playlistId, or expectedChannelId" });
+});
+
+test("remove-from-playlist route rejects a request missing expectedChannelId specifically", async () => {
+  const handler = createRemoveFromPlaylistPostHandler({
+    getSession: async () => ({ user: { id: "user-1" } }),
+    core: {
+      removeVideosFromPlaylist: async () => ({ playlistId: "p1", requested: 0, removed: 0, failures: [] }),
+    },
+  });
+
+  const response = await handler(makeRequest({ playlistId: "p1", videoIds: ["v1"] }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(payload, { error: "Missing videoIds, playlistId, or expectedChannelId" });
 });
 
 // Independent test-suite audit (2026-09-26): this route implements a 401 pre-auth check but had
@@ -105,7 +124,9 @@ test("remove-from-playlist route surfaces a DomainError as a structured JSON err
     },
   });
 
-  const response = await handler(makeRequest({ playlistId: "p1", videoIds: ["v1"] }));
+  const response = await handler(
+    makeRequest({ playlistId: "p1", expectedChannelId: "UC_TEST", videoIds: ["v1"] })
+  );
   const payload = await response.json();
 
   assert.equal(response.status, 503);

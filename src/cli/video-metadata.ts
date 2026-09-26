@@ -1282,6 +1282,7 @@ export async function runCliCommand(args: {
         const result = await core.addVideosToPlaylist({
           credentialRef,
           playlistId: requiredStringFlag(parsedArgs.flags, "playlistId"),
+          expectedChannelId: requiredStringFlag(parsedArgs.flags, "expectedChannelId"),
           videoIds: parseVideoIdsFlag(parsedArgs.flags),
         });
         writeStdout(serializeSuccess(result));
@@ -1291,6 +1292,7 @@ export async function runCliCommand(args: {
       const result = await core.removeVideosFromPlaylist({
         credentialRef,
         playlistId: requiredStringFlag(parsedArgs.flags, "playlistId"),
+        expectedChannelId: requiredStringFlag(parsedArgs.flags, "expectedChannelId"),
         videoIds: parseVideoIdsFlag(parsedArgs.flags),
       });
       writeStdout(serializeSuccess(result));
