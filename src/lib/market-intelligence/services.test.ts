@@ -202,7 +202,7 @@ function createFixture(overrides?: {
         snapshotCalls.push(args);
         return overrides?.publicSnapshot !== undefined
           ? overrides.publicSnapshot
-          : { channelId: args.channelId, title: "Fetched Channel", subscriberCount: 100, viewCount: 200, videoCount: 3 };
+          : { channelId: args.channelId, title: "Fetched Channel", subscriberCount: 100, hiddenSubscriberCount: false, viewCount: 200, videoCount: 3 };
       },
     },
   });
@@ -362,7 +362,7 @@ test("AC-MI-09: fetchPublicSnapshot rejects a channel that is not on the watchli
 
 test("AC-MI-10: fetchPublicSnapshot resolves credentials with YOUTUBE_READ_SCOPE, fetches by researchChannelId, and records a 'high'-confidence evidence row stamped from callOrigin", async () => {
   const { store, services, resolveCalls, snapshotCalls } = createFixture({
-    publicSnapshot: { channelId: VALID_CHANNEL_ID, title: "Competitor", subscriberCount: 5000, viewCount: 90000, videoCount: 12 },
+    publicSnapshot: { channelId: VALID_CHANNEL_ID, title: "Competitor", subscriberCount: 5000, hiddenSubscriberCount: false, viewCount: 90000, videoCount: 12 },
   });
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Competitor" }, { createdVia: "web_ui" });
 
@@ -403,16 +403,26 @@ test("AC-MI-11: fetchPublicSnapshot rejects when YouTube reports no public chann
 // omission for a value YouTube did not actually report.
 test("AC-MI-12: describePublicChannelSnapshot reports the title and every field, describes a null field honestly instead of fabricating a number, and flags subscriberCount as YouTube's own rounded approximation (real API docs: 'rounded to three significant figures')", () => {
   assert.equal(
-    describePublicChannelSnapshot({ channelId: VALID_CHANNEL_ID, title: "x", subscriberCount: 12300, viewCount: 456000, videoCount: 42 }),
+    describePublicChannelSnapshot({ channelId: VALID_CHANNEL_ID, title: "x", subscriberCount: 12300, hiddenSubscriberCount: false, viewCount: 456000, videoCount: 42 }),
     'Public snapshot for "x": ~12300 subscribers (YouTube reports this rounded to 3 significant figures, not an exact count), 456000 total views, 42 videos'
   );
   assert.equal(
-    describePublicChannelSnapshot({ channelId: VALID_CHANNEL_ID, title: "x", subscriberCount: null, viewCount: 456000, videoCount: 42 }),
+    describePublicChannelSnapshot({ channelId: VALID_CHANNEL_ID, title: "x", subscriberCount: null, hiddenSubscriberCount: true, viewCount: 456000, videoCount: 42 }),
     'Public snapshot for "x": subscriber count hidden, 456000 total views, 42 videos'
   );
   assert.equal(
-    describePublicChannelSnapshot({ channelId: VALID_CHANNEL_ID, title: "x", subscriberCount: 0, viewCount: null, videoCount: null }),
+    describePublicChannelSnapshot({ channelId: VALID_CHANNEL_ID, title: "x", subscriberCount: 0, hiddenSubscriberCount: false, viewCount: null, videoCount: null }),
     'Public snapshot for "x": ~0 subscribers (YouTube reports this rounded to 3 significant figures, not an exact count), view count unavailable, video count unavailable'
+  );
+});
+
+// Phase 9 slice 9A -- proves the fix for the exact ambiguity independent review found: a null
+// subscriberCount for a reason OTHER than YouTube hiding it (a genuinely absent/unparseable stat)
+// must never be described as "hidden" (a specific, different, real fact).
+test("AC-MI-12c: describePublicChannelSnapshot describes a null subscriberCount as 'unavailable', not 'hidden', when hiddenSubscriberCount is false", () => {
+  assert.equal(
+    describePublicChannelSnapshot({ channelId: VALID_CHANNEL_ID, title: "x", subscriberCount: null, hiddenSubscriberCount: false, viewCount: 456000, videoCount: 42 }),
+    'Public snapshot for "x": subscriber count unavailable, 456000 total views, 42 videos'
   );
 });
 
@@ -421,7 +431,7 @@ test("AC-MI-12: describePublicChannelSnapshot reports the title and every field,
 // confusing `for ""` with nothing identifying the channel.
 test("AC-MI-12b: describePublicChannelSnapshot falls back to the channel id when title is empty", () => {
   assert.equal(
-    describePublicChannelSnapshot({ channelId: VALID_CHANNEL_ID, title: "", subscriberCount: 100, viewCount: 200, videoCount: 3 }),
+    describePublicChannelSnapshot({ channelId: VALID_CHANNEL_ID, title: "", subscriberCount: 100, hiddenSubscriberCount: false, viewCount: 200, videoCount: 3 }),
     `Public snapshot for "${VALID_CHANNEL_ID}": ~100 subscribers (YouTube reports this rounded to 3 significant figures, not an exact count), 200 total views, 3 videos`
   );
 });
@@ -589,7 +599,7 @@ test("AC-9A-08: recordVideoSnapshot rejects a channel not on the watchlist; list
 
 test("AC-9A-09: captureChannelSnapshot stores hiddenSubscriberCount:true and subscriberCount:null together when YouTube hides the count", async () => {
   const { services } = createFixture({
-    publicSnapshot: { channelId: VALID_CHANNEL_ID, title: "Example", subscriberCount: null, viewCount: 9000, videoCount: 12 },
+    publicSnapshot: { channelId: VALID_CHANNEL_ID, title: "Example", subscriberCount: null, hiddenSubscriberCount: true, viewCount: 9000, videoCount: 12 },
   });
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Worth watching" }, { createdVia: "web_ui" });
 
@@ -605,9 +615,27 @@ test("AC-9A-09: captureChannelSnapshot stores hiddenSubscriberCount:true and sub
   assert.equal(result.source, "youtube.channels.list");
 });
 
+// Found by independent review, 2026-09-26: an earlier version inferred hiddenSubscriberCount from
+// `subscriberCount === null` alone, which would have mislabeled THIS exact case (null for a
+// different, unrelated reason) as "hidden." Proves the fix uses the real gateway-reported flag.
+test("AC-9A-09b: captureChannelSnapshot stores hiddenSubscriberCount:false when subscriberCount is null for a reason other than YouTube hiding it", async () => {
+  const { services } = createFixture({
+    publicSnapshot: { channelId: VALID_CHANNEL_ID, title: "Example", subscriberCount: null, hiddenSubscriberCount: false, viewCount: 9000, videoCount: 12 },
+  });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Worth watching" }, { createdVia: "web_ui" });
+
+  const result = await services.captureChannelSnapshot(
+    { researchChannelId: VALID_CHANNEL_ID, credentialRef: { userId: "u1" } },
+    { createdVia: "web_ui" }
+  );
+
+  assert.equal(result.subscriberCount, null);
+  assert.equal(result.hiddenSubscriberCount, false, "must not fabricate 'hidden' for an unrelated null reason");
+});
+
 test("AC-9A-10: captureChannelSnapshot never touches research_evidence -- fetchPublicSnapshot's own rows stay unaffected", async () => {
   const { store, services } = createFixture({
-    publicSnapshot: { channelId: VALID_CHANNEL_ID, title: "Example", subscriberCount: 100, viewCount: 9000, videoCount: 12 },
+    publicSnapshot: { channelId: VALID_CHANNEL_ID, title: "Example", subscriberCount: 100, hiddenSubscriberCount: false, viewCount: 9000, videoCount: 12 },
   });
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Worth watching" }, { createdVia: "web_ui" });
 

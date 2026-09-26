@@ -150,7 +150,15 @@ export const recordChannelSnapshotInputSchema = z
     hiddenSubscriberCount: z.boolean().optional(),
     source: z.string().min(1, "source is required").max(500),
   })
-  .strict();
+  .strict()
+  // Found by independent review, 2026-09-26: without this, a manual entry could claim
+  // `hiddenSubscriberCount: true` (a real, known fact) and a concrete `subscriberCount` (a real,
+  // known number) at once -- self-contradictory, and uncorrectable once stored (this table is
+  // append-only, `PHASE_9_SLICE_9A_PLAN.md` §2).
+  .refine((input) => !(input.hiddenSubscriberCount === true && input.subscriberCount !== undefined), {
+    message: "subscriberCount must not be provided when hiddenSubscriberCount is true",
+    path: ["subscriberCount"],
+  });
 
 export const recordChannelSnapshotOutputSchema = marketChannelSnapshotSchema;
 
@@ -187,7 +195,12 @@ export const recordVideoSnapshotInputSchema = z
     viewCount: nonNegativeIntSchema.optional(),
     likeCount: nonNegativeIntSchema.optional(),
     commentCount: nonNegativeIntSchema.optional(),
-    publishedAt: z.string().min(1).optional(),
+    // `.datetime()` (this codebase's established convention for a trusted ISO timestamp, e.g.
+    // snapshot/schemas.ts's own createdAt) -- found by independent review, 2026-09-26: a bare
+    // `.string()` here let an unparseable value (e.g. "not-a-date") reach `new Date(...)` in
+    // services.ts, producing an Invalid Date whose NaN epoch then crashed the libsql driver with
+    // an opaque low-level exception instead of this module's normal clean validation_failed.
+    publishedAt: z.string().datetime().optional(),
     source: z.string().min(1, "source is required").max(500),
   })
   .strict();

@@ -30,5 +30,5 @@ export function createMarketIntelligenceCore() {
 }
 
 export type MarketIntelligenceCore = ReturnType<typeof createMarketIntelligenceCore>;
-export type { ResearchChannel, ResearchEvidence } from "./contracts";
+export type { ResearchChannel, ResearchEvidence, MarketChannelSnapshot, MarketVideoSnapshot } from "./contracts";
 export { DomainError, isDomainError } from "./contracts";

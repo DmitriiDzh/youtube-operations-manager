@@ -90,16 +90,25 @@ const ALLOWED_IMPORTER_DIRS = [path.join(SRC_ROOT, "lib", "market-intelligence")
 // was in the first version of this fix (found by independent review, round 2, 2026-09-26: this
 // exact function, added in the same commit that introduced this derivation's predecessor, was
 // never added to the old hardcoded list -- a probe file importing it directly from `@/lib/db`
-// passed PHASE9-INV-02 undetected). Plus the two underlying snake_case SQL table names, which
-// cannot be derived the same way (they are string literals inside `sqliteTable(...)` calls, not
-// exported identifiers) -- a raw `sql\`... research_channels ...\`` escape hatch (already used
-// elsewhere in this codebase, e.g. migrations) would bypass a camelCase-only list entirely.
+// passed PHASE9-INV-02 undetected). Plus the underlying snake_case SQL table names, which cannot
+// be derived the same way (they are string literals inside `sqliteTable(...)` calls, not exported
+// identifiers) -- a raw `sql\`... research_channels ...\`` escape hatch (already used elsewhere in
+// this codebase, e.g. migrations) would bypass a camelCase-only list entirely.
+//
+// Widened for Phase 9 slice 9A (found by independent review, 2026-09-26): the pattern originally
+// only matched `Research(Channel|Evidence)`-shaped names, so none of slice 9A's own
+// `Market(Channel|Video)Snapshot`-shaped exports (or their two raw table names) were ever added to
+// this list -- a probe file importing `insertMarketChannelSnapshot`/`marketChannelSnapshots`
+// directly from `@/lib/db` passed this test undetected, exactly the class of gap this test's own
+// dynamic derivation exists to prevent. Fixed by widening the pattern to match either shape, not
+// by hand-adding the new names (which would only defer the identical gap to the next new table).
 async function deriveForbiddenDbSymbols(): Promise<string[]> {
   const dbTsContent = await readFile(path.join(SRC_ROOT, "lib", "db.ts"), "utf8");
-  const pattern = /\bexport\s+(?:async function|function|const)\s+(\w*[Rr]esearch(?:Channel|Evidence)\w*)\b/g;
+  const pattern =
+    /\bexport\s+(?:async function|function|const)\s+(\w*(?:[Rr]esearch(?:Channel|Evidence)|[Mm]arket(?:Channel|Video)Snapshot)\w*)\b/g;
   const derived = new Set<string>();
   for (const match of dbTsContent.matchAll(pattern)) derived.add(match[1]);
-  return [...derived, "research_channels", "research_evidence"];
+  return [...derived, "research_channels", "research_evidence", "market_channel_snapshots", "market_video_snapshots"];
 }
 
 test("PHASE9-INV-02: no file outside market-intelligence's own module references its db.ts symbols", async () => {
@@ -108,7 +117,12 @@ test("PHASE9-INV-02: no file outside market-intelligence's own module references
   // this test itself already knows about, the derivation regex broke, not the invariant.
   assert.ok(forbiddenDbSymbols.includes("deleteResearchChannel"), "derivation must find deleteResearchChannel");
   assert.ok(forbiddenDbSymbols.includes("researchChannels"), "derivation must find the researchChannels table export");
-  assert.ok(forbiddenDbSymbols.length >= 8, "derivation returned suspiciously few symbols -- regex likely broke");
+  assert.ok(
+    forbiddenDbSymbols.includes("insertMarketChannelSnapshot"),
+    "derivation must find slice 9A's insertMarketChannelSnapshot (independent review, 2026-09-26 -- the original pattern missed every Market*Snapshot export entirely)"
+  );
+  assert.ok(forbiddenDbSymbols.includes("marketChannelSnapshots"), "derivation must find the marketChannelSnapshots table export");
+  assert.ok(forbiddenDbSymbols.length >= 16, "derivation returned suspiciously few symbols -- regex likely broke");
 
   // Also scans scripts/, not just src/ -- same same-day widening the read/write gateway
   // inventory tests already applied (found by independent review, 2026-09-26): a one-off script

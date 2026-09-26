@@ -918,6 +918,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-59 | MCP `tools/list` rendering of a ZodEffects (`.refine()`-based) `inputSchema` had not been verified end-to-end | none blocking | RESOLVED, 2026-09-25 |
 | RISK-60 | `write_channel_select`/`auth_user_select` mutate global, not per-connection, active-channel state -- a race once multiple agent connections (BL-091) operate concurrently | none blocking yet | OPEN |
 | RISK-61 | `market-intelligence`'s `getWatchlistEntry`/`listEvidence` throw `RESEARCH_CHANNEL_NOT_AVAILABLE` with different `details` key names (`channelId` vs `researchChannelId`) for the same condition -- the two still-used Web API routes forward this verbatim | none blocking, cosmetic | OPEN |
+| RISK-62 | `market-intelligence/services.ts` hand-duplicates its "look up researchChannelId, throw RESEARCH_CHANNEL_NOT_AVAILABLE if missing" guard across ~15 call sites, and 3 write functions each re-fetch a whole channel's snapshot history just to `.find()` the row just inserted, instead of a shared guard helper / `.insert(...).returning()` | none blocking, efficiency/duplication only | OPEN |
 
 ## RISK-53 — `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` — RESOLVED, 2026-09-24
 
@@ -1016,6 +1017,17 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Required remediation (not yet scheduled):** pick one `details` key (`channelId`, matching `getWatchlistEntryContext`'s own choice) and use it in both functions -- a small, independent follow-up, not gated on anything else.
 - **Gate(s):** none.
 - **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2) -- a single-file, backward-compatible-in-substance fix.
+- **Status:** OPEN, tracked.
+
+## RISK-62 — `market-intelligence/services.ts` duplicates its watchlist-existence guard and re-fetches full history on every write — OPEN, 2026-09-26
+
+- **Affected components:** `src/lib/market-intelligence/services.ts` -- the "call `getResearchChannelById`, throw `RESEARCH_CHANNEL_NOT_AVAILABLE` if missing" guard, hand-repeated at every function that takes a `researchChannelId` (roughly 15 call sites after Phase 9 slice 9A's own 5 additions); separately, `recordEvidence`, `fetchPublicSnapshot`, `recordChannelSnapshot`, `recordVideoSnapshot`, and `captureChannelSnapshot` each insert one row then call the matching `listXByChannel` (no id filter, no limit) just to `.find()` the row just inserted.
+- **Found during:** independent review of Phase 9 slice 9A (`docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md`), which added 5 more copies of both patterns rather than introducing a shared helper.
+- **Actual risk:** low today (a single local operator, append-only tables expected to stay small) -- but grows as tracked history accumulates: every write becomes an O(n) full-history read+scan instead of an O(1) `.insert(...).returning()`, and the guard's ~15 hand-copies mean a future semantic change (e.g. an archived/soft-deleted watchlist state) requires correctly touching all of them by hand, with no test forcing a missed one to fail loudly.
+- **Why not fixed as part of slice 9A:** slice 9A's own 5 new functions were written to match this module's ALREADY-SHIPPED, already-reviewed convention exactly (`addToWatchlist`/`recordEvidence`/`fetchPublicSnapshot` already used the identical guard-duplication and insert-then-refetch shapes before this slice) -- fixing only the 5 new call sites would create inconsistency within the same file for no visible reason, and fixing all ~15 (new and pre-existing) would be an unscoped refactor of already-shipped code, not something to bundle into a slice whose own stated purpose is a new data model (`PHASE_9_SLICE_9A_PLAN.md` §1).
+- **Required remediation (not yet scheduled):** (a) extract a shared `assertResearchChannelExists(researchChannelId)` helper used by every function in this file; (b) switch every insert to Drizzle's `.insert(...).returning()` (confirmed already supported by this project's libsql driver) instead of insert-then-full-list-refetch.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2) -- an internal refactor with no behavior change.
 - **Status:** OPEN, tracked.
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

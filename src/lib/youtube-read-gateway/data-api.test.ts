@@ -461,6 +461,7 @@ test("getPublicChannelSnapshot requests exactly part=[snippet,statistics] and id
     channelId: "UC_COMPETITOR",
     title: "Competitor Channel",
     subscriberCount: 12300,
+    hiddenSubscriberCount: false,
     viewCount: 456000,
     videoCount: 42,
   });
@@ -484,6 +485,11 @@ test("getPublicChannelSnapshot reports subscriberCount as null when hiddenSubscr
   const snapshot = await getPublicChannelSnapshot(youtube, "UC_HIDDEN");
 
   assert.equal(snapshot?.subscriberCount, null);
+  assert.equal(
+    snapshot?.hiddenSubscriberCount,
+    true,
+    "the real flag must be exposed, not just inferred downstream from subscriberCount === null (Phase 9 slice 9A)"
+  );
   assert.equal(snapshot?.viewCount, 1000);
 });
 
@@ -505,6 +511,7 @@ test("getPublicChannelSnapshot never fabricates a 0 for a statistics field the A
   const snapshot = await getPublicChannelSnapshot(youtube, "UC_PARTIAL");
 
   assert.equal(snapshot?.subscriberCount, 500);
+  assert.equal(snapshot?.hiddenSubscriberCount, false, "a real, non-hidden count must never be flagged as hidden");
   assert.equal(snapshot?.viewCount, null);
   assert.equal(snapshot?.videoCount, null);
 });

@@ -202,8 +202,16 @@ export type PublicChannelSnapshot = {
    * latter case would otherwise return a fabricated "0" (YouTube reports a real subscriber count
    * of exactly zero identically to a hidden one at the raw API level), which this codebase's
    * "never fabricate a stat" discipline (see `parseStatCount`'s own callers) forbids treating as
-   * a genuine observation (Phase 9 slice 3, `docs/roadmap/plans/PHASE_9_PLAN.md` §7). */
+   * a genuine observation (Phase 9 slice 3, `docs/roadmap/plans/PHASE_9_PLAN.md` §7). Use the
+   * `hiddenSubscriberCount` field below to tell "hidden, a known fact" apart from "absent/
+   * unparseable, an unknown gap" -- both collapse to `null` here, but only the former is `true`. */
   subscriberCount: number | null;
+  /** YouTube's own real flag (`statistics.hiddenSubscriberCount`), exposed alongside the
+   * (necessarily ambiguous) `null` above -- added for Phase 9 slice 9A
+   * (`docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md`) after independent review found a caller
+   * re-guessing this from `subscriberCount === null` would also misclassify a genuinely
+   * absent/unparseable count as "hidden." */
+  hiddenSubscriberCount: boolean;
   viewCount: number | null;
   videoCount: number | null;
 };
@@ -234,6 +242,7 @@ export async function getPublicChannelSnapshot(
     channelId: channel.id,
     title: channel.snippet?.title ?? "",
     subscriberCount: hiddenSubscriberCount ? null : parseStatCount(channel.statistics?.subscriberCount),
+    hiddenSubscriberCount,
     viewCount: parseStatCount(channel.statistics?.viewCount),
     videoCount: parseStatCount(channel.statistics?.videoCount),
   };

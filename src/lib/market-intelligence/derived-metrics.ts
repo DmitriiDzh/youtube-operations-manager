@@ -68,23 +68,35 @@ function insufficientHistoryVelocity(): SnapshotVelocity {
 
 /**
  * Rate of change per day for each numeric field, over a trailing window ending at `now`. Compares
- * the LATEST snapshot against the earliest snapshot at or before the window's start (`full_window`
- * coverage); if no snapshot reaches back that far, falls back to the earliest snapshot actually
- * available (`partial_window`) rather than fabricating a value over an unobserved span (spec §9:
- * "expose limitations when history is incomplete"). `basis` is the same for every field in one
- * call (it describes which pair of snapshots was compared, a single time-based choice); `value`
- * is independently `null` per field when either endpoint snapshot lacks that specific field.
+ * the LATEST snapshot against an earlier one, chosen from every OTHER real snapshot (never the
+ * latest snapshot compared against itself, even in the degenerate case below): the one closest to
+ * (but at or before) the window's start, if any qualifies (`full_window` coverage); otherwise the
+ * oldest earlier snapshot actually available (`partial_window`), rather than fabricating a value
+ * over an unobserved span (spec §9: "expose limitations when history is incomplete"). `basis` is
+ * the same for every field in one call (it describes which pair of snapshots was compared, a
+ * single time-based choice); `value` is independently `null` per field when either endpoint
+ * snapshot lacks that specific field.
+ *
+ * Found by independent review, 2026-09-26: an earlier version picked the "earlier" endpoint from
+ * the FULL sorted list (including the latest snapshot itself). When every real snapshot -- the
+ * latest one included -- was already older than the requested window (e.g. no new data collected
+ * in the last 30 days, but two real snapshots exist from 60 and 90 days ago), that version's
+ * "closest snapshot at or before the cutoff" resolved to the latest snapshot itself, comparing it
+ * against itself (a zero span) and incorrectly reporting `insufficient_history` despite 2 real,
+ * usable snapshots existing. Restricting the "earlier" candidate pool to every snapshot BEFORE
+ * `latest` (never `latest` itself) makes that impossible whenever 2+ distinct snapshots exist.
  */
 export function computeSnapshotVelocity(snapshots: SnapshotWithTime[], windowDays: number, now: Date): SnapshotVelocity {
   if (snapshots.length < 2) return insufficientHistoryVelocity();
 
   const sorted = [...snapshots].sort((a, b) => a.observedAt.getTime() - b.observedAt.getTime());
   const latest = sorted[sorted.length - 1];
+  const earlierCandidates = sorted.slice(0, -1);
   const windowStartCutoff = now.getTime() - windowDays * MS_PER_DAY;
 
-  const earliestAtOrBeforeCutoff = [...sorted].reverse().find((s) => s.observedAt.getTime() <= windowStartCutoff);
-  const earliest = earliestAtOrBeforeCutoff ?? sorted[0];
-  const basis: VelocityBasis = earliestAtOrBeforeCutoff ? "full_window" : "partial_window";
+  const closestAtOrBeforeCutoff = earlierCandidates.findLast((s) => s.observedAt.getTime() <= windowStartCutoff);
+  const earliest = closestAtOrBeforeCutoff ?? earlierCandidates[0];
+  const basis: VelocityBasis = closestAtOrBeforeCutoff ? "full_window" : "partial_window";
 
   const spanMs = latest.observedAt.getTime() - earliest.observedAt.getTime();
   if (spanMs <= 0) return insufficientHistoryVelocity();

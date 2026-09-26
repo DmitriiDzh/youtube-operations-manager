@@ -52,10 +52,15 @@ import type { CreatedVia } from "@/lib/shared-provenance";
  * stated plainly.
  */
 export function describePublicChannelSnapshot(snapshot: PublicChannelSnapshot): string {
+  // Uses the real `hiddenSubscriberCount` flag (added for slice 9A), not `subscriberCount ===
+  // null` alone -- a null count can also mean "absent/unparseable," a genuinely different, unknown
+  // gap this wording should not misdescribe as "hidden" (independent review, 2026-09-26).
   const subscribers =
     snapshot.subscriberCount !== null
       ? `~${snapshot.subscriberCount} subscribers (YouTube reports this rounded to 3 significant figures, not an exact count)`
-      : "subscriber count hidden";
+      : snapshot.hiddenSubscriberCount
+        ? "subscriber count hidden"
+        : "subscriber count unavailable";
   const views = snapshot.viewCount !== null ? `${snapshot.viewCount} total views` : "view count unavailable";
   const videos = snapshot.videoCount !== null ? `${snapshot.videoCount} videos` : "video count unavailable";
   // Falls back to the channel id when YouTube's own response omits `snippet.title` (the read
@@ -612,13 +617,11 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         subscriberCount: snapshot.subscriberCount,
         viewCount: snapshot.viewCount,
         videoCount: snapshot.videoCount,
-        // `PublicChannelSnapshot.subscriberCount` is `null` for two possible real reasons
-        // (YouTube's own `hiddenSubscriberCount` flag, or a genuinely unparseable/absent stat) --
-        // the read gateway does not currently distinguish them in its returned shape. Assuming
-        // "hidden" here matches the exact same simplification `describePublicChannelSnapshot`
-        // (slice 3) already makes for its own "subscriber count hidden" wording -- not a new
-        // inaccuracy introduced by this slice, parity with already-reviewed behavior.
-        hiddenSubscriberCount: snapshot.subscriberCount === null,
+        // YouTube's own real flag, not re-guessed from `subscriberCount === null` -- that would
+        // also misclassify a genuinely absent/unparseable count as "hidden" (found by independent
+        // review, 2026-09-26; fixed at the root by widening `PublicChannelSnapshot` itself, both
+        // here and in the read gateway, rather than re-guessing downstream).
+        hiddenSubscriberCount: snapshot.hiddenSubscriberCount,
         source: "youtube.channels.list",
         createdVia: callOrigin.createdVia,
       });

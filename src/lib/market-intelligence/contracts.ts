@@ -47,6 +47,10 @@ export type PublicChannelSnapshot = {
   channelId: string;
   title: string;
   subscriberCount: number | null;
+  /** YouTube's own real flag -- added for Phase 9 slice 9A so `captureChannelSnapshot` never has
+   * to re-guess "hidden" from `subscriberCount === null` (which is also `null` for an unrelated,
+   * genuinely-unknown reason). See the read gateway's own `PublicChannelSnapshot` doc comment. */
+  hiddenSubscriberCount: boolean;
   viewCount: number | null;
   videoCount: number | null;
 };
