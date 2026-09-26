@@ -96,6 +96,14 @@ function mergeEditorialContext(
   return Object.keys(merged).length > 0 ? merged : null;
 }
 
+// Cost control: the mock provider's target cap (via videoIds/targetLanguages array limits in
+// schemas.ts) is far too high to safely apply to a REAL, potentially-paid connection. A
+// connection-backed call is capped much lower, independent of and in addition to those
+// schema-level limits. Corrected 2026-09-26 (independent test-suite audit): this used to cite
+// "docs/acceptance/PHASE_6_AI_CONNECTIONS_ACCEPTANCE.md §7" -- that document only has sections
+// 1-6, and no acceptance scenario for this specific cap exists there at all. This is this app's
+// own cost-safety measure, not a formally acceptance-tested requirement; see
+// `src/lib/ai-localization/services.test.ts`'s boundary test for its actual regression coverage.
 const REAL_CONNECTION_MAX_TARGETS_PER_CALL = 50;
 
 type ChangeToPersist = {
@@ -303,11 +311,7 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
           }
         }
 
-        // Cost control (docs/acceptance/PHASE_6_AI_CONNECTIONS_ACCEPTANCE.md §7): the
-        // mock provider's target cap (via videoIds/targetLanguages array limits in
-        // schemas.ts) is far too high to safely apply to a REAL, potentially-paid
-        // connection. A connection-backed call is capped much lower, independent of
-        // and in addition to those schema-level limits.
+        // Cost control -- see REAL_CONNECTION_MAX_TARGETS_PER_CALL's own doc comment above.
         if (parsedInput.connectionId && targets.length > REAL_CONNECTION_MAX_TARGETS_PER_CALL) {
           throw new DomainError({
             code: "validation_failed",
