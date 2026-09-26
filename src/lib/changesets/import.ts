@@ -1,4 +1,15 @@
-import ExcelJS from "exceljs";
+import type { Workbook } from "exceljs";
+import {
+  XlsxBufferError,
+  XlsxInvalidWorkbookError,
+  XlsxRowLimitError,
+  assertDataRowCountWithinLimit,
+  buildHeaderIndex,
+  cellText,
+  findMissingColumns,
+  loadWorkbookFromBuffer,
+  readKeyValueSheet,
+} from "@/lib/shared-xlsx";
 import { DomainError } from "./contracts";
 import type { ImportRowError, ParsedFieldOutcome, ParsedRowResult, ParsedWorkbook, StoredVideoRecord } from "./contracts";
 import {
@@ -12,6 +23,9 @@ import {
 
 // Resource-safety limits (docs/PROJECT_SPEC.md §7 "Resource safety"): bound file size
 // and row count so a malformed/huge workbook cannot exhaust memory or hang the import.
+// The values are this app's own tuning decision; the enforcement mechanism itself lives
+// in @/lib/shared-xlsx (loadWorkbookFromBuffer/assertDataRowCountWithinLimit) -- see
+// docs/TECHNICAL_DEBT.md RISK-01 for this check's known limitation.
 export const MAX_WORKBOOK_BYTES = 25 * 1024 * 1024; // 25MB
 export const MAX_LOCALIZATION_ROWS = 20_000;
 
@@ -29,69 +43,20 @@ function structuralError(message: string, details?: unknown): DomainError {
 }
 
 /**
- * Reads a cell's displayed text as plain data only. Formula cells use only their
- * cached `result` (never the formula string itself), so imported content is always
- * treated as inert data, never as something to evaluate (docs/PROJECT_SPEC.md §7).
+ * Reads this workbook's "Meta" sheet (schema_version/exported_at/channel_id) via the
+ * generic key-value reader -- returns all-null when the sheet is absent (an older export
+ * without it remains importable, see the doc comment on this shape's writer).
  */
-function cellText(cell: ExcelJS.Cell | undefined): string {
-  if (!cell) return "";
-  const value = cell.value;
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (value instanceof Date) return value.toISOString();
-
-  if (typeof value === "object") {
-    if ("richText" in value && Array.isArray((value as { richText: unknown[] }).richText)) {
-      return (value as { richText: Array<{ text?: string }> }).richText
-        .map((part) => part.text ?? "")
-        .join("");
-    }
-    if ("result" in value) {
-      const result = (value as { result: unknown }).result;
-      if (typeof result === "string") return result;
-      if (typeof result === "number") return String(result);
-      return "";
-    }
-    if ("text" in value) {
-      return String((value as { text: unknown }).text ?? "");
-    }
-  }
-
-  return "";
-}
-
-function buildHeaderIndex(headerRow: ExcelJS.Row): Map<string, number> {
-  const index = new Map<string, number>();
-  headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
-    const name = cellText(cell).trim().toLowerCase();
-    if (name) index.set(name, colNumber);
-  });
-  return index;
-}
-
-function readMetaSheet(workbook: ExcelJS.Workbook): {
+function readMetaSheet(workbook: Workbook): {
   schemaVersion: string | null;
   exportedAt: string | null;
   channelId: string | null;
 } {
-  const sheet = workbook.getWorksheet("Meta");
-  if (!sheet) {
-    return { schemaVersion: null, exportedAt: null, channelId: null };
-  }
-
-  const values: Record<string, string> = {};
-  sheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return; // header
-    const key = cellText(row.getCell(1)).trim().toLowerCase();
-    const value = cellText(row.getCell(2)).trim();
-    if (key) values[key] = value;
-  });
-
+  const values = readKeyValueSheet(workbook, "Meta");
   return {
-    schemaVersion: values.schema_version || null,
-    exportedAt: values.exported_at || null,
-    channelId: values.channel_id || null,
+    schemaVersion: values?.schema_version || null,
+    exportedAt: values?.exported_at || null,
+    channelId: values?.channel_id || null,
   };
 }
 
@@ -111,25 +76,19 @@ export async function parseAndValidateWorkbook(args: {
   channelId: string;
   syncedVideos: StoredVideoRecord[];
 }): Promise<ParsedWorkbook> {
-  if (args.buffer.length === 0) {
-    throw structuralError("Uploaded file is empty");
-  }
-  if (args.buffer.length > MAX_WORKBOOK_BYTES) {
-    throw structuralError("Workbook exceeds the maximum supported file size", {
-      maxBytes: MAX_WORKBOOK_BYTES,
-    });
-  }
-
-  const workbook = new ExcelJS.Workbook();
+  let workbook;
   try {
-    // Pre-existing @types/node vs. exceljs Buffer-generic mismatch (same as
-    // localization/adapters/xlsx.test.ts) -- cast is data-safe, load() only reads bytes.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await workbook.xlsx.load(args.buffer as any);
+    workbook = await loadWorkbookFromBuffer(args.buffer, { maxBytes: MAX_WORKBOOK_BYTES });
   } catch (error) {
-    throw structuralError("File is not a valid XLSX workbook", {
-      cause: error instanceof Error ? error.message : String(error),
-    });
+    if (error instanceof XlsxBufferError) {
+      throw error.kind === "empty"
+        ? structuralError("Uploaded file is empty")
+        : structuralError("Workbook exceeds the maximum supported file size", { maxBytes: MAX_WORKBOOK_BYTES });
+    }
+    if (error instanceof XlsxInvalidWorkbookError) {
+      throw structuralError("File is not a valid XLSX workbook", { cause: error.sourceMessage });
+    }
+    throw error;
   }
 
   const localizationsSheet = workbook.getWorksheet("Localizations");
@@ -147,19 +106,23 @@ export async function parseAndValidateWorkbook(args: {
 
   const headerRow = localizationsSheet.getRow(1);
   const headerIndex = buildHeaderIndex(headerRow);
-  const missingColumns = REQUIRED_LOCALIZATION_COLUMNS.filter((col) => !headerIndex.has(col));
+  const missingColumns = findMissingColumns(headerIndex, REQUIRED_LOCALIZATION_COLUMNS);
   if (missingColumns.length > 0) {
     throw structuralError("Localizations worksheet is missing required columns", {
       missingColumns,
     });
   }
 
-  const totalDataRows = Math.max(0, localizationsSheet.rowCount - 1);
-  if (totalDataRows > MAX_LOCALIZATION_ROWS) {
-    throw structuralError("Workbook has too many localization rows", {
-      rowCount: totalDataRows,
-      maxRows: MAX_LOCALIZATION_ROWS,
-    });
+  try {
+    assertDataRowCountWithinLimit(localizationsSheet, MAX_LOCALIZATION_ROWS);
+  } catch (error) {
+    if (error instanceof XlsxRowLimitError) {
+      throw structuralError("Workbook has too many localization rows", {
+        rowCount: error.actualRows,
+        maxRows: MAX_LOCALIZATION_ROWS,
+      });
+    }
+    throw error;
   }
 
   const syncedVideoMap = new Map(args.syncedVideos.map((v) => [v.videoId, v]));
