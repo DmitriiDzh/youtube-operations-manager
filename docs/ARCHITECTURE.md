@@ -1418,3 +1418,32 @@ analytics wrapper, a new creative-asset catalog, draft provenance, bulk-localiza
 content-proposal/artifact registration, a Codex operations-workspace template, and independent
 review -- **which of these is actually implemented as of any given moment is tracked exclusively
 in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here**.
+
+## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-3
+
+Owner instruction, Telegram 2026-09-26: an explicit assignment to research, plan, and begin
+implementing Phase 9 (`docs/roadmap/FUTURE_PHASES.md` §5) as its own feature branch, superseding
+§2a's Operational Validation Gate default ordering for Phase 9 specifically (see `FUTURE_PHASES.md`
+§12). **Detailed design, slice breakdown, and acceptance criteria live in
+`docs/roadmap/plans/PHASE_9_PLAN.md` and `docs/SYSTEM_MAP.md` §2.9v -- this section states only the
+one architectural decision worth recording permanently here, not the full slice-by-slice detail.**
+
+**The one new trust boundary this phase introduces:** every table this application had before Phase
+9 implicitly assumes the operator owns the channel/video a row describes (`channels.id` is always a
+channel `write-context.assertWriteChannel` could plausibly authorize a write against). Phase 9 is
+the first phase whose entire purpose is data about a channel the operator does *not* own. Rather
+than adding a nullable "is this owned?" flag to an existing table, this is enforced structurally:
+`research_channels`/`research_evidence` are new, separate tables, never joined with
+`channels`/`videos`, and a mechanical inventory test
+(`src/lib/market-intelligence/write-path-inventory.test.ts`) fails the suite if any file in this
+module ever references `write-context`/`assertWriteChannel`/`youtube-write-gateway`. This is the
+same "enforce the invariant mechanically, not by convention" pattern already used for the read/write
+gateways (§17's own reuse of `AGENTS.md` §G) and for `ai-connections`'/`shared-xlsx`'s own inventory
+tests -- applied here to a new *data-ownership* boundary rather than a new *call-site* boundary.
+
+The one real outbound YouTube call this phase makes (`getPublicChannelSnapshot`,
+`src/lib/youtube-read-gateway/data-api.ts`) is a new function on the existing single read gateway
+(`docs/decisions/0007-youtube-read-gateway.md`), never a new client or a direct `googleapis` import
+-- confirming that gateway's own design already generalizes to reading an arbitrary, non-owned
+channel's public data by explicit id, which this phase needed and which nothing before it had
+exercised.
