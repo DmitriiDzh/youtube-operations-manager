@@ -330,14 +330,16 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * review -- the two call sites had already started to drift cosmetically).
      *
      * Deliberately does NOT call `getWatchlistEntry`/`listEvidence` above -- an earlier version did
-     * (concurrently, via `Promise.all`), but independent review (round 2) found that still ran the
-     * existence check against `deps.getResearchChannelById` twice (once inside each), which both
-     * wasted a round-trip and opened a race window (a `removeFromWatchlist` landing between the two
-     * independent reads could make one branch see the channel and the other not) -- and the two
-     * calls' own `RESEARCH_CHANNEL_NOT_AVAILABLE` errors carry different `details` key names
-     * (`channelId` vs `researchChannelId`), so whichever happened to reject first made the response
-     * shape non-deterministic. A single existence check here, feeding both branches, closes both
-     * gaps at once.
+     * (concurrently, via `Promise.all`), but independent review (round 2) found the actual defect
+     * was TWO INDEPENDENT existence checks (`deps.getResearchChannelById` called once inside each
+     * sibling function), not the concurrency itself: that duplication wasted a round-trip and opened
+     * a race window (a `removeFromWatchlist` landing between the two independent reads could make
+     * one branch see the channel and the other not), and the two calls' own
+     * `RESEARCH_CHANNEL_NOT_AVAILABLE` errors carried different `details` key names (`channelId` vs
+     * `researchChannelId`), making the response shape depend on which one happened to reject first.
+     * A single existence check below, feeding both branches, closes both gaps -- the two reads
+     * below are sequential only because `listResearchEvidenceByChannel` has no reason to run at all
+     * once the channel is already known not to exist, not because concurrency is unsafe per se.
      */
     async getWatchlistEntryContext(input: unknown): Promise<{ channel: ResearchChannel; evidence: ResearchEvidence[] }> {
       const parsedInput = parseWithSchema(getWatchlistEntryInputSchema, input, "get watchlist entry context input");

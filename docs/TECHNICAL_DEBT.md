@@ -917,6 +917,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-58 | `registerExternalArtifact`'s `referenceKind: "url"` accepted any non-empty string, not just an actual URL (label-only enforcement); `external_artifact_id` remains intentionally opaque | none blocking | `url` half RESOLVED, 2026-09-24; `external_artifact_id` half OPEN by design |
 | RISK-59 | MCP `tools/list` rendering of a ZodEffects (`.refine()`-based) `inputSchema` had not been verified end-to-end | none blocking | RESOLVED, 2026-09-25 |
 | RISK-60 | `write_channel_select`/`auth_user_select` mutate global, not per-connection, active-channel state -- a race once multiple agent connections (BL-091) operate concurrently | none blocking yet | OPEN |
+| RISK-61 | `market-intelligence`'s `getWatchlistEntry`/`listEvidence` throw `RESEARCH_CHANNEL_NOT_AVAILABLE` with different `details` key names (`channelId` vs `researchChannelId`) for the same condition -- the two still-used Web API routes forward this verbatim | none blocking, cosmetic | OPEN |
 
 ## RISK-53 — `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` — RESOLVED, 2026-09-24
 
@@ -1004,6 +1005,17 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Required remediation (not yet scheduled):** either (a) make active-channel/active-identity state per-connection rather than a single global row, or (b) restrict `write_channel_select`/`auth_user_select` to an operator-only surface (never callable by a zoned agent connection). Needs an explicit owner decision — this entry exists so that decision is not lost, not to imply either option is already chosen.
 - **Gate(s):** none yet assigned; relevant once genuinely concurrent multi-agent operation is in real use.
 - **Approval required from:** project owner, before either remediation option is implemented.
+- **Status:** OPEN, tracked.
+
+## RISK-61 — `market-intelligence`'s `getWatchlistEntry`/`listEvidence` disagree on their `RESEARCH_CHANNEL_NOT_AVAILABLE` `details` key — OPEN, 2026-09-26
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `getWatchlistEntry` (`details: { channelId }`) and `listEvidence` (`details: { researchChannelId }`); `src/app/api/market-intelligence/channels/[channelId]/route.ts` and `.../[channelId]/evidence/route.ts`, both of which forward `error.details` verbatim into their JSON response.
+- **Found during:** independent review (round 3) of Phase 9 slice 4 (`docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`) -- that slice's own `getWatchlistEntryContext` was written specifically to close this exact inconsistency for the new MCP/CLI surface (a single existence check, one `details` shape), which highlighted that the two original functions it replaced calling separately (still used directly by the Web API routes above) still disagree with each other.
+- **Actual risk:** cosmetic only -- a Web UI/API consumer hitting the channel route vs. the evidence route for the same unwatched channel sees two different `details` key names for the identical logical error. No safety, data-integrity, or security consequence; `error.code` (`RESEARCH_CHANNEL_NOT_AVAILABLE`) is stable either way.
+- **Why not fixed as part of slice 4:** `getWatchlistEntry`/`listEvidence` are already-shipped, already-merged Phase 9 slice-1 functions powering the Web UI's own Research tab and its API routes -- changing their `details` shape is a behavior change to already-reviewed, unrelated code, out of slice 4's own stated scope (`docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md` §5/§6).
+- **Required remediation (not yet scheduled):** pick one `details` key (`channelId`, matching `getWatchlistEntryContext`'s own choice) and use it in both functions -- a small, independent follow-up, not gated on anything else.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2) -- a single-file, backward-compatible-in-substance fix.
 - **Status:** OPEN, tracked.
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

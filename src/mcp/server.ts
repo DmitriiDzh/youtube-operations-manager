@@ -1473,9 +1473,12 @@ export function createMcpToolHandlers(
 
     /**
      * Single-channel deep dive: one watchlisted channel's own record plus its full evidence
-     * history. Fails with `RESEARCH_CHANNEL_NOT_AVAILABLE` (from `getWatchlistEntry`) if the given
-     * `channelId` is not on the watchlist -- `listEvidence` is never called for a channel that
-     * doesn't exist.
+     * history, via the market-intelligence module's own single `getWatchlistEntryContext` call
+     * (one existence check feeding both the channel and evidence lookups -- an earlier version of
+     * this handler called `getWatchlistEntry`/`listEvidence` separately, found by independent
+     * review to double the existence check and risk a non-deterministic error shape). Fails with
+     * `RESEARCH_CHANNEL_NOT_AVAILABLE` (`details: { channelId }`) if the given `channelId` is not
+     * on the watchlist.
      */
     async queryMarketIntelligence(input: unknown): Promise<ToolResponse> {
       const parsedInput = getWatchlistEntryInputSchema.safeParse(input);
