@@ -187,14 +187,17 @@ export function formatWatchTimeHours(minutes: number): string {
 /**
  * Studio-parity Slice O2 (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §2.4) -- formats an
  * ISO `YYYY-MM-DD` date for the Overview chart's hover tooltip, matching real Studio's own
- * "Weekday, Mon D, YYYY" wording (e.g. "Sun, Sep 6, 2026"). Parses the date's own UTC components
- * directly rather than `new Date(iso)` + local-timezone formatting, so the displayed weekday never
- * shifts by one day depending on the viewer's own timezone offset from UTC.
+ * "Weekday, Mon D" wording (e.g. "Sun, Sep 6"). Shortened 2026-09-26 (owner instruction, Telegram)
+ * to drop the year -- kept as its own Studio-parity format, deliberately NOT the app-wide
+ * DD.MM.YYYY convention (`@/lib/shared-formatting`), since this specifically mirrors Studio's own
+ * chart-tooltip wording rather than this app's general date display. Parses the date's own UTC
+ * components directly rather than `new Date(iso)` + local-timezone formatting, so the displayed
+ * weekday never shifts by one day depending on the viewer's own timezone offset from UTC.
  */
 export function formatChartDate(isoDate: string): string {
   const [year, month, day] = isoDate.split("-").map(Number);
   const date = new Date(Date.UTC(year, month - 1, day));
-  return date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+  return date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
 }
 
 export function zeroFillDailySeries<T extends { date: string }>(

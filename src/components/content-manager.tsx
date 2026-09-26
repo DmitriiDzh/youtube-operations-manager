@@ -41,7 +41,12 @@ type PrivacyFilter = "all" | "public" | "unlisted" | "private";
 // `status.publishAt` (a distinct field from `publishedAt`, only present for a scheduled video);
 // otherwise there is nothing to show.
 function formatPublishColumn(video: SyncedVideo): string {
-  if (video.privacyStatus === "public") return formatDisplayDate(video.publishedAt);
+  // `publishedAt` is typed as a non-nullable `string`, but the read gateway can still hand back
+  // `""` for a malformed/incomplete API response (youtube-read-gateway/data-api.ts's own
+  // `item.snippet.publishedAt ?? ""` fallback) -- the truthy guard here preserves the pre-existing
+  // "show a dash rather than 'Invalid date'" behavior for that case (independent review,
+  // 2026-09-26).
+  if (video.privacyStatus === "public") return video.publishedAt ? formatDisplayDate(video.publishedAt) : "—";
   if (video.publishAt) return formatDisplayDate(video.publishAt);
   return "—";
 }

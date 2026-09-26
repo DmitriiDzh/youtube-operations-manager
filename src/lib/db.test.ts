@@ -990,15 +990,23 @@ test("initializeDatabaseSchema: an existing pre-versioning database (baseline ta
     await client.execute(
       "INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('UC_PREV', 'x', 'UU_PREV')"
     );
+    // Owner instruction, 2026-09-26 (Content tab's "Publish" column) -- same ADD-COLUMN
+    // re-apply scenario, two migrations later (v21, videos.publish_at), checked in the same
+    // INSERT as v19's own duration_seconds column above.
     await client.execute(
-      "INSERT INTO videos (id, channel_id, title, description, published_at, privacy_status, thumbnails_json, localizations_json, duration_seconds) " +
-        "VALUES ('v_prev', 'UC_PREV', 't', '', '2026-01-01T00:00:00Z', 'public', '{}', '{}', 630)"
+      "INSERT INTO videos (id, channel_id, title, description, published_at, privacy_status, thumbnails_json, localizations_json, duration_seconds, publish_at) " +
+        "VALUES ('v_prev', 'UC_PREV', 't', '', '2026-01-01T00:00:00Z', 'private', '{}', '{}', 630, '2026-10-15T09:00:00.000Z')"
     );
-    const durationRow = await client.execute("SELECT duration_seconds FROM videos WHERE id = 'v_prev'");
+    const videoRow = await client.execute("SELECT duration_seconds, publish_at FROM videos WHERE id = 'v_prev'");
     assert.equal(
-      durationRow.rows[0]?.duration_seconds,
+      videoRow.rows[0]?.duration_seconds,
       630,
       "a later migration (v19, ADD COLUMN) must still apply correctly on the pre-versioning re-apply path"
+    );
+    assert.equal(
+      videoRow.rows[0]?.publish_at,
+      "2026-10-15T09:00:00.000Z",
+      "a later migration (v21, ADD COLUMN) must still apply correctly on the pre-versioning re-apply path"
     );
   }));
 
@@ -1046,6 +1054,49 @@ test("videos.duration_seconds round-trips through the real Drizzle schema, and s
     const byId = new Map(rows.map((v) => [v.id, v]));
     assert.equal(byId.get("v_with_duration")?.durationSeconds, 630);
     assert.equal(byId.get("v_without_duration")?.durationSeconds, null);
+  }));
+
+// Proves the schema column and its mapping (`mapStoredVideo`'s `publishAt: row.publishAt`) round
+// trip correctly, and that a video with no scheduled publish time stays `null` rather than being
+// fabricated as an empty string or copied from `publishedAt`.
+test("videos.publish_at round-trips through the real Drizzle schema, and stays null when never provided", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(channels).values({
+      id: "UC_B",
+      title: "Test Channel",
+      thumbnailUrl: null,
+      uploadsPlaylistId: "UU_TEST_B",
+      connectedUserId: null,
+    });
+
+    await isolatedDb.insert(videos).values({
+      id: "v_scheduled",
+      channelId: "UC_B",
+      title: "Title",
+      description: "",
+      publishedAt: "2026-01-01T00:00:00.000Z",
+      privacyStatus: "private",
+      thumbnailsJson: "{}",
+      localizationsJson: "{}",
+      publishAt: "2026-10-15T09:00:00.000Z",
+    });
+    await isolatedDb.insert(videos).values({
+      id: "v_not_scheduled",
+      channelId: "UC_B",
+      title: "Title",
+      description: "",
+      publishedAt: "2026-01-01T00:00:00.000Z",
+      privacyStatus: "public",
+      thumbnailsJson: "{}",
+      localizationsJson: "{}",
+    });
+
+    const rows = await isolatedDb.select().from(videos).where(eq(videos.channelId, "UC_B"));
+    const byId = new Map(rows.map((v) => [v.id, v]));
+    assert.equal(byId.get("v_scheduled")?.publishAt, "2026-10-15T09:00:00.000Z");
+    assert.equal(byId.get("v_not_scheduled")?.publishAt, null);
   }));
 
 // AC-SCHEMA-04

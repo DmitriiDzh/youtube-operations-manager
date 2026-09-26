@@ -49,7 +49,15 @@ export function createVideoDetailsLocalCacheAdapter() {
             commentCount: current.commentCount,
             likeCount: current.likeCount,
             durationSeconds: current.durationSeconds,
-            publishAt: args.after.publishAt ?? current.publishAt,
+            // No `?? current.publishAt` fallback (unlike `privacyStatus` above, whose real-world
+            // null case is negligible): `args.after.publishAt` is a fresh, authoritative read
+            // straight from YouTube (adapters/youtube-api.ts), and `null` there is a genuine,
+            // meaningful fact -- "YouTube confirms this video is not currently scheduled" (either
+            // now public, or its schedule was cancelled) -- not "unknown, keep the old value".
+            // Falling back to `current.publishAt` would silently keep a stale scheduled date after
+            // it stopped being true, the exact wrong-direction version of the bug this field's
+            // whole merge-preservation exists to prevent (independent review, 2026-09-26).
+            publishAt: args.after.publishAt,
           },
         ],
         // Deliberately the ORIGINAL row's own lastSyncedAt, not "now" -- this is a targeted
