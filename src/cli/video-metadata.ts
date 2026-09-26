@@ -22,6 +22,7 @@ import { createAnalyticsCore, type AnalyticsCore } from "@/lib/analytics";
 import { createAiLocalizationCore, type AiLocalizationCore } from "@/lib/ai-localization";
 import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent-operations";
 import { createAssetCatalogCore, type AssetCatalogCore } from "@/lib/asset-catalog";
+import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
 import {
   createAgentConnectionsCore,
   type AgentConnectionsCoreSubset,
@@ -80,6 +81,11 @@ type AgentOperationsCliCoreSubset = Pick<
   | "listAssetPerformance"
 >;
 type AssetCatalogCliCoreSubset = Pick<AssetCatalogCore, "registerAsset">;
+// Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md) -- CLI parity for the MCP
+// query_market_intelligence/query_competitors tools. Wired directly here, not through
+// AgentOperationsCliCoreSubset above -- see MarketIntelligenceCoreSubset's own doc comment in
+// src/mcp/server.ts for why.
+type MarketIntelligenceCliCoreSubset = Pick<MarketIntelligenceCore, "listWatchlist" | "getWatchlistEntryContext">;
 
 loadEnvConfig(process.cwd());
 
@@ -144,7 +150,9 @@ export type ParsedArgs = {
     | "list-operations-files"
     | "get-operations-file"
     | "find-comparable-videos"
-    | "list-asset-performance";
+    | "list-asset-performance"
+    | "competitors"
+    | "market-intelligence";
   flags: Record<string, string | boolean>;
 };
 
@@ -188,6 +196,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
       "get-operations-file",
       "find-comparable-videos",
       "list-asset-performance",
+      "competitors",
+      "market-intelligence",
     ],
     asset: ["register"],
   };
@@ -428,6 +438,11 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   // agent list-asset-performance (slice L, owner spec §16): local reads only (asset catalog +
   // sync mirror + local analytics rows), never a live YouTube call, never mutates anything.
   "list-asset-performance",
+  // agent competitors/market-intelligence (Phase 9 slice 4,
+  // docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md): local reads only over the market-intelligence
+  // module's own watchlist/evidence storage, never a live YouTube call, never mutates anything.
+  "competitors",
+  "market-intelligence",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -508,6 +523,7 @@ export async function runCliCommand(args: {
   agentOperationsCore?: AgentOperationsCliCoreSubset;
   assetCatalogCore?: AssetCatalogCliCoreSubset;
   agentConnectionsCore?: AgentConnectionsCoreSubset;
+  marketIntelligenceCore?: MarketIntelligenceCliCoreSubset;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
 }): Promise<number> {
@@ -524,6 +540,7 @@ export async function runCliCommand(args: {
   const agentOperationsCore = args.agentOperationsCore ?? createAgentOperationsCore();
   const assetCatalogCore = args.assetCatalogCore ?? createAssetCatalogCore();
   const agentConnectionsCore = args.agentConnectionsCore ?? createAgentConnectionsCore();
+  const marketIntelligenceCore = args.marketIntelligenceCore ?? createMarketIntelligenceCore();
   const writeStdout =
     args.writeStdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const writeStderr =
@@ -840,6 +857,25 @@ export async function runCliCommand(args: {
             ? metricNamesFlag.split(",").map((entry) => entry.trim()).filter(Boolean)
             : undefined,
         });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md) -- both read the
+      // market-intelligence module's own watchlist/evidence storage directly via
+      // marketIntelligenceCore, not agentOperationsCore (see MarketIntelligenceCliCoreSubset's own
+      // doc comment above). Global data, never channel-scoped -- no channelId/assertActiveChannel
+      // check, like
+      // "list-operations-files"/"get-operations-file" above.
+      if (parsedArgs.command === "competitors") {
+        const result = await marketIntelligenceCore.listWatchlist();
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "market-intelligence") {
+        const requestedChannelId = requiredStringFlag(parsedArgs.flags, "channelId");
+        const result = await marketIntelligenceCore.getWatchlistEntryContext({ channelId: requestedChannelId });
         writeStdout(serializeSuccess(result));
         return 0;
       }

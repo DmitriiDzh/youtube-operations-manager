@@ -11,6 +11,7 @@ import {
   addToWatchlistOutputSchema,
   fetchPublicSnapshotInputSchema,
   fetchPublicSnapshotOutputSchema,
+  getWatchlistEntryContextOutputSchema,
   getWatchlistEntryInputSchema,
   getWatchlistEntryOutputSchema,
   listEvidenceInputSchema,
@@ -318,6 +319,47 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       const row = rows.find((candidate) => candidate.id === id)!;
 
       return parseWithSchema(fetchPublicSnapshotOutputSchema, toResearchEvidence(row), "fetch public snapshot output");
+    },
+
+    /**
+     * Single-channel deep dive: one watchlisted channel's own record plus its full evidence
+     * history, by channelId. Added for Phase 9 slice 4
+     * (`docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`) so MCP (`query_market_intelligence`) and CLI
+     * (`agent market-intelligence`) share one implementation of this two-call join, instead of
+     * each independently re-orchestrating `getWatchlistEntry`/`listEvidence` (found by independent
+     * review -- the two call sites had already started to drift cosmetically).
+     *
+     * Deliberately does NOT call `getWatchlistEntry`/`listEvidence` above -- an earlier version did
+     * (concurrently, via `Promise.all`), but independent review (round 2) found the actual defect
+     * was TWO INDEPENDENT existence checks (`deps.getResearchChannelById` called once inside each
+     * sibling function), not the concurrency itself: that duplication wasted a round-trip and opened
+     * a race window (a `removeFromWatchlist` landing between the two independent reads could make
+     * one branch see the channel and the other not), and the two calls' own
+     * `RESEARCH_CHANNEL_NOT_AVAILABLE` errors carried different `details` key names (`channelId` vs
+     * `researchChannelId`), making the response shape depend on which one happened to reject first.
+     * A single existence check below, feeding both branches, closes both gaps -- the two reads
+     * below are sequential only because `listResearchEvidenceByChannel` has no reason to run at all
+     * once the channel is already known not to exist, not because concurrency is unsafe per se.
+     */
+    async getWatchlistEntryContext(input: unknown): Promise<{ channel: ResearchChannel; evidence: ResearchEvidence[] }> {
+      const parsedInput = parseWithSchema(getWatchlistEntryInputSchema, input, "get watchlist entry context input");
+
+      const channelRow = await deps.getResearchChannelById(parsedInput.channelId);
+      if (!channelRow) {
+        throw new DomainError({
+          code: "RESEARCH_CHANNEL_NOT_AVAILABLE",
+          message: "No watchlist entry for the requested channel",
+          details: { channelId: parsedInput.channelId },
+        });
+      }
+
+      const evidenceRows = await deps.listResearchEvidenceByChannel(parsedInput.channelId);
+
+      return parseWithSchema(
+        getWatchlistEntryContextOutputSchema,
+        { channel: toResearchChannel(channelRow), evidence: evidenceRows.map(toResearchEvidence) },
+        "get watchlist entry context output"
+      );
     },
   };
 }

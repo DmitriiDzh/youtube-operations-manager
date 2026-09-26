@@ -78,6 +78,8 @@ import {
   listMetricsInputSchema,
   listWeeklyReportsInputSchema,
 } from "@/lib/analytics/schemas";
+import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
+import { getWatchlistEntryInputSchema } from "@/lib/market-intelligence/schemas";
 
 loadEnvConfig(process.cwd());
 
@@ -132,6 +134,16 @@ type AnalyticsCoreSubset = Pick<
   | "listWeeklyReports"
   | "getWeeklyReport"
 >;
+
+// Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md): registered directly here, not
+// through `agentOperationsCore` -- `query_market_intelligence`/`query_competitors` are plain
+// (or single-merge) reads over the market-intelligence module's own watchlist/evidence storage
+// with no agent-context reshaping needed, and keeping this dependency in the MCP/CLI interface
+// layer (which already imports every domain module's own core factory directly) avoids adding
+// `market-intelligence` as a hard dependency of `agent-operations`'s own service layer
+// (`docs/roadmap/plans/PHASE_9_PLAN.md` §5's module-independence rule). Global data, never
+// channel-scoped -- no `assertMcpDeviceAvailable` or active-channel check applies to either.
+type MarketIntelligenceCoreSubset = Pick<MarketIntelligenceCore, "listWatchlist" | "getWatchlistEntryContext">;
 
 // BL-075/BL-078 (docs/roadmap/BACKLOG.md): the same "generate proposals" -> "create Change Set"
 // two-step workflow the Web UI's own ai-localization routes already expose, now reachable by an
@@ -220,6 +232,8 @@ type McpToolHandlers = {
   agentGetOperationsFile: (input: unknown) => Promise<ToolResponse>;
   agentFindComparableVideos: (input: unknown) => Promise<ToolResponse>;
   agentListAssetPerformance: (input: unknown) => Promise<ToolResponse>;
+  queryCompetitors: (input: unknown) => Promise<ToolResponse>;
+  queryMarketIntelligence: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -416,6 +430,10 @@ const playlistUpdateToolInputSchema = z
     }
   );
 
+// Phase 9 slice 4 -- `query_competitors` takes no parameters (a plain roster read); `.strict()` so
+// an unexpected field is rejected loudly, matching every other input schema in this codebase.
+const queryCompetitorsInputSchema = z.object({}).strict();
+
 export function createMcpToolHandlers(
   core: VideoMetadataCoreSubset & PlaylistManagementCoreSubset,
   auth: {
@@ -436,7 +454,8 @@ export function createMcpToolHandlers(
   channelAccessCore: ChannelAccessCore = createChannelAccessCore(),
   analyticsCore: AnalyticsCoreSubset = createAnalyticsCore(),
   aiLocalizationCore: AiLocalizationCoreSubset = createAiLocalizationCore(),
-  agentOperationsCore: AgentOperationsCoreSubset = createAgentOperationsCore()
+  agentOperationsCore: AgentOperationsCoreSubset = createAgentOperationsCore(),
+  marketIntelligenceCore: MarketIntelligenceCoreSubset = createMarketIntelligenceCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -1432,6 +1451,48 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    // Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md) -- calls
+    // `marketIntelligenceCore` directly, not `agentOperationsCore` (see `MarketIntelligenceCoreSubset`'s
+    // own doc comment above for why). Global data, never channel-scoped -- no
+    // `assertActiveChannel`/`assertMcpDeviceAvailable` check, no `credentialRef` (neither call makes
+    // a live YouTube request).
+    async queryCompetitors(input: unknown): Promise<ToolResponse> {
+      const parsedInput = queryCompetitorsInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const result = await marketIntelligenceCore.listWatchlist();
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * Single-channel deep dive: one watchlisted channel's own record plus its full evidence
+     * history, via the market-intelligence module's own single `getWatchlistEntryContext` call
+     * (one existence check feeding both the channel and evidence lookups -- an earlier version of
+     * this handler called `getWatchlistEntry`/`listEvidence` separately, found by independent
+     * review to double the existence check and risk a non-deterministic error shape). Fails with
+     * `RESEARCH_CHANNEL_NOT_AVAILABLE` (`details: { channelId }`) if the given `channelId` is not
+     * on the watchlist.
+     */
+    async queryMarketIntelligence(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getWatchlistEntryInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const result = await marketIntelligenceCore.getWatchlistEntryContext(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -1562,6 +1623,11 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // Slice L -- a pure local read (asset catalog + local sync mirror + local analytics rows,
     // never a live YouTube call) -- ungated, like `agentFindComparableVideos` above.
     agentListAssetPerformance: handlers.agentListAssetPerformance,
+    // Phase 9 slice 4 -- pure local reads over the market-intelligence module's own watchlist/
+    // evidence storage, never a live YouTube call, never a mutation -- ungated, same
+    // classification as agentListAssets above.
+    queryCompetitors: handlers.queryCompetitors,
+    queryMarketIntelligence: handlers.queryMarketIntelligence,
   };
 }
 
@@ -2159,6 +2225,32 @@ export function createMcpServer(
       inputSchema: listAssetPerformanceSdkInputSchema,
     },
     (args) => handlers.agentListAssetPerformance(args)
+  );
+
+  // Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md) -- fulfils the two capability
+  // names PLANNED_FUTURE_CAPABILITIES reserved since Phase 7 (src/lib/agent-operations/contracts.ts),
+  // using these exact literal tool names rather than an `agent_`-prefixed pair. Both are pure local
+  // reads over the market-intelligence module's own watchlist/evidence storage, never a live
+  // YouTube call, never channel-scoped (this data is global, about channels the operator does not
+  // necessarily own).
+  registerTool(
+    "query_competitors",
+    {
+      description:
+        "List every channel currently on the research watchlist (channelId, handleOrUrl, reason it was added, addedAt) -- no evidence attached, just the roster. A local read only, never a live YouTube call. Global data, not scoped to any owned channel -- these are channels the operator does not necessarily own (docs/roadmap/plans/PHASE_9_PLAN.md).",
+      inputSchema: queryCompetitorsInputSchema,
+    },
+    (args) => handlers.queryCompetitors(args)
+  );
+
+  registerTool(
+    "query_market_intelligence",
+    {
+      description:
+        "Single-channel deep dive into the research watchlist: one watchlisted channel's own record (channelId, handleOrUrl, reason, addedAt) plus its full evidence history (each row's observation, source, confidence, collectedAt), by channelId. Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. A local read only, never a live YouTube call. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (docs/roadmap/plans/PHASE_9_PLAN.md §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (this vocabulary is a known, still-open design question, docs/roadmap/plans/PHASE_9_PLAN.md §8).",
+      inputSchema: getWatchlistEntryInputSchema,
+    },
+    (args) => handlers.queryMarketIntelligence(args)
   );
 
   return server;

@@ -1419,7 +1419,7 @@ content-proposal/artifact registration, a Codex operations-workspace template, a
 review -- **which of these is actually implemented as of any given moment is tracked exclusively
 in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here**.
 
-## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-3
+## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4
 
 Owner instruction, Telegram 2026-09-26: an explicit assignment to research, plan, and begin
 implementing Phase 9 (`docs/roadmap/FUTURE_PHASES.md` §5) as its own feature branch, superseding
@@ -1447,3 +1447,17 @@ The one real outbound YouTube call this phase makes (`getPublicChannelSnapshot`,
 -- confirming that gateway's own design already generalizes to reading an arbitrary, non-owned
 channel's public data by explicit id, which this phase needed and which nothing before it had
 exercised.
+
+**Slice 4 (`docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`, 2026-09-26) -- agent-facing MCP/CLI
+surface, fulfilling the two capability names `agent-operations` reserved since Phase 7
+(`query_market_intelligence`/`query_competitors`).** Registered directly in `src/mcp/server.ts`/
+`src/cli/video-metadata.ts` against `createMarketIntelligenceCore()`, deliberately **not** through
+a new function in `agent-operations`'s own service layer the way slice C/K/L wrap `analytics`/
+`comparable-content`/`asset-performance`. `PHASE_9_PLAN.md` §5's module-independence rule forbids
+adding `market-intelligence` as a hard dependency of another module's *service* layer; keeping this
+dependency confined to the MCP/CLI *interface* layer (which already imports every domain module's
+own core factory directly, e.g. `analyticsCore`) avoids that without losing anything -- neither tool
+needs slice C/K/L's richer "agent context" reshaping. `agent-operations`'s own `AGENT_CAPABILITIES`
+still gains two entries under a new `market_intelligence` domain, following the same
+"pre-existing tool, registered here for capability-discovery completeness" pattern already used for
+`channel_context.list_channels`/`analytics.query_data_quality`.

@@ -253,6 +253,29 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Owner spec §16: joins the existing asset catalog (`linkedVideoId` -- an operator/agent-asserted 'this asset was used on this video' association, never verified against YouTube and carrying no time range) against each linked video's own already-collected performance data. Always reports each video's LIFETIME totals (viewCount/likeCount/commentCount/durationSeconds, each independently null if never synced, plus `lifetimeCountersAsOf` -- when the channel sync last refreshed them, NOT when analytics were collected); an OPTIONAL age-aligned value (`performanceMetric` + a REQUIRED, caller-supplied `performanceDayOffset` -- never derived from wall-clock 'now', reusing the same shared age-alignment helper as comparable_content.find_comparable_videos, never a second implementation) is additionally computed only when both are given, and is honestly `null` (never excluded, never fabricated) for a video with real data at later days but no day-0 coverage -- a normal case for a video published before regular collection began. `sort: \"lifetimeViewCount\"` ranks by a NON-age-fair total that structurally favors older videos (more time to accumulate views) -- never itself a 'performed better' signal. This is a JOIN, not a FILTER -- a null performance value is still a reportable row, never grounds for exclusion; only an asset's own broken link (unlinked, or its linkedVideoId not resolving to a video on the SAME channel -- one combined count, since a channel-scoped read cannot further distinguish 'never synced' from 'on another channel') is excluded, counted in `excludedForMissingLink`, never silently dropped. Does NOT support thumbnail-CTR/impressions-based questions ('which thumbnails were used by high-CTR videos') -- this application's own analytics collection never fetches YouTube's impressions/CTR metrics at all, and this is never approximated via card/annotation click-through metrics (a different signal). Does NOT support metadata/version linkage (no temporal precision on `linkedVideoId`) or experiment/outcome linkage (Phase 10, not built yet). Never reads Content Proposal reference associations (`content_proposal_artifacts`) -- a structurally different, draft/unactioned relationship, never conflated with actual asset usage. `credentialRef` is optional and, if omitted, resolved automatically to the caller's own active identity -- only actually used when `performanceMetric` is requested. `limit` is silently clamped, never rejected. Requires channelId to be the caller's currently-active channel.",
   },
+  // Phase 9 slice 4 (`docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`) -- fulfils the two capability
+  // names reserved in `PLANNED_FUTURE_CAPABILITIES` since Phase 7. Both registered directly as
+  // `query_market_intelligence`/`query_competitors` MCP tools in `src/mcp/server.ts` calling
+  // `createMarketIntelligenceCore()` (`src/lib/market-intelligence/`), NOT wrapped by a new
+  // function in this module -- same "pre-existing tool, registered here for capability-discovery
+  // completeness" pattern as `channel_context.list_channels`/`analytics.query_data_quality` above.
+  // Neither is channel-scoped (research data is global, about channels the operator does not
+  // necessarily own) -- no `channelId`/active-channel check applies, same as
+  // `operations_workspace.list_files` above.
+  {
+    id: "market_intelligence.query_competitors",
+    domain: "market_intelligence",
+    permission: "READ",
+    description:
+      "List every channel currently on the research watchlist (id, handle/URL, reason it was added, when it was added) -- no evidence attached, just the roster. Implemented as the pre-existing `query_competitors` MCP tool/`agent competitors` CLI command (`src/lib/market-intelligence/`), not a new function. Local read only, never a live YouTube call. Global, not scoped to any owned channel -- this module's watchlist/evidence describe channels the operator does not necessarily own (AGENTS.md §F/`docs/roadmap/plans/PHASE_9_PLAN.md`).",
+  },
+  {
+    id: "market_intelligence.query_market_intelligence",
+    domain: "market_intelligence",
+    permission: "READ",
+    description:
+      "Single-channel deep dive into the research watchlist: one watchlisted channel's own record plus its full evidence history, by channelId. Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. Implemented as the pre-existing `query_market_intelligence` MCP tool/`agent market-intelligence` CLI command (`src/lib/market-intelligence/`), not a new function. Local read only, never a live YouTube call. Global, not scoped to any owned channel -- see market_intelligence.query_competitors above for the same caveat. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (`docs/roadmap/plans/PHASE_9_PLAN.md` §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (a known, still-open vocabulary question, `docs/roadmap/plans/PHASE_9_PLAN.md` §8).",
+  },
 ];
 
 

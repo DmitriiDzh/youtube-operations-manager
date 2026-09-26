@@ -98,6 +98,16 @@ export const listEvidenceOutputSchema = z
   })
   .strict();
 
+// Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md) -- the combined "channel + its
+// full evidence history" shape MCP's query_market_intelligence and CLI's `agent
+// market-intelligence` both return, via getWatchlistEntryContext's single implementation.
+export const getWatchlistEntryContextOutputSchema = z
+  .object({
+    channel: researchChannelSchema,
+    evidence: z.array(researchEvidenceSchema),
+  })
+  .strict();
+
 // Phase 9 slice 3 -- the one action in this module that makes a real outbound YouTube API call.
 export const fetchPublicSnapshotInputSchema = z
   .object({
