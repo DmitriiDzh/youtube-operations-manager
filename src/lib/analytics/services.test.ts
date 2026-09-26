@@ -392,6 +392,43 @@ test("collectMetrics: a fresh mark backed only by a run that never covered yeste
   assert.equal(analyticsCalls.length, 1);
 });
 
+// Independent test-suite audit (2026-09-26): the test above only exercises the DATE-RANGE half of
+// `genuineRunCoversExpectedDate`'s condition (`run.requestedStartDate <= expectedFreshThroughDate
+// && run.requestedEndDate >= expectedFreshThroughDate`) -- its recorded run's date range simply
+// never touches yesterday. The OTHER half of that same `&&` -- `(run.videoCount === 0 ||
+// run.upsertsIssued > 0)` -- had zero coverage: a run whose date range genuinely covers yesterday
+// but was itself a TOTAL FAILURE (attempted real videos, landed zero rows) must be treated
+// exactly the same as "no run at all," per the same owner principle this whole gate exists to
+// enforce (2026-09-25: a run that touched no real data never "genuinely completed").
+test("collectMetrics: a fresh mark backed only by a run that covers yesterday but was a total failure (zero upserts, non-zero videos) is treated as stale and retried", async () => {
+  const { services, channelAccess, analyticsCalls, lastAutoCollectedAtByChannel, collectionRuns } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+    now: new Date("2026-09-22T13:00:00Z"), // "yesterday" = 2026-09-21
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  lastAutoCollectedAtByChannel.set("UC_A", new Date("2026-09-22T12:30:00Z")); // today, after the boundary
+  collectionRuns.push({
+    channelId: "UC_A",
+    requestedStartDate: "2026-09-15",
+    requestedEndDate: "2026-09-21", // genuinely covers yesterday (2026-09-21) ...
+    videoCount: 1, // ... but every one of its videos failed ...
+    upsertsIssued: 0, // ... so zero rows actually landed: a total failure, not a genuine success.
+    skippedVideoIds: ["v1"],
+    ranAt: new Date("2026-09-22T12:30:00Z"),
+  });
+
+  const result = await services.collectMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-15",
+    endDate: "2026-09-21",
+  });
+
+  assert.equal(result.videoCount, 1, "the mark was not trusted -- a real collection ran instead of being refused");
+  assert.equal(analyticsCalls.length, 1);
+});
+
 // The daily-freshness gate must apply no matter WHICH caller triggers the second attempt (owner
 // instruction: "ни человеку, ни агенту, ни каким-то скриптам") -- exercised here as an
 // auto-collection marking the channel fresh, then a manual "Collect now" call for the same
