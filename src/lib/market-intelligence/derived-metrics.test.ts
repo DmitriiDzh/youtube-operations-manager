@@ -99,16 +99,23 @@ test("AC-9A-05: computeSnapshotVelocity reports partial_window and computes the 
   assert.equal(result.videoCount.value, 0);
 });
 
-test("AC-9A-11: computeSnapshotVelocity computes a real rate from 2+ snapshots that are ALL older than the requested window, never falsely reporting insufficient_history", () => {
+// Updated 2026-09-26 by round 2 of independent review, against round 1's own fix for this exact
+// scenario: round 1 correctly stopped this case from falsely reporting insufficient_history, but
+// asserted the wrong basis ("full_window") for it -- round 2 found that `full_window` requires
+// `latest` itself to be current relative to the window, which it is NOT here (latest is 60 days
+// old against a 30-day window). The requirement itself did not change: "must produce a real,
+// honestly-labeled rate, never insufficient_history" -- only which label is honest for this
+// specific scenario did (`AGENTS.md` §L: a requirement-derived correction, not "the impl doesn't
+// do this").
+test("AC-9A-11: computeSnapshotVelocity computes a real rate from 2+ snapshots that are ALL older than the requested window, reporting stale_latest (never falsely insufficient_history or full_window)", () => {
   const MS_PER_DAY = 24 * 60 * 60 * 1000;
   const now = new Date("2026-09-26T00:00:00.000Z");
   const ninetyDaysAgo = new Date(now.getTime() - 90 * MS_PER_DAY);
   const sixtyDaysAgo = new Date(now.getTime() - 60 * MS_PER_DAY);
   // Requested window is 30 days (cutoff = 30 days ago), but BOTH real snapshots (60 and 90 days
-  // ago) are older than that. An earlier version of this function picked its "earlier" endpoint
-  // from the full snapshot list including the latest one -- when every snapshot is already older
-  // than the cutoff, that pick coincided with `latest` itself (a zero span), incorrectly reporting
-  // insufficient_history despite 2 real, usable snapshots existing.
+  // ago) are older than that -- including `latest` itself, so this is NOT a reliable "last 30
+  // days" figure even though a real rate can still be computed over the true ~30-day span between
+  // the two snapshots.
   const snapshots: SnapshotWithTime[] = [
     { observedAt: ninetyDaysAgo, subscriberCount: 100, viewCount: 1000, videoCount: 5 },
     { observedAt: sixtyDaysAgo, subscriberCount: 130, viewCount: 1300, videoCount: 6 },
@@ -117,10 +124,33 @@ test("AC-9A-11: computeSnapshotVelocity computes a real rate from 2+ snapshots t
   const result = computeSnapshotVelocity(snapshots, 30, now);
 
   assert.notEqual(result.subscriberCount.basis, "insufficient_history");
-  assert.equal(result.subscriberCount.basis, "full_window");
+  assert.equal(result.subscriberCount.basis, "stale_latest");
   assert.equal(result.subscriberCount.value, 1); // (130-100)/30 real days
   assert.equal(result.viewCount.value, 10); // (1300-1000)/30
   assert.ok(Math.abs(result.videoCount.value! - 1 / 30) < 1e-9); // (6-5)/30
+});
+
+test("AC-9A-12: computeSnapshotVelocity ignores a candidate that ties latest's own (second-truncated) timestamp, using a genuinely earlier snapshot instead of falling back to insufficient_history", () => {
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  const now = new Date("2026-09-26T00:00:00.000Z");
+  const ninetyDaysAgo = new Date(now.getTime() - 90 * MS_PER_DAY);
+  const tiedInstant = new Date(now.getTime() - 60 * MS_PER_DAY);
+  // Two snapshots share the EXACT same stored instant (the real-world cause: observedAt is
+  // truncated to whole seconds by the DB column, so two captures within the same wall-clock
+  // second collide) -- one of them becomes `latest` (array order decides which, both are
+  // equally "latest" by timestamp). Round 2 of independent review found an earlier version
+  // discarded ALL history in this case (spanMs === 0 against the tied candidate), even though the
+  // genuinely distinct 90-day-old snapshot was perfectly usable.
+  const snapshots: SnapshotWithTime[] = [
+    { observedAt: ninetyDaysAgo, subscriberCount: 100, viewCount: 1000, videoCount: 5 },
+    { observedAt: tiedInstant, subscriberCount: 130, viewCount: 1300, videoCount: 6 },
+    { observedAt: tiedInstant, subscriberCount: 130, viewCount: 1300, videoCount: 6 },
+  ];
+
+  const result = computeSnapshotVelocity(snapshots, 7, now);
+
+  assert.notEqual(result.subscriberCount.basis, "insufficient_history");
+  assert.equal(result.subscriberCount.value, 1); // (130-100)/30 real days between the 90-day-old and the tied pair
 });
 
 test("computeSnapshotVelocity sorts out-of-order input snapshots by observedAt before choosing endpoints", () => {

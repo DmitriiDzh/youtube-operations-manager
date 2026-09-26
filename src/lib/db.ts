@@ -4484,8 +4484,10 @@ export async function insertMarketChannelSnapshot(
 }
 
 // Oldest first -- deliberately the opposite order from `listResearchEvidenceByChannel`'s
-// newest-first convention: this is the natural order for delta/velocity computation over time
-// (`derived-metrics.ts` consumes this list directly, walking it chronologically).
+// newest-first convention: this is the natural order `derived-metrics.ts`'s delta/velocity
+// functions expect once a future slice wires them up to a real read path (not yet done as of
+// slice 9A -- corrected 2026-09-26, independent review round 2, after an earlier version of this
+// comment claimed derived-metrics.ts already consumes this list, which no production code does).
 export async function listMarketChannelSnapshotsByChannel(
   researchChannelId: string,
   database: AppDb = db

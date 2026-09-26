@@ -100,12 +100,21 @@ const ALLOWED_IMPORTER_DIRS = [path.join(SRC_ROOT, "lib", "market-intelligence")
 // `Market(Channel|Video)Snapshot`-shaped exports (or their two raw table names) were ever added to
 // this list -- a probe file importing `insertMarketChannelSnapshot`/`marketChannelSnapshots`
 // directly from `@/lib/db` passed this test undetected, exactly the class of gap this test's own
-// dynamic derivation exists to prevent. Fixed by widening the pattern to match either shape, not
-// by hand-adding the new names (which would only defer the identical gap to the next new table).
+// dynamic derivation exists to prevent.
+//
+// Generalized further by independent review, round 2, 2026-09-26: hand-widening the pattern by
+// exact shape (`Research(Channel|Evidence)`, then also `Market(Channel|Video)Snapshot`) only defers
+// the identical gap to the NEXT new table this module ever adds (e.g. slice 9B's own
+// `market_intelligence_collection_runs`) -- every future table would need its own manual regex
+// addition, the same class of oversight this derivation exists to prevent in the first place.
+// Replaced with a plain substring match on "research" or "market" (case-insensitive) -- verified by
+// direct inspection that every one of this module's own db.ts exports contains one of these two
+// words, and that no OTHER export anywhere else in db.ts does (so this widening adds no false
+// positives) -- any future market-intelligence table/export automatically stays covered without
+// this file ever needing to change again for that reason.
 async function deriveForbiddenDbSymbols(): Promise<string[]> {
   const dbTsContent = await readFile(path.join(SRC_ROOT, "lib", "db.ts"), "utf8");
-  const pattern =
-    /\bexport\s+(?:async function|function|const)\s+(\w*(?:[Rr]esearch(?:Channel|Evidence)|[Mm]arket(?:Channel|Video)Snapshot)\w*)\b/g;
+  const pattern = /\bexport\s+(?:async function|function|const)\s+(\w*(?:[Rr]esearch|[Mm]arket)\w*)\b/g;
   const derived = new Set<string>();
   for (const match of dbTsContent.matchAll(pattern)) derived.add(match[1]);
   return [...derived, "research_channels", "research_evidence", "market_channel_snapshots", "market_video_snapshots"];
