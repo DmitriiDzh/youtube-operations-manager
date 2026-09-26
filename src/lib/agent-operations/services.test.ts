@@ -229,7 +229,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   const result = await services.getSystemCapabilities({});
 
   assert.equal(result.productVersion, "9.9.9");
-  assert.equal(result.agentApiVersion, "0.10.0");
+  assert.equal(result.agentApiVersion, "0.11.0");
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -292,16 +292,34 @@ test("capabilities includes system.get_capabilities itself, classified READ", as
   assert.equal(self!.domain, "system");
 });
 
-// AC-CAP-05: exactly the three future capabilities the owner's own spec §14 named as extension
-// points -- not more (scope creep into implying an unbuilt capability exists) and not fewer.
-test("plannedFutureCapabilities is exactly the three extension points from the owner's spec §14, no more no less", async () => {
+// AC-CAP-05: exactly one future capability remains from the owner's spec §14 -- Phase 10's
+// create_experiment_proposal. Updated 2026-09-26 (Phase 9 slice 4,
+// `docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`): the requirement itself changed, not that this
+// test was wrong -- query_market_intelligence/query_competitors are now real, implemented
+// capabilities (see the next test), so they must NOT still be reported as merely "planned."
+test("plannedFutureCapabilities is exactly the one remaining extension point from the owner's spec §14, no more no less", async () => {
   const { services } = createFixture();
   const result = await services.getSystemCapabilities({});
 
+  assert.deepEqual([...result.plannedFutureCapabilities].sort(), ["create_experiment_proposal"]);
+});
+
+// AC-CAP-05b: Phase 9 slice 4 -- the two previously-planned capabilities must now appear as real,
+// implemented entries under the market_intelligence domain, not merely removed from the planned
+// list (removing one without the other landing would leave the interface internally
+// inconsistent).
+test("capabilities includes market_intelligence.query_market_intelligence and .query_competitors, both READ", async () => {
+  const { services } = createFixture();
+  const result = await services.getSystemCapabilities({});
+
+  const marketIntelligenceCapabilities = result.capabilities.filter((c) => c.domain === "market_intelligence");
   assert.deepEqual(
-    [...result.plannedFutureCapabilities].sort(),
-    ["create_experiment_proposal", "query_competitors", "query_market_intelligence"].sort()
+    marketIntelligenceCapabilities.map((c) => c.id).sort(),
+    ["market_intelligence.query_competitors", "market_intelligence.query_market_intelligence"]
   );
+  for (const capability of marketIntelligenceCapabilities) {
+    assert.equal(capability.permission, "READ");
+  }
 });
 
 // AC-CAP-08: the input schema is a strict empty object -- an unexpected extra field must fail

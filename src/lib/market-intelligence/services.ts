@@ -11,6 +11,7 @@ import {
   addToWatchlistOutputSchema,
   fetchPublicSnapshotInputSchema,
   fetchPublicSnapshotOutputSchema,
+  getWatchlistEntryContextOutputSchema,
   getWatchlistEntryInputSchema,
   getWatchlistEntryOutputSchema,
   listEvidenceInputSchema,
@@ -123,7 +124,7 @@ type ServiceDependencies = {
 };
 
 export function createMarketIntelligenceServices(deps: ServiceDependencies) {
-  return {
+  const services = {
     /**
      * Adds a channel the operator does not (necessarily) own to the research watchlist
      * (`docs/roadmap/plans/PHASE_9_PLAN.md` §5/§7). `callOrigin` is SERVER-STAMPED at the
@@ -319,7 +320,38 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
       return parseWithSchema(fetchPublicSnapshotOutputSchema, toResearchEvidence(row), "fetch public snapshot output");
     },
+
+    /**
+     * Single-channel deep dive: one watchlisted channel's own record plus its full evidence
+     * history, by channelId. Added for Phase 9 slice 4
+     * (`docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`) so MCP (`query_market_intelligence`) and CLI
+     * (`agent market-intelligence`) share one implementation of this two-call join, instead of
+     * each independently re-orchestrating `getWatchlistEntry`/`listEvidence` (found by independent
+     * review -- the two call sites had already started to drift cosmetically).
+     *
+     * `getWatchlistEntry` and `listEvidence` run concurrently, not sequentially: `listEvidence`
+     * performs its own independent not-found check against the same `channelId` (mirroring
+     * `getWatchlistEntry`'s own), so there is no real data dependency between the two calls --
+     * awaiting them one after another bought nothing, it only doubled the latency. If the channel
+     * isn't on the watchlist, both reject with the identical `RESEARCH_CHANNEL_NOT_AVAILABLE`.
+     */
+    async getWatchlistEntryContext(input: unknown): Promise<{ channel: ResearchChannel; evidence: ResearchEvidence[] }> {
+      const parsedInput = parseWithSchema(getWatchlistEntryInputSchema, input, "get watchlist entry context input");
+
+      const [channel, evidenceResult] = await Promise.all([
+        services.getWatchlistEntry(parsedInput),
+        services.listEvidence({ researchChannelId: parsedInput.channelId }),
+      ]);
+
+      return parseWithSchema(
+        getWatchlistEntryContextOutputSchema,
+        { channel, evidence: evidenceResult.evidence },
+        "get watchlist entry context output"
+      );
+    },
   };
+
+  return services;
 }
 
 export type MarketIntelligenceServices = ReturnType<typeof createMarketIntelligenceServices>;

@@ -13,6 +13,7 @@ import type { ChannelAccessCore } from "@/lib/channel-access";
 import type { AnalyticsCore } from "@/lib/analytics";
 import type { AiLocalizationCore } from "@/lib/ai-localization";
 import type { AgentOperationsCore } from "@/lib/agent-operations";
+import type { MarketIntelligenceCore } from "@/lib/market-intelligence";
 import type { AgentConnectionsCoreSubset } from "@/lib/agent-connections";
 import { AGENT_API_VERSION } from "@/lib/agent-operations";
 import { rawSqlClient } from "@/lib/db";
@@ -2785,7 +2786,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
 
   assert.equal(result.isError, undefined);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
-  assert.equal(payload.agentApiVersion, "0.10.0");
+  assert.equal(payload.agentApiVersion, "0.11.0");
   assert.deepEqual(payload.grantedPermissions, ["READ", "DRAFT"]);
   assert.ok(payload.capabilities.some((c: { id: string }) => c.id === "system.get_capabilities"));
 });
@@ -2854,7 +2855,7 @@ function makeAgentOperationsCoreStub(): Pick<
       dataDomains: [],
       actionClasses: ["READ", "DRAFT", "APPROVE", "EXECUTE"],
       grantedPermissions: ["READ", "DRAFT"],
-      plannedFutureCapabilities: ["query_market_intelligence", "query_competitors", "create_experiment_proposal"],
+      plannedFutureCapabilities: ["create_experiment_proposal"],
       schemaVersions: { app: 14 },
     }),
     getChannelContext: async () => ({
@@ -4700,4 +4701,241 @@ test("MCP channel_sync passes through to the real handler when zoning allows the
   // proving the zone check did not block it, not that the whole call succeeded.
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
   assert.notEqual(payload?.error?.code, "AGENT_ZONE_VIOLATION");
+});
+
+// Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md) -- query_competitors/
+// query_market_intelligence, registered directly against marketIntelligenceCore (9th positional
+// arg), not agentOperationsCore. See MarketIntelligenceCoreSubset's own doc comment in server.ts
+// for why these two are wired this way instead of through agent-operations. Both handlers now
+// call the market-intelligence module's own single getWatchlistEntryContext (independent review,
+// 2026-09-26: MCP and CLI previously each re-orchestrated getWatchlistEntry+listEvidence
+// separately, a duplicated two-call join that had already started to drift cosmetically).
+function makeMarketIntelligenceCoreStub(): Pick<MarketIntelligenceCore, "listWatchlist" | "getWatchlistEntryContext"> {
+  return {
+    listWatchlist: async () => ({ channels: [] }),
+    getWatchlistEntryContext: async () => {
+      throw new DomainError({ code: "RESEARCH_CHANNEL_NOT_AVAILABLE", message: "No watchlist entry for the requested channel" });
+    },
+  };
+}
+
+test("MCP query_competitors returns an empty roster for an empty watchlist", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    makeMarketIntelligenceCoreStub()
+  );
+  const result = await handlers.queryCompetitors({});
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.deepEqual(payload.channels, []);
+});
+
+test("MCP query_competitors returns exactly one entry for a single-channel watchlist", async () => {
+  const marketIntelligenceCore = makeMarketIntelligenceCoreStub();
+  marketIntelligenceCore.listWatchlist = async () => ({
+    channels: [{ channelId: "UC_1", handleOrUrl: null, reason: "competitor in the same niche", addedAt: "2026-09-26T00:00:00.000Z" }],
+  });
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    marketIntelligenceCore
+  );
+  const result = await handlers.queryCompetitors({});
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.channels.length, 1);
+  assert.equal(payload.channels[0].channelId, "UC_1");
+});
+
+test("MCP query_competitors returns the watchlist unchanged for 2+ entries (AC-CAP-05b's own listWatchlist passthrough)", async () => {
+  const marketIntelligenceCore = makeMarketIntelligenceCoreStub();
+  marketIntelligenceCore.listWatchlist = async () => ({
+    channels: [
+      { channelId: "UC_1", handleOrUrl: null, reason: "competitor in the same niche", addedAt: "2026-09-26T00:00:00.000Z" },
+      { channelId: "UC_2", handleOrUrl: "@example", reason: "fast-growing format", addedAt: "2026-09-25T00:00:00.000Z" },
+    ],
+  });
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    marketIntelligenceCore
+  );
+  const result = await handlers.queryCompetitors({});
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.channels.length, 2);
+  assert.deepEqual(
+    payload.channels.map((c: { channelId: string }) => c.channelId),
+    ["UC_1", "UC_2"]
+  );
+});
+
+test("MCP query_competitors rejects an unexpected input field as validation_failed", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    makeMarketIntelligenceCoreStub()
+  );
+  const result = await handlers.queryCompetitors({ unexpectedField: "oops" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+});
+
+test("MCP query_market_intelligence requires channelId -- validation_failed before any store call", async () => {
+  let getWatchlistEntryContextCalled = false;
+  const marketIntelligenceCore = makeMarketIntelligenceCoreStub();
+  marketIntelligenceCore.getWatchlistEntryContext = async () => {
+    getWatchlistEntryContextCalled = true;
+    throw new Error("should not be called");
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    marketIntelligenceCore
+  );
+  const result = await handlers.queryMarketIntelligence({});
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+  assert.equal(getWatchlistEntryContextCalled, false);
+});
+
+test("MCP query_market_intelligence surfaces RESEARCH_CHANNEL_NOT_AVAILABLE for a channel not on the watchlist", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    makeMarketIntelligenceCoreStub()
+  );
+  const result = await handlers.queryMarketIntelligence({ channelId: "UC_not_watched" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "RESEARCH_CHANNEL_NOT_AVAILABLE");
+});
+
+test("MCP query_market_intelligence returns the channel's own record with an empty evidence array when none has been recorded yet", async () => {
+  const marketIntelligenceCore = makeMarketIntelligenceCoreStub();
+  marketIntelligenceCore.getWatchlistEntryContext = async (input: unknown) => {
+    const { channelId } = input as { channelId: string };
+    return {
+      channel: { channelId, handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z" },
+      evidence: [],
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    marketIntelligenceCore
+  );
+  const result = await handlers.queryMarketIntelligence({ channelId: "UC_1" });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.channel.channelId, "UC_1");
+  assert.deepEqual(payload.evidence, []);
+});
+
+test("MCP query_market_intelligence returns the channel's own record plus its full evidence history for 2+ evidence rows", async () => {
+  let capturedInput: unknown;
+  const marketIntelligenceCore = makeMarketIntelligenceCoreStub();
+  marketIntelligenceCore.getWatchlistEntryContext = async (input: unknown) => {
+    capturedInput = input;
+    return {
+      channel: { channelId: "UC_1", handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z" },
+      evidence: [
+        {
+          evidenceId: "ev1",
+          researchChannelId: "UC_1",
+          observation: "Public snapshot for \"Example\": ~1000 subscribers, 5000 total views, 10 videos",
+          source: "youtube.channels.list",
+          confidence: "high",
+          collectedAt: "2026-09-25T00:00:00.000Z",
+        },
+        {
+          evidenceId: "ev2",
+          researchChannelId: "UC_1",
+          observation: "manual observation: new upload format",
+          source: "manual observation",
+          confidence: null,
+          collectedAt: "2026-09-26T00:00:00.000Z",
+        },
+      ],
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    marketIntelligenceCore
+  );
+  const result = await handlers.queryMarketIntelligence({ channelId: "UC_1" });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.channel.channelId, "UC_1");
+  assert.equal(payload.evidence.length, 2);
+  assert.deepEqual(
+    payload.evidence.map((e: { evidenceId: string }) => e.evidenceId),
+    ["ev1", "ev2"]
+  );
+  assert.deepEqual(capturedInput, { channelId: "UC_1" });
 });

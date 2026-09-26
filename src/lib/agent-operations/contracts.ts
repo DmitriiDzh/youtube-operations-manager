@@ -58,7 +58,7 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts`) for the current, authoritative
  * list of capabilities.
  */
-export const AGENT_API_VERSION = "0.10.0";
+export const AGENT_API_VERSION = "0.11.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
@@ -80,6 +80,7 @@ export const AGENT_CAPABILITY_DOMAINS = [
   "operations_workspace",
   "comparable_content",
   "asset_performance",
+  "market_intelligence",
 ] as const;
 export type AgentCapabilityDomain = (typeof AGENT_CAPABILITY_DOMAINS)[number];
 
@@ -93,10 +94,12 @@ export type AgentCapabilityDescriptor = {
 /**
  * Data domains this interface can answer questions about right now. Grows exactly in step with
  * `AGENT_CAPABILITIES` below -- a domain is only listed once at least one real capability serves
- * it. `competitor_intelligence`/`experiment_history` are DELIBERATELY absent (owner spec §14/§20:
- * extension points only, Phase 9/10 not implemented) -- see `PLANNED_FUTURE_CAPABILITIES` for how
- * a caller distinguishes "not built yet" from "doesn't exist as a concept." Same const-array
- * rationale as `AGENT_CAPABILITY_DOMAINS` above (RISK-53).
+ * it. `experiment_history` is DELIBERATELY absent (owner spec §14/§20: an extension point only,
+ * Phase 10 not implemented) -- see `PLANNED_FUTURE_CAPABILITIES` for how a caller distinguishes
+ * "not built yet" from "doesn't exist as a concept." `competitor_intelligence` (Phase 9) is no
+ * longer absent -- Phase 9 slice 4 (`query_market_intelligence`/`query_competitors`) implements it,
+ * see `AGENT_CAPABILITIES`'s `market_intelligence` domain. Same const-array rationale as
+ * `AGENT_CAPABILITY_DOMAINS` above (RISK-53).
  */
 export const AGENT_DATA_DOMAINS = [
   "channel_metadata",
@@ -106,23 +109,24 @@ export const AGENT_DATA_DOMAINS = [
   "asset_metadata",
   "content_proposal_metadata",
   "operations_workspace_files",
+  "competitor_intelligence",
 ] as const;
 export type AgentDataDomain = (typeof AGENT_DATA_DOMAINS)[number];
 
 /**
  * Capabilities named in the owner's own spec (§14) that this interface is designed to eventually
- * expose, once their underlying data domain exists (competitor/trend intelligence is Phase 9,
- * experiment history is Phase 10 -- neither implemented here). Returned by `get_capabilities` so
- * an agent can distinguish `CAPABILITY_NOT_AVAILABLE` ("this is a real, planned extension point,
- * not a typo or a hallucinated tool name") from a capability id that simply does not exist at
- * all. This is a plain, static, human-maintained list -- never inferred from `FUTURE_PHASES.md`
- * automatically, to avoid a stale doc silently changing agent-visible behavior.
+ * expose, once their underlying data domain exists (experiment history is Phase 10, not
+ * implemented here). Returned by `get_capabilities` so an agent can distinguish
+ * `CAPABILITY_NOT_AVAILABLE` ("this is a real, planned extension point, not a typo or a
+ * hallucinated tool name") from a capability id that simply does not exist at all. This is a
+ * plain, static, human-maintained list -- never inferred from `FUTURE_PHASES.md` automatically, to
+ * avoid a stale doc silently changing agent-visible behavior.
+ *
+ * `query_market_intelligence`/`query_competitors` (Phase 9's own two reserved names) moved out of
+ * this list 2026-09-26 (Phase 9 slice 4, `docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`) -- both are
+ * now real, implemented capabilities under `AGENT_CAPABILITIES`'s `market_intelligence` domain.
  */
-export const PLANNED_FUTURE_CAPABILITIES = [
-  "query_market_intelligence",
-  "query_competitors",
-  "create_experiment_proposal",
-] as const;
+export const PLANNED_FUTURE_CAPABILITIES = ["create_experiment_proposal"] as const;
 export type PlannedFutureCapability = (typeof PLANNED_FUTURE_CAPABILITIES)[number];
 
 export type SystemCapabilities = {

@@ -15,6 +15,7 @@ import type { ChannelAccessCore } from "@/lib/channel-access";
 import type { AnalyticsCore } from "@/lib/analytics";
 import type { AiLocalizationCore } from "@/lib/ai-localization";
 import type { AssetCatalogCore } from "@/lib/asset-catalog";
+import type { MarketIntelligenceCore } from "@/lib/market-intelligence";
 import type { VideoContextSection } from "@/lib/agent-operations";
 import type { AgentConnectionsCoreSubset } from "@/lib/agent-connections";
 import { rawSqlClient } from "@/lib/db";
@@ -2858,7 +2859,7 @@ test("CLI agent capabilities returns version/capabilities with no auth/channel r
       dataDomains: [],
       actionClasses: ["READ", "DRAFT", "APPROVE", "EXECUTE"] as const,
       grantedPermissions: ["READ", "DRAFT"] as const,
-      plannedFutureCapabilities: ["query_market_intelligence", "query_competitors", "create_experiment_proposal"] as const,
+      plannedFutureCapabilities: ["create_experiment_proposal"] as const,
       schemaVersions: { app: 14 },
     }),
     getChannelContext: async () => { throw new Error("not used"); },
@@ -3422,6 +3423,114 @@ test("CLI agent channel-analytics/video-analytics are never blocked by the opera
       writeStdout: () => {},
     });
     assert.equal(videoAnalyticsExit, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md) -- CLI parity for the MCP
+// query_competitors/query_market_intelligence tools. Wired via marketIntelligenceCore, not
+// agentOperationsCore -- no channelId/active-channel check applies (global data). Both commands
+// call the market-intelligence module's own single getWatchlistEntryContext (independent review,
+// 2026-09-26: MCP and CLI previously each re-orchestrated getWatchlistEntry+listEvidence
+// separately).
+function makeMarketIntelligenceCliCoreStub(): Pick<MarketIntelligenceCore, "listWatchlist" | "getWatchlistEntryContext"> {
+  return {
+    listWatchlist: async () => ({ channels: [] }),
+    getWatchlistEntryContext: async () => {
+      throw new DomainError({ code: "RESEARCH_CHANNEL_NOT_AVAILABLE", message: "No watchlist entry for the requested channel" });
+    },
+  };
+}
+
+test("CLI agent competitors returns the watchlist with no channelId/auth resolution required", async () => {
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  marketIntelligenceCore.listWatchlist = async () => ({
+    channels: [{ channelId: "UC_1", handleOrUrl: null, reason: "competitor", addedAt: "2026-09-26T00:00:00.000Z" }],
+  });
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "competitors"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.channels.length, 1);
+  assert.equal(envelope.data.channels[0].channelId, "UC_1");
+});
+
+test("CLI agent market-intelligence requires --channelId and returns the channel plus its evidence history", async () => {
+  let capturedInput: unknown;
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  marketIntelligenceCore.getWatchlistEntryContext = async (input: unknown) => {
+    capturedInput = input;
+    const { channelId } = input as { channelId: string };
+    return { channel: { channelId, handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z" }, evidence: [] };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "market-intelligence", "--channelId", "UC_1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(capturedInput, { channelId: "UC_1" });
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.channel.channelId, "UC_1");
+  assert.deepEqual(envelope.data.evidence, []);
+});
+
+test("CLI agent market-intelligence rejects a missing --channelId as validation_failed", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "market-intelligence"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore: makeMarketIntelligenceCliCoreStub(),
+    writeStdout: () => {},
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI agent competitors/market-intelligence are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+    marketIntelligenceCore.getWatchlistEntryContext = async () => ({
+      channel: { channelId: "UC_1", handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z" },
+      evidence: [],
+    });
+
+    const competitorsExit = await runCliCommand({
+      argv: ["agent", "competitors"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      marketIntelligenceCore,
+      writeStdout: () => {},
+    });
+    assert.equal(competitorsExit, 0);
+
+    const marketIntelligenceExit = await runCliCommand({
+      argv: ["agent", "market-intelligence", "--channelId", "UC_1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      marketIntelligenceCore,
+      writeStdout: () => {},
+    });
+    assert.equal(marketIntelligenceExit, 0);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }

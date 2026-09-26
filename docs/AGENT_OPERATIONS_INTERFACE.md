@@ -900,9 +900,40 @@ second error-code enum:
 | L | Performance ↔ asset linkage (owner spec §16) | **IMPLEMENTED, independent-review cycle closed (4 rounds, findings 5/1/1/0)** -- see §4h; found and assigned the same way and same day as slice K. New `src/lib/asset-performance/` module. MCP `agent_list_asset_performance`, CLI `agent list-asset-performance`. `AGENT_API_VERSION` → `0.10.0`. `BL-089`. |
 | J | Independent security/integration review | **Per-slice review cycles: covered by each slice's own `docs/roadmap/BACKLOG.md` row (BL-079 onward through BL-089) -- not restated here as a round tally.** Slice J's own NEW, phase-wide work (owner spec §28's acceptance contract, backfilled for A-I plus fresh cross-cutting checks for the assembled whole) is done -- see §4i and `docs/acceptance/PHASE_7_ACCEPTANCE.md` §8-§11, `BL-090`. Remaining before this phase can be considered fully closed: the owner's own explicit "yes, merge" approval (`AGENTS.md` §K.2) -- never inferred from a clean review, and never granted by this document. |
 
-Deliberately **not** implemented in this phase (owner spec §14/§29): the competitor/trend
-intelligence module (Phase 9) and the Experiment Engine (Phase 10). `plannedFutureCapabilities`
-names their eventual extension points; no speculative schema or code for either exists yet.
+Deliberately **not** implemented in this phase (owner spec §14/§29): the Experiment Engine
+(Phase 10). `plannedFutureCapabilities` names its eventual extension point
+(`create_experiment_proposal`); no speculative schema or code for it exists yet. The competitor/
+trend intelligence extension point (`query_market_intelligence`/`query_competitors`) was
+implemented 2026-09-26 as Phase 9's own slice 4, not part of this phase's own owner-spec slices --
+see §4k below.
+
+## 4k. Market intelligence query surface (Phase 9 slice 4, `docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`) -- IMPLEMENTED
+
+Not one of this document's own owner-spec slices (A-L above) -- Phase 9's own follow-up assignment,
+which happens to fulfil two capability names this interface reserved back in slice A
+(`PLANNED_FUTURE_CAPABILITIES`). Full design/data-model detail lives in
+`docs/roadmap/plans/PHASE_9_PLAN.md`/`docs/ARCHITECTURE.md` §18 -- this section records only how it
+plugs into this interface.
+
+- **`query_competitors`** (MCP)/`agent competitors` (CLI) -- every channel on the research
+  watchlist (`channelId`, `handleOrUrl`, `reason`, `addedAt`), no evidence attached.
+- **`query_market_intelligence`** (MCP)/`agent market-intelligence --channelId=...` (CLI) -- one
+  watchlisted channel's own record plus its full evidence history; `RESEARCH_CHANNEL_NOT_AVAILABLE`
+  if the given `channelId` isn't on the watchlist.
+- Both registered directly in `src/mcp/server.ts`/`src/cli/video-metadata.ts` against
+  `createMarketIntelligenceCore()` -- **not** a new function in this module's own service layer,
+  unlike slice C/K/L's wrappers over `analytics`/`comparable-content`/`asset-performance`. See
+  `docs/ARCHITECTURE.md` §18's own note on why (module-independence, `PHASE_9_PLAN.md` §5).
+  `AGENT_CAPABILITIES` still gained two entries (`market_intelligence.query_competitors`/
+  `market_intelligence.query_market_intelligence`, domain `market_intelligence`, both READ) for
+  capability-discovery completeness -- the same pattern already used for
+  `channel_context.list_channels`/`analytics.query_data_quality`.
+- Global data, never channel-scoped (research data describes channels the operator does not
+  necessarily own) -- no `channelId`/active-channel check on either, matching
+  `operations_workspace.list_files`'s own precedent. Neither accepts `credentialRef` -- neither
+  makes a live YouTube call.
+- `AGENT_DATA_DOMAINS` gained `competitor_intelligence` (the literal name this module's own
+  contracts already reserved for it). `AGENT_API_VERSION` → `0.11.0`.
 
 ## 8. Safety invariants this interface must never violate
 

@@ -383,3 +383,52 @@ test("AC-MI-15: after removal, the same channel id can be added back (never bloc
   const readded = await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Second" }, { createdVia: "web_ui" });
   assert.equal(readded.reason, "Second");
 });
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 4 -- getWatchlistEntryContext (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md §7).
+// Added so MCP's query_market_intelligence and CLI's `agent market-intelligence` share one
+// implementation of the "channel + its full evidence history" join, instead of each
+// independently re-orchestrating getWatchlistEntry+listEvidence (found by independent review --
+// the two call sites had already started to drift cosmetically).
+// ---------------------------------------------------------------------------
+
+test("AC-MI-16: getWatchlistEntryContext rejects a channel not on the watchlist with RESEARCH_CHANNEL_NOT_AVAILABLE", async () => {
+  const { services } = createFixture();
+
+  await assert.rejects(
+    () => services.getWatchlistEntryContext({ channelId: OTHER_VALID_CHANNEL_ID }),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_CHANNEL_NOT_AVAILABLE"
+  );
+});
+
+test("AC-MI-17: getWatchlistEntryContext returns the channel's own record with an empty evidence array when none has been recorded yet", async () => {
+  const { services } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Worth watching" }, { createdVia: "web_ui" });
+
+  const result = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+
+  assert.equal(result.channel.channelId, VALID_CHANNEL_ID);
+  assert.deepEqual(result.evidence, []);
+});
+
+test("AC-MI-18: getWatchlistEntryContext returns every recorded evidence row for 2+ rows, in insertion order", async () => {
+  const { services } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Worth watching" }, { createdVia: "web_ui" });
+  await services.recordEvidence(
+    { researchChannelId: VALID_CHANNEL_ID, observation: "First observation", source: "manual observation" },
+    { createdVia: "web_ui" }
+  );
+  await services.recordEvidence(
+    { researchChannelId: VALID_CHANNEL_ID, observation: "Second observation", source: "manual observation" },
+    { createdVia: "web_ui" }
+  );
+
+  const result = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+
+  assert.equal(result.channel.channelId, VALID_CHANNEL_ID);
+  assert.equal(result.evidence.length, 2);
+  assert.deepEqual(
+    result.evidence.map((e) => e.observation),
+    ["First observation", "Second observation"]
+  );
+});

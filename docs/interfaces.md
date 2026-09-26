@@ -299,6 +299,14 @@ draft/unactioned relationship). `--limit` above the maximum is silently clamped,
 (the same lesson independent review found in slice K, round 3). See
 `docs/AGENT_OPERATIONS_INTERFACE.md` §4h for the full design.
 
+`agent competitors` (Phase 9 slice 4, `docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`) takes no
+flags and returns the whole research watchlist (no evidence attached) -- global data, no
+`--channelId`/active-channel check, no auth resolution. `agent market-intelligence --channelId=...`
+returns that one watchlisted channel's own record plus its full evidence history, failing with
+`RESEARCH_CHANNEL_NOT_AVAILABLE` if it isn't on the watchlist. Neither makes a live YouTube call.
+Both are wired via `createMarketIntelligenceCore()` directly, not through `agentOperationsCore` --
+see `docs/AGENT_OPERATIONS_INTERFACE.md` §4k for the full design.
+
 ### Analytics commands (CLI parity for the MCP `analytics_*` tools, Phase 8 follow-up)
 
 ```bash
@@ -606,6 +614,25 @@ Key MCP tools:
     `collectMetrics`/`runAutoCollectionIfStale`/`runWeeklyReportIfDue` (real local-persistence
     mutations; only the Web UI's own "Collect now" button and dashboard-mount triggers can start a
     new collection run or generate/replace a weekly report).
+- Market intelligence query tools (Phase 9 slice 4, `docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`)
+  — fulfil the two capability names `agent-operations` reserved since Phase 7
+  (`PLANNED_FUTURE_CAPABILITIES`), using those exact literal names rather than an `agent_`-prefixed
+  pair. Neither accepts `credentialRef` (neither makes a live YouTube call) and neither is
+  channel-scoped — this data describes channels the operator does not necessarily own
+  (`docs/ARCHITECTURE.md` §18).
+  - `query_competitors` — `{}` → `{ channels: ResearchChannel[] }`, every channel currently on the
+    research watchlist (`channelId`, `handleOrUrl`, `reason`, `addedAt`) — no evidence attached,
+    just the roster. Local read only, a direct passthrough of the existing `listWatchlist` service
+    call.
+  - `query_market_intelligence` — `{ channelId }` → `{ channel: ResearchChannel, evidence:
+    ResearchEvidence[] }`, one watchlisted channel's own record plus its full evidence history.
+    Fails with `RESEARCH_CHANNEL_NOT_AVAILABLE` if `channelId` is not on the watchlist (the
+    existing `getWatchlistEntry`'s own error — `listEvidence` is never called for a channel that
+    doesn't exist). Local read only.
+  - Both registered directly against `createMarketIntelligenceCore()` in `src/mcp/server.ts`/
+    `src/cli/video-metadata.ts`, not through `agent-operations`'s own service layer —
+    `docs/ARCHITECTURE.md` §18 records why (module-independence, `PHASE_9_PLAN.md` §5).
+    CLI parity: `agent competitors` / `agent market-intelligence --channelId=...`.
 
 Most tools accept optional `credentialRef`; if omitted, server falls back to active local auth context.
 
