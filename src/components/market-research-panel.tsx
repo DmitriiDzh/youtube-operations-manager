@@ -48,6 +48,27 @@ export function MarketResearchPanel() {
   const [fetchingSnapshot, setFetchingSnapshot] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<ResearchChannel | null>(null);
   const [removing, setRemoving] = useState(false);
+  // Phase 9 slice 9B -- surfaces the Settings-tab quota slider's own "off" state here too
+  // (plan §8: "an explicit 'auto-collection is off' state on the Research tab"), so an operator
+  // who never visits Settings still learns why their watchlist's counts never refresh on their
+  // own. `null` while unknown (still loading, or the fetch failed) never renders a banner either
+  // way -- this is informational only, never a blocking error.
+  const [autoCollectionBudgetUnits, setAutoCollectionBudgetUnits] = useState<number | null | undefined>(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/settings")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { marketIntelligenceDailyQuotaBudgetUnits?: number | null } | null) => {
+        if (!cancelled) setAutoCollectionBudgetUnits(data?.marketIntelligenceDailyQuotaBudgetUnits ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setAutoCollectionBudgetUnits(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const fetchChannels = useCallback(async () => {
     setLoading(true);
@@ -205,6 +226,13 @@ export function MarketResearchPanel() {
           </InfoTooltip>
         </h3>
       </div>
+
+      {!autoCollectionBudgetUnits && autoCollectionBudgetUnits !== undefined && (
+        <p className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-500">
+          Auto-refresh is off &mdash; snapshots below are only added when you fetch them manually.
+          Set a daily quota under Settings → API to refresh watchlisted channels automatically.
+        </p>
+      )}
 
       <div className="rounded-lg border border-zinc-800 p-4">
         <h4 className="mb-3 text-sm font-semibold text-zinc-200">Add a channel to the watchlist</h4>

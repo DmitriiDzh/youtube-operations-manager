@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { isValidIanaTimezone, isValidLocalTimeOfDay } from "@/lib/analytics/staleness";
 import { createCloudQuotasCore } from "@/lib/cloud-quotas";
+import { createMarketIntelligenceCore } from "@/lib/market-intelligence";
 import {
   getAnalyticsReadsEnabled,
   getAnalyticsSyncSettings,
@@ -19,6 +20,11 @@ import {
   setOperationsWorkspacePath,
 } from "@/lib/db";
 import { validateOperationsWorkspacePath } from "@/lib/operations-instructions";
+
+// A thin passthrough to the market-intelligence module's own quota-budget actions, never a direct
+// `@/lib/db` import for that setting -- this module's own PHASE9-INV-02 inventory test forbids any
+// file outside it from reaching into its db.ts symbols directly (AGENTS.md §D/§M).
+const marketIntelligenceCore = createMarketIntelligenceCore();
 
 /**
  * App-wide settings (Settings tab, owner instruction 2026-09-21). Two flags today:
@@ -60,6 +66,15 @@ import { validateOperationsWorkspacePath } from "@/lib/operations-instructions";
  *   `agent`-namespaced MCP tool or CLI command can (owner spec §17's `local_path` self-
  *   authorization concern, applied here: an agent that could choose its own instructions
  *   directory would be authorizing its own filesystem access).
+ * - `marketIntelligenceDailyQuotaBudgetUnits` -- Phase 9 slice 9B
+ *   (`docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md` §4, owner decision 2026-09-26: "пользователь
+ *   сам в настройках мог это выставить... от того числа строить логику" -- a plain operator-set
+ *   number, no hardcoded default). `null`/unset means the repeatable competitor refresh is OFF; a
+ *   real `<input type="range">` slider in the Settings tab is this value's own UI (never a
+ *   locale-formatted display, `settings-input-widget-conventions`). The window this budget resets
+ *   against is a plain UTC calendar day, deliberately not Pacific-Time-aligned like
+ *   `cloudQuotaStatus` below (`AGENTS.md` §M: no cross-feature-module import for that
+ *   day-boundary logic) -- never confuse the two numbers.
  * - `cloudQuotaStatus` -- read-only, not settable via `POST`: real Google Cloud quota
  *   limit/usage from the Cloud Monitoring API (`docs/decisions/0008-cloud-connection.md`'s
  *   follow-up, owner instruction 2026-09-22 -- "сколько максимальная квота... сколько из неё
@@ -85,6 +100,7 @@ async function getSettingsSnapshot() {
     gatewayTraffic,
     cloudQuotaStatus,
     operationsWorkspacePath,
+    marketIntelligenceDailyQuotaBudgetUnits,
   ] = await Promise.all([
     getLiveWritesEnabled(),
     getMcpConnectionEnabled(),
@@ -94,6 +110,7 @@ async function getSettingsSnapshot() {
     getGatewayTrafficLast24h(),
     createCloudQuotasCore().getQuotaStatus(),
     getOperationsWorkspacePath(),
+    marketIntelligenceCore.getDailyQuotaBudgetUnits(),
   ]);
 
   return {
@@ -106,6 +123,7 @@ async function getSettingsSnapshot() {
     gatewayTraffic,
     cloudQuotaStatus,
     operationsWorkspacePath,
+    marketIntelligenceDailyQuotaBudgetUnits,
   };
 }
 
@@ -162,6 +180,29 @@ export async function POST(request: Request) {
       );
     }
     await setAnalyticsSyncSettings({ timezone: body.analyticsSyncTimezone });
+  }
+
+  if (body.marketIntelligenceDailyQuotaBudgetUnits !== undefined) {
+    if (body.marketIntelligenceDailyQuotaBudgetUnits === null) {
+      await marketIntelligenceCore.setDailyQuotaBudgetUnits(null);
+    } else if (
+      typeof body.marketIntelligenceDailyQuotaBudgetUnits !== "number" ||
+      !Number.isFinite(body.marketIntelligenceDailyQuotaBudgetUnits) ||
+      !Number.isInteger(body.marketIntelligenceDailyQuotaBudgetUnits) ||
+      body.marketIntelligenceDailyQuotaBudgetUnits < 0
+    ) {
+      return NextResponse.json(
+        { error: "validation_failed", message: "marketIntelligenceDailyQuotaBudgetUnits must be a non-negative integer or null" },
+        { status: 400 }
+      );
+    } else {
+      // 0 means the same thing as null (off) at the storage layer -- passed through as-is rather
+      // than silently rewritten to null here, so the stored value always matches exactly what
+      // this route accepted.
+      await marketIntelligenceCore.setDailyQuotaBudgetUnits(
+        body.marketIntelligenceDailyQuotaBudgetUnits === 0 ? null : body.marketIntelligenceDailyQuotaBudgetUnits
+      );
+    }
   }
 
   if (body.operationsWorkspacePath !== undefined) {

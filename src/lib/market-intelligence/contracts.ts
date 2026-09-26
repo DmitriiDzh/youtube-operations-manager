@@ -53,6 +53,22 @@ export type PublicChannelSnapshot = {
   hiddenSubscriberCount: boolean;
   viewCount: number | null;
   videoCount: number | null;
+  /** Added for Phase 9 slice 9B -- see the read gateway's own `PublicChannelSnapshot` doc comment. */
+  uploadsPlaylistId: string | null;
+};
+
+/**
+ * Phase 9 slice 9B -- locally redefined with the same shape as `youtube-read-gateway`'s own
+ * `PublicVideoSnapshot`, never imported from it directly (same independence rationale as
+ * `PublicChannelSnapshot` above).
+ */
+export type PublicVideoSnapshot = {
+  videoId: string;
+  title: string;
+  publishedAt: string | null;
+  viewCount: number | null;
+  likeCount: number | null;
+  commentCount: number | null;
 };
 
 // ---------------------------------------------------------------------------

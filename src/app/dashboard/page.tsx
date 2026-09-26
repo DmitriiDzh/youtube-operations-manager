@@ -11,6 +11,7 @@ import { LanguagesManager } from "@/components/languages-manager";
 import { BatchManager } from "@/components/batch-manager";
 import { AiConnectionsManager } from "@/components/ai-connections-manager";
 import { AnalyticsCollectionSettings } from "@/components/analytics-collection-settings";
+import { MarketIntelligenceCollectionSettings } from "@/components/market-intelligence-collection-settings";
 import { LiveWritesSettings } from "@/components/live-writes-settings";
 import { McpConnectionSettings } from "@/components/mcp-connection-settings";
 import { AgentConnectionsManager } from "@/components/agent-connections-manager";
@@ -147,9 +148,20 @@ export default function Dashboard() {
       .finally(() => {
         fetch(`/api/channels/${encodeURIComponent(channelId)}/analytics/weekly-reports/generate-if-due`, {
           method: "POST",
-        }).catch(() => {
-          // Non-fatal -- the due-week check means the next dashboard load simply tries again.
-        });
+        })
+          .catch(() => {
+            // Non-fatal -- the due-week check means the next dashboard load simply tries again.
+          })
+          .finally(() => {
+            // Phase 9 slice 9B (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md §7) -- third
+            // fire-and-forget call, chained after the two Phase-8 ones above (never in parallel,
+            // same rationale). Channel-agnostic (market intelligence's own watchlist is global,
+            // not scoped to `channel.id`) -- the server's own budget/staleness checks decide
+            // whether anything actually runs.
+            fetch("/api/market-intelligence/collect-if-stale", { method: "POST" }).catch(() => {
+              // Non-fatal -- the staleness/budget check means the next dashboard load simply tries again.
+            });
+          });
       });
   }, [channel]);
 
@@ -355,6 +367,7 @@ export default function Dashboard() {
             <ReadGatewaySettings />
             <CloudConnectionSettings />
             <AnalyticsCollectionSettings />
+            <MarketIntelligenceCollectionSettings />
           </FeatureErrorBoundary>
         </div>
 

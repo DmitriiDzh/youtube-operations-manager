@@ -130,3 +130,16 @@ test("proxy gates the analytics weekly-reports generate-if-due route like any ot
     await releaseOperationLock(rawSqlClient);
   }
 });
+
+// Phase 9 slice 9B: the market-intelligence auto-refresh trigger is a POST that MAY perform a real
+// mutation (a new market_channel_snapshots/market_video_snapshots/collection-run row) -- gated the
+// same way, never exempted, even though it often no-ops (same reasoning as auto-collect above).
+test("proxy gates the market-intelligence collect-if-stale route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/collect-if-stale"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});

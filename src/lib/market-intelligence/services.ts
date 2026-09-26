@@ -4,6 +4,7 @@ import {
   type MarketChannelSnapshot,
   type MarketVideoSnapshot,
   type PublicChannelSnapshot,
+  type PublicVideoSnapshot,
   type ResearchChannel,
   type ResearchEvidence,
   type ResolvedCredentials,
@@ -33,6 +34,8 @@ import {
   recordVideoSnapshotInputSchema,
   recordVideoSnapshotOutputSchema,
   removeFromWatchlistInputSchema,
+  runCollectionIfStaleInputSchema,
+  runCollectionIfStaleOutputSchema,
 } from "./schemas";
 import type { CreatedVia } from "@/lib/shared-provenance";
 
@@ -189,6 +192,15 @@ type ServiceDependencies = {
       credentials: ResolvedCredentials;
       channelId: string;
     }): Promise<PublicChannelSnapshot | null>;
+    // Phase 9 slice 9B.
+    listUploadsPlaylistFirstPageVideoIds(args: {
+      credentials: ResolvedCredentials;
+      uploadsPlaylistId: string;
+    }): Promise<string[]>;
+    getPublicVideoSnapshots(args: {
+      credentials: ResolvedCredentials;
+      videoIds: string[];
+    }): Promise<PublicVideoSnapshot[]>;
   };
   // Phase 9 slice 9A (docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md).
   insertMarketChannelSnapshot(input: {
@@ -214,7 +226,54 @@ type ServiceDependencies = {
     createdVia: string;
   }): Promise<void>;
   listMarketVideoSnapshotsByChannel(researchChannelId: string): Promise<StoredMarketVideoSnapshotForService[]>;
+  // Phase 9 slice 9B (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md).
+  /** Injectable so staleness/budget-window tests never depend on the real wall clock (advisor
+   * review, before implementation -- mirrors `analytics/services.ts`'s own identical pattern). */
+  clock: { now(): Date };
+  getMarketIntelligenceDailyQuotaBudgetUnits(): Promise<number | null>;
+  setMarketIntelligenceDailyQuotaBudgetUnits(units: number | null): Promise<void>;
+  getMarketIntelligenceUnitsSpentSince(since: Date): Promise<number>;
+  claimStaleResearchChannelsForCollection(args: {
+    now: Date;
+    staleCutoff: Date;
+    claimExpiryCutoff: Date;
+    excludeResearchChannelIds: string[];
+  }): Promise<string[]>;
+  releaseResearchChannelCollectionClaim(researchChannelId: string): Promise<void>;
+  listRecentlyFailedResearchChannelIds(since: Date): Promise<string[]>;
+  markResearchChannelAutoCollected(researchChannelId: string, at: Date): Promise<void>;
+  insertMarketIntelligenceCollectionRun(input: {
+    researchChannelId: string;
+    status: "success" | "skipped_quota_limited" | "failed";
+    unitsSpent: number;
+    videosRequested?: number | null;
+    videosReturned?: number | null;
+    errorMessage?: string | null;
+    ranAt?: Date;
+  }): Promise<void>;
 };
+
+// Phase 9 slice 9B -- real YouTube Data API v3 quota costs (`channels.list`/`playlistItems.list`/
+// `videos.list` are each a flat 1 unit regardless of requested parts, per the API's own published
+// quota table); a channel is attempted for at most these 3 real calls (enumeration is capped to a
+// single page, `getPublicVideoSnapshots` to a single ≤50-id batch -- see the read gateway's own
+// `listUploadsPlaylistFirstPageVideoIds` doc comment for why cost stays exactly 1 unit per call,
+// deterministically, never dependent on how many ids happen to come back).
+const CHANNELS_LIST_UNIT_COST = 1;
+const PLAYLIST_ITEMS_LIST_UNIT_COST = 1;
+const VIDEOS_LIST_UNIT_COST = 1;
+
+// A channel is stale after 24h with no successful collection -- deliberately a plain elapsed-time
+// check, not Phase 8's own local-wall-clock-boundary rule (`AGENTS.md` §M: no cross-feature-module
+// import of `analytics/staleness.ts` for a requirement this feature does not actually share).
+const MARKET_INTELLIGENCE_STALE_WINDOW_MS = 24 * 60 * 60 * 1000;
+// A claim older than this is treated as an abandoned (crashed) attempt and may be reclaimed --
+// generous relative to a single channel's real work (at most 3 outbound HTTP calls).
+const MARKET_INTELLIGENCE_CLAIM_EXPIRY_MS = 15 * 60 * 1000;
+
+function startOfUtcDay(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
 
 export function createMarketIntelligenceServices(deps: ServiceDependencies) {
   return {
@@ -631,6 +690,221 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       const row = rows.find((candidate) => candidate.id === id)!;
 
       return parseWithSchema(captureChannelSnapshotOutputSchema, toMarketChannelSnapshot(row), "capture channel snapshot output");
+    },
+
+    /**
+     * The operator-set daily unit budget (Phase 9 slice 9B, plan §4) -- `null`/unset means the
+     * repeatable auto-refresh is off. Exposed here (a thin passthrough) rather than left as a
+     * direct `db.ts` import inside `/api/settings/route.ts` (found by this module's own mechanical
+     * `PHASE9-INV-02` inventory test, which is exactly the guard this indirection exists to
+     * satisfy): a generic settings route reaching straight into a feature module's own db.ts
+     * functions is the identical reach-around `AGENTS.md` §D/§M forbids for every other domain,
+     * even though this particular setting is a plain number with no validation of its own to add.
+     */
+    async getDailyQuotaBudgetUnits(): Promise<number | null> {
+      return deps.getMarketIntelligenceDailyQuotaBudgetUnits();
+    },
+
+    async setDailyQuotaBudgetUnits(units: number | null): Promise<void> {
+      await deps.setMarketIntelligenceDailyQuotaBudgetUnits(units);
+    },
+
+    /**
+     * The repeatable, budget-aware auto-refresh trigger (Phase 9 slice 9B): every watchlisted
+     * channel stale by more than 24h gets one attempt -- channel snapshot (± its uploads playlist
+     * id, one `channels.list` call), up to 50 newest video snapshots (one `playlistItems.list` +
+     * one `videos.list` call) -- gated by the operator's own daily unit budget
+     * (`getMarketIntelligenceDailyQuotaBudgetUnits`; `null`/unset means auto-collection is off).
+     *
+     * Deliberately does NOT call the public `captureChannelSnapshot` above (advisor review, before
+     * implementation): that action's own output schema strips `uploadsPlaylistId` (a field
+     * `MarketChannelSnapshot`, the PERSISTED contract, has no reason to carry) and it would
+     * re-resolve credentials once per channel instead of once for the whole run. This method calls
+     * `deps.youtubeApi`/`deps.insertMarketChannelSnapshot` directly instead, on the one
+     * already-resolved credential set.
+     *
+     * Concurrency: claims every eligible channel atomically in ONE call
+     * (`claimStaleResearchChannelsForCollection`, a single `UPDATE ... WHERE ... RETURNING`) before
+     * any real work starts -- a second concurrent call (e.g. two dashboard tabs) sees none of them
+     * still claimable and does nothing, closing the race a per-channel-only claim would still leave
+     * open against a run-scoped shared budget. Each claim is released the moment that channel's own
+     * attempt reaches ANY terminal outcome, in a `finally`, so a crash mid-run leaves at most an
+     * abandoned claim (self-healing after `MARKET_INTELLIGENCE_CLAIM_EXPIRY_MS`), never a
+     * permanently stuck channel.
+     *
+     * Budget accounting is per real outbound call, not per assumed channel cost: the moment
+     * `remaining` can no longer cover the NEXT call, that channel's row is stamped
+     * `skipped_quota_limited` with whatever it honestly spent so far (0 if blocked on its very
+     * first call), every other still-claimed channel is released WITHOUT a row of its own (found by
+     * advisor review: writing one identical row per remaining stale channel on every single
+     * dashboard mount, once the budget is merely small, would spam the audit log for no new
+     * information beyond "the budget ran out here"), and the whole run stops -- a later channel
+     * never jumps the queue ahead of one already skipped this run.
+     *
+     * A channel whose most recent run failed within the last 24h is excluded from this run's claim
+     * entirely (`listRecentlyFailedResearchChannelIds`) -- without this, a permanently broken
+     * channel (deleted, made private) would spend at least one real unit on every mount, forever.
+     * `last_auto_collected_at` is set ONLY on a channel's own full success, never as a side effect
+     * of the overall run -- a channel this run could not fully process stays stale for next time.
+     */
+    async runCollectionIfStale(input: unknown): Promise<{
+      attempted: number;
+      succeeded: number;
+      failed: number;
+      quotaLimited: number;
+      unitsSpent: number;
+    }> {
+      const parsedInput = parseWithSchema(runCollectionIfStaleInputSchema, input, "run collection if stale input");
+      const zeroed = { attempted: 0, succeeded: 0, failed: 0, quotaLimited: 0, unitsSpent: 0 };
+
+      const budget = await deps.getMarketIntelligenceDailyQuotaBudgetUnits();
+      if (budget === null) {
+        return parseWithSchema(runCollectionIfStaleOutputSchema, zeroed, "run collection if stale output");
+      }
+
+      const now = deps.clock.now();
+      const spentToday = await deps.getMarketIntelligenceUnitsSpentSince(startOfUtcDay(now));
+      let remaining = budget - spentToday;
+      if (remaining <= 0) {
+        return parseWithSchema(runCollectionIfStaleOutputSchema, zeroed, "run collection if stale output");
+      }
+
+      // Credentials must resolve BEFORE any channel is claimed -- a scope/credential failure must
+      // never leave a channel claimed with nothing actually attempted (advisor review).
+      const credentials = await deps.authResolver.resolve({
+        credentialRef: parsedInput.credentialRef,
+        requiredScopes: [YOUTUBE_READ_SCOPE],
+      });
+
+      const staleCutoff = new Date(now.getTime() - MARKET_INTELLIGENCE_STALE_WINDOW_MS);
+      const claimExpiryCutoff = new Date(now.getTime() - MARKET_INTELLIGENCE_CLAIM_EXPIRY_MS);
+      const recentlyFailedIds = await deps.listRecentlyFailedResearchChannelIds(staleCutoff);
+      const claimedIds = await deps.claimStaleResearchChannelsForCollection({
+        now,
+        staleCutoff,
+        claimExpiryCutoff,
+        excludeResearchChannelIds: recentlyFailedIds,
+      });
+
+      if (claimedIds.length === 0) {
+        return parseWithSchema(runCollectionIfStaleOutputSchema, zeroed, "run collection if stale output");
+      }
+
+      let attempted = 0;
+      let succeeded = 0;
+      let failedCount = 0;
+      let quotaLimited = 0;
+      let unitsSpentTotal = 0;
+
+      for (let i = 0; i < claimedIds.length; i++) {
+        const researchChannelId = claimedIds[i];
+
+        if (remaining < CHANNELS_LIST_UNIT_COST) {
+          attempted += 1;
+          quotaLimited += 1;
+          await deps.insertMarketIntelligenceCollectionRun({
+            researchChannelId,
+            status: "skipped_quota_limited",
+            unitsSpent: 0,
+            ranAt: now,
+          });
+          await deps.releaseResearchChannelCollectionClaim(researchChannelId);
+          for (let j = i + 1; j < claimedIds.length; j++) {
+            await deps.releaseResearchChannelCollectionClaim(claimedIds[j]);
+          }
+          break;
+        }
+
+        attempted += 1;
+        let unitsSpentThisChannel = 0;
+        let videosRequested: number | null = null;
+        let videosReturned: number | null = null;
+
+        try {
+          const snapshot = await deps.youtubeApi.getPublicChannelSnapshot({ credentials, channelId: researchChannelId });
+          unitsSpentThisChannel += CHANNELS_LIST_UNIT_COST;
+          remaining -= CHANNELS_LIST_UNIT_COST;
+
+          if (!snapshot) {
+            throw new Error("YouTube reports no public channel for this id");
+          }
+
+          await deps.insertMarketChannelSnapshot({
+            id: deps.idGenerator(),
+            researchChannelId,
+            subscriberCount: snapshot.subscriberCount,
+            viewCount: snapshot.viewCount,
+            videoCount: snapshot.videoCount,
+            hiddenSubscriberCount: snapshot.hiddenSubscriberCount,
+            source: "youtube.channels.list",
+            createdVia: "web_ui",
+          });
+
+          if (snapshot.uploadsPlaylistId && remaining >= PLAYLIST_ITEMS_LIST_UNIT_COST) {
+            const videoIds = await deps.youtubeApi.listUploadsPlaylistFirstPageVideoIds({
+              credentials,
+              uploadsPlaylistId: snapshot.uploadsPlaylistId,
+            });
+            unitsSpentThisChannel += PLAYLIST_ITEMS_LIST_UNIT_COST;
+            remaining -= PLAYLIST_ITEMS_LIST_UNIT_COST;
+            videosRequested = videoIds.length;
+            videosReturned = 0;
+
+            if (videoIds.length > 0 && remaining >= VIDEOS_LIST_UNIT_COST) {
+              const videoSnapshots: PublicVideoSnapshot[] = await deps.youtubeApi.getPublicVideoSnapshots({
+                credentials,
+                videoIds,
+              });
+              unitsSpentThisChannel += VIDEOS_LIST_UNIT_COST;
+              remaining -= VIDEOS_LIST_UNIT_COST;
+              videosReturned = videoSnapshots.length;
+
+              for (const videoSnapshot of videoSnapshots) {
+                await deps.insertMarketVideoSnapshot({
+                  id: deps.idGenerator(),
+                  researchChannelId,
+                  videoId: videoSnapshot.videoId,
+                  viewCount: videoSnapshot.viewCount,
+                  likeCount: videoSnapshot.likeCount,
+                  commentCount: videoSnapshot.commentCount,
+                  publishedAt: videoSnapshot.publishedAt ? new Date(videoSnapshot.publishedAt) : null,
+                  source: "youtube.videos.list",
+                  createdVia: "web_ui",
+                });
+              }
+            }
+          }
+
+          await deps.markResearchChannelAutoCollected(researchChannelId, now);
+          await deps.insertMarketIntelligenceCollectionRun({
+            researchChannelId,
+            status: "success",
+            unitsSpent: unitsSpentThisChannel,
+            videosRequested,
+            videosReturned,
+            ranAt: now,
+          });
+          succeeded += 1;
+        } catch (error) {
+          await deps.insertMarketIntelligenceCollectionRun({
+            researchChannelId,
+            status: "failed",
+            unitsSpent: unitsSpentThisChannel,
+            errorMessage: error instanceof Error ? error.message : String(error),
+            ranAt: now,
+          });
+          failedCount += 1;
+        } finally {
+          await deps.releaseResearchChannelCollectionClaim(researchChannelId);
+          unitsSpentTotal += unitsSpentThisChannel;
+        }
+      }
+
+      return parseWithSchema(
+        runCollectionIfStaleOutputSchema,
+        { attempted, succeeded, failed: failedCount, quotaLimited, unitsSpent: unitsSpentTotal },
+        "run collection if stale output"
+      );
     },
   };
 }

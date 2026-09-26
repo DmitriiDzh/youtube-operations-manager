@@ -231,6 +231,29 @@ export const captureChannelSnapshotInputSchema = z
 
 export const captureChannelSnapshotOutputSchema = marketChannelSnapshotSchema;
 
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9B (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md) -- repeatable refresh trigger.
+// ---------------------------------------------------------------------------
+
+// Same shape as fetchPublicSnapshotInputSchema/captureChannelSnapshotInputSchema's own
+// credentialRef field -- this trigger is global (every stale watchlisted channel at once), not
+// scoped to one researchChannelId, so that is its only input.
+export const runCollectionIfStaleInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+  })
+  .strict();
+
+export const runCollectionIfStaleOutputSchema = z
+  .object({
+    attempted: nonNegativeIntSchema,
+    succeeded: nonNegativeIntSchema,
+    failed: nonNegativeIntSchema,
+    quotaLimited: nonNegativeIntSchema,
+    unitsSpent: nonNegativeIntSchema,
+  })
+  .strict();
+
 // Re-exported so services.ts/adapters never need their own separate import of the shared
 // provenance vocabulary's schema (AGENTS.md §M: market-intelligence is a caller of
 // shared-provenance, not a second owner of it).
@@ -245,3 +268,5 @@ export type ListChannelSnapshotsInput = z.infer<typeof listChannelSnapshotsInput
 export type RecordVideoSnapshotInput = z.infer<typeof recordVideoSnapshotInputSchema>;
 export type ListVideoSnapshotsInput = z.infer<typeof listVideoSnapshotsInputSchema>;
 export type CaptureChannelSnapshotInput = z.infer<typeof captureChannelSnapshotInputSchema>;
+export type RunCollectionIfStaleInput = z.infer<typeof runCollectionIfStaleInputSchema>;
+export type RunCollectionIfStaleOutput = z.infer<typeof runCollectionIfStaleOutputSchema>;

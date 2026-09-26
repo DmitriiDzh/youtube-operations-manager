@@ -8,9 +8,11 @@ import {
   createYoutubeClient,
   getChannelForSync,
   getPublicChannelSnapshot,
+  getPublicVideoSnapshots,
   getVideoDetailsContext,
   getVideosMetadataContextBatch,
   listSupportedLanguages,
+  listUploadsPlaylistFirstPageVideoIds,
   listUploadsPlaylistVideoIds,
   parseIso8601DurationToSeconds,
 } from "./data-api";
@@ -456,7 +458,7 @@ test("getPublicChannelSnapshot requests exactly part=[snippet,statistics] and id
 
   const snapshot = await getPublicChannelSnapshot(youtube, "UC_COMPETITOR");
 
-  assert.deepEqual(receivedArgs, { part: ["snippet", "statistics"], id: ["UC_COMPETITOR"] });
+  assert.deepEqual(receivedArgs, { part: ["snippet", "statistics", "contentDetails"], id: ["UC_COMPETITOR"] });
   assert.deepEqual(snapshot, {
     channelId: "UC_COMPETITOR",
     title: "Competitor Channel",
@@ -464,6 +466,7 @@ test("getPublicChannelSnapshot requests exactly part=[snippet,statistics] and id
     hiddenSubscriberCount: false,
     viewCount: 456000,
     videoCount: 42,
+    uploadsPlaylistId: null,
   });
 });
 
@@ -524,4 +527,146 @@ test("getPublicChannelSnapshot returns null when no channel matches the given id
   const snapshot = await getPublicChannelSnapshot(youtube, "UC_MISSING");
 
   assert.equal(snapshot, null);
+});
+
+// Phase 9 slice 9B (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md) -- getPublicChannelSnapshot now
+// also reads contentDetails.relatedPlaylists.uploads in the SAME channels.list call.
+test("getPublicChannelSnapshot reads uploadsPlaylistId from contentDetails, and null when the channel has none", async () => {
+  const youtube = fakeYoutubeClient({
+    channelsList: (async () => ({
+      data: {
+        items: [
+          {
+            id: "UC_COMPETITOR",
+            snippet: { title: "Competitor Channel" },
+            statistics: { subscriberCount: "100", viewCount: "200", videoCount: "3", hiddenSubscriberCount: false },
+            contentDetails: { relatedPlaylists: { uploads: "UU_COMPETITOR" } },
+          },
+        ],
+      },
+    })) as unknown as youtube_v3.Youtube["channels"]["list"],
+  });
+
+  const snapshot = await getPublicChannelSnapshot(youtube, "UC_COMPETITOR");
+
+  assert.equal(snapshot?.uploadsPlaylistId, "UU_COMPETITOR");
+});
+
+// Phase 9 slice 9B -- listUploadsPlaylistFirstPageVideoIds, exactly one playlistItems.list call.
+test("listUploadsPlaylistFirstPageVideoIds issues exactly one playlistItems.list call, even when a nextPageToken is present", async () => {
+  let callCount = 0;
+  const youtube = fakeYoutubeClient({
+    playlistItemsList: (async () => {
+      callCount += 1;
+      return {
+        data: {
+          items: [{ contentDetails: { videoId: "v1" } }, { contentDetails: { videoId: "v2" } }],
+          nextPageToken: "there-is-more-but-must-never-be-fetched",
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["playlistItems"]["list"],
+  });
+
+  const videoIds = await listUploadsPlaylistFirstPageVideoIds(youtube, "UU_TEST");
+
+  assert.deepEqual(videoIds, ["v1", "v2"]);
+  assert.equal(callCount, 1, "must never fetch a second page, regardless of nextPageToken -- its own real YouTube quota cost must stay exactly 1 unit");
+});
+
+test("listUploadsPlaylistFirstPageVideoIds dedupes ids within the single page and returns an empty array for an empty playlist", async () => {
+  const youtube = fakeYoutubeClient({
+    playlistItemsList: (async () => ({
+      data: { items: [{ contentDetails: { videoId: "v1" } }, { contentDetails: { videoId: "v1" } }] },
+    })) as unknown as youtube_v3.Youtube["playlistItems"]["list"],
+  });
+
+  const videoIds = await listUploadsPlaylistFirstPageVideoIds(youtube, "UU_TEST");
+  assert.deepEqual(videoIds, ["v1"]);
+
+  const emptyYoutube = fakeYoutubeClient({
+    playlistItemsList: (async () => ({ data: { items: [] } })) as unknown as youtube_v3.Youtube["playlistItems"]["list"],
+  });
+  assert.deepEqual(await listUploadsPlaylistFirstPageVideoIds(emptyYoutube, "UU_EMPTY"), []);
+});
+
+// Phase 9 slice 9B -- getPublicVideoSnapshots, a lean public batch video-stats fetch.
+test("getPublicVideoSnapshots returns an empty array without calling the API for an empty id list", async () => {
+  let called = false;
+  const youtube = fakeYoutubeClient({
+    videosList: (async () => {
+      called = true;
+      return { data: { items: [] } };
+    }) as unknown as youtube_v3.Youtube["videos"]["list"],
+  });
+
+  const snapshots = await getPublicVideoSnapshots(youtube, []);
+
+  assert.deepEqual(snapshots, []);
+  assert.equal(called, false);
+});
+
+test("getPublicVideoSnapshots requests snippet+statistics, parses stats, and never fabricates a missing field", async () => {
+  let receivedArgs: unknown;
+  const youtube = fakeYoutubeClient({
+    videosList: (async (args: unknown) => {
+      receivedArgs = args;
+      return {
+        data: {
+          items: [
+            {
+              id: "v1",
+              snippet: { title: "Video One", publishedAt: "2026-01-01T00:00:00.000Z" },
+              statistics: { viewCount: "100", likeCount: "10", commentCount: "2" },
+            },
+            {
+              id: "v2",
+              snippet: { title: "Video Two" },
+              statistics: {},
+            },
+          ],
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["videos"]["list"],
+  });
+
+  const snapshots = await getPublicVideoSnapshots(youtube, ["v1", "v2"]);
+
+  assert.deepEqual(receivedArgs, { part: ["snippet", "statistics"], id: ["v1", "v2"] });
+  assert.deepEqual(snapshots, [
+    { videoId: "v1", title: "Video One", publishedAt: "2026-01-01T00:00:00.000Z", viewCount: 100, likeCount: 10, commentCount: 2 },
+    { videoId: "v2", title: "Video Two", publishedAt: null, viewCount: null, likeCount: null, commentCount: null },
+  ]);
+});
+
+test("getPublicVideoSnapshots chunks requests into groups of at most 50 video ids", async () => {
+  const requestedBatches: string[][] = [];
+  const videoIds = Array.from({ length: 60 }, (_, i) => `v${i + 1}`);
+
+  const youtube = fakeYoutubeClient({
+    videosList: (async (args: { id?: string[] }) => {
+      const batch = args.id ?? [];
+      requestedBatches.push(batch);
+      return { data: { items: batch.map((id) => ({ id, snippet: { title: id }, statistics: {} })) } };
+    }) as unknown as youtube_v3.Youtube["videos"]["list"],
+  });
+
+  const snapshots = await getPublicVideoSnapshots(youtube, videoIds);
+
+  assert.equal(snapshots.length, 60);
+  assert.equal(requestedBatches.length, 2);
+  assert.equal(requestedBatches[0]?.length, 50);
+  assert.equal(requestedBatches[1]?.length, 10);
+});
+
+test("getPublicVideoSnapshots omits a requested id absent from the response, never fabricating a placeholder", async () => {
+  const youtube = fakeYoutubeClient({
+    videosList: (async () => ({
+      data: { items: [{ id: "v1", snippet: { title: "Video One" }, statistics: {} }] },
+    })) as unknown as youtube_v3.Youtube["videos"]["list"],
+  });
+
+  const snapshots = await getPublicVideoSnapshots(youtube, ["v1", "v2_deleted"]);
+
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0]?.videoId, "v1");
 });

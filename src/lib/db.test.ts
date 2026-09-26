@@ -55,9 +55,16 @@ import {
   deleteResearchChannel,
   marketChannelSnapshots,
   marketVideoSnapshots,
+  marketIntelligenceCollectionRuns,
   insertMarketChannelSnapshot,
   listMarketChannelSnapshotsByChannel,
   insertMarketVideoSnapshot,
+  claimStaleResearchChannelsForCollection,
+  releaseResearchChannelCollectionClaim,
+  listRecentlyFailedResearchChannelIds,
+  markResearchChannelAutoCollected,
+  insertMarketIntelligenceCollectionRun,
+  getMarketIntelligenceUnitsSpentSince,
 } from "./db";
 import { readSchemaVersion } from "@/lib/schema-versioning";
 import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
@@ -133,6 +140,7 @@ test("initializeDatabaseSchema: a fresh database ends stamped at SCHEMA_CURRENT_
     assert.equal(await tableExists(client, "content_proposal_artifacts"), true);
     assert.equal(await tableExists(client, "market_channel_snapshots"), true);
     assert.equal(await tableExists(client, "market_video_snapshots"), true);
+    assert.equal(await tableExists(client, "market_intelligence_collection_runs"), true);
   }));
 
 // Phase 7 slice D (docs/AGENT_OPERATIONS_INTERFACE.md §4c).
@@ -1042,6 +1050,23 @@ test("initializeDatabaseSchema: an existing pre-versioning database (baseline ta
       true,
       "a later migration (v23) must still apply correctly on the pre-versioning re-apply path"
     );
+    // Phase 9 slice 9B -- a later ALTER-TABLE + CREATE-TABLE migration (v24) must also survive the
+    // pre-versioning re-apply path, same as v22/v23's own assertions above.
+    assert.equal(
+      await tableExists(client, "market_intelligence_collection_runs"),
+      true,
+      "a later migration (v24) must still apply correctly on the pre-versioning re-apply path"
+    );
+    const researchChannelColumns = await client.execute("PRAGMA table_info(research_channels)");
+    const researchChannelColumnNames = researchChannelColumns.rows.map((row) => row.name);
+    assert.ok(
+      researchChannelColumnNames.includes("last_auto_collected_at"),
+      "a later ALTER TABLE migration (v24) must still apply correctly on the pre-versioning re-apply path"
+    );
+    assert.ok(
+      researchChannelColumnNames.includes("collection_claimed_at"),
+      "a later ALTER TABLE migration (v24) must still apply correctly on the pre-versioning re-apply path"
+    );
   }));
 
 // Phase 7 slice K (owner spec §10 -- AC-DUR-01). `upsertVideos`/`listStoredVideosByChannel`
@@ -1330,6 +1355,178 @@ test("deleteResearchChannel also cascade-deletes market_channel_snapshots/market
     assert.equal(channelSnapshotRows.length, 0, "channel snapshots must be deleted along with their channel, never left orphaned");
     const videoSnapshotRows = await isolatedDb.select().from(marketVideoSnapshots);
     assert.equal(videoSnapshotRows.length, 0, "video snapshots must be deleted along with their channel, never left orphaned");
+  }));
+
+// Phase 9 slice 9B (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md §9) -- proves the mark-then-run
+// claim's own atomicity against the REAL SQLite driver, not a service-level fake (AGENTS.md §L: a
+// fake in-memory store can only prove the fake is self-consistent, never that the underlying
+// `UPDATE ... WHERE ... RETURNING` statement is genuinely a compare-and-swap).
+test("claimStaleResearchChannelsForCollection: a second concurrent claim attempt gets nothing for a channel the first already claimed", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values([
+      { id: "UC_STALE_NEVER_COLLECTED0", reason: "r", createdVia: "web_ui" },
+      { id: "UC_STALE_ALREADY_CLAIMED0", reason: "r", createdVia: "web_ui" },
+    ]);
+
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    const staleCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const claimExpiryCutoff = new Date(now.getTime() - 15 * 60 * 1000);
+
+    const firstClaim = await claimStaleResearchChannelsForCollection(
+      { now, staleCutoff, claimExpiryCutoff, excludeResearchChannelIds: [] },
+      isolatedDb
+    );
+    assert.deepEqual(
+      [...firstClaim].sort(),
+      ["UC_STALE_ALREADY_CLAIMED0", "UC_STALE_NEVER_COLLECTED0"],
+      "both never-collected channels must be claimed by the first caller"
+    );
+
+    const secondClaim = await claimStaleResearchChannelsForCollection(
+      { now, staleCutoff, claimExpiryCutoff, excludeResearchChannelIds: [] },
+      isolatedDb
+    );
+    assert.deepEqual(secondClaim, [], "a second concurrent claim attempt must see both channels already claimed, and get nothing");
+
+    await releaseResearchChannelCollectionClaim("UC_STALE_ALREADY_CLAIMED0", isolatedDb);
+    const thirdClaim = await claimStaleResearchChannelsForCollection(
+      { now, staleCutoff, claimExpiryCutoff, excludeResearchChannelIds: [] },
+      isolatedDb
+    );
+    assert.deepEqual(
+      thirdClaim,
+      ["UC_STALE_ALREADY_CLAIMED0"],
+      "releasing a claim must make that channel (and only that channel) claimable again"
+    );
+  }));
+
+test("claimStaleResearchChannelsForCollection: a claim older than claimExpiryCutoff is treated as abandoned and can be reclaimed", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_ABANDONED_CLAIM00000", reason: "r", createdVia: "web_ui" });
+
+    const firstAttemptTime = new Date("2026-09-27T00:00:00.000Z");
+    await claimStaleResearchChannelsForCollection(
+      {
+        now: firstAttemptTime,
+        staleCutoff: new Date(firstAttemptTime.getTime() - 24 * 60 * 60 * 1000),
+        claimExpiryCutoff: new Date(firstAttemptTime.getTime() - 15 * 60 * 1000),
+        excludeResearchChannelIds: [],
+      },
+      isolatedDb
+    );
+    // Simulates a crashed process that claimed the channel and never released it -- the claim is
+    // now 20 minutes old.
+    const laterTime = new Date(firstAttemptTime.getTime() + 20 * 60 * 1000);
+    const reclaim = await claimStaleResearchChannelsForCollection(
+      {
+        now: laterTime,
+        staleCutoff: new Date(laterTime.getTime() - 24 * 60 * 60 * 1000),
+        claimExpiryCutoff: new Date(laterTime.getTime() - 15 * 60 * 1000),
+        excludeResearchChannelIds: [],
+      },
+      isolatedDb
+    );
+    assert.deepEqual(reclaim, ["UC_ABANDONED_CLAIM00000"], "a claim older than the expiry cutoff must be reclaimable, never stuck forever");
+  }));
+
+test("claimStaleResearchChannelsForCollection: excludeResearchChannelIds keeps a recently-failed channel out of the claimed set", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values([
+      { id: "UC_RECENTLY_FAILED00000", reason: "r", createdVia: "web_ui" },
+      { id: "UC_NEVER_FAILED0000000", reason: "r", createdVia: "web_ui" },
+    ]);
+
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    const claimed = await claimStaleResearchChannelsForCollection(
+      {
+        now,
+        staleCutoff: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+        claimExpiryCutoff: new Date(now.getTime() - 15 * 60 * 1000),
+        excludeResearchChannelIds: ["UC_RECENTLY_FAILED00000"],
+      },
+      isolatedDb
+    );
+    assert.deepEqual(claimed, ["UC_NEVER_FAILED0000000"]);
+  }));
+
+test("listRecentlyFailedResearchChannelIds: returns only channels whose most recent run is a failure within the window, deduped", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values([
+      { id: "UC_FAILED_TWICE0000000", reason: "r", createdVia: "web_ui" },
+      { id: "UC_SUCCEEDED000000000", reason: "r", createdVia: "web_ui" },
+      { id: "UC_FAILED_LONG_AGO0000", reason: "r", createdVia: "web_ui" },
+    ]);
+
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    await insertMarketIntelligenceCollectionRun(
+      { researchChannelId: "UC_FAILED_TWICE0000000", status: "failed", unitsSpent: 1, errorMessage: "boom" },
+      isolatedDb
+    );
+    await isolatedDb
+      .update(marketIntelligenceCollectionRuns)
+      .set({ ranAt: now })
+      .where(eq(marketIntelligenceCollectionRuns.researchChannelId, "UC_FAILED_TWICE0000000"));
+    await insertMarketIntelligenceCollectionRun(
+      { researchChannelId: "UC_FAILED_TWICE0000000", status: "failed", unitsSpent: 1, errorMessage: "boom again" },
+      isolatedDb
+    );
+    await insertMarketIntelligenceCollectionRun(
+      { researchChannelId: "UC_SUCCEEDED000000000", status: "success", unitsSpent: 3 },
+      isolatedDb
+    );
+    await insertMarketIntelligenceCollectionRun(
+      { researchChannelId: "UC_FAILED_LONG_AGO0000", status: "failed", unitsSpent: 1, errorMessage: "old failure" },
+      isolatedDb
+    );
+    await isolatedDb
+      .update(marketIntelligenceCollectionRuns)
+      .set({ ranAt: new Date(since.getTime() - 60 * 60 * 1000) })
+      .where(eq(marketIntelligenceCollectionRuns.researchChannelId, "UC_FAILED_LONG_AGO0000"));
+
+    const recentlyFailed = await listRecentlyFailedResearchChannelIds(since, isolatedDb);
+    assert.deepEqual(recentlyFailed, ["UC_FAILED_TWICE0000000"], "deduped to one entry, excludes success and excludes a failure outside the window");
+  }));
+
+test("markResearchChannelAutoCollected + getMarketIntelligenceUnitsSpentSince round-trip through the real Drizzle schema", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_UNITS_SPENT00000000", reason: "r", createdVia: "web_ui" });
+
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    await markResearchChannelAutoCollected("UC_UNITS_SPENT00000000", now, isolatedDb);
+    const [channelRow] = await isolatedDb.select().from(researchChannels).where(eq(researchChannels.id, "UC_UNITS_SPENT00000000"));
+    assert.equal(channelRow.lastAutoCollectedAt?.getTime(), now.getTime());
+
+    await insertMarketIntelligenceCollectionRun(
+      { researchChannelId: "UC_UNITS_SPENT00000000", status: "success", unitsSpent: 3, videosRequested: 10, videosReturned: 9 },
+      isolatedDb
+    );
+    await insertMarketIntelligenceCollectionRun(
+      { researchChannelId: "UC_UNITS_SPENT00000000", status: "skipped_quota_limited", unitsSpent: 1 },
+      isolatedDb
+    );
+
+    const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const totalSpent = await getMarketIntelligenceUnitsSpentSince(since, isolatedDb);
+    assert.equal(totalSpent, 4, "sums units_spent across every status, including a partially-spent skipped_quota_limited row");
+
+    const [runRow] = await isolatedDb
+      .select()
+      .from(marketIntelligenceCollectionRuns)
+      .where(eq(marketIntelligenceCollectionRuns.status, "success"));
+    assert.equal(runRow.videosRequested, 10, "videosRequested must round-trip, never fabricated");
+    assert.equal(runRow.videosReturned, 9, "a gap between requested and returned must be preserved honestly, never silently corrected");
   }));
 
 // AC-SCHEMA-04

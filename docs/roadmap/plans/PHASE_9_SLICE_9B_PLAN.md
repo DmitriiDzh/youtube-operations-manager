@@ -67,10 +67,20 @@ snapshots; scheduler integration; quota accounting"):
   of the overall run — a channel skipped because the budget ran out mid-run must remain stale for
   the next trigger, not silently marked done.
 - **Concurrent-trigger guard: mark-then-run**, not mark-after — the running collection stamps its
-  own "attempt in progress" signal before doing real work (mirrors the established, already-tested
-  precedent this codebase uses for the identical two-open-tabs race, `docs/roadmap/BACKLOG.md`
-  BL-059), so two near-simultaneous dashboard mounts can't both spend budget refreshing the same
-  channel twice.
+  own "attempt in progress" signal before doing real work. **Correction (advisor review, before
+  implementation): this does NOT actually mirror BL-059/`runAutoCollectionIfStale`** as first
+  drafted here — direct inspection of `analytics/services.ts` found that function is mark-AFTER
+  (it marks `analyticsLastAutoCollectedAt` only once `collectMetrics` itself finishes, and its own
+  doc comment explicitly accepts a rare double-collection race as a deliberate tradeoff, since
+  Analytics quota is ample). That looser guard is the wrong fit here: this feature's operator-set,
+  possibly-small budget makes a double-spend a real correctness problem, not a rare harmless
+  waste, so this slice earns its own STRICTER guard instead of reusing that precedent. Concretely:
+  a new `research_channels.collection_claimed_at` column (nullable timestamp, added to the same v24
+  migration as `last_auto_collected_at`), claimed via one atomic `UPDATE ... WHERE (stale) AND
+  (unclaimed) ... RETURNING id` for EVERY eligible channel at once (not per-channel), and released
+  once each channel's attempt reaches any terminal outcome. A claim older than 15 minutes is
+  treated as abandoned (crash safety) and may be reclaimed. Verified directly against the real
+  libsql driver (`db.test.ts`), not assumed from SQLite's general reputation.
 - **The quota Settings control is a real `<input type="range">` slider** (the owner's own word,
   "ползунок"), paired with a plain-text numeric readout of the exact value (never a locale-
   formatted number) -- consistent with this project's standing rule against locale-ambiguous
@@ -90,6 +100,7 @@ snapshots; scheduler integration; quota accounting"):
 
 ```sql
 ALTER TABLE research_channels ADD COLUMN last_auto_collected_at INTEGER;
+ALTER TABLE research_channels ADD COLUMN collection_claimed_at INTEGER;
 
 CREATE TABLE IF NOT EXISTS market_intelligence_collection_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,10 +119,12 @@ CREATE INDEX IF NOT EXISTS market_intelligence_collection_runs_ran_at_idx
 ```
 
 `last_auto_collected_at` mirrors `channels.analyticsLastAutoCollectedAt`'s own shape/purpose
-exactly, scoped to `research_channels` instead. The collection-run table is this slice's own
-`analytics_collection_runs` counterpart -- append-only, one row per real attempt at one channel,
-used both as the audit trail and as the quota ledger's source of truth (`SUM(units_spent)` for
-today's UTC calendar day).
+exactly, scoped to `research_channels` instead. `collection_claimed_at` is the mark-then-run
+concurrency claim (§2's correction above) -- transient, cleared once an attempt reaches any
+terminal outcome, never a substitute for `last_auto_collected_at`. The collection-run table is this
+slice's own `analytics_collection_runs` counterpart -- append-only, one row per real attempt at one
+channel, used both as the audit trail and as the quota ledger's source of truth (`SUM(units_spent)`
+for today's UTC calendar day).
 
 ## 4. Quota budget
 
@@ -136,9 +149,15 @@ today's UTC calendar day).
   requests `part: ["snippet", "statistics", "contentDetails"]` (was `["snippet", "statistics"]`)
   and reads `channel.contentDetails?.relatedPlaylists?.uploads ?? null`. Its own doc comment's
   "never enumerates a non-owned channel's videos" claim is updated -- 9B is exactly that exception.
-- `listUploadsPlaylistVideoIds` gains an optional `{ maxResults?: number }` third parameter --
-  when given, stops paging once that many ids are collected (still deduping); omitted preserves
-  today's unlimited-pagination behavior unchanged for owned-channel sync's own existing caller.
+- **Correction (advisor review, before implementation): NOT an options-based `maxResults` widening
+  of `listUploadsPlaylistVideoIds`** as first drafted here -- that would leave the real unit cost
+  observable only as "1 call," when a first page short of `maxResults` valid ids plus a
+  `nextPageToken` would actually issue a second `playlistItems.list` request the caller's own
+  meter would never see (silently under-counting real spend). Implemented instead as a new, separate
+  `listUploadsPlaylistFirstPageVideoIds(youtube, uploadsPlaylistId)` -- exactly ONE
+  `playlistItems.list` call, never paginates regardless of `nextPageToken`, so its real YouTube
+  quota cost is always and exactly 1 unit, deterministically. `listUploadsPlaylistVideoIds` itself
+  is unchanged from before this slice.
 - New `getPublicVideoSnapshots(youtube, videoIds)` -- `part: ["snippet", "statistics"]`, batched by
   the existing `YOUTUBE_VIDEOS_LIST_BATCH_SIZE`/`chunk` helper, returns `{ videoId, title,
   publishedAt, viewCount, likeCount, commentCount }[]`; a requested id absent from the response is
@@ -146,21 +165,37 @@ today's UTC calendar day).
 
 ## 6. Market-intelligence module additions
 
-- `captureChannelSnapshot` (9A) is extended to also persist `uploadsPlaylistId` internally for the
-  same call's use by the video-collection step -- no second `channels.list` call.
-- New `captureVideoSnapshots(researchChannelId, videoIds, credentials)`-shaped internal helper
-  storing one `market_video_snapshots` row per returned video via the already-existing
-  `insertMarketVideoSnapshot` (9A).
-- New orchestration, `runMarketIntelligenceCollectionIfStale(credentialRef)`: for every
-  `research_channels` row where `last_auto_collected_at` is null or >24h old (independent, small
-  staleness check owned by this module, per §2), attempt in mark-then-run order: mark attempt-in-
-  progress → capture channel snapshot (± uploads playlist id) → capture up to 50 video snapshots →
-  record one `market_intelligence_collection_runs` row → mark `last_auto_collected_at` **only on
-  success**. Stops issuing further calls (this channel or later ones) the moment the budget check
-  in §4 fails, recording `skipped_quota_limited` for whatever didn't run.
+- **Deliberately does NOT call the public `captureChannelSnapshot` (9A) inside the orchestration**
+  (advisor review, before implementation): that action's own output schema strips
+  `uploadsPlaylistId` (a field the persisted `MarketChannelSnapshot` contract has no reason to
+  carry) and it would re-resolve credentials once per channel instead of once for the whole run.
+  `runCollectionIfStale` calls `deps.youtubeApi.getPublicChannelSnapshot`/
+  `deps.insertMarketChannelSnapshot` directly instead, on one already-resolved credential set.
+- New orchestration, `runCollectionIfStale({ credentialRef })` (schema-validated `unknown` input,
+  matching this module's own convention): resolves credentials FIRST (a scope/credential failure
+  aborts before any channel is claimed); computes today's spend and the stale/failure-backoff
+  cutoffs; excludes channels whose most recent run failed within the last 24h
+  (`listRecentlyFailedResearchChannelIds` -- found necessary by advisor review: without it, a
+  permanently broken channel would spend a unit on every single dashboard mount, forever); claims
+  every remaining eligible channel AT ONCE in one atomic call
+  (`claimStaleResearchChannelsForCollection` -- also advisor review: a per-channel-only claim still
+  leaves a run-scoped shared budget racy across two channels claimed by two different concurrent
+  callers); then per claimed channel, in order: capture channel snapshot (± uploads playlist id) →
+  capture up to 50 video snapshots (only if budget allows) → record one
+  `market_intelligence_collection_runs` row (`success`/`failed`, with real spend recorded even on a
+  partial failure) → release the claim → mark `last_auto_collected_at` **only on full success**.
+  The moment a channel's very first call can't be paid for, that channel gets exactly one
+  `skipped_quota_limited` row (unitsSpent 0) and every other still-claimed channel is released
+  WITHOUT its own row (avoids one identical row per remaining stale channel on every mount once the
+  budget is merely small) -- the whole run then stops.
 - New API route, `POST /api/market-intelligence/collect-if-stale` (mirrors
   `.../analytics/auto-collect`'s own shape/idempotence contract) -- real mutation, gated by
   `src/proxy.ts` normally, never exempted, matching every other real-mutation route in this app.
+- The daily quota budget getter/setter are exposed as their own thin service actions
+  (`getDailyQuotaBudgetUnits`/`setDailyQuotaBudgetUnits`) rather than left as a direct `db.ts`
+  import inside `/api/settings/route.ts` -- found necessary by this module's own mechanical
+  `PHASE9-INV-02` inventory test, which forbids any file outside the module from reaching into its
+  db.ts symbols directly, even for a setting as simple as a plain nullable number.
 
 ## 7. Trigger wiring
 

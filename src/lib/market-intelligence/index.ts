@@ -26,6 +26,16 @@ export function createMarketIntelligenceCore() {
     listMarketVideoSnapshotsByChannel: store.listMarketVideoSnapshotsByChannel,
     authResolver: defaultAuthResolver(),
     youtubeApi: createMarketIntelligenceYoutubeApiAdapter(),
+    // Phase 9 slice 9B (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md).
+    clock: { now: () => new Date() },
+    getMarketIntelligenceDailyQuotaBudgetUnits: store.getMarketIntelligenceDailyQuotaBudgetUnits,
+    setMarketIntelligenceDailyQuotaBudgetUnits: store.setMarketIntelligenceDailyQuotaBudgetUnits,
+    getMarketIntelligenceUnitsSpentSince: store.getMarketIntelligenceUnitsSpentSince,
+    claimStaleResearchChannelsForCollection: store.claimStaleResearchChannelsForCollection,
+    releaseResearchChannelCollectionClaim: store.releaseResearchChannelCollectionClaim,
+    listRecentlyFailedResearchChannelIds: store.listRecentlyFailedResearchChannelIds,
+    markResearchChannelAutoCollected: store.markResearchChannelAutoCollected,
+    insertMarketIntelligenceCollectionRun: store.insertMarketIntelligenceCollectionRun,
   });
 }
 

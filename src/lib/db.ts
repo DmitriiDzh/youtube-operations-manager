@@ -5,7 +5,7 @@ import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import path from "path";
-import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
 import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
@@ -901,6 +901,24 @@ export const researchChannels = sqliteTable("research_channels", {
   addedAt: integer("added_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),
+  /** Phase 9 slice 9B (`docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md`) -- mirrors
+   * `channels.analyticsLastAutoCollectedAt`'s own shape/purpose exactly, scoped to a research
+   * channel instead. `NULL` means never auto-collected (always stale). Set ONLY on a genuinely
+   * successful refresh of THIS channel -- a run that skips this channel (budget exhausted) must
+   * never touch it, so the channel stays stale for the next trigger. */
+  lastAutoCollectedAt: integer("last_auto_collected_at", { mode: "timestamp" }),
+  /** Phase 9 slice 9B -- the mark-then-run concurrency claim (advisor review before
+   * implementation: analytics' own `runAutoCollectionIfStale` is actually mark-AFTER and
+   * deliberately accepts a rare double-collection race, since Analytics quota is ample; this
+   * feature's operator-set budget makes a double-spend a real correctness problem, so it earns its
+   * own, stricter claim column rather than reusing `lastAutoCollectedAt` for both roles). Set
+   * atomically (a single `UPDATE ... WHERE ... RETURNING` -- never read-then-write) immediately
+   * before a channel's real work starts, and cleared once that channel's attempt reaches any
+   * terminal outcome (success, failure, or quota-limited skip). A claim older than
+   * `MARKET_INTELLIGENCE_CLAIM_EXPIRY_MS` is treated as abandoned (a crashed process) and may be
+   * reclaimed -- never requires a manual operator unlock, unlike `operation-lock`'s deliberately
+   * stricter export/import/migration guard. */
+  collectionClaimedAt: integer("collection_claimed_at", { mode: "timestamp" }),
 });
 
 /**
@@ -996,6 +1014,41 @@ export const marketVideoSnapshots = sqliteTable(
   (table) => [
     index("market_video_snapshots_research_channel_id_idx").on(table.researchChannelId),
     index("market_video_snapshots_video_id_idx").on(table.videoId),
+  ]
+);
+
+/**
+ * Phase 9 slice 9B (`docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md`) -- append-only, one row per real
+ * attempt at refreshing one watchlisted channel. Serves TWO roles at once, deliberately not split
+ * into two tables: (1) the audit trail owner spec §25 requires ("failures must be visible and
+ * auditable") -- mirrors `analyticsCollectionRuns`' own precedent and role; (2) the quota ledger's
+ * own source of truth (`SUM(units_spent)` for today's UTC calendar day) -- `gatewayCallEvents`
+ * cannot serve this role, since it counts YouTube-client CONSTRUCTIONS, not real per-request unit
+ * spend (confirmed by direct inspection before this slice was designed). `videos_requested` vs.
+ * `videos_returned` disambiguates "some ids came back missing" from either extreme, honestly --
+ * `videos.list` silently omits deleted/private videos from its response with no distinguishing
+ * signal, so a gap here is reported as exactly that (a gap), never assumed to mean `deleted_video`
+ * specifically (no evidence for that stronger claim exists from this call alone).
+ */
+export const marketIntelligenceCollectionRuns = sqliteTable(
+  "market_intelligence_collection_runs",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    researchChannelId: text("research_channel_id")
+      .notNull()
+      .references(() => researchChannels.id),
+    ranAt: integer("ran_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    status: text("status", { enum: ["success", "skipped_quota_limited", "failed"] }).notNull(),
+    unitsSpent: integer("units_spent").notNull(),
+    videosRequested: integer("videos_requested"),
+    videosReturned: integer("videos_returned"),
+    errorMessage: text("error_message"),
+  },
+  (table) => [
+    index("market_intelligence_collection_runs_research_channel_id_idx").on(table.researchChannelId),
+    index("market_intelligence_collection_runs_ran_at_idx").on(table.ranAt),
   ]
 );
 
@@ -1434,6 +1487,40 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
       await client.execute(
         "CREATE INDEX IF NOT EXISTS market_video_snapshots_video_id_idx ON market_video_snapshots(video_id)"
+      );
+    },
+  },
+  {
+    version: 24,
+    description:
+      "research_channels.last_auto_collected_at/collection_claimed_at + market_intelligence_collection_runs -- Phase 9 slice 9B repeatable refresh staleness tracking, mark-then-run concurrency claim, and append-only collection-run audit/quota log (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md)",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE research_channels ADD COLUMN last_auto_collected_at INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+      try {
+        await client.execute("ALTER TABLE research_channels ADD COLUMN collection_claimed_at INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_intelligence_collection_runs (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "research_channel_id TEXT NOT NULL REFERENCES research_channels(id), " +
+          "ran_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "status TEXT NOT NULL, " +
+          "units_spent INTEGER NOT NULL, " +
+          "videos_requested INTEGER, " +
+          "videos_returned INTEGER, " +
+          "error_message TEXT)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_intelligence_collection_runs_research_channel_id_idx ON market_intelligence_collection_runs(research_channel_id)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_intelligence_collection_runs_ran_at_idx ON market_intelligence_collection_runs(ran_at)"
       );
     },
   },
@@ -4354,6 +4441,8 @@ export type StoredResearchChannel = {
   reason: string;
   createdVia: string;
   addedAt: Date;
+  lastAutoCollectedAt: Date | null;
+  collectionClaimedAt: Date | null;
 };
 
 export async function insertResearchChannel(
@@ -4437,6 +4526,8 @@ export async function deleteResearchChannel(id: string, database: AppDb = db): P
     await tx.delete(researchEvidence).where(eq(researchEvidence.researchChannelId, id));
     await tx.delete(marketChannelSnapshots).where(eq(marketChannelSnapshots.researchChannelId, id));
     await tx.delete(marketVideoSnapshots).where(eq(marketVideoSnapshots.researchChannelId, id));
+    // Phase 9 slice 9B -- widened for the same FK-ordering reason as the two tables above.
+    await tx.delete(marketIntelligenceCollectionRuns).where(eq(marketIntelligenceCollectionRuns.researchChannelId, id));
     await tx.delete(researchChannels).where(eq(researchChannels.id, id));
   });
 }
@@ -4549,4 +4640,170 @@ export async function listMarketVideoSnapshotsByChannel(
     .from(marketVideoSnapshots)
     .where(eq(marketVideoSnapshots.researchChannelId, researchChannelId))
     .orderBy(asc(marketVideoSnapshots.observedAt));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9B (`docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md`) -- repeatable-refresh staleness
+// tracking and the append-only collection-run audit/quota log. Read/written only by
+// `src/lib/market-intelligence/adapters/store.ts`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirrors `markAnalyticsAutoCollected`'s own shape exactly, scoped to `research_channels`. Called
+ * ONLY after a genuine successful refresh of this specific channel -- never as a side effect of
+ * the overall collection run, so a channel skipped for budget reasons stays stale for next time.
+ */
+export async function markResearchChannelAutoCollected(
+  researchChannelId: string,
+  at: Date,
+  database: AppDb = db
+): Promise<void> {
+  await database
+    .update(researchChannels)
+    .set({ lastAutoCollectedAt: at })
+    .where(eq(researchChannels.id, researchChannelId));
+}
+
+/**
+ * The atomic mark-then-run concurrency claim (see `researchChannels.collectionClaimedAt`'s own
+ * doc comment for why this is a separate column from `lastAutoCollectedAt`, rather than reusing
+ * `markResearchChannelAutoCollected` above for both roles). A single `UPDATE ... WHERE ...
+ * RETURNING` -- never a separate read followed by a write -- so two callers racing this exact
+ * statement can never both see themselves as the winner for the same channel id: SQLite serializes
+ * the two statements, and only the first to actually run matches the `WHERE` clause's own
+ * "not already claimed" condition, so the second's `RETURNING` set excludes it (verified directly
+ * against this project's own libsql driver, not assumed from SQLite's general reputation, before
+ * this function was written).
+ *
+ * `excludeResearchChannelIds` is the caller's own "recently failed" backoff list
+ * (`listRecentlyFailedResearchChannelIds` below) -- computed as a separate, plain read rather than
+ * folded into this one atomic statement, since it is a soft prioritization heuristic, not a
+ * correctness-critical lock (a channel that slips through this exclusion by a race is merely
+ * retried a little sooner than ideal, never double-charged).
+ */
+export async function claimStaleResearchChannelsForCollection(
+  args: { now: Date; staleCutoff: Date; claimExpiryCutoff: Date; excludeResearchChannelIds: string[] },
+  database: AppDb = db
+): Promise<string[]> {
+  const conditions = [
+    or(isNull(researchChannels.lastAutoCollectedAt), lt(researchChannels.lastAutoCollectedAt, args.staleCutoff)),
+    or(isNull(researchChannels.collectionClaimedAt), lt(researchChannels.collectionClaimedAt, args.claimExpiryCutoff)),
+  ];
+  if (args.excludeResearchChannelIds.length > 0) {
+    conditions.push(notInArray(researchChannels.id, args.excludeResearchChannelIds));
+  }
+
+  const rows = await database
+    .update(researchChannels)
+    .set({ collectionClaimedAt: args.now })
+    .where(and(...conditions))
+    .returning({ id: researchChannels.id });
+
+  return rows.map((row) => row.id);
+}
+
+/**
+ * Releases one channel's claim once its attempt reaches ANY terminal outcome (success, failure, or
+ * a quota-limited skip) -- called unconditionally in the orchestration's own `finally`, so a claim
+ * never outlives the single collection pass that took it, regardless of that pass's own duration
+ * (`claimExpiryCutoff` above exists only as a crash-safety fallback, not as the normal release
+ * path).
+ */
+export async function releaseResearchChannelCollectionClaim(
+  researchChannelId: string,
+  database: AppDb = db
+): Promise<void> {
+  await database
+    .update(researchChannels)
+    .set({ collectionClaimedAt: null })
+    .where(eq(researchChannels.id, researchChannelId));
+}
+
+/**
+ * The failure-retry backoff (advisor review before implementation: without this, a permanently
+ * broken channel -- e.g. deleted or made private -- would be re-attempted, spending at least one
+ * real YouTube API unit, on every single dashboard mount, all day, forever). A channel whose most
+ * recent collection-run row is `status: "failed"` within `since` is excluded from the next claim --
+ * reuses the same window as the staleness check itself (this module owns no separate
+ * backoff-duration concept, `AGENTS.md` §M: no new shared constant introduced for one caller).
+ */
+export async function listRecentlyFailedResearchChannelIds(since: Date, database: AppDb = db): Promise<string[]> {
+  const rows = await database
+    .select({ researchChannelId: marketIntelligenceCollectionRuns.researchChannelId })
+    .from(marketIntelligenceCollectionRuns)
+    .where(and(eq(marketIntelligenceCollectionRuns.status, "failed"), gte(marketIntelligenceCollectionRuns.ranAt, since)));
+  return [...new Set(rows.map((row) => row.researchChannelId))];
+}
+
+/**
+ * Appends one audit/quota-ledger row (`marketIntelligenceCollectionRuns`'s own doc comment
+ * explains the dual role). Never updated once written -- a genuinely new attempt is always a new
+ * row, matching every other append-only table this module owns.
+ */
+export async function insertMarketIntelligenceCollectionRun(
+  input: {
+    researchChannelId: string;
+    status: "success" | "skipped_quota_limited" | "failed";
+    unitsSpent: number;
+    videosRequested?: number | null;
+    videosReturned?: number | null;
+    errorMessage?: string | null;
+    // Injectable so the orchestration's own staleness/backoff-window tests can control exactly
+    // what this row's ranAt reads as -- omitted (real callers outside a test) defaults to the
+    // table's own `$defaultFn(() => new Date())`, unchanged from before this parameter existed.
+    ranAt?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketIntelligenceCollectionRuns).values({
+    researchChannelId: input.researchChannelId,
+    status: input.status,
+    unitsSpent: input.unitsSpent,
+    videosRequested: input.videosRequested ?? null,
+    videosReturned: input.videosReturned ?? null,
+    errorMessage: input.errorMessage ?? null,
+    ...(input.ranAt ? { ranAt: input.ranAt } : {}),
+  });
+}
+
+/**
+ * The quota ledger's own read side: total real YouTube API units spent by market-intelligence
+ * collection since `since` (the caller passes the start of "today," a plain UTC calendar day
+ * boundary -- deliberately NOT Pacific-Time-aligned like `cloud-quotas`' own display, per this
+ * slice's own `AGENTS.md` §M module-independence constraint; the Settings UI labels this window
+ * explicitly so it is never confused with that other, differently-windowed number). Sums every row
+ * regardless of `status` -- a `skipped_quota_limited`/`failed` row still has a real, already-spent
+ * `unitsSpent` (e.g. the channel-snapshot call succeeded before the video step got skipped) that
+ * must count against the budget.
+ */
+export async function getMarketIntelligenceUnitsSpentSince(since: Date, database: AppDb = db): Promise<number> {
+  const [row] = await database
+    .select({ total: sql<number | null>`SUM(${marketIntelligenceCollectionRuns.unitsSpent})` })
+    .from(marketIntelligenceCollectionRuns)
+    .where(gte(marketIntelligenceCollectionRuns.ranAt, since));
+  return row?.total ?? 0;
+}
+
+const MARKET_INTELLIGENCE_DAILY_QUOTA_BUDGET_SETTING_KEY = "market_intelligence_daily_quota_budget_units";
+
+/**
+ * `null` (never set, or explicitly cleared) means auto-collection is OFF -- "the operator sets the
+ * number, no hardcoded default" (owner decision, `PHASE_9_PLAN.md` §12 item 2). Stored as a plain
+ * string in `app_settings` like every other setting; parsed defensively (a corrupted/non-numeric
+ * stored value is treated as unset rather than throwing on every dashboard load).
+ */
+export async function getMarketIntelligenceDailyQuotaBudgetUnits(database: AppDb = db): Promise<number | null> {
+  const raw = await getAppSetting(MARKET_INTELLIGENCE_DAILY_QUOTA_BUDGET_SETTING_KEY, database);
+  // `""` (an explicitly-cleared setting, see the setter below) must be treated the same as a
+  // never-set row (`null`) -- `Number("")` is `0`, not `NaN`, so this check cannot be folded into
+  // the `Number.isFinite`/`> 0` guard below without relying on that coincidence.
+  if (raw === null || raw === "") return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : null;
+}
+
+/** `null` clears the setting (equivalent to "off"); validation of the range is the caller's job
+ * (the API route boundary), same convention `setAnalyticsSyncSettings` already uses. */
+export async function setMarketIntelligenceDailyQuotaBudgetUnits(units: number | null, database: AppDb = db): Promise<void> {
+  await setAppSetting(MARKET_INTELLIGENCE_DAILY_QUOTA_BUDGET_SETTING_KEY, units === null ? "" : String(units), database);
 }

@@ -1419,7 +1419,7 @@ content-proposal/artifact registration, a Codex operations-workspace template, a
 review -- **which of these is actually implemented as of any given moment is tracked exclusively
 in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here**.
 
-## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A
+## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9B
 
 Owner instruction, Telegram 2026-09-26: an explicit assignment to research, plan, and begin
 implementing Phase 9 (`docs/roadmap/FUTURE_PHASES.md` §5) as its own feature branch, superseding
@@ -1495,3 +1495,46 @@ this slice adds) reuses the identical `getPublicChannelSnapshot` read-gateway ca
 (slice 3) already uses, but is a pure *addition* -- `fetchPublicSnapshot`'s own existing
 `research_evidence` write path is completely untouched, proven by a dedicated test
 (`AC-9A-10`, `services.test.ts`).
+
+**Slice 9B (`docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md`, 2026-09-27) -- repeatable refresh, real
+video collection, an operator-set quota budget, and a check-on-app-open scheduler.** Fills the gap
+9A's own plan explicitly named: a data model and one manual/on-demand live action, with zero
+automatic trigger. The one architectural decision worth recording permanently:
+
+**A stricter, dedicated mark-then-run concurrency guard, not a reuse of Phase 8's own
+`runAutoCollectionIfStale` pattern.** Direct inspection (before implementation, advisor review)
+found that Phase 8's own auto-collection is actually mark-*after* -- it marks
+`channels.analyticsLastAutoCollectedAt` only once collection finishes, and its own doc comment
+explicitly accepts a rare double-collection race between two concurrent callers as a deliberate
+tradeoff (Analytics quota is ample enough that a rare double-spend is harmless). That tradeoff does
+not transfer here: this feature's daily budget is an operator-set number that can be small, so a
+double-spend is a real correctness problem, not a rare harmless waste. This slice therefore adds its
+own `research_channels.collection_claimed_at` column (nullable timestamp, same v24 migration as
+`last_auto_collected_at`) and claims every eligible channel in ONE atomic
+`UPDATE ... WHERE (stale) AND (unclaimed) ... RETURNING id` at the start of a run -- not
+per-channel -- so two concurrent callers (two open dashboard tabs) can never together claim
+overlapping channels, closing a race a per-channel-only claim would still leave open against a
+run-scoped shared budget. A claim is released the moment its channel's attempt reaches any terminal
+outcome; a claim older than 15 minutes is treated as an abandoned (crashed) attempt and may be
+reclaimed, so a crash never permanently locks a channel out of future collection. This atomicity is
+verified directly against the real libsql driver (`db.test.ts`), not assumed from SQLite's general
+reputation.
+
+Budget accounting is metered per real outbound call, not per assumed channel cost: the collector
+tracks `remaining` across the whole run and, the moment a channel's next call can't be paid for,
+writes exactly one `skipped_quota_limited` row for that channel (with whatever it honestly spent so
+far, even 0) and releases every other still-claimed channel without its own row -- a deliberate
+choice (found necessary by advisor review) to avoid writing one identical audit row per remaining
+stale channel on every single dashboard mount once the budget merely runs short. A channel whose
+most recent run failed within the last 24h is excluded from the next claim entirely, for the
+symmetric reason: without this, a permanently broken (deleted/private) competitor channel would
+spend at least one real unit on every mount, forever.
+
+Video enumeration is deliberately capped to a channel's uploads playlist's first page only (a new
+`listUploadsPlaylistFirstPageVideoIds`, exactly one `playlistItems.list` call, never paginates) --
+an earlier drafted design widened the existing `listUploadsPlaylistVideoIds` with an `maxResults`
+option instead, but advisor review found that would leave the real unit cost unobservable to the
+caller whenever the first page came up short and a second page had to be fetched, silently
+under-counting real spend. Capping by PAGE rather than by count makes the cost exactly and always 1
+unit, deterministically -- consistent with this feature's own "never fabricate a unit-spend number"
+requirement.
