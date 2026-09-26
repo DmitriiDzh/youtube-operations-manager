@@ -1,6 +1,8 @@
 import { YOUTUBE_READ_SCOPE } from "@/lib/auth";
 import {
   DomainError,
+  type MarketChannelSnapshot,
+  type MarketVideoSnapshot,
   type PublicChannelSnapshot,
   type ResearchChannel,
   type ResearchEvidence,
@@ -9,17 +11,27 @@ import {
 import {
   addToWatchlistInputSchema,
   addToWatchlistOutputSchema,
+  captureChannelSnapshotInputSchema,
+  captureChannelSnapshotOutputSchema,
   fetchPublicSnapshotInputSchema,
   fetchPublicSnapshotOutputSchema,
   getWatchlistEntryContextOutputSchema,
   getWatchlistEntryInputSchema,
   getWatchlistEntryOutputSchema,
+  listChannelSnapshotsInputSchema,
+  listChannelSnapshotsOutputSchema,
   listEvidenceInputSchema,
   listEvidenceOutputSchema,
+  listVideoSnapshotsInputSchema,
+  listVideoSnapshotsOutputSchema,
   listWatchlistOutputSchema,
   parseWithSchema,
+  recordChannelSnapshotInputSchema,
+  recordChannelSnapshotOutputSchema,
   recordEvidenceInputSchema,
   recordEvidenceOutputSchema,
+  recordVideoSnapshotInputSchema,
+  recordVideoSnapshotOutputSchema,
   removeFromWatchlistInputSchema,
 } from "./schemas";
 import type { CreatedVia } from "@/lib/shared-provenance";
@@ -72,6 +84,31 @@ type StoredResearchEvidenceForService = {
   collectedAt: Date;
 };
 
+type StoredMarketChannelSnapshotForService = {
+  id: string;
+  researchChannelId: string;
+  observedAt: Date;
+  subscriberCount: number | null;
+  viewCount: number | null;
+  videoCount: number | null;
+  hiddenSubscriberCount: boolean;
+  source: string;
+  createdVia: string;
+};
+
+type StoredMarketVideoSnapshotForService = {
+  id: string;
+  researchChannelId: string;
+  videoId: string;
+  observedAt: Date;
+  viewCount: number | null;
+  likeCount: number | null;
+  commentCount: number | null;
+  publishedAt: Date | null;
+  source: string;
+  createdVia: string;
+};
+
 function toResearchChannel(row: StoredResearchChannelForService): ResearchChannel {
   return {
     channelId: row.id,
@@ -89,6 +126,33 @@ function toResearchEvidence(row: StoredResearchEvidenceForService): ResearchEvid
     source: row.source,
     confidence: row.confidence,
     collectedAt: row.collectedAt.toISOString(),
+  };
+}
+
+function toMarketChannelSnapshot(row: StoredMarketChannelSnapshotForService): MarketChannelSnapshot {
+  return {
+    snapshotId: row.id,
+    researchChannelId: row.researchChannelId,
+    observedAt: row.observedAt.toISOString(),
+    subscriberCount: row.subscriberCount,
+    viewCount: row.viewCount,
+    videoCount: row.videoCount,
+    hiddenSubscriberCount: row.hiddenSubscriberCount,
+    source: row.source,
+  };
+}
+
+function toMarketVideoSnapshot(row: StoredMarketVideoSnapshotForService): MarketVideoSnapshot {
+  return {
+    snapshotId: row.id,
+    researchChannelId: row.researchChannelId,
+    videoId: row.videoId,
+    observedAt: row.observedAt.toISOString(),
+    viewCount: row.viewCount,
+    likeCount: row.likeCount,
+    commentCount: row.commentCount,
+    publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
+    source: row.source,
   };
 }
 
@@ -121,6 +185,30 @@ type ServiceDependencies = {
       channelId: string;
     }): Promise<PublicChannelSnapshot | null>;
   };
+  // Phase 9 slice 9A (docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md).
+  insertMarketChannelSnapshot(input: {
+    id: string;
+    researchChannelId: string;
+    subscriberCount?: number | null;
+    viewCount?: number | null;
+    videoCount?: number | null;
+    hiddenSubscriberCount?: boolean;
+    source: string;
+    createdVia: string;
+  }): Promise<void>;
+  listMarketChannelSnapshotsByChannel(researchChannelId: string): Promise<StoredMarketChannelSnapshotForService[]>;
+  insertMarketVideoSnapshot(input: {
+    id: string;
+    researchChannelId: string;
+    videoId: string;
+    viewCount?: number | null;
+    likeCount?: number | null;
+    commentCount?: number | null;
+    publishedAt?: Date | null;
+    source: string;
+    createdVia: string;
+  }): Promise<void>;
+  listMarketVideoSnapshotsByChannel(researchChannelId: string): Promise<StoredMarketVideoSnapshotForService[]>;
 };
 
 export function createMarketIntelligenceServices(deps: ServiceDependencies) {
@@ -360,6 +448,186 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         { channel: toResearchChannel(channelRow), evidence: evidenceRows.map(toResearchEvidence) },
         "get watchlist entry context output"
       );
+    },
+
+    /**
+     * Manual, structured entry against an existing watchlist entry (Phase 9 slice 9A). Mirrors
+     * `recordEvidence`'s own discipline exactly: `researchChannelId` must already be on the
+     * watchlist, and an omitted numeric field is stored as `null`, never coerced to `0`.
+     */
+    async recordChannelSnapshot(
+      input: unknown,
+      callOrigin: { createdVia: CreatedVia }
+    ): Promise<MarketChannelSnapshot> {
+      const parsedInput = parseWithSchema(recordChannelSnapshotInputSchema, input, "record channel snapshot input");
+
+      const channelRow = await deps.getResearchChannelById(parsedInput.researchChannelId);
+      if (!channelRow) {
+        throw new DomainError({
+          code: "RESEARCH_CHANNEL_NOT_AVAILABLE",
+          message: "Cannot record a channel snapshot for a channel that is not on the watchlist",
+          details: { researchChannelId: parsedInput.researchChannelId },
+        });
+      }
+
+      const id = deps.idGenerator();
+      await deps.insertMarketChannelSnapshot({
+        id,
+        researchChannelId: parsedInput.researchChannelId,
+        subscriberCount: parsedInput.subscriberCount ?? null,
+        viewCount: parsedInput.viewCount ?? null,
+        videoCount: parsedInput.videoCount ?? null,
+        hiddenSubscriberCount: parsedInput.hiddenSubscriberCount ?? false,
+        source: parsedInput.source,
+        createdVia: callOrigin.createdVia,
+      });
+
+      const rows = await deps.listMarketChannelSnapshotsByChannel(parsedInput.researchChannelId);
+      // Guaranteed to exist -- this call itself just inserted it.
+      const row = rows.find((candidate) => candidate.id === id)!;
+
+      return parseWithSchema(recordChannelSnapshotOutputSchema, toMarketChannelSnapshot(row), "record channel snapshot output");
+    },
+
+    async listChannelSnapshots(input: unknown): Promise<{ snapshots: MarketChannelSnapshot[] }> {
+      const parsedInput = parseWithSchema(listChannelSnapshotsInputSchema, input, "list channel snapshots input");
+
+      const channelRow = await deps.getResearchChannelById(parsedInput.researchChannelId);
+      if (!channelRow) {
+        throw new DomainError({
+          code: "RESEARCH_CHANNEL_NOT_AVAILABLE",
+          message: "No watchlist entry for the requested channel",
+          details: { researchChannelId: parsedInput.researchChannelId },
+        });
+      }
+
+      const rows = await deps.listMarketChannelSnapshotsByChannel(parsedInput.researchChannelId);
+      const output = { snapshots: rows.map(toMarketChannelSnapshot) };
+      return parseWithSchema(listChannelSnapshotsOutputSchema, output, "list channel snapshots output");
+    },
+
+    /**
+     * Manual, structured entry for a video belonging to a watchlisted channel (Phase 9 slice 9A).
+     * No automatic collection writes to this table yet -- real video-enumeration/collection is
+     * 9B's own scope (`docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md` §1).
+     */
+    async recordVideoSnapshot(
+      input: unknown,
+      callOrigin: { createdVia: CreatedVia }
+    ): Promise<MarketVideoSnapshot> {
+      const parsedInput = parseWithSchema(recordVideoSnapshotInputSchema, input, "record video snapshot input");
+
+      const channelRow = await deps.getResearchChannelById(parsedInput.researchChannelId);
+      if (!channelRow) {
+        throw new DomainError({
+          code: "RESEARCH_CHANNEL_NOT_AVAILABLE",
+          message: "Cannot record a video snapshot for a channel that is not on the watchlist",
+          details: { researchChannelId: parsedInput.researchChannelId },
+        });
+      }
+
+      const id = deps.idGenerator();
+      await deps.insertMarketVideoSnapshot({
+        id,
+        researchChannelId: parsedInput.researchChannelId,
+        videoId: parsedInput.videoId,
+        viewCount: parsedInput.viewCount ?? null,
+        likeCount: parsedInput.likeCount ?? null,
+        commentCount: parsedInput.commentCount ?? null,
+        publishedAt: parsedInput.publishedAt ? new Date(parsedInput.publishedAt) : null,
+        source: parsedInput.source,
+        createdVia: callOrigin.createdVia,
+      });
+
+      const rows = await deps.listMarketVideoSnapshotsByChannel(parsedInput.researchChannelId);
+      // Guaranteed to exist -- this call itself just inserted it.
+      const row = rows.find((candidate) => candidate.id === id)!;
+
+      return parseWithSchema(recordVideoSnapshotOutputSchema, toMarketVideoSnapshot(row), "record video snapshot output");
+    },
+
+    async listVideoSnapshots(input: unknown): Promise<{ snapshots: MarketVideoSnapshot[] }> {
+      const parsedInput = parseWithSchema(listVideoSnapshotsInputSchema, input, "list video snapshots input");
+
+      const channelRow = await deps.getResearchChannelById(parsedInput.researchChannelId);
+      if (!channelRow) {
+        throw new DomainError({
+          code: "RESEARCH_CHANNEL_NOT_AVAILABLE",
+          message: "No watchlist entry for the requested channel",
+          details: { researchChannelId: parsedInput.researchChannelId },
+        });
+      }
+
+      const rows = await deps.listMarketVideoSnapshotsByChannel(parsedInput.researchChannelId);
+      const output = { snapshots: rows.map(toMarketVideoSnapshot) };
+      return parseWithSchema(listVideoSnapshotsOutputSchema, output, "list video snapshots output");
+    },
+
+    /**
+     * The one action in this slice that makes a real outbound YouTube API call (Phase 9 slice 9A)
+     * -- reuses the identical `getPublicChannelSnapshot` read-gateway call `fetchPublicSnapshot`
+     * (slice 3) already uses, per `docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md` §3's own design
+     * decision. Deliberately does NOT touch `fetchPublicSnapshot`'s own existing behavior -- the
+     * free-text `research_evidence` row it writes is completely unaffected; this is a pure
+     * addition writing a separate, structured `market_channel_snapshots` row from the same live
+     * response.
+     */
+    async captureChannelSnapshot(
+      input: unknown,
+      callOrigin: { createdVia: CreatedVia }
+    ): Promise<MarketChannelSnapshot> {
+      const parsedInput = parseWithSchema(captureChannelSnapshotInputSchema, input, "capture channel snapshot input");
+
+      const channelRow = await deps.getResearchChannelById(parsedInput.researchChannelId);
+      if (!channelRow) {
+        throw new DomainError({
+          code: "RESEARCH_CHANNEL_NOT_AVAILABLE",
+          message: "Cannot capture a channel snapshot for a channel that is not on the watchlist",
+          details: { researchChannelId: parsedInput.researchChannelId },
+        });
+      }
+
+      const credentials = await deps.authResolver.resolve({
+        credentialRef: parsedInput.credentialRef,
+        requiredScopes: [YOUTUBE_READ_SCOPE],
+      });
+
+      const snapshot = await deps.youtubeApi.getPublicChannelSnapshot({
+        credentials,
+        channelId: parsedInput.researchChannelId,
+      });
+
+      if (!snapshot) {
+        throw new DomainError({
+          code: "RESEARCH_CHANNEL_NOT_AVAILABLE",
+          message: "YouTube reports no public channel for this id",
+          details: { researchChannelId: parsedInput.researchChannelId },
+        });
+      }
+
+      const id = deps.idGenerator();
+      await deps.insertMarketChannelSnapshot({
+        id,
+        researchChannelId: parsedInput.researchChannelId,
+        subscriberCount: snapshot.subscriberCount,
+        viewCount: snapshot.viewCount,
+        videoCount: snapshot.videoCount,
+        // `PublicChannelSnapshot.subscriberCount` is `null` for two possible real reasons
+        // (YouTube's own `hiddenSubscriberCount` flag, or a genuinely unparseable/absent stat) --
+        // the read gateway does not currently distinguish them in its returned shape. Assuming
+        // "hidden" here matches the exact same simplification `describePublicChannelSnapshot`
+        // (slice 3) already makes for its own "subscriber count hidden" wording -- not a new
+        // inaccuracy introduced by this slice, parity with already-reviewed behavior.
+        hiddenSubscriberCount: snapshot.subscriberCount === null,
+        source: "youtube.channels.list",
+        createdVia: callOrigin.createdVia,
+      });
+
+      const rows = await deps.listMarketChannelSnapshotsByChannel(parsedInput.researchChannelId);
+      // Guaranteed to exist -- this call itself just inserted it.
+      const row = rows.find((candidate) => candidate.id === id)!;
+
+      return parseWithSchema(captureChannelSnapshotOutputSchema, toMarketChannelSnapshot(row), "capture channel snapshot output");
     },
   };
 }

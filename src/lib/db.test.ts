@@ -53,6 +53,11 @@ import {
   researchChannels,
   researchEvidence,
   deleteResearchChannel,
+  marketChannelSnapshots,
+  marketVideoSnapshots,
+  insertMarketChannelSnapshot,
+  listMarketChannelSnapshotsByChannel,
+  insertMarketVideoSnapshot,
 } from "./db";
 import { readSchemaVersion } from "@/lib/schema-versioning";
 import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
@@ -126,6 +131,8 @@ test("initializeDatabaseSchema: a fresh database ends stamped at SCHEMA_CURRENT_
     assert.equal(await tableExists(client, "creative_assets"), true);
     assert.equal(await tableExists(client, "content_proposals"), true);
     assert.equal(await tableExists(client, "content_proposal_artifacts"), true);
+    assert.equal(await tableExists(client, "market_channel_snapshots"), true);
+    assert.equal(await tableExists(client, "market_video_snapshots"), true);
   }));
 
 // Phase 7 slice D (docs/AGENT_OPERATIONS_INTERFACE.md §4c).
@@ -1023,6 +1030,18 @@ test("initializeDatabaseSchema: an existing pre-versioning database (baseline ta
       true,
       "a later migration (v22) must still apply correctly on the pre-versioning re-apply path"
     );
+    // Phase 9 slice 9A -- a later CREATE-TABLE migration (v23) must also survive the
+    // pre-versioning re-apply path, same as v22's own assertions above.
+    assert.equal(
+      await tableExists(client, "market_channel_snapshots"),
+      true,
+      "a later migration (v23) must still apply correctly on the pre-versioning re-apply path"
+    );
+    assert.equal(
+      await tableExists(client, "market_video_snapshots"),
+      true,
+      "a later migration (v23) must still apply correctly on the pre-versioning re-apply path"
+    );
   }));
 
 // Phase 7 slice K (owner spec §10 -- AC-DUR-01). `upsertVideos`/`listStoredVideosByChannel`
@@ -1205,6 +1224,112 @@ test("deleteResearchChannel removes the channel and every evidence row recorded 
     assert.equal(channelRows.length, 0);
     const evidenceRows = await isolatedDb.select().from(researchEvidence);
     assert.equal(evidenceRows.length, 0, "evidence must be deleted along with its channel, never left orphaned");
+  }));
+
+// Phase 9 slice 9A -- proves market_channel_snapshots/market_video_snapshots round-trip through
+// the real Drizzle schema, are append-only (each insert is its own row, never upserted), and never
+// fabricate a missing numeric field as 0. Structural isolation (no other module's code can
+// reference these tables) is proven by write-path-inventory.test.ts's PHASE9-INV-02, same as
+// research_channels/research_evidence above.
+test("market_channel_snapshots/market_video_snapshots round-trip through the real Drizzle schema, append-only, never fabricating a missing numeric field", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await isolatedDb.insert(researchChannels).values({
+      id: "UC_SNAPSHOT_TARGET_0000",
+      reason: "Tracking growth",
+      createdVia: "web_ui",
+    });
+
+    await insertMarketChannelSnapshot(
+      {
+        id: "snap-1",
+        researchChannelId: "UC_SNAPSHOT_TARGET_0000",
+        subscriberCount: 1000,
+        viewCount: 50000,
+        videoCount: 20,
+        source: "youtube.channels.list",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+    // A second real observation of the SAME channel is its own new row, never an upsert -- proves
+    // the append-only shape (PHASE_9_SLICE_9A_PLAN.md §2).
+    await insertMarketChannelSnapshot(
+      {
+        id: "snap-2",
+        researchChannelId: "UC_SNAPSHOT_TARGET_0000",
+        subscriberCount: null,
+        hiddenSubscriberCount: true,
+        viewCount: 52000,
+        videoCount: 21,
+        source: "youtube.channels.list",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+
+    const channelSnapshots = await listMarketChannelSnapshotsByChannel("UC_SNAPSHOT_TARGET_0000", isolatedDb);
+    assert.equal(channelSnapshots.length, 2, "each observation must be its own row, never upserted");
+    assert.equal(channelSnapshots[0].id, "snap-1", "list must be oldest first");
+    assert.equal(channelSnapshots[1].subscriberCount, null, "a hidden subscriber count must stay null, never a fabricated 0");
+    assert.equal(channelSnapshots[1].hiddenSubscriberCount, true);
+    assert.equal(channelSnapshots[0].hiddenSubscriberCount, false, "default must be false, not left undefined/null");
+
+    await insertMarketVideoSnapshot(
+      {
+        id: "video-snap-1",
+        researchChannelId: "UC_SNAPSHOT_TARGET_0000",
+        videoId: "v_competitor_1",
+        viewCount: 5000,
+        source: "manual observation",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+    const videoSnapshotRows = await isolatedDb
+      .select()
+      .from(marketVideoSnapshots)
+      .where(eq(marketVideoSnapshots.researchChannelId, "UC_SNAPSHOT_TARGET_0000"));
+    assert.equal(videoSnapshotRows.length, 1);
+    assert.equal(videoSnapshotRows[0].likeCount, null, "an omitted field must stay null, never a fabricated 0");
+    assert.equal(videoSnapshotRows[0].publishedAt, null);
+  }));
+
+// Phase 9 slice 9A -- widens the existing deleteResearchChannel cascade-delete test above to cover
+// the two new snapshot tables, which carry the identical FK onto researchChannels.id.
+test("deleteResearchChannel also cascade-deletes market_channel_snapshots/market_video_snapshots for the same channel", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await isolatedDb.insert(researchChannels).values({
+      id: "UC_TO_DELETE_SNAPSHOTS0",
+      reason: "Temporary",
+      createdVia: "web_ui",
+    });
+    await insertMarketChannelSnapshot(
+      { id: "snap-to-delete", researchChannelId: "UC_TO_DELETE_SNAPSHOTS0", source: "manual observation", createdVia: "web_ui" },
+      isolatedDb
+    );
+    await insertMarketVideoSnapshot(
+      {
+        id: "video-snap-to-delete",
+        researchChannelId: "UC_TO_DELETE_SNAPSHOTS0",
+        videoId: "v_x",
+        source: "manual observation",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+
+    await deleteResearchChannel("UC_TO_DELETE_SNAPSHOTS0", isolatedDb);
+
+    const channelSnapshotRows = await isolatedDb.select().from(marketChannelSnapshots);
+    assert.equal(channelSnapshotRows.length, 0, "channel snapshots must be deleted along with their channel, never left orphaned");
+    const videoSnapshotRows = await isolatedDb.select().from(marketVideoSnapshots);
+    assert.equal(videoSnapshotRows.length, 0, "video snapshots must be deleted along with their channel, never left orphaned");
   }));
 
 // AC-SCHEMA-04

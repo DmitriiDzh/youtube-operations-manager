@@ -1,8 +1,12 @@
 import {
   deleteResearchChannel,
   getResearchChannelById,
+  insertMarketChannelSnapshot,
+  insertMarketVideoSnapshot,
   insertResearchChannel,
   insertResearchEvidence,
+  listMarketChannelSnapshotsByChannel,
+  listMarketVideoSnapshotsByChannel,
   listResearchChannels,
   listResearchEvidenceByChannel,
 } from "@/lib/db";
@@ -19,6 +23,11 @@ export function createMarketIntelligenceStoreAdapter() {
     deleteResearchChannel,
     insertResearchEvidence,
     listResearchEvidenceByChannel,
+    // Phase 9 slice 9A (docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md).
+    insertMarketChannelSnapshot,
+    listMarketChannelSnapshotsByChannel,
+    insertMarketVideoSnapshot,
+    listMarketVideoSnapshotsByChannel,
   };
 }
 

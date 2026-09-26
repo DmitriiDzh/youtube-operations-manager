@@ -5,7 +5,7 @@ import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import path from "path";
-import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
 import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
@@ -930,6 +930,75 @@ export const researchEvidence = sqliteTable(
   (table) => [index("research_evidence_research_channel_id_idx").on(table.researchChannelId)]
 );
 
+/**
+ * Phase 9 slice 9A (`docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md`) -- a structured, append-only
+ * public observation of a watchlisted channel's own numeric stats. Never upserted by any natural
+ * key -- every real fetch is its own newly-inserted row, since `channels.list` has no "historical
+ * day" concept (unlike `video_metrics_daily`'s per-day upsert for owned-channel analytics; see the
+ * slice plan §2 for why that pattern does not transfer here). `hiddenSubscriberCount` is an
+ * explicit boolean, not inferred from `subscriberCount IS NULL` -- disambiguates "YouTube hides
+ * this, a known fact" from "we don't know" (spec §27's data-quality vocabulary, the one item
+ * actually knowable from a `channels.list` response today).
+ *
+ * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** -- same accepted device-local limitation
+ * `research_channels`/`research_evidence` already have (`docs/TECHNICAL_DEBT.md` RISK-52); the
+ * owner's 2026-09-26 decision to eventually transfer this data is a separate, not-yet-scoped
+ * engineering choice (whole-copy snapshot vs. continuous CRDT merge), not bundled into this slice.
+ */
+export const marketChannelSnapshots = sqliteTable(
+  "market_channel_snapshots",
+  {
+    id: text("id").primaryKey(),
+    researchChannelId: text("research_channel_id")
+      .notNull()
+      .references(() => researchChannels.id),
+    observedAt: integer("observed_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    subscriberCount: integer("subscriber_count"),
+    viewCount: integer("view_count"),
+    videoCount: integer("video_count"),
+    hiddenSubscriberCount: integer("hidden_subscriber_count", { mode: "boolean" }).notNull().default(false),
+    source: text("source").notNull(),
+    createdVia: text("created_via").notNull(),
+  },
+  (table) => [index("market_channel_snapshots_research_channel_id_idx").on(table.researchChannelId)]
+);
+
+/**
+ * Phase 9 slice 9A -- same append-only shape as `marketChannelSnapshots`, for a video belonging to
+ * a watchlisted channel. No FK on `videoId` -- there is no local "videos we don't own" watchlist
+ * table yet (that is 9C's own future table, per `docs/roadmap/plans/PHASE_9_PLAN.md` §13's entity
+ * mapping), so `videoId` is a plain YouTube id, exactly like `research_evidence.observation` never
+ * references anything structured today. `publishedAt` is nullable -- not always known at snapshot
+ * time depending on which future collection path populates a row, and needed later (9D) for
+ * age-normalized comparison. **No automatic writer exists for this table in slice 9A** -- only a
+ * manual `recordVideoSnapshot` entry point; real video-enumeration collection is 9B's own scope.
+ */
+export const marketVideoSnapshots = sqliteTable(
+  "market_video_snapshots",
+  {
+    id: text("id").primaryKey(),
+    researchChannelId: text("research_channel_id")
+      .notNull()
+      .references(() => researchChannels.id),
+    videoId: text("video_id").notNull(),
+    observedAt: integer("observed_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    viewCount: integer("view_count"),
+    likeCount: integer("like_count"),
+    commentCount: integer("comment_count"),
+    publishedAt: integer("published_at", { mode: "timestamp" }),
+    source: text("source").notNull(),
+    createdVia: text("created_via").notNull(),
+  },
+  (table) => [
+    index("market_video_snapshots_research_channel_id_idx").on(table.researchChannelId),
+    index("market_video_snapshots_video_id_idx").on(table.videoId),
+  ]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -1324,6 +1393,47 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
       await client.execute(
         "CREATE INDEX IF NOT EXISTS research_evidence_research_channel_id_idx ON research_evidence(research_channel_id)"
+      );
+    },
+  },
+  {
+    version: 23,
+    description:
+      "market_channel_snapshots, market_video_snapshots -- Phase 9 slice 9A structured, append-only public observations (docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md), referencing research_channels; never upserted by any natural key",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_channel_snapshots (" +
+          "id TEXT PRIMARY KEY, " +
+          "research_channel_id TEXT NOT NULL REFERENCES research_channels(id), " +
+          "observed_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "subscriber_count INTEGER, " +
+          "view_count INTEGER, " +
+          "video_count INTEGER, " +
+          "hidden_subscriber_count INTEGER NOT NULL DEFAULT 0, " +
+          "source TEXT NOT NULL, " +
+          "created_via TEXT NOT NULL)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_channel_snapshots_research_channel_id_idx ON market_channel_snapshots(research_channel_id)"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_video_snapshots (" +
+          "id TEXT PRIMARY KEY, " +
+          "research_channel_id TEXT NOT NULL REFERENCES research_channels(id), " +
+          "video_id TEXT NOT NULL, " +
+          "observed_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "view_count INTEGER, " +
+          "like_count INTEGER, " +
+          "comment_count INTEGER, " +
+          "published_at INTEGER, " +
+          "source TEXT NOT NULL, " +
+          "created_via TEXT NOT NULL)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_video_snapshots_research_channel_id_idx ON market_video_snapshots(research_channel_id)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_video_snapshots_video_id_idx ON market_video_snapshots(video_id)"
       );
     },
   },
@@ -4319,11 +4429,122 @@ export async function listResearchEvidenceByChannel(
  * FK-ordering discipline this codebase already learned the hard way in
  * `sync-gateway/change-drafts/services.ts`'s `discardLocalAndAdoptPeer` (RISK-46): deleting the
  * parent first, under `foreign_keys=ON`, would either fail the constraint or (if constraints were
- * ever relaxed) silently orphan evidence rows.
+ * ever relaxed) silently orphan evidence rows. Widened for slice 9A to also cascade-delete both new
+ * snapshot tables, for the identical reason -- they carry the same FK onto `researchChannels.id`.
  */
 export async function deleteResearchChannel(id: string, database: AppDb = db): Promise<void> {
   await database.transaction(async (tx) => {
     await tx.delete(researchEvidence).where(eq(researchEvidence.researchChannelId, id));
+    await tx.delete(marketChannelSnapshots).where(eq(marketChannelSnapshots.researchChannelId, id));
+    await tx.delete(marketVideoSnapshots).where(eq(marketVideoSnapshots.researchChannelId, id));
     await tx.delete(researchChannels).where(eq(researchChannels.id, id));
   });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9A (`docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md`) -- structured, append-only
+// market snapshots. Read/written only by `src/lib/market-intelligence/adapters/store.ts`.
+// ---------------------------------------------------------------------------
+
+export type StoredMarketChannelSnapshot = {
+  id: string;
+  researchChannelId: string;
+  observedAt: Date;
+  subscriberCount: number | null;
+  viewCount: number | null;
+  videoCount: number | null;
+  hiddenSubscriberCount: boolean;
+  source: string;
+  createdVia: string;
+};
+
+export async function insertMarketChannelSnapshot(
+  input: {
+    id: string;
+    researchChannelId: string;
+    subscriberCount?: number | null;
+    viewCount?: number | null;
+    videoCount?: number | null;
+    hiddenSubscriberCount?: boolean;
+    source: string;
+    createdVia: string;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketChannelSnapshots).values({
+    id: input.id,
+    researchChannelId: input.researchChannelId,
+    subscriberCount: input.subscriberCount ?? null,
+    viewCount: input.viewCount ?? null,
+    videoCount: input.videoCount ?? null,
+    hiddenSubscriberCount: input.hiddenSubscriberCount ?? false,
+    source: input.source,
+    createdVia: input.createdVia,
+  });
+}
+
+// Oldest first -- deliberately the opposite order from `listResearchEvidenceByChannel`'s
+// newest-first convention: this is the natural order for delta/velocity computation over time
+// (`derived-metrics.ts` consumes this list directly, walking it chronologically).
+export async function listMarketChannelSnapshotsByChannel(
+  researchChannelId: string,
+  database: AppDb = db
+): Promise<StoredMarketChannelSnapshot[]> {
+  return database
+    .select()
+    .from(marketChannelSnapshots)
+    .where(eq(marketChannelSnapshots.researchChannelId, researchChannelId))
+    .orderBy(asc(marketChannelSnapshots.observedAt));
+}
+
+export type StoredMarketVideoSnapshot = {
+  id: string;
+  researchChannelId: string;
+  videoId: string;
+  observedAt: Date;
+  viewCount: number | null;
+  likeCount: number | null;
+  commentCount: number | null;
+  publishedAt: Date | null;
+  source: string;
+  createdVia: string;
+};
+
+export async function insertMarketVideoSnapshot(
+  input: {
+    id: string;
+    researchChannelId: string;
+    videoId: string;
+    viewCount?: number | null;
+    likeCount?: number | null;
+    commentCount?: number | null;
+    publishedAt?: Date | null;
+    source: string;
+    createdVia: string;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketVideoSnapshots).values({
+    id: input.id,
+    researchChannelId: input.researchChannelId,
+    videoId: input.videoId,
+    viewCount: input.viewCount ?? null,
+    likeCount: input.likeCount ?? null,
+    commentCount: input.commentCount ?? null,
+    publishedAt: input.publishedAt ?? null,
+    source: input.source,
+    createdVia: input.createdVia,
+  });
+}
+
+// Oldest first -- same rationale as listMarketChannelSnapshotsByChannel above.
+export async function listMarketVideoSnapshotsByChannel(
+  researchChannelId: string,
+  database: AppDb = db
+): Promise<StoredMarketVideoSnapshot[]> {
+  return database
+    .select()
+    .from(marketVideoSnapshots)
+    .where(eq(marketVideoSnapshots.researchChannelId, researchChannelId))
+    .orderBy(asc(marketVideoSnapshots.observedAt));
 }

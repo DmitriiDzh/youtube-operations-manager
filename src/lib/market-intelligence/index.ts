@@ -20,6 +20,10 @@ export function createMarketIntelligenceCore() {
     deleteResearchChannel: store.deleteResearchChannel,
     insertResearchEvidence: store.insertResearchEvidence,
     listResearchEvidenceByChannel: store.listResearchEvidenceByChannel,
+    insertMarketChannelSnapshot: store.insertMarketChannelSnapshot,
+    listMarketChannelSnapshotsByChannel: store.listMarketChannelSnapshotsByChannel,
+    insertMarketVideoSnapshot: store.insertMarketVideoSnapshot,
+    listMarketVideoSnapshotsByChannel: store.listMarketVideoSnapshotsByChannel,
     authResolver: defaultAuthResolver(),
     youtubeApi: createMarketIntelligenceYoutubeApiAdapter(),
   });

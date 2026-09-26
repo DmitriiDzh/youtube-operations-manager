@@ -46,14 +46,43 @@ type EvidenceRow = {
   collectedAt: Date;
 };
 
+type ChannelSnapshotRow = {
+  id: string;
+  researchChannelId: string;
+  observedAt: Date;
+  subscriberCount: number | null;
+  viewCount: number | null;
+  videoCount: number | null;
+  hiddenSubscriberCount: boolean;
+  source: string;
+  createdVia: string;
+};
+
+type VideoSnapshotRow = {
+  id: string;
+  researchChannelId: string;
+  videoId: string;
+  observedAt: Date;
+  viewCount: number | null;
+  likeCount: number | null;
+  commentCount: number | null;
+  publishedAt: Date | null;
+  source: string;
+  createdVia: string;
+};
+
 function createFakeStore() {
   const channels = new Map<string, Row>();
   const evidence: EvidenceRow[] = [];
+  const channelSnapshots: ChannelSnapshotRow[] = [];
+  const videoSnapshots: VideoSnapshotRow[] = [];
   let nextId = 1;
 
   return {
     channels,
     evidence,
+    channelSnapshots,
+    videoSnapshots,
     idGenerator: () => `evidence-${nextId++}`,
     async insertResearchChannel(input: { id: string; handleOrUrl?: string | null; reason: string; createdVia: string }) {
       channels.set(input.id, {
@@ -96,6 +125,58 @@ function createFakeStore() {
     },
     async listResearchEvidenceByChannel(researchChannelId: string) {
       return evidence.filter((row) => row.researchChannelId === researchChannelId);
+    },
+    async insertMarketChannelSnapshot(input: {
+      id: string;
+      researchChannelId: string;
+      subscriberCount?: number | null;
+      viewCount?: number | null;
+      videoCount?: number | null;
+      hiddenSubscriberCount?: boolean;
+      source: string;
+      createdVia: string;
+    }) {
+      channelSnapshots.push({
+        id: input.id,
+        researchChannelId: input.researchChannelId,
+        observedAt: new Date(),
+        subscriberCount: input.subscriberCount ?? null,
+        viewCount: input.viewCount ?? null,
+        videoCount: input.videoCount ?? null,
+        hiddenSubscriberCount: input.hiddenSubscriberCount ?? false,
+        source: input.source,
+        createdVia: input.createdVia,
+      });
+    },
+    async listMarketChannelSnapshotsByChannel(researchChannelId: string) {
+      return channelSnapshots.filter((row) => row.researchChannelId === researchChannelId);
+    },
+    async insertMarketVideoSnapshot(input: {
+      id: string;
+      researchChannelId: string;
+      videoId: string;
+      viewCount?: number | null;
+      likeCount?: number | null;
+      commentCount?: number | null;
+      publishedAt?: Date | null;
+      source: string;
+      createdVia: string;
+    }) {
+      videoSnapshots.push({
+        id: input.id,
+        researchChannelId: input.researchChannelId,
+        videoId: input.videoId,
+        observedAt: new Date(),
+        viewCount: input.viewCount ?? null,
+        likeCount: input.likeCount ?? null,
+        commentCount: input.commentCount ?? null,
+        publishedAt: input.publishedAt ?? null,
+        source: input.source,
+        createdVia: input.createdVia,
+      });
+    },
+    async listMarketVideoSnapshotsByChannel(researchChannelId: string) {
+      return videoSnapshots.filter((row) => row.researchChannelId === researchChannelId);
     },
   };
 }
@@ -439,4 +520,102 @@ test("AC-MI-18: getWatchlistEntryContext returns every recorded evidence row for
     result.evidence.map((e) => e.observation),
     ["First observation", "Second observation"]
   );
+});
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9A -- service-layer acceptance criteria from
+// docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md §5 (derived-metrics.test.ts covers the pure
+// delta/velocity functions themselves; these tests cover the service layer that stores and
+// retrieves the raw rows those functions consume).
+// ---------------------------------------------------------------------------
+
+test("AC-9A-06: recordChannelSnapshot rejects a channel not on the watchlist, before any insert", async () => {
+  const { store, services } = createFixture();
+
+  await assert.rejects(
+    () =>
+      services.recordChannelSnapshot(
+        { researchChannelId: OTHER_VALID_CHANNEL_ID, subscriberCount: 100, source: "manual observation" },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_CHANNEL_NOT_AVAILABLE"
+  );
+  assert.equal(store.channelSnapshots.length, 0);
+});
+
+test("AC-9A-07: recordChannelSnapshot/listChannelSnapshots never coerce an omitted numeric field to 0", async () => {
+  const { services } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Worth watching" }, { createdVia: "web_ui" });
+
+  const recorded = await services.recordChannelSnapshot(
+    { researchChannelId: VALID_CHANNEL_ID, viewCount: 5000, source: "manual observation" },
+    { createdVia: "web_ui" }
+  );
+  assert.equal(recorded.subscriberCount, null, "an omitted field must be null, never a fabricated 0");
+  assert.equal(recorded.videoCount, null);
+  assert.equal(recorded.viewCount, 5000);
+  assert.equal(recorded.hiddenSubscriberCount, false, "default must be false when not specified");
+
+  const list = await services.listChannelSnapshots({ researchChannelId: VALID_CHANNEL_ID });
+  assert.equal(list.snapshots.length, 1);
+  assert.equal(list.snapshots[0].subscriberCount, null);
+});
+
+test("AC-9A-08: recordVideoSnapshot rejects a channel not on the watchlist; listVideoSnapshots never fabricates an omitted field", async () => {
+  const { services } = createFixture();
+
+  await assert.rejects(
+    () =>
+      services.recordVideoSnapshot(
+        { researchChannelId: OTHER_VALID_CHANNEL_ID, videoId: "v1", source: "manual observation" },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_CHANNEL_NOT_AVAILABLE"
+  );
+
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Worth watching" }, { createdVia: "web_ui" });
+  const recorded = await services.recordVideoSnapshot(
+    { researchChannelId: VALID_CHANNEL_ID, videoId: "v1", viewCount: 200, source: "manual observation" },
+    { createdVia: "web_ui" }
+  );
+  assert.equal(recorded.likeCount, null);
+  assert.equal(recorded.commentCount, null);
+  assert.equal(recorded.publishedAt, null);
+
+  const list = await services.listVideoSnapshots({ researchChannelId: VALID_CHANNEL_ID });
+  assert.equal(list.snapshots.length, 1);
+  assert.equal(list.snapshots[0].videoId, "v1");
+});
+
+test("AC-9A-09: captureChannelSnapshot stores hiddenSubscriberCount:true and subscriberCount:null together when YouTube hides the count", async () => {
+  const { services } = createFixture({
+    publicSnapshot: { channelId: VALID_CHANNEL_ID, title: "Example", subscriberCount: null, viewCount: 9000, videoCount: 12 },
+  });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Worth watching" }, { createdVia: "web_ui" });
+
+  const result = await services.captureChannelSnapshot(
+    { researchChannelId: VALID_CHANNEL_ID, credentialRef: { userId: "u1" } },
+    { createdVia: "web_ui" }
+  );
+
+  assert.equal(result.subscriberCount, null);
+  assert.equal(result.hiddenSubscriberCount, true);
+  assert.equal(result.viewCount, 9000);
+  assert.equal(result.videoCount, 12);
+  assert.equal(result.source, "youtube.channels.list");
+});
+
+test("AC-9A-10: captureChannelSnapshot never touches research_evidence -- fetchPublicSnapshot's own rows stay unaffected", async () => {
+  const { store, services } = createFixture({
+    publicSnapshot: { channelId: VALID_CHANNEL_ID, title: "Example", subscriberCount: 100, viewCount: 9000, videoCount: 12 },
+  });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Worth watching" }, { createdVia: "web_ui" });
+
+  await services.fetchPublicSnapshot({ researchChannelId: VALID_CHANNEL_ID, credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.equal(store.evidence.length, 1, "fetchPublicSnapshot's own free-text evidence row must exist as before");
+
+  await services.captureChannelSnapshot({ researchChannelId: VALID_CHANNEL_ID, credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+
+  assert.equal(store.evidence.length, 1, "captureChannelSnapshot must never write to research_evidence");
+  assert.equal(store.channelSnapshots.length, 1, "captureChannelSnapshot writes exactly its own structured row");
 });

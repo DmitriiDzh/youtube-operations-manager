@@ -1419,7 +1419,7 @@ content-proposal/artifact registration, a Codex operations-workspace template, a
 review -- **which of these is actually implemented as of any given moment is tracked exclusively
 in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here**.
 
-## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4
+## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A
 
 Owner instruction, Telegram 2026-09-26: an explicit assignment to research, plan, and begin
 implementing Phase 9 (`docs/roadmap/FUTURE_PHASES.md` §5) as its own feature branch, superseding
@@ -1461,3 +1461,37 @@ needs slice C/K/L's richer "agent context" reshaping. `agent-operations`'s own `
 still gains two entries under a new `market_intelligence` domain, following the same
 "pre-existing tool, registered here for capability-discovery completeness" pattern already used for
 `channel_context.list_channels`/`analytics.query_data_quality`.
+
+**Slice 9A (`docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md`, 2026-09-26) -- structured, append-only
+market snapshot model, the first slice of Phase 9's extended scope (Part II).** New
+`market_channel_snapshots`/`market_video_snapshots` tables (SCHEMA_MIGRATIONS v23), FK'd to
+`research_channels.id`. **Never upserted by any natural key** -- the central finding this slice's
+own plan documents (§2/§10): unlike `video_metrics_daily`'s per-day upsert (correct for owned-
+channel Analytics API data, which has a real "historical day" concept), `channels.list`/
+`videos.list` return only the *current* cumulative count with no way to ask for a past day's value
+-- every real observation must be its own newly-inserted row, or the exact history Phase 9's own
+irreplaceability priority (spec §38, `PHASE_9_PLAN.md` §10) depends on would be silently
+overwritten. `deleteResearchChannel` (`src/lib/db.ts`) was widened to cascade-delete both new
+tables in the same transaction as `research_evidence`, closing the identical FK-ordering hazard
+RISK-46 already taught this codebase the hard way.
+
+**Derived metrics (delta, velocity) are pure functions computed at READ time** over raw snapshot
+rows (`src/lib/market-intelligence/derived-metrics.ts`, styled after `src/lib/analytics/
+staleness.ts`: zero I/O, `now` always an explicit argument) -- never a second, redundant stored
+representation (spec §8's own "prefer retaining raw observations so formulas can evolve later").
+`computeSnapshotVelocity` reports an explicit `insufficient_history`/`partial_window`/`full_window`
+basis alongside its computed rate, rather than silently extrapolating over a span the real data
+doesn't actually cover -- the same "expose limitations when history is incomplete" discipline
+(spec §27) this slice's own `hiddenSubscriberCount` boolean column applies at the storage layer
+(an explicit fact -- "YouTube hides this" -- kept structurally distinct from "we don't know").
+
+**Deliberately narrower than the plan's own literal 9A text**, and explicitly recorded as such
+(`PHASE_9_SLICE_9A_PLAN.md` §1): `market_video_snapshots` ships with a full schema and CRUD service
+layer (`recordVideoSnapshot`/`listVideoSnapshots`) so 9B has something to write into and it is
+independently testable now, but **no automatic collector writes to it yet** -- real video-
+enumeration (walking a channel's uploads playlist, batching `videos.list`) is 9B's own named scope,
+not silently pulled forward into this slice. `captureChannelSnapshot` (the one live YouTube call
+this slice adds) reuses the identical `getPublicChannelSnapshot` read-gateway call `fetchPublicSnapshot`
+(slice 3) already uses, but is a pure *addition* -- `fetchPublicSnapshot`'s own existing
+`research_evidence` write path is completely untouched, proven by a dedicated test
+(`AC-9A-10`, `services.test.ts`).

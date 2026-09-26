@@ -50,3 +50,34 @@ export type PublicChannelSnapshot = {
   viewCount: number | null;
   videoCount: number | null;
 };
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9A (docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md) -- structured, append-only
+// public observations. Never upserted by any natural key -- every real fetch is its own newly-
+// inserted row (§2 of the slice plan explains why `video_metrics_daily`'s per-day-upsert pattern
+// does not transfer here). `research_evidence` remains the free-text/qualitative log; these are
+// the numeric counterpart, per PHASE_9_PLAN.md §13's entity-mapping table.
+// ---------------------------------------------------------------------------
+
+export type MarketChannelSnapshot = {
+  snapshotId: string;
+  researchChannelId: string;
+  observedAt: string;
+  subscriberCount: number | null;
+  viewCount: number | null;
+  videoCount: number | null;
+  hiddenSubscriberCount: boolean;
+  source: string;
+};
+
+export type MarketVideoSnapshot = {
+  snapshotId: string;
+  researchChannelId: string;
+  videoId: string;
+  observedAt: string;
+  viewCount: number | null;
+  likeCount: number | null;
+  commentCount: number | null;
+  publishedAt: string | null;
+  source: string;
+};

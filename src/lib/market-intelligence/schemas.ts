@@ -118,6 +118,106 @@ export const fetchPublicSnapshotInputSchema = z
 
 export const fetchPublicSnapshotOutputSchema = researchEvidenceSchema;
 
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9A (docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md) -- structured, append-only
+// public observations. See contracts.ts's own doc comment for why these are never upserted.
+// ---------------------------------------------------------------------------
+
+// Never `.min(0)` alone -- `.int()` first rejects a fractional "count" outright, matching this
+// codebase's existing "a count is always a non-negative integer" convention (e.g. analytics'
+// own metric values).
+const nonNegativeIntSchema = z.number().int().nonnegative();
+
+export const marketChannelSnapshotSchema = z
+  .object({
+    snapshotId: z.string().min(1),
+    researchChannelId: z.string().min(1),
+    observedAt: z.string(),
+    subscriberCount: z.number().int().nullable(),
+    viewCount: z.number().int().nullable(),
+    videoCount: z.number().int().nullable(),
+    hiddenSubscriberCount: z.boolean(),
+    source: z.string(),
+  })
+  .strict();
+
+export const recordChannelSnapshotInputSchema = z
+  .object({
+    researchChannelId: z.string().min(1),
+    subscriberCount: nonNegativeIntSchema.optional(),
+    viewCount: nonNegativeIntSchema.optional(),
+    videoCount: nonNegativeIntSchema.optional(),
+    hiddenSubscriberCount: z.boolean().optional(),
+    source: z.string().min(1, "source is required").max(500),
+  })
+  .strict();
+
+export const recordChannelSnapshotOutputSchema = marketChannelSnapshotSchema;
+
+export const listChannelSnapshotsInputSchema = z
+  .object({
+    researchChannelId: z.string().min(1),
+  })
+  .strict();
+
+export const listChannelSnapshotsOutputSchema = z
+  .object({
+    snapshots: z.array(marketChannelSnapshotSchema),
+  })
+  .strict();
+
+export const marketVideoSnapshotSchema = z
+  .object({
+    snapshotId: z.string().min(1),
+    researchChannelId: z.string().min(1),
+    videoId: z.string().min(1),
+    observedAt: z.string(),
+    viewCount: z.number().int().nullable(),
+    likeCount: z.number().int().nullable(),
+    commentCount: z.number().int().nullable(),
+    publishedAt: z.string().nullable(),
+    source: z.string(),
+  })
+  .strict();
+
+export const recordVideoSnapshotInputSchema = z
+  .object({
+    researchChannelId: z.string().min(1),
+    videoId: z.string().min(1, "videoId is required"),
+    viewCount: nonNegativeIntSchema.optional(),
+    likeCount: nonNegativeIntSchema.optional(),
+    commentCount: nonNegativeIntSchema.optional(),
+    publishedAt: z.string().min(1).optional(),
+    source: z.string().min(1, "source is required").max(500),
+  })
+  .strict();
+
+export const recordVideoSnapshotOutputSchema = marketVideoSnapshotSchema;
+
+export const listVideoSnapshotsInputSchema = z
+  .object({
+    researchChannelId: z.string().min(1),
+  })
+  .strict();
+
+export const listVideoSnapshotsOutputSchema = z
+  .object({
+    snapshots: z.array(marketVideoSnapshotSchema),
+  })
+  .strict();
+
+// The one action in this module's 9A slice that makes a real outbound YouTube API call --
+// mirrors fetchPublicSnapshotInputSchema exactly (no `source` field: server-stamped at the call
+// site, never caller-supplied, same as fetchPublicSnapshot's own "youtube.channels.list").
+export const captureChannelSnapshotInputSchema = z
+  .object({
+    researchChannelId: z.string().min(1),
+    credentialRef: credentialRefSchema,
+  })
+  .strict();
+
+export const captureChannelSnapshotOutputSchema = marketChannelSnapshotSchema;
+
 // Re-exported so services.ts/adapters never need their own separate import of the shared
 // provenance vocabulary's schema (AGENTS.md §M: market-intelligence is a caller of
 // shared-provenance, not a second owner of it).
@@ -127,3 +227,8 @@ export type AddToWatchlistInput = z.infer<typeof addToWatchlistInputSchema>;
 export type GetWatchlistEntryInput = z.infer<typeof getWatchlistEntryInputSchema>;
 export type RecordEvidenceInput = z.infer<typeof recordEvidenceInputSchema>;
 export type ListEvidenceInput = z.infer<typeof listEvidenceInputSchema>;
+export type RecordChannelSnapshotInput = z.infer<typeof recordChannelSnapshotInputSchema>;
+export type ListChannelSnapshotsInput = z.infer<typeof listChannelSnapshotsInputSchema>;
+export type RecordVideoSnapshotInput = z.infer<typeof recordVideoSnapshotInputSchema>;
+export type ListVideoSnapshotsInput = z.infer<typeof listVideoSnapshotsInputSchema>;
+export type CaptureChannelSnapshotInput = z.infer<typeof captureChannelSnapshotInputSchema>;
