@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { formatDisplayDate, formatDisplayDateTime, parseDisplayDate, parseDisplayDateTime } from "@/lib/shared-formatting";
+import { formatDisplayDateTime, formatDisplayDateUtc, parseDisplayDate, parseDisplayDateTime } from "@/lib/shared-formatting";
 
 type VideoDetailsSnapshot = {
   videoId: string;
@@ -60,7 +60,11 @@ function toFormValues(s: VideoDetailsSnapshot): FormValues {
     publicStatsViewable: s.publicStatsViewable ?? true,
     selfDeclaredMadeForKids: s.selfDeclaredMadeForKids ?? false,
     containsSyntheticMedia: s.containsSyntheticMedia ?? false,
-    recordingDate: s.recordingDate ? formatDisplayDate(s.recordingDate) : "",
+    // UTC-anchored, not `formatDisplayDate` -- `recordingDate` is a pure calendar date with no
+    // real time-of-day (paired with `parseDisplayDate`'s own UTC-midnight write direction below);
+    // reading it back with local-time components would shift the displayed day for any viewer in
+    // a negative-UTC-offset timezone (independent review, 2026-09-26).
+    recordingDate: s.recordingDate ? formatDisplayDateUtc(s.recordingDate) : "",
   };
 }
 
@@ -108,7 +112,7 @@ function buildPatch(form: FormValues, original: VideoDetailsSnapshot): Patch {
   if (form.containsSyntheticMedia !== (original.containsSyntheticMedia ?? false)) {
     patch.containsSyntheticMedia = form.containsSyntheticMedia;
   }
-  const originalRecordingDateDisplay = original.recordingDate ? formatDisplayDate(original.recordingDate) : "";
+  const originalRecordingDateDisplay = original.recordingDate ? formatDisplayDateUtc(original.recordingDate) : "";
   if (form.recordingDate && form.recordingDate !== originalRecordingDateDisplay) {
     const parsed = parseDisplayDate(form.recordingDate);
     if (parsed) patch.recordingDate = parsed;

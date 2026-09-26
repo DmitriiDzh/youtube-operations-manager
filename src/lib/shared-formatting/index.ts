@@ -5,10 +5,13 @@
 // locale, which renders differently depending on the viewer's own browser/OS locale -- the same
 // class of bug this project already hit once for the Analytics settings time input (a native,
 // locale-dependent widget showed "12.05" instead of "12:05" under a Finnish-locale browser, fixed
-// by replacing the widget, not by picking a "better" locale). Both functions here render in the
-// viewer's LOCAL time zone, matching the exact behavior of the `toLocaleString()`/
-// `toLocaleDateString()` calls they replace -- only the display FORMAT changes, never which moment
-// in time is shown.
+// by replacing the widget, not by picking a "better" locale). `formatDisplayDate`/
+// `formatDisplayDateTime` render in the viewer's LOCAL time zone, matching the exact behavior of
+// the `toLocaleString()`/`toLocaleDateString()` calls they replace -- only the display FORMAT
+// changes, never which moment in time is shown. `formatDisplayDateUtc` is the one deliberate
+// exception, for fields that are a pure calendar date with no real time-of-day to begin with (see
+// its own doc comment) -- pick LOCAL vs UTC by what the underlying value actually represents, not
+// by habit.
 
 function pad2(value: number): string {
   return value.toString().padStart(2, "0");
@@ -30,6 +33,24 @@ export function formatDisplayDateTime(value: string | number | Date): string {
   const date = toDate(value);
   if (Number.isNaN(date.getTime())) return "Invalid date";
   return `${formatDisplayDate(date)} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+/**
+ * Renders a PURE calendar date (no real time-of-day -- e.g. YouTube's `recordingDate`, which this
+ * app's own write side always anchors at UTC midnight, `parseDisplayDate` below) as "DD.MM.YYYY"
+ * using its UTC calendar components, not `formatDisplayDate`'s local ones. `formatDisplayDate` is
+ * correct for a genuine timestamp (an instant that actually happened, e.g. `publishedAt`) -- "which
+ * local calendar day did this happen on" is exactly what a viewer wants there. A bare date has no
+ * such instant to begin with; reading it back with local-time components shifts the displayed day
+ * by one for any viewer with a negative UTC offset (independent review, 2026-09-26 -- found live:
+ * a value written as "05.01.2026" re-displayed as "04.01.2026" under `TZ=America/New_York`, with
+ * no edit in between). Always pair this with `parseDisplayDate`, never `formatDisplayDate`, for the
+ * same field.
+ */
+export function formatDisplayDateUtc(value: string | number | Date): string {
+  const date = toDate(value);
+  if (Number.isNaN(date.getTime())) return "Invalid date";
+  return `${pad2(date.getUTCDate())}.${pad2(date.getUTCMonth() + 1)}.${date.getUTCFullYear()}`;
 }
 
 // --- Editable fields: the reverse direction (owner instruction, 2026-09-26, Telegram: "Сделай
