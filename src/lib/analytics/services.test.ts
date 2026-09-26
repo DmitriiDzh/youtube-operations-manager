@@ -439,13 +439,19 @@ test("collectMetrics: a credential-resolution failure does not mark the channel 
   });
   await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
 
-  await assert.rejects(() =>
-    services.collectMetrics({
-      credentialRef: { userId: "user-1" },
-      channelId: "UC_A",
-      startDate: "2026-09-01",
-      endDate: "2026-09-01",
-    })
+  // Independent test-suite audit (2026-09-26): this assertion previously had no predicate at
+  // all -- it would pass regardless of what was thrown, or even a wrong error code. Per
+  // services.ts, a credential-resolution failure is mapped via `mapUnknownError(error,
+  // "unauthorized")`; check that mapping actually happened.
+  await assert.rejects(
+    () =>
+      services.collectMetrics({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-09-01",
+        endDate: "2026-09-01",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "unauthorized"
   );
   assert.equal(
     lastAutoCollectedAtByChannel.get("UC_A") ?? null,
@@ -952,6 +958,10 @@ test("getChannelOverview propagates a credential-resolution failure (e.g. missin
   });
   await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
 
+  // Independent test-suite audit (2026-09-26): checking only `error instanceof DomainError`
+  // would not catch a bug that mapped this failure to the wrong error code -- services.ts's own
+  // comment above (and the code) say this specific case maps via `mapUnknownError(error,
+  // "unauthorized")`, so assert that code explicitly.
   await assert.rejects(
     () =>
       services.getChannelOverview({
@@ -960,7 +970,7 @@ test("getChannelOverview propagates a credential-resolution failure (e.g. missin
         startDate: "2026-08-26",
         endDate: "2026-09-22",
       }),
-    (error: unknown) => error instanceof DomainError
+    (error: unknown) => error instanceof DomainError && error.code === "unauthorized"
   );
   assert.equal(channelAnalyticsCalls.length, 0, "no real Analytics API call was made once credentials failed to resolve");
 });
@@ -1125,6 +1135,9 @@ test("getChannelBreakdown propagates a credential-resolution failure (e.g. missi
   });
   await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
 
+  // Independent test-suite audit (2026-09-26): checking only `error instanceof DomainError`
+  // would not catch a bug that mapped this failure to the wrong error code -- services.ts maps
+  // this specific case via `mapUnknownError(error, "unauthorized")`.
   await assert.rejects(
     () =>
       services.getChannelBreakdown({
@@ -1134,7 +1147,7 @@ test("getChannelBreakdown propagates a credential-resolution failure (e.g. missi
         endDate: "2026-09-22",
         breakdown: "trafficSources",
       }),
-    (error: unknown) => error instanceof DomainError
+    (error: unknown) => error instanceof DomainError && error.code === "unauthorized"
   );
   assert.equal(channelBreakdownCalls.length, 0, "no real Analytics API call was made once credentials failed to resolve");
 });
@@ -1244,6 +1257,9 @@ test("getVideoRetentionCurve propagates a credential-resolution failure (e.g. mi
   });
   await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
 
+  // Independent test-suite audit (2026-09-26): checking only `error instanceof DomainError`
+  // would not catch a bug that mapped this failure to the wrong error code -- services.ts maps
+  // this specific case via `mapUnknownError(error, "unauthorized")`.
   await assert.rejects(
     () =>
       services.getVideoRetentionCurve({
@@ -1253,7 +1269,7 @@ test("getVideoRetentionCurve propagates a credential-resolution failure (e.g. mi
         startDate: "2026-08-26",
         endDate: "2026-09-22",
       }),
-    (error: unknown) => error instanceof DomainError
+    (error: unknown) => error instanceof DomainError && error.code === "unauthorized"
   );
   assert.equal(channelBreakdownCalls.length, 0, "no real Analytics API call was made once credentials failed to resolve");
 });
