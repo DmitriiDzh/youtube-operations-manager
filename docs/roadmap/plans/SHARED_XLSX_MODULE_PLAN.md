@@ -97,9 +97,15 @@ test fails loudly the day someone tries.
   **unmodified** — that is the acceptance criterion for "zero behavior change," per `AGENTS.md` §L
   (a passing pre-existing test suite is evidence here precisely because these tests were written
   independently of this refactor and encode the actual contract).
-- **Docs:** `docs/ARCHITECTURE.md` (new section describing the module, mirroring how `shared-crypto`/
-  `shared-logger`/`shared-provenance` are already documented), `docs/SYSTEM_MAP.md` (note in the
-  existing Localization/Change-Set sections pointing at the new module), `docs/DEVELOPMENT_PLAYBOOK.md`
+- **Docs:** ~~`docs/ARCHITECTURE.md` (new section describing the module, mirroring how
+  `shared-crypto`/`shared-logger`/`shared-provenance` are already documented)~~ **Amended during
+  implementation (independent review, 2026-09-26): this line's own premise was wrong.** None of
+  `shared-crypto`/`shared-logger`/`shared-provenance` are actually documented in
+  `docs/ARCHITECTURE.md` at all — checked, zero mentions of any of the three anywhere in that file.
+  They live only in `docs/SYSTEM_MAP.md` (via the task/backlog row that created each one), which is
+  the real precedent this module follows — done as the new `docs/SYSTEM_MAP.md` §2.9u instead, plus
+  a note in the existing Localization/Change-Set sections pointing at the new module.
+  `docs/DEVELOPMENT_PLAYBOOK.md`
   §6.10 (update the reference example to name the new module alongside the two thin adapters),
   `docs/TECHNICAL_DEBT.md` RISK-01 (affected-components update, §1 above),
   `docs/roadmap/FUTURE_PHASES.md` §7's XLSX-replacement bullet (one sentence distinguishing this

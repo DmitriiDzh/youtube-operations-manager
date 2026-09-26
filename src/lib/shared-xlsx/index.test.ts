@@ -104,6 +104,18 @@ test("buildWorkbook computes a two-letter autofilter column for more than 26 col
   assert.deepEqual(sheet!.autoFilter, { from: "A1", to: "AA1" });
 });
 
+// Independent review finding (2026-09-26): the 27-column case above proves the two-letter
+// rollover works, but never exercised the exact single-letter/two-letter boundary itself
+// (26 columns -> "Z", the last single-letter column) -- hand-verified against the real
+// spreadsheet-column-letter convention (A=1 ... Z=26, AA=27), not derived from the
+// implementation under test.
+test("buildWorkbook computes a single-letter autofilter column for exactly 26 columns (the A-Z boundary)", () => {
+  const columns = Array.from({ length: 26 }, (_, i) => ({ header: `c${i}`, key: `c${i}` }));
+  const workbook = buildWorkbook([{ name: "Exact26", columns, rows: [], autoFilter: true }]);
+  const sheet = workbook.getWorksheet("Exact26");
+  assert.deepEqual(sheet!.autoFilter, { from: "A1", to: "Z1" });
+});
+
 test("workbookToBuffer round-trips through loadWorkbookFromBuffer", async () => {
   const workbook = buildWorkbook([{ name: "S", columns: [{ header: "x", key: "x" }], rows: [{ x: "1" }] }]);
   const buffer = await workbookToBuffer(workbook);
