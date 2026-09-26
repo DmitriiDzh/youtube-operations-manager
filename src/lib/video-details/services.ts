@@ -63,10 +63,11 @@ export type ServiceDependencies = {
   };
   localCache: {
     /** Refreshes only the fields this module can touch that also happen to exist in the local
-     * `videos` cache (title/description/privacyStatus/defaultLanguage/etag) -- reuses
-     * `channel-sync`'s own `upsertVideos`, never a parallel write path (AGENTS.md §D). Fields
-     * this module writes that the cache doesn't track at all (tags, categoryId, license,
-     * publishAt, ...) are simply not part of the cache and need no handling here. */
+     * `videos` cache (title/description/privacyStatus/defaultLanguage/etag/publishAt, the last
+     * added 2026-09-26 for Content tab's "Publish" column) -- reuses `channel-sync`'s own
+     * `upsertVideos`, never a parallel write path (AGENTS.md §D). Fields this module writes that
+     * the cache still doesn't track (tags, categoryId, license, ...) are simply not part of the
+     * cache and need no handling here. */
     refreshVideoFields(args: { channelId: string; videoId: string; after: VideoDetailsSnapshot }): Promise<void>;
   };
   idGenerator: () => string;

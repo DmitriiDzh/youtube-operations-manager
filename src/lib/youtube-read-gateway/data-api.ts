@@ -255,6 +255,7 @@ export type VideoSyncMetadata = {
   commentCount: number | null;
   likeCount: number | null;
   durationSeconds: number | null;
+  publishAt: string | null;
 };
 
 function parseStatCount(value: string | null | undefined): number | null {
@@ -350,6 +351,12 @@ export async function getVideosMetadataContextBatch(
         likeCount: parseStatCount(item.statistics?.likeCount),
         // Phase 7 slice K (owner spec §10). Same "never fabricate" discipline as the stats above.
         durationSeconds: parseIso8601DurationToSeconds(item.contentDetails?.duration),
+        // Owner instruction, 2026-09-26: YouTube's own scheduled-publish time for a still-private
+        // video (distinct from `snippet.publishedAt` above, which reflects when a PUBLIC video
+        // actually went live). Already present in this same response -- `part: ["status", ...]`
+        // was already requested for `privacyStatus`, no new API part needed. `null` once the
+        // video is public (YouTube itself clears this field) or if it was never scheduled.
+        publishAt: item.status?.publishAt ?? null,
       });
     }
   }

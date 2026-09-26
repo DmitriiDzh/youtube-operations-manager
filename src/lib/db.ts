@@ -220,6 +220,13 @@ export const videos = sqliteTable("videos", {
   // Additive, schema version 19 (Phase 7 slice K, owner spec §10 "similar duration" filter) --
   // same nullable-until-next-sync convention as the three columns above.
   durationSeconds: integer("duration_seconds"),
+  // Additive, schema version 21 (owner instruction, 2026-09-26, Telegram: Content tab's "Publish"
+  // column needs a scheduled-publish date for a still-private video, not only its actual
+  // `publishedAt`). This is YouTube's own `status.publishAt` -- a distinct field from
+  // `snippet.publishedAt` above, present only while a video is privately scheduled to go public
+  // later; `null` once the video is actually public (YouTube itself clears it) or if it was never
+  // scheduled at all. Same nullable-until-next-sync convention as the columns above.
+  publishAt: text("publish_at"),
   lastSyncedAt: integer("last_synced_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),
@@ -1226,6 +1233,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 21,
+    description:
+      "videos.publish_at -- owner instruction 2026-09-26, Content tab's scheduled-publish date for a still-private video (YouTube's status.publishAt, distinct from snippet.publishedAt)",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE videos ADD COLUMN publish_at TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -1890,6 +1909,7 @@ export type StoredVideo = {
   commentCount: number | null;
   likeCount: number | null;
   durationSeconds: number | null;
+  publishAt: string | null;
   lastSyncedAt: Date;
 };
 
@@ -1926,6 +1946,7 @@ function mapStoredVideo(row: typeof videos.$inferSelect): StoredVideo {
     commentCount: row.commentCount,
     likeCount: row.likeCount,
     durationSeconds: row.durationSeconds,
+    publishAt: row.publishAt,
     lastSyncedAt: row.lastSyncedAt,
   };
 }
@@ -2343,6 +2364,7 @@ export async function upsertVideos(
     commentCount?: number | null;
     likeCount?: number | null;
     durationSeconds?: number | null;
+    publishAt?: string | null;
   }>,
   syncedAt: Date
 ): Promise<void> {
@@ -2363,6 +2385,7 @@ export async function upsertVideos(
       commentCount: entry.commentCount ?? null,
       likeCount: entry.likeCount ?? null,
       durationSeconds: entry.durationSeconds ?? null,
+      publishAt: entry.publishAt ?? null,
       lastSyncedAt: syncedAt,
     };
 

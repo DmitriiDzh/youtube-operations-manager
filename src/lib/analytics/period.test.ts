@@ -137,13 +137,13 @@ test("zeroFillDailySeries fills from startDate even when the first row starts la
 
 // Studio-parity Slice O2 (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §2.4) --
 // formatChartDate. Expected value hand-computed from a real calendar (AGENTS.md §L): 2026-09-06 is
-// a Sunday.
-test("formatChartDate matches real Studio's own tooltip wording (\"Weekday, Mon D, YYYY\")", () => {
-  assert.equal(formatChartDate("2026-09-06"), "Sun, Sep 6, 2026");
+// a Sunday. Shortened 2026-09-26 (owner instruction) to drop the year.
+test("formatChartDate matches real Studio's own tooltip wording (\"Weekday, Mon D\")", () => {
+  assert.equal(formatChartDate("2026-09-06"), "Sun, Sep 6");
 });
 
 test("formatChartDate never shifts the weekday due to the viewer's own local timezone offset from UTC", () => {
   // A date parsed via `new Date(isoDate)` + local formatting would show Dec 31 in a timezone
   // behind UTC -- this must always report the calendar date exactly as given, Jan 1.
-  assert.equal(formatChartDate("2027-01-01"), "Fri, Jan 1, 2027");
+  assert.equal(formatChartDate("2027-01-01"), "Fri, Jan 1");
 });

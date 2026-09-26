@@ -211,6 +211,47 @@ test("getVideosMetadataContextBatch requests contentDetails and parses duration 
   assert.equal(results[1]?.durationSeconds, null);
 });
 
+// Owner instruction, 2026-09-26: Content tab's "Publish" column needs YouTube's own
+// scheduled-publish time for a still-private video (`status.publishAt`), distinct from
+// `snippet.publishedAt`. `status` was already a requested part (for `privacyStatus`), so this is
+// a pure extraction change, not a new API request shape -- verified here by asserting the field
+// is read correctly for a scheduled video, a public one (field absent), and one where `status` is
+// missing entirely (e.g. an older cached response shape), never inventing a value.
+test("getVideosMetadataContextBatch reads status.publishAt for a scheduled video, and null when absent", async () => {
+  const youtube = fakeYoutubeClient({
+    videosList: (async () => ({
+      data: {
+        items: [
+          {
+            id: "v1",
+            etag: "etag-v1",
+            snippet: { title: "T", description: "D", publishedAt: "2026-01-01T00:00:00.000Z" },
+            status: { privacyStatus: "private", publishAt: "2026-10-15T09:00:00.000Z" },
+          },
+          {
+            id: "v2",
+            etag: "etag-v2",
+            snippet: { title: "T2", description: "D2", publishedAt: "2026-01-01T00:00:00.000Z" },
+            status: { privacyStatus: "public" },
+          },
+          {
+            id: "v3",
+            etag: "etag-v3",
+            snippet: { title: "T3", description: "D3", publishedAt: "2026-01-01T00:00:00.000Z" },
+            // No `status` at all.
+          },
+        ],
+      },
+    })) as unknown as youtube_v3.Youtube["videos"]["list"],
+  });
+
+  const results = await getVideosMetadataContextBatch(youtube, ["v1", "v2", "v3"]);
+
+  assert.equal(results[0]?.publishAt, "2026-10-15T09:00:00.000Z");
+  assert.equal(results[1]?.publishAt, null);
+  assert.equal(results[2]?.publishAt, null);
+});
+
 test("AC-QUOTA-01: the exact approved 75-video fixture issues 2 videos.list calls (chunks of 50 and 25), never 75", async () => {
   const requestedBatches: string[][] = [];
   const videoIds = Array.from({ length: 75 }, (_, i) => `v${i + 1}`);

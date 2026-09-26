@@ -1,8 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { formatDisplayDateTime, formatDisplayDateUtc, parseDisplayDate, parseDisplayDateTime } from "@/lib/shared-formatting";
 
-type VideoDetailsSnapshot = {
+// Exported so `video-details-panel.test.ts` can exercise the date-conversion wiring directly --
+// plain function calls, no React rendering involved (this repo has no component-rendering test
+// infrastructure, RISK-42) -- after an independent review found a real regression (recordingDate
+// displayed one day earlier than stored, for any negative-UTC-offset viewer) that no test in this
+// codebase would have caught, since `shared-formatting`'s own tests only exercise that module in
+// isolation, never this component's actual wiring of which function goes with which field.
+export type VideoDetailsSnapshot = {
   videoId: string;
   etag: string | null;
   title: string;
@@ -20,7 +27,7 @@ type VideoDetailsSnapshot = {
   recordingDate: string | null;
 };
 
-type FormValues = {
+export type FormValues = {
   title: string;
   description: string;
   tagsText: string;
@@ -36,9 +43,16 @@ type FormValues = {
   recordingDate: string;
 };
 
-type Patch = Record<string, unknown>;
+export type Patch = Record<string, unknown>;
 
-function toFormValues(s: VideoDetailsSnapshot): FormValues {
+// Owner instruction, 2026-09-26 (Telegram): the recording-date/scheduled-publish fields must
+// display DD.MM.YYYY[ HH:MM] like the rest of the app, not a native picker's locale-dependent
+// rendering -- but the value this form ultimately sends YouTube must stay the exact wire format
+// it always was. `FormValues` holds the DISPLAY text the operator sees and edits directly (same
+// approach as the pre-existing HH:MM Settings field); `buildPatch` below is the "write direction"
+// of the conversion, turning that text back into ISO via `@/lib/shared-formatting`'s
+// `parseDisplayDate`/`parseDisplayDateTime`.
+export function toFormValues(s: VideoDetailsSnapshot): FormValues {
   return {
     title: s.title,
     description: s.description,
@@ -46,13 +60,17 @@ function toFormValues(s: VideoDetailsSnapshot): FormValues {
     categoryId: s.categoryId ?? "",
     defaultLanguage: s.defaultLanguage ?? "",
     privacyStatus: s.privacyStatus ?? "private",
-    publishAt: s.publishAt ?? "",
+    publishAt: s.publishAt ? formatDisplayDateTime(s.publishAt) : "",
     license: s.license ?? "youtube",
     embeddable: s.embeddable ?? true,
     publicStatsViewable: s.publicStatsViewable ?? true,
     selfDeclaredMadeForKids: s.selfDeclaredMadeForKids ?? false,
     containsSyntheticMedia: s.containsSyntheticMedia ?? false,
-    recordingDate: s.recordingDate ?? "",
+    // UTC-anchored, not `formatDisplayDate` -- `recordingDate` is a pure calendar date with no
+    // real time-of-day (paired with `parseDisplayDate`'s own UTC-midnight write direction below);
+    // reading it back with local-time components would shift the displayed day for any viewer in
+    // a negative-UTC-offset timezone (independent review, 2026-09-26).
+    recordingDate: s.recordingDate ? formatDisplayDateUtc(s.recordingDate) : "",
   };
 }
 
@@ -67,7 +85,7 @@ function parseTags(text: string): string[] {
  * loaded from -- never the whole form. `publishAt` is the one documented exception (the API
  * requires `privacyStatus: "private"` in the same request): if publishAt is being newly set,
  * privacyStatus is always included even when the operator didn't touch it. */
-function buildPatch(form: FormValues, original: VideoDetailsSnapshot): Patch {
+export function buildPatch(form: FormValues, original: VideoDetailsSnapshot): Patch {
   const patch: Patch = {};
   if (form.title !== original.title) patch.title = form.title;
   if (form.description !== original.description) patch.description = form.description;
@@ -78,9 +96,16 @@ function buildPatch(form: FormValues, original: VideoDetailsSnapshot): Patch {
     patch.defaultLanguage = form.defaultLanguage;
   }
   if (form.privacyStatus !== (original.privacyStatus ?? "private")) patch.privacyStatus = form.privacyStatus;
-  if (form.publishAt && form.publishAt !== (original.publishAt ?? "")) {
-    patch.publishAt = new Date(form.publishAt).toISOString();
-    patch.privacyStatus = "private";
+  const originalPublishAtDisplay = original.publishAt ? formatDisplayDateTime(original.publishAt) : "";
+  if (form.publishAt && form.publishAt !== originalPublishAtDisplay) {
+    // Invalid/in-progress typed text is deliberately excluded from the patch rather than sent as
+    // garbage -- the render below disables Preview/Save while any date/time field is invalid, so
+    // reaching here with an unparseable value should never actually happen in practice.
+    const parsed = parseDisplayDateTime(form.publishAt);
+    if (parsed) {
+      patch.publishAt = parsed;
+      patch.privacyStatus = "private";
+    }
   }
   if (form.license !== (original.license ?? "youtube")) patch.license = form.license;
   if (form.embeddable !== (original.embeddable ?? true)) patch.embeddable = form.embeddable;
@@ -93,8 +118,10 @@ function buildPatch(form: FormValues, original: VideoDetailsSnapshot): Patch {
   if (form.containsSyntheticMedia !== (original.containsSyntheticMedia ?? false)) {
     patch.containsSyntheticMedia = form.containsSyntheticMedia;
   }
-  if (form.recordingDate && form.recordingDate !== (original.recordingDate ?? "")) {
-    patch.recordingDate = new Date(form.recordingDate).toISOString();
+  const originalRecordingDateDisplay = original.recordingDate ? formatDisplayDateUtc(original.recordingDate) : "";
+  if (form.recordingDate && form.recordingDate !== originalRecordingDateDisplay) {
+    const parsed = parseDisplayDate(form.recordingDate);
+    if (parsed) patch.recordingDate = parsed;
   }
   return patch;
 }
@@ -182,7 +209,7 @@ export function VideoDetailsPanel({
   }, [hasChanges]);
 
   async function handlePreview() {
-    if (!snapshot || !hasChanges) return;
+    if (!snapshot || !hasChanges || !recordingDateValid || !publishAtValid) return;
     setPreviewing(true);
     setError(null);
     try {
@@ -209,7 +236,7 @@ export function VideoDetailsPanel({
   }
 
   async function handleApply() {
-    if (!snapshot || !canSave) return;
+    if (!snapshot || !canSave || !recordingDateValid || !publishAtValid) return;
     setApplying(true);
     setError(null);
     try {
@@ -242,6 +269,8 @@ export function VideoDetailsPanel({
   if (!form || !snapshot) return <p className="text-sm text-red-400">Failed to load video details.</p>;
 
   const canSetPublishAt = snapshot.privacyStatus === "private" && !snapshot.publishAt;
+  const recordingDateValid = form.recordingDate === "" || parseDisplayDate(form.recordingDate) !== null;
+  const publishAtValid = form.publishAt === "" || parseDisplayDateTime(form.publishAt) !== null;
 
   return (
     <div className="flex h-full min-h-0 flex-col space-y-4">
@@ -332,22 +361,45 @@ export function VideoDetailsPanel({
           <label className="block">
             <span className="text-xs text-zinc-400">Recording date</span>
             <input
-              type="date"
-              value={form.recordingDate ? form.recordingDate.slice(0, 10) : ""}
+              type="text"
+              inputMode="numeric"
+              placeholder="DD.MM.YYYY"
+              value={form.recordingDate}
               onChange={(e) => updateForm({ recordingDate: e.target.value })}
-              className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
+              // A plain text input, not `type="date"` -- the native picker renders its value using
+              // the browser/OS locale's own format (e.g. "9/26/2026" vs "26.09.2026"), the same
+              // class of inconsistency already fixed once for the Settings time field. This field
+              // always shows/accepts exactly DD.MM.YYYY; `buildPatch` converts it back to the ISO
+              // wire format YouTube expects via `@/lib/shared-formatting`'s `parseDisplayDate`.
+              className={`mt-1 w-full rounded-md border bg-zinc-900 px-2 py-1 text-sm text-zinc-200 ${
+                recordingDateValid ? "border-zinc-700" : "border-red-700"
+              }`}
             />
           </label>
           {canSetPublishAt && (
             <label className="block">
               <span className="text-xs text-zinc-400">Scheduled publish time (private only, one-time)</span>
               <input
-                type="datetime-local"
-                value={form.publishAt ? form.publishAt.slice(0, 16) : ""}
+                type="text"
+                inputMode="numeric"
+                placeholder="DD.MM.YYYY HH:MM"
+                value={form.publishAt}
                 onChange={(e) => updateForm({ publishAt: e.target.value })}
-                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
+                // Same reasoning as Recording date above -- a plain text input showing/accepting
+                // DD.MM.YYYY HH:MM (24h, viewer's local time), converted back to ISO by
+                // `parseDisplayDateTime` in `buildPatch`, instead of a native
+                // `type="datetime-local"` picker's locale-dependent rendering.
+                className={`mt-1 w-full rounded-md border bg-zinc-900 px-2 py-1 text-sm text-zinc-200 ${
+                  publishAtValid ? "border-zinc-700" : "border-red-700"
+                }`}
               />
             </label>
+          )}
+          {(!recordingDateValid || !publishAtValid) && (
+            <p className="text-xs text-red-400 sm:col-span-2">
+              {!recordingDateValid && "Recording date must be DD.MM.YYYY. "}
+              {!publishAtValid && "Scheduled publish time must be DD.MM.YYYY HH:MM (24h)."}
+            </p>
           )}
           <label className="block">
             <span className="text-xs text-zinc-400">License</span>
@@ -413,14 +465,14 @@ export function VideoDetailsPanel({
       <div className="flex shrink-0 flex-wrap items-center gap-2">
         <button
           onClick={handlePreview}
-          disabled={!hasChanges || previewing}
+          disabled={!hasChanges || previewing || !recordingDateValid || !publishAtValid}
           className="rounded-lg border border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
         >
           {previewing ? "Previewing..." : "Preview changes"}
         </button>
         <button
           onClick={handleApply}
-          disabled={!canSave}
+          disabled={!canSave || !recordingDateValid || !publishAtValid}
           title={hasChanges && !patchesEqual(previewedPatch, currentPatch) ? "Preview again before saving" : undefined}
           className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
         >
