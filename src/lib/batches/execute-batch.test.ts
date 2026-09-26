@@ -217,6 +217,11 @@ function createHarness(options: {
   assertWriteChannel?: (args: {
     expectedChannelId?: string;
   }) => Promise<{ expectedChannelId: string; shouldPersistSelection: boolean; userId: string | null }>;
+  /** AC-BACKUP-01 ordering proof: when supplied, `captureBackup` appends a "backup" entry
+   * here. A test pairs this with its own instrumented executor appending a "write" entry,
+   * to assert the real relative order across the createBatch/executeBatch call boundary --
+   * not just that both happen somewhere in the pipeline. */
+  calls?: Array<{ type: "backup" | "write"; videoId: string }>;
 } = {}) {
   const store = createFakeStore();
   let counter = 0;
@@ -267,7 +272,8 @@ function createHarness(options: {
       async checkInfrastructureHealth() {
         return { healthy: options.backupHealthy ?? true };
       },
-      async captureBackup() {
+      async captureBackup(args: { videoId: string }) {
+        options.calls?.push({ type: "backup", videoId: args.videoId });
         return { path: "/fake/backup.json", capturedAt: new Date().toISOString() };
       },
     },
@@ -311,6 +317,35 @@ function scriptedExecutor(results: WriteExecutorResult[]): WriteExecutor {
     },
   };
 }
+
+// Independent test-suite audit (2026-09-26): AC-BACKUP-01's own acceptance text requires
+// proving backup precedes the write call for the SAME video. Every other test in this file
+// exercises `createBatch` (captures the backup) and `executeBatch` (calls the executor) as two
+// separate, sequentially-awaited top-level calls, which already structurally guarantees the
+// order -- but nothing previously made that guarantee an explicit, checked assertion. This test
+// closes that gap with a real (mocked) WriteExecutor, not the dry-run path (which never reaches
+// a WriteExecutor at all), by recording both events into one shared, order-preserving array.
+test("AC-BACKUP-01: backup is captured (during createBatch) before the write call (during executeBatch) for the same video, against a real mocked WriteExecutor", async () => {
+  const calls: Array<{ type: "backup" | "write"; videoId: string }> = [];
+  const harness = createHarness({ calls });
+
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+
+  const executor: WriteExecutor = {
+    async attemptWrite() {
+      calls.push({ type: "write", videoId: "v1" });
+      return { outcome: "SUCCESS" };
+    },
+  };
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor });
+
+  assert.equal(summary.results[0].status, "SUCCESS");
+  const backupIndex = calls.findIndex((c) => c.type === "backup" && c.videoId === "v1");
+  const writeIndex = calls.findIndex((c) => c.type === "write" && c.videoId === "v1");
+  assert.ok(backupIndex !== -1, "captureBackup must actually have been called for v1");
+  assert.ok(writeIndex !== -1, "the executor must actually have been called for v1");
+  assert.ok(backupIndex < writeIndex, "backup must be captured strictly before the write call for the same video");
+});
 
 test("§0.E: a transient FAILED is retried up to maxAttempts and succeeds", async () => {
   const harness = createHarness({
