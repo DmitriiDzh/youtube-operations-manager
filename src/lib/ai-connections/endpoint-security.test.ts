@@ -79,6 +79,30 @@ test("IPv6 literal URLs are checked directly and never trigger a DNS lookup (fas
   await validateEndpointUrl("https://[2001:4860:4860::8888]/", { allowLocal: false, dnsLookup: failingDnsLookup });
 });
 
+// Independent test-suite audit (2026-09-26): isBlockedIpv6's `::ffff:`-prefix unwrap-and-recheck
+// branch had zero test coverage. Verified separately that a LITERAL bracketed URL never actually
+// reaches this branch either way -- `new URL("https://[::ffff:169.254.169.254]/").hostname`
+// normalizes to the WHATWG hex form (e.g. "[::ffff:a9fe:a9fe]"), not the dotted-quad form this
+// unwrap logic parses, so a literal URL always falls through to "block conservatively" instead.
+// The only way to actually exercise the dotted-quad-aware branch is via a DNS resolver returning
+// a raw `{address: "::ffff:x.x.x.x", family: 6}` record, which these two tests do directly.
+test("a DNS resolution returning an IPv4-mapped IPv6 metadata address (::ffff:169.254.169.254) is blocked", async () => {
+  await assert.rejects(
+    validateEndpointUrl("https://looks-public.example.com/v1", {
+      allowLocal: false,
+      dnsLookup: async () => [{ address: "::ffff:169.254.169.254", family: 6 }],
+    }),
+    (err: unknown) => err instanceof DomainError && err.code === "endpoint_not_allowed"
+  );
+});
+
+test("a DNS resolution returning an IPv4-mapped IPv6 genuinely public address (::ffff:8.8.8.8) is accepted", async () => {
+  await validateEndpointUrl("https://looks-public.example.com/v1", {
+    allowLocal: false,
+    dnsLookup: async () => [{ address: "::ffff:8.8.8.8", family: 6 }],
+  });
+});
+
 test("a hanging DNS lookup is bounded by its own timeout and fails closed, rather than hanging forever", async () => {
   const neverResolves = new Promise<Array<{ address: string; family: number }>>(() => {});
   await assert.rejects(
