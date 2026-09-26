@@ -751,7 +751,7 @@ All routes are App Router handlers and require authenticated session user.
   `agent_get_capabilities` above (see `docs/AGENT_OPERATIONS_INTERFACE.md`). Read-only, gated by
   the same NextAuth session check as every other route in this app; not channel-scoped.
 
-### Market Intelligence API (Phase 9 slices 1-4/9A-9B — previously undocumented here, per `AGENTS.md` §H)
+### Market Intelligence API (Phase 9 slices 1-4/9A-9C — previously undocumented here, per `AGENTS.md` §H)
 
 All routes are global (not scoped to one owned channel) -- the research watchlist tracks channels
 the operator does not necessarily own (`docs/ARCHITECTURE.md` §18).
@@ -761,6 +761,10 @@ the operator does not necessarily own (`docs/ARCHITECTURE.md` §18).
 - `GET /api/market-intelligence/channels/[channelId]/evidence` — every recorded observation for the channel; `POST` — record one manually (`{ observation, source, confidence? }`)
 - `POST /api/market-intelligence/channels/[channelId]/fetch-public-snapshot` — the one slice-3 action making a real `channels.list` call; records a free-text evidence row
 - `POST /api/market-intelligence/collect-if-stale` (Phase 9 slice 9B) — repeatable, budget-aware auto-refresh: every watchlisted channel stale by >24h gets a channel snapshot + up to 50 newest video snapshots, gated by the operator-set daily unit budget (`marketIntelligenceDailyQuotaBudgetUnits`, Settings tab); triggered once per dashboard mount (chained after the two Phase 8 analytics calls), real mutation, gated by `src/proxy.ts` like `analytics/auto-collect`; no request body
+- `POST /api/market-intelligence/discover` (Phase 9 slice 9C) — `{ query }`; one `search.list` call (100 units, shares the same daily budget as auto-refresh above), only ever called from an explicit Research-tab UI click, never automatic; upserts discovery candidates (dedup against the watchlist and existing candidates)
+- `GET /api/market-intelligence/discovery-candidates` — list all discovery candidates, newest `lastSeenAt` first
+- `PATCH /api/market-intelligence/discovery-candidates/[channelId]` — `{ status: "watching" | "ignored" | "archived" }` (never `"promoted"`, which has its own route below)
+- `POST /api/market-intelligence/discovery-candidates/[channelId]/promote` — `{ reason }`; adds the candidate to the watchlist and marks it `"promoted"`
 
 ### Analytics API (Phase 8 + Studio-Parity S6b, BL-055..059/BL-072 — previously undocumented here)
 

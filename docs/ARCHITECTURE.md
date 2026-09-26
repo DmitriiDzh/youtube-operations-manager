@@ -1419,7 +1419,7 @@ content-proposal/artifact registration, a Codex operations-workspace template, a
 review -- **which of these is actually implemented as of any given moment is tracked exclusively
 in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here**.
 
-## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9B
+## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9C
 
 Owner instruction, Telegram 2026-09-26: an explicit assignment to research, plan, and begin
 implementing Phase 9 (`docs/roadmap/FUTURE_PHASES.md` §5) as its own feature branch, superseding
@@ -1538,3 +1538,15 @@ caller whenever the first page came up short and a second page had to be fetched
 under-counting real spend. Capping by PAGE rather than by count makes the cost exactly and always 1
 unit, deterministically -- consistent with this feature's own "never fabricate a unit-spend number"
 requirement.
+
+**Slice 9C (`docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md`, 2026-09-27) -- search.list-based
+discovery, minimal by design.** Full detail lives in the plan doc and `docs/SYSTEM_MAP.md` §2.9v;
+the one architectural point worth recording here: `market_discovery_candidates` is a **lifecycle
+table** (rediscovery only touches `lastSeenAt`, never duplicates a row or resets an operator-set
+`status`), architecturally unlike 9A/9B's append-only snapshot/run tables -- it is closer in shape
+to `research_channels` itself than to `market_channel_snapshots`. Its own run-log
+(`market_discovery_runs`) is a separate table from 9B's `market_intelligence_collection_runs`
+(that one's `research_channel_id` is `NOT NULL` and FK'd to the watchlist, which a discovery run
+-- not about any one watchlisted channel -- cannot satisfy), but both feed the SAME
+`getMarketIntelligenceUnitsSpentSince` sum, since owner decision 2 set one shared daily budget, not
+one per sub-feature.
