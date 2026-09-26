@@ -853,6 +853,137 @@ test("removeVideosFromPlaylist fails closed when playlist ownership does not mat
   assert.equal(calls.delete, 0);
 });
 
+// Independent test-suite audit (2026-09-26): the two tests above only cover WRITE_CHANNEL_MISMATCH
+// (an ownership preflight failure) -- updatePlaylist/deletePlaylist each also have a dedicated
+// WRITE_CHANNEL_UNRESOLVED test (assertWriteChannel itself failing, before any preflight ever
+// runs), which addVideosToPlaylist/removeVideosFromPlaylist were missing. Both call the identical
+// shared assertWriteChannel, so the actual guardrail behavior is already covered by
+// write-context's own tests -- these two close the same test-symmetry gap the sibling methods
+// already closed for themselves.
+test("addVideosToPlaylist fails closed on unresolved write channel before ownership preflight", async () => {
+  const calls = { preflight: 0, add: 0 };
+
+  const services = createPlaylistManagementServices({
+    authResolver: {
+      resolve: async (args) => ({
+        credentialRef: args.credentialRef as { userId: string },
+        accessToken: "access",
+        refreshToken: "refresh",
+        tokenExpiry: undefined,
+        scopeSet: new Set(args.requiredScopes),
+      }),
+    },
+    youtubeApi: {
+      listPlaylists: async () => [],
+      createPlaylist: async ({ title, description, privacyStatus }) => ({
+        id: "p-created",
+        title,
+        description: description ?? "",
+        privacyStatus,
+      }),
+      getPlaylistForUpdate: async () => {
+        calls.preflight += 1;
+        return null;
+      },
+      updatePlaylist: async () => ({ id: "p-updated", title: "Updated", description: "", privacyStatus: "private" }),
+      getPlaylistForDelete: async () => null,
+      deletePlaylist: async () => undefined,
+      addVideoToPlaylist: async () => {
+        calls.add += 1;
+      },
+      listPlaylistItemIdsByVideo: async () => new Map(),
+      deletePlaylistItem: async () => undefined,
+    },
+    writeContext: {
+      assertWriteChannel: async () => {
+        throw new DomainError({
+          code: "WRITE_CHANNEL_UNRESOLVED",
+          message: "Cannot resolve active write channel for the current OAuth session",
+          details: { expectedChannelId: "UC_EXPECTED" },
+        });
+      },
+    },
+    channelSelectionStore: {
+      setSelectedChannelId: async () => undefined,
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      services.addVideosToPlaylist({
+        credentialRef: { userId: "user-1" },
+        playlistId: "playlist-1",
+        expectedChannelId: "UC_EXPECTED",
+        videoIds: ["v1"],
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "WRITE_CHANNEL_UNRESOLVED"
+  );
+
+  assert.deepEqual(calls, { preflight: 0, add: 0 });
+});
+
+test("removeVideosFromPlaylist fails closed on unresolved write channel before ownership preflight", async () => {
+  const calls = { preflight: 0, delete: 0 };
+
+  const services = createPlaylistManagementServices({
+    authResolver: {
+      resolve: async (args) => ({
+        credentialRef: args.credentialRef as { userId: string },
+        accessToken: "access",
+        refreshToken: "refresh",
+        tokenExpiry: undefined,
+        scopeSet: new Set(args.requiredScopes),
+      }),
+    },
+    youtubeApi: {
+      listPlaylists: async () => [],
+      createPlaylist: async ({ title, description, privacyStatus }) => ({
+        id: "p-created",
+        title,
+        description: description ?? "",
+        privacyStatus,
+      }),
+      getPlaylistForUpdate: async () => {
+        calls.preflight += 1;
+        return null;
+      },
+      updatePlaylist: async () => ({ id: "p-updated", title: "Updated", description: "", privacyStatus: "private" }),
+      getPlaylistForDelete: async () => null,
+      deletePlaylist: async () => undefined,
+      addVideoToPlaylist: async () => undefined,
+      listPlaylistItemIdsByVideo: async () => new Map([["v1", ["pi-1"]]]),
+      deletePlaylistItem: async () => {
+        calls.delete += 1;
+      },
+    },
+    writeContext: {
+      assertWriteChannel: async () => {
+        throw new DomainError({
+          code: "WRITE_CHANNEL_UNRESOLVED",
+          message: "Cannot resolve active write channel for the current OAuth session",
+          details: { expectedChannelId: "UC_EXPECTED" },
+        });
+      },
+    },
+    channelSelectionStore: {
+      setSelectedChannelId: async () => undefined,
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      services.removeVideosFromPlaylist({
+        credentialRef: { userId: "user-1" },
+        playlistId: "playlist-1",
+        expectedChannelId: "UC_EXPECTED",
+        videoIds: ["v1"],
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "WRITE_CHANNEL_UNRESOLVED"
+  );
+
+  assert.deepEqual(calls, { preflight: 0, delete: 0 });
+});
+
 test("deletePlaylist enforces guardrail and deletes when channel matches", async () => {
   const calls = { delete: 0, persist: 0 };
   const services = createPlaylistManagementServices({

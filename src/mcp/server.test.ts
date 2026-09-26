@@ -1402,6 +1402,67 @@ test("MCP playlist_delete fails closed on unresolved channel with stable details
   });
 });
 
+// Independent test-suite audit (2026-09-26): playlist_add_videos/playlist_remove_videos gained
+// the same expectedChannelId write-channel guardrail playlist_update/playlist_delete already
+// have (services.ts commit b8d1578), but had no dedicated guardrail-failure test of their own at
+// the MCP layer -- only a generic combined validation-failure case that never actually reaches
+// the guardrail. Mirrors playlist_update's/playlist_delete's own tests immediately above.
+test("MCP playlist_add_videos fails closed on guardrail mismatch with stable details", async () => {
+  const core = makeCoreStub();
+  core.addVideosToPlaylist = async () => {
+    throw new DomainError({
+      code: "WRITE_CHANNEL_MISMATCH",
+      message: "Playlist does not belong to the active write channel",
+      details: {
+        expectedChannelId: "UC_EXPECTED",
+        activeWriteChannelId: "UC_ACTIVE",
+      },
+    });
+  };
+
+  const handlers = createMcpToolHandlers(core, makeAuthStub());
+  const result = await handlers.playlistAddVideos({
+    playlistId: "p-add",
+    expectedChannelId: "UC_EXPECTED",
+    videoIds: ["v1"],
+  });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "WRITE_CHANNEL_MISMATCH");
+  assert.deepEqual(payload.error.details, {
+    expectedChannelId: "UC_EXPECTED",
+    activeWriteChannelId: "UC_ACTIVE",
+  });
+});
+
+test("MCP playlist_remove_videos fails closed on unresolved channel with stable details", async () => {
+  const core = makeCoreStub();
+  core.removeVideosFromPlaylist = async () => {
+    throw new DomainError({
+      code: "WRITE_CHANNEL_UNRESOLVED",
+      message: "Cannot resolve active write channel for the current OAuth session",
+      details: {
+        expectedChannelId: "UC_ACTIVE",
+      },
+    });
+  };
+
+  const handlers = createMcpToolHandlers(core, makeAuthStub());
+  const result = await handlers.playlistRemoveVideos({
+    playlistId: "p-remove",
+    expectedChannelId: "UC_ACTIVE",
+    videoIds: ["v1"],
+  });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "WRITE_CHANNEL_UNRESOLVED");
+  assert.deepEqual(payload.error.details, {
+    expectedChannelId: "UC_ACTIVE",
+  });
+});
+
 // Phase 7 slice 1 (docs/roadmap/plans/PHASE_7_PLAN.md): changeset_list, changeset_get,
 // localization_import_preview, batch_list, batch_get. All five are read/propose-only --
 // no test here needs device-lock setup, since none of them are wrapped by

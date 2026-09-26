@@ -294,6 +294,8 @@ headers corrected (both features had actually merged to `dev` by the time this b
 `DEVELOPMENT_PLAYBOOK.md` §6.5's identity-verification row needed no separate edit — Category A
 finding 1's fix made its claim actually true.
 
-**Full validation after every commit on this branch:** `npx tsc --noEmit`, `npm run lint`,
+**Verified clean on this branch's tip** (independent review, 2026-09-26 — individual commits along
+the way ran a mix of targeted and full validation, not uniformly the full set every time; see each
+commit's own message for exactly what it ran): `npx tsc --noEmit`, `npm run lint`,
 `npm run build`, `git diff --check` all clean; `npm test` grew from the `dev` baseline of 1487 to
 1525, with zero pre-existing test weakened or deleted to make a change pass.

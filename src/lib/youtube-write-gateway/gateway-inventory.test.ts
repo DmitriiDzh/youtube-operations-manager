@@ -31,6 +31,10 @@ import { fileURLToPath } from "node:url";
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(THIS_DIR, "..", "..", "..");
 const GATEWAY_DIR = THIS_DIR;
+// Matches read-gateway-inventory.test.ts's own SCAN_ROOTS (independent test-suite audit,
+// 2026-09-26) -- a build/one-off script under scripts/ is just as capable of a direct mutating
+// call as anything under src/, so both inventory tests should scan the same root set.
+const SCAN_ROOTS = ["src", "scripts"];
 
 async function listTsFilesRecursively(dir: string): Promise<string[]> {
   let entries;
@@ -50,6 +54,11 @@ async function listTsFilesRecursively(dir: string): Promise<string[]> {
     }
   }
   return files;
+}
+
+async function listAllScannedFiles(): Promise<string[]> {
+  const lists = await Promise.all(SCAN_ROOTS.map((root) => listTsFilesRecursively(path.join(REPO_ROOT, root))));
+  return lists.flat();
 }
 
 // Every YouTube Data API v3 resource with at least one documented mutating method, and every
@@ -78,7 +87,7 @@ const WRITE_CALL_PATTERN =
   /\.(videos|playlists|playlistItems|playlistImages|captions|thumbnails|channels|channelSections|channelBanners|comments|commentThreads|subscriptions|liveBroadcasts|liveStreams|liveChatBans|liveChatMessages|liveChatModerators|members|watermarks|abuseReports|thirdPartyLinks)\.(insert|insertCuepoint|update|delete|set|unset|rate|reportAbuse|bind|transition|control|markAsSpam|setModerationStatus)\s*\(/;
 
 test("youtube-write-gateway inventory: no file outside this module calls a mutating youtube_v3 method directly", async () => {
-  const allFiles = await listTsFilesRecursively(path.join(REPO_ROOT, "src"));
+  const allFiles = await listAllScannedFiles();
   const offenders: string[] = [];
 
   for (const file of allFiles) {
@@ -120,7 +129,7 @@ test("youtube-write-gateway inventory: every file that imports a real write prim
   // caller (`src/lib/batches/adapters/write-executor.youtube.ts`, which does call the barrier
   // correctly today -- this fix makes that a proven fact instead of an unverified one). Scanning
   // for actual importers means a future 5th caller can't slip through the same way.
-  const allFiles = await listTsFilesRecursively(path.join(REPO_ROOT, "src"));
+  const allFiles = await listAllScannedFiles();
   const callers: string[] = [];
 
   for (const file of allFiles) {
