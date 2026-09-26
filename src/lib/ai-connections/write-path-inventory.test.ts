@@ -80,29 +80,73 @@ test("AC-CONN-14b: no file other than index.ts references the bare global fetch 
   assert.deepEqual(offenders, [], `Found bare fetch() references outside index.ts:\n${offenders.join("\n")}`);
 });
 
+// Builds the 4 import-form patterns (static `from`, side-effect `import "..."`, dynamic
+// `import(...)`, `require(...)`) for a module-specifier regex fragment, matching an actual
+// import/require SPECIFIER string, never merely a word containing the package name -- this
+// deliberately does NOT flag this module's own "openai-compatible" adapter filename/identifiers,
+// which describe a PROTOCOL this code implements itself, not a dependency on OpenAI's own SDK
+// package. Widened 2026-09-26 (independent test-suite audit): the previous version only matched
+// a static `from "openai"`/`require("openai")` with the specifier EXACTLY "openai" -- verified
+// empirically that `from "openai/resources"` (any subpath import, the normal way to reach SDK
+// helpers), a side-effect `import "openai"`, and a dynamic `await import("openai")` all passed
+// through undetected. The `(?:/[^"']*)?` suffix below additionally covers subpath imports.
+function buildSdkImportPatterns(packageSpecifier: string): RegExp[] {
+  const moduleSpecifier = `${packageSpecifier}(?:/[^"']*)?`;
+  return [
+    new RegExp(String.raw`from\s*["']${moduleSpecifier}["']`, "i"),
+    new RegExp(String.raw`^\s*import\s*["']${moduleSpecifier}["']`, "im"),
+    new RegExp(String.raw`import\s*\(\s*["']${moduleSpecifier}["']\s*\)`, "i"),
+    new RegExp(String.raw`require\s*\(\s*["']${moduleSpecifier}["']\s*\)`, "i"),
+  ];
+}
+
+const SDK_IMPORT_PATTERNS = [
+  ...buildSdkImportPatterns("openai"),
+  ...buildSdkImportPatterns("@anthropic-ai"),
+  /\baxios\b/i,
+  /\bundici\b/i,
+];
+
 test("AC-CONN-14c: no real AI provider SDK is imported anywhere in this module", async () => {
   const files = await listTsFilesRecursively(MODULE_ROOT);
   const offenders: string[] = [];
-  // Matches an actual import/require SPECIFIER string (e.g. `from "openai"` or
-  // `require("openai")`), never merely a word containing "openai" -- this
-  // deliberately does NOT flag this module's own "openai-compatible" adapter
-  // filename/identifiers, which describe a PROTOCOL this code implements itself,
-  // not a dependency on OpenAI's own SDK package.
-  const patterns = [
-    /from\s+["']openai["']/i,
-    /require\(\s*["']openai["']\s*\)/i,
-    /from\s+["']@anthropic-ai\//i,
-    /require\(\s*["']@anthropic-ai\//i,
-    /\baxios\b/i,
-    /\bundici\b/i,
-  ];
 
   for (const file of files) {
     const content = stripComments(await readFile(file, "utf8"));
-    for (const pattern of patterns) {
+    for (const pattern of SDK_IMPORT_PATTERNS) {
       if (pattern.test(content)) offenders.push(`${file}: matches ${pattern}`);
     }
   }
 
   assert.deepEqual(offenders, [], `Found forbidden SDK dependencies:\n${offenders.join("\n")}`);
+});
+
+test("AC-CONN-14c patterns: the widened openai/@anthropic-ai detection actually catches subpath/side-effect/dynamic imports", () => {
+  const shouldMatch = [
+    `import OpenAI from "openai";`,
+    `import { X } from "openai/resources";`,
+    `import "openai";`,
+    `const m = await import("openai");`,
+    `const m = require("openai/resources");`,
+    `import Anthropic from "@anthropic-ai/sdk";`,
+    `const m = await import("@anthropic-ai/sdk");`,
+  ];
+  const shouldNotMatch = [
+    `import { createOpenAiCompatibleAdapter } from "./adapters/openai-compatible";`,
+    `// this module implements an openai-compatible protocol adapter, not the openai SDK`,
+    `const label = "openai-compatible";`,
+  ];
+
+  for (const sample of shouldMatch) {
+    assert.ok(
+      SDK_IMPORT_PATTERNS.some((pattern) => pattern.test(sample)),
+      `Expected to catch: ${sample}`
+    );
+  }
+  for (const sample of shouldNotMatch) {
+    assert.ok(
+      !SDK_IMPORT_PATTERNS.some((pattern) => pattern.test(sample)),
+      `Expected NOT to catch: ${sample}`
+    );
+  }
 });
