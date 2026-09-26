@@ -22,8 +22,8 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createMarketIntelligenceServices } from "./services";
-import { isDomainError } from "./contracts";
+import { createMarketIntelligenceServices, describePublicChannelSnapshot } from "./services";
+import { isDomainError, type PublicChannelSnapshot, type ResolvedCredentials } from "./contracts";
 
 const VALID_CHANNEL_ID = "UC1234567890123456789012"; // "UC" + 22 chars, matches the schema regex
 const OTHER_VALID_CHANNEL_ID = "UCabcdefghijklmnopqrstuv";
@@ -94,10 +94,32 @@ function createFakeStore() {
   };
 }
 
-function createFixture() {
+function createFixture(overrides?: {
+  publicSnapshot?: PublicChannelSnapshot | null;
+  resolveError?: Error;
+}) {
   const store = createFakeStore();
-  const services = createMarketIntelligenceServices(store);
-  return { store, services };
+  const resolveCalls: unknown[] = [];
+  const snapshotCalls: unknown[] = [];
+  const services = createMarketIntelligenceServices({
+    ...store,
+    authResolver: {
+      async resolve(args: { credentialRef: unknown; requiredScopes: readonly string[] }) {
+        resolveCalls.push(args);
+        if (overrides?.resolveError) throw overrides.resolveError;
+        return { accessToken: "fake-access-token", refreshToken: "fake-refresh-token" } as ResolvedCredentials;
+      },
+    },
+    youtubeApi: {
+      async getPublicChannelSnapshot(args: { credentials: ResolvedCredentials; channelId: string }) {
+        snapshotCalls.push(args);
+        return overrides?.publicSnapshot !== undefined
+          ? overrides.publicSnapshot
+          : { channelId: args.channelId, title: "Fetched Channel", subscriberCount: 100, viewCount: 200, videoCount: 3 };
+      },
+    },
+  });
+  return { store, services, resolveCalls, snapshotCalls };
 }
 
 test("AC-MI-01: addToWatchlist rejects an empty reason before storage", async () => {
@@ -230,5 +252,76 @@ test("AC-MI-08: getWatchlistEntry/listEvidence for an unknown channel report RES
   await assert.rejects(
     () => services.listEvidence({ researchChannelId: OTHER_VALID_CHANNEL_ID }),
     (error: unknown) => isDomainError(error) && error.code === "RESEARCH_CHANNEL_NOT_AVAILABLE"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 3 -- fetchPublicSnapshot (docs/roadmap/plans/PHASE_9_PLAN.md §6/§7).
+// ---------------------------------------------------------------------------
+
+test("AC-MI-09: fetchPublicSnapshot rejects a channel that is not on the watchlist, without resolving credentials", async () => {
+  const { services, resolveCalls } = createFixture();
+
+  await assert.rejects(
+    () =>
+      services.fetchPublicSnapshot(
+        { researchChannelId: OTHER_VALID_CHANNEL_ID, credentialRef: { userId: "u1" } },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_CHANNEL_NOT_AVAILABLE"
+  );
+  assert.equal(resolveCalls.length, 0, "must never resolve credentials for a channel that isn't watchlisted");
+});
+
+test("AC-MI-10: fetchPublicSnapshot resolves credentials with YOUTUBE_READ_SCOPE, fetches by researchChannelId, and records a confirmed evidence row stamped from callOrigin", async () => {
+  const { store, services, resolveCalls, snapshotCalls } = createFixture({
+    publicSnapshot: { channelId: VALID_CHANNEL_ID, title: "Competitor", subscriberCount: 5000, viewCount: 90000, videoCount: 12 },
+  });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Competitor" }, { createdVia: "web_ui" });
+
+  const evidence = await services.fetchPublicSnapshot(
+    { researchChannelId: VALID_CHANNEL_ID, credentialRef: { userId: "u1" } },
+    { createdVia: "web_ui" }
+  );
+
+  assert.deepEqual(resolveCalls, [{ credentialRef: { userId: "u1" }, requiredScopes: ["https://www.googleapis.com/auth/youtube.readonly"] }]);
+  assert.deepEqual(snapshotCalls, [{ credentials: { accessToken: "fake-access-token", refreshToken: "fake-refresh-token" }, channelId: VALID_CHANNEL_ID }]);
+  assert.equal(evidence.source, "youtube.channels.list");
+  assert.equal(evidence.confidence, "confirmed");
+  assert.equal(evidence.observation, "Public snapshot: 5000 subscribers, 90000 total views, 12 videos");
+  assert.equal(store.evidence.length, 1);
+  assert.equal(store.evidence[0].createdVia, "web_ui");
+});
+
+test("AC-MI-11: fetchPublicSnapshot rejects when YouTube reports no public channel for this id, and records nothing", async () => {
+  const { store, services } = createFixture({ publicSnapshot: null });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Competitor" }, { createdVia: "web_ui" });
+
+  await assert.rejects(
+    () =>
+      services.fetchPublicSnapshot(
+        { researchChannelId: VALID_CHANNEL_ID, credentialRef: { userId: "u1" } },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_CHANNEL_NOT_AVAILABLE"
+  );
+  assert.equal(store.evidence.length, 0);
+});
+
+// AC-MI-12: describePublicChannelSnapshot's wording, derived independently from YOUTUBE's own
+// documented "hiddenSubscriberCount"/field-omission semantics -- never a fabricated 0 or a silent
+// omission for a value YouTube did not actually report.
+test("AC-MI-12: describePublicChannelSnapshot reports every field, and describes a null field honestly instead of fabricating a number", () => {
+  assert.equal(
+    describePublicChannelSnapshot({ channelId: VALID_CHANNEL_ID, title: "x", subscriberCount: 12300, viewCount: 456000, videoCount: 42 }),
+    "Public snapshot: 12300 subscribers, 456000 total views, 42 videos"
+  );
+  assert.equal(
+    describePublicChannelSnapshot({ channelId: VALID_CHANNEL_ID, title: "x", subscriberCount: null, viewCount: 456000, videoCount: 42 }),
+    "Public snapshot: subscriber count hidden, 456000 total views, 42 videos"
+  );
+  assert.equal(
+    describePublicChannelSnapshot({ channelId: VALID_CHANNEL_ID, title: "x", subscriberCount: 0, viewCount: null, videoCount: null }),
+    "Public snapshot: 0 subscribers, view count unavailable, video count unavailable"
   );
 });

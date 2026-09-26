@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { createdViaSchema } from "@/lib/shared-provenance";
+import { credentialRefSchema } from "@/lib/video-metadata/schemas";
 export { parseWithSchema, formatZodError } from "./contracts";
 
 // Same pattern as `src/lib/cli-auth/schemas.ts`'s `selectWriteChannelInputSchema` -- duplicated
@@ -88,6 +89,16 @@ export const listEvidenceOutputSchema = z
     evidence: z.array(researchEvidenceSchema),
   })
   .strict();
+
+// Phase 9 slice 3 -- the one action in this module that makes a real outbound YouTube API call.
+export const fetchPublicSnapshotInputSchema = z
+  .object({
+    researchChannelId: z.string().min(1),
+    credentialRef: credentialRefSchema,
+  })
+  .strict();
+
+export const fetchPublicSnapshotOutputSchema = researchEvidenceSchema;
 
 // Re-exported so services.ts/adapters never need their own separate import of the shared
 // provenance vocabulary's schema (AGENTS.md §M: market-intelligence is a caller of

@@ -6,9 +6,10 @@ import {
   createIdGenerator,
   type DomainErrorCode,
   type DomainErrorShape,
+  type ResolvedCredentials,
 } from "@/lib/video-metadata/contracts";
 
-export type { DomainErrorCode, DomainErrorShape };
+export type { DomainErrorCode, DomainErrorShape, ResolvedCredentials };
 export { DomainError, isDomainError, parseWithSchema, formatZodError, createIdGenerator };
 
 // ---------------------------------------------------------------------------
@@ -34,4 +35,18 @@ export type ResearchEvidence = {
   source: string;
   confidence: string | null;
   collectedAt: string;
+};
+
+/**
+ * Phase 9 slice 3 -- locally redefined with the same shape as
+ * `youtube-read-gateway`'s own `PublicChannelSnapshot`, never imported from it directly (mirrors
+ * `channel-sync/contracts.ts`'s own `ChannelForSync` -- AGENTS.md §D: each domain module stays
+ * independent of another module's internal type, even the read gateway's).
+ */
+export type PublicChannelSnapshot = {
+  channelId: string;
+  title: string;
+  subscriberCount: number | null;
+  viewCount: number | null;
+  videoCount: number | null;
 };

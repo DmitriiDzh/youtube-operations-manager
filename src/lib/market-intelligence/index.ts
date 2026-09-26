@@ -1,5 +1,13 @@
+import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
 import { createMarketIntelligenceStoreAdapter } from "./adapters/store";
+import { createMarketIntelligenceYoutubeApiAdapter } from "./adapters/youtube-api";
 import { createMarketIntelligenceServices } from "./services";
+
+function defaultAuthResolver() {
+  return {
+    resolve: resolveGoogleCredentials,
+  };
+}
 
 export function createMarketIntelligenceCore() {
   const store = createMarketIntelligenceStoreAdapter();
@@ -11,6 +19,8 @@ export function createMarketIntelligenceCore() {
     getResearchChannelById: store.getResearchChannelById,
     insertResearchEvidence: store.insertResearchEvidence,
     listResearchEvidenceByChannel: store.listResearchEvidenceByChannel,
+    authResolver: defaultAuthResolver(),
+    youtubeApi: createMarketIntelligenceYoutubeApiAdapter(),
   });
 }
 

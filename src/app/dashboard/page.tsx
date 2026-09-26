@@ -15,6 +15,7 @@ import { LiveWritesSettings } from "@/components/live-writes-settings";
 import { McpConnectionSettings } from "@/components/mcp-connection-settings";
 import { AgentConnectionsManager } from "@/components/agent-connections-manager";
 import { OperationsWorkspaceSettings } from "@/components/operations-workspace-settings";
+import { MarketResearchPanel } from "@/components/market-research-panel";
 import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
 import { ChannelConnectionsSettings } from "@/components/channel-connections-settings";
@@ -32,6 +33,7 @@ import {
   DeviceIcon,
   HomeIcon,
   LocalizationsIcon,
+  ResearchIcon,
   SettingsIcon,
 } from "@/components/icons";
 
@@ -51,6 +53,10 @@ const NAV_ITEMS = [
   { value: "analytics", label: "Analytics", icon: AnalyticsIcon },
   { value: "languages", label: "Languages", icon: LocalizationsIcon },
   { value: "batches", label: "Batches", icon: BatchesIcon },
+  // Phase 9 slice 2 (docs/roadmap/plans/PHASE_9_PLAN.md) -- global, not channel-scoped (see
+  // MarketResearchPanel's own doc comment), so it doesn't need `channel` the way Content/
+  // Analytics/Languages/Batches do.
+  { value: "research", label: "Research", icon: ResearchIcon },
   { value: "settings", label: "Settings", icon: SettingsIcon },
   // Renamed from "Device" (2026-09-21, AUTOMERGE_MIGRATION_PLAN.md §6 CD6, owner instruction):
   // this tab is now also where every detected draft-sync conflict is tracked and presented for a
@@ -293,6 +299,19 @@ export default function Dashboard() {
               in Settings &mdash; off by default every session.
             </p>
             <BatchManager channelId={channel?.id ?? null} channelTitle={channel?.title ?? null} />
+          </div>
+        </FeatureErrorBoundary>
+      )}
+
+      {tab === "research" && (
+        <FeatureErrorBoundary label="Research">
+          <div>
+            <p className="mb-4 text-sm text-zinc-400">
+              A manually-seeded watchlist of channels for competitive/market context &mdash; never
+              automatically discovered, and never a source of private analytics for a channel you
+              don&rsquo;t own.
+            </p>
+            <MarketResearchPanel />
           </div>
         </FeatureErrorBoundary>
       )}
