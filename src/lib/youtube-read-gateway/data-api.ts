@@ -358,6 +358,46 @@ export async function getPublicVideoSnapshots(youtube: youtube_v3.Youtube, video
   return results;
 }
 
+export type PublicChannelSearchResult = {
+  channelId: string;
+  title: string;
+  /** `null` when the API omits it -- never fabricated. */
+  description: string | null;
+};
+
+/**
+ * Phase 9 slice 9C -- `search.list` (channel-type only), exactly ONE call, never paginates
+ * (mirrors `listUploadsPlaylistFirstPageVideoIds`'s own precedent: capping by page keeps the real
+ * unit cost -- 100 units, YouTube's own published rate for this method, two orders of magnitude
+ * above any `.list` read -- exactly and always 1 call, deterministically, never silently doubling
+ * to 200 units for a query whose first page alone doesn't satisfy the caller). A result missing
+ * its own channel id (a malformed/unexpected API response) is simply omitted, never fabricated.
+ */
+export async function searchPublicChannels(
+  youtube: youtube_v3.Youtube,
+  query: string,
+  maxResults = 25
+): Promise<PublicChannelSearchResult[]> {
+  const res = await youtube.search.list({
+    part: ["snippet"],
+    q: query,
+    type: ["channel"],
+    maxResults,
+  });
+
+  const results: PublicChannelSearchResult[] = [];
+  for (const item of res.data.items ?? []) {
+    const channelId = item.id?.channelId;
+    if (!channelId) continue;
+    results.push({
+      channelId,
+      title: item.snippet?.title ?? "",
+      description: item.snippet?.description ?? null,
+    });
+  }
+  return results;
+}
+
 const YOUTUBE_VIDEOS_LIST_BATCH_SIZE = 50;
 
 function chunk<T>(items: T[], size: number): T[][] {

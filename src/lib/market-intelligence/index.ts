@@ -36,9 +36,16 @@ export function createMarketIntelligenceCore() {
     listRecentlyFailedResearchChannelIds: store.listRecentlyFailedResearchChannelIds,
     markResearchChannelAutoCollected: store.markResearchChannelAutoCollected,
     insertMarketIntelligenceCollectionRun: store.insertMarketIntelligenceCollectionRun,
+    // Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md).
+    getMarketDiscoveryCandidateById: store.getMarketDiscoveryCandidateById,
+    listMarketDiscoveryCandidates: store.listMarketDiscoveryCandidates,
+    insertMarketDiscoveryCandidate: store.insertMarketDiscoveryCandidate,
+    touchMarketDiscoveryCandidateLastSeen: store.touchMarketDiscoveryCandidateLastSeen,
+    setMarketDiscoveryCandidateStatus: store.setMarketDiscoveryCandidateStatus,
+    insertMarketDiscoveryRun: store.insertMarketDiscoveryRun,
   });
 }
 
 export type MarketIntelligenceCore = ReturnType<typeof createMarketIntelligenceCore>;
-export type { ResearchChannel, ResearchEvidence, MarketChannelSnapshot, MarketVideoSnapshot } from "./contracts";
+export type { ResearchChannel, ResearchEvidence, MarketChannelSnapshot, MarketVideoSnapshot, MarketDiscoveryCandidate } from "./contracts";
 export { DomainError, isDomainError } from "./contracts";

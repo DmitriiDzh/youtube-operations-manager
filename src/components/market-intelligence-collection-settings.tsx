@@ -105,16 +105,15 @@ export function MarketIntelligenceCollectionSettings() {
     <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <div>
         <h3 className="flex items-center gap-1.5 text-base font-medium text-zinc-100">
-          Competitor auto-refresh quota
+          Market intelligence daily quota
           <InfoTooltip>
-            Once per running dashboard session, this app checks every watchlisted competitor
-            channel that hasn&rsquo;t been refreshed in the last 24h and refreshes as many as this
-            daily YouTube API unit budget allows. A full refresh (channel snapshot plus its newest
-            videos) costs up to 3 units &mdash; a channel is only ever refreshed if the full 3-unit
-            cost is available, never partially. This does not run on a background schedule while
-            the app is closed &mdash; only while the interface is open. Set to 0 to turn
-            auto-refresh off. This budget resets at UTC midnight, independent of the Cloud quota
-            numbers shown elsewhere.
+            One shared daily YouTube API unit budget for both features on the Research tab: (1)
+            automatic competitor auto-refresh &mdash; once per running dashboard session, this app
+            checks every watchlisted competitor channel that hasn&rsquo;t been refreshed in the last
+            24h and refreshes as many as the budget allows (up to 3 units per channel, only ever
+            spent in full, never partially); and (2) manual channel discovery &mdash; each search
+            you run on the Research tab costs 100 units. Set to 0 to turn both off. This budget
+            resets at UTC midnight, independent of the Cloud quota numbers shown elsewhere.
           </InfoTooltip>
         </h3>
       </div>
@@ -156,7 +155,7 @@ export function MarketIntelligenceCollectionSettings() {
         </button>
       </div>
 
-      {isOff && <p className="text-xs text-zinc-500">Auto-collection is off.</p>}
+      {isOff && <p className="text-xs text-zinc-500">Auto-refresh and discovery are both off.</p>}
       {savedNotice && <p className="text-sm font-medium text-green-500">{savedNotice}</p>}
       {error && (
         <div className="rounded-lg border border-red-900 bg-red-950/50 p-3 text-sm text-red-400">

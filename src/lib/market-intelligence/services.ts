@@ -1,8 +1,11 @@
 import { YOUTUBE_READ_SCOPE } from "@/lib/auth";
 import {
   DomainError,
+  type DiscoveryCandidateStatus,
   type MarketChannelSnapshot,
+  type MarketDiscoveryCandidate,
   type MarketVideoSnapshot,
+  type PublicChannelSearchResult,
   type PublicChannelSnapshot,
   type PublicVideoSnapshot,
   type ResearchChannel,
@@ -14,6 +17,8 @@ import {
   addToWatchlistOutputSchema,
   captureChannelSnapshotInputSchema,
   captureChannelSnapshotOutputSchema,
+  discoverChannelsInputSchema,
+  discoverChannelsOutputSchema,
   fetchPublicSnapshotInputSchema,
   fetchPublicSnapshotOutputSchema,
   getWatchlistEntryContextOutputSchema,
@@ -21,12 +26,16 @@ import {
   getWatchlistEntryOutputSchema,
   listChannelSnapshotsInputSchema,
   listChannelSnapshotsOutputSchema,
+  listDiscoveryCandidatesOutputSchema,
   listEvidenceInputSchema,
   listEvidenceOutputSchema,
   listVideoSnapshotsInputSchema,
   listVideoSnapshotsOutputSchema,
   listWatchlistOutputSchema,
+  marketDiscoveryCandidateSchema,
   parseWithSchema,
+  promoteDiscoveryCandidateInputSchema,
+  promoteDiscoveryCandidateOutputSchema,
   recordChannelSnapshotInputSchema,
   recordChannelSnapshotOutputSchema,
   recordEvidenceInputSchema,
@@ -36,6 +45,7 @@ import {
   removeFromWatchlistInputSchema,
   runCollectionIfStaleInputSchema,
   runCollectionIfStaleOutputSchema,
+  updateDiscoveryCandidateStatusInputSchema,
 } from "./schemas";
 import type { CreatedVia } from "@/lib/shared-provenance";
 
@@ -164,6 +174,31 @@ function toMarketVideoSnapshot(row: StoredMarketVideoSnapshotForService): Market
   };
 }
 
+type StoredMarketDiscoveryCandidateForService = {
+  id: string;
+  title: string;
+  status: DiscoveryCandidateStatus;
+  discoverySource: string;
+  discoveryQuery: string;
+  reasonDiscovered: string | null;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+  createdVia: string;
+};
+
+function toMarketDiscoveryCandidate(row: StoredMarketDiscoveryCandidateForService): MarketDiscoveryCandidate {
+  return {
+    channelId: row.id,
+    title: row.title,
+    status: row.status,
+    discoverySource: row.discoverySource,
+    discoveryQuery: row.discoveryQuery,
+    reasonDiscovered: row.reasonDiscovered,
+    firstSeenAt: row.firstSeenAt.toISOString(),
+    lastSeenAt: row.lastSeenAt.toISOString(),
+  };
+}
+
 type ServiceDependencies = {
   idGenerator(): string;
   insertResearchChannel(input: {
@@ -201,6 +236,11 @@ type ServiceDependencies = {
       credentials: ResolvedCredentials;
       videoIds: string[];
     }): Promise<PublicVideoSnapshot[]>;
+    // Phase 9 slice 9C.
+    searchPublicChannels(args: {
+      credentials: ResolvedCredentials;
+      query: string;
+    }): Promise<PublicChannelSearchResult[]>;
   };
   // Phase 9 slice 9A (docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md).
   insertMarketChannelSnapshot(input: {
@@ -251,6 +291,28 @@ type ServiceDependencies = {
     errorMessage?: string | null;
     ranAt?: Date;
   }): Promise<void>;
+  // Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md).
+  getMarketDiscoveryCandidateById(channelId: string): Promise<StoredMarketDiscoveryCandidateForService | null>;
+  listMarketDiscoveryCandidates(): Promise<StoredMarketDiscoveryCandidateForService[]>;
+  insertMarketDiscoveryCandidate(input: {
+    id: string;
+    title: string;
+    discoverySource: string;
+    discoveryQuery: string;
+    reasonDiscovered?: string | null;
+    createdVia: string;
+  }): Promise<void>;
+  touchMarketDiscoveryCandidateLastSeen(channelId: string, at: Date): Promise<void>;
+  setMarketDiscoveryCandidateStatus(channelId: string, status: DiscoveryCandidateStatus): Promise<void>;
+  insertMarketDiscoveryRun(input: {
+    query: string;
+    status: "success" | "failed";
+    unitsSpent: number;
+    candidatesFound?: number | null;
+    candidatesNew?: number | null;
+    errorMessage?: string | null;
+    ranAt?: Date;
+  }): Promise<void>;
 };
 
 // Phase 9 slice 9B -- real YouTube Data API v3 quota costs (`channels.list`/`playlistItems.list`/
@@ -270,6 +332,10 @@ const VIDEOS_LIST_UNIT_COST = 1;
 // "attempted" and "fully processed" the same thing for every channel this run touches -- never a
 // partial channel.
 const PER_CHANNEL_WORST_CASE_UNIT_COST = CHANNELS_LIST_UNIT_COST + PLAYLIST_ITEMS_LIST_UNIT_COST + VIDEOS_LIST_UNIT_COST;
+
+// Phase 9 slice 9C -- YouTube's own published quota cost for `search.list`, two orders of
+// magnitude above any `.list` read (docs/roadmap/plans/PHASE_9_PLAN.md §11).
+const SEARCH_LIST_UNIT_COST = 100;
 
 // A channel is stale after 24h with no successful collection -- deliberately a plain elapsed-time
 // check, not Phase 8's own local-wall-clock-boundary rule (`AGENTS.md` §M: no cross-feature-module
@@ -995,6 +1061,195 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         runCollectionIfStaleOutputSchema,
         { attempted, succeeded, failed: failedCount, quotaLimited, unitsSpent: unitsSpentTotal },
         "run collection if stale output"
+      );
+    },
+
+    /**
+     * The one `search.list`-based discovery action (Phase 9 slice 9C) -- never automatic, only
+     * ever called from an explicit operator UI action (owner decision 4). Shares 9B's exact same
+     * daily unit budget/ledger (owner decision 2 set ONE budget, not one per sub-feature) --
+     * `getMarketIntelligenceUnitsSpentSince` sums both this slice's `market_discovery_runs` and
+     * 9B's `market_intelligence_collection_runs`. `null`/unset budget refuses outright
+     * (`MARKET_INTELLIGENCE_QUOTA_DISABLED`) rather than silently no-op'ing like 9B's own
+     * background trigger does -- an operator who just clicked "Discover" needs to know why nothing
+     * happened, not have it silently swallowed. Charged before the call resolves, same as every 9B
+     * call (a thrown request still costs a real unit per YouTube's own quota accounting).
+     *
+     * A result already on the watchlist is never turned into a candidate; a result matching an
+     * existing candidate only touches `lastSeenAt`, never duplicates the row or resets an
+     * operator-set `status`.
+     */
+    async discoverChannels(
+      input: unknown,
+      callOrigin: { createdVia: CreatedVia }
+    ): Promise<{ candidatesFound: number; candidatesNew: number }> {
+      const parsedInput = parseWithSchema(discoverChannelsInputSchema, input, "discover channels input");
+
+      const budget = await deps.getMarketIntelligenceDailyQuotaBudgetUnits();
+      if (budget === null) {
+        throw new DomainError({
+          code: "MARKET_INTELLIGENCE_QUOTA_DISABLED",
+          message: "Set a daily YouTube API unit budget in Settings before running discovery",
+          details: {},
+        });
+      }
+
+      const now = deps.clock.now();
+      const spentToday = await deps.getMarketIntelligenceUnitsSpentSince(startOfUtcDay(now));
+      const remaining = budget - spentToday;
+      if (remaining < SEARCH_LIST_UNIT_COST) {
+        throw new DomainError({
+          code: "MARKET_INTELLIGENCE_QUOTA_EXCEEDED",
+          message: `This search costs ${SEARCH_LIST_UNIT_COST} units; only ${Math.max(remaining, 0)} remain today`,
+          details: { remaining: Math.max(remaining, 0), required: SEARCH_LIST_UNIT_COST },
+        });
+      }
+
+      const credentials = await deps.authResolver.resolve({
+        credentialRef: parsedInput.credentialRef,
+        requiredScopes: [YOUTUBE_READ_SCOPE],
+      });
+
+      let results: PublicChannelSearchResult[];
+      try {
+        results = await deps.youtubeApi.searchPublicChannels({ credentials, query: parsedInput.query });
+      } catch (error) {
+        await deps.insertMarketDiscoveryRun({
+          query: parsedInput.query,
+          status: "failed",
+          unitsSpent: SEARCH_LIST_UNIT_COST,
+          errorMessage: error instanceof Error ? error.message : String(error),
+          ranAt: now,
+        });
+        throw error;
+      }
+
+      let candidatesNewCount = 0;
+      for (const result of results) {
+        const alreadyWatchlisted = await deps.getResearchChannelById(result.channelId);
+        if (alreadyWatchlisted) continue;
+
+        const existingCandidate = await deps.getMarketDiscoveryCandidateById(result.channelId);
+        if (existingCandidate) {
+          await deps.touchMarketDiscoveryCandidateLastSeen(result.channelId, now);
+          continue;
+        }
+
+        await deps.insertMarketDiscoveryCandidate({
+          id: result.channelId,
+          title: result.title,
+          discoverySource: "youtube.search.list",
+          discoveryQuery: parsedInput.query,
+          reasonDiscovered: result.description,
+          createdVia: callOrigin.createdVia,
+        });
+        candidatesNewCount += 1;
+      }
+
+      await deps.insertMarketDiscoveryRun({
+        query: parsedInput.query,
+        status: "success",
+        unitsSpent: SEARCH_LIST_UNIT_COST,
+        candidatesFound: results.length,
+        candidatesNew: candidatesNewCount,
+        ranAt: now,
+      });
+
+      return parseWithSchema(
+        discoverChannelsOutputSchema,
+        { candidatesFound: results.length, candidatesNew: candidatesNewCount },
+        "discover channels output"
+      );
+    },
+
+    async listDiscoveryCandidates(): Promise<{ candidates: MarketDiscoveryCandidate[] }> {
+      const rows = await deps.listMarketDiscoveryCandidates();
+      return parseWithSchema(
+        listDiscoveryCandidatesOutputSchema,
+        { candidates: rows.map(toMarketDiscoveryCandidate) },
+        "list discovery candidates output"
+      );
+    },
+
+    /**
+     * `status` is never `"new"` (the initial state only) or `"promoted"` (its own dedicated action
+     * below, since promotion has a real side effect) -- enforced by the input schema's own enum,
+     * not re-checked here. Rejects `DISCOVERY_CANDIDATE_ALREADY_PROMOTED` for a candidate already
+     * promoted -- that record is a closed historical fact from that point on.
+     */
+    async updateDiscoveryCandidateStatus(input: unknown): Promise<MarketDiscoveryCandidate> {
+      const parsedInput = parseWithSchema(
+        updateDiscoveryCandidateStatusInputSchema,
+        input,
+        "update discovery candidate status input"
+      );
+
+      const existing = await deps.getMarketDiscoveryCandidateById(parsedInput.channelId);
+      if (!existing) {
+        throw new DomainError({
+          code: "DISCOVERY_CANDIDATE_NOT_FOUND",
+          message: "No discovery candidate for this channel id",
+          details: { channelId: parsedInput.channelId },
+        });
+      }
+      if (existing.status === "promoted") {
+        throw new DomainError({
+          code: "DISCOVERY_CANDIDATE_ALREADY_PROMOTED",
+          message: "A promoted candidate's status cannot be changed here -- manage it via the watchlist instead",
+          details: { channelId: parsedInput.channelId },
+        });
+      }
+
+      await deps.setMarketDiscoveryCandidateStatus(parsedInput.channelId, parsedInput.status);
+      const updated = (await deps.getMarketDiscoveryCandidateById(parsedInput.channelId))!;
+      return parseWithSchema(marketDiscoveryCandidateSchema, toMarketDiscoveryCandidate(updated), "update discovery candidate status output");
+    },
+
+    /**
+     * Inserts a `research_channels` row directly via `deps.insertResearchChannel` (mirrors
+     * `getWatchlistEntryContext`'s own established precedent of avoiding a redundant duplicate
+     * existence-check rather than calling the public `addToWatchlist` action, which would repeat
+     * this same existence check internally) UNLESS the channel is already watchlisted -- idempotent
+     * in that case, since the desired end state already holds.
+     */
+    async promoteDiscoveryCandidate(
+      input: unknown,
+      callOrigin: { createdVia: CreatedVia }
+    ): Promise<{ channel: ResearchChannel; candidate: MarketDiscoveryCandidate }> {
+      const parsedInput = parseWithSchema(promoteDiscoveryCandidateInputSchema, input, "promote discovery candidate input");
+
+      const existing = await deps.getMarketDiscoveryCandidateById(parsedInput.channelId);
+      if (!existing) {
+        throw new DomainError({
+          code: "DISCOVERY_CANDIDATE_NOT_FOUND",
+          message: "No discovery candidate for this channel id",
+          details: { channelId: parsedInput.channelId },
+        });
+      }
+      if (existing.status === "promoted") {
+        throw new DomainError({
+          code: "DISCOVERY_CANDIDATE_ALREADY_PROMOTED",
+          message: "This candidate has already been promoted",
+          details: { channelId: parsedInput.channelId },
+        });
+      }
+
+      const alreadyWatchlisted = await deps.getResearchChannelById(parsedInput.channelId);
+      if (!alreadyWatchlisted) {
+        await deps.insertResearchChannel({
+          id: parsedInput.channelId,
+          reason: parsedInput.reason,
+          createdVia: callOrigin.createdVia,
+        });
+      }
+      await deps.setMarketDiscoveryCandidateStatus(parsedInput.channelId, "promoted");
+
+      const channelRow = (await deps.getResearchChannelById(parsedInput.channelId))!;
+      const candidateRow = (await deps.getMarketDiscoveryCandidateById(parsedInput.channelId))!;
+      return parseWithSchema(
+        promoteDiscoveryCandidateOutputSchema,
+        { channel: toResearchChannel(channelRow), candidate: toMarketDiscoveryCandidate(candidateRow) },
+        "promote discovery candidate output"
       );
     },
   };

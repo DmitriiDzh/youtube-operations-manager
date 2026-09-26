@@ -124,6 +124,9 @@ async function deriveForbiddenDbSymbols(): Promise<string[]> {
     "market_channel_snapshots",
     "market_video_snapshots",
     "market_intelligence_collection_runs",
+    // Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md).
+    "market_discovery_candidates",
+    "market_discovery_runs",
   ];
 }
 

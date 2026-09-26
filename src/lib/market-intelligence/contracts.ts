@@ -101,3 +101,33 @@ export type MarketVideoSnapshot = {
   publishedAt: string | null;
   source: string;
 };
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md) -- search.list-based discovery.
+// A LIFECYCLE entity, not an append-only observation like the two types above (see the doc comment
+// on db.ts's own `marketDiscoveryCandidates` table for why).
+// ---------------------------------------------------------------------------
+
+export type DiscoveryCandidateStatus = "new" | "watching" | "ignored" | "archived" | "promoted";
+
+export type MarketDiscoveryCandidate = {
+  channelId: string;
+  title: string;
+  status: DiscoveryCandidateStatus;
+  discoverySource: string;
+  discoveryQuery: string;
+  reasonDiscovered: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+};
+
+/**
+ * Phase 9 slice 9C -- locally redefined with the same shape as `youtube-read-gateway`'s own
+ * `PublicChannelSearchResult`, never imported from it directly (same independence rationale as
+ * `PublicChannelSnapshot`/`PublicVideoSnapshot` above).
+ */
+export type PublicChannelSearchResult = {
+  channelId: string;
+  title: string;
+  description: string | null;
+};

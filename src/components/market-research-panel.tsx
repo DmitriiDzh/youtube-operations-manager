@@ -229,8 +229,9 @@ export function MarketResearchPanel() {
 
       {!autoCollectionBudgetUnits && autoCollectionBudgetUnits !== undefined && (
         <p className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-500">
-          Auto-refresh is off &mdash; snapshots below are only added when you fetch them manually.
-          Set a daily quota under Settings → API to refresh watchlisted channels automatically.
+          Auto-refresh is off &mdash; snapshots below are only added when you fetch them manually,
+          and channel discovery below is also unavailable. Set a daily quota under Settings → API
+          to enable both.
         </p>
       )}
 

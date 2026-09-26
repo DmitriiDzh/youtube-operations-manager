@@ -23,7 +23,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createMarketIntelligenceServices, describePublicChannelSnapshot } from "./services";
-import { isDomainError, type PublicChannelSnapshot, type PublicVideoSnapshot, type ResolvedCredentials } from "./contracts";
+import {
+  isDomainError,
+  type DiscoveryCandidateStatus,
+  type PublicChannelSearchResult,
+  type PublicChannelSnapshot,
+  type PublicVideoSnapshot,
+  type ResolvedCredentials,
+} from "./contracts";
 
 const VALID_CHANNEL_ID = "UC1234567890123456789012"; // "UC" + 22 chars, matches the schema regex
 const OTHER_VALID_CHANNEL_ID = "UCabcdefghijklmnopqrstuv";
@@ -44,6 +51,28 @@ type CollectionRunRow = {
   unitsSpent: number;
   videosRequested: number | null;
   videosReturned: number | null;
+  errorMessage: string | null;
+  ranAt: Date;
+};
+
+type DiscoveryCandidateRow = {
+  id: string;
+  title: string;
+  status: DiscoveryCandidateStatus;
+  discoverySource: string;
+  discoveryQuery: string;
+  reasonDiscovered: string | null;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+  createdVia: string;
+};
+
+type DiscoveryRunRow = {
+  query: string;
+  status: "success" | "failed";
+  unitsSpent: number;
+  candidatesFound: number | null;
+  candidatesNew: number | null;
   errorMessage: string | null;
   ranAt: Date;
 };
@@ -89,6 +118,8 @@ function createFakeStore() {
   const channelSnapshots: ChannelSnapshotRow[] = [];
   const videoSnapshots: VideoSnapshotRow[] = [];
   const collectionRuns: CollectionRunRow[] = [];
+  const discoveryCandidates = new Map<string, DiscoveryCandidateRow>();
+  const discoveryRuns: DiscoveryRunRow[] = [];
   let quotaBudget: number | null = null;
   let nextId = 1;
   let failNextSuccessRunInsert = false;
@@ -102,6 +133,8 @@ function createFakeStore() {
     channelSnapshots,
     videoSnapshots,
     collectionRuns,
+    discoveryCandidates,
+    discoveryRuns,
     setQuotaBudget(units: number | null) {
       quotaBudget = units;
     },
@@ -227,8 +260,12 @@ function createFakeStore() {
     async setMarketIntelligenceDailyQuotaBudgetUnits(units: number | null) {
       quotaBudget = units;
     },
+    // Sums BOTH tables -- mirrors db.ts's own real implementation exactly (one shared budget
+    // across collection and discovery, not two independent ones).
     async getMarketIntelligenceUnitsSpentSince(since: Date) {
-      return collectionRuns.filter((row) => row.ranAt.getTime() >= since.getTime()).reduce((sum, row) => sum + row.unitsSpent, 0);
+      const collectionSpent = collectionRuns.filter((row) => row.ranAt.getTime() >= since.getTime()).reduce((sum, row) => sum + row.unitsSpent, 0);
+      const discoverySpent = discoveryRuns.filter((row) => row.ranAt.getTime() >= since.getTime()).reduce((sum, row) => sum + row.unitsSpent, 0);
+      return collectionSpent + discoverySpent;
     },
     async claimStaleResearchChannelsForCollection(args: {
       now: Date;
@@ -290,6 +327,61 @@ function createFakeStore() {
         ranAt: input.ranAt ?? new Date(),
       });
     },
+    // Phase 9 slice 9C.
+    async getMarketDiscoveryCandidateById(channelId: string) {
+      return discoveryCandidates.get(channelId) ?? null;
+    },
+    async listMarketDiscoveryCandidates() {
+      return [...discoveryCandidates.values()].sort((a, b) => b.lastSeenAt.getTime() - a.lastSeenAt.getTime());
+    },
+    async insertMarketDiscoveryCandidate(input: {
+      id: string;
+      title: string;
+      discoverySource: string;
+      discoveryQuery: string;
+      reasonDiscovered?: string | null;
+      createdVia: string;
+    }) {
+      const now = new Date();
+      discoveryCandidates.set(input.id, {
+        id: input.id,
+        title: input.title,
+        status: "new",
+        discoverySource: input.discoverySource,
+        discoveryQuery: input.discoveryQuery,
+        reasonDiscovered: input.reasonDiscovered ?? null,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        createdVia: input.createdVia,
+      });
+    },
+    async touchMarketDiscoveryCandidateLastSeen(channelId: string, at: Date) {
+      const row = discoveryCandidates.get(channelId);
+      if (row) row.lastSeenAt = at;
+    },
+    async setMarketDiscoveryCandidateStatus(channelId: string, status: DiscoveryCandidateStatus) {
+      const row = discoveryCandidates.get(channelId);
+      if (row) row.status = status;
+    },
+    async insertMarketDiscoveryRun(input: {
+      query: string;
+      status: "success" | "failed";
+      unitsSpent: number;
+      candidatesFound?: number | null;
+      candidatesNew?: number | null;
+      errorMessage?: string | null;
+      ranAt?: Date;
+    }) {
+      discoveryRuns.push({
+        query: input.query,
+        status: input.status,
+        unitsSpent: input.unitsSpent,
+        candidatesFound: input.candidatesFound ?? null,
+        candidatesNew: input.candidatesNew ?? null,
+        errorMessage: input.errorMessage ?? null,
+        ranAt: input.ranAt ?? new Date(),
+      });
+    },
   };
 }
 
@@ -303,12 +395,15 @@ function createFixture(overrides?: {
   }) => Promise<PublicChannelSnapshot | null>;
   uploadsPlaylistVideoIds?: string[];
   publicVideoSnapshots?: PublicVideoSnapshot[];
+  searchResults?: PublicChannelSearchResult[];
+  searchImpl?: (args: { credentials: ResolvedCredentials; query: string }) => Promise<PublicChannelSearchResult[]>;
 }) {
   const store = createFakeStore();
   const resolveCalls: unknown[] = [];
   const snapshotCalls: unknown[] = [];
   const playlistCalls: unknown[] = [];
   const videoSnapshotCalls: unknown[] = [];
+  const searchCalls: unknown[] = [];
   let currentNow = overrides?.now ?? new Date();
   const services = createMarketIntelligenceServices({
     ...store,
@@ -344,6 +439,11 @@ function createFixture(overrides?: {
         videoSnapshotCalls.push(args);
         return overrides?.publicVideoSnapshots ?? [];
       },
+      async searchPublicChannels(args: { credentials: ResolvedCredentials; query: string }) {
+        searchCalls.push(args);
+        if (overrides?.searchImpl) return overrides.searchImpl(args);
+        return overrides?.searchResults ?? [];
+      },
     },
   });
   return {
@@ -353,6 +453,7 @@ function createFixture(overrides?: {
     snapshotCalls,
     playlistCalls,
     videoSnapshotCalls,
+    searchCalls,
     setNow(date: Date) {
       currentNow = date;
     },
@@ -1196,4 +1297,216 @@ test("AC-9B-16: if only the mark (not the audit row) fails, exactly one row is w
 
   const recentlyFailed = await store.listRecentlyFailedResearchChannelIds(since);
   assert.deepEqual(recentlyFailed, [], "an attempt that genuinely succeeded must never be placed in the failure backoff");
+});
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md §9) -- acceptance criteria for
+// discoverChannels/listDiscoveryCandidates/updateDiscoveryCandidateStatus/promoteDiscoveryCandidate,
+// drafted from the plan's own §9 before this file's own implementation was read line-by-line
+// (AGENTS.md §L).
+// ---------------------------------------------------------------------------
+
+test("AC-9C-01: with budget null/unset, discoverChannels makes zero real calls and throws MARKET_INTELLIGENCE_QUOTA_DISABLED", async () => {
+  const { store, services, resolveCalls, searchCalls } = createFixture();
+
+  await assert.rejects(
+    () => services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "MARKET_INTELLIGENCE_QUOTA_DISABLED"
+  );
+  assert.equal(resolveCalls.length, 0, "must never resolve credentials before the budget check");
+  assert.equal(searchCalls.length, 0);
+  assert.equal(store.discoveryRuns.length, 0);
+});
+
+test("AC-9C-02: with remaining < 100 (accounting for both collection and discovery spend already recorded today), discoverChannels throws MARKET_INTELLIGENCE_QUOTA_EXCEEDED before any real call", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { store, services, searchCalls } = createFixture({ now });
+  store.setQuotaBudget(150);
+  store.collectionRuns.push({
+    researchChannelId: VALID_CHANNEL_ID,
+    status: "success",
+    unitsSpent: 60,
+    videosRequested: null,
+    videosReturned: null,
+    errorMessage: null,
+    ranAt: now,
+  });
+  store.discoveryRuns.push({ query: "gaming", status: "success", unitsSpent: 60, candidatesFound: 0, candidatesNew: 0, errorMessage: null, ranAt: now });
+
+  await assert.rejects(
+    () => services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }),
+    (error: unknown) => {
+      if (!isDomainError(error) || error.code !== "MARKET_INTELLIGENCE_QUOTA_EXCEEDED") return false;
+      assert.deepEqual(error.details, { remaining: 30, required: 100 });
+      return true;
+    }
+  );
+  assert.equal(searchCalls.length, 0);
+});
+
+test("AC-9C-03/04/05: a result already watchlisted is skipped; a result matching an existing candidate only touches lastSeenAt (never resets status); a genuinely new result is inserted as status:new", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { store, services } = createFixture({
+    now,
+    searchResults: [
+      { channelId: VALID_CHANNEL_ID, title: "Already Watchlisted", description: null },
+      { channelId: OTHER_VALID_CHANNEL_ID, title: "Existing Candidate", description: "desc" },
+      { channelId: "UC_BRAND_NEW00000000000", title: "Brand New", description: "new one" },
+    ],
+  });
+  store.setQuotaBudget(1000);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.discoveryCandidates.set(OTHER_VALID_CHANNEL_ID, {
+    id: OTHER_VALID_CHANNEL_ID,
+    title: "Existing Candidate (old title)",
+    status: "ignored",
+    discoverySource: "youtube.search.list",
+    discoveryQuery: "old query",
+    reasonDiscovered: null,
+    firstSeenAt: new Date("2026-09-01T00:00:00.000Z"),
+    lastSeenAt: new Date("2026-09-01T00:00:00.000Z"),
+    createdVia: "web_ui",
+  });
+
+  const result = await services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.deepEqual(result, { candidatesFound: 3, candidatesNew: 1 });
+
+  assert.equal(store.discoveryCandidates.has(VALID_CHANNEL_ID), false, "a result already on the watchlist must never become a candidate");
+
+  const existing = store.discoveryCandidates.get(OTHER_VALID_CHANNEL_ID);
+  assert.equal(existing?.status, "ignored", "rediscovery must never reset an operator-set status");
+  assert.equal(existing?.title, "Existing Candidate (old title)", "rediscovery must never overwrite the stored title either");
+  assert.equal(existing?.lastSeenAt.getTime(), now.getTime());
+
+  const brandNew = store.discoveryCandidates.get("UC_BRAND_NEW00000000000");
+  assert.equal(brandNew?.status, "new");
+  assert.equal(brandNew?.reasonDiscovered, "new one");
+
+  assert.equal(store.discoveryCandidates.size, 2, "exactly the existing candidate plus the one genuinely new one -- never a third for the already-watchlisted result");
+});
+
+test("AC-9C-06: updateDiscoveryCandidateStatus rejects a target of promoted, and rejects any status change on an already-promoted candidate", async () => {
+  const { store, services } = createFixture();
+  store.discoveryCandidates.set("UC_PROMOTED00000000000", {
+    id: "UC_PROMOTED00000000000",
+    title: "Promoted",
+    status: "promoted",
+    discoverySource: "youtube.search.list",
+    discoveryQuery: "q",
+    reasonDiscovered: null,
+    firstSeenAt: new Date(),
+    lastSeenAt: new Date(),
+    createdVia: "web_ui",
+  });
+  store.discoveryCandidates.set("UC_NOT_PROMOTED0000000", {
+    id: "UC_NOT_PROMOTED0000000",
+    title: "Watching",
+    status: "watching",
+    discoverySource: "youtube.search.list",
+    discoveryQuery: "q",
+    reasonDiscovered: null,
+    firstSeenAt: new Date(),
+    lastSeenAt: new Date(),
+    createdVia: "web_ui",
+  });
+
+  // Schema itself rejects "promoted" as a target status.
+  await assert.rejects(
+    () => services.updateDiscoveryCandidateStatus({ channelId: "UC_NOT_PROMOTED0000000", status: "promoted" }),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+
+  await assert.rejects(
+    () => services.updateDiscoveryCandidateStatus({ channelId: "UC_PROMOTED00000000000", status: "watching" }),
+    (error: unknown) => isDomainError(error) && error.code === "DISCOVERY_CANDIDATE_ALREADY_PROMOTED"
+  );
+});
+
+test("AC-9C-07: promoteDiscoveryCandidate creates exactly one research_channels row (never a duplicate if already watchlisted) and sets the candidate's status to promoted", async () => {
+  const { store, services } = createFixture();
+  store.discoveryCandidates.set("UC_TO_PROMOTE000000000", {
+    id: "UC_TO_PROMOTE000000000",
+    title: "To Promote",
+    status: "watching",
+    discoverySource: "youtube.search.list",
+    discoveryQuery: "q",
+    reasonDiscovered: null,
+    firstSeenAt: new Date(),
+    lastSeenAt: new Date(),
+    createdVia: "web_ui",
+  });
+
+  const result = await services.promoteDiscoveryCandidate(
+    { channelId: "UC_TO_PROMOTE000000000", reason: "Promoted from discovery" },
+    { createdVia: "web_ui" }
+  );
+  assert.equal(result.channel.channelId, "UC_TO_PROMOTE000000000");
+  assert.equal(result.candidate.status, "promoted");
+  assert.equal(store.channels.size, 1);
+
+  // Idempotent: promoting again (e.g. a retry) never creates a duplicate watchlist row.
+  await assert.rejects(
+    () => services.promoteDiscoveryCandidate({ channelId: "UC_TO_PROMOTE000000000", reason: "again" }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "DISCOVERY_CANDIDATE_ALREADY_PROMOTED"
+  );
+  assert.equal(store.channels.size, 1, "must never create a second watchlist row");
+});
+
+test("AC-9C-07b: promoteDiscoveryCandidate is idempotent when the channel is already watchlisted by some other path", async () => {
+  const { store, services } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "added separately" }, { createdVia: "web_ui" });
+  store.discoveryCandidates.set(VALID_CHANNEL_ID, {
+    id: VALID_CHANNEL_ID,
+    title: "Already Watchlisted Elsewhere",
+    status: "new",
+    discoverySource: "youtube.search.list",
+    discoveryQuery: "q",
+    reasonDiscovered: null,
+    firstSeenAt: new Date(),
+    lastSeenAt: new Date(),
+    createdVia: "web_ui",
+  });
+
+  const result = await services.promoteDiscoveryCandidate({ channelId: VALID_CHANNEL_ID, reason: "promote" }, { createdVia: "web_ui" });
+  assert.equal(result.channel.reason, "added separately", "must never overwrite the existing watchlist row's own reason");
+  assert.equal(result.candidate.status, "promoted");
+  assert.equal(store.channels.size, 1);
+});
+
+test("AC-9C-08: a search.list call that throws still records its own real 100-unit spend on the run log", async () => {
+  const { store, services } = createFixture({
+    searchImpl: async () => {
+      throw new Error("simulated search.list failure");
+    },
+  });
+  store.setQuotaBudget(1000);
+
+  await assert.rejects(() => services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }));
+
+  assert.equal(store.discoveryRuns.length, 1);
+  assert.equal(store.discoveryRuns[0]?.status, "failed");
+  assert.equal(store.discoveryRuns[0]?.unitsSpent, 100, "a thrown request must still record its own real, non-zero spend");
+});
+
+test("AC-9C-09: getMarketIntelligenceUnitsSpentSince (via the shared budget check) sees both a 9B collection spend and this slice's own discovery spend", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { store, services, searchCalls } = createFixture({ now });
+  store.setQuotaBudget(100);
+  store.collectionRuns.push({
+    researchChannelId: VALID_CHANNEL_ID,
+    status: "success",
+    unitsSpent: 5,
+    videosRequested: null,
+    videosReturned: null,
+    errorMessage: null,
+    ranAt: now,
+  });
+
+  // 100 budget - 5 already spent by 9B's own collection = 95 remaining, short of the 100 this
+  // search needs -- proves the two ledgers are genuinely shared, not independent.
+  await assert.rejects(
+    () => services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "MARKET_INTELLIGENCE_QUOTA_EXCEEDED"
+  );
+  assert.equal(searchCalls.length, 0);
 });

@@ -65,6 +65,14 @@ import {
   markResearchChannelAutoCollected,
   insertMarketIntelligenceCollectionRun,
   getMarketIntelligenceUnitsSpentSince,
+  marketDiscoveryCandidates,
+  marketDiscoveryRuns,
+  getMarketDiscoveryCandidateById,
+  listMarketDiscoveryCandidates,
+  insertMarketDiscoveryCandidate,
+  touchMarketDiscoveryCandidateLastSeen,
+  setMarketDiscoveryCandidateStatus,
+  insertMarketDiscoveryRun,
 } from "./db";
 import { readSchemaVersion } from "@/lib/schema-versioning";
 import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
@@ -141,6 +149,8 @@ test("initializeDatabaseSchema: a fresh database ends stamped at SCHEMA_CURRENT_
     assert.equal(await tableExists(client, "market_channel_snapshots"), true);
     assert.equal(await tableExists(client, "market_video_snapshots"), true);
     assert.equal(await tableExists(client, "market_intelligence_collection_runs"), true);
+    assert.equal(await tableExists(client, "market_discovery_candidates"), true);
+    assert.equal(await tableExists(client, "market_discovery_runs"), true);
   }));
 
 // Phase 7 slice D (docs/AGENT_OPERATIONS_INTERFACE.md §4c).
@@ -1067,6 +1077,18 @@ test("initializeDatabaseSchema: an existing pre-versioning database (baseline ta
       researchChannelColumnNames.includes("collection_claimed_at"),
       "a later ALTER TABLE migration (v24) must still apply correctly on the pre-versioning re-apply path"
     );
+    // Phase 9 slice 9C -- a later CREATE-TABLE migration (v25) must also survive the
+    // pre-versioning re-apply path, same as v22/v23/v24's own assertions above.
+    assert.equal(
+      await tableExists(client, "market_discovery_candidates"),
+      true,
+      "a later migration (v25) must still apply correctly on the pre-versioning re-apply path"
+    );
+    assert.equal(
+      await tableExists(client, "market_discovery_runs"),
+      true,
+      "a later migration (v25) must still apply correctly on the pre-versioning re-apply path"
+    );
   }));
 
 // Phase 7 slice K (owner spec §10 -- AC-DUR-01). `upsertVideos`/`listStoredVideosByChannel`
@@ -1527,6 +1549,59 @@ test("markResearchChannelAutoCollected + getMarketIntelligenceUnitsSpentSince ro
       .where(eq(marketIntelligenceCollectionRuns.status, "success"));
     assert.equal(runRow.videosRequested, 10, "videosRequested must round-trip, never fabricated");
     assert.equal(runRow.videosReturned, 9, "a gap between requested and returned must be preserved honestly, never silently corrected");
+  }));
+
+// Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md §9) -- market_discovery_candidates
+// is a LIFECYCLE table (rediscovery touches lastSeenAt only, never duplicates or resets status),
+// unlike the append-only snapshot tables above.
+test("market_discovery_candidates round-trips through the real Drizzle schema; rediscovery touches lastSeenAt only, never duplicates or resets status", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await insertMarketDiscoveryCandidate(
+      { id: "UC_CANDIDATE00000000000", title: "Discovered Channel", discoverySource: "youtube.search.list", discoveryQuery: "cooking", createdVia: "web_ui" },
+      isolatedDb
+    );
+    const inserted = await getMarketDiscoveryCandidateById("UC_CANDIDATE00000000000", isolatedDb);
+    assert.equal(inserted?.status, "new");
+    assert.equal(inserted?.reasonDiscovered, null, "an omitted field must be null, never a fabricated empty string");
+
+    await setMarketDiscoveryCandidateStatus("UC_CANDIDATE00000000000", "ignored", isolatedDb);
+    // A fixed, whole-second timestamp -- integer-mode columns truncate sub-second precision, so a
+    // Date.now()-derived value would flakily mismatch on round-trip depending on the current millisecond.
+    const laterSeenAt = new Date("2026-09-28T00:00:00.000Z");
+    await touchMarketDiscoveryCandidateLastSeen("UC_CANDIDATE00000000000", laterSeenAt, isolatedDb);
+
+    const afterRediscovery = await getMarketDiscoveryCandidateById("UC_CANDIDATE00000000000", isolatedDb);
+    assert.equal(afterRediscovery?.status, "ignored", "rediscovery must never reset an operator-set status back to new");
+    assert.equal(afterRediscovery?.lastSeenAt.getTime(), laterSeenAt.getTime());
+
+    const allRows = await isolatedDb.select().from(marketDiscoveryCandidates);
+    assert.equal(allRows.length, 1, "rediscovery must never insert a duplicate row for the same channel");
+
+    const listed = await listMarketDiscoveryCandidates(isolatedDb);
+    assert.equal(listed.length, 1);
+  }));
+
+test("getMarketIntelligenceUnitsSpentSince sums market_intelligence_collection_runs AND market_discovery_runs -- one shared budget, not two independent ones", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_SHARED_BUDGET000000", reason: "r", createdVia: "web_ui" });
+
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    await insertMarketIntelligenceCollectionRun({ researchChannelId: "UC_SHARED_BUDGET000000", status: "success", unitsSpent: 3, ranAt: now }, isolatedDb);
+    await insertMarketDiscoveryRun({ query: "cooking", status: "success", unitsSpent: 100, candidatesFound: 5, candidatesNew: 2, ranAt: now }, isolatedDb);
+    await insertMarketDiscoveryRun({ query: "gaming", status: "failed", unitsSpent: 100, errorMessage: "boom", ranAt: now }, isolatedDb);
+
+    const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const totalSpent = await getMarketIntelligenceUnitsSpentSince(since, isolatedDb);
+    assert.equal(totalSpent, 203, "must sum both tables (3 + 100 + 100), including a failed discovery run's own real spend");
+
+    const [discoveryRunRow] = await isolatedDb.select().from(marketDiscoveryRuns).where(eq(marketDiscoveryRuns.status, "success"));
+    assert.equal(discoveryRunRow.candidatesFound, 5, "candidatesFound must round-trip, never fabricated");
+    assert.equal(discoveryRunRow.candidatesNew, 2);
   }));
 
 // AC-SCHEMA-04

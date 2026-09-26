@@ -1052,6 +1052,54 @@ export const marketIntelligenceCollectionRuns = sqliteTable(
   ]
 );
 
+/**
+ * Phase 9 slice 9C (`docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md`) -- a LIFECYCLE table, not an
+ * append-only observation series like `marketChannelSnapshots`/`marketVideoSnapshots` above: one
+ * row per discovered channel, touched (never duplicated) on rediscovery. No FK to
+ * `researchChannels` -- a candidate is explicitly a PRE-watchlist entity; promotion inserts a
+ * separate `research_channels` row and keeps this one (`status: "promoted"`) as a permanent
+ * historical record.
+ */
+export const marketDiscoveryCandidates = sqliteTable("market_discovery_candidates", {
+  id: text("id").primaryKey(), // the real YouTube channel id
+  title: text("title").notNull(),
+  status: text("status", { enum: ["new", "watching", "ignored", "archived", "promoted"] }).notNull(),
+  discoverySource: text("discovery_source").notNull(),
+  discoveryQuery: text("discovery_query").notNull(),
+  reasonDiscovered: text("reason_discovered"),
+  firstSeenAt: integer("first_seen_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  lastSeenAt: integer("last_seen_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  createdVia: text("created_via").notNull(),
+});
+
+/**
+ * Phase 9 slice 9C -- this slice's own `market_intelligence_collection_runs` counterpart: append-
+ * only audit trail AND (jointly with that table, via `getMarketIntelligenceUnitsSpentSince`) the
+ * shared quota ledger's source of truth. Not scoped to any one `researchChannelId` -- a discovery
+ * run is a search, not a per-channel refresh -- so it cannot reuse that other table's own
+ * NOT-NULL-FK'd shape.
+ */
+export const marketDiscoveryRuns = sqliteTable(
+  "market_discovery_runs",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    query: text("query").notNull(),
+    ranAt: integer("ran_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    status: text("status", { enum: ["success", "failed"] }).notNull(),
+    unitsSpent: integer("units_spent").notNull(),
+    candidatesFound: integer("candidates_found"),
+    candidatesNew: integer("candidates_new"),
+    errorMessage: text("error_message"),
+  },
+  (table) => [index("market_discovery_runs_ran_at_idx").on(table.ranAt)]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -1521,6 +1569,39 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
       await client.execute(
         "CREATE INDEX IF NOT EXISTS market_intelligence_collection_runs_ran_at_idx ON market_intelligence_collection_runs(ran_at)"
+      );
+    },
+  },
+  {
+    version: 25,
+    description:
+      "market_discovery_candidates + market_discovery_runs -- Phase 9 slice 9C search.list-based discovery, candidate lifecycle, and its own append-only quota-ledger counterpart to market_intelligence_collection_runs (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_discovery_candidates (" +
+          "id TEXT PRIMARY KEY, " +
+          "title TEXT NOT NULL, " +
+          "status TEXT NOT NULL, " +
+          "discovery_source TEXT NOT NULL, " +
+          "discovery_query TEXT NOT NULL, " +
+          "reason_discovered TEXT, " +
+          "first_seen_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "last_seen_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "created_via TEXT NOT NULL)"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_discovery_runs (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "query TEXT NOT NULL, " +
+          "ran_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "status TEXT NOT NULL, " +
+          "units_spent INTEGER NOT NULL, " +
+          "candidates_found INTEGER, " +
+          "candidates_new INTEGER, " +
+          "error_message TEXT)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_discovery_runs_ran_at_idx ON market_discovery_runs(ran_at)"
       );
     },
   },
@@ -4772,20 +4853,26 @@ export async function insertMarketIntelligenceCollectionRun(
 
 /**
  * The quota ledger's own read side: total real YouTube API units spent by market-intelligence
- * collection since `since` (the caller passes the start of "today," a plain UTC calendar day
- * boundary -- deliberately NOT Pacific-Time-aligned like `cloud-quotas`' own display, per this
- * slice's own `AGENTS.md` §M module-independence constraint; the Settings UI labels this window
- * explicitly so it is never confused with that other, differently-windowed number). Sums every row
- * regardless of `status` -- a `skipped_quota_limited`/`failed` row still has a real, already-spent
- * `unitsSpent` (e.g. the channel-snapshot call succeeded before the video step got skipped) that
- * must count against the budget.
+ * -- collection (`market_intelligence_collection_runs`) AND, as of Phase 9 slice 9C, discovery
+ * (`market_discovery_runs`) -- since `since` (the caller passes the start of "today," a plain UTC
+ * calendar day boundary -- deliberately NOT Pacific-Time-aligned like `cloud-quotas`' own display,
+ * per this slice's own `AGENTS.md` §M module-independence constraint; the Settings UI labels this
+ * window explicitly so it is never confused with that other, differently-windowed number). Sums
+ * every row regardless of `status` -- a `skipped_quota_limited`/`failed` collection row, or a
+ * `failed` discovery row, still has a real, already-spent `unitsSpent` that must count against the
+ * budget. Both tables are summed here (not one call site adding them itself) because both slices
+ * share ONE operator-set daily budget (owner decision 2) -- there is no per-feature sub-budget.
  */
 export async function getMarketIntelligenceUnitsSpentSince(since: Date, database: AppDb = db): Promise<number> {
-  const [row] = await database
+  const [collectionRow] = await database
     .select({ total: sql<number | null>`SUM(${marketIntelligenceCollectionRuns.unitsSpent})` })
     .from(marketIntelligenceCollectionRuns)
     .where(gte(marketIntelligenceCollectionRuns.ranAt, since));
-  return row?.total ?? 0;
+  const [discoveryRow] = await database
+    .select({ total: sql<number | null>`SUM(${marketDiscoveryRuns.unitsSpent})` })
+    .from(marketDiscoveryRuns)
+    .where(gte(marketDiscoveryRuns.ranAt, since));
+  return (collectionRow?.total ?? 0) + (discoveryRow?.total ?? 0);
 }
 
 const MARKET_INTELLIGENCE_DAILY_QUOTA_BUDGET_SETTING_KEY = "market_intelligence_daily_quota_budget_units";
@@ -4810,4 +4897,104 @@ export async function getMarketIntelligenceDailyQuotaBudgetUnits(database: AppDb
  * (the API route boundary), same convention `setAnalyticsSyncSettings` already uses. */
 export async function setMarketIntelligenceDailyQuotaBudgetUnits(units: number | null, database: AppDb = db): Promise<void> {
   await setAppSetting(MARKET_INTELLIGENCE_DAILY_QUOTA_BUDGET_SETTING_KEY, units === null ? "" : String(units), database);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9C (`docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md`) -- search.list-based discovery
+// and the candidate lifecycle. Read/written only by `src/lib/market-intelligence/adapters/store.ts`.
+// ---------------------------------------------------------------------------
+
+export type DiscoveryCandidateStatus = "new" | "watching" | "ignored" | "archived" | "promoted";
+
+export type StoredMarketDiscoveryCandidate = {
+  id: string;
+  title: string;
+  status: DiscoveryCandidateStatus;
+  discoverySource: string;
+  discoveryQuery: string;
+  reasonDiscovered: string | null;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+  createdVia: string;
+};
+
+export async function getMarketDiscoveryCandidateById(
+  channelId: string,
+  database: AppDb = db
+): Promise<StoredMarketDiscoveryCandidate | null> {
+  const [row] = await database.select().from(marketDiscoveryCandidates).where(eq(marketDiscoveryCandidates.id, channelId));
+  return row ?? null;
+}
+
+// Newest lastSeenAt first -- a rediscovered (still-relevant) candidate surfaces above one nobody
+// has seen again in a long time, unlike the append-only snapshot tables' oldest-first convention
+// (which exists there to replay a time series in order; this is a lifecycle list, not a series).
+export async function listMarketDiscoveryCandidates(database: AppDb = db): Promise<StoredMarketDiscoveryCandidate[]> {
+  return database.select().from(marketDiscoveryCandidates).orderBy(desc(marketDiscoveryCandidates.lastSeenAt));
+}
+
+export async function insertMarketDiscoveryCandidate(
+  input: {
+    id: string;
+    title: string;
+    discoverySource: string;
+    discoveryQuery: string;
+    reasonDiscovered?: string | null;
+    createdVia: string;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketDiscoveryCandidates).values({
+    id: input.id,
+    title: input.title,
+    status: "new",
+    discoverySource: input.discoverySource,
+    discoveryQuery: input.discoveryQuery,
+    reasonDiscovered: input.reasonDiscovered ?? null,
+    createdVia: input.createdVia,
+  });
+}
+
+/** Rediscovery never duplicates the row or touches `status` -- only `lastSeenAt` moves. */
+export async function touchMarketDiscoveryCandidateLastSeen(
+  channelId: string,
+  at: Date,
+  database: AppDb = db
+): Promise<void> {
+  await database.update(marketDiscoveryCandidates).set({ lastSeenAt: at }).where(eq(marketDiscoveryCandidates.id, channelId));
+}
+
+export async function setMarketDiscoveryCandidateStatus(
+  channelId: string,
+  status: DiscoveryCandidateStatus,
+  database: AppDb = db
+): Promise<void> {
+  await database.update(marketDiscoveryCandidates).set({ status }).where(eq(marketDiscoveryCandidates.id, channelId));
+}
+
+/**
+ * Appends one audit/quota-ledger row -- this slice's own `insertMarketIntelligenceCollectionRun`
+ * counterpart. Never updated once written.
+ */
+export async function insertMarketDiscoveryRun(
+  input: {
+    query: string;
+    status: "success" | "failed";
+    unitsSpent: number;
+    candidatesFound?: number | null;
+    candidatesNew?: number | null;
+    errorMessage?: string | null;
+    ranAt?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketDiscoveryRuns).values({
+    query: input.query,
+    status: input.status,
+    unitsSpent: input.unitsSpent,
+    candidatesFound: input.candidatesFound ?? null,
+    candidatesNew: input.candidatesNew ?? null,
+    errorMessage: input.errorMessage ?? null,
+    ...(input.ranAt ? { ranAt: input.ranAt } : {}),
+  });
 }

@@ -98,7 +98,12 @@ export type DomainErrorCode =
   | "CLOUD_CONNECTION_TOKEN_EXCHANGE_FAILED"
   // Phase 9 slice 1 (docs/roadmap/plans/PHASE_9_PLAN.md) -- market-research watchlist.
   | "RESEARCH_CHANNEL_ALREADY_WATCHED"
-  | "RESEARCH_CHANNEL_NOT_AVAILABLE";
+  | "RESEARCH_CHANNEL_NOT_AVAILABLE"
+  // Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md) -- discovery.
+  | "MARKET_INTELLIGENCE_QUOTA_DISABLED"
+  | "MARKET_INTELLIGENCE_QUOTA_EXCEEDED"
+  | "DISCOVERY_CANDIDATE_NOT_FOUND"
+  | "DISCOVERY_CANDIDATE_ALREADY_PROMOTED";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

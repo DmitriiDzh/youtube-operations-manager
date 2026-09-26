@@ -1,22 +1,28 @@
 import {
   claimStaleResearchChannelsForCollection,
   deleteResearchChannel,
+  getMarketDiscoveryCandidateById,
   getMarketIntelligenceDailyQuotaBudgetUnits,
   getMarketIntelligenceUnitsSpentSince,
   getResearchChannelById,
   insertMarketChannelSnapshot,
+  insertMarketDiscoveryCandidate,
+  insertMarketDiscoveryRun,
   insertMarketIntelligenceCollectionRun,
   insertMarketVideoSnapshot,
   insertResearchChannel,
   insertResearchEvidence,
   listMarketChannelSnapshotsByChannel,
+  listMarketDiscoveryCandidates,
   listMarketVideoSnapshotsByChannel,
   listRecentlyFailedResearchChannelIds,
   listResearchChannels,
   listResearchEvidenceByChannel,
   markResearchChannelAutoCollected,
   releaseResearchChannelCollectionClaim,
+  setMarketDiscoveryCandidateStatus,
   setMarketIntelligenceDailyQuotaBudgetUnits,
+  touchMarketDiscoveryCandidateLastSeen,
 } from "@/lib/db";
 import { createIdGenerator } from "../contracts";
 
@@ -45,6 +51,13 @@ export function createMarketIntelligenceStoreAdapter() {
     claimStaleResearchChannelsForCollection,
     releaseResearchChannelCollectionClaim,
     listRecentlyFailedResearchChannelIds,
+    // Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md).
+    getMarketDiscoveryCandidateById,
+    listMarketDiscoveryCandidates,
+    insertMarketDiscoveryCandidate,
+    touchMarketDiscoveryCandidateLastSeen,
+    setMarketDiscoveryCandidateStatus,
+    insertMarketDiscoveryRun,
   };
 }
 

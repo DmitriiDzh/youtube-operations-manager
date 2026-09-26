@@ -254,6 +254,67 @@ export const runCollectionIfStaleOutputSchema = z
   })
   .strict();
 
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md) -- search.list-based discovery.
+// ---------------------------------------------------------------------------
+
+export const discoverChannelsInputSchema = z
+  .object({
+    query: z.string().min(1, "query is required").max(200),
+    credentialRef: credentialRefSchema,
+  })
+  .strict();
+
+export const discoverChannelsOutputSchema = z
+  .object({
+    candidatesFound: nonNegativeIntSchema,
+    candidatesNew: nonNegativeIntSchema,
+  })
+  .strict();
+
+export const marketDiscoveryCandidateSchema = z
+  .object({
+    channelId: z.string().min(1),
+    title: z.string(),
+    status: z.enum(["new", "watching", "ignored", "archived", "promoted"]),
+    discoverySource: z.string(),
+    discoveryQuery: z.string(),
+    reasonDiscovered: z.string().nullable(),
+    firstSeenAt: z.string(),
+    lastSeenAt: z.string(),
+  })
+  .strict();
+
+export const listDiscoveryCandidatesOutputSchema = z
+  .object({
+    candidates: z.array(marketDiscoveryCandidateSchema),
+  })
+  .strict();
+
+// "new" is never an accepted target (it's the initial state only) and "promoted" is never accepted
+// here (it has a real side effect -- creating a watchlist entry -- and needs its own dedicated
+// action/audit trail below, not a bare status flip).
+export const updateDiscoveryCandidateStatusInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    status: z.enum(["watching", "ignored", "archived"]),
+  })
+  .strict();
+
+export const promoteDiscoveryCandidateInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    reason: z.string().min(1, "reason is required").max(2000),
+  })
+  .strict();
+
+export const promoteDiscoveryCandidateOutputSchema = z
+  .object({
+    channel: researchChannelSchema,
+    candidate: marketDiscoveryCandidateSchema,
+  })
+  .strict();
+
 // Re-exported so services.ts/adapters never need their own separate import of the shared
 // provenance vocabulary's schema (AGENTS.md §M: market-intelligence is a caller of
 // shared-provenance, not a second owner of it).
@@ -270,3 +331,6 @@ export type ListVideoSnapshotsInput = z.infer<typeof listVideoSnapshotsInputSche
 export type CaptureChannelSnapshotInput = z.infer<typeof captureChannelSnapshotInputSchema>;
 export type RunCollectionIfStaleInput = z.infer<typeof runCollectionIfStaleInputSchema>;
 export type RunCollectionIfStaleOutput = z.infer<typeof runCollectionIfStaleOutputSchema>;
+export type DiscoverChannelsInput = z.infer<typeof discoverChannelsInputSchema>;
+export type UpdateDiscoveryCandidateStatusInput = z.infer<typeof updateDiscoveryCandidateStatusInputSchema>;
+export type PromoteDiscoveryCandidateInput = z.infer<typeof promoteDiscoveryCandidateInputSchema>;

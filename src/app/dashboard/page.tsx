@@ -17,6 +17,7 @@ import { McpConnectionSettings } from "@/components/mcp-connection-settings";
 import { AgentConnectionsManager } from "@/components/agent-connections-manager";
 import { OperationsWorkspaceSettings } from "@/components/operations-workspace-settings";
 import { MarketResearchPanel } from "@/components/market-research-panel";
+import { MarketDiscoveryPanel } from "@/components/market-discovery-panel";
 import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
 import { ChannelConnectionsSettings } from "@/components/channel-connections-settings";
@@ -317,13 +318,14 @@ export default function Dashboard() {
 
       {tab === "research" && (
         <FeatureErrorBoundary label="Research">
-          <div>
-            <p className="mb-4 text-sm text-zinc-400">
-              A manually-seeded watchlist of channels for competitive/market context &mdash; never
-              automatically discovered, and never a source of private analytics for a channel you
-              don&rsquo;t own.
+          <div className="space-y-6">
+            <p className="text-sm text-zinc-400">
+              A watchlist of channels for competitive/market context &mdash; discovery only ever
+              runs on your own explicit request below, never automatically, and this is never a
+              source of private analytics for a channel you don&rsquo;t own.
             </p>
             <MarketResearchPanel />
+            <MarketDiscoveryPanel />
           </div>
         </FeatureErrorBoundary>
       )}

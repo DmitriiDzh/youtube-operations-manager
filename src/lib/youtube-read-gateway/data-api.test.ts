@@ -15,6 +15,7 @@ import {
   listUploadsPlaylistFirstPageVideoIds,
   listUploadsPlaylistVideoIds,
   parseIso8601DurationToSeconds,
+  searchPublicChannels,
 } from "./data-api";
 
 // The "Data API reads" toggle (owner instruction, 2026-09-22): default-enabled, unlike Gate B's
@@ -47,12 +48,14 @@ function fakeYoutubeClient(overrides: {
   videosList?: youtube_v3.Youtube["videos"]["list"];
   videosUpdate?: youtube_v3.Youtube["videos"]["update"];
   i18nLanguagesList?: youtube_v3.Youtube["i18nLanguages"]["list"];
+  searchList?: youtube_v3.Youtube["search"]["list"];
 }): youtube_v3.Youtube {
   return {
     channels: { list: overrides.channelsList },
     playlistItems: { list: overrides.playlistItemsList },
     videos: { list: overrides.videosList, update: overrides.videosUpdate },
     i18nLanguages: { list: overrides.i18nLanguagesList },
+    search: { list: overrides.searchList },
   } as unknown as youtube_v3.Youtube;
 }
 
@@ -669,4 +672,54 @@ test("getPublicVideoSnapshots omits a requested id absent from the response, nev
 
   assert.equal(snapshots.length, 1);
   assert.equal(snapshots[0]?.videoId, "v1");
+});
+
+// Phase 9 slice 9C -- searchPublicChannels, exactly one search.list call.
+test("searchPublicChannels requests part=snippet, type=channel, and maps id.channelId/snippet fields", async () => {
+  let receivedArgs: unknown;
+  const youtube = fakeYoutubeClient({
+    searchList: (async (args: unknown) => {
+      receivedArgs = args;
+      return {
+        data: {
+          items: [
+            { id: { channelId: "UC_A" }, snippet: { title: "Channel A", description: "About A" } },
+            { id: { channelId: "UC_B" }, snippet: { title: "Channel B" } },
+          ],
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["search"]["list"],
+  });
+
+  const results = await searchPublicChannels(youtube, "cooking", 25);
+
+  assert.deepEqual(receivedArgs, { part: ["snippet"], q: "cooking", type: ["channel"], maxResults: 25 });
+  assert.deepEqual(results, [
+    { channelId: "UC_A", title: "Channel A", description: "About A" },
+    { channelId: "UC_B", title: "Channel B", description: null },
+  ]);
+});
+
+test("searchPublicChannels omits a result missing its own channel id, never fabricating one", async () => {
+  const youtube = fakeYoutubeClient({
+    searchList: (async () => ({
+      data: { items: [{ id: {}, snippet: { title: "No id" } }, { id: { channelId: "UC_OK" }, snippet: { title: "OK" } }] },
+    })) as unknown as youtube_v3.Youtube["search"]["list"],
+  });
+
+  const results = await searchPublicChannels(youtube, "query");
+  assert.deepEqual(results, [{ channelId: "UC_OK", title: "OK", description: null }]);
+});
+
+test("searchPublicChannels issues exactly one call, never paginates, even with a nextPageToken present", async () => {
+  let callCount = 0;
+  const youtube = fakeYoutubeClient({
+    searchList: (async () => {
+      callCount += 1;
+      return { data: { items: [{ id: { channelId: "UC_A" }, snippet: { title: "A" } }], nextPageToken: "more" } };
+    }) as unknown as youtube_v3.Youtube["search"]["list"],
+  });
+
+  await searchPublicChannels(youtube, "query");
+  assert.equal(callCount, 1, "must never fetch a second page -- its real cost (100 units) must stay exactly and always 1 call");
 });

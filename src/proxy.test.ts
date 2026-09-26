@@ -9,6 +9,10 @@ function mutatingRequest(pathname: string) {
   return new NextRequest(new Request(`http://localhost${pathname}`, { method: "POST" }));
 }
 
+function patchRequest(pathname: string) {
+  return new NextRequest(new Request(`http://localhost${pathname}`, { method: "PATCH" }));
+}
+
 function readRequest(pathname: string) {
   return new NextRequest(new Request(`http://localhost${pathname}`, { method: "GET" }));
 }
@@ -138,6 +142,38 @@ test("proxy gates the market-intelligence collect-if-stale route like any other 
   await acquireOperationLock(rawSqlClient, "export");
   try {
     const response = await proxy(mutatingRequest("/api/market-intelligence/collect-if-stale"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// Phase 9 slice 9C: discovery/candidate-lifecycle routes are real mutations (write candidate rows,
+// a run-log row, or a new watchlist entry) -- gated the same way, never exempted.
+test("proxy gates the market-intelligence discover route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/discover"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("proxy gates the market-intelligence discovery-candidates status-update route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(patchRequest("/api/market-intelligence/discovery-candidates/UC_TEST0000000000000"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("proxy gates the market-intelligence discovery-candidates promote route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/discovery-candidates/UC_TEST0000000000000/promote"));
     assert.equal(response.status, 409);
   } finally {
     await releaseOperationLock(rawSqlClient);
