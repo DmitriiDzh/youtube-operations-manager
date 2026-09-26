@@ -1419,7 +1419,7 @@ content-proposal/artifact registration, a Codex operations-workspace template, a
 review -- **which of these is actually implemented as of any given moment is tracked exclusively
 in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here**.
 
-## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9C
+## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9D
 
 Owner instruction, Telegram 2026-09-26: an explicit assignment to research, plan, and begin
 implementing Phase 9 (`docs/roadmap/FUTURE_PHASES.md` §5) as its own feature branch, superseding
