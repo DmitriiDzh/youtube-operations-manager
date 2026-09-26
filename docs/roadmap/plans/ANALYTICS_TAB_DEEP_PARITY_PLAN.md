@@ -38,18 +38,45 @@ name found; every claim of *unavailability* is flagged as needing its own live p
 slice starts, exactly as this codebase already does for `CHANNEL_OVERVIEW_METRIC_NAMES` (see that
 constant's own doc comment in `src/lib/analytics/contracts.ts` for the precedent this plan follows).
 
-**One correction to that existing precedent, found this session:** that doc comment records a
-2026-09-23 live probe of `"impressions"`/`"impressionClickThroughRate"` as rejected ("Unknown
-identifier") and concludes impressions/CTR are "genuinely unavailable via the public Analytics
-API." Official documentation found this session shows Google added exactly this capability to the
-public API on **2026-01-15**, under different identifiers: `videoThumbnailImpressions` and
-`videoThumbnailImpressionsClickThroughRate` (a source used the shorter `videoThumbnailImpressionsClickRate`
-for the same metric in one place — the exact spelling needs confirming against the live API
-reference or a real probe response, not asserted here). The 2026-09-23 conclusion was very likely
-a wrong-identifier-name false negative, not a real platform limitation — **Slice C3 below starts
-by re-probing with the correct name(s) before doing anything else**, and if confirmed, the existing
-"genuinely unavailable" doc comment in `contracts.ts` needs correcting alongside it (never leave a
-disproven claim standing once its slice starts touching that file).
+**Update, BL-093 (Slice C1's own live probe, 2026-09-25, run against the real "Tropico Jazz"
+channel via the exact `youtubeAnalytics/v2/reports:query` endpoint this app's gateway already
+calls):** this plan's own first-draft note above suspected the 2026-09-23 "impressions/CTR
+unavailable" conclusion in `contracts.ts` was a simple wrong-metric-name false negative. **That
+suspicion was half right and half wrong — corrected here rather than left standing.** Confirmed via
+a real probe request:
+
+- `videoThumbnailImpressions`/`videoThumbnailImpressionsClickThroughRate` **are** real, recognized
+  identifiers (a query naming an actually-unknown metric returns `"Unknown identifier (X)"` naming
+  that metric specifically; these two never appear in that role).
+- But every shape tried against the ad-hoc `reports:query` endpoint — channel-level with no
+  dimension, with `dimensions=day`, with `dimensions=video`, paired with `views`, filtered to one
+  video — returned `"The query is not supported"`, not a metric-name error. Further research (the
+  same official docs, `channel_reports`) found why: these two metrics belong to a **separate
+  "Reach report" family** (`channel_reach_basic_a1`/`channel_reach_combined_a1`), which lives under
+  the **YouTube *Reporting* API v1** (`developers.google.com/youtube/reporting`) — a bulk,
+  scheduled-job system (create a reporting job once, then periodically list/download generated
+  report files) — **not** the ad-hoc `youtubeAnalytics/v2 reports:query` endpoint
+  `youtube-read-gateway/analytics-api.ts` calls everywhere else in this app. No dimension
+  combination on the query endpoint will ever return these two metrics, regardless of exact naming.
+- **Revised conclusion:** the 2026-09-23 "unavailable" verdict was correct for the API surface this
+  app actually uses, for the wrong stated reason (it blamed the metric *name*, when the real
+  blocker is that it's a structurally different API integration). Retained in full below (§3.3/3.4)
+  as Slice C3's now-corrected scope: full impressions/CTR funnel parity needs a **new Reporting API
+  v1 integration** (its own OAuth scope check — `yt-analytics.readonly` may or may not cover it,
+  unconfirmed — its own job-creation/polling adapter, no live-request-response symmetry with every
+  other slice in this plan) — a materially larger, differently-shaped effort than "add a metric
+  name." **Recommend treating C3 as its own separately-scoped future decision, not part of this
+  round's assignable slices** (§5 updated accordingly, and since confirmed final -- C3 is
+  permanently out of scope, not merely deferred pending a future pickup). The `contracts.ts` doc
+  comment's own "genuinely unavailable" conclusion has already been corrected (commit `adea559`)
+  to cite this finding instead of the wrong-name theory -- done, not still pending.
+- Every other capability this plan flagged as "needs its own live probe" was **also confirmed
+  working** in the same probe run, against real data: `elapsedVideoTimeRatio` (retention, paired
+  with `audienceWatchRatio`/`relativeRetentionPerformance`), `insightTrafficSourceType` (traffic
+  sources), `deviceType`, `ageGroup,gender`, `country`, `subscribedStatus`, and `creatorContentType`
+  (Formats) all returned real `200` responses with real rows against the "Tropico Jazz" channel.
+  These slices (C2, C4, A2-A4, A6) can proceed with their dimension/metric names confirmed, not
+  merely "documented."
 
 ## 1. Cross-cutting technical notes (apply to every slice below)
 
@@ -129,27 +156,42 @@ explaining each metric, no realtime panel.
 
 Everything here already works with metrics this app already requests
 (`CHANNEL_OVERVIEW_METRIC_NAMES`: views, estimatedMinutesWatched, subscribersGained/Lost) at
-`dimensions=day` — no new dimension needed for the card-switching chart itself. The 48-hour
-realtime panel is the one new capability: YouTube's Analytics API supports an explicit "estimated,
-last-48-hours, near-real-time" report mode (`startDate`/`endDate` around `now`, hourly granularity)
-— needs its own live probe to confirm exact parameters (this app has never queried at hourly
-granularity or this recently before); the live subscriber count is likely already available via
-the existing channel-info read (`youtube-read-gateway/data-api.ts`), not the Analytics API at all
-— check that before assuming a new call is needed.
+`dimensions=day` — no new dimension needed for the card-switching chart itself. **Updated
+(2026-09-26), superseding this section's own first-draft text below:** the 48-hour realtime panel
+is **not** buildable at all via any public API surface — see §2.4's O3 entry for the confirmed
+finding (a live probe returned genuinely empty rows for "today"/last-48-hours, and further research
+established the underlying 48-72 hour processing delay applies to both the ad-hoc query API and the
+bulk Reporting API; Studio's live panel runs on non-public internal infrastructure). The one
+genuinely-public piece of that panel, an all-time subscriber count via `channels.list`, is not new
+work either — `ChannelOverviewPanel` already displays it. Nothing in this panel needs a new API
+call; O3 is out of scope entirely, not merely blocked pending a probe.
 
 ### 2.4 Proposed slices
 
-- **Slice O1 — Card-click chart switching + metric tooltip.** Make the three existing metric cards
-  clickable; store which is selected; redraw the existing `AnalyticsLineChart` using the selected
-  metric's own data/axis scale/units; add the explanation tooltip (static per-metric copy, no new
-  API call — the numbers are already fetched). Smallest, highest-value, zero new API surface.
-- **Slice O2 — Chart hover tooltip (exact value + date).** `AnalyticsLineChart` currently has no
-  hover interaction at all (confirm by reading that component before starting) — add a crosshair +
-  point tooltip, matching this app's own `dataviz` skill conventions rather than copying Studio's
-  markup.
-- **Slice O3 — Realtime panel.** New adapter function for the 48h/hourly report (own live probe
-  first), a new small "Realtime" card component, live subscriber count (check whether an existing
-  read already has this before adding a call). Independent of O1/O2.
+- ~~**Slice O1 — Card-click chart switching + metric tooltip.**~~ **DONE (2026-09-26).** Made the
+  three existing metric cards clickable; stores which is selected; redraws the existing
+  `AnalyticsLineChart` using the selected metric's own data/axis scale/units; added the explanation
+  tooltip (static per-metric copy, no new API call — the numbers are already fetched). Smallest,
+  highest-value, zero new API surface.
+- ~~**Slice O2 — Chart hover tooltip.**~~ **DONE, smaller than planned (2026-09-26).** This plan's
+  own first-draft note above was wrong: `AnalyticsLineChart` already had a crosshair + point
+  tooltip before this round (built earlier, BL-072) — never actually re-read before this line was
+  written. The real remaining gap was just date formatting: the tooltip showed a raw `YYYY-MM-DD`
+  string, not Studio's own "Weekday, Mon D, YYYY" wording. Added `formatChartDate` (`period.ts`,
+  parses the date's own UTC components directly so the weekday never shifts with the viewer's local
+  timezone) and wired it into the Overview chart. 2 new tests.
+- **Slice O3 — Realtime panel — CONFIRMED INFEASIBLE via the public API (2026-09-26 probe +
+  research), not merely unconfirmed.** A direct probe against a real channel for "today"/"the last
+  48 hours" via the same `youtubeAnalytics/v2 reports:query` endpoint this app already uses
+  returned genuinely empty rows — confirming (again) the documented 48-72 hour processing delay
+  this app's own `computeDefaultAutoCollectionRange` already works around. Further research found
+  this delay applies to **both** the ad-hoc query API and the bulk Reporting API — neither public
+  surface can produce Studio's live, updating-every-few-seconds 48h hourly bar chart or live
+  subscriber ticker; that panel is built on Studio's own internal, non-public infrastructure, the
+  same class of gap as C3's impressions/CTR funnel (§3.3) and the cross-channel-affinity cards
+  (§4.3). The one genuinely-public piece of this panel — an all-time subscriber count via
+  `channels.list` — is not new: `ChannelOverviewPanel` already displays it ("Current subscribers
+  (all-time)"). **Nothing to build here; moved to permanently out of scope, not merely deferred.**
 - **Slice O4-stub — Advanced-mode explorer.** Explicitly deferred, not part of this plan's
   recommended first assignment (§5) — flag as a future, separately-scoped item only.
 
@@ -186,42 +228,49 @@ comparison), not this tab's own per-video-in-period breakdown. Treat as unrelate
 
 ### 3.3 API feasibility
 
-- **Retention curve:** publicly documented (`elapsedVideoTimeRatio` dimension,
-  `audienceWatchRatio`/`relativeRetentionPerformance` metrics, per-video). The four
-  Intro/Top-moments/Spikes/Dips *modes* are very likely a client-side classification Studio itself
-  computes over the same underlying curve (e.g. "top moment" = a local maximum well above the
-  smoothed baseline) rather than four separate API reports — this needs confirming against the
-  actual shape of a real retention response before committing to an exact algorithm; do not assume
-  Google exposes these four labels directly.
-- **Traffic sources:** `insightTrafficSourceType` dimension, publicly documented.
-- **Impressions/CTR funnel:** see §0's correction above — likely available under
-  `videoThumbnailImpressions`/`videoThumbnailImpressionsClickThroughRate` (name to confirm by live
-  probe), added to the public API 2026-01-15. "Engaged views from impressions" and "watch time from
-  impressions" are more specialized derived figures; confirm the exact metric name(s) Google
-  exposes for these two specifically (may not exist as a direct metric — could require combining
-  impressions with a filtered views/watch-time query) before committing to full funnel parity in
-  one slice.
+- **Retention curve — CONFIRMED (BL-093 live probe, 2026-09-25).** `dimensions=elapsedVideoTimeRatio`,
+  `metrics=audienceWatchRatio,relativeRetentionPerformance`, `filters=video==<id>` returned a real
+  100-row curve (elapsed ratio 0.01→1.00) against a real Tropico Jazz video. The four
+  Intro/Top-moments/Spikes/Dips *modes* are still believed to be a client-side classification Studio
+  computes over this same underlying curve, not four separate API reports — not independently
+  confirmed this round. **Updated (2026-09-26):** the exact classification rule (e.g. "top moment" =
+  a local maximum well above the smoothed baseline) was not Slice C4's first task as actually
+  delivered — C4 shipped Intro-mode only and deliberately excluded classification altogether,
+  deferring it to its own follow-up slice (see §3.4's own Slice C4 entry and §5's status). It does
+  not block C1/C2 either way.
+- **Traffic sources — CONFIRMED.** `dimensions=insightTrafficSourceType`, `metrics=views` returned
+  real rows (`SUBSCRIBER`, `RELATED_VIDEO`, `YT_SEARCH`, etc.) with real view counts.
+- **Impressions/CTR funnel — CONFIRMED UNAVAILABLE via this app's existing API integration, for a
+  different reason than first suspected.** See §0's corrected finding: `videoThumbnailImpressions`/
+  `videoThumbnailImpressionsClickThroughRate` are real identifiers but belong to the YouTube
+  *Reporting* API v1's bulk "Reach report" job system, not the ad-hoc `youtubeAnalytics/v2
+  reports:query` endpoint this app's gateway uses everywhere else. Achieving this specific card
+  needs a new, structurally different API integration (scheduled report jobs, not live queries) —
+  its own separately-scoped future decision (§3.4, §5), not a slice of this round.
 - **Top videos:** no new capability — this app already has per-video view counts.
 
 ### 3.4 Proposed slices
 
-- **Slice C1 — Live probe: confirm the 4 new capabilities above against a real API response**
-  (retention dimension/metrics, traffic-source dimension, impressions/CTR metric names, and
-  whether "engaged views"/"watch time from impressions" exist as direct metrics). Small, no UI,
-  pure research-with-code (a throwaway probe script, not shipped) — de-risks every slice below
-  before any of them start. This is the single most valuable next step given this session's own
-  finding that a wrong-name false negative already happened once.
-- **Slice C2 — Traffic sources card.** Lowest-risk of the four (dimension already confirmed
-  public, no funnel/curve complexity) — sub-tab bar breakdown, matching Studio's shape.
-- **Slice C3 — Impressions/CTR funnel card.** Depends on C1's probe result for exact metric names
-  and whether the full 5-stage funnel is achievable or a narrower 2-3-stage version ships first.
-- **Slice C4 — Retention curve + video list.** The largest, most novel piece (new chart type, a
-  two-series comparison, per-video selection state, a genuinely new visual language for this app).
-  Recommend shipping "Intro" mode alone first (simplest: no top-moment/spike/dip classification
-  logic needed, just the raw curve for whichever video is selected), then Top moments/Spikes/Dips
-  as a follow-up slice once the classification approach is validated against real data.
-- **Slice C5 — Top videos card.** No new API surface; smallest possible standalone slice, could
-  ship independently or bundled with any of the above.
+- ~~**Slice C1 — Live probe.**~~ **DONE (BL-093, 2026-09-25).** See §0 and §3.3 above for the full
+  result: retention and traffic-source dimensions confirmed working against real data; impressions/
+  CTR confirmed to need a structurally different API (Reporting API v1, not this app's existing
+  query-based gateway) — not a naming fix.
+- ~~**Slice C2 — Traffic sources card.**~~ **DONE (BL-095, 2026-09-26).** Confirmed-feasible, no
+  funnel/curve complexity — sub-tab bar breakdown, matching Studio's shape.
+- **Slice C3-deferred — Impressions/CTR funnel card.** Moved out of this round's assignable set per
+  §0/§3.3's corrected finding — building it means integrating the YouTube Reporting API v1 (a new
+  OAuth-scope check, a new job-creation/polling adapter with no precedent anywhere in this codebase
+  today), not adding a metric name to the existing gateway pattern every other slice in this plan
+  uses. Recommend the owner treat "is this new integration worth it for one funnel card" as its own
+  explicit decision before assigning it, rather than folding it into this round.
+- ~~**Slice C4 — Retention curve + video list.**~~ **DONE, "Intro" mode only (BL-097, 2026-09-26).**
+  Confirmed-feasible (dimension/metrics live-verified). Shipped the raw curve for whichever video is
+  selected, deliberately without top-moment/spike/dip classification logic (the largest, most novel
+  piece — new chart type, a two-series comparison, per-video selection state — scoped down to its
+  simplest useful form first); Top moments/Spikes/Dips remains a follow-up slice once a
+  classification approach is validated against real data, per commit `4ddc0c9`.
+- ~~**Slice C5 — Top videos card.**~~ **DONE (BL-096, 2026-09-26).** No new API surface; extracted a
+  shared `use-top-videos.ts` hook (`AGENTS.md` §D) rather than a third, standalone implementation.
 - **Slice C6-deferred — Top Remixed.** Explicitly not part of the first assignment (§3.2 above).
 
 ## 4. Audience sub-tab
@@ -269,55 +318,80 @@ Nothing today.
 - **Geography:** `country` dimension, publicly documented (also `province`/`continent` sub-
   dimensions likely exist if a future drill-down is wanted, per `AGENTS.md` §M's design-for-
   extension principle — not needed for a first slice).
-- **Watch time from subscribers:** `subscribedStatus` dimension, publicly documented.
-- **New/Casual/Regular viewer split:** unclear whether this is a literal API dimension or a Studio-
-  computed segmentation over `subscribedStatus` + a returning-viewer heuristic — needs its own live
+- **Watch time from subscribers — CONFIRMED (BL-094 live probe, 2026-09-25).**
+  `dimensions=subscribedStatus`, `metrics=estimatedMinutesWatched` returned real
+  `SUBSCRIBED`/`UNSUBSCRIBED` rows against Tropico Jazz.
+- **Formats (Video/Shorts/Live split) — CONFIRMED.** `dimensions=creatorContentType` returned a
+  real row (`videoOnDemand`, this channel has no Shorts/Live yet — the dimension itself works;
+  whether it returns the other two values for a channel that has them was not testable against this
+  channel's real catalog, a real gap this specific channel's data can't close).
+- **New/Casual/Regular viewer split:** **not tested this round** (no obvious single dimension name
+  to probe blindly) — still unclear whether this is a literal API dimension or a Studio-computed
+  segmentation over `subscribedStatus` + a returning-viewer heuristic. Still needs its own live
   probe before committing to an exact reproduction; do not assume a 1:1 dimension exists.
-- **When viewers are on YouTube (heatmap):** no publicly documented hour-of-day view dimension was
-  found in this session's research — flag as **needs its own dedicated feasibility research spike**
-  before any slice promises it; may not be reproducible from the public API at all.
-- **Channels/What your audience watches:** flagged above as likely infeasible via public API —
-  treat as **out of scope** for this plan's slices unless a future research spike finds otherwise.
-- **Formats (Video/Shorts/Live split):** likely `creatorContentType` dimension (documented
-  elsewhere in the API's dimension list) — needs its own confirmation, not yet independently
-  checked this session.
+- **When viewers are on YouTube (heatmap):** **not tested this round** — no publicly documented
+  hour-of-day view dimension was found in this session's research. Still flagged as **needs its own
+  dedicated feasibility research spike** before any slice promises it; may not be reproducible from
+  the public API at all.
+- **Channels/What your audience watches:** **not tested this round** — still flagged as likely
+  infeasible via public API; treat as **out of scope** for this plan's slices unless a future
+  research spike finds otherwise.
 
 ### 4.4 Proposed slices
 
-- **Slice A1 — Live probe: confirm the open questions in §4.3** (new/casual/regular segmentation,
-  hour-of-day heatmap feasibility, `creatorContentType`, and whether channels/what-audience-watches
-  are reachable at all) — same rationale as Slice C1, do this before committing UI work to any of
-  the uncertain panels.
-- **Slice A2 — Device type card.** Confirmed-feasible, no open questions, smallest standalone win.
-- **Slice A3 — Age/gender + Top geographies cards.** Both confirmed-feasible, same shape (ranked
-  breakdown + percentage), can ship together or split further if preferred at assignment time.
-- **Slice A4 — Watch time from subscribers card.** Confirmed-feasible, small.
-- **Slice A5 — Audience by watch behavior + Popular with different audiences.** Depends on A1's
-  answer for the new/casual/regular segmentation approach.
-- **Slice A6 — Formats card.** Depends on A1 confirming `creatorContentType` (or the correct real
-  dimension).
+- ~~**Slice A1 — Live probe.**~~ **PARTIALLY DONE (BL-094, 2026-09-25).** Device type, age/gender,
+  geography, subscribed-status, and `creatorContentType` all confirmed working against real data
+  (§4.3 above) — A2/A3/A4/A6 below are now confirmed-feasible, not merely "likely." The three
+  harder open questions (new/casual/regular segmentation, the hour-of-day heatmap, cross-channel
+  affinity data) were **not** resolved this round — no obvious dimension name existed to try blindly
+  the way the other five did; each still needs its own dedicated research pass before A5/A7 can be
+  assigned (see below).
+- ~~**Slice A2 — Device type card.**~~ **DONE (BL-095, 2026-09-26).** Confirmed-feasible, no open
+  questions, smallest standalone win.
+- ~~**Slice A3 — Age/gender + Top geographies cards.**~~ **DONE (BL-095, 2026-09-26).** Both
+  confirmed-feasible, same shape (ranked breakdown + percentage), shipped together.
+- ~~**Slice A4 — Watch time from subscribers card.**~~ **DONE (BL-095, 2026-09-26).** Confirmed-feasible, small.
+- **Slice A5 — Audience by watch behavior + Popular with different audiences.** Still blocked on
+  the unresolved new/casual/regular segmentation question above.
+- ~~**Slice A6 — Formats card.**~~ **DONE (BL-095, 2026-09-26).** Confirmed-feasible
+  (`creatorContentType`), with the caveat that this channel's own data can only exercise the
+  `videoOnDemand` value; Shorts/Live values are unverified against a real response and should be
+  treated as "documented, not observed" until tested against a channel that actually has that
+  content type.
 - **Slice A7-deferred — When your viewers are on YouTube (heatmap), Videos growing your audience,
-  Channels/What your audience watches.** Each has an open feasibility question A1 must answer
-  first; do not assign any of these three until that research exists, per the same discipline
-  `STUDIO_PARITY_PLAN.md` §4 already applies to Home's comments/subscribers cards.
+  Channels/What your audience watches.** Each still has an open feasibility question, unresolved by
+  this round's probe; do not assign any of these three until that research exists, per the same
+  discipline `STUDIO_PARITY_PLAN.md` §4 already applies to Home's comments/subscribers cards.
 
 ## 5. Recommended first assignment, if the owner wants to start now
 
-Smallest-risk-first, mirroring `STUDIO_PARITY_PLAN.md` §6's own reasoning style:
+Smallest-risk-first, mirroring `STUDIO_PARITY_PLAN.md` §6's own reasoning style. **Updated
+2026-09-26 — every slice this section originally recommended is now either done or definitively
+resolved as out of scope** (all held un-merged as one batch pending the owner's own end-of-batch
+approval, per their instruction):
 
-1. **O1 (card-click chart switching)** — zero new API surface, immediately visible, matches the
-   owner's own explicit ask ("можно переключать views / hours / subscribers... 3 разных графика")
-   most directly of everything in this plan.
-2. **C1 + A1 (the two live-probe research spikes)** — cheap, de-risk everything downstream,
-   surfaces exactly which of §3/§4's "likely feasible" claims actually hold before any UI is built
-   on top of a wrong assumption (this session already found one real false-negative from the same
-   failure mode, §0).
-3. Once C1/A1 land: **O2, O3, C2, C5, A2, A3, A4** are all independently assignable, confirmed-
-   feasible, no-open-question slices — any subset can proceed in any order without blocking each
-   other.
-4. **C3, C4, A5, A6** depend on their respective probe's findings — assign after C1/A1's results
-   are in.
-5. **O4-stub, C6-deferred, A7-deferred** — explicitly not recommended for this round; each needs
-   either a separate scoping decision (Advanced-mode explorer) or its own dedicated feasibility
-   research the relevant probe slice doesn't already cover (Shorts-remix data, the heatmap
-   dimension, cross-channel affinity data).
+1. **DONE: O1, O2, C1, C2, C4 ("Intro" mode only), C5, A2, A3, A4, A6.** **PARTIALLY DONE: A1**
+   (independent review round 4, 2026-09-26 -- flagged for consistency with §4.4's own "PARTIALLY
+   DONE" label for this same slice: 5 of 8 Audience dimensions confirmed, 3 harder questions
+   unresolved, see §4.3/§4.4). Card-click chart switching + tooltip date formatting (Overview); both
+   research probes; traffic sources, retention curve, and top videos (Content); device type,
+   age/gender, geography, subscribed status, and content format (Audience). All live-verified in the
+   browser against the real "Tropico Jazz" channel with real data; `npm test` clean at every step
+   (1465/1465 as of the last independent-review fix, dev's own baseline was 1432); no console
+   errors. Seven backlog rows (BL-092 through BL-098) record the detailed history; BL-098's own
+   Notes column is the single running tally of independent-review rounds and findings — see there
+   for the current count rather than a number restated here.
+2. **CONFIRMED OUT OF SCOPE, not merely deferred: O3 (realtime panel) and C3 (impressions/CTR
+   funnel).** Both need infrastructure this app's existing gateway pattern cannot reach at all —
+   O3 needs Studio's own non-public real-time system (the public API's 48-72h processing delay
+   applies uniformly, confirmed by a direct probe); C3 needs a structurally different API (YouTube
+   Reporting API v1's bulk job system, not the ad-hoc query endpoint). Neither should be assigned
+   as a normal slice of this plan; each would need its own separate scoping decision if ever
+   pursued.
+3. **Still genuinely blocked on an unresolved research question: A5** (new/casual/regular
+   segmentation) **and A7-deferred** (hour-of-day heatmap, cross-channel affinity, "videos growing
+   your audience"). Unlike O3/C3 above, these were never actually probed this round (no obvious
+   dimension name existed to try) — a real, separate research pass could still resolve them; do not
+   assign until one does.
+4. **O4-stub (Advanced-mode explorer), C6-deferred (Top Remixed)** — still not recommended for this
+   round, unchanged from the original assessment.

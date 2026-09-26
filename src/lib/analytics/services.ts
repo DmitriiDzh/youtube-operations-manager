@@ -8,15 +8,19 @@ import { computeDueReportWeek, computeWeeklyReportContent } from "./weekly-repor
 import {
   ANALYTICS_METRIC_NAMES,
   AUTO_COLLECTION_RANGE_DAYS,
+  CHANNEL_BREAKDOWN_PRESETS,
   CHANNEL_OVERVIEW_METRIC_NAMES,
   DomainError,
   isDomainError,
   type AutoCollectResult,
+  type ChannelBreakdownKind,
   type ChannelOverviewTotals,
   type CollectMetricsResult,
   type DataQualityReportResult,
+  type GetChannelBreakdownResult,
   type GetChannelOverviewResult,
   type GetComparableAgeComparisonResult,
+  type GetVideoRetentionCurveResult,
   type GetWeeklyReportResult,
   type ListMetricsResult,
   type ListWeeklyReportsResult,
@@ -28,12 +32,16 @@ import {
 import {
   collectMetricsInputSchema,
   collectMetricsOutputSchema,
+  getChannelBreakdownInputSchema,
+  getChannelBreakdownOutputSchema,
   getChannelOverviewInputSchema,
   getChannelOverviewOutputSchema,
   getComparableAgeComparisonInputSchema,
   getComparableAgeComparisonOutputSchema,
   getDataQualityReportInputSchema,
   getDataQualityReportOutputSchema,
+  getVideoRetentionCurveInputSchema,
+  getVideoRetentionCurveOutputSchema,
   getWeeklyReportInputSchema,
   getWeeklyReportOutputSchema,
   listMetricsInputSchema,
@@ -76,6 +84,19 @@ type ServiceDependencies = {
       endDate: string;
       metricNames: readonly string[];
     }): Promise<Array<{ date: string; metrics: Record<string, number> }>>;
+    // Studio-Parity deep-parity plan (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §1) --
+    // one shared shape for every non-`day` channel-level breakdown (traffic sources, device type,
+    // age/gender, geography, subscribed status, content format), confirmed against real API
+    // responses (BL-093/BL-094) before this was added, not merely documented.
+    queryChannelBreakdownReport(args: {
+      credentials: ResolvedCredentials;
+      channelId: string;
+      startDate: string;
+      endDate: string;
+      dimensions: string;
+      metricNames: readonly string[];
+      filters?: string;
+    }): Promise<Array<{ dimensionValues: string[]; metrics: Record<string, number> }>>;
   };
   videoStore: {
     listVideosByChannel(channelId: string): Promise<StoredVideoRef[]>;
@@ -697,6 +718,146 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         };
 
         return parseWithSchema(getChannelOverviewOutputSchema, output, "get channel overview output");
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
+      }
+    },
+
+    /**
+     * Studio-Parity deep-parity plan (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §1's
+     * cross-cutting note, slices C2/A2/A3/A4/A6) -- one shared method for every channel-level,
+     * non-`day` breakdown card (traffic sources, device type, age/gender, geography, subscribed
+     * status, content format), parameterized by `breakdown` (`CHANNEL_BREAKDOWN_PRESETS`). A live
+     * read for the selected period only, never persisted -- same precedent as `getChannelOverview`
+     * above, not `collectMetrics`'s daily-collection-and-store model (see the plan's own §1 note on
+     * why these two persistence models are deliberately different).
+     */
+    async getChannelBreakdown(input: unknown): Promise<GetChannelBreakdownResult> {
+      const parsedInput = parseWithSchema(getChannelBreakdownInputSchema, input, "get channel breakdown input");
+
+      try {
+        assertValidDateRange(parsedInput.startDate, parsedInput.endDate);
+      } catch (error) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: error instanceof Error ? error.message : "Invalid date range",
+        });
+      }
+
+      try {
+        const userId = getCredentialUserId(parsedInput.credentialRef);
+        await deps.channelAccess.assertActiveChannel({
+          userId,
+          channelId: parsedInput.channelId,
+        });
+
+        const credentials = await deps.authResolver.resolve({
+          credentialRef: parsedInput.credentialRef,
+          requiredScopes: [YOUTUBE_ANALYTICS_READ_SCOPE],
+        });
+
+        const preset = CHANNEL_BREAKDOWN_PRESETS[parsedInput.breakdown as ChannelBreakdownKind];
+        const rows = await deps.youtubeApi.queryChannelBreakdownReport({
+          credentials,
+          channelId: parsedInput.channelId,
+          startDate: parsedInput.startDate,
+          endDate: parsedInput.endDate,
+          dimensions: preset.dimensions,
+          metricNames: preset.metricNames,
+        });
+
+        const output = {
+          channelId: parsedInput.channelId,
+          breakdown: parsedInput.breakdown,
+          startDate: parsedInput.startDate,
+          endDate: parsedInput.endDate,
+          rows,
+        };
+
+        return parseWithSchema(getChannelBreakdownOutputSchema, output, "get channel breakdown output");
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
+      }
+    },
+
+    /**
+     * Studio-Parity deep-parity plan (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §3.4,
+     * Slice C4, "Intro" mode) -- one video's own audience-retention curve
+     * (`elapsedVideoTimeRatio` dimension, confirmed against a real response, BL-093). A live read,
+     * same persistence model as `getChannelOverview`/`getChannelBreakdown` (never stored).
+     *
+     * `videoId` must belong to `channelId` (`docs/DEVELOPMENT_PLAYBOOK.md` §6.6) -- checked against
+     * `videoStore.listVideosByChannel`, the same discipline `getComparableAgeComparison` already
+     * uses, never assumed from the caller's own input.
+     */
+    async getVideoRetentionCurve(input: unknown): Promise<GetVideoRetentionCurveResult> {
+      const parsedInput = parseWithSchema(getVideoRetentionCurveInputSchema, input, "get video retention curve input");
+
+      try {
+        assertValidDateRange(parsedInput.startDate, parsedInput.endDate);
+      } catch (error) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: error instanceof Error ? error.message : "Invalid date range",
+        });
+      }
+
+      try {
+        const userId = getCredentialUserId(parsedInput.credentialRef);
+        await deps.channelAccess.assertActiveChannel({
+          userId,
+          channelId: parsedInput.channelId,
+        });
+
+        const videos = await deps.videoStore.listVideosByChannel(parsedInput.channelId);
+        if (!videos.some((video) => video.videoId === parsedInput.videoId)) {
+          throw new DomainError({
+            code: "validation_failed",
+            message: `videoId ${parsedInput.videoId} does not belong to channel ${parsedInput.channelId}`,
+            details: { videoId: parsedInput.videoId },
+          });
+        }
+
+        const credentials = await deps.authResolver.resolve({
+          credentialRef: parsedInput.credentialRef,
+          requiredScopes: [YOUTUBE_ANALYTICS_READ_SCOPE],
+        });
+
+        const rows = await deps.youtubeApi.queryChannelBreakdownReport({
+          credentials,
+          channelId: parsedInput.channelId,
+          startDate: parsedInput.startDate,
+          endDate: parsedInput.endDate,
+          dimensions: "elapsedVideoTimeRatio",
+          metricNames: ["audienceWatchRatio", "relativeRetentionPerformance"],
+          filters: `video==${parsedInput.videoId}`,
+        });
+
+        // `?? 0` on a row missing one of these two metrics is a real, pre-existing pattern this
+        // file's own `getChannelOverview` already uses for its own daily rows (independent review
+        // round 3, 2026-09-26, flagged the same tension that function's own doc comment already
+        // has) -- not introduced fresh here. Low-risk in practice: every real response this
+        // session's live probe observed included both metrics on every row; `audienceWatchRatio`
+        // is the only one the UI currently renders, `relativeRetentionPerformance` is fetched but
+        // unused (Content-analytics-panel's "Intro" mode never displays a "typical retention"
+        // comparison, per this plan's own scoping).
+        const points = rows
+          .map((row) => ({
+            elapsedVideoTimeRatio: Number(row.dimensionValues[0]),
+            audienceWatchRatio: row.metrics.audienceWatchRatio ?? 0,
+            relativeRetentionPerformance: row.metrics.relativeRetentionPerformance ?? 0,
+          }))
+          .sort((a, b) => a.elapsedVideoTimeRatio - b.elapsedVideoTimeRatio);
+
+        const output = {
+          channelId: parsedInput.channelId,
+          videoId: parsedInput.videoId,
+          startDate: parsedInput.startDate,
+          endDate: parsedInput.endDate,
+          points,
+        };
+
+        return parseWithSchema(getVideoRetentionCurveOutputSchema, output, "get video retention curve output");
       } catch (error) {
         throw mapUnknownError(error, "unauthorized");
       }

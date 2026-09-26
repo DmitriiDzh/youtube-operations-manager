@@ -113,7 +113,18 @@ export type AutoCollectResult =
  * rest of that list, whose own doc comment says it was never independently confirmed metric-by-
  * metric. "impressions"/"impressionClickThroughRate" (Studio's thumbnail-impressions/CTR widgets)
  * were also live-probed and confirmed **rejected** by the real API ("Unknown identifier") --
- * genuinely unavailable via the public Analytics API, not merely unimplemented here.
+ * genuinely unavailable via the `youtubeAnalytics/v2 reports:query` endpoint this app's gateway
+ * uses, though not for the reason first assumed here. **Follow-up (docs/roadmap/plans/
+ * ANALYTICS_TAB_DEEP_PARITY_PLAN.md §0, BL-093, 2026-09-25):** those two exact names were simply
+ * wrong -- the real identifiers are `videoThumbnailImpressions`/
+ * `videoThumbnailImpressionsClickThroughRate`, added to the public API 2026-01-15. A follow-up
+ * live probe confirmed those two names ARE recognized by the API, but every query shape tried
+ * against this same `reports:query` endpoint (channel-level, per-day, per-video, alone or paired
+ * with `views`) returned "The query is not supported," not a metric-name error -- these two
+ * metrics belong to a separate "Reach report" family (`channel_reach_basic_a1`/
+ * `channel_reach_combined_a1`) that only exists under the YouTube *Reporting* API v1's bulk,
+ * scheduled-job system, never this ad-hoc query endpoint. The original "genuinely unavailable"
+ * conclusion holds for this endpoint specifically; it was never really about the metric name.
  */
 export const CHANNEL_OVERVIEW_METRIC_NAMES = [
   "views",
@@ -123,6 +134,64 @@ export const CHANNEL_OVERVIEW_METRIC_NAMES = [
 ] as const;
 
 export type ChannelOverviewMetricName = (typeof CHANNEL_OVERVIEW_METRIC_NAMES)[number];
+
+/**
+ * Studio-Parity deep-parity plan (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §3.4/§4.4,
+ * slices C2/A2/A3/A4/A6) -- the exact `dimensions`/`metricNames` request shape for each channel-
+ * level breakdown card, confirmed against real API responses for every one of these six kinds
+ * (BL-093/BL-094 live probe, 2026-09-25) before this constant was written. One shared preset table
+ * rather than one bespoke service method per card -- every breakdown card uses the identical
+ * `getChannelBreakdown` service method and `queryChannelBreakdownReport` gateway function below,
+ * parameterized only by which preset to use.
+ */
+export const CHANNEL_BREAKDOWN_PRESETS = {
+  trafficSources: { dimensions: "insightTrafficSourceType", metricNames: ["views"] },
+  deviceType: { dimensions: "deviceType", metricNames: ["estimatedMinutesWatched"] },
+  ageGender: { dimensions: "ageGroup,gender", metricNames: ["viewerPercentage"] },
+  geography: { dimensions: "country", metricNames: ["views"] },
+  subscribedStatus: { dimensions: "subscribedStatus", metricNames: ["estimatedMinutesWatched"] },
+  contentFormat: { dimensions: "creatorContentType", metricNames: ["estimatedMinutesWatched"] },
+} as const satisfies Record<string, { dimensions: string; metricNames: readonly string[] }>;
+
+export type ChannelBreakdownKind = keyof typeof CHANNEL_BREAKDOWN_PRESETS;
+
+export type ChannelBreakdownRow = {
+  dimensionValues: string[];
+  metrics: Record<string, number>;
+};
+
+export type GetChannelBreakdownResult = {
+  channelId: string;
+  breakdown: ChannelBreakdownKind;
+  startDate: string;
+  endDate: string;
+  rows: ChannelBreakdownRow[];
+};
+
+/**
+ * Studio-Parity deep-parity plan (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §3.4, Slice
+ * C4, "Intro" mode) -- one point per `elapsedVideoTimeRatio` value the API returns (confirmed
+ * against a real response, BL-093). Deliberately scoped to just the raw curve for now, not
+ * Studio's own "This video vs. typical retention" two-series comparison or its Top
+ * moments/Spikes/Dips classification -- the exact relationship between `audienceWatchRatio` and
+ * `relativeRetentionPerformance` needed to reconstruct Studio's own "typical" baseline was never
+ * confirmed this session; inventing one would be exactly the "reading the implementation and
+ * writing down what it happens to do" `AGENTS.md` §L warns against, applied to an external API
+ * instead of this app's own code.
+ */
+export type VideoRetentionPoint = {
+  elapsedVideoTimeRatio: number;
+  audienceWatchRatio: number;
+  relativeRetentionPerformance: number;
+};
+
+export type GetVideoRetentionCurveResult = {
+  channelId: string;
+  videoId: string;
+  startDate: string;
+  endDate: string;
+  points: VideoRetentionPoint[];
+};
 
 export type ChannelOverviewDailyRow = {
   date: string;

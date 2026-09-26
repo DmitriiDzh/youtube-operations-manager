@@ -7,6 +7,7 @@ import {
   assertAnalyticsReadsAuthorized,
   createYoutubeAnalyticsClient,
   queryChannelAnalyticsReport,
+  queryChannelBreakdownReport,
   queryVideoAnalyticsReport,
 } from "./analytics-api";
 
@@ -222,4 +223,128 @@ test("queryChannelAnalyticsReport maps rows by column name, matching the real li
       metrics: { views: 175, estimatedMinutesWatched: 2946, subscribersGained: 3, subscribersLost: 1 },
     },
   ]);
+});
+
+// Independent review round 2 (2026-09-26) found `queryChannelBreakdownReport`'s own response-
+// parsing (multi-dimension `dimensionValues` ordering, `filters` spread) was only ever exercised
+// indirectly, one layer up, through fixture-mocked services tests -- direct tests added here,
+// mirroring the direct-adapter-test pattern the two functions above already use.
+// docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §1/§3.4/§4.4.
+test("queryChannelBreakdownReport sends ids/startDate/endDate/metrics/dimensions with no filters when none given", async () => {
+  let capturedArgs: Record<string, unknown> | undefined;
+
+  const youtubeAnalytics = fakeAnalyticsClient((async (args: Record<string, unknown>) => {
+    capturedArgs = args;
+    return { data: { columnHeaders: [], rows: [] } };
+  }) as unknown as youtubeAnalytics_v2.Resource$Reports["query"]);
+
+  await queryChannelBreakdownReport(youtubeAnalytics, {
+    channelId: "UC_TEST",
+    startDate: "2026-08-26",
+    endDate: "2026-09-22",
+    dimensions: "insightTrafficSourceType",
+    metricNames: ["views"],
+  });
+
+  assert.equal(capturedArgs?.ids, "channel==UC_TEST");
+  assert.equal(capturedArgs?.startDate, "2026-08-26");
+  assert.equal(capturedArgs?.endDate, "2026-09-22");
+  assert.equal(capturedArgs?.metrics, "views");
+  assert.equal(capturedArgs?.dimensions, "insightTrafficSourceType");
+  assert.equal("filters" in (capturedArgs ?? {}), false);
+});
+
+test("queryChannelBreakdownReport passes filters through exactly when given (the per-video retention-curve shape)", async () => {
+  let capturedArgs: Record<string, unknown> | undefined;
+
+  const youtubeAnalytics = fakeAnalyticsClient((async (args: Record<string, unknown>) => {
+    capturedArgs = args;
+    return { data: { columnHeaders: [], rows: [] } };
+  }) as unknown as youtubeAnalytics_v2.Resource$Reports["query"]);
+
+  await queryChannelBreakdownReport(youtubeAnalytics, {
+    channelId: "UC_TEST",
+    startDate: "2026-08-26",
+    endDate: "2026-09-22",
+    dimensions: "elapsedVideoTimeRatio",
+    metricNames: ["audienceWatchRatio", "relativeRetentionPerformance"],
+    filters: "video==vid1",
+  });
+
+  assert.equal(capturedArgs?.dimensions, "elapsedVideoTimeRatio");
+  assert.equal(capturedArgs?.filters, "video==vid1");
+});
+
+test("queryChannelBreakdownReport maps a single dimension's values, matching the real live-verified traffic-source response shape", async () => {
+  const youtubeAnalytics = fakeAnalyticsClient((async () => ({
+    data: {
+      // Real shape observed for insightTrafficSourceType against "Tropico Jazz" (2026-09-25 probe).
+      columnHeaders: [
+        { name: "insightTrafficSourceType", columnType: "DIMENSION", dataType: "STRING" },
+        { name: "views", columnType: "METRIC", dataType: "INTEGER" },
+      ],
+      rows: [
+        ["RELATED_VIDEO", 3462],
+        ["YT_SEARCH", 90],
+      ],
+    },
+  })) as unknown as youtubeAnalytics_v2.Resource$Reports["query"]);
+
+  const rows = await queryChannelBreakdownReport(youtubeAnalytics, {
+    channelId: "UC_TEST",
+    startDate: "2026-08-28",
+    endDate: "2026-09-23",
+    dimensions: "insightTrafficSourceType",
+    metricNames: ["views"],
+  });
+
+  assert.deepEqual(rows, [
+    { dimensionValues: ["RELATED_VIDEO"], metrics: { views: 3462 } },
+    { dimensionValues: ["YT_SEARCH"], metrics: { views: 90 } },
+  ]);
+});
+
+test("queryChannelBreakdownReport maps a multi-dimension response in request order (ageGroup,gender)", async () => {
+  const youtubeAnalytics = fakeAnalyticsClient((async () => ({
+    data: {
+      columnHeaders: [
+        { name: "ageGroup", columnType: "DIMENSION", dataType: "STRING" },
+        { name: "gender", columnType: "DIMENSION", dataType: "STRING" },
+        { name: "viewerPercentage", columnType: "METRIC", dataType: "FLOAT" },
+      ],
+      rows: [["age65-", "male", 53.9]],
+    },
+  })) as unknown as youtubeAnalytics_v2.Resource$Reports["query"]);
+
+  const rows = await queryChannelBreakdownReport(youtubeAnalytics, {
+    channelId: "UC_TEST",
+    startDate: "2026-08-28",
+    endDate: "2026-09-23",
+    dimensions: "ageGroup,gender",
+    metricNames: ["viewerPercentage"],
+  });
+
+  assert.deepEqual(rows, [{ dimensionValues: ["age65-", "male"], metrics: { viewerPercentage: 53.9 } }]);
+});
+
+test("queryChannelBreakdownReport returns an empty array when the API response omits rows entirely", async () => {
+  const youtubeAnalytics = fakeAnalyticsClient((async () => ({
+    data: {
+      columnHeaders: [
+        { name: "deviceType", columnType: "DIMENSION", dataType: "STRING" },
+        { name: "estimatedMinutesWatched", columnType: "METRIC", dataType: "INTEGER" },
+      ],
+      // rows intentionally absent
+    },
+  })) as unknown as youtubeAnalytics_v2.Resource$Reports["query"]);
+
+  const rows = await queryChannelBreakdownReport(youtubeAnalytics, {
+    channelId: "UC_TEST",
+    startDate: "2026-08-28",
+    endDate: "2026-09-23",
+    dimensions: "deviceType",
+    metricNames: ["estimatedMinutesWatched"],
+  });
+
+  assert.deepEqual(rows, []);
 });

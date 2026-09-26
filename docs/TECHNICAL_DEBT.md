@@ -787,12 +787,42 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Approval required from:** project owner, only if the deployment model ever changes from single local operator.
 - **Status:** OPEN — deliberate, accepted scope of the feature as designed; documented per `AGENTS.md` §F rather than left unrecorded.
 
-## RISK-50 — Top-content-by-views ranking is implemented twice (client-side and server-side) — OPEN, 2026-09-23 (advisor review)
+## RISK-50 — Top-content-by-views ranking is implemented twice (client-side and server-side) — OPEN, 2026-09-23 (advisor review), updated 2026-09-26
 
-- **Affected components:** `src/components/channel-overview-panel.tsx`'s `fetchTopContent` (client-side, computed from `GET .../analytics` + `GET .../videos` responses, powers the Analytics "Overview" tab's own top-content card) and `src/lib/analytics/weekly-report.ts`'s `computeWeeklyReportContent` (server-side, powers the weekly report snapshot's own `topContent` field, Phase 8 follow-up slice 4).
-- **Current behavior:** Both independently group `video_metrics_daily` `views` rows by `videoId`, sum them over a date range, sort descending, and take the top N -- the same core aggregation, written twice in two different languages/layers (a `useCallback` in a React component vs. a pure function in `src/lib/analytics/`), not sharing one implementation.
-- **Why not fixed now:** the client-side version aggregates client-fetched JSON already shaped for the Overview tab's own display needs (thumbnails, `topContent` cap of 5); the server-side version aggregates raw DB rows for a JSON snapshot. Unifying them would mean either moving the Overview tab's aggregation to the server (a larger refactor of an already-shipped, independently-reviewed feature, out of scope for this slice per `AGENTS.md` §C) or exporting the pure ranking step in a shape both call sites can share without forcing an unrelated API/UI change on the Overview tab. Recorded here per `AGENTS.md` §M's "shared logic should have one owner" principle, rather than fixed incidentally as part of an unrelated slice.
-- **Required remediation:** if a third caller ever needs the same ranking (e.g. a future Phase 9/10 report), extract the pure summing/sorting step into one shared function in `src/lib/analytics/` and have both existing call sites adopt it, rather than adding a third copy.
+- **Affected components:** `src/components/use-top-videos.ts` (client-side; extracted 2026-09-26,
+  Slice C5 of the Analytics deep-parity plan (commit `232543b`), from `channel-overview-panel.tsx`'s
+  own original inline `fetchTopContent` -- computed from `GET .../analytics` + `GET .../videos`
+  responses) and `src/lib/analytics/weekly-report.ts`'s `computeWeeklyReportContent` (server-side,
+  powers the weekly report snapshot's own `topContent` field, Phase 8 follow-up slice 4). Still
+  exactly two independent implementations of the same aggregation, not three -- the extraction
+  moved the client-side one out of a single component into a shared hook, it did not add a new,
+  differently-shaped implementation.
+- **Current behavior:** Both independently group `video_metrics_daily` `views` rows by `videoId`,
+  sum them over a date range, sort descending, and take the top N -- the same core aggregation,
+  written twice in two different languages/layers (a React hook vs. a pure function in
+  `src/lib/analytics/`), not sharing one implementation.
+- **2026-09-26 update -- a second client-side CONSUMER appeared, not a third IMPLEMENTATION:** the
+  Analytics deep-parity plan's Content tab ("Top videos" card, `content-analytics-panel.tsx`) needed
+  the identical ranking and was pointed at the newly-extracted `use-top-videos.ts` hook rather than
+  writing a third copy -- this is the correct outcome under `AGENTS.md` §D, and is why the
+  extraction happened at all. It is a narrower fix than this entry's own original "Required
+  remediation" below asked for (one function in `src/lib/analytics/` shared by *both* the client
+  and server sides) -- the client-side duplication (2 call sites now, not 1) is resolved, but the
+  original client-vs-server duplication this entry is actually about remains exactly as open as
+  before.
+- **Why not fixed now:** the client-side version aggregates client-fetched JSON already shaped for
+  display needs (thumbnails, a caller-supplied top-N cap); the server-side version aggregates raw DB
+  rows for a JSON snapshot. Unifying them would mean either moving the client-side callers'
+  aggregation to the server (a larger refactor of two already-shipped, independently-reviewed
+  features, out of scope per `AGENTS.md` §C) or exporting the pure ranking step in a shape both
+  layers can share without forcing an unrelated API/UI change on either existing caller. Recorded
+  here per `AGENTS.md` §M's "shared logic should have one owner" principle, rather than fixed
+  incidentally as part of an unrelated slice.
+- **Required remediation:** if a third, genuinely independent implementation is ever about to be
+  written (client or server), extract the pure summing/sorting step into one shared function in
+  `src/lib/analytics/` and have both existing implementations (`use-top-videos.ts` itself -- its two
+  consumers only ever call the hook, they never do the summing/sorting themselves -- and
+  `weekly-report.ts`) adopt it, rather than adding another copy.
 - **Gate(s):** none blocking -- a duplicated small pure computation, not a correctness or safety issue.
 - **Approval required from:** none -- routine cleanup, whenever it's next touched.
 - **Status:** OPEN — tracked, not yet consolidated.
@@ -874,7 +904,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-47 | Approving a Change doesn't check for an open CRDT field conflict on it (CD6) | none (fixed) | FIXED, 2026-09-21 |
 | RISK-48 | Cloud connection encryption key has no rotation/backup procedure | DEFERRED | OPEN |
 | RISK-49 | Channel-connections list/disconnect have no per-caller channel-ownership check (deliberate, feature's actual purpose) | none blocking | OPEN |
-| RISK-50 | Top-content-by-views ranking duplicated (client-side Overview tab vs. server-side weekly report) | none blocking | OPEN |
+| RISK-50 | Top-content-by-views ranking duplicated (shared client-side hook, 2 consumers, vs. server-side weekly report) | none blocking | OPEN |
 | RISK-51 | CLI `ai-localization generate` has no `--editorialBrief` flag (MCP tool has the equivalent) | none blocking | OPEN, owner will revisit |
 | RISK-52 | `creative_assets`/`content_proposals`/`content_proposal_artifacts` (Phase 7 slices D/G) do not travel with a device snapshot/handoff | none blocking | OPEN |
 | RISK-53 | `agent-operations/schemas.ts` hardcoded its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES`/domain enums instead of importing them from `contracts.ts` -- caused a real capability-discovery bug when slice G added a new data domain | none (fixed) | RESOLVED, 2026-09-24 |

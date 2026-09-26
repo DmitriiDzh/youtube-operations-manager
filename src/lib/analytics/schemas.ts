@@ -1,7 +1,7 @@
 import { z, ZodError } from "zod";
 import { credentialRefSchema } from "@/lib/video-metadata/schemas";
 import { CUMULATIVE_COMPARISON_METRIC_NAMES } from "./comparable-age";
-import { DomainError } from "./contracts";
+import { CHANNEL_BREAKDOWN_PRESETS, DomainError, type ChannelBreakdownKind } from "./contracts";
 
 export function formatZodError(error: ZodError) {
   return error.issues.map((issue) => ({
@@ -141,6 +141,67 @@ export const getChannelOverviewOutputSchema = z
 
 export type GetChannelOverviewInput = z.infer<typeof getChannelOverviewInputSchema>;
 export type GetChannelOverviewOutput = z.infer<typeof getChannelOverviewOutputSchema>;
+
+export const getChannelBreakdownInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+    startDate: isoDateSchema,
+    endDate: isoDateSchema,
+    breakdown: z.enum(Object.keys(CHANNEL_BREAKDOWN_PRESETS) as [ChannelBreakdownKind, ...ChannelBreakdownKind[]]),
+  })
+  .strict();
+
+export const getChannelBreakdownOutputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    breakdown: z.enum(Object.keys(CHANNEL_BREAKDOWN_PRESETS) as [ChannelBreakdownKind, ...ChannelBreakdownKind[]]),
+    startDate: z.string(),
+    endDate: z.string(),
+    rows: z.array(
+      z
+        .object({
+          dimensionValues: z.array(z.string()),
+          metrics: z.record(z.string(), z.number()),
+        })
+        .strict()
+    ),
+  })
+  .strict();
+
+export type GetChannelBreakdownInput = z.infer<typeof getChannelBreakdownInputSchema>;
+export type GetChannelBreakdownOutput = z.infer<typeof getChannelBreakdownOutputSchema>;
+
+export const getVideoRetentionCurveInputSchema = z
+  .object({
+    credentialRef: credentialRefSchema,
+    channelId: z.string().min(1),
+    videoId: z.string().min(1),
+    startDate: isoDateSchema,
+    endDate: isoDateSchema,
+  })
+  .strict();
+
+export const getVideoRetentionCurveOutputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    videoId: z.string().min(1),
+    startDate: z.string(),
+    endDate: z.string(),
+    points: z.array(
+      z
+        .object({
+          elapsedVideoTimeRatio: z.number(),
+          audienceWatchRatio: z.number(),
+          relativeRetentionPerformance: z.number(),
+        })
+        .strict()
+    ),
+  })
+  .strict();
+
+export type GetVideoRetentionCurveInput = z.infer<typeof getVideoRetentionCurveInputSchema>;
+export type GetVideoRetentionCurveOutput = z.infer<typeof getVideoRetentionCurveOutputSchema>;
 
 export const getDataQualityReportInputSchema = z
   .object({

@@ -142,6 +142,80 @@ export async function queryVideoAnalyticsReport(
   return parseDayDimensionReport(res.data);
 }
 
+export type ChannelBreakdownRow = {
+  /** One value per requested dimension, in request order (e.g. `["age35-44", "female"]` for
+   * `dimensions: "ageGroup,gender"`). */
+  dimensionValues: string[];
+  /** Keyed by the exact metric name the API returned in `columnHeaders`. */
+  metrics: Record<string, number>;
+};
+
+/**
+ * Fetches a channel-level breakdown report for one or more non-`day` dimensions over a date range
+ * (e.g. `insightTrafficSourceType`, `deviceType`, `ageGroup,gender`, `country`, `subscribedStatus`,
+ * `creatorContentType`) -- Studio-Parity deep-parity plan
+ * (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §1's own cross-cutting note: one new
+ * function per new dimension shape needed, reused by every slice that needs it, never one bespoke
+ * function per dimension). All six of the dimensions above share this identical request/response
+ * shape (a single date range, no `day` granularity, one row per distinct dimension-value
+ * combination) -- confirmed against real responses for every one of them (BL-093/BL-094 live
+ * probe, 2026-09-25) before this function was written, not assumed from documentation alone.
+ *
+ * Deliberately a separate function from `queryChannelAnalyticsReport` above rather than a
+ * `dimensions` parameter added to it: that function's `parseDayDimensionReport` return shape
+ * (`{ date, metrics }`) is specific to a `day` dimension and used by callers (`collectMetrics`)
+ * that genuinely need date-keyed rows; this one's callers need dimension-value-keyed rows instead,
+ * and the two response shapes should not be forced into one type.
+ *
+ * Optional `filters` (e.g. `video==<id>`) reuses this same shape for a **per-video** breakdown --
+ * the audience-retention curve (`dimensions: "elapsedVideoTimeRatio"`, confirmed against a real
+ * response, BL-093) is structurally identical to a channel-level breakdown once scoped to one
+ * video, exactly the same relationship `queryVideoAnalyticsReport` above already has to
+ * `queryChannelAnalyticsReport`.
+ */
+export async function queryChannelBreakdownReport(
+  youtubeAnalytics: youtubeAnalytics_v2.Youtubeanalytics,
+  args: {
+    channelId: string;
+    startDate: string;
+    endDate: string;
+    dimensions: string;
+    metricNames: readonly string[];
+    filters?: string;
+  }
+): Promise<ChannelBreakdownRow[]> {
+  const res = await youtubeAnalytics.reports.query({
+    ids: `channel==${args.channelId}`,
+    startDate: args.startDate,
+    endDate: args.endDate,
+    metrics: args.metricNames.join(","),
+    dimensions: args.dimensions,
+    ...(args.filters ? { filters: args.filters } : {}),
+  });
+
+  const columnHeaders = res.data.columnHeaders ?? [];
+  const dimensionColumns = columnHeaders
+    .map((header, index) => ({ index, name: header.name ?? null }))
+    .filter((entry) => columnHeaders[entry.index]?.columnType === "DIMENSION");
+  const metricColumns = columnHeaders
+    .map((header, index) => ({ index, name: header.name ?? null }))
+    .filter((entry) => columnHeaders[entry.index]?.columnType === "METRIC" && entry.name !== null);
+
+  const rows = res.data.rows ?? [];
+  return rows.map((row) => {
+    const dimensionValues = dimensionColumns.map((column) => String(row[column.index]));
+    const metrics: Record<string, number> = {};
+    for (const column of metricColumns) {
+      const raw = row[column.index];
+      const value = typeof raw === "number" ? raw : Number(raw);
+      if (column.name && Number.isFinite(value)) {
+        metrics[column.name] = value;
+      }
+    }
+    return { dimensionValues, metrics };
+  });
+}
+
 /**
  * Fetches daily metrics for the whole channel over a date range -- no `filters=video==...`.
  * Studio-Parity S6b (docs/roadmap/plans/STUDIO_PARITY_PLAN.md §4, Analytics "Overview" tab):

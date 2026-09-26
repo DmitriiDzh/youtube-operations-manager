@@ -730,6 +730,8 @@ All routes are App Router handlers and require authenticated session user.
 - `GET /api/channels/[channelId]/analytics/weekly-reports` — every stored weekly report snapshot for the channel, newest week first (read-only, no YouTube call; see `docs/ARCHITECTURE.md` §14.11)
 - `GET /api/channels/[channelId]/analytics/weekly-reports/[weekStartDate]` — one stored snapshot by its Monday start date, or `{ report: null }` if none exists yet (read-only, no YouTube call)
 - `POST /api/channels/[channelId]/analytics/weekly-reports/generate-if-due` — generates/replaces the current due week's snapshot if one isn't already `"final"`; real local-persistence mutation, gated by `src/proxy.ts` like `analytics/auto-collect`; triggered once per dashboard mount, chained after auto-collect
+- `GET /api/channels/[channelId]/analytics/breakdown?startDate=&endDate=&breakdown=` — live channel-level Analytics API read for one of six breakdown kinds (`trafficSources`/`deviceType`/`ageGender`/`geography`/`subscribedStatus`/`contentFormat`, see `CHANNEL_BREAKDOWN_PRESETS`); **never persisted**, not subject to the collection routes' freshness gate (see `docs/ARCHITECTURE.md` §14.12)
+- `GET /api/channels/[channelId]/videos/[videoId]/analytics/retention?startDate=&endDate=` — live per-video Analytics API read: audience-retention curve (`elapsedVideoTimeRatio` dimension, "Intro" mode only — no "typical retention" comparison line); **never persisted** (see `docs/ARCHITECTURE.md` §14.12)
 
 ### Localization API (read-only)
 

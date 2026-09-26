@@ -29,7 +29,8 @@ export function createAnalyticsCore() {
 }
 
 export type AnalyticsCore = ReturnType<typeof createAnalyticsCore>;
-export { ANALYTICS_METRIC_NAMES, AUTO_COLLECTION_RANGE_DAYS, CHANNEL_OVERVIEW_METRIC_NAMES } from "./contracts";
+export { ANALYTICS_METRIC_NAMES, AUTO_COLLECTION_RANGE_DAYS, CHANNEL_BREAKDOWN_PRESETS, CHANNEL_OVERVIEW_METRIC_NAMES } from "./contracts";
+export type { ChannelBreakdownKind, ChannelBreakdownRow, GetChannelBreakdownResult } from "./contracts";
 export { CUMULATIVE_COMPARISON_METRIC_NAMES } from "./comparable-age";
 export type { CumulativeComparisonMetricName } from "./comparable-age";
 export { WEEKLY_REPORT_FORMAT_VERSION } from "./weekly-report";
