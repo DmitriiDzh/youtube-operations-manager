@@ -91,6 +91,16 @@ export function parseDisplayDate(text: string): string | null {
  * `new Date("YYYY-MM-DDTHH:mm").toISOString()`'s existing behavior (a date-time string with no
  * explicit offset is parsed as local time), the exact value a caller migrating off a native
  * `<input type="datetime-local">` would previously have produced.
+ *
+ * Known, accepted, non-regressed edge case (independent review, round 3, 2026-09-26): a typed
+ * time that falls in a DST "spring-forward" gap (a local wall-clock time that never actually
+ * occurs, e.g. 02:30 on the one day a clock skips from 02:00 to 03:00) is silently normalized by
+ * `Date.setHours` to the next valid instant, rather than rejected -- e.g. "08.03.2026 02:30" in
+ * `America/New_York` round-trips back as "08.03.2026 03:30". This is not a new regression: the
+ * native `<input type="datetime-local">` this function's caller replaced had the exact same
+ * silent-normalization behavior for the same input. `parseCalendarComponents`'s own "reject an
+ * impossible date" guarantee covers the DATE (e.g. 31.02) but was never extended to this
+ * once-a-year, one-hour TIME gap; left as a known limitation rather than fixed here.
  */
 export function parseDisplayDateTime(text: string): string | null {
   const match = /^(\d{2})\.(\d{2})\.(\d{4}) (\d{2}):(\d{2})$/.exec(text.trim());

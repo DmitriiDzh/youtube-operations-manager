@@ -90,6 +90,32 @@ test("formatDisplayDateUtc round-trips with parseDisplayDate's own UTC-midnight 
   assert.equal(formatDisplayDateUtc(wireValue!), "05.01.2026");
 });
 
+// Round 3 of independent review, 2026-09-26: UTC midnight plus a POSITIVE offset (e.g. Moscow
+// +3, Auckland +12/+13) never crosses into the previous calendar day, so the test above (and
+// whatever ambient `TZ` the machine running it happens to have) would silently pass even if
+// `formatDisplayDateUtc` were reverted back to LOCAL getters -- reproduced live: that mutation
+// passed 24/24 under TZ=UTC, TZ=Europe/Moscow, and TZ=Pacific/Auckland, and only failed under a
+// NEGATIVE offset (TZ=America/New_York). The test above alone therefore does NOT make good on its
+// own "in any timezone" claim -- it only does when the machine running the suite happens to sit
+// behind UTC. This test pins the timezone explicitly so the regression is caught no matter what
+// timezone actually runs the suite, closing that gap rather than leaving it to chance.
+test("formatDisplayDateUtc does not roll back a day under a negative-UTC-offset timezone, regardless of the machine's own ambient TZ", () => {
+  const originalTz = process.env.TZ;
+  try {
+    process.env.TZ = "America/New_York"; // UTC-5/-4 -- the exact zone the live bug was found under.
+    const wireValue = parseDisplayDate("05.01.2026");
+    assert.ok(wireValue);
+    assert.equal(
+      formatDisplayDateUtc(wireValue!),
+      "05.01.2026",
+      "must not silently become 04.01.2026 -- this is the exact live-found regression"
+    );
+  } finally {
+    if (originalTz === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTz;
+  }
+});
+
 test("formatDisplayDateUtc returns 'Invalid date' for unparseable input", () => {
   assert.equal(formatDisplayDateUtc("not-a-real-date"), "Invalid date");
 });

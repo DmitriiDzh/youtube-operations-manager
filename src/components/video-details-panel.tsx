@@ -3,7 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatDisplayDateTime, formatDisplayDateUtc, parseDisplayDate, parseDisplayDateTime } from "@/lib/shared-formatting";
 
-type VideoDetailsSnapshot = {
+// Exported so `video-details-panel.test.ts` can exercise the date-conversion wiring directly --
+// plain function calls, no React rendering involved (this repo has no component-rendering test
+// infrastructure, RISK-42) -- after an independent review found a real regression (recordingDate
+// displayed one day earlier than stored, for any negative-UTC-offset viewer) that no test in this
+// codebase would have caught, since `shared-formatting`'s own tests only exercise that module in
+// isolation, never this component's actual wiring of which function goes with which field.
+export type VideoDetailsSnapshot = {
   videoId: string;
   etag: string | null;
   title: string;
@@ -21,7 +27,7 @@ type VideoDetailsSnapshot = {
   recordingDate: string | null;
 };
 
-type FormValues = {
+export type FormValues = {
   title: string;
   description: string;
   tagsText: string;
@@ -37,7 +43,7 @@ type FormValues = {
   recordingDate: string;
 };
 
-type Patch = Record<string, unknown>;
+export type Patch = Record<string, unknown>;
 
 // Owner instruction, 2026-09-26 (Telegram): the recording-date/scheduled-publish fields must
 // display DD.MM.YYYY[ HH:MM] like the rest of the app, not a native picker's locale-dependent
@@ -46,7 +52,7 @@ type Patch = Record<string, unknown>;
 // approach as the pre-existing HH:MM Settings field); `buildPatch` below is the "write direction"
 // of the conversion, turning that text back into ISO via `@/lib/shared-formatting`'s
 // `parseDisplayDate`/`parseDisplayDateTime`.
-function toFormValues(s: VideoDetailsSnapshot): FormValues {
+export function toFormValues(s: VideoDetailsSnapshot): FormValues {
   return {
     title: s.title,
     description: s.description,
@@ -79,7 +85,7 @@ function parseTags(text: string): string[] {
  * loaded from -- never the whole form. `publishAt` is the one documented exception (the API
  * requires `privacyStatus: "private"` in the same request): if publishAt is being newly set,
  * privacyStatus is always included even when the operator didn't touch it. */
-function buildPatch(form: FormValues, original: VideoDetailsSnapshot): Patch {
+export function buildPatch(form: FormValues, original: VideoDetailsSnapshot): Patch {
   const patch: Patch = {};
   if (form.title !== original.title) patch.title = form.title;
   if (form.description !== original.description) patch.description = form.description;

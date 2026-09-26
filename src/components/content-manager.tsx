@@ -15,7 +15,7 @@ type SyncedChannel = {
   lastSyncedAt: string | null;
 };
 
-type SyncedVideo = {
+export type SyncedVideo = {
   videoId: string;
   channelId: string;
   title: string;
@@ -40,7 +40,7 @@ type PrivacyFilter = "all" | "public" | "unlisted" | "private";
 // it's actually public; while it's still private and scheduled, it shows YouTube's own
 // `status.publishAt` (a distinct field from `publishedAt`, only present for a scheduled video);
 // otherwise there is nothing to show.
-function formatPublishColumn(video: SyncedVideo): string {
+export function formatPublishColumn(video: SyncedVideo): string {
   // `publishedAt` is typed as a non-nullable `string`, but the read gateway can still hand back
   // `""` for a malformed/incomplete API response (youtube-read-gateway/data-api.ts's own
   // `item.snippet.publishedAt ?? ""` fallback) -- the truthy guard here preserves the pre-existing
