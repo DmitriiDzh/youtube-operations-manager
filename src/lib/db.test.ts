@@ -50,6 +50,8 @@ import {
   upsertVideoMetric,
   upsertWeeklyReport,
   videos,
+  researchChannels,
+  researchEvidence,
 } from "./db";
 import { readSchemaVersion } from "@/lib/schema-versioning";
 import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
@@ -1008,6 +1010,18 @@ test("initializeDatabaseSchema: an existing pre-versioning database (baseline ta
       "2026-10-15T09:00:00.000Z",
       "a later migration (v21, ADD COLUMN) must still apply correctly on the pre-versioning re-apply path"
     );
+    // Phase 9 slice 1 -- a later CREATE-TABLE migration (v22) must also survive the
+    // pre-versioning re-apply path, same as v13/v14's own assertions above.
+    assert.equal(
+      await tableExists(client, "research_channels"),
+      true,
+      "a later migration (v22) must still apply correctly on the pre-versioning re-apply path"
+    );
+    assert.equal(
+      await tableExists(client, "research_evidence"),
+      true,
+      "a later migration (v22) must still apply correctly on the pre-versioning re-apply path"
+    );
   }));
 
 // Phase 7 slice K (owner spec §10 -- AC-DUR-01). `upsertVideos`/`listStoredVideosByChannel`
@@ -1097,6 +1111,60 @@ test("videos.publish_at round-trips through the real Drizzle schema, and stays n
     const byId = new Map(rows.map((v) => [v.id, v]));
     assert.equal(byId.get("v_scheduled")?.publishAt, "2026-10-15T09:00:00.000Z");
     assert.equal(byId.get("v_not_scheduled")?.publishAt, null);
+  }));
+
+// Phase 9 slice 1 -- proves research_channels/research_evidence round-trip through the real
+// Drizzle schema, are never joined against channels/videos, and that a channel id here need not
+// exist in the (owned-channel) `channels` table at all -- the entire point of this table.
+test("research_channels/research_evidence round-trip through the real Drizzle schema, independent of channels/videos", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await isolatedDb.insert(researchChannels).values({
+      id: "UC_NOT_OWNED_00000000000",
+      handleOrUrl: "@competitor",
+      reason: "Fast-growing in the same niche",
+      createdVia: "web_ui",
+    });
+
+    await isolatedDb.insert(researchEvidence).values({
+      id: "evidence-1",
+      researchChannelId: "UC_NOT_OWNED_00000000000",
+      observation: "Published 3 videos this week",
+      source: "manual observation",
+      confidence: "high",
+      createdVia: "web_ui",
+    });
+    await isolatedDb.insert(researchEvidence).values({
+      id: "evidence-2",
+      researchChannelId: "UC_NOT_OWNED_00000000000",
+      observation: "Subscriber count as of 2026-09-26",
+      source: "youtube.channels.list",
+      createdVia: "web_ui",
+    });
+
+    const channelRows = await isolatedDb.select().from(researchChannels);
+    assert.equal(channelRows.length, 1);
+    assert.equal(channelRows[0].reason, "Fast-growing in the same niche");
+
+    const evidenceRows = await isolatedDb
+      .select()
+      .from(researchEvidence)
+      .where(eq(researchEvidence.researchChannelId, "UC_NOT_OWNED_00000000000"));
+    assert.equal(evidenceRows.length, 2);
+    const bySource = new Map(evidenceRows.map((row) => [row.source, row]));
+    assert.equal(bySource.get("manual observation")?.confidence, "high");
+    assert.equal(
+      bySource.get("youtube.channels.list")?.confidence,
+      null,
+      "confidence must stay null rather than a fabricated default when never provided"
+    );
+
+    // The owned-channel `channels` table has no row for this id at all -- proves this is not an
+    // oversight, it is the whole point: research_channels never requires the channel to be owned.
+    const ownedChannelRows = await isolatedDb.select().from(channels);
+    assert.equal(ownedChannelRows.length, 0);
   }));
 
 // AC-SCHEMA-04
