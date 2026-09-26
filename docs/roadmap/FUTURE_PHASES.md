@@ -274,6 +274,11 @@ implemented during Phases 7-10 unless separately approved:
   pipeline's primary *human*-editing interface — even if agent-driven generation no longer needs a
   spreadsheet intermediary, XLSX (or some other human-facing view) may still carry real value for a
   human reviewer/editor path, and this bullet does not decide whether or how that path is kept.
+  **Not to be confused with a separate, narrower, already-completed task (2026-09-26,
+  `docs/roadmap/plans/SHARED_XLSX_MODULE_PLAN.md`):** the genuinely generic XLSX mechanics (cell
+  reading, sheet building, safety limits) were extracted into `src/lib/shared-xlsx/` so any future
+  screen can reuse them — a pure structural move, zero behavior change, that neither answers nor
+  narrows this bullet's own still-open question about XLSX's long-term role.
 - **Multi-agent responsibility zones** (recorded 2026-09-25, owner request via Telegram, same
   conversation that assigned Phase 7's merge to `dev`). After Phase 7 established that any
   MCP-compatible client (Claude, not only Codex) can already connect with zero code changes, the
