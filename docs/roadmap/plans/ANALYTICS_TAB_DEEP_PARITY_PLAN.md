@@ -156,13 +156,15 @@ explaining each metric, no realtime panel.
 
 Everything here already works with metrics this app already requests
 (`CHANNEL_OVERVIEW_METRIC_NAMES`: views, estimatedMinutesWatched, subscribersGained/Lost) at
-`dimensions=day` — no new dimension needed for the card-switching chart itself. The 48-hour
-realtime panel is the one new capability: YouTube's Analytics API supports an explicit "estimated,
-last-48-hours, near-real-time" report mode (`startDate`/`endDate` around `now`, hourly granularity)
-— needs its own live probe to confirm exact parameters (this app has never queried at hourly
-granularity or this recently before); the live subscriber count is likely already available via
-the existing channel-info read (`youtube-read-gateway/data-api.ts`), not the Analytics API at all
-— check that before assuming a new call is needed.
+`dimensions=day` — no new dimension needed for the card-switching chart itself. **Updated
+(2026-09-26), superseding this section's own first-draft text below:** the 48-hour realtime panel
+is **not** buildable at all via any public API surface — see §2.4's O3 entry for the confirmed
+finding (a live probe returned genuinely empty rows for "today"/last-48-hours, and further research
+established the underlying 48-72 hour processing delay applies to both the ad-hoc query API and the
+bulk Reporting API; Studio's live panel runs on non-public internal infrastructure). The one
+genuinely-public piece of that panel, an all-time subscriber count via `channels.list`, is not new
+work either — `ChannelOverviewPanel` already displays it. Nothing in this panel needs a new API
+call; O3 is out of scope entirely, not merely blocked pending a probe.
 
 ### 2.4 Proposed slices
 
@@ -230,8 +232,11 @@ comparison), not this tab's own per-video-in-period breakdown. Treat as unrelate
   100-row curve (elapsed ratio 0.01→1.00) against a real Tropico Jazz video. The four
   Intro/Top-moments/Spikes/Dips *modes* are still believed to be a client-side classification Studio
   computes over this same underlying curve, not four separate API reports — not independently
-  confirmed this round; the exact classification rule (e.g. "top moment" = a local maximum well
-  above the smoothed baseline) is Slice C4's own first task, not blocking C1/C2.
+  confirmed this round. **Updated (2026-09-26):** the exact classification rule (e.g. "top moment" =
+  a local maximum well above the smoothed baseline) was not Slice C4's first task as actually
+  delivered — C4 shipped Intro-mode only and deliberately excluded classification altogether,
+  deferring it to its own follow-up slice (see §3.4's own Slice C4 entry and §5's status). It does
+  not block C1/C2 either way.
 - **Traffic sources — CONFIRMED.** `dimensions=insightTrafficSourceType`, `metrics=views` returned
   real rows (`SUBSCRIBER`, `RELATED_VIDEO`, `YT_SEARCH`, etc.) with real view counts.
 - **Impressions/CTR funnel — CONFIRMED UNAVAILABLE via this app's existing API integration, for a
