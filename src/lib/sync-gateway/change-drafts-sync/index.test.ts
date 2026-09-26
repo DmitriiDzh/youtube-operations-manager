@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
 import { createChangeDraftsCore } from "../change-drafts";
 import { createFilesystemChangeDraftsStore } from "../change-drafts/adapters/automerge-store";
 import { createFilesystemTransportAdapter } from "./adapters/filesystem-transport";
 import { createChangeDraftsSyncCoreForProduction } from "./index";
 import { createChangeDraftsSyncCore } from "./services";
+import { withTempDir } from "@/test-support/temp-dir";
 
 test("createChangeDraftsSyncCoreForProduction returns the SAME instance across calls -- required for the single-flight guard to actually guard anything across separate request handlers", () => {
   const first = createChangeDraftsSyncCoreForProduction();
@@ -20,15 +18,6 @@ test("createChangeDraftsSyncCoreForProduction returns the SAME instance across c
 // adapter against one shared directory (standing in for a Syncthing-synced folder). Proves the
 // whole loop actually works together, not just each piece in isolation.
 
-async function withTempDir(run: (dir: string) => Promise<void>) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "change-drafts-sync-e2e-"));
-  try {
-    await run(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
-
 function fakeLogger() {
   return { info() {}, error() {} };
 }
@@ -36,9 +25,9 @@ function fakeLogger() {
 const CHANNEL = "UC_sync_e2e";
 
 test("two devices, each with a real filesystem store, sync through the real shared-folder transport and end up with each other's edits", async () => {
-  await withTempDir(async (sharedRoot) => {
-    await withTempDir(async (deviceAStoreDir) => {
-      await withTempDir(async (deviceBStoreDir) => {
+  await withTempDir("change-drafts-sync-e2e-", async (sharedRoot) => {
+    await withTempDir("change-drafts-sync-e2e-", async (deviceAStoreDir) => {
+      await withTempDir("change-drafts-sync-e2e-", async (deviceBStoreDir) => {
         const changeDraftsA = createChangeDraftsCore({
           store: createFilesystemChangeDraftsStore(deviceAStoreDir),
           sqlSource: { async listChangeSetsForChannel() { return []; }, async listChangesForChangeSet() { return []; } },

@@ -1,21 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
-import os from "node:os";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { createDiscardedDocumentBackupStore } from "./discarded-backup-store";
-
-async function withTempDir(run: (dir: string) => Promise<void>) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "discarded-backup-store-test-"));
-  try {
-    await run(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
+import { withTempDir } from "@/test-support/temp-dir";
 
 test("backup writes the exact bytes to a new file, creating the directory if needed", async () => {
-  await withTempDir(async (parent) => {
+  await withTempDir("discarded-backup-store-test-", async (parent) => {
     const baseDir = path.join(parent, "does", "not", "exist", "yet");
     const store = createDiscardedDocumentBackupStore(baseDir);
     const bytes = new Uint8Array([1, 2, 3, 250, 0, 128]);
@@ -28,7 +19,7 @@ test("backup writes the exact bytes to a new file, creating the directory if nee
 });
 
 test("backup never overwrites -- two calls for the same channel produce two distinct files", async () => {
-  await withTempDir(async (baseDir) => {
+  await withTempDir("discarded-backup-store-test-", async (baseDir) => {
     const store = createDiscardedDocumentBackupStore(baseDir);
     const first = await store.backup("UC_test", new Uint8Array([1]));
     const second = await store.backup("UC_test", new Uint8Array([2]));
@@ -45,7 +36,7 @@ test("backup never overwrites -- two calls for the same channel produce two dist
 });
 
 test("a channelId containing filesystem-unsafe characters is sanitized rather than escaping baseDir", async () => {
-  await withTempDir(async (baseDir) => {
+  await withTempDir("discarded-backup-store-test-", async (baseDir) => {
     const store = createDiscardedDocumentBackupStore(baseDir);
     const result = await store.backup("../../etc/passwd", new Uint8Array([9]));
     assert.ok(path.resolve(result.path).startsWith(path.resolve(baseDir)));

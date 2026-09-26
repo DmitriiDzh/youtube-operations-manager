@@ -1,21 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
-import os from "node:os";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { createFilesystemChangeDraftsStore } from "./automerge-store";
-
-async function withTempDir(run: (dir: string) => Promise<void>) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "change-drafts-store-test-"));
-  try {
-    await run(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
+import { withTempDir } from "@/test-support/temp-dir";
 
 test("loadDocumentBytes returns null for a channel that has never been saved", async () => {
-  await withTempDir(async (dir) => {
+  await withTempDir("change-drafts-store-test-", async (dir) => {
     const store = createFilesystemChangeDraftsStore(dir);
     const bytes = await store.loadDocumentBytes("UC_never_saved");
     assert.equal(bytes, null);
@@ -23,7 +14,7 @@ test("loadDocumentBytes returns null for a channel that has never been saved", a
 });
 
 test("saveDocumentBytes then loadDocumentBytes round-trips the exact bytes, creating the directory if needed", async () => {
-  await withTempDir(async (dir) => {
+  await withTempDir("change-drafts-store-test-", async (dir) => {
     const nestedDir = path.join(dir, "does", "not", "exist", "yet");
     const store = createFilesystemChangeDraftsStore(nestedDir);
     const original = new Uint8Array([1, 2, 3, 4, 250, 0, 128]);
@@ -37,7 +28,7 @@ test("saveDocumentBytes then loadDocumentBytes round-trips the exact bytes, crea
 });
 
 test("two different channelIds are stored as two distinct files, never overwriting each other", async () => {
-  await withTempDir(async (dir) => {
+  await withTempDir("change-drafts-store-test-", async (dir) => {
     const store = createFilesystemChangeDraftsStore(dir);
     await store.saveDocumentBytes("UC_channel_a", new Uint8Array([1]));
     await store.saveDocumentBytes("UC_channel_b", new Uint8Array([2]));
@@ -50,7 +41,7 @@ test("two different channelIds are stored as two distinct files, never overwriti
 });
 
 test("saveDocumentBytes writes atomically: no leftover .tmp file after a save, and a second save leaves only the final file behind", async () => {
-  await withTempDir(async (dir) => {
+  await withTempDir("change-drafts-store-test-", async (dir) => {
     const store = createFilesystemChangeDraftsStore(dir);
     await store.saveDocumentBytes("UC_atomic", new Uint8Array([1, 2, 3]));
     await store.saveDocumentBytes("UC_atomic", new Uint8Array([4, 5, 6]));
@@ -64,7 +55,7 @@ test("saveDocumentBytes writes atomically: no leftover .tmp file after a save, a
 });
 
 test("a channelId containing filesystem-unsafe characters is sanitized rather than escaping baseDir", async () => {
-  await withTempDir(async (dir) => {
+  await withTempDir("change-drafts-store-test-", async (dir) => {
     const store = createFilesystemChangeDraftsStore(dir);
     await store.saveDocumentBytes("../../etc/passwd", new Uint8Array([9]));
 

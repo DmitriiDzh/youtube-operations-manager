@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, readdir } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 import { createClient, type Client } from "@libsql/client";
 import { initializeDatabaseSchema } from "../db";
@@ -15,22 +14,7 @@ import {
   RecoveryModeError,
 } from "./services";
 import { OperationLockError } from "@/lib/operation-lock";
-
-async function withTempDir(fn: (dir: string) => Promise<void>) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "device-handoff-test-"));
-  try {
-    await fn(dir);
-  } finally {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        await rm(dir, { recursive: true, force: true });
-        break;
-      } catch {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-    }
-  }
-}
+import { withTempDir } from "@/test-support/temp-dir";
 
 async function makeClient(dir: string, name: string): Promise<Client> {
   const client = createClient({ url: `file:${path.join(dir, name)}` });
@@ -68,7 +52,7 @@ async function seedLedgerRow(client: Client, id: string, batchId: string, status
 
 // AC-HANDOFF-03
 test("importHandoff activates normal mutation capability when the snapshot has no unresolved execution state", () =>
-  withTempDir(async (dir) => {
+  withTempDir("device-handoff-test-", async (dir) => {
     const source = await makeClient(dir, "source.db");
     await seedChannel(source, "chan-1");
     await seedBatch(source, "batch-1", "chan-1");
@@ -109,7 +93,7 @@ test("importHandoff activates normal mutation capability when the snapshot has n
 
 // AC-HANDOFF-04
 test("importHandoff leaves the device in recovery mode when the snapshot carries unresolved execution rows, but still preserves the data", () =>
-  withTempDir(async (dir) => {
+  withTempDir("device-handoff-test-", async (dir) => {
     const source = await makeClient(dir, "source.db");
     await seedChannel(source, "chan-1");
     await source.execute({
@@ -163,7 +147,7 @@ test("importHandoff leaves the device in recovery mode when the snapshot carries
 
 // AC-HANDOFF-05 -- the single most safety-critical scenario.
 test("acknowledgeRecoveryDiagnostics never changes any row's status and never lifts the recovery-mode gate", () =>
-  withTempDir(async (dir) => {
+  withTempDir("device-handoff-test-", async (dir) => {
     const client = await makeClient(dir, "receiving.db");
     await seedChannel(client, "chan-1");
     await client.execute({
@@ -197,7 +181,7 @@ test("acknowledgeRecoveryDiagnostics never changes any row's status and never li
 
 // AC-HANDOFF-06
 test("recovery mode lifts once the underlying rows are independently resolved to a terminal state", () =>
-  withTempDir(async (dir) => {
+  withTempDir("device-handoff-test-", async (dir) => {
     const client = await makeClient(dir, "receiving.db");
     await seedChannel(client, "chan-1");
     await client.execute({
@@ -224,7 +208,7 @@ test("recovery mode lifts once the underlying rows are independently resolved to
 
 // AC-HANDOFF-07
 test("audit trail and durable intent records survive import unmodified", () =>
-  withTempDir(async (dir) => {
+  withTempDir("device-handoff-test-", async (dir) => {
     const source = await makeClient(dir, "source.db");
     await seedChannel(source, "chan-1");
     await source.execute({
@@ -264,7 +248,7 @@ test("audit trail and durable intent records survive import unmodified", () =>
 
 // AC-SNAP-07 via the orchestrator
 test("importHandoff is a safe no-op for a duplicate-of-current snapshot", () =>
-  withTempDir(async (dir) => {
+  withTempDir("device-handoff-test-", async (dir) => {
     const source = await makeClient(dir, "source.db");
     await seedChannel(source, "chan-1");
     await seedBatch(source, "batch-1", "chan-1");
@@ -304,7 +288,7 @@ test("importHandoff is a safe no-op for a duplicate-of-current snapshot", () =>
   }));
 
 test("assertDeviceAvailableForMutation rejects while an operation lock is held", () =>
-  withTempDir(async (dir) => {
+  withTempDir("device-handoff-test-", async (dir) => {
     const client = await makeClient(dir, "device.db");
     const { acquireOperationLock } = await import("@/lib/operation-lock");
     await acquireOperationLock(client, "export");
@@ -318,7 +302,7 @@ test("assertDeviceAvailableForMutation rejects while an operation lock is held",
   }));
 
 test("importHandoff refuses a snapshot from a newer, unsupported schema version before touching the live DB", () =>
-  withTempDir(async (dir) => {
+  withTempDir("device-handoff-test-", async (dir) => {
     const source = await makeClient(dir, "source.db");
     await seedChannel(source, "chan-1");
     // Force schema_meta to report a future version at export time.
@@ -367,7 +351,7 @@ test("importHandoff refuses a snapshot from a newer, unsupported schema version 
 // UNRESOLVED_EXECUTION_STATUSES's contract says must never happen. src/proxy.ts's exemption for
 // /api/device-handoff/** only avoids a lock self-deadlock; this is the real enforcement point.
 test("importHandoff refuses to run at all when this device is already in recovery mode, and never touches the live DB", () =>
-  withTempDir(async (dir) => {
+  withTempDir("device-handoff-test-", async (dir) => {
     const source = await makeClient(dir, "source.db");
     await seedChannel(source, "chan-2");
     const exportResult = await exportHandoff({
