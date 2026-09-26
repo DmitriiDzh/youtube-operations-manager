@@ -864,6 +864,13 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         let unitsSpentThisChannel = 0;
         let videosRequested: number | null = null;
         let videosReturned: number | null = null;
+        // Guards the catch block below against writing a SECOND collection-run row for the same
+        // attempt (found by independent review: without this, a throw from
+        // markResearchChannelAutoCollected -- AFTER the success row already landed -- fell into the
+        // catch, which wrote a second "failed" row with the identical unitsSpent, double-counting
+        // real spend in the quota ledger AND wrongly putting a channel that actually succeeded into
+        // the 24h failure-retry backoff).
+        let successRowWritten = false;
 
         try {
           // Charged BEFORE the call resolves, not after -- YouTube's own quota accounting charges
@@ -938,10 +945,11 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           // markResearchChannelAutoCollected could succeed and this insert then fail -- the channel
           // would end up marked fresh (skipped for 24h) while its own audit trail said "failed",
           // directly contradicting this module's own "marked ONLY on full success" invariant. This
-          // is not a full transaction (neither write shares one), so a failure of the MARK itself
-          // (after this insert succeeds) can still leave a "success" row with the channel still
-          // stale -- accepted as the strictly less harmful direction: a wasted, redundant retry next
-          // run, never a false "already fresh" claim.
+          // is not a full transaction (neither write shares one), so the MARK itself can still throw
+          // AFTER this insert succeeds -- guarded by `successRowWritten` above, so that specific
+          // case is treated as the real success it is (no second, double-counting audit row), with
+          // the channel simply staying stale for a free retry next run, rather than being
+          // misrecorded as a failure it never actually was.
           await deps.insertMarketIntelligenceCollectionRun({
             researchChannelId,
             status: "success",
@@ -950,22 +958,33 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
             videosReturned,
             ranAt: now,
           });
+          successRowWritten = true;
           await deps.markResearchChannelAutoCollected(researchChannelId, now);
           succeeded += 1;
         } catch (error) {
-          await deps.insertMarketIntelligenceCollectionRun({
-            researchChannelId,
-            status: "failed",
-            unitsSpent: unitsSpentThisChannel,
-            // Preserves whatever was actually known before the failure (e.g. enumeration finished
-            // but the stats fetch itself threw) instead of discarding it back to null (found by
-            // advisor review).
-            videosRequested,
-            videosReturned,
-            errorMessage: error instanceof Error ? error.message : String(error),
-            ranAt: now,
-          });
-          failedCount += 1;
+          // If the success row already landed, this catch exists only because the MARK itself
+          // threw afterward -- the attempt genuinely succeeded and already has its own audit row,
+          // so a second "failed" row here would double-count unitsSpent in the ledger and wrongly
+          // trigger the 24h failure backoff for a channel that didn't actually fail. The channel
+          // simply stays stale (the mark never landed) and is retried, at no extra ledger cost, on
+          // the next run.
+          if (!successRowWritten) {
+            await deps.insertMarketIntelligenceCollectionRun({
+              researchChannelId,
+              status: "failed",
+              unitsSpent: unitsSpentThisChannel,
+              // Preserves whatever was actually known before the failure (e.g. enumeration
+              // finished but the stats fetch itself threw) instead of discarding it back to null
+              // (found by advisor review).
+              videosRequested,
+              videosReturned,
+              errorMessage: error instanceof Error ? error.message : String(error),
+              ranAt: now,
+            });
+            failedCount += 1;
+          } else {
+            succeeded += 1;
+          }
         } finally {
           await deps.releaseResearchChannelCollectionClaim(researchChannelId);
           unitsSpentTotal += unitsSpentThisChannel;

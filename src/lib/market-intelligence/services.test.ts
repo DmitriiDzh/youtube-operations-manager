@@ -94,6 +94,7 @@ function createFakeStore() {
   let failNextSuccessRunInsert = false;
   let failVideoSnapshotInsertAfter: number | null = null;
   let videoSnapshotInsertCount = 0;
+  let failNextMark = false;
 
   return {
     channels,
@@ -111,6 +112,9 @@ function createFakeStore() {
     },
     failVideoSnapshotInsertAfterNth(n: number) {
       failVideoSnapshotInsertAfter = n;
+    },
+    failNextMarkOnce() {
+      failNextMark = true;
     },
     idGenerator: () => `evidence-${nextId++}`,
     async insertResearchChannel(input: { id: string; handleOrUrl?: string | null; reason: string; createdVia: string }) {
@@ -256,6 +260,10 @@ function createFakeStore() {
       return [...ids];
     },
     async markResearchChannelAutoCollected(researchChannelId: string, at: Date) {
+      if (failNextMark) {
+        failNextMark = false;
+        throw new Error("simulated markResearchChannelAutoCollected failure");
+      }
       const row = channels.get(researchChannelId);
       if (row) row.lastAutoCollectedAt = at;
     },
@@ -1165,4 +1173,27 @@ test("AC-9B-15: videosReturned counts only videos actually persisted, never the 
   assert.equal(run.status, "failed");
   assert.equal(run.videosRequested, 3);
   assert.equal(run.videosReturned, 2, "must report exactly what was actually persisted (2), never the raw API response length (3)");
+});
+
+// Found by a second round of independent review, right after AC-9B-14's own fix landed: writing
+// the success row BEFORE the mark closed the original gap, but introduced a NEW one -- if the mark
+// itself throws (after the success row already landed), the catch block wrote a SECOND row with
+// status:"failed" and the identical unitsSpent, double-counting real spend in the quota ledger and
+// wrongly placing an actually-successful channel into the 24h failure-retry backoff.
+test("AC-9B-16: if only the mark (not the audit row) fails, exactly one row is written, spend is counted once, and the channel is never placed in the failure backoff", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const { store, services } = createFixture({ now, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO });
+  store.setQuotaBudget(100);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.failNextMarkOnce();
+
+  const result = await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+  assert.deepEqual(result, { attempted: 1, succeeded: 1, failed: 0, quotaLimited: 0, unitsSpent: 2 });
+  assert.equal(store.collectionRuns.length, 1, "exactly one row -- never a second, double-counting row for the same attempt");
+  assert.equal(store.collectionRuns[0]?.status, "success");
+  assert.equal(store.channels.get(VALID_CHANNEL_ID)?.lastAutoCollectedAt, null, "the mark itself never landed -- the channel stays stale for a free retry next run");
+
+  const recentlyFailed = await store.listRecentlyFailedResearchChannelIds(since);
+  assert.deepEqual(recentlyFailed, [], "an attempt that genuinely succeeded must never be placed in the failure backoff");
 });
