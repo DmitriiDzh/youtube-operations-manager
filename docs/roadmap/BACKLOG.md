@@ -119,10 +119,13 @@ workflow this file follows.
 
 Studio-parity's Analytics-tab portion (plan §4 Slice S6) is the same work already tracked as
 BL-003/`docs/roadmap/plans/PHASE_8_PLAN.md` (S6a, done) and BL-072 (S6b's first slice — Overview
-only, done). S6c (Content-analytics sub-tab: retention curve, CTR/impressions funnel -- the latter
-now confirmed unavailable via the public API per BL-072's notes) and S6d (Audience/Trends parity:
-demographics, geography, device, traffic sources) remain undesigned in detail and unassigned, per
-the plan's own §4 reasoning -- each needs its own scoping pass once picked up.
+only, done). **Updated 2026-09-26:** S6c/S6d's one-paragraph sketches are superseded by
+`docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md` (its own §0 says so explicitly), which is
+the detailed scoping pass they used to be missing. That plan was assigned by the owner (Telegram
+2026-09-25) and most of its confirmed-feasible S6c/S6d scope shipped as BL-093..098 above
+(retention curve, traffic sources, top videos, device/age-gender/geography/subscribed-status/
+content-format); the impressions/CTR funnel (C3) and the realtime panel (O3) were confirmed
+permanently out of scope (BL-098), not merely deferred.
 
 Rows were seeded on 2026-09-20 when the `roadmap-backlog` skill was created, as a first pass at
 turning `FUTURE_PHASES.md`'s Phase 7-10 and future-directions sections into trackable slices.

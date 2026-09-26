@@ -332,7 +332,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Схема:** `analytics_weekly_reports` (SCHEMA_MIGRATIONS версия 14), один ряд на `(channel_id, week_start_date)` (UNIQUE-индекс), `report_json` хранит весь сериализованный отчёт. Сознательно не в `SNAPSHOT_TRANSFERRED_TABLES` (производные, пересчитываемые данные).
 - **Триггер-роут:** `POST .../analytics/weekly-reports/generate-if-due`, вызывается раз на монтирование дашборда, ПОСЛЕ уже существующего auto-collect-триггера (через `.finally()`), гейтится `src/proxy.ts` как любая мутирующая POST.
 - **Чтение (read-only, не гейтится, БЕЗ MCP/CLI-инструмента для генерации по запросу — та же логика исключения, что у `collectMetrics`):** `GET .../analytics/weekly-reports`, `GET .../analytics/weekly-reports/[weekStartDate]`, MCP `analytics_weekly_reports_list`/`analytics_weekly_report_get`, CLI `analytics weekly-reports`/`analytics weekly-report-get`.
-- **Известный, отслеженный дубль (`docs/TECHNICAL_DEBT.md` RISK-50):** ранжирование `topContent` — вторая реализация той же агрегации, что уже делает клиентский `fetchTopContent` в `channel-overview-panel.tsx` — не объединено в этом слайсе.
+- **Известный, отслеженный дубль (`docs/TECHNICAL_DEBT.md` RISK-50):** ранжирование `topContent` — вторая реализация той же агрегации, что уже делает клиентский хук `use-top-videos.ts` (используется `channel-overview-panel.tsx` и `content-analytics-panel.tsx`, §2.9t) — не объединено в этом слайсе.
 
 ### 2.9r Agent Operations Interface (Phase 7, расширенный owner-спекой 2026-09-23) — **CODE-COMPLETE, смержено в `dev`** (`cc6a431`, 2026-09-25; актуальный статус по слайсам — см. `docs/AGENT_OPERATIONS_INTERFACE.md` §7, не здесь в заголовке)
 
