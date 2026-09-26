@@ -1,4 +1,5 @@
 import {
+  deleteResearchChannel,
   getResearchChannelById,
   insertResearchChannel,
   insertResearchEvidence,
@@ -15,6 +16,7 @@ export function createMarketIntelligenceStoreAdapter() {
     insertResearchChannel,
     listResearchChannels,
     getResearchChannelById,
+    deleteResearchChannel,
     insertResearchEvidence,
     listResearchEvidenceByChannel,
   };

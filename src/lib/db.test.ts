@@ -52,6 +52,7 @@ import {
   videos,
   researchChannels,
   researchEvidence,
+  deleteResearchChannel,
 } from "./db";
 import { readSchemaVersion } from "@/lib/schema-versioning";
 import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
@@ -1115,7 +1116,16 @@ test("videos.publish_at round-trips through the real Drizzle schema, and stays n
 
 // Phase 9 slice 1 -- proves research_channels/research_evidence round-trip through the real
 // Drizzle schema, are never joined against channels/videos, and that a channel id here need not
-// exist in the (owned-channel) `channels` table at all -- the entire point of this table.
+// exist in the (owned-channel) `channels` table at all -- the entire point of this table. This
+// test proves the DATA-LEVEL half of that separation (no row appears in `channels` for a
+// research-only id); the STRUCTURAL half (no other module's code can even reference
+// research_channels/research_evidence, by symbol or by raw SQL table name, including
+// `channel-access`/`listStoredVideosByChannel`) is proven instead by
+// `src/lib/market-intelligence/write-path-inventory.test.ts`'s PHASE9-INV-02 -- `channel-access`
+// itself never reads channel/video content tables at all (it only compares a channelId against
+// the session's active-channel selection), and `listStoredVideosByChannel` always uses the
+// module-level singleton `db` (not injectable), so neither can be exercised against this file's
+// own isolated temp database the way the Drizzle assertions below are.
 test("research_channels/research_evidence round-trip through the real Drizzle schema, independent of channels/videos", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
@@ -1165,6 +1175,36 @@ test("research_channels/research_evidence round-trip through the real Drizzle sc
     // oversight, it is the whole point: research_channels never requires the channel to be owned.
     const ownedChannelRows = await isolatedDb.select().from(channels);
     assert.equal(ownedChannelRows.length, 0);
+  }));
+
+// Added by independent review (2026-09-26, Phase 9 slice 1 follow-up): deleteResearchChannel
+// must delete evidence rows before the channel row (RISK-46's own FK-ordering lesson, found the
+// hard way earlier in this same project) -- proven here against the real schema with
+// foreign_keys=ON, not just asserted by a fake in-memory store in services.test.ts.
+test("deleteResearchChannel removes the channel and every evidence row recorded against it, in one transaction", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await isolatedDb.insert(researchChannels).values({
+      id: "UC_TO_DELETE_000000000",
+      reason: "Temporary",
+      createdVia: "web_ui",
+    });
+    await isolatedDb.insert(researchEvidence).values({
+      id: "evidence-to-delete",
+      researchChannelId: "UC_TO_DELETE_000000000",
+      observation: "Will be deleted",
+      source: "manual observation",
+      createdVia: "web_ui",
+    });
+
+    await deleteResearchChannel("UC_TO_DELETE_000000000", isolatedDb);
+
+    const channelRows = await isolatedDb.select().from(researchChannels);
+    assert.equal(channelRows.length, 0);
+    const evidenceRows = await isolatedDb.select().from(researchEvidence);
+    assert.equal(evidenceRows.length, 0, "evidence must be deleted along with its channel, never left orphaned");
   }));
 
 // AC-SCHEMA-04

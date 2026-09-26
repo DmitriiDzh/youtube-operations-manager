@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
+import { ConfirmDialog } from "./confirm-dialog";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 
 type ResearchChannel = {
@@ -44,6 +45,8 @@ export function MarketResearchPanel() {
   const [newConfidence, setNewConfidence] = useState("");
   const [recordingEvidence, setRecordingEvidence] = useState(false);
   const [fetchingSnapshot, setFetchingSnapshot] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<ResearchChannel | null>(null);
+  const [removing, setRemoving] = useState(false);
 
   const fetchChannels = useCallback(async () => {
     setLoading(true);
@@ -111,6 +114,29 @@ export function MarketResearchPanel() {
       await fetchChannels();
     } finally {
       setAdding(false);
+    }
+  }
+
+  async function handleConfirmRemove() {
+    if (!removeTarget) return;
+    setRemoving(true);
+    try {
+      const res = await fetch(`/api/market-intelligence/channels/${encodeURIComponent(removeTarget.channelId)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.message ?? "Failed to remove channel from the watchlist");
+        return;
+      }
+      if (selectedChannelId === removeTarget.channelId) {
+        setSelectedChannelId(null);
+        setEvidence([]);
+      }
+      await fetchChannels();
+    } finally {
+      setRemoving(false);
+      setRemoveTarget(null);
     }
   }
 
@@ -222,16 +248,24 @@ export function MarketResearchPanel() {
         {!loading && channels.length === 0 && <p className="text-sm text-zinc-500">No channels on the watchlist yet.</p>}
         {channels.map((c) => (
           <div key={c.channelId} className="rounded-lg border border-zinc-800 p-3">
-            <button
-              onClick={() => handleSelectChannel(c.channelId)}
-              className="w-full text-left"
-            >
-              <p className="text-sm font-medium text-zinc-200">
-                {c.handleOrUrl ?? c.channelId} <span className="text-xs text-zinc-500">({c.channelId})</span>
-              </p>
-              <p className="text-xs text-zinc-400">{c.reason}</p>
-              <p className="text-xs text-zinc-500">Added {formatDisplayDateTime(c.addedAt)}</p>
-            </button>
+            <div className="flex items-start justify-between gap-2">
+              <button
+                onClick={() => handleSelectChannel(c.channelId)}
+                className="min-w-0 flex-1 text-left"
+              >
+                <p className="text-sm font-medium text-zinc-200">
+                  {c.handleOrUrl ?? c.channelId} <span className="text-xs text-zinc-500">({c.channelId})</span>
+                </p>
+                <p className="text-xs text-zinc-400">{c.reason}</p>
+                <p className="text-xs text-zinc-500">Added {formatDisplayDateTime(c.addedAt)}</p>
+              </button>
+              <button
+                onClick={() => setRemoveTarget(c)}
+                className="shrink-0 rounded-md border border-zinc-700 px-2 py-1 text-xs text-red-400 hover:bg-zinc-800"
+              >
+                Remove
+              </button>
+            </div>
 
             {selectedChannelId === c.channelId && (
               <div className="mt-3 space-y-3 border-t border-zinc-800 pt-3">
@@ -297,6 +331,17 @@ export function MarketResearchPanel() {
           </div>
         ))}
       </div>
+
+      {removeTarget && (
+        <ConfirmDialog
+          title="Remove from watchlist?"
+          description={`This removes "${removeTarget.handleOrUrl ?? removeTarget.channelId}" and every evidence row recorded against it. This cannot be undone.`}
+          confirmLabel={removing ? "Removing..." : "Remove"}
+          confirmVariant="danger"
+          onCancel={() => setRemoveTarget(null)}
+          onConfirm={handleConfirmRemove}
+        />
+      )}
     </div>
   );
 }

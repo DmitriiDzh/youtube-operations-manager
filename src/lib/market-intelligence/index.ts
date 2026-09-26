@@ -17,6 +17,7 @@ export function createMarketIntelligenceCore() {
     insertResearchChannel: store.insertResearchChannel,
     listResearchChannels: store.listResearchChannels,
     getResearchChannelById: store.getResearchChannelById,
+    deleteResearchChannel: store.deleteResearchChannel,
     insertResearchEvidence: store.insertResearchEvidence,
     listResearchEvidenceByChannel: store.listResearchEvidenceByChannel,
     authResolver: defaultAuthResolver(),

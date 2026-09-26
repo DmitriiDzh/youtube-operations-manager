@@ -91,10 +91,19 @@ automatically.
 - `research_channels`/`research_evidence` tables, additive migration, structurally separate from
   `channels`/`videos`.
 - Manual add-to-watchlist service + API route + minimal Web UI (operator supplies a channel
-  ID/handle + a required reason).
+  ID/handle + a required reason), plus a remove-from-watchlist capability (added during this
+  assignment's own independent review, 2026-09-26 — the first version had no way to correct a
+  mistyped reason or a wrong channel id).
 - A "fetch public snapshot" action populating one evidence row from a public, explicit-id read
-  (title, thumbnail, uploads-playlist-derived video count where cheaply available) — reusing the
-  read-gateway's existing capability, not a new API surface.
+  (`channels.list` with `part=snippet,statistics`) — reusing the read-gateway's existing
+  capability, not a new API surface. **Delivered scope, corrected 2026-09-26 by independent
+  review** against this bullet's own original wording: `title` and the subscriber/view/video
+  counts are recorded together in the evidence row's `observation` text (so an operator who added
+  a channel by bare `UC...` id still sees its real name once a snapshot is fetched) — there is no
+  separate structured `title` field on `research_channels` itself, and no thumbnail is fetched or
+  stored (a thumbnail needs either a new column plus display wiring or a separate fetch-and-cache
+  concern, judged not "cheap" enough for this slice's own minimal scope — deferred, not delivered).
+  `videoCount` comes directly from `statistics.videoCount`, not derived from the uploads playlist.
 - A mechanical inventory test (same pattern as the existing `batches`/`ai-connections`
   write-path-inventory tests)
   proving `market-intelligence`'s own code never imports/calls `write-context`/
@@ -195,9 +204,11 @@ automatically.
   attempt to omit either.
 - `addToWatchlist` is idempotent-safe for a duplicate channel id: a second add for the same
   `research_channels.id` either updates the existing row's `reason`/re-confirms it, or is rejected
-  with a clear `DomainError`, never silently creates a second row with the same primary key
-  (decided precisely during slice 1's own implementation, stated here as "must not silently
-  duplicate," not yet as one specific mechanism).
+  with a clear `DomainError`, never silently creates a second row with the same primary key.
+  **Decided in slice 1's own implementation: rejected with `RESEARCH_CHANNEL_ALREADY_WATCHED`,
+  never silently overwritten** — an operator who wants to change the `reason` uses
+  `removeFromWatchlist` (added during this assignment's own independent review, 2026-09-26) and
+  re-adds the entry.
 - The "fetch public snapshot" action (slice 3) never fabricates a value the API didn't actually
   return (mirrors the existing `viewCount`/`commentCount`-style "never default to 0/empty" pattern
   already established in `channel-sync`) — a test using a fixture where a field is genuinely
@@ -206,8 +217,14 @@ automatically.
 - A channel already present in `channels` (i.e. the operator's own, owned channel) can still be
   legally added to `research_channels` too if the operator chooses (nothing prevents researching
   a channel you also happen to own) — but the two tables are never joined or conflated by any
-  query, and a test proves `research_channels`/`research_evidence` rows are invisible to every
-  existing owned-channel-scoped read path (`channel-access`, `listStoredVideosByChannel`, etc.).
+  query. **Delivered as two complementary tests, corrected 2026-09-26 by independent review**
+  against this bullet's original single-test wording (`channel-access` never reads channel/video
+  content tables at all, and `listStoredVideosByChannel` uses a non-injectable module-level `db`
+  singleton, so neither can actually be exercised the way originally described): a `db.test.ts`
+  test proves the data-level half (no row appears in `channels` for a research-only id) and
+  `market-intelligence/write-path-inventory.test.ts`'s `PHASE9-INV-02` proves the structural half
+  (no other module's code references `research_channels`/`research_evidence`, by symbol or by raw
+  SQL table name).
 
 ## 8. Required project-owner decisions
 

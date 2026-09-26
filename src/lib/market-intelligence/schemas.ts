@@ -56,6 +56,14 @@ export const getWatchlistEntryInputSchema = z
 
 export const getWatchlistEntryOutputSchema = researchChannelSchema;
 
+// Added by independent review (2026-09-26): the first version of this module had no way to
+// correct or remove a watchlist entry once added.
+export const removeFromWatchlistInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+  })
+  .strict();
+
 export const recordEvidenceInputSchema = z
   .object({
     researchChannelId: z.string().min(1),

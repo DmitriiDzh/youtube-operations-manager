@@ -13,7 +13,9 @@ import { fileURLToPath } from "node:url";
 
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MODULE_ROOT = THIS_DIR;
-const SRC_ROOT = path.resolve(THIS_DIR, "../../..", "src");
+const REPO_ROOT = path.resolve(THIS_DIR, "../../..");
+const SRC_ROOT = path.join(REPO_ROOT, "src");
+const SCRIPTS_ROOT = path.join(REPO_ROOT, "scripts");
 
 async function listTsFilesRecursively(dir: string): Promise<string[]> {
   let entries;
@@ -63,12 +65,28 @@ test("PHASE9-INV-01: no file in src/lib/market-intelligence references a write-c
 // and never a second, competing read of those tables from an unrelated domain module (AGENTS.md
 // §M: this module must be independently removable without breaking anything that doesn't
 // actually depend on it).
-const ALLOWED_IMPORTER_PREFIXES = [
+//
+// Found by independent review (2026-09-26): `startsWith` on a raw path prefix is a real bypass --
+// "src/lib/market-intelligence-v2/x.ts".startsWith(".../market-intelligence") is true with no
+// path-separator boundary. Fixed with the same `isInsideDir` (path.relative-based) helper
+// `youtube-read-gateway/read-gateway-inventory.test.ts` already uses for exactly this reason.
+function isInsideDir(file: string, dir: string): boolean {
+  const relative = path.relative(dir, file);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+const ALLOWED_IMPORTER_DIRS = [
   path.join(SRC_ROOT, "lib", "market-intelligence"),
   path.join(SRC_ROOT, "app", "api", "market-intelligence"),
-  path.join(SRC_ROOT, "components", "market-intelligence"),
 ];
+// The Web UI panel is a single file directly under src/components, not its own directory --
+// matched by exact path, not isInsideDir (there is no "market-intelligence" subdirectory there).
+const ALLOWED_IMPORTER_FILES = [path.join(SRC_ROOT, "components", "market-research-panel.tsx")];
 
+// Both the camelCase Drizzle identifiers AND the underlying snake_case SQL table names --
+// found by independent review (2026-09-26): a raw `sql\`... research_channels ...\`` escape
+// hatch (already used elsewhere in this codebase, e.g. migrations) would bypass a camelCase-only
+// list entirely.
 const FORBIDDEN_DB_SYMBOLS = [
   "researchChannels",
   "researchEvidence",
@@ -77,14 +95,20 @@ const FORBIDDEN_DB_SYMBOLS = [
   "getResearchChannelById",
   "insertResearchEvidence",
   "listResearchEvidenceByChannel",
+  "research_channels",
+  "research_evidence",
 ];
 
 test("PHASE9-INV-02: no file outside market-intelligence's own module/routes/UI references its db.ts symbols", async () => {
-  const files = await listTsFilesRecursively(SRC_ROOT);
+  // Also scans scripts/, not just src/ -- same same-day widening the read/write gateway
+  // inventory tests already applied (found by independent review, 2026-09-26): a one-off script
+  // is just as capable of a violation as production source.
+  const files = [...(await listTsFilesRecursively(SRC_ROOT)), ...(await listTsFilesRecursively(SCRIPTS_ROOT))];
   const offenders: string[] = [];
 
   for (const file of files) {
-    if (ALLOWED_IMPORTER_PREFIXES.some((prefix) => file.startsWith(prefix))) continue;
+    if (ALLOWED_IMPORTER_DIRS.some((dir) => isInsideDir(file, dir))) continue;
+    if (ALLOWED_IMPORTER_FILES.some((allowed) => path.resolve(file) === path.resolve(allowed))) continue;
     if (path.resolve(file) === path.resolve(SRC_ROOT, "lib", "db.ts")) continue;
     const content = await readFile(file, "utf8");
     for (const symbol of FORBIDDEN_DB_SYMBOLS) {
@@ -97,4 +121,11 @@ test("PHASE9-INV-02: no file outside market-intelligence's own module/routes/UI 
   }
 
   assert.deepEqual(offenders, [], `Found forbidden research_* references outside market-intelligence:\n${offenders.join("\n")}`);
+});
+
+test("PHASE9-INV-02 helper: isInsideDir rejects a same-prefix sibling directory (the actual bug this fixes)", () => {
+  const dir = path.join(SRC_ROOT, "lib", "market-intelligence");
+  assert.equal(isInsideDir(path.join(SRC_ROOT, "lib", "market-intelligence", "services.ts"), dir), true);
+  assert.equal(isInsideDir(path.join(SRC_ROOT, "lib", "market-intelligence-v2", "x.ts"), dir), false);
+  assert.equal(isInsideDir(path.join(SRC_ROOT, "lib", "market-intelligenceother.ts"), dir), false);
 });

@@ -4311,3 +4311,19 @@ export async function listResearchEvidenceByChannel(
     .where(eq(researchEvidence.researchChannelId, researchChannelId))
     .orderBy(desc(researchEvidence.collectedAt));
 }
+
+/**
+ * Added by independent review (2026-09-26, Phase 9 slice 1 follow-up): the first version of this
+ * module had no way to correct or remove a watchlist entry once added, permanent for the life of
+ * the local database. Deletes evidence rows BEFORE the channel row, in one transaction -- the same
+ * FK-ordering discipline this codebase already learned the hard way in
+ * `sync-gateway/change-drafts/services.ts`'s `discardLocalAndAdoptPeer` (RISK-46): deleting the
+ * parent first, under `foreign_keys=ON`, would either fail the constraint or (if constraints were
+ * ever relaxed) silently orphan evidence rows.
+ */
+export async function deleteResearchChannel(id: string, database: AppDb = db): Promise<void> {
+  await database.transaction(async (tx) => {
+    await tx.delete(researchEvidence).where(eq(researchEvidence.researchChannelId, id));
+    await tx.delete(researchChannels).where(eq(researchChannels.id, id));
+  });
+}

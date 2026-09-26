@@ -70,6 +70,12 @@ function createFakeStore() {
     async getResearchChannelById(id: string) {
       return channels.get(id) ?? null;
     },
+    async deleteResearchChannel(id: string) {
+      channels.delete(id);
+      for (let i = evidence.length - 1; i >= 0; i--) {
+        if (evidence[i].researchChannelId === id) evidence.splice(i, 1);
+      }
+    },
     async insertResearchEvidence(input: {
       id: string;
       researchChannelId: string;
@@ -287,8 +293,11 @@ test("AC-MI-10: fetchPublicSnapshot resolves credentials with YOUTUBE_READ_SCOPE
   assert.deepEqual(resolveCalls, [{ credentialRef: { userId: "u1" }, requiredScopes: ["https://www.googleapis.com/auth/youtube.readonly"] }]);
   assert.deepEqual(snapshotCalls, [{ credentials: { accessToken: "fake-access-token", refreshToken: "fake-refresh-token" }, channelId: VALID_CHANNEL_ID }]);
   assert.equal(evidence.source, "youtube.channels.list");
-  assert.equal(evidence.confidence, "confirmed");
-  assert.equal(evidence.observation, "Public snapshot: 5000 subscribers, 90000 total views, 12 videos");
+  assert.equal(evidence.confidence, "high");
+  assert.equal(
+    evidence.observation,
+    'Public snapshot for "Competitor": ~5000 subscribers (YouTube reports this rounded to 3 significant figures, not an exact count), 90000 total views, 12 videos'
+  );
   assert.equal(store.evidence.length, 1);
   assert.equal(store.evidence[0].createdVia, "web_ui");
 });
@@ -311,17 +320,56 @@ test("AC-MI-11: fetchPublicSnapshot rejects when YouTube reports no public chann
 // AC-MI-12: describePublicChannelSnapshot's wording, derived independently from YOUTUBE's own
 // documented "hiddenSubscriberCount"/field-omission semantics -- never a fabricated 0 or a silent
 // omission for a value YouTube did not actually report.
-test("AC-MI-12: describePublicChannelSnapshot reports every field, and describes a null field honestly instead of fabricating a number", () => {
+test("AC-MI-12: describePublicChannelSnapshot reports the title and every field, describes a null field honestly instead of fabricating a number, and flags subscriberCount as YouTube's own rounded approximation (real API docs: 'rounded to three significant figures')", () => {
   assert.equal(
     describePublicChannelSnapshot({ channelId: VALID_CHANNEL_ID, title: "x", subscriberCount: 12300, viewCount: 456000, videoCount: 42 }),
-    "Public snapshot: 12300 subscribers, 456000 total views, 42 videos"
+    'Public snapshot for "x": ~12300 subscribers (YouTube reports this rounded to 3 significant figures, not an exact count), 456000 total views, 42 videos'
   );
   assert.equal(
     describePublicChannelSnapshot({ channelId: VALID_CHANNEL_ID, title: "x", subscriberCount: null, viewCount: 456000, videoCount: 42 }),
-    "Public snapshot: subscriber count hidden, 456000 total views, 42 videos"
+    'Public snapshot for "x": subscriber count hidden, 456000 total views, 42 videos'
   );
   assert.equal(
     describePublicChannelSnapshot({ channelId: VALID_CHANNEL_ID, title: "x", subscriberCount: 0, viewCount: null, videoCount: null }),
-    "Public snapshot: 0 subscribers, view count unavailable, video count unavailable"
+    'Public snapshot for "x": ~0 subscribers (YouTube reports this rounded to 3 significant figures, not an exact count), view count unavailable, video count unavailable'
   );
+});
+
+// ---------------------------------------------------------------------------
+// removeFromWatchlist -- added by independent review, 2026-09-26 (docs/roadmap/plans/PHASE_9_PLAN.md).
+// ---------------------------------------------------------------------------
+
+test("AC-MI-13: removeFromWatchlist deletes the channel and every evidence row recorded against it", async () => {
+  const { store, services } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Test" }, { createdVia: "web_ui" });
+  await services.recordEvidence(
+    { researchChannelId: VALID_CHANNEL_ID, observation: "Something", source: "manual observation" },
+    { createdVia: "web_ui" }
+  );
+  assert.equal(store.channels.size, 1);
+  assert.equal(store.evidence.length, 1);
+
+  await services.removeFromWatchlist({ channelId: VALID_CHANNEL_ID });
+
+  assert.equal(store.channels.size, 0);
+  assert.equal(store.evidence.length, 0);
+  await assert.rejects(
+    () => services.getWatchlistEntry({ channelId: VALID_CHANNEL_ID }),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_CHANNEL_NOT_AVAILABLE"
+  );
+});
+
+test("AC-MI-14: removeFromWatchlist is a silent no-op for a channel that was never on the watchlist (idempotent, mirrors localization's removeTrackedLanguage convention)", async () => {
+  const { store, services } = createFixture();
+  await services.removeFromWatchlist({ channelId: OTHER_VALID_CHANNEL_ID });
+  assert.equal(store.channels.size, 0);
+});
+
+test("AC-MI-15: after removal, the same channel id can be added back (never blocked by a stale duplicate check)", async () => {
+  const { services } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "First" }, { createdVia: "web_ui" });
+  await services.removeFromWatchlist({ channelId: VALID_CHANNEL_ID });
+
+  const readded = await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Second" }, { createdVia: "web_ui" });
+  assert.equal(readded.reason, "Second");
 });

@@ -19,6 +19,7 @@ import {
   parseWithSchema,
   recordEvidenceInputSchema,
   recordEvidenceOutputSchema,
+  removeFromWatchlistInputSchema,
 } from "./schemas";
 import type { CreatedVia } from "@/lib/shared-provenance";
 
@@ -27,13 +28,24 @@ import type { CreatedVia } from "@/lib/shared-provenance";
  * (Phase 9 slice 3). Exported for direct unit testing (`AGENTS.md` §L: the "never fabricate"
  * requirement applies to the wording itself, not only to the underlying numbers) -- a hidden or
  * missing field is described as such, never silently omitted or presented as zero.
+ *
+ * Includes `title` (found missing by independent review, 2026-09-26 -- the plan's own §4 in-scope
+ * bullet promises "title... where cheaply available," but the first version of this function
+ * fetched `title` into `PublicChannelSnapshot` and then silently discarded it, leaving an operator
+ * who added a channel by bare `UC...` id with no human-readable name anywhere in the Research
+ * tab). `subscriberCount` is explicitly flagged as YouTube's own rounded approximation (the real
+ * YouTube Data API v3 docs for `channels.list` document `statistics.subscriberCount` as "rounded
+ * to three significant figures," never exact) -- `viewCount`/`videoCount` are not rounded and are
+ * stated plainly.
  */
 export function describePublicChannelSnapshot(snapshot: PublicChannelSnapshot): string {
   const subscribers =
-    snapshot.subscriberCount !== null ? `${snapshot.subscriberCount} subscribers` : "subscriber count hidden";
+    snapshot.subscriberCount !== null
+      ? `~${snapshot.subscriberCount} subscribers (YouTube reports this rounded to 3 significant figures, not an exact count)`
+      : "subscriber count hidden";
   const views = snapshot.viewCount !== null ? `${snapshot.viewCount} total views` : "view count unavailable";
   const videos = snapshot.videoCount !== null ? `${snapshot.videoCount} videos` : "video count unavailable";
-  return `Public snapshot: ${subscribers}, ${views}, ${videos}`;
+  return `Public snapshot for "${snapshot.title}": ${subscribers}, ${views}, ${videos}`;
 }
 
 type StoredResearchChannelForService = {
@@ -84,6 +96,7 @@ type ServiceDependencies = {
   }): Promise<void>;
   listResearchChannels(): Promise<StoredResearchChannelForService[]>;
   getResearchChannelById(id: string): Promise<StoredResearchChannelForService | null>;
+  deleteResearchChannel(id: string): Promise<void>;
   insertResearchEvidence(input: {
     id: string;
     researchChannelId: string;
@@ -114,8 +127,8 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      *
      * Rejects a duplicate `channelId` with `RESEARCH_CHANNEL_ALREADY_WATCHED` rather than
      * silently creating a second row or silently overwriting the existing `reason` -- an
-     * operator who wants to change the reason removes and re-adds the entry explicitly (no
-     * update/remove operation exists yet in this slice; see the plan's §6 slice 2).
+     * operator who wants to change the reason calls `removeFromWatchlist` (below) and re-adds the
+     * entry explicitly (no in-place update/rename operation exists yet -- only add and remove).
      */
     async addToWatchlist(
       input: unknown,
@@ -165,6 +178,20 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       }
 
       return parseWithSchema(getWatchlistEntryOutputSchema, toResearchChannel(row), "get watchlist entry output");
+    },
+
+    /**
+     * Removes a channel from the watchlist, along with every evidence row recorded against it
+     * (added by independent review, 2026-09-26 -- the first version of this module had no way to
+     * correct a mistyped `reason` or a wrong channel id, permanent for the life of the local
+     * database). Idempotent-safe: removing an already-absent channel is a silent no-op, not an
+     * error -- there is nothing destructive about a caller trying to remove something that is
+     * already gone, and this matches this module's own `getResearchChannelById`-based existence
+     * checks used elsewhere (never distinguishing "never existed" from "already removed").
+     */
+    async removeFromWatchlist(input: unknown): Promise<void> {
+      const parsedInput = parseWithSchema(removeFromWatchlistInputSchema, input, "remove from watchlist input");
+      await deps.deleteResearchChannel(parsedInput.channelId);
     },
 
     /**
@@ -268,7 +295,12 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         researchChannelId: parsedInput.researchChannelId,
         observation: describePublicChannelSnapshot(snapshot),
         source: "youtube.channels.list",
-        confidence: "confirmed",
+        // "high", not "confirmed" -- found by independent review (2026-09-26): subscriberCount is
+        // YouTube's own rounded approximation (see describePublicChannelSnapshot's own doc
+        // comment), so labeling this evidence "confirmed" overstates its precision, including for
+        // the all-null case (e.g. a hidden subscriber count with no other stats), which described
+        // nothing concrete yet was still labeled as fully certain.
+        confidence: "high",
         createdVia: callOrigin.createdVia,
       });
 
