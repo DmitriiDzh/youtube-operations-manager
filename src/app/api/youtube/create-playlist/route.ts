@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth";
 import { createPlaylistManagementCore } from "@/lib/playlist-management";
 import { DomainError } from "@/lib/playlist-management/contracts";
 import { getVideoMetadataErrorStatus } from "../../video-metadata/error-status";
+import { parseVideoMetadataJsonBody } from "../../video-metadata/parse-json-body";
 
 type CreatePlaylistRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
@@ -22,12 +23,17 @@ export function createCreatePlaylistPostHandler(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { title, description, privacyStatus } = await request.json();
-    if (!title?.trim()) {
-      return NextResponse.json({ error: "Title is required" }, { status: 400 });
-    }
-
     try {
+      const body = (await parseVideoMetadataJsonBody(request)) as {
+        title?: string;
+        description?: string;
+        privacyStatus?: string;
+      };
+      const { title, description, privacyStatus } = body;
+      if (!title?.trim()) {
+        return NextResponse.json({ error: "Title is required" }, { status: 400 });
+      }
+
       const result = await deps.core.createPlaylist({
         credentialRef: { userId: session.user.id },
         title: title.trim(),

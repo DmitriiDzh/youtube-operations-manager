@@ -1768,7 +1768,7 @@ export function createMcpServer(
     "playlist_add_videos",
     {
       description:
-        "Add one or more videos to a playlist and return stable partial results with attempted/added/failures.",
+        "Add one or more videos to a playlist after strict write-channel guardrail validation (expectedChannelId is REQUIRED), returning stable partial results with attempted/added/failures.",
       inputSchema: playlistAddVideosInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.playlistAddVideos(args)
@@ -1798,7 +1798,7 @@ export function createMcpServer(
     "playlist_remove_videos",
     {
       description:
-        "Remove one or more videos from a playlist and return stable partial results with requested/removed/failures.",
+        "Remove one or more videos from a playlist after strict write-channel guardrail validation (expectedChannelId is REQUIRED), returning stable partial results with requested/removed/failures.",
       inputSchema: playlistRemoveVideosInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.playlistRemoveVideos(args)

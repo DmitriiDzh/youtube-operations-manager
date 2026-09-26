@@ -31,6 +31,10 @@ import { fileURLToPath } from "node:url";
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(THIS_DIR, "..", "..", "..");
 const GATEWAY_DIR = THIS_DIR;
+// Matches read-gateway-inventory.test.ts's own SCAN_ROOTS (independent test-suite audit,
+// 2026-09-26) -- a build/one-off script under scripts/ is just as capable of a direct mutating
+// call as anything under src/, so both inventory tests should scan the same root set.
+const SCAN_ROOTS = ["src", "scripts"];
 
 async function listTsFilesRecursively(dir: string): Promise<string[]> {
   let entries;
@@ -52,6 +56,11 @@ async function listTsFilesRecursively(dir: string): Promise<string[]> {
   return files;
 }
 
+async function listAllScannedFiles(): Promise<string[]> {
+  const lists = await Promise.all(SCAN_ROOTS.map((root) => listTsFilesRecursively(path.join(REPO_ROOT, root))));
+  return lists.flat();
+}
+
 // Every YouTube Data API v3 resource with at least one documented mutating method, and every
 // mutating verb across them (developers.google.com/youtube/v3/docs) -- deliberately broader
 // than just the handful of methods this repository happens to call today, so a future module
@@ -62,11 +71,23 @@ async function listTsFilesRecursively(dir: string): Promise<string[]> {
 // `src/lib/video-metadata/adapters/transcript-provider.ts`, a legitimate, pre-existing
 // read-only caller this test must not flag. `captions.insert/update/delete` (real mutations)
 // are still caught -- only the one verb `download` is excluded, not the whole `captions` resource.
+// Widened 2026-09-26 (independent test-suite audit) after checking every resource's actual
+// method set in the installed `googleapis` package's own type definitions
+// (node_modules/googleapis/build/src/apis/youtube/v3.d.ts): `abuseReports.insert`,
+// `playlistImages.insert/update/delete`, and `thirdPartyLinks.insert/update/delete` were real
+// mutating methods on resources this pattern didn't list at all; `liveBroadcasts.insertCuepoint`
+// was a real mutating verb the old verb alternation (only the literal `insert`) didn't match even
+// though `liveBroadcasts` itself was already listed. The `tests` resource's own `insert` method is
+// deliberately NOT added here despite being real and documented -- "tests" is common enough as an
+// ordinary property/variable name elsewhere in this codebase that including it would create a
+// real false-positive risk (e.g. `someRecord.tests.insert(...)` in unrelated code) for a resource
+// this app will realistically never call; if that ever changes, add it explicitly rather than
+// widening the resource list further.
 const WRITE_CALL_PATTERN =
-  /\.(videos|playlists|playlistItems|captions|thumbnails|channels|channelSections|channelBanners|comments|commentThreads|subscriptions|liveBroadcasts|liveStreams|liveChatBans|liveChatMessages|liveChatModerators|members|watermarks)\.(insert|update|delete|set|unset|rate|reportAbuse|bind|transition|control|markAsSpam|setModerationStatus)\s*\(/;
+  /\.(videos|playlists|playlistItems|playlistImages|captions|thumbnails|channels|channelSections|channelBanners|comments|commentThreads|subscriptions|liveBroadcasts|liveStreams|liveChatBans|liveChatMessages|liveChatModerators|members|watermarks|abuseReports|thirdPartyLinks)\.(insert|insertCuepoint|update|delete|set|unset|rate|reportAbuse|bind|transition|control|markAsSpam|setModerationStatus)\s*\(/;
 
 test("youtube-write-gateway inventory: no file outside this module calls a mutating youtube_v3 method directly", async () => {
-  const allFiles = await listTsFilesRecursively(path.join(REPO_ROOT, "src"));
+  const allFiles = await listAllScannedFiles();
   const offenders: string[] = [];
 
   for (const file of allFiles) {
@@ -88,22 +109,57 @@ test("youtube-write-gateway inventory: no file outside this module calls a mutat
   );
 });
 
-test("youtube-write-gateway inventory: no file outside this module imports its write primitives via a re-export chain that skips assertLiveWritesAuthorized", async () => {
-  // Defense in depth for the three known non-batches call sites: each must call
-  // `assertLiveWritesAuthorized` itself before its own gateway write call, since the gateway's
-  // raw primitives (applyVideoMetadataUpdate, applyVideoDetailsUpdate, the playlist functions)
-  // deliberately do not call it themselves (see index.ts's own module doc comment for why).
-  const requiredCallers = [
-    { file: path.join(REPO_ROOT, "src", "lib", "video-metadata", "adapters", "youtube-api.ts"), writeFn: "applyVideoMetadataUpdate" },
-    { file: path.join(REPO_ROOT, "src", "lib", "video-details", "adapters", "youtube-api.ts"), writeFn: "applyVideoDetailsUpdate" },
-    { file: path.join(REPO_ROOT, "src", "lib", "playlist-management", "adapters", "youtube-api.ts"), writeFn: "createPlaylistForAuthenticated" },
-  ];
+// The gateway's real, network-hitting write primitives (excludes `assertLiveWritesAuthorized`
+// itself and the pure field-whitelist helpers `pickWritable*Fields`, which have no barrier to
+// check). Every caller of any of these must call `assertLiveWritesAuthorized` itself, since the
+// primitives deliberately do not call it themselves (see index.ts's own module doc comment).
+const WRITE_PRIMITIVE_NAMES = [
+  "applyVideoMetadataUpdate",
+  "applyVideoDetailsUpdate",
+  "createPlaylistForAuthenticated",
+  "updatePlaylistForAuthenticated",
+  "deletePlaylistForAuthenticated",
+  "addVideoToPlaylistForAuthenticated",
+  "deletePlaylistItemById",
+];
 
-  for (const { file, writeFn } of requiredCallers) {
+test("youtube-write-gateway inventory: every file that imports a real write primitive also calls assertLiveWritesAuthorized", async () => {
+  // Discovered, not hardcoded (independent test-suite audit, 2026-09-26): the old version of
+  // this test named only 3 files by hand and silently never checked a 4th, real, already-existing
+  // caller (`src/lib/batches/adapters/write-executor.youtube.ts`, which does call the barrier
+  // correctly today -- this fix makes that a proven fact instead of an unverified one). Scanning
+  // for actual importers means a future 5th caller can't slip through the same way.
+  const allFiles = await listAllScannedFiles();
+  const callers: string[] = [];
+
+  for (const file of allFiles) {
+    if (file.endsWith(".test.ts")) continue;
+    if (path.resolve(path.dirname(file)) === path.resolve(GATEWAY_DIR)) continue;
+
+    const content = await readFile(file, "utf8");
+    const importsAnyWritePrimitive = WRITE_PRIMITIVE_NAMES.some((name) => new RegExp(`\\b${name}\\b`).test(content));
+    if (importsAnyWritePrimitive) {
+      callers.push(file);
+    }
+  }
+
+  assert.ok(callers.length > 0, "Expected at least one real caller of a write-gateway primitive -- found none, check the scan itself");
+
+  // A plain substring check would be satisfied by a comment merely mentioning the function's
+  // name (verified this is a real, not hypothetical, gap this fix closes) -- require an actual
+  // call shape instead. Note: this does NOT verify the call happens *before* the write primitive
+  // call in execution order -- that would require real call-graph analysis across function
+  // boundaries (a caller may correctly call the barrier in one function and the write primitive
+  // in a different function it invokes, e.g. `write-executor.youtube.ts`'s `attemptWrite` ->
+  // `performYoutubeWrite` split, which is correct but would not appear "before" in raw file-text
+  // order) -- out of scope for a regex-based inventory test; this only proves the call exists.
+  const callPattern = /assertLiveWritesAuthorized\s*\(/;
+  for (const file of callers) {
     const content = await readFile(file, "utf8");
     assert.ok(
-      content.includes("assertLiveWritesAuthorized"),
-      `${path.relative(REPO_ROOT, file)} calls the gateway's ${writeFn} but never calls assertLiveWritesAuthorized`
+      callPattern.test(content),
+      `${path.relative(REPO_ROOT, file)} imports a write-gateway primitive but never actually calls ` +
+        `assertLiveWritesAuthorized() (a mention in a comment or string doesn't count)`
     );
   }
 });

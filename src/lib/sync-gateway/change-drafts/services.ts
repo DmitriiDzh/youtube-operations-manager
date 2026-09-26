@@ -644,16 +644,26 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
           }
         };
 
-        // Provenance is diffed independently by its OWN key set, exactly like `changes` below --
-        // NOT derived from which change sets are being removed (found by independent review: a
-        // change set that SURVIVES the discard, because the adopted peer's document also has it,
-        // can still have carried a provenance entry only the discarded document knew about -- the
-        // peer's own version of that change set may simply have no provenance recorded for it.
-        // Scoping cleanup to "only when the parent change set is removed" misses exactly that
-        // case and leaves a real orphan row). Run BEFORE the change-set loop below: provenance has
-        // a NOT NULL, un-cascaded FK to change_sets, so if the same change set is also being
-        // removed, its provenance row must be gone first or `deleteChangeSet` fails a real
-        // constraint.
+        // Deletion order matters: `changes.change_set_id` AND `ai_localization_generation_
+        // provenance.change_set_id` are both NOT NULL, un-cascaded FKs to `change_sets(id)`, and
+        // this connection runs with `foreign_keys=ON` (src/lib/db.ts's `deleteStoredGeneration
+        // ProvenanceForChangeSet` comment). A change set being discarded here almost always has
+        // its own child changes discarded in the SAME run too, so both children must be deleted
+        // BEFORE their parent change-set row, or the real `deleteChangeSet` call throws a live FK
+        // violation. `deleteRowSafely` swallows that error (logs, doesn't rethrow) precisely so a
+        // transient failure never blocks the rest of cleanup or the discard itself -- but that
+        // same swallowing means a wrong order here fails SILENTLY, leaving the change-set row
+        // permanently orphaned (found by independent review: the previous order deleted change
+        // sets before changes, reproducing exactly the phantom-row bug this cleanup exists to fix,
+        // one level up -- undetected because every existing test used an in-memory fake projection
+        // with no FK enforcement to catch it; see sql-projection.test.ts's real-SQLite regression).
+        //
+        // Provenance is diffed independently by its OWN key set, NOT derived from which change
+        // sets are being removed: a change set that SURVIVES the discard, because the adopted
+        // peer's document also has it, can still have carried a provenance entry only the
+        // discarded document knew about -- the peer's own version of that change set may simply
+        // have no provenance recorded for it. Scoping cleanup to "only when the parent change set
+        // is removed" misses exactly that case and leaves a real orphan row.
         for (const provenanceId of Object.keys(discardedDoc.provenance ?? {})) {
           if (provenanceId in (adopted.provenance ?? {})) continue;
           const changeSetId = discardedDoc.provenance![provenanceId]!.changeSetId;
@@ -661,15 +671,15 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
             deps.projection.deleteProvenanceForChangeSet(changeSetId)
           );
         }
+        for (const changeId of Object.keys(discardedDoc.changes)) {
+          if (changeId in adopted.changes) continue;
+          await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { changeId }, () => deps.projection.deleteChange(changeId));
+        }
         for (const changeSetId of Object.keys(discardedDoc.changeSets)) {
           if (changeSetId in adopted.changeSets) continue;
           await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { changeSetId }, () =>
             deps.projection.deleteChangeSet(changeSetId)
           );
-        }
-        for (const changeId of Object.keys(discardedDoc.changes)) {
-          if (changeId in adopted.changes) continue;
-          await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { changeId }, () => deps.projection.deleteChange(changeId));
         }
       }
 

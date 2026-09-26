@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth";
 import { createPlaylistManagementCore } from "@/lib/playlist-management";
 import { DomainError } from "@/lib/playlist-management/contracts";
 import { getVideoMetadataErrorStatus } from "../../video-metadata/error-status";
+import { parseVideoMetadataJsonBody } from "../../video-metadata/parse-json-body";
 
 type RemoveFromPlaylistRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
@@ -22,19 +23,25 @@ export function createRemoveFromPlaylistPostHandler(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { videoIds, playlistId } = await request.json();
-    if (!videoIds?.length || !playlistId) {
-      return NextResponse.json(
-        { error: "Missing videoIds or playlistId" },
-        { status: 400 }
-      );
-    }
-
     try {
+      const body = (await parseVideoMetadataJsonBody(request)) as {
+        videoIds?: string[];
+        playlistId?: string;
+        expectedChannelId?: string;
+      };
+      const { videoIds, playlistId, expectedChannelId } = body;
+      if (!videoIds?.length || !playlistId || !expectedChannelId) {
+        return NextResponse.json(
+          { error: "Missing videoIds, playlistId, or expectedChannelId" },
+          { status: 400 }
+        );
+      }
+
       const result = await deps.core.removeVideosFromPlaylist({
         credentialRef: { userId: session.user.id },
         videoIds,
         playlistId,
+        expectedChannelId,
       });
 
       return NextResponse.json({ removed: result.removed });

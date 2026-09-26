@@ -22,20 +22,25 @@ function createFixture(opts: {
     },
   };
 
+  let monitoringCallCount = 0;
   const monitoringClient = {
     async fetchDailyQuotaLimit(args: { service: string }) {
+      monitoringCallCount += 1;
       if (args.service === opts.throwForService) throw new Error("simulated Monitoring API failure");
       return opts.limitByService?.[args.service] ?? null;
     },
     async fetchDailyQuotaUsage(args: { service: string }) {
+      monitoringCallCount += 1;
       if (args.service === opts.throwForService) throw new Error("simulated Monitoring API failure");
       return opts.usageByService?.[args.service] ?? 0;
     },
     async fetchPerMinuteQuotaLimit() {
+      monitoringCallCount += 1;
       if (opts.throwForMonitoringOwnQuota) throw new Error("simulated Monitoring API failure");
       return opts.monitoringPerMinuteLimit ?? null;
     },
     async fetchLatestMinuteUsage() {
+      monitoringCallCount += 1;
       if (opts.throwForMonitoringOwnQuota) throw new Error("simulated Monitoring API failure");
       return opts.monitoringPerMinuteUsage ?? 0;
     },
@@ -48,13 +53,18 @@ function createFixture(opts: {
     projectNumber: opts.projectNumber ?? "131970858038",
   });
 
-  return { services };
+  return { services, getMonitoringCallCount: () => monitoringCallCount };
 }
 
+// Independent test-suite audit (2026-09-26): this test's own title claimed "never calls the real
+// APIs" but the fixture had no call-tracking at all -- production code is correct today (it
+// early-returns before any monitoringClient call), but nothing here would have caught a
+// regression that started calling the API anyway before discarding the result.
 test("getQuotaStatus: not connected -> connected: false, all three services unknown, never calls the real APIs", async () => {
-  const { services } = createFixture({ connected: false });
+  const { services, getMonitoringCallCount } = createFixture({ connected: false });
   const status = await services.getQuotaStatus();
   assert.deepEqual(status, { connected: false, dataApi: null, analytics: null, monitoring: null });
+  assert.equal(getMonitoringCallCount(), 0, "no monitoringClient method should be called when not connected");
 });
 
 test("getQuotaStatus: no project number derivable (GOOGLE_CLIENT_ID unset/malformed) -> degrades to unknown rather than throwing", async () => {

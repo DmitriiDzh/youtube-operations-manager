@@ -392,6 +392,43 @@ test("collectMetrics: a fresh mark backed only by a run that never covered yeste
   assert.equal(analyticsCalls.length, 1);
 });
 
+// Independent test-suite audit (2026-09-26): the test above only exercises the DATE-RANGE half of
+// `genuineRunCoversExpectedDate`'s condition (`run.requestedStartDate <= expectedFreshThroughDate
+// && run.requestedEndDate >= expectedFreshThroughDate`) -- its recorded run's date range simply
+// never touches yesterday. The OTHER half of that same `&&` -- `(run.videoCount === 0 ||
+// run.upsertsIssued > 0)` -- had zero coverage: a run whose date range genuinely covers yesterday
+// but was itself a TOTAL FAILURE (attempted real videos, landed zero rows) must be treated
+// exactly the same as "no run at all," per the same owner principle this whole gate exists to
+// enforce (2026-09-25: a run that touched no real data never "genuinely completed").
+test("collectMetrics: a fresh mark backed only by a run that covers yesterday but was a total failure (zero upserts, non-zero videos) is treated as stale and retried", async () => {
+  const { services, channelAccess, analyticsCalls, lastAutoCollectedAtByChannel, collectionRuns } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+    now: new Date("2026-09-22T13:00:00Z"), // "yesterday" = 2026-09-21
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  lastAutoCollectedAtByChannel.set("UC_A", new Date("2026-09-22T12:30:00Z")); // today, after the boundary
+  collectionRuns.push({
+    channelId: "UC_A",
+    requestedStartDate: "2026-09-15",
+    requestedEndDate: "2026-09-21", // genuinely covers yesterday (2026-09-21) ...
+    videoCount: 1, // ... but every one of its videos failed ...
+    upsertsIssued: 0, // ... so zero rows actually landed: a total failure, not a genuine success.
+    skippedVideoIds: ["v1"],
+    ranAt: new Date("2026-09-22T12:30:00Z"),
+  });
+
+  const result = await services.collectMetrics({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-09-15",
+    endDate: "2026-09-21",
+  });
+
+  assert.equal(result.videoCount, 1, "the mark was not trusted -- a real collection ran instead of being refused");
+  assert.equal(analyticsCalls.length, 1);
+});
+
 // The daily-freshness gate must apply no matter WHICH caller triggers the second attempt (owner
 // instruction: "ни человеку, ни агенту, ни каким-то скриптам") -- exercised here as an
 // auto-collection marking the channel fresh, then a manual "Collect now" call for the same
@@ -439,13 +476,19 @@ test("collectMetrics: a credential-resolution failure does not mark the channel 
   });
   await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
 
-  await assert.rejects(() =>
-    services.collectMetrics({
-      credentialRef: { userId: "user-1" },
-      channelId: "UC_A",
-      startDate: "2026-09-01",
-      endDate: "2026-09-01",
-    })
+  // Independent test-suite audit (2026-09-26): this assertion previously had no predicate at
+  // all -- it would pass regardless of what was thrown, or even a wrong error code. Per
+  // services.ts, a credential-resolution failure is mapped via `mapUnknownError(error,
+  // "unauthorized")`; check that mapping actually happened.
+  await assert.rejects(
+    () =>
+      services.collectMetrics({
+        credentialRef: { userId: "user-1" },
+        channelId: "UC_A",
+        startDate: "2026-09-01",
+        endDate: "2026-09-01",
+      }),
+    (error: unknown) => error instanceof DomainError && error.code === "unauthorized"
   );
   assert.equal(
     lastAutoCollectedAtByChannel.get("UC_A") ?? null,
@@ -952,6 +995,10 @@ test("getChannelOverview propagates a credential-resolution failure (e.g. missin
   });
   await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
 
+  // Independent test-suite audit (2026-09-26): checking only `error instanceof DomainError`
+  // would not catch a bug that mapped this failure to the wrong error code -- services.ts's own
+  // comment above (and the code) say this specific case maps via `mapUnknownError(error,
+  // "unauthorized")`, so assert that code explicitly.
   await assert.rejects(
     () =>
       services.getChannelOverview({
@@ -960,7 +1007,7 @@ test("getChannelOverview propagates a credential-resolution failure (e.g. missin
         startDate: "2026-08-26",
         endDate: "2026-09-22",
       }),
-    (error: unknown) => error instanceof DomainError
+    (error: unknown) => error instanceof DomainError && error.code === "unauthorized"
   );
   assert.equal(channelAnalyticsCalls.length, 0, "no real Analytics API call was made once credentials failed to resolve");
 });
@@ -1125,6 +1172,9 @@ test("getChannelBreakdown propagates a credential-resolution failure (e.g. missi
   });
   await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
 
+  // Independent test-suite audit (2026-09-26): checking only `error instanceof DomainError`
+  // would not catch a bug that mapped this failure to the wrong error code -- services.ts maps
+  // this specific case via `mapUnknownError(error, "unauthorized")`.
   await assert.rejects(
     () =>
       services.getChannelBreakdown({
@@ -1134,7 +1184,7 @@ test("getChannelBreakdown propagates a credential-resolution failure (e.g. missi
         endDate: "2026-09-22",
         breakdown: "trafficSources",
       }),
-    (error: unknown) => error instanceof DomainError
+    (error: unknown) => error instanceof DomainError && error.code === "unauthorized"
   );
   assert.equal(channelBreakdownCalls.length, 0, "no real Analytics API call was made once credentials failed to resolve");
 });
@@ -1244,6 +1294,9 @@ test("getVideoRetentionCurve propagates a credential-resolution failure (e.g. mi
   });
   await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
 
+  // Independent test-suite audit (2026-09-26): checking only `error instanceof DomainError`
+  // would not catch a bug that mapped this failure to the wrong error code -- services.ts maps
+  // this specific case via `mapUnknownError(error, "unauthorized")`.
   await assert.rejects(
     () =>
       services.getVideoRetentionCurve({
@@ -1253,7 +1306,7 @@ test("getVideoRetentionCurve propagates a credential-resolution failure (e.g. mi
         startDate: "2026-08-26",
         endDate: "2026-09-22",
       }),
-    (error: unknown) => error instanceof DomainError
+    (error: unknown) => error instanceof DomainError && error.code === "unauthorized"
   );
   assert.equal(channelBreakdownCalls.length, 0, "no real Analytics API call was made once credentials failed to resolve");
 });

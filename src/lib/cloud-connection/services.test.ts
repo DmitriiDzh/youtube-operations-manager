@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createCloudConnectionServices } from "./services";
 import { CLOUD_CONNECTION_SCOPE, DomainError } from "./contracts";
-import { encryptSecret } from "./crypto";
+import { decryptSecret, encryptSecret } from "./crypto";
 
 const FIXED_KEY = Buffer.alloc(32, 7);
 
@@ -19,6 +19,7 @@ function createFixture(opts: {
   now?: Date;
   getToken?: () => Promise<{ tokens: Record<string, unknown> }>;
   refreshAccessToken?: () => Promise<{ credentials: Record<string, unknown> }>;
+  revokeToken?: (token: string) => Promise<void>;
 } = {}) {
   let row: FakeStoredRow | null = null;
   const revokeCalls: string[] = [];
@@ -67,9 +68,11 @@ function createFixture(opts: {
           })),
       }) as unknown as ReturnType<typeof import("@/lib/auth").createGoogleOAuthClient>) as never,
     fetchIdentity: async () => ({ userId: "sub-1", email: "owner@example.com", name: null, image: null }),
-    revokeToken: async (token: string) => {
-      revokeCalls.push(token);
-    },
+    revokeToken:
+      opts.revokeToken ??
+      (async (token: string) => {
+        revokeCalls.push(token);
+      }),
     generateState: () => "fixed-state-value",
   };
 
@@ -140,8 +143,19 @@ test("completeConnect: success stores the encrypted token set and returns the pu
   });
 
   const row = getRow()!;
+  // Independent test-suite audit (2026-09-26): checking the raw base64 ciphertext string for a
+  // plaintext substring does not prove real AES encryption happened -- base64-encoding a JSON
+  // payload containing these exact strings does NOT preserve the substring in its output either
+  // way, so this check alone would also pass for a hypothetical regression where completeConnect
+  // stored a merely base64-"encoded" (not actually encrypted) token set. Decode first, and
+  // separately prove a real decrypt round-trip recovers the exact original tokens.
   assert.ok(!row.ciphertext.includes("fake-access-token"), "the raw access token must never appear in the stored row");
   assert.ok(!row.ciphertext.includes("fake-refresh-token"), "the raw refresh token must never appear in the stored row");
+
+  const decryptedJson = decryptSecret({ ciphertext: row.ciphertext, iv: row.iv, authTag: row.authTag }, FIXED_KEY);
+  const decoded = JSON.parse(decryptedJson);
+  assert.equal(decoded.accessToken, "fake-access-token");
+  assert.equal(decoded.refreshToken, "fake-refresh-token");
 });
 
 test("completeConnect: a token exchange with no access_token is refused", async () => {
@@ -202,6 +216,32 @@ test("disconnect: revokes the refresh token with Google, then clears the stored 
 
   assert.deepEqual(revokeCalls, ["fake-refresh-token"]);
   assert.equal(getRow(), null);
+});
+
+// Independent test-suite audit (2026-09-26): disconnect's own doc comment states it clears the
+// row "regardless of whether the revoke call itself succeeded" (a try/finally), but both
+// pre-existing disconnect tests used an always-succeeding revoke fake -- the finally branch was
+// never actually exercised.
+test("disconnect: clears the stored row even when Google's revoke call fails", async () => {
+  const { services, getRow } = createFixture({
+    revokeToken: async () => {
+      throw new Error("revoke endpoint unreachable");
+    },
+  });
+  await services.completeConnect({
+    code: "auth-code",
+    state: "fixed-state-value",
+    expectedState: "fixed-state-value",
+    redirectUri: "http://localhost:3000/api/cloud-connection/callback",
+  });
+  assert.ok(getRow());
+
+  // The revoke failure still propagates (try/finally re-throws after cleanup runs) -- the row
+  // being cleared regardless is what this test actually verifies, not that disconnect swallows
+  // the error.
+  await assert.rejects(() => services.disconnect(), /revoke endpoint unreachable/);
+
+  assert.equal(getRow(), null, "the local row must be cleared even though Google's revoke call failed");
 });
 
 test("resolveCloudCredentials: nothing connected -> refuses", async () => {
@@ -285,8 +325,14 @@ test("resolveCloudCredentials: expired with no refresh token -> refuses rather t
 
 // Sanity check on the crypto round-trip used by the fixture itself, so a future change to the
 // token-set JSON shape doesn't silently start double-encoding.
+// Independent test-suite audit (2026-09-26): this test never actually called decryptSecret --
+// it would have passed even if decryption were completely broken or removed. Completed the
+// actual round-trip this module's own re-exported encryptSecret/decryptSecret wrap.
 test("sanity: encryptSecret/decryptSecret round-trips a token-set JSON blob exactly", () => {
   const payload = { accessToken: "a", refreshToken: "b", tokenExpiry: 123 };
   const encrypted = encryptSecret(JSON.stringify(payload), FIXED_KEY);
   assert.ok(encrypted.ciphertext.length > 0);
+
+  const decrypted = decryptSecret(encrypted, FIXED_KEY);
+  assert.deepEqual(JSON.parse(decrypted), payload);
 });

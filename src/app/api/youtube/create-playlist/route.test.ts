@@ -62,6 +62,50 @@ test("create-playlist route rejects missing title", async () => {
   assert.deepEqual(payload, { error: "Title is required" });
 });
 
+// Independent test-suite audit (2026-09-26): this route implements a 401 pre-auth check but had
+// no test proving it, unlike its sibling GET route (../playlists/route.test.ts).
+test("create-playlist route returns unauthorized when session is missing", async () => {
+  const handler = createCreatePlaylistPostHandler({
+    getSession: async () => null,
+    core: {
+      createPlaylist: async () => ({
+        playlist: { id: "unused", title: "unused", description: "", privacyStatus: "private" },
+      }),
+    },
+  });
+
+  const response = await handler(makeRequest({ title: "Roadtrip" }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(payload, { error: "Unauthorized" });
+});
+
+// Independent test-suite audit (2026-09-26): this route used to parse the request body with raw
+// `request.json()` before entering its try block, so a malformed body threw an uncaught
+// SyntaxError -> bare 500. Now routed through parseVideoMetadataJsonBody inside the try block.
+test("create-playlist route surfaces malformed JSON as a structured 400, not a bare 500", async () => {
+  const handler = createCreatePlaylistPostHandler({
+    getSession: async () => ({ user: { id: "user-1" } }),
+    core: {
+      createPlaylist: async () => ({
+        playlist: { id: "unused", title: "unused", description: "", privacyStatus: "private" },
+      }),
+    },
+  });
+
+  const request = new Request("http://localhost/api/youtube/create-playlist", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{not valid json",
+  });
+  const response = await handler(request);
+  const payload = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(payload.error, "validation_failed");
+});
+
 // Regression test: before this fix, a DomainError thrown by the core (e.g. the gateway's
 // live_writes_disabled, src/lib/youtube-write-gateway) propagated uncaught, producing a bare
 // 500 with no JSON body -- discovered live 2026-09-21 while independently verifying BL-046

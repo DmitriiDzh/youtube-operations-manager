@@ -4,6 +4,26 @@ import { DomainError } from "@/lib/video-metadata/contracts";
 import { createCliAuthService } from "./services";
 import type { ActiveAuthStorage } from "./adapters/active-auth-storage";
 
+type CliAuthDbStub = NonNullable<
+  NonNullable<Parameters<typeof createCliAuthService>[0]>["db"]
+>;
+
+// Independent test-suite audit (2026-09-26): this exact 7-key db stub was duplicated, with only
+// per-test overrides differing, across all 14 tests in this file. Consolidated into one factory
+// with the same implicit no-op/null defaults every inline occurrence already used.
+function makeDbStub(overrides: Partial<CliAuthDbStub> = {}): CliAuthDbStub {
+  return {
+    upsertUser: async () => undefined,
+    listUsers: async () => [],
+    getUserSummary: async () => null,
+    getUserTokens: async () => null,
+    clearUserTokens: async () => undefined,
+    getSelectedChannelId: async () => null,
+    setSelectedChannelId: async () => undefined,
+    ...overrides,
+  };
+}
+
 function makeStorageStub(initialUserId: string | null = null): ActiveAuthStorage {
   let current =
     initialUserId === null
@@ -33,15 +53,7 @@ function makeStorageStub(initialUserId: string | null = null): ActiveAuthStorage
 test("resolveEffectiveCredentialRef keeps explicit credential precedence", async () => {
   const service = createCliAuthService({
     storage: makeStorageStub("active-user"),
-    db: {
-      upsertUser: async () => undefined,
-      listUsers: async () => [],
-      getUserSummary: async () => null,
-      getUserTokens: async () => null,
-      clearUserTokens: async () => undefined,
-      getSelectedChannelId: async () => null,
-      setSelectedChannelId: async () => undefined,
-    },
+    db: makeDbStub(),
   });
 
   const resolved = await service.resolveEffectiveCredentialRef({
@@ -53,9 +65,7 @@ test("resolveEffectiveCredentialRef keeps explicit credential precedence", async
 test("resolveEffectiveCredentialRef falls back to active context", async () => {
   const service = createCliAuthService({
     storage: makeStorageStub("active-user"),
-    db: {
-      upsertUser: async () => undefined,
-      listUsers: async () => [],
+    db: makeDbStub({
       getUserSummary: async (userId: string) => ({
         userId,
         email: `${userId}@example.com`,
@@ -63,11 +73,7 @@ test("resolveEffectiveCredentialRef falls back to active context", async () => {
         tokenExpiry: null,
         hasRefreshToken: true,
       }),
-      getUserTokens: async () => null,
-      clearUserTokens: async () => undefined,
-      getSelectedChannelId: async () => null,
-      setSelectedChannelId: async () => undefined,
-    },
+    }),
   });
 
   const resolved = await service.resolveEffectiveCredentialRef({});
@@ -77,15 +83,7 @@ test("resolveEffectiveCredentialRef falls back to active context", async () => {
 test("resolveEffectiveCredentialRef fails with AUTH_USER_NOT_FOUND when active user is missing", async () => {
   const service = createCliAuthService({
     storage: makeStorageStub("active-user"),
-    db: {
-      upsertUser: async () => undefined,
-      listUsers: async () => [],
-      getUserSummary: async () => null,
-      getUserTokens: async () => null,
-      clearUserTokens: async () => undefined,
-      getSelectedChannelId: async () => null,
-      setSelectedChannelId: async () => undefined,
-    },
+    db: makeDbStub(),
   });
 
   await assert.rejects(
@@ -166,9 +164,7 @@ test("whoami returns enriched write-channel context without secrets", async () =
         recommendedAction: "Reauthenticate with the expected channel or select active.",
       }),
     },
-    db: {
-      upsertUser: async () => undefined,
-      listUsers: async () => [],
+    db: makeDbStub({
       getUserSummary: async (userId: string) => ({
         userId,
         email: `${userId}@example.com`,
@@ -176,11 +172,8 @@ test("whoami returns enriched write-channel context without secrets", async () =
         tokenExpiry: null,
         hasRefreshToken: true,
       }),
-      getUserTokens: async () => null,
-      clearUserTokens: async () => undefined,
       getSelectedChannelId: async () => "UC_SELECTED",
-      setSelectedChannelId: async () => undefined,
-    },
+    }),
   });
 
   const result = await service.whoami();
@@ -228,11 +221,10 @@ test("loginDevice persists user and marks active context", async () => {
       }),
       revokeToken: async () => undefined,
     },
-    db: {
+    db: makeDbStub({
       upsertUser: async (input) => {
         upsertedUserId = input.userId;
       },
-      listUsers: async () => [],
       getUserSummary: async (userId: string) => ({
         userId,
         email: `${userId}@example.com`,
@@ -240,11 +232,7 @@ test("loginDevice persists user and marks active context", async () => {
         tokenExpiry: null,
         hasRefreshToken: true,
       }),
-      getUserTokens: async () => null,
-      clearUserTokens: async () => undefined,
-      getSelectedChannelId: async () => null,
-      setSelectedChannelId: async () => undefined,
-    },
+    }),
   });
 
   const result = await service.loginDevice();
@@ -291,9 +279,7 @@ test("login uses fixed loopback redirect URI from callback server", async () => 
       },
       revokeToken: async () => undefined,
     },
-    db: {
-      upsertUser: async () => undefined,
-      listUsers: async () => [],
+    db: makeDbStub({
       getUserSummary: async (userId: string) => ({
         userId,
         email: `${userId}@example.com`,
@@ -301,11 +287,7 @@ test("login uses fixed loopback redirect URI from callback server", async () => 
         tokenExpiry: null,
         hasRefreshToken: true,
       }),
-      getUserTokens: async () => null,
-      clearUserTokens: async () => undefined,
-      getSelectedChannelId: async () => null,
-      setSelectedChannelId: async () => undefined,
-    },
+    }),
     startLoopbackCallbackServer: async () => ({
       redirectUri: "http://127.0.0.1:8787",
       waitForCallback: Promise.resolve({ code: "auth-code", state: "state" }),
@@ -344,9 +326,7 @@ test("revoke fails if remote revoke fails and keeps local tokens untouched", asy
         throw new Error("remote revoke failed");
       },
     },
-    db: {
-      upsertUser: async () => undefined,
-      listUsers: async () => [],
+    db: makeDbStub({
       getUserSummary: async (userId: string) => ({
         userId,
         email: "active@example.com",
@@ -364,9 +344,7 @@ test("revoke fails if remote revoke fails and keeps local tokens untouched", asy
       clearUserTokens: async () => {
         clearTokensCalled = true;
       },
-      getSelectedChannelId: async () => null,
-      setSelectedChannelId: async () => undefined,
-    },
+    }),
   });
 
   await assert.rejects(() => service.revoke(), /remote revoke failed/);
@@ -420,9 +398,7 @@ test("listKnownWriteChannels returns minimal-safe known channels from write-cont
         throw new Error("not used");
       },
     },
-    db: {
-      upsertUser: async () => undefined,
-      listUsers: async () => [],
+    db: makeDbStub({
       getUserSummary: async (userId: string) => ({
         userId,
         email: `${userId}@example.com`,
@@ -430,11 +406,8 @@ test("listKnownWriteChannels returns minimal-safe known channels from write-cont
         tokenExpiry: null,
         hasRefreshToken: true,
       }),
-      getUserTokens: async () => null,
-      clearUserTokens: async () => undefined,
       getSelectedChannelId: async () => "UC_SELECTED",
-      setSelectedChannelId: async () => undefined,
-    },
+    }),
   });
 
   const result = await service.listKnownWriteChannels();
@@ -477,9 +450,7 @@ test("selectWriteChannel persists requested channel and returns mismatch state",
         recommendedAction: "Reauthenticate with the expected channel or select the active channel.",
       }),
     },
-    db: {
-      upsertUser: async () => undefined,
-      listUsers: async () => [],
+    db: makeDbStub({
       getUserSummary: async (userId: string) => ({
         userId,
         email: `${userId}@example.com`,
@@ -487,11 +458,8 @@ test("selectWriteChannel persists requested channel and returns mismatch state",
         tokenExpiry: null,
         hasRefreshToken: true,
       }),
-      getUserTokens: async () => null,
-      clearUserTokens: async () => undefined,
       getSelectedChannelId: async () => "UC_SELECTED",
-      setSelectedChannelId: async () => undefined,
-    },
+    }),
   });
 
   const result = await service.selectWriteChannel({
@@ -506,9 +474,7 @@ test("selectWriteChannel persists requested channel and returns mismatch state",
 test("selectWriteChannel rejects invalid channelId with validation_failed", async () => {
   const service = createCliAuthService({
     storage: makeStorageStub("active-user"),
-    db: {
-      upsertUser: async () => undefined,
-      listUsers: async () => [],
+    db: makeDbStub({
       getUserSummary: async (userId: string) => ({
         userId,
         email: `${userId}@example.com`,
@@ -516,11 +482,7 @@ test("selectWriteChannel rejects invalid channelId with validation_failed", asyn
         tokenExpiry: null,
         hasRefreshToken: true,
       }),
-      getUserTokens: async () => null,
-      clearUserTokens: async () => undefined,
-      getSelectedChannelId: async () => null,
-      setSelectedChannelId: async () => undefined,
-    },
+    }),
   });
 
   await assert.rejects(
@@ -574,9 +536,7 @@ test("selectUser switches activeUserId and returns post-switch write-context fee
         throw new Error("not used");
       },
     },
-    db: {
-      upsertUser: async () => undefined,
-      listUsers: async () => [],
+    db: makeDbStub({
       getUserSummary: async (userId: string) => {
         if (userId !== "user-b") return null;
         return {
@@ -587,11 +547,8 @@ test("selectUser switches activeUserId and returns post-switch write-context fee
           hasRefreshToken: true,
         };
       },
-      getUserTokens: async () => null,
-      clearUserTokens: async () => undefined,
       getSelectedChannelId: async () => "UC_SELECTED",
-      setSelectedChannelId: async () => undefined,
-    },
+    }),
   });
 
   const result = await service.selectUser({ userId: "user-b" });
@@ -610,15 +567,7 @@ test("selectUser fails with AUTH_USER_NOT_FOUND and does not persist changes", a
   const storage = makeStorageStub("user-a");
   const service = createCliAuthService({
     storage,
-    db: {
-      upsertUser: async () => undefined,
-      listUsers: async () => [],
-      getUserSummary: async () => null,
-      getUserTokens: async () => null,
-      clearUserTokens: async () => undefined,
-      getSelectedChannelId: async () => null,
-      setSelectedChannelId: async () => undefined,
-    },
+    db: makeDbStub(),
   });
 
   await assert.rejects(
@@ -667,9 +616,7 @@ test("selectUser is idempotent and keeps changed=false for same active user", as
         throw new Error("not used");
       },
     },
-    db: {
-      upsertUser: async () => undefined,
-      listUsers: async () => [],
+    db: makeDbStub({
       getUserSummary: async (userId: string) => ({
         userId,
         email: `${userId}@example.com`,
@@ -677,11 +624,8 @@ test("selectUser is idempotent and keeps changed=false for same active user", as
         tokenExpiry: null,
         hasRefreshToken: true,
       }),
-      getUserTokens: async () => null,
-      clearUserTokens: async () => undefined,
       getSelectedChannelId: async () => "UC_SELECTED",
-      setSelectedChannelId: async () => undefined,
-    },
+    }),
   });
 
   const result = await service.selectUser({ userId: "user-a" });
@@ -722,9 +666,7 @@ test("selectUser updates implicit fallback used by resolveEffectiveCredentialRef
         throw new Error("not used");
       },
     },
-    db: {
-      upsertUser: async () => undefined,
-      listUsers: async () => [],
+    db: makeDbStub({
       getUserSummary: async (userId: string) => ({
         userId,
         email: `${userId}@example.com`,
@@ -732,11 +674,7 @@ test("selectUser updates implicit fallback used by resolveEffectiveCredentialRef
         tokenExpiry: null,
         hasRefreshToken: true,
       }),
-      getUserTokens: async () => null,
-      clearUserTokens: async () => undefined,
-      getSelectedChannelId: async () => null,
-      setSelectedChannelId: async () => undefined,
-    },
+    }),
   });
 
   await service.selectUser({ userId: "user-b" });

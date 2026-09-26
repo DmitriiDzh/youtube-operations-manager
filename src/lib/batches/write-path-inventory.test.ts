@@ -54,25 +54,37 @@ async function listTsFilesRecursively(dir: string): Promise<string[]> {
 }
 
 // Every one of these is either a function that accepts/invokes a `WriteExecutor`
-// (`executeBatch`, `executeWithRetry`, `recoverBatch`, `resolveUnknownLedgerRow`), or a
-// symbol that IS the real/fake write executor itself. Read-only/dry-run-only symbols
-// (`createBatchCore`, `createBatch`, `listBatchesByChannel`, `requireBatchForChannel`,
-// `listLedgerRows`, `prepareBatchExecution`, `getBatchErrorReport`, audit readers, etc.)
-// are legitimately used by the Web UI/API and are NOT on this list.
+// (`executeBatch`, `executeWithRetry`, `recoverBatch`, `resolveUnknownLedgerRow`,
+// `executeSingleAttempt`), a symbol that IS the real/fake write executor itself, or the Layer-1
+// gate that constructs one. Read-only/dry-run-only symbols (`createBatchCore`, `createBatch`,
+// `listBatchesByChannel`, `requireBatchForChannel`, `listLedgerRows`, `prepareBatchExecution`,
+// `getBatchErrorReport`, audit readers, etc.) are legitimately used by the Web UI/API and are
+// NOT on this list.
+// Widened 2026-09-26 (independent test-suite audit): this list omitted two symbols that
+// together form a live-write-capable path with none of `executeWithRetry`'s audit/ledger-
+// transition/lock-release guarantees -- `executeSingleAttempt` (exported from
+// `createBatchServices`, a real Slice-1-era function still covered by `services.test.ts`, but
+// with zero production callers today -- kept, not deleted, since it's genuinely tested; a
+// future route calling it directly would previously have passed this test undetected) and
+// `createLiveWriteExecutorIfEnabled` (importable without the string "WriteExecutor" ever
+// appearing at an unannotated call site -- its one legitimate caller is already on the
+// allowlist below).
 const FORBIDDEN_SYMBOLS = [
   "executeBatch",
+  "executeSingleAttempt",
   "executeWithRetry",
   "recoverBatch",
   "resolveUnknownLedgerRow",
   "WriteExecutor",
   "createYoutubeWriteExecutor",
   "createScriptedFakeWriteExecutor",
+  "createLiveWriteExecutorIfEnabled",
   "performYoutubeWrite",
 ];
 
 // The one explicitly-authorized exception (owner instruction, 2026-09-21): the route that
-// actually executes a live batch necessarily references `executeBatch`/`WriteExecutor`. Its
-// own Layer 1 gate (`createLiveWriteExecutorIfEnabled`, checked at the top of this file's
+// actually executes a live batch necessarily references `executeBatch`/`WriteExecutor`/
+// `createLiveWriteExecutorIfEnabled`. Its own Layer 1 gate (checked at the top of this file's
 // header comment) is what keeps this from being reachable unless the Settings-tab toggle is
 // on -- this allowlist is deliberately exactly one file, not a directory or a pattern.
 const ALLOWED_LIVE_WRITE_FILES = new Set([

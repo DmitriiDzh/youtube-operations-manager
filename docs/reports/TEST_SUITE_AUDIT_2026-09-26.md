@@ -208,8 +208,94 @@ deliberately, not wastefully).
 
 ## What this document does not do
 
-It does not fix anything — every finding above is exactly as found, unimplemented. It does not
-decide any of the "needs owner sign-off" items (Category A findings 1 and 4 specifically change a
-contract or reveal a spec/implementation gap and should not be silently patched). Category B and C
-items are lower-risk, test-only or mechanical-check fixes that could reasonably proceed once
-prioritized. Category D items are pure internal test-code refactors with no behavior change.
+At the time this document was written, it did not fix anything — every finding above was reported
+exactly as found, unimplemented. The owner then assigned exactly that work (Telegram, 2026-09-26:
+*"Создай новую ветку и проведи в ней изменения / улучшения согласно результатам анализа. Я
+согласовываю только финальный мердж в дев."*) on `feature/test-suite-audit-fixes`. See the
+Disposition section below for what that branch actually did with each finding — this section's
+original text is left as-is above (a snapshot of the review-only deliverable), not rewritten to
+claim foreknowledge of the fixes that came after it.
+
+## Disposition — `feature/test-suite-audit-fixes` (2026-09-26)
+
+Every finding above got one of three outcomes. None was silently dropped.
+
+**Category A:**
+1. `addVideosToPlaylist`/`removeVideosFromPlaylist` channel-identity gap — **FIXED**, `b8d1578`.
+   `expectedChannelId` added to both schemas (required), wired through `assertWriteChannel` exactly
+   like `updatePlaylist`/`deletePlaylist`, threaded through the Web routes/CLI/MCP. This is a public
+   API/MCP contract change — disclosed explicitly to the owner when this branch is presented for its
+   final merge approval (`AGENTS.md` §K.2), not silently merged.
+2. `write-path-inventory.test.ts` `FORBIDDEN_SYMBOLS` gap — **FIXED**, `ea12442`.
+   `executeSingleAttempt`/`createLiveWriteExecutorIfEnabled` added to the forbidden list.
+3. `REAL_CONNECTION_MAX_TARGETS_PER_CALL` cap has zero test coverage — **FIXED**, `4999223`. Boundary
+   tests added (50 succeeds, 51 rejected with exact `{requested, limit}` details, mock provider
+   uncapped); the stale non-existent-section doc-comment citation corrected.
+4. `AC-AUDIT-03` (`actorType`/`actorId` on audit events) unimplemented — **RECORDED AS DEBT, not
+   implemented**, `0dd8b06` (new progress note under `RISK-09`). Implementing a missing Phase 5
+   acceptance criterion is new production functionality, not a test fix — out of scope for this
+   branch; the owner's own decision on implement-vs-accept is still open.
+5. Playlist routes: missing `try/catch` and raw `request.json()` — **FIXED**, `ea12442`. All four
+   routes now use `parseVideoMetadataJsonBody` inside `try`; `GET /playlists` maps `DomainError`
+   the same way its siblings do; 401/malformed-body/DomainError tests added.
+
+**Category B (all three inventory-test regex gaps):** **FIXED**, `bc55776`. All three inventory
+tests now use a shared 4-form import-detection pattern (static/side-effect/dynamic/`require`);
+`gateway-inventory.test.ts`'s resource/verb list widened against the real `googleapis` types; its
+hardcoded 3-file caller list replaced with a dynamic scan (which found a real, previously-unchecked
+4th caller, confirmed already correct).
+
+**Category C:**
+- `sync-runner.test.ts` weak mutual-exclusion assertion — **FIXED**, `e0f772c` (ordered-events
+  pattern, plus the missing reverse-direction test the title already claimed to cover).
+- `cloud-connection` vacuous decrypt/plaintext-leak tests — **FIXED**, `1589b74`.
+- `analytics/services.test.ts` credential-failure tests missing `.code` — **FIXED**, `faf53e2`.
+- `pickWritableSnippetFields`/`pickWritableStatusFields` missing negative tests — **FIXED**,
+  `1b21f76`.
+- `computeBackoffDelayMs` zero coverage — **FIXED**, `1b21f76` (new `contracts.test.ts`, bounds
+  independently derived from §0.E's formula, plus a genuine-randomization check).
+- `AC-BACKUP-01` only demonstrated on the dry-run path — **FIXED**, `3cfd3ea`. New test proves the
+  order against a real (mocked) `WriteExecutor`, not dry-run.
+- `::ffff:` unwrap branch untested + NAT64 (`64:ff9b::/96`) gap — **FIXED**, `51a6798`. This was a
+  real, exploitable SSRF gap (a literal URL like `https://[64:ff9b::169.254.169.254]/` passed
+  validation entirely) — closed with a shared `unwrapEmbeddedIpv4` helper and 5 new tests; also
+  fixed an unrelated false-positive the same gap analysis surfaced (a public `::ffff:` literal was
+  incorrectly blocked). `docs/TECHNICAL_DEBT.md` RISK-14 updated.
+- **Two additional real findings surfaced while addressing the above, not in the original report:**
+  (a) `discardLocalAndAdoptPeer`'s SQL-projection cleanup deleted a discarded change set's row
+  BEFORE its own child change rows, silently violating a live FK constraint
+  (`foreign_keys=ON`) and leaving the change-set row permanently orphaned — every existing test used
+  an in-memory fake with no FK enforcement, so none could catch it. **FIXED**, `2f5ca8c`
+  (`RISK-46` updated), with a real-`SqlProjectionAdapter` regression test verified to fail against
+  the old order and pass against the new one. (b) The 2026-09-25 analytics freshness-gate fix
+  (`genuineRunCoversExpectedDate`) had a test for its date-range clause but zero coverage for its
+  total-failure clause (a run covering yesterday but with `upsertsIssued: 0`) — **FIXED**, `4d3f5b7`.
+
+**Category D:**
+- `withTempDir` duplication (9 files) — **FIXED**, `d2cd500`.
+- `cli-auth/services.test.ts` db-stub duplication — **FIXED**, `461fb51`.
+- `src/mcp/server.test.ts`/`src/cli/video-metadata.test.ts` shared-fixtures consolidation (>10,000
+  combined lines, two byte-identical helper functions) — **NOT DONE, deferred**. Flagged by the
+  original report as the biggest win but also the biggest risk/effort; doing it inside a branch that
+  already carries a real security fix (SSRF/NAT64) and a real data-integrity fix (RISK-46 FK
+  ordering) would mix high-churn, low-risk refactoring with changes that need careful, focused
+  review. Recommend its own dedicated `feature/*` branch and task.
+- `playlist-management/services.test.ts` fixture reuse (used by 1 of 12 tests), `analytics/
+  services.test.ts` table-driving (~9/~5/~3 near-identical groups), `src/proxy.test.ts` table-driving
+  (4 near-identical tests), `cli/video-metadata.recovery-gate.test.ts`'s repeated fake-auth object,
+  `ai-connections/crypto.test.ts`'s one redundant case — **NOT DONE, deferred** for the same reason:
+  genuine, low-risk wins, but additive scope beyond what this branch's fixes required. Recommend a
+  follow-up `proposed` backlog item (`roadmap-backlog` skill) if the owner wants them picked up.
+
+**Minor documentation drift (all three):** **FIXED**, `3743155`. `SYSTEM_MAP.md` §2.9s/§2.9t merge
+headers corrected (both features had actually merged to `dev` by the time this branch started); the
+`error-classification.ts` doc comment corrected to describe the fixture's current (real-shaped,
+`Object.defineProperty`-based) form instead of the superseded plain-object one.
+`DEVELOPMENT_PLAYBOOK.md` §6.5's identity-verification row needed no separate edit — Category A
+finding 1's fix made its claim actually true.
+
+**Verified clean on this branch's tip** (independent review, 2026-09-26 — individual commits along
+the way ran a mix of targeted and full validation, not uniformly the full set every time; see each
+commit's own message for exactly what it ran): `npx tsc --noEmit`, `npm run lint`,
+`npm run build`, `git diff --check` all clean; `npm test` grew from the `dev` baseline of 1487 to
+1529, with zero pre-existing test weakened or deleted to make a change pass.

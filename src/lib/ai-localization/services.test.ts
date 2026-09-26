@@ -652,3 +652,70 @@ test("RISK-30: the mock provider path (no connectionId) never calls the device-a
 
   assert.equal(checked, false);
 });
+
+// Independent test-suite audit (2026-09-26): REAL_CONNECTION_MAX_TARGETS_PER_CALL (= 50) had zero
+// test coverage anywhere in the repo -- this is the only thing standing between an agent-driven
+// connection-backed call and an unbounded paid-API bill. The provider's own `calls` counter proves
+// the cap is enforced BEFORE any real generation call is made, not merely that the result is
+// truncated afterward.
+test("REAL_CONNECTION_MAX_TARGETS_PER_CALL: exactly 50 (video, language) targets through a real connection succeeds", async () => {
+  const videos = Array.from({ length: 50 }, (_, i) => makeVideo({ videoId: `v${i + 1}` }));
+  const { build } = makeFixture(videos);
+  const provider = fixedProvider(() => ({ status: "ok", title: "x", description: "y" })) as LocalizationProvider & { calls: number };
+  const services = build(provider, {
+    resolveConnectionProvider: async () => provider,
+  });
+
+  const result = await services.generateProposals({
+    channelId: "UC_TEST",
+    videoIds: videos.map((v) => v.videoId),
+    targetLanguages: ["es"],
+    connectionId: "conn-1",
+  });
+
+  assert.equal(provider.calls, 50);
+  assert.equal(result.results.length, 50);
+});
+
+test("REAL_CONNECTION_MAX_TARGETS_PER_CALL: 51 (video, language) targets through a real connection is rejected before any generation call", async () => {
+  const videos = Array.from({ length: 51 }, (_, i) => makeVideo({ videoId: `v${i + 1}` }));
+  const { build } = makeFixture(videos);
+  const provider = fixedProvider(() => ({ status: "ok", title: "x", description: "y" })) as LocalizationProvider & { calls: number };
+  const services = build(provider, {
+    resolveConnectionProvider: async () => provider,
+  });
+
+  await assert.rejects(
+    () =>
+      services.generateProposals({
+        channelId: "UC_TEST",
+        videoIds: videos.map((v) => v.videoId),
+        targetLanguages: ["es"],
+        connectionId: "conn-1",
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof DomainError);
+      assert.equal(error.code, "validation_failed");
+      assert.deepEqual(error.details, { requested: 51, limit: 50 });
+      return true;
+    }
+  );
+
+  assert.equal(provider.calls, 0);
+});
+
+test("REAL_CONNECTION_MAX_TARGETS_PER_CALL: the same 51-target request through the mock provider (no connectionId) is not capped", async () => {
+  const videos = Array.from({ length: 51 }, (_, i) => makeVideo({ videoId: `v${i + 1}` }));
+  const { build } = makeFixture(videos);
+  const provider = fixedProvider(() => ({ status: "ok", title: "x", description: "y" })) as LocalizationProvider & { calls: number };
+  const services = build(provider);
+
+  const result = await services.generateProposals({
+    channelId: "UC_TEST",
+    videoIds: videos.map((v) => v.videoId),
+    targetLanguages: ["es"],
+  });
+
+  assert.equal(provider.calls, 51);
+  assert.equal(result.results.length, 51);
+});

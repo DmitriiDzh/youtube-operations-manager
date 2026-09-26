@@ -98,6 +98,19 @@ function isBlockedIpv4(ip: string): boolean {
   return BLOCKED_IPV4_RANGES.some(([base, prefix]) => isInIpv4Range(ip, base, prefix));
 }
 
+// An embedded-IPv4 suffix can arrive as a dotted quad ("169.254.169.254", the form Node's own
+// DNS resolver tends to use for these prefixes) or as two hex groups ("a9fe:a9fe", the form the
+// WHATWG URL parser normalizes an IPv6 literal to -- `new URL("http://[64:ff9b::169.254.169.254]/")`
+// itself rewrites the hostname to "[64:ff9b::a9fe:a9fe]" before this function ever sees it). Both
+// must be recognized, or a literal URL's embedded address silently bypasses the unwrap.
+function unwrapEmbeddedIpv4(suffix: string): string | null {
+  if (isIP(suffix) === 4) return suffix;
+  const groups = suffix.split(":");
+  if (groups.length !== 2 || !groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return null;
+  const [hi, lo] = groups.map((g) => parseInt(g, 16));
+  return [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff].join(".");
+}
+
 function isBlockedIpv6(ip: string): boolean {
   const normalized = ip.toLowerCase();
   if (normalized === "::1") return true; // loopback
@@ -105,9 +118,16 @@ function isBlockedIpv6(ip: string): boolean {
   if (normalized.startsWith("fe80:") || normalized.startsWith("fe8") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb")) return true; // link-local fe80::/10
   if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true; // unique local fc00::/7
   if (normalized.startsWith("::ffff:")) {
-    // IPv4-mapped IPv6 -- unwrap and re-check as IPv4.
-    const mapped = normalized.slice("::ffff:".length);
-    return isIP(mapped) === 4 ? isBlockedIpv4(mapped) : true; // unparseable mapped address -> block conservatively
+    // IPv4-mapped IPv6 (RFC 4291 §2.5.5.2) -- unwrap and re-check as IPv4.
+    const mapped = unwrapEmbeddedIpv4(normalized.slice("::ffff:".length));
+    return mapped ? isBlockedIpv4(mapped) : true; // unparseable mapped address -> block conservatively
+  }
+  if (normalized.startsWith("64:ff9b::")) {
+    // NAT64 well-known prefix (RFC 6052 §2.1) -- also embeds an IPv4 address, in the low 32
+    // bits, and must be unwrapped the same way or a synthesized address (e.g. a NAT64 gateway
+    // resolving straight through to 169.254.169.254) would fall through to `false` below.
+    const mapped = unwrapEmbeddedIpv4(normalized.slice("64:ff9b::".length));
+    return mapped ? isBlockedIpv4(mapped) : true; // unparseable mapped address -> block conservatively
   }
   return false;
 }

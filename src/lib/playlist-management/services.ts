@@ -356,6 +356,36 @@ export function createPlaylistManagementServices(deps: ServiceDependencies) {
           requiredScopes: [YOUTUBE_WRITE_SCOPE],
         });
 
+        const guardrail = await deps.writeContext.assertWriteChannel({
+          credentialRef: parsedInput.credentialRef,
+          credentials,
+          expectedChannelId: parsedInput.expectedChannelId,
+        });
+
+        const targetPlaylist = await deps.youtubeApi.getPlaylistForUpdate({
+          credentials,
+          playlistId: parsedInput.playlistId,
+        });
+
+        if (!targetPlaylist) {
+          throw new DomainError({
+            code: "not_found",
+            message: "Playlist not found",
+            details: { playlistId: parsedInput.playlistId },
+          });
+        }
+
+        if (targetPlaylist.channelId !== guardrail.activeWriteChannel.id) {
+          throw new DomainError({
+            code: "WRITE_CHANNEL_MISMATCH",
+            message: "Playlist does not belong to the active write channel",
+            details: {
+              expectedChannelId: guardrail.expectedChannelId,
+              activeWriteChannelId: targetPlaylist.channelId,
+            },
+          });
+        }
+
         let added = 0;
         const failures: PlaylistMutationFailure[] = [];
 
@@ -375,6 +405,13 @@ export function createPlaylistManagementServices(deps: ServiceDependencies) {
               ...(classified.message ? { message: classified.message } : {}),
             });
           }
+        }
+
+        if (guardrail.shouldPersistSelection && guardrail.userId) {
+          await deps.channelSelectionStore.setSelectedChannelId(
+            guardrail.userId,
+            guardrail.expectedChannelId
+          );
         }
 
         return parseWithSchema(
@@ -404,6 +441,36 @@ export function createPlaylistManagementServices(deps: ServiceDependencies) {
           credentialRef: parsedInput.credentialRef,
           requiredScopes: [YOUTUBE_WRITE_SCOPE],
         });
+
+        const guardrail = await deps.writeContext.assertWriteChannel({
+          credentialRef: parsedInput.credentialRef,
+          credentials,
+          expectedChannelId: parsedInput.expectedChannelId,
+        });
+
+        const targetPlaylist = await deps.youtubeApi.getPlaylistForUpdate({
+          credentials,
+          playlistId: parsedInput.playlistId,
+        });
+
+        if (!targetPlaylist) {
+          throw new DomainError({
+            code: "not_found",
+            message: "Playlist not found",
+            details: { playlistId: parsedInput.playlistId },
+          });
+        }
+
+        if (targetPlaylist.channelId !== guardrail.activeWriteChannel.id) {
+          throw new DomainError({
+            code: "WRITE_CHANNEL_MISMATCH",
+            message: "Playlist does not belong to the active write channel",
+            details: {
+              expectedChannelId: guardrail.expectedChannelId,
+              activeWriteChannelId: targetPlaylist.channelId,
+            },
+          });
+        }
 
         const itemIdsByVideo = await deps.youtubeApi.listPlaylistItemIdsByVideo({
           credentials,
@@ -440,6 +507,13 @@ export function createPlaylistManagementServices(deps: ServiceDependencies) {
               ...(classified.message ? { message: classified.message } : {}),
             });
           }
+        }
+
+        if (guardrail.shouldPersistSelection && guardrail.userId) {
+          await deps.channelSelectionStore.setSelectedChannelId(
+            guardrail.userId,
+            guardrail.expectedChannelId
+          );
         }
 
         return parseWithSchema(

@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createClient, type Client } from "@libsql/client";
 import { initializeDatabaseSchema } from "../db";
@@ -16,22 +15,7 @@ import {
 import { listPublishedSnapshotIds, createStagingDir, writeManifest } from "./adapters/filesystem";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
 import { SnapshotError } from "./contracts";
-
-async function withTempDir(fn: (dir: string) => Promise<void>) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "snapshot-test-"));
-  try {
-    await fn(dir);
-  } finally {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        await rm(dir, { recursive: true, force: true });
-        break;
-      } catch {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-    }
-  }
-}
+import { withTempDir } from "@/test-support/temp-dir";
 
 async function makeClient(dir: string, name: string): Promise<Client> {
   const client = createClient({ url: `file:${path.join(dir, name)}` });
@@ -69,7 +53,7 @@ async function seedUser(client: Client, userId: string, accessToken: string) {
 
 // AC-CONN-02 (INV-CP.1/CP.2): secrets never survive export.
 test("exportSnapshot: the published data.db contains zero users rows and zero token bytes", () =>
-  withTempDir(async (dir) => {
+  withTempDir("snapshot-test-", async (dir) => {
     const client = await makeClient(dir, "source.db");
     await seedUser(client, "user-1", "super-secret-access-token-xyz");
 
@@ -99,7 +83,7 @@ test("exportSnapshot: the published data.db contains zero users rows and zero to
 // instead, so neither `ai_connections` nor `ai_connection_credentials` should exist at all in a
 // scrubbed snapshot copy any more (same treatment as `users`, tested above).
 test("exportSnapshot: the published data.db contains neither ai_connections nor ai_connection_credentials", () =>
-  withTempDir(async (dir) => {
+  withTempDir("snapshot-test-", async (dir) => {
     const client = await makeClient(dir, "source.db");
     await client.execute({
       sql: "INSERT INTO ai_connections (id, display_name, adapter_type, model_id, capabilities_json) VALUES (?, ?, ?, ?, ?)",
@@ -132,7 +116,7 @@ test("exportSnapshot: the published data.db contains neither ai_connections nor 
 
 // AC-SNAP-01
 test("a snapshot is not visible under its final id until publish (staging is not listed)", () =>
-  withTempDir(async (dir) => {
+  withTempDir("snapshot-test-", async (dir) => {
     const snapshotsDir = path.join(dir, "snapshots");
     const { dir: stagingDir } = await createStagingDir(snapshotsDir);
     await writeFile(path.join(stagingDir, "data.db"), "not a real db, doesn't matter for this check");
@@ -144,7 +128,7 @@ test("a snapshot is not visible under its final id until publish (staging is not
 
 // AC-SNAP-02
 test("exportSnapshot: manifest checksum matches the actual published (post-scrub) file", () =>
-  withTempDir(async (dir) => {
+  withTempDir("snapshot-test-", async (dir) => {
     const client = await makeClient(dir, "source.db");
     const manifest = await exportSnapshot({
       client,
@@ -162,7 +146,7 @@ test("exportSnapshot: manifest checksum matches the actual published (post-scrub
 
 // AC-SNAP-03
 test("verifySnapshotForImport rejects a snapshot missing the complete marker", () =>
-  withTempDir(async (dir) => {
+  withTempDir("snapshot-test-", async (dir) => {
     const snapshotsDir = path.join(dir, "snapshots");
     const { dir: stagingDir } = await createStagingDir(snapshotsDir);
     const dbPath = path.join(stagingDir, "data.db");
@@ -191,7 +175,7 @@ test("verifySnapshotForImport rejects a snapshot missing the complete marker", (
 
 // AC-SNAP-04
 test("verifySnapshotForImport rejects a checksum mismatch", () =>
-  withTempDir(async (dir) => {
+  withTempDir("snapshot-test-", async (dir) => {
     const client = await makeClient(dir, "source.db");
     const manifest = await exportSnapshot({
       client,
@@ -215,7 +199,7 @@ test("verifySnapshotForImport rejects a checksum mismatch", () =>
 
 // AC-SNAP-05
 test("verifySnapshotForImport rejects a snapshot with a missing referenced file", () =>
-  withTempDir(async (dir) => {
+  withTempDir("snapshot-test-", async (dir) => {
     const client = await makeClient(dir, "source.db");
     const manifest = await exportSnapshot({
       client,
@@ -239,7 +223,7 @@ test("verifySnapshotForImport rejects a snapshot with a missing referenced file"
 
 // AC-SNAP-06
 test("verifySnapshotForImport blocks a divergent lineage rather than guessing by timestamp", () =>
-  withTempDir(async (dir) => {
+  withTempDir("snapshot-test-", async (dir) => {
     const client = await makeClient(dir, "source.db");
     const manifest = await exportSnapshot({
       client,
@@ -263,7 +247,7 @@ test("verifySnapshotForImport blocks a divergent lineage rather than guessing by
 
 // AC-SNAP-07
 test("verifySnapshotForImport recognizes a duplicate of the current local snapshot as a safe no-op, not divergence", () =>
-  withTempDir(async (dir) => {
+  withTempDir("snapshot-test-", async (dir) => {
     const client = await makeClient(dir, "source.db");
     const manifest = await exportSnapshot({
       client,
@@ -283,7 +267,7 @@ test("verifySnapshotForImport recognizes a duplicate of the current local snapsh
 
 // AC-SNAP-08
 test("publishing never overwrites an existing snapshot id", () =>
-  withTempDir(async (dir) => {
+  withTempDir("snapshot-test-", async (dir) => {
     const snapshotsDir = path.join(dir, "snapshots");
     const { dir: stagingDir } = await createStagingDir(snapshotsDir);
     await writeFile(path.join(stagingDir, "data.db"), "content-a");
@@ -305,7 +289,7 @@ test("publishing never overwrites an existing snapshot id", () =>
 // replace-style example table (M6 narrowed the allowlist to just `schema_meta` plus the four
 // Category D write-pipeline tables, `docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md`).
 test("applySnapshotToDatabase: replaces application-state tables while never touching users/credentials/ai_connections", () =>
-  withTempDir(async (dir) => {
+  withTempDir("snapshot-test-", async (dir) => {
     const source = await makeClient(dir, "source.db");
     await seedUser(source, "source-user", "source-secret-token");
     // `channels` itself is no longer transferred (2026-09-22, both devices sync it independently
@@ -397,7 +381,7 @@ test("applySnapshotToDatabase: replaces application-state tables while never tou
 // on both sides purely to satisfy `batches.channel_id`'s FK, exactly as it would in reality
 // (both devices independently sync the same real channel).
 test("applySnapshotToDatabase: succeeds when the receiving device already has local rows whose foreign keys point at tables being replaced (RISK-33)", () =>
-  withTempDir(async (dir) => {
+  withTempDir("snapshot-test-", async (dir) => {
     const source = await makeClient(dir, "source.db");
     await seedChannel(source, "chan-1");
     await seedBatch(source, "batch-new", "chan-1");
@@ -456,7 +440,7 @@ test("applySnapshotToDatabase: succeeds when the receiving device already has lo
 // time (FK enforcement is OFF for the entire import itself, per this same file's RISK-33 fix, so
 // the receiving side needs no matching local row).
 test("applySnapshotToDatabase: merges by column name, not physical position (RISK-29)", () =>
-  withTempDir(async (dir) => {
+  withTempDir("snapshot-test-", async (dir) => {
     const source = await makeClient(dir, "source.db");
     await seedChannel(source, "chan-1");
     await source.execute(`
@@ -511,7 +495,7 @@ test("applySnapshotToDatabase: merges by column name, not physical position (RIS
   }));
 
 test("scanForUnresolvedExecutionState finds APPLYING/UNKNOWN rows but not PENDING/SUCCESS", () =>
-  withTempDir(async (dir) => {
+  withTempDir("snapshot-test-", async (dir) => {
     const client = await makeClient(dir, "source.db");
     await seedChannel(client, "chan-1");
     await client.execute({
@@ -538,7 +522,7 @@ test("scanForUnresolvedExecutionState finds APPLYING/UNKNOWN rows but not PENDIN
   }));
 
 test("readLineageState returns null/0 for a device that has never exported or imported anything", () =>
-  withTempDir(async (dir) => {
+  withTempDir("snapshot-test-", async (dir) => {
     const client = await makeClient(dir, "source.db");
     const state = await readLineageState(client);
     assert.deepEqual(state, { lastSnapshotId: null, lastGeneration: 0 });
@@ -546,7 +530,7 @@ test("readLineageState returns null/0 for a device that has never exported or im
   }));
 
 test("exportSnapshot advances this device's own lineage state", () =>
-  withTempDir(async (dir) => {
+  withTempDir("snapshot-test-", async (dir) => {
     const client = await makeClient(dir, "source.db");
     const first = await exportSnapshot({
       client,

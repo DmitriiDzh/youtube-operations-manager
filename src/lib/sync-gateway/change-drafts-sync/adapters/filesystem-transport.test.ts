@@ -1,21 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { createFilesystemTransportAdapter } from "./filesystem-transport";
-
-async function withTempDir(run: (dir: string) => Promise<void>) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "change-drafts-sync-test-"));
-  try {
-    await run(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
+import { withTempDir } from "@/test-support/temp-dir";
 
 test("listPeerFiles returns an empty array for a channel with no exchange directory yet", async () => {
-  await withTempDir(async (root) => {
+  await withTempDir("change-drafts-sync-test-", async (root) => {
     const transport = createFilesystemTransportAdapter();
     const peers = await transport.listPeerFiles(root, "UC_test", "device-a");
     assert.deepEqual(peers, []);
@@ -23,7 +14,7 @@ test("listPeerFiles returns an empty array for a channel with no exchange direct
 });
 
 test("writeDeviceFile then listPeerFiles from a DIFFERENT device round-trips the exact bytes, creating the directory if needed", async () => {
-  await withTempDir(async (root) => {
+  await withTempDir("change-drafts-sync-test-", async (root) => {
     const transport = createFilesystemTransportAdapter();
     const bytes = new Uint8Array([1, 2, 3, 250, 0, 128]);
     await transport.writeDeviceFile(root, "UC_test", "device-a", bytes);
@@ -36,7 +27,7 @@ test("writeDeviceFile then listPeerFiles from a DIFFERENT device round-trips the
 });
 
 test("listPeerFiles NEVER returns the caller's own file, even though it wrote one this cycle", async () => {
-  await withTempDir(async (root) => {
+  await withTempDir("change-drafts-sync-test-", async (root) => {
     const transport = createFilesystemTransportAdapter();
     await transport.writeDeviceFile(root, "UC_test", "device-a", new Uint8Array([1]));
     await transport.writeDeviceFile(root, "UC_test", "device-b", new Uint8Array([2]));
@@ -48,7 +39,7 @@ test("listPeerFiles NEVER returns the caller's own file, even though it wrote on
 });
 
 test("listPeerFiles ignores Syncthing's own conflict-copy and temp-file artifacts, never feeding them back as a real peer", async () => {
-  await withTempDir(async (root) => {
+  await withTempDir("change-drafts-sync-test-", async (root) => {
     const transport = createFilesystemTransportAdapter();
     const channelDir = path.join(root, "UC_test");
     await mkdir(channelDir, { recursive: true });
@@ -66,7 +57,7 @@ test("listPeerFiles ignores Syncthing's own conflict-copy and temp-file artifact
 });
 
 test("two different channels are stored in separate subdirectories, never mixing peer files", async () => {
-  await withTempDir(async (root) => {
+  await withTempDir("change-drafts-sync-test-", async (root) => {
     const transport = createFilesystemTransportAdapter();
     await transport.writeDeviceFile(root, "UC_channel_a", "device-x", new Uint8Array([1]));
     await transport.writeDeviceFile(root, "UC_channel_b", "device-x", new Uint8Array([2]));
@@ -79,7 +70,7 @@ test("two different channels are stored in separate subdirectories, never mixing
 });
 
 test("checkRootAvailable refuses when the configured sync root does not exist, without creating anything (guards against macOS phantom mount-point directories)", async () => {
-  await withTempDir(async (root) => {
+  await withTempDir("change-drafts-sync-test-", async (root) => {
     const transport = createFilesystemTransportAdapter();
     const missingRoot = path.join(root, "not-actually-mounted");
 
@@ -92,14 +83,14 @@ test("checkRootAvailable refuses when the configured sync root does not exist, w
 });
 
 test("checkRootAvailable succeeds when the configured sync root already exists", async () => {
-  await withTempDir(async (root) => {
+  await withTempDir("change-drafts-sync-test-", async (root) => {
     const transport = createFilesystemTransportAdapter();
     await transport.checkRootAvailable(root);
   });
 });
 
 test("writeDeviceFile still creates its own nested subfolder freely under an already-existing root (the normal first-use case, unaffected by checkRootAvailable)", async () => {
-  await withTempDir(async (root) => {
+  await withTempDir("change-drafts-sync-test-", async (root) => {
     const transport = createFilesystemTransportAdapter();
     await transport.writeDeviceFile(path.join(root, "change-drafts"), "UC_test", "device-a", new Uint8Array([1]));
     const peers = await transport.listPeerFiles(path.join(root, "change-drafts"), "UC_test", "someone-else");
@@ -108,7 +99,7 @@ test("writeDeviceFile still creates its own nested subfolder freely under an alr
 });
 
 test("a channelId/deviceId containing filesystem-unsafe characters is sanitized rather than escaping root", async () => {
-  await withTempDir(async (root) => {
+  await withTempDir("change-drafts-sync-test-", async (root) => {
     const transport = createFilesystemTransportAdapter();
     await transport.writeDeviceFile(root, "../../etc/passwd", "../../also-bad", new Uint8Array([7]));
 

@@ -1,22 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile, readdir, open } from "node:fs/promises";
+import { readFile, readdir, open } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { writeJsonFileAtomic } from "./services";
-
-async function withTempDir(fn: (dir: string) => Promise<void>) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "atomic-json-file-test-"));
-  try {
-    await fn(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
+import { withTempDir } from "@/test-support/temp-dir";
 
 test("writeJsonFileAtomic writes readable, correctly-formatted JSON", () =>
-  withTempDir(async (dir) => {
+  withTempDir("atomic-json-file-test-", async (dir) => {
     const target = path.join(dir, "state.json");
     await writeJsonFileAtomic(target, { status: "in_progress" });
 
@@ -25,7 +16,7 @@ test("writeJsonFileAtomic writes readable, correctly-formatted JSON", () =>
   }));
 
 test("writeJsonFileAtomic overwrites an existing file cleanly, leaving no stray tmp files", () =>
-  withTempDir(async (dir) => {
+  withTempDir("atomic-json-file-test-", async (dir) => {
     const target = path.join(dir, "state.json");
     await writeJsonFileAtomic(target, { status: "in_progress" });
     await writeJsonFileAtomic(target, { status: "completed" });
@@ -42,7 +33,7 @@ test("writeJsonFileAtomic overwrites an existing file cleanly, leaving no stray 
 // can't simulate a real power loss, but confirms the fsync'd write path doesn't silently
 // corrupt or fail to write the file's real content (independent review, review series cycle 2).
 test("writeJsonFileAtomic's fsync'd write path still produces the exact written content", () =>
-  withTempDir(async (dir) => {
+  withTempDir("atomic-json-file-test-", async (dir) => {
     const target = path.join(dir, "state.json");
     const payload = { status: "completed", nested: { count: 3, items: ["a", "b"] } };
     await writeJsonFileAtomic(target, payload);
@@ -92,7 +83,7 @@ function openWithCloseFailure(errorMessage: string) {
 }
 
 test("writeJsonFileAtomic: a write/sync failure propagates, even if close() also fails, and cleans up the real tmp file", () =>
-  withTempDir(async (dir) => {
+  withTempDir("atomic-json-file-test-", async (dir) => {
     const target = path.join(dir, "state.json");
 
     await assert.rejects(
@@ -106,7 +97,7 @@ test("writeJsonFileAtomic: a write/sync failure propagates, even if close() also
   }));
 
 test("writeJsonFileAtomic: a close() failure after a successful write/sync propagates (not silently swallowed) and cleans up the real tmp file", () =>
-  withTempDir(async (dir) => {
+  withTempDir("atomic-json-file-test-", async (dir) => {
     const target = path.join(dir, "state.json");
 
     await assert.rejects(
