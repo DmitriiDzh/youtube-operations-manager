@@ -279,7 +279,7 @@ test("AC-MI-09: fetchPublicSnapshot rejects a channel that is not on the watchli
   assert.equal(resolveCalls.length, 0, "must never resolve credentials for a channel that isn't watchlisted");
 });
 
-test("AC-MI-10: fetchPublicSnapshot resolves credentials with YOUTUBE_READ_SCOPE, fetches by researchChannelId, and records a confirmed evidence row stamped from callOrigin", async () => {
+test("AC-MI-10: fetchPublicSnapshot resolves credentials with YOUTUBE_READ_SCOPE, fetches by researchChannelId, and records a 'high'-confidence evidence row stamped from callOrigin", async () => {
   const { store, services, resolveCalls, snapshotCalls } = createFixture({
     publicSnapshot: { channelId: VALID_CHANNEL_ID, title: "Competitor", subscriberCount: 5000, viewCount: 90000, videoCount: 12 },
   });

@@ -245,6 +245,16 @@ Still open, to be decided as each slice is actually reached (not blocking slice 
   panel) — decided at slice 2.
 - Whether slice 4 (agent-facing MCP/CLI surface) is in scope for this same assignment or its own
   follow-up — decided once slices 1-3 are done and reviewed, per this plan's own §6.
+- **Known, accepted narrow races (independent review round 3, 2026-09-26), not fixed — single-
+  operator local app, no data corruption in either case:** (a) removing a watchlist entry while
+  its own `fetchPublicSnapshot` is still in flight can make the late `insertResearchEvidence`
+  target an already-deleted `research_channel_id`; the real FK constraint (`foreign_keys=ON`)
+  correctly rejects the insert, but the route currently surfaces this as a generic `500` rather
+  than a clean `DomainError`. (b) the Web UI's evidence fetch/snapshot-fetch handlers don't guard
+  against `selectedChannelId` having changed by the time a response lands, so rapidly switching
+  between watchlist rows can transiently render one channel's evidence under another's card
+  (self-corrects on the next explicit re-select). Revisit if this module ever moves beyond a
+  single interactive operator clicking through the UI by hand.
 
 ## 9. Where this is recorded
 

@@ -21,10 +21,11 @@ type ResearchEvidence = {
   collectedAt: string;
 };
 
-// Phase 9 slice 2 (docs/roadmap/plans/PHASE_9_PLAN.md) -- global (not channel-scoped) market
-// research watchlist. Manually-seeded only in this slice: adding a channel and recording evidence
-// are both operator-entered here; no automatic discovery or public-snapshot fetch exists yet
-// (slice 3).
+// Phase 9 slices 2-3 (docs/roadmap/plans/PHASE_9_PLAN.md) -- global (not channel-scoped) market
+// research watchlist. Manually-seeded: adding a channel and recording evidence are both
+// operator-entered; "Fetch public snapshot" (slice 3) is the one action that makes a real
+// outbound YouTube API call. No automatic discovery/prioritization exists (a later, unassigned
+// slice, plan §6).
 export function MarketResearchPanel() {
   const [channels, setChannels] = useState<ResearchChannel[]>([]);
   const [error, setError] = useState<string | null>(null);
