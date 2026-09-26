@@ -876,6 +876,60 @@ export const agentCapabilityZones = sqliteTable("agent_capability_zones", {
   assignedConnectionId: text("assigned_connection_id").references(() => agentConnections.id),
 });
 
+/**
+ * Phase 9 slice 1 (`src/lib/market-intelligence/`) -- a manually-seeded market-research
+ * watchlist entry (`docs/roadmap/plans/PHASE_9_PLAN.md` §5). `id` is the real YouTube channel
+ * ID (e.g. `UC...`), never a generated UUID -- mirrors `channels.id`'s own convention, since
+ * both tables identify the same kind of external entity. Deliberately **not** a foreign key
+ * into `channels` and never joined with it: a row here may describe a channel the operator
+ * does not own (the entire point of this table), or one they also happen to own -- the two
+ * tables must stay structurally distinct regardless (`AGENTS.md` §F "keep owned-channel
+ * analytics and public market/competitor observations explicitly separate").
+ *
+ * This watchlist is global (not scoped to any one owned channel) -- there is currently only
+ * one operator per local install, and a competitor is often relevant research context for more
+ * than one of the operator's own channels at once.
+ *
+ * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** -- same accepted device-local limitation
+ * `creative_assets`/`content_proposals` already have (`docs/TECHNICAL_DEBT.md` RISK-52).
+ */
+export const researchChannels = sqliteTable("research_channels", {
+  id: text("id").primaryKey(),
+  handleOrUrl: text("handle_or_url"),
+  reason: text("reason").notNull(),
+  createdVia: text("created_via").notNull(),
+  addedAt: integer("added_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+/**
+ * Phase 9 slice 1 -- one publicly-observable fact recorded against a `research_channels` row
+ * (`docs/roadmap/plans/PHASE_9_PLAN.md` §5/§7). Never a private-analytics-shaped figure (no
+ * CTR/retention/revenue field exists here, by design) and never a conclusion ("profitable",
+ * "worth copying") -- a raw, sourced observation only. `confidence` is free text for this slice
+ * (an enum is deferred until a real consumer needs to filter/sort by it).
+ *
+ * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** -- same reasoning as `research_channels` above.
+ */
+export const researchEvidence = sqliteTable(
+  "research_evidence",
+  {
+    id: text("id").primaryKey(),
+    researchChannelId: text("research_channel_id")
+      .notNull()
+      .references(() => researchChannels.id),
+    observation: text("observation").notNull(),
+    source: text("source").notNull(),
+    confidence: text("confidence"),
+    createdVia: text("created_via").notNull(),
+    collectedAt: integer("collected_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [index("research_evidence_research_channel_id_idx").on(table.researchChannelId)]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -1243,6 +1297,34 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
+    },
+  },
+  {
+    version: 22,
+    description:
+      "research_channels, research_evidence -- Phase 9 slice 1 manually-seeded market-research watchlist (docs/roadmap/plans/PHASE_9_PLAN.md), structurally separate from channels/videos: these rows describe channels the operator does not own",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS research_channels (" +
+          "id TEXT PRIMARY KEY, " +
+          "handle_or_url TEXT, " +
+          "reason TEXT NOT NULL, " +
+          "created_via TEXT NOT NULL, " +
+          "added_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS research_evidence (" +
+          "id TEXT PRIMARY KEY, " +
+          "research_channel_id TEXT NOT NULL REFERENCES research_channels(id), " +
+          "observation TEXT NOT NULL, " +
+          "source TEXT NOT NULL, " +
+          "confidence TEXT, " +
+          "created_via TEXT NOT NULL, " +
+          "collected_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS research_evidence_research_channel_id_idx ON research_evidence(research_channel_id)"
+      );
     },
   },
 ];
@@ -4149,4 +4231,99 @@ export async function getAgentCapabilityZoneById(
     .from(agentCapabilityZones)
     .where(eq(agentCapabilityZones.capabilityId, capabilityId));
   return row ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 1 (`docs/roadmap/plans/PHASE_9_PLAN.md`) -- market-research watchlist. Read/
+// written only by `src/lib/market-intelligence/adapters/store.ts`.
+// ---------------------------------------------------------------------------
+
+export type StoredResearchChannel = {
+  id: string;
+  handleOrUrl: string | null;
+  reason: string;
+  createdVia: string;
+  addedAt: Date;
+};
+
+export async function insertResearchChannel(
+  input: { id: string; handleOrUrl?: string | null; reason: string; createdVia: string },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(researchChannels).values({
+    id: input.id,
+    handleOrUrl: input.handleOrUrl ?? null,
+    reason: input.reason,
+    createdVia: input.createdVia,
+  });
+}
+
+export async function listResearchChannels(database: AppDb = db): Promise<StoredResearchChannel[]> {
+  return database.select().from(researchChannels).orderBy(desc(researchChannels.addedAt));
+}
+
+export async function getResearchChannelById(
+  id: string,
+  database: AppDb = db
+): Promise<StoredResearchChannel | null> {
+  const [row] = await database.select().from(researchChannels).where(eq(researchChannels.id, id));
+  return row ?? null;
+}
+
+export type StoredResearchEvidence = {
+  id: string;
+  researchChannelId: string;
+  observation: string;
+  source: string;
+  confidence: string | null;
+  createdVia: string;
+  collectedAt: Date;
+};
+
+export async function insertResearchEvidence(
+  input: {
+    id: string;
+    researchChannelId: string;
+    observation: string;
+    source: string;
+    confidence?: string | null;
+    createdVia: string;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(researchEvidence).values({
+    id: input.id,
+    researchChannelId: input.researchChannelId,
+    observation: input.observation,
+    source: input.source,
+    confidence: input.confidence ?? null,
+    createdVia: input.createdVia,
+  });
+}
+
+export async function listResearchEvidenceByChannel(
+  researchChannelId: string,
+  database: AppDb = db
+): Promise<StoredResearchEvidence[]> {
+  return database
+    .select()
+    .from(researchEvidence)
+    .where(eq(researchEvidence.researchChannelId, researchChannelId))
+    .orderBy(desc(researchEvidence.collectedAt));
+}
+
+/**
+ * Added by independent review (2026-09-26, Phase 9 slice 1 follow-up): the first version of this
+ * module had no way to correct or remove a watchlist entry once added, permanent for the life of
+ * the local database. Deletes evidence rows BEFORE the channel row, in one transaction -- the same
+ * FK-ordering discipline this codebase already learned the hard way in
+ * `sync-gateway/change-drafts/services.ts`'s `discardLocalAndAdoptPeer` (RISK-46): deleting the
+ * parent first, under `foreign_keys=ON`, would either fail the constraint or (if constraints were
+ * ever relaxed) silently orphan evidence rows.
+ */
+export async function deleteResearchChannel(id: string, database: AppDb = db): Promise<void> {
+  await database.transaction(async (tx) => {
+    await tx.delete(researchEvidence).where(eq(researchEvidence.researchChannelId, id));
+    await tx.delete(researchChannels).where(eq(researchChannels.id, id));
+  });
 }

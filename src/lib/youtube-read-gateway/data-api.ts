@@ -195,6 +195,50 @@ export async function getChannelForSync(
   };
 }
 
+export type PublicChannelSnapshot = {
+  channelId: string;
+  title: string;
+  /** `null` both when the API omits the field AND when `hiddenSubscriberCount` is true -- the
+   * latter case would otherwise return a fabricated "0" (YouTube reports a real subscriber count
+   * of exactly zero identically to a hidden one at the raw API level), which this codebase's
+   * "never fabricate a stat" discipline (see `parseStatCount`'s own callers) forbids treating as
+   * a genuine observation (Phase 9 slice 3, `docs/roadmap/plans/PHASE_9_PLAN.md` §7). */
+  subscriberCount: number | null;
+  viewCount: number | null;
+  videoCount: number | null;
+};
+
+/**
+ * Phase 9 slice 3 -- a public, explicit-id snapshot of an ARBITRARY channel (not necessarily
+ * owned by the operator), for the market-research watchlist's "fetch public snapshot" action.
+ * Deliberately a separate function from `getChannelForSync` (which is named/scoped for "my own
+ * channel, or a channel about to be treated as mine" and never requests `statistics`) -- this one
+ * requests exactly the public fields a competitor snapshot needs and nothing content-details-
+ * shaped (no `uploadsPlaylistId`, since this slice never enumerates a non-owned channel's videos).
+ */
+export async function getPublicChannelSnapshot(
+  youtube: youtube_v3.Youtube,
+  channelId: string
+): Promise<PublicChannelSnapshot | null> {
+  const res = await youtube.channels.list({
+    part: ["snippet", "statistics"],
+    id: [channelId],
+  });
+
+  const channel = res.data.items?.[0];
+  if (!channel?.id) return null;
+
+  const hiddenSubscriberCount = channel.statistics?.hiddenSubscriberCount === true;
+
+  return {
+    channelId: channel.id,
+    title: channel.snippet?.title ?? "",
+    subscriberCount: hiddenSubscriberCount ? null : parseStatCount(channel.statistics?.subscriberCount),
+    viewCount: parseStatCount(channel.statistics?.viewCount),
+    videoCount: parseStatCount(channel.statistics?.videoCount),
+  };
+}
+
 export async function listUploadsPlaylistVideoIds(
   youtube: youtube_v3.Youtube,
   uploadsPlaylistId: string

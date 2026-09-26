@@ -7,6 +7,7 @@ import {
   assertDataApiReadsAuthorized,
   createYoutubeClient,
   getChannelForSync,
+  getPublicChannelSnapshot,
   getVideoDetailsContext,
   getVideosMetadataContextBatch,
   listSupportedLanguages,
@@ -431,4 +432,89 @@ test("listSupportedLanguages falls back to the code as the name when snippet.nam
   const languages = await listSupportedLanguages(youtube);
 
   assert.deepEqual(languages, [{ code: "xx", name: "xx" }]);
+});
+
+// Phase 9 slice 3 (docs/roadmap/plans/PHASE_9_PLAN.md §6/§7) -- getPublicChannelSnapshot.
+test("getPublicChannelSnapshot requests exactly part=[snippet,statistics] and id=[channelId], never mine:true", async () => {
+  let receivedArgs: unknown;
+  const youtube = fakeYoutubeClient({
+    channelsList: (async (args: unknown) => {
+      receivedArgs = args;
+      return {
+        data: {
+          items: [
+            {
+              id: "UC_COMPETITOR",
+              snippet: { title: "Competitor Channel" },
+              statistics: { subscriberCount: "12300", viewCount: "456000", videoCount: "42", hiddenSubscriberCount: false },
+            },
+          ],
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["channels"]["list"],
+  });
+
+  const snapshot = await getPublicChannelSnapshot(youtube, "UC_COMPETITOR");
+
+  assert.deepEqual(receivedArgs, { part: ["snippet", "statistics"], id: ["UC_COMPETITOR"] });
+  assert.deepEqual(snapshot, {
+    channelId: "UC_COMPETITOR",
+    title: "Competitor Channel",
+    subscriberCount: 12300,
+    viewCount: 456000,
+    videoCount: 42,
+  });
+});
+
+test("getPublicChannelSnapshot reports subscriberCount as null when hiddenSubscriberCount is true, never the raw '0' YouTube returns for a hidden count", async () => {
+  const youtube = fakeYoutubeClient({
+    channelsList: (async () => ({
+      data: {
+        items: [
+          {
+            id: "UC_HIDDEN",
+            snippet: { title: "Hidden Subscriber Count Channel" },
+            statistics: { subscriberCount: "0", viewCount: "1000", videoCount: "5", hiddenSubscriberCount: true },
+          },
+        ],
+      },
+    })) as unknown as youtube_v3.Youtube["channels"]["list"],
+  });
+
+  const snapshot = await getPublicChannelSnapshot(youtube, "UC_HIDDEN");
+
+  assert.equal(snapshot?.subscriberCount, null);
+  assert.equal(snapshot?.viewCount, 1000);
+});
+
+test("getPublicChannelSnapshot never fabricates a 0 for a statistics field the API omits entirely", async () => {
+  const youtube = fakeYoutubeClient({
+    channelsList: (async () => ({
+      data: {
+        items: [
+          {
+            id: "UC_PARTIAL",
+            snippet: { title: "Partial Stats Channel" },
+            statistics: { subscriberCount: "500" },
+          },
+        ],
+      },
+    })) as unknown as youtube_v3.Youtube["channels"]["list"],
+  });
+
+  const snapshot = await getPublicChannelSnapshot(youtube, "UC_PARTIAL");
+
+  assert.equal(snapshot?.subscriberCount, 500);
+  assert.equal(snapshot?.viewCount, null);
+  assert.equal(snapshot?.videoCount, null);
+});
+
+test("getPublicChannelSnapshot returns null when no channel matches the given id", async () => {
+  const youtube = fakeYoutubeClient({
+    channelsList: (async () => ({ data: { items: [] } })) as unknown as youtube_v3.Youtube["channels"]["list"],
+  });
+
+  const snapshot = await getPublicChannelSnapshot(youtube, "UC_MISSING");
+
+  assert.equal(snapshot, null);
 });

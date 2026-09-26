@@ -70,6 +70,8 @@ const DOMAIN_ERROR_STATUS = {
   // through a JSON API response (that route always redirects), but this table is indexed with the
   // full `DomainErrorCode` union, so every code needs an entry.
   CLOUD_CONNECTION_TOKEN_EXCHANGE_FAILED: 401,
+  RESEARCH_CHANNEL_ALREADY_WATCHED: 409,
+  RESEARCH_CHANNEL_NOT_AVAILABLE: 404,
 } as const satisfies Partial<Record<DomainErrorCode, number>>;
 
 export function getVideoMetadataErrorStatus(code: DomainErrorCode) {

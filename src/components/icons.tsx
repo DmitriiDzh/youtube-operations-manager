@@ -88,3 +88,14 @@ export function DeviceIcon(props: SVGProps<SVGSVGElement>) {
     </IconBase>
   );
 }
+
+// Phase 9 slice 2 (docs/roadmap/plans/PHASE_9_PLAN.md) -- a magnifying glass, for the
+// market-research watchlist tab.
+export function ResearchIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <IconBase {...props}>
+      <circle cx="10.5" cy="10.5" r="6.5" />
+      <path d="m20 20-4.6-4.6" />
+    </IconBase>
+  );
+}

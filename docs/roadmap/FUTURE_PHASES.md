@@ -627,9 +627,17 @@ Recorded 2026-09-26, owner instruction ("Strategic Roadmap Update — Post Phase
 and updated in place rather than accumulating a new dated paragraph every time it changes, since
 its whole purpose is to answer "what's next" at a glance:
 
-**CURRENT NEXT PRIORITY:** Operational Validation Gate (§2a).
+**CURRENT NEXT PRIORITY:** Operational Validation Gate (§2a) remains the default priority order —
+**explicitly superseded for Phase 9 specifically** on 2026-09-26, when the owner directly assigned
+Phase 9 over Telegram ("Создай новую ветку для Phase 9, Market Discovery & Trend Intelligence.
+Проведи исследование и составь план. Приступай к выполнению плану.") without first completing
+§2a's workstreams. Per §2a's own escape clause ("or the owner explicitly reprioritizes"), this is
+that explicit reprioritization for Phase 9 alone — it does not waive §2a for any other phase, and
+§2a's five workstreams remain open and still block everything else in this list.
 
-**NEXT MAJOR PRODUCT PHASE:** Phase 9 — Market Discovery & Trend Intelligence (§5).
+**IN PROGRESS:** Phase 9 — Market Discovery & Trend Intelligence (§5), `feature/phase-9-market-discovery`,
+slices 1-3 of `docs/roadmap/plans/PHASE_9_PLAN.md` implemented (manually-seeded watchlist,
+Web UI/API, public-snapshot fetch) — see `docs/ROADMAP_STATUS.md` for the current merge state.
 
 **DEPENDENCY:** Phase 10 (§6) depends on Phase 9 (§5) and Phase 8 (§4).
 

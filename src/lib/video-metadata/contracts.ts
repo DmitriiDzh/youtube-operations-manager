@@ -95,7 +95,10 @@ export type DomainErrorCode =
   // to tell "Google rejected the token exchange" (most often: docs/decisions/0008-cloud-connection.md's
   // separate `/api/cloud-connection/callback` redirect URI was never added to the OAuth client's own
   // "Authorized redirect URIs" in Google Cloud Console) apart from every other callback failure.
-  | "CLOUD_CONNECTION_TOKEN_EXCHANGE_FAILED";
+  | "CLOUD_CONNECTION_TOKEN_EXCHANGE_FAILED"
+  // Phase 9 slice 1 (docs/roadmap/plans/PHASE_9_PLAN.md) -- market-research watchlist.
+  | "RESEARCH_CHANNEL_ALREADY_WATCHED"
+  | "RESEARCH_CHANNEL_NOT_AVAILABLE";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;
