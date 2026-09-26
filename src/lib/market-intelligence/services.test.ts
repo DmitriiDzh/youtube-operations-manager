@@ -392,12 +392,20 @@ test("AC-MI-15: after removal, the same channel id can be added back (never bloc
 // the two call sites had already started to drift cosmetically).
 // ---------------------------------------------------------------------------
 
-test("AC-MI-16: getWatchlistEntryContext rejects a channel not on the watchlist with RESEARCH_CHANNEL_NOT_AVAILABLE", async () => {
+test("AC-MI-16: getWatchlistEntryContext rejects a channel not on the watchlist with RESEARCH_CHANNEL_NOT_AVAILABLE and a stable details.channelId shape", async () => {
   const { services } = createFixture();
 
   await assert.rejects(
     () => services.getWatchlistEntryContext({ channelId: OTHER_VALID_CHANNEL_ID }),
-    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_CHANNEL_NOT_AVAILABLE"
+    (error: unknown) =>
+      isDomainError(error) &&
+      error.code === "RESEARCH_CHANNEL_NOT_AVAILABLE" &&
+      // Pins the exact `details` shape -- independent review (round 2, 2026-09-26) found an
+      // earlier version of this function delegated to getWatchlistEntry/listEvidence
+      // concurrently, whose two RESEARCH_CHANNEL_NOT_AVAILABLE errors carried different
+      // `details` key names (`channelId` vs `researchChannelId`), making the response
+      // non-deterministic depending on which one settled first.
+      JSON.stringify(error.details) === JSON.stringify({ channelId: OTHER_VALID_CHANNEL_ID })
   );
 });
 

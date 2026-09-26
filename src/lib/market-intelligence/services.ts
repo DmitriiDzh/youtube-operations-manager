@@ -124,7 +124,7 @@ type ServiceDependencies = {
 };
 
 export function createMarketIntelligenceServices(deps: ServiceDependencies) {
-  const services = {
+  return {
     /**
      * Adds a channel the operator does not (necessarily) own to the research watchlist
      * (`docs/roadmap/plans/PHASE_9_PLAN.md` §5/§7). `callOrigin` is SERVER-STAMPED at the
@@ -329,29 +329,37 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * each independently re-orchestrating `getWatchlistEntry`/`listEvidence` (found by independent
      * review -- the two call sites had already started to drift cosmetically).
      *
-     * `getWatchlistEntry` and `listEvidence` run concurrently, not sequentially: `listEvidence`
-     * performs its own independent not-found check against the same `channelId` (mirroring
-     * `getWatchlistEntry`'s own), so there is no real data dependency between the two calls --
-     * awaiting them one after another bought nothing, it only doubled the latency. If the channel
-     * isn't on the watchlist, both reject with the identical `RESEARCH_CHANNEL_NOT_AVAILABLE`.
+     * Deliberately does NOT call `getWatchlistEntry`/`listEvidence` above -- an earlier version did
+     * (concurrently, via `Promise.all`), but independent review (round 2) found that still ran the
+     * existence check against `deps.getResearchChannelById` twice (once inside each), which both
+     * wasted a round-trip and opened a race window (a `removeFromWatchlist` landing between the two
+     * independent reads could make one branch see the channel and the other not) -- and the two
+     * calls' own `RESEARCH_CHANNEL_NOT_AVAILABLE` errors carry different `details` key names
+     * (`channelId` vs `researchChannelId`), so whichever happened to reject first made the response
+     * shape non-deterministic. A single existence check here, feeding both branches, closes both
+     * gaps at once.
      */
     async getWatchlistEntryContext(input: unknown): Promise<{ channel: ResearchChannel; evidence: ResearchEvidence[] }> {
       const parsedInput = parseWithSchema(getWatchlistEntryInputSchema, input, "get watchlist entry context input");
 
-      const [channel, evidenceResult] = await Promise.all([
-        services.getWatchlistEntry(parsedInput),
-        services.listEvidence({ researchChannelId: parsedInput.channelId }),
-      ]);
+      const channelRow = await deps.getResearchChannelById(parsedInput.channelId);
+      if (!channelRow) {
+        throw new DomainError({
+          code: "RESEARCH_CHANNEL_NOT_AVAILABLE",
+          message: "No watchlist entry for the requested channel",
+          details: { channelId: parsedInput.channelId },
+        });
+      }
+
+      const evidenceRows = await deps.listResearchEvidenceByChannel(parsedInput.channelId);
 
       return parseWithSchema(
         getWatchlistEntryContextOutputSchema,
-        { channel, evidence: evidenceResult.evidence },
+        { channel: toResearchChannel(channelRow), evidence: evidenceRows.map(toResearchEvidence) },
         "get watchlist entry context output"
       );
     },
   };
-
-  return services;
 }
 
 export type MarketIntelligenceServices = ReturnType<typeof createMarketIntelligenceServices>;
