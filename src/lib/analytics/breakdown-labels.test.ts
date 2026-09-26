@@ -10,9 +10,16 @@ import {
 } from "./breakdown-labels";
 
 // Independent review round 1 finding (2026-09-26): breakdown-labels.ts had zero tests -- every
-// mapping was only ever exercised indirectly through the UI. Expected values below are hand-stated
-// from the real API responses this session's live probe (BL-093/BL-094) actually observed, per
-// AGENTS.md §L, not copied from the implementation's own map.
+// mapping was only ever exercised indirectly through the UI. Expected values for the enum VALUES
+// tested below (e.g. "SUBSCRIBER", "DESKTOP") are hand-stated from the real API responses this
+// session's live probe (BL-093/BL-094) actually observed, per AGENTS.md §L, not copied from the
+// implementation's own map. **Updated, independent review round 5 (2026-09-26):** this no longer
+// describes every test in this file -- round 4 added tests for enum values Google documents but
+// this app's live probe never observed (this channel has no Shorts/Live/Hashtags/etc. activity);
+// those tests' expected LABEL TEXT is this app's own plain-language gloss of each value's
+// documented meaning (see the source map's own comments at those entries), not something a live
+// response demonstrated -- an intentionally different, and weaker, kind of independence than the
+// live-observed cases, not equivalent to them.
 
 test("labelTrafficSource maps every raw value the live probe actually observed", () => {
   assert.equal(labelTrafficSource(["RELATED_VIDEO"]), "Suggested videos");
@@ -55,7 +62,10 @@ test("labelTrafficSource maps every previously-missing documented value to a hum
   assert.equal(labelTrafficSource(["PRODUCT_PAGE"]), "Product page");
   assert.equal(labelTrafficSource(["SOUND_PAGE"]), "Sound page");
   assert.equal(labelTrafficSource(["VIDEO_REMIXES"]), "Video remixes");
-  assert.equal(labelTrafficSource(["WATCH_WITH"]), "Watch together");
+  // Independent review round 5 (2026-09-26): this test originally asserted "Watch together" -- a
+  // generic paraphrase of a specific named YouTube feature ("Watch With", a Creator Commentary
+  // stream) -- corrected to keep the feature's own name.
+  assert.equal(labelTrafficSource(["WATCH_WITH"]), "Watch With");
 });
 
 test("labelDeviceType maps every raw value the live probe actually observed", () => {

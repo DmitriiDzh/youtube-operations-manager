@@ -66,7 +66,10 @@ const TRAFFIC_SOURCE_LABELS: Record<string, string> = {
   PRODUCT_PAGE: "Product page",
   SOUND_PAGE: "Sound page",
   VIDEO_REMIXES: "Video remixes",
-  WATCH_WITH: "Watch together",
+  // Independent review round 5 (2026-09-26): "Watch together" was a generic paraphrase -- Google's
+  // docs name this a specific feature ("Watch With", a Creator Commentary stream), not co-viewing
+  // in general; kept as the feature's own name rather than genericized.
+  WATCH_WITH: "Watch With",
 };
 
 export function labelTrafficSource([value]: string[]): string {
