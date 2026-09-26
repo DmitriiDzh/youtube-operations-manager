@@ -196,6 +196,12 @@ provenance and documented metric definitions.
 
 ## 5. Phase 9 — Market Discovery & Trend Intelligence
 
+**Status:** slices 1-3 DONE (see §12's marker below); a much larger, detailed extended-scope
+description was recorded 2026-09-26 in `docs/roadmap/plans/PHASE_9_OWNER_SPEC_2026-09-26.md`
+(verbatim) with an analysis and execution plan in `docs/roadmap/plans/PHASE_9_PLAN.md` Part II —
+planned only, not assigned; this section's own summary below predates and remains consistent with
+that fuller detail.
+
 **Objective:** extend the intelligence platform beyond owned-channel data — continuously discover
 and observe competitor channels, competitor videos, emerging formats, topics, niches, creative
 patterns, public trend signals, and potentially attractive new channel opportunities. Must not
@@ -636,9 +642,19 @@ that explicit reprioritization for Phase 9 alone — it does not waive §2a for 
 §2a's five workstreams remain open and still block everything else in this list.
 
 **DONE, slices 1-3:** Phase 9 — Market Discovery & Trend Intelligence (§5), merged to `dev` in
-`b83c9b2` (2026-09-26) — manually-seeded watchlist, Web UI/API, public-snapshot fetch. Slice 4
-(agent-facing MCP/CLI surface) and automatic discovery remain unassigned — see
-`docs/ROADMAP_STATUS.md` and `docs/roadmap/plans/PHASE_9_PLAN.md` for detail.
+`b83c9b2` (2026-09-26) — manually-seeded watchlist, Web UI/API, public-snapshot fetch. See
+`docs/ROADMAP_STATUS.md` and `docs/roadmap/plans/PHASE_9_PLAN.md` Part I for detail.
+
+**EXTENDED SCOPE PLANNED, NOT ASSIGNED (2026-09-26):** the owner sent a much larger, detailed
+39-section description of this same phase the same day slices 1-3 merged (market data model,
+discovery, historical observation/trend/breakout detection, topic/creative intelligence, niche
+discovery, quota-budgeted collection, a full Agent Operations Interface surface) — verbatim in
+`docs/roadmap/plans/PHASE_9_OWNER_SPEC_2026-09-26.md`, analyzed with an execution plan in
+`docs/roadmap/plans/PHASE_9_PLAN.md` Part II (§10-17). **This is a plan only — none of it is
+authorized to start** until the owner resolves the 5 decisions Part II §12 identifies (background-
+collection scheduling; a YouTube API quota budget shared with the rest of this app; whether/when
+to spend on real AI for topic/creative analysis; when `search.list`-based discovery is authorized;
+cross-device history transfer for the new observation tables) and explicitly assigns a next slice.
 
 **DEPENDENCY:** Phase 10 (§6) depends on Phase 9 (§5) and Phase 8 (§4).
 
