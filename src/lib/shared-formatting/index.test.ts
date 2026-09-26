@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatDisplayDate, formatDisplayDateTime } from "./index";
+import { formatDisplayDate, formatDisplayDateTime, parseDisplayDate, parseDisplayDateTime } from "./index";
 
 // Expected values hand-computed from the calendar (AGENTS.md §L), not copied from running the
 // implementation. `new Date(year, monthIndex, day, ...)` constructs a LOCAL-time date directly --
@@ -47,4 +47,66 @@ test("formatDisplayDateTime handles midnight as 00:00, not 24:00 or blank", () =
 
 test("formatDisplayDateTime returns 'Invalid date' for unparseable input", () => {
   assert.equal(formatDisplayDateTime("garbage"), "Invalid date");
+});
+
+// parseDisplayDate/parseDisplayDateTime -- the write direction. Expected values hand-derived from
+// the Gregorian calendar (AGENTS.md §L): which months have 30/31/28/29 days, and which years are
+// leap years (divisible by 4, except centuries not divisible by 400) are facts independent of this
+// implementation, not read off it.
+
+test("parseDisplayDate converts DD.MM.YYYY to a UTC-midnight ISO date, matching new Date('YYYY-MM-DD').toISOString()", () => {
+  assert.equal(parseDisplayDate("05.01.2026"), "2026-01-05T00:00:00.000Z");
+  assert.equal(parseDisplayDate("25.12.2026"), "2026-12-25T00:00:00.000Z");
+});
+
+test("parseDisplayDate rejects a day that does not exist in that month, rather than letting it roll over", () => {
+  // JS's own `new Date(2026, 1, 31)` silently rolls over to March 3rd -- must be rejected instead.
+  assert.equal(parseDisplayDate("31.02.2026"), null);
+  assert.equal(parseDisplayDate("31.04.2026"), null); // April has 30 days
+});
+
+test("parseDisplayDate handles February 29 correctly for leap and non-leap years", () => {
+  assert.equal(parseDisplayDate("29.02.2024"), "2024-02-29T00:00:00.000Z"); // 2024 is a leap year
+  assert.equal(parseDisplayDate("29.02.2026"), null); // 2026 is not
+});
+
+test("parseDisplayDate rejects an out-of-range day or month", () => {
+  assert.equal(parseDisplayDate("00.01.2026"), null);
+  assert.equal(parseDisplayDate("32.01.2026"), null);
+  assert.equal(parseDisplayDate("05.13.2026"), null);
+  assert.equal(parseDisplayDate("05.00.2026"), null);
+});
+
+test("parseDisplayDate rejects the wrong shape entirely, including a non-zero-padded value and an empty string", () => {
+  assert.equal(parseDisplayDate("5.1.2026"), null);
+  assert.equal(parseDisplayDate("2026-01-05"), null);
+  assert.equal(parseDisplayDate(""), null);
+  assert.equal(parseDisplayDate("garbage"), null);
+});
+
+test("parseDisplayDateTime converts DD.MM.YYYY HH:MM as the viewer's local time, matching new Date('YYYY-MM-DDTHH:mm').toISOString()", () => {
+  // Compared against a Date object built from the same local components, exactly like
+  // formatDisplayDate's own "explicit time component" test above -- independent of the CI
+  // machine's own timezone.
+  const expected = new Date(2026, 0, 5, 14, 30).toISOString();
+  assert.equal(parseDisplayDateTime("05.01.2026 14:30"), expected);
+});
+
+test("parseDisplayDateTime accepts midnight as 00:00", () => {
+  assert.equal(parseDisplayDateTime("05.01.2026 00:00"), new Date(2026, 0, 5, 0, 0).toISOString());
+});
+
+test("parseDisplayDateTime rejects an out-of-range hour or minute, never wrapping into the next day", () => {
+  assert.equal(parseDisplayDateTime("05.01.2026 24:00"), null);
+  assert.equal(parseDisplayDateTime("05.01.2026 12:60"), null);
+});
+
+test("parseDisplayDateTime rejects an impossible calendar date even with a valid time", () => {
+  assert.equal(parseDisplayDateTime("31.02.2026 10:00"), null);
+});
+
+test("parseDisplayDateTime rejects the wrong shape, including a date with no time part and an empty string", () => {
+  assert.equal(parseDisplayDateTime("05.01.2026"), null);
+  assert.equal(parseDisplayDateTime(""), null);
+  assert.equal(parseDisplayDateTime("garbage"), null);
 });
