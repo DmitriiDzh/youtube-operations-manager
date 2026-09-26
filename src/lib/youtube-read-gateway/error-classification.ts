@@ -118,12 +118,15 @@ function wrapResourceForQuotaClassification<T extends object>(resource: T): T {
  * by the JS spec to return that exact same value for such a property -- returning a wrapped
  * substitute throws `TypeError: 'get' on proxy: property '...' is a read-only and
  * non-configurable data property...`. This was only caught by testing against a client shaped
- * like the real one; the unit tests below use a plain object precisely because that shape
- * doesn't happen to trigger this invariant, which is exactly why it needed a live check too.
- * Copying each own property onto a fresh object via `Object.defineProperty` (not plain
- * assignment, which can silently fail to shadow a non-writable property found via the prototype
- * chain) sidesteps the invariant entirely -- the new object has no such restrictive descriptors
- * of its own to violate.
+ * like the real one -- an earlier, plain-object test fixture did not happen to trigger this
+ * invariant, which is exactly why the bug wasn't caught until a live check. This file's own
+ * test fixture (`error-classification.test.ts`'s `fakeYoutubeLikeClient`) was fixed the same
+ * day to use `Object.defineProperty` with `writable: false, configurable: false`, deliberately
+ * reproducing the real client's own restrictive shape so this exact regression can never again
+ * slip past the unit tests undetected. Copying each own property onto a fresh object via
+ * `Object.defineProperty` (not plain assignment, which can silently fail to shadow a
+ * non-writable property found via the prototype chain) sidesteps the invariant entirely -- the
+ * new object has no such restrictive descriptors of its own to violate.
  */
 export function wrapYoutubeClientForQuotaClassification<T extends object>(client: T): T {
   const wrapped: Record<PropertyKey, unknown> = Object.create(Object.getPrototypeOf(client) ?? Object.prototype);
