@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as Automerge from "@automerge/automerge";
+import { getStoredChangeById, getStoredChangeSet, upsertChannel } from "@/lib/db";
 import { DomainError, type ChannelDraftDocument, type DraftChange, type DraftChangeSet, type DraftProvenance } from "./contracts";
 import { createChangeDraftsCore, type ServiceDependencies } from "./services";
 import type { ChangeDraftsStoreAdapter } from "./adapters/automerge-store";
 import type { DiscardedDocumentBackupStore } from "./adapters/discarded-backup-store";
-import type { SqlProjectionAdapter } from "./adapters/sql-projection";
+import { createSqlProjectionAdapter, type SqlProjectionAdapter } from "./adapters/sql-projection";
 import type { SqlSourceAdapter } from "./adapters/sql-source";
 
 function fakeStore(): ChangeDraftsStoreAdapter {
@@ -565,6 +566,47 @@ test("discardLocalAndAdoptPeer removes SQL projection rows for change sets/chang
   assert.equal(projection.projectedChanges.has("c-local-only"), false, "the discarded change's SQL row must be removed");
   assert.ok(projection.projectedChangeSets.has("cs-peer-only"), "the adopted change set must still be projected");
   assert.ok(projection.projectedChanges.has("c-peer-only"), "the adopted change must still be projected");
+});
+
+// Independent test-suite audit (2026-09-26): the test above only ever proves this against
+// `fakeProjection()`, an in-memory Map with no foreign-key enforcement -- it cannot distinguish
+// a correct deletion order from a wrong one. `changes.change_set_id` is a real, un-cascaded FK to
+// `change_sets(id)` under this app's real `foreign_keys=ON` connection, so deleting a change set
+// while its own child change row still exists throws a live constraint error; `deleteRowSafely`
+// swallows that error (by design, so one row's failure never blocks the rest of cleanup), which
+// means a wrong order fails SILENTLY -- the change-set row is left permanently orphaned instead of
+// removed. Proven here against the REAL `createSqlProjectionAdapter()`, the same one production
+// wires up, not a fake -- this is exactly the scenario (a change set discarded together with its
+// own child change) that reproduces the bug.
+test("discardLocalAndAdoptPeer, against the REAL SQL projection, actually removes both a discarded change set AND its child change -- not just the child (FK-ordering regression)", async () => {
+  const realChannel = "UC_discard_fk_order_test";
+  await upsertChannel({ channelId: realChannel, title: "Test", thumbnailUrl: null, uploadsPlaylistId: "UU_test", connectedUserId: null });
+
+  const projection = createSqlProjectionAdapter();
+  const local = createChangeDraftsCore(makeDeps({ store: fakeStore(), projection }));
+  await local.createChangeSet({ channelId: realChannel, changeSetId: "cs-fk-local-only", source: "ai_localization" });
+  await local.addChange({
+    channelId: realChannel, changeId: "c-fk-local-only", changeSetId: "cs-fk-local-only", videoId: "v1",
+    language: "es", field: "title", baselineValue: "A", proposedValue: "B", changeType: "modify",
+  });
+
+  const peer = createChangeDraftsCore(makeDeps());
+  await peer.createChangeSet({ channelId: realChannel, changeSetId: "cs-fk-peer-only", source: "ai_localization" });
+  const peerBytes = await peer.exportBytes({ channelId: realChannel });
+
+  await local.discardLocalAndAdoptPeer({ channelId: realChannel, incomingBytes: peerBytes });
+
+  assert.equal(
+    await getStoredChangeById("c-fk-local-only"),
+    null,
+    "the discarded change's real SQL row must actually be gone"
+  );
+  assert.equal(
+    await getStoredChangeSet("cs-fk-local-only"),
+    null,
+    "the discarded change set's real SQL row must actually be gone -- deleting it BEFORE its still-existing " +
+      "child change would throw a live FK-constraint error, silently swallowed, leaving this row orphaned forever"
+  );
 });
 
 // Regression (independent review, found before any FK exception was ever actually hit live):
