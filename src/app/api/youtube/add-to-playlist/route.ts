@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth";
 import { createPlaylistManagementCore } from "@/lib/playlist-management";
 import { DomainError } from "@/lib/playlist-management/contracts";
 import { getVideoMetadataErrorStatus } from "../../video-metadata/error-status";
+import { parseVideoMetadataJsonBody } from "../../video-metadata/parse-json-body";
 
 type AddToPlaylistRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
@@ -22,15 +23,16 @@ export function createAddToPlaylistPostHandler(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { videoIds, playlistId } = await request.json();
-    if (!videoIds?.length || !playlistId) {
-      return NextResponse.json(
-        { error: "Missing videoIds or playlistId" },
-        { status: 400 }
-      );
-    }
-
     try {
+      const body = (await parseVideoMetadataJsonBody(request)) as { videoIds?: string[]; playlistId?: string };
+      const { videoIds, playlistId } = body;
+      if (!videoIds?.length || !playlistId) {
+        return NextResponse.json(
+          { error: "Missing videoIds or playlistId" },
+          { status: 400 }
+        );
+      }
+
       const result = await deps.core.addVideosToPlaylist({
         credentialRef: { userId: session.user.id },
         videoIds,

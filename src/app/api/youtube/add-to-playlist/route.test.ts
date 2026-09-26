@@ -53,6 +53,46 @@ test("add-to-playlist route rejects missing params", async () => {
   assert.deepEqual(payload, { error: "Missing videoIds or playlistId" });
 });
 
+// Independent test-suite audit (2026-09-26): this route implements a 401 pre-auth check but had
+// no test proving it, unlike its sibling GET route (../playlists/route.test.ts).
+test("add-to-playlist route returns unauthorized when session is missing", async () => {
+  const handler = createAddToPlaylistPostHandler({
+    getSession: async () => null,
+    core: {
+      addVideosToPlaylist: async () => ({ playlistId: "p1", attempted: 0, added: 0, failures: [] }),
+    },
+  });
+
+  const response = await handler(makeRequest({ playlistId: "p1", videoIds: ["v1"] }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(payload, { error: "Unauthorized" });
+});
+
+// Independent test-suite audit (2026-09-26): this route used to parse the request body with raw
+// `request.json()` before entering its try block, so a malformed body threw an uncaught
+// SyntaxError -> bare 500. Now routed through parseVideoMetadataJsonBody inside the try block.
+test("add-to-playlist route surfaces malformed JSON as a structured 400, not a bare 500", async () => {
+  const handler = createAddToPlaylistPostHandler({
+    getSession: async () => ({ user: { id: "user-1" } }),
+    core: {
+      addVideosToPlaylist: async () => ({ playlistId: "p1", attempted: 0, added: 0, failures: [] }),
+    },
+  });
+
+  const request = new Request("http://localhost/api/youtube/add-to-playlist", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{not valid json",
+  });
+  const response = await handler(request);
+  const payload = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(payload.error, "validation_failed");
+});
+
 // Regression test: see the matching test in ../create-playlist/route.test.ts for why this
 // exists -- a DomainError from the core previously propagated uncaught as a bare 500.
 test("add-to-playlist route surfaces a DomainError as a structured JSON error, not a bare 500", async () => {
