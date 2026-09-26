@@ -790,7 +790,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 ## RISK-50 — Top-content-by-views ranking is implemented twice (client-side and server-side) — OPEN, 2026-09-23 (advisor review), updated 2026-09-26
 
 - **Affected components:** `src/components/use-top-videos.ts` (client-side; extracted 2026-09-26,
-  independent review round 5 of the Analytics deep-parity plan, from `channel-overview-panel.tsx`'s
+  Slice C5 of the Analytics deep-parity plan (commit `232543b`), from `channel-overview-panel.tsx`'s
   own original inline `fetchTopContent` -- computed from `GET .../analytics` + `GET .../videos`
   responses) and `src/lib/analytics/weekly-report.ts`'s `computeWeeklyReportContent` (server-side,
   powers the weekly report snapshot's own `topContent` field, Phase 8 follow-up slice 4). Still

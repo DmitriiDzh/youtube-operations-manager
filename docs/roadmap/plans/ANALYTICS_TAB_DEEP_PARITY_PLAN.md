@@ -168,10 +168,11 @@ call; O3 is out of scope entirely, not merely blocked pending a probe.
 
 ### 2.4 Proposed slices
 
-- **Slice O1 — Card-click chart switching + metric tooltip.** Make the three existing metric cards
-  clickable; store which is selected; redraw the existing `AnalyticsLineChart` using the selected
-  metric's own data/axis scale/units; add the explanation tooltip (static per-metric copy, no new
-  API call — the numbers are already fetched). Smallest, highest-value, zero new API surface.
+- ~~**Slice O1 — Card-click chart switching + metric tooltip.**~~ **DONE (2026-09-26).** Made the
+  three existing metric cards clickable; stores which is selected; redraws the existing
+  `AnalyticsLineChart` using the selected metric's own data/axis scale/units; added the explanation
+  tooltip (static per-metric copy, no new API call — the numbers are already fetched). Smallest,
+  highest-value, zero new API surface.
 - ~~**Slice O2 — Chart hover tooltip.**~~ **DONE, smaller than planned (2026-09-26).** This plan's
   own first-draft note above was wrong: `AnalyticsLineChart` already had a crosshair + point
   tooltip before this round (built earlier, BL-072) — never actually re-read before this line was
@@ -254,22 +255,22 @@ comparison), not this tab's own per-video-in-period breakdown. Treat as unrelate
   result: retention and traffic-source dimensions confirmed working against real data; impressions/
   CTR confirmed to need a structurally different API (Reporting API v1, not this app's existing
   query-based gateway) — not a naming fix.
-- **Slice C2 — Traffic sources card.** Confirmed-feasible, no funnel/curve complexity — sub-tab bar
-  breakdown, matching Studio's shape. Ready to assign as-is.
+- ~~**Slice C2 — Traffic sources card.**~~ **DONE (BL-095, 2026-09-26).** Confirmed-feasible, no
+  funnel/curve complexity — sub-tab bar breakdown, matching Studio's shape.
 - **Slice C3-deferred — Impressions/CTR funnel card.** Moved out of this round's assignable set per
   §0/§3.3's corrected finding — building it means integrating the YouTube Reporting API v1 (a new
   OAuth-scope check, a new job-creation/polling adapter with no precedent anywhere in this codebase
   today), not adding a metric name to the existing gateway pattern every other slice in this plan
   uses. Recommend the owner treat "is this new integration worth it for one funnel card" as its own
   explicit decision before assigning it, rather than folding it into this round.
-- **Slice C4 — Retention curve + video list.** Confirmed-feasible (dimension/metrics live-verified).
-  The largest, most novel piece (new chart type, a two-series comparison, per-video selection state,
-  a genuinely new visual language for this app). Recommend shipping "Intro" mode alone first
-  (simplest: no top-moment/spike/dip classification logic needed, just the raw curve for whichever
-  video is selected), then Top moments/Spikes/Dips as a follow-up slice once the classification
-  approach is validated against real data.
-- **Slice C5 — Top videos card.** No new API surface; smallest possible standalone slice, could
-  ship independently or bundled with any of the above.
+- ~~**Slice C4 — Retention curve + video list.**~~ **DONE, "Intro" mode only (BL-097, 2026-09-26).**
+  Confirmed-feasible (dimension/metrics live-verified). Shipped the raw curve for whichever video is
+  selected, deliberately without top-moment/spike/dip classification logic (the largest, most novel
+  piece — new chart type, a two-series comparison, per-video selection state — scoped down to its
+  simplest useful form first); Top moments/Spikes/Dips remains a follow-up slice once a
+  classification approach is validated against real data, per commit `4ddc0c9`.
+- ~~**Slice C5 — Top videos card.**~~ **DONE (BL-096, 2026-09-26).** No new API surface; extracted a
+  shared `use-top-videos.ts` hook (`AGENTS.md` §D) rather than a third, standalone implementation.
 - **Slice C6-deferred — Top Remixed.** Explicitly not part of the first assignment (§3.2 above).
 
 ## 4. Audience sub-tab
@@ -345,16 +346,18 @@ Nothing today.
   affinity data) were **not** resolved this round — no obvious dimension name existed to try blindly
   the way the other five did; each still needs its own dedicated research pass before A5/A7 can be
   assigned (see below).
-- **Slice A2 — Device type card.** Confirmed-feasible, no open questions, smallest standalone win.
-- **Slice A3 — Age/gender + Top geographies cards.** Both confirmed-feasible, same shape (ranked
-  breakdown + percentage), can ship together or split further if preferred at assignment time.
-- **Slice A4 — Watch time from subscribers card.** Confirmed-feasible, small.
+- ~~**Slice A2 — Device type card.**~~ **DONE (BL-095, 2026-09-26).** Confirmed-feasible, no open
+  questions, smallest standalone win.
+- ~~**Slice A3 — Age/gender + Top geographies cards.**~~ **DONE (BL-095, 2026-09-26).** Both
+  confirmed-feasible, same shape (ranked breakdown + percentage), shipped together.
+- ~~**Slice A4 — Watch time from subscribers card.**~~ **DONE (BL-095, 2026-09-26).** Confirmed-feasible, small.
 - **Slice A5 — Audience by watch behavior + Popular with different audiences.** Still blocked on
   the unresolved new/casual/regular segmentation question above.
-- **Slice A6 — Formats card.** Confirmed-feasible (`creatorContentType`) — ready to assign, with the
-  caveat that this channel's own data can only exercise the `videoOnDemand` value; Shorts/Live
-  values are unverified against a real response and should be treated as "documented, not
-  observed" until tested against a channel that actually has that content type.
+- ~~**Slice A6 — Formats card.**~~ **DONE (BL-095, 2026-09-26).** Confirmed-feasible
+  (`creatorContentType`), with the caveat that this channel's own data can only exercise the
+  `videoOnDemand` value; Shorts/Live values are unverified against a real response and should be
+  treated as "documented, not observed" until tested against a channel that actually has that
+  content type.
 - **Slice A7-deferred — When your viewers are on YouTube (heatmap), Videos growing your audience,
   Channels/What your audience watches.** Each still has an open feasibility question, unresolved by
   this round's probe; do not assign any of these three until that research exists, per the same
@@ -374,9 +377,10 @@ approval, per their instruction):
    research probes; traffic sources, retention curve, and top videos (Content); device type,
    age/gender, geography, subscribed status, and content format (Audience). All live-verified in the
    browser against the real "Tropico Jazz" channel with real data; `npm test` clean at every step
-   (final count, after 6 independent-review rounds' own fixes: 1465/1465, dev's own baseline was
-   1432); no console errors. Seven backlog rows (BL-092 through BL-098) record the detailed
-   history.
+   (1465/1465 as of the last independent-review fix, dev's own baseline was 1432); no console
+   errors. Seven backlog rows (BL-092 through BL-098) record the detailed history; BL-098's own
+   Notes column is the single running tally of independent-review rounds and findings — see there
+   for the current count rather than a number restated here.
 2. **CONFIRMED OUT OF SCOPE, not merely deferred: O3 (realtime panel) and C3 (impressions/CTR
    funnel).** Both need infrastructure this app's existing gateway pattern cannot reach at all —
    O3 needs Studio's own non-public real-time system (the public API's 48-72h processing delay
