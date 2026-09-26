@@ -262,6 +262,14 @@ type ServiceDependencies = {
 const CHANNELS_LIST_UNIT_COST = 1;
 const PLAYLIST_ITEMS_LIST_UNIT_COST = 1;
 const VIDEOS_LIST_UNIT_COST = 1;
+// A channel is only ever started once `remaining` can cover ALL 3 possible calls (found by
+// independent review: an earlier version checked budget per-call instead, which let a channel that
+// got cut short mid-way still be recorded "success" and marked collected -- directly contradicting
+// this slice's own plan §2/§4 ("a channel skipped because the budget ran out must remain stale,"
+// "records this channel's row as skipped_quota_limited"). Pre-committing the full worst case makes
+// "attempted" and "fully processed" the same thing for every channel this run touches -- never a
+// partial channel.
+const PER_CHANNEL_WORST_CASE_UNIT_COST = CHANNELS_LIST_UNIT_COST + PLAYLIST_ITEMS_LIST_UNIT_COST + VIDEOS_LIST_UNIT_COST;
 
 // A channel is stale after 24h with no successful collection -- deliberately a plain elapsed-time
 // check, not Phase 8's own local-wall-clock-boundary rule (`AGENTS.md` §M: no cross-feature-module
@@ -732,20 +740,41 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * abandoned claim (self-healing after `MARKET_INTELLIGENCE_CLAIM_EXPIRY_MS`), never a
      * permanently stuck channel.
      *
-     * Budget accounting is per real outbound call, not per assumed channel cost: the moment
-     * `remaining` can no longer cover the NEXT call, that channel's row is stamped
-     * `skipped_quota_limited` with whatever it honestly spent so far (0 if blocked on its very
-     * first call), every other still-claimed channel is released WITHOUT a row of its own (found by
-     * advisor review: writing one identical row per remaining stale channel on every single
-     * dashboard mount, once the budget is merely small, would spam the audit log for no new
-     * information beyond "the budget ran out here"), and the whole run stops -- a later channel
-     * never jumps the queue ahead of one already skipped this run.
+     * Budget is checked against `PER_CHANNEL_WORST_CASE_UNIT_COST` (3) BEFORE a channel is even
+     * started, not per individual call -- a channel is either fully processed this run or not
+     * started at all, never cut short partway. **Correction (independent/advisor review): an
+     * earlier version checked budget per-call instead**, which let a channel whose `channels.list`
+     * and `playlistItems.list` succeeded but whose `videos.list` got cut short by budget still be
+     * recorded `"success"` and marked collected -- directly contradicting this slice's own plan
+     * (`PHASE_9_SLICE_9B_PLAN.md` §2/§4: a budget-limited channel must stay stale and be recorded
+     * `skipped_quota_limited`). The moment `remaining` can no longer cover a FULL channel, that
+     * channel's row is stamped `skipped_quota_limited` (`unitsSpent: 0` -- nothing was attempted),
+     * every other still-claimed channel is released WITHOUT a row of its own (found by advisor
+     * review: writing one identical row per remaining stale channel on every single dashboard
+     * mount, once the budget is merely small, would spam the audit log for no new information
+     * beyond "the budget ran out here"), and the whole run stops.
+     *
+     * Each call's own cost is charged to `remaining`/`unitsSpentThisChannel` BEFORE that call
+     * resolves, not after -- a thrown error (e.g. a transient network failure) must still be
+     * recorded with its real spend (YouTube's own quota accounting charges a failed/invalid request
+     * too), never silently erased back to a fabricated 0 (advisor review).
      *
      * A channel whose most recent run failed within the last 24h is excluded from this run's claim
      * entirely (`listRecentlyFailedResearchChannelIds`) -- without this, a permanently broken
      * channel (deleted, made private) would spend at least one real unit on every mount, forever.
      * `last_auto_collected_at` is set ONLY on a channel's own full success, never as a side effect
      * of the overall run -- a channel this run could not fully process stays stale for next time.
+     *
+     * **Known residual limitation, stated plainly rather than silently left implicit (advisor
+     * review):** `remaining` is recomputed from the ledger once, right after this run's own claim
+     * lands, narrowing but not eliminating the race between two concurrent callers (e.g. two
+     * dashboard tabs opened within moments of each other) each starting from the same
+     * not-yet-updated spend total. Two such runs could each independently decide they have enough
+     * budget for one full channel and both proceed, together spending up to
+     * `2 * PER_CHANNEL_WORST_CASE_UNIT_COST` against a budget that only covered one. This is judged
+     * an acceptable, bounded overshoot for a same-machine, low-frequency trigger (never a
+     * distributed system), not a gap silently left unrecognized -- the channel-level `collectionClaimedAt`
+     * claim above still guarantees the two runs never spend budget on the SAME channel twice.
      */
     async runCollectionIfStale(input: unknown): Promise<{
       attempted: number;
@@ -790,6 +819,19 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         return parseWithSchema(runCollectionIfStaleOutputSchema, zeroed, "run collection if stale output");
       }
 
+      // Recomputed AFTER the claim, from the ledger's own current state -- narrows (does not fully
+      // eliminate -- see this function's own top-level doc comment) the race window a second
+      // concurrent caller's own stale pre-claim `spentToday` read would otherwise leave open
+      // (advisor review, before implementation).
+      const spentAfterClaim = await deps.getMarketIntelligenceUnitsSpentSince(startOfUtcDay(now));
+      remaining = budget - spentAfterClaim;
+      if (remaining <= 0) {
+        for (const claimedId of claimedIds) {
+          await deps.releaseResearchChannelCollectionClaim(claimedId);
+        }
+        return parseWithSchema(runCollectionIfStaleOutputSchema, zeroed, "run collection if stale output");
+      }
+
       let attempted = 0;
       let succeeded = 0;
       let failedCount = 0;
@@ -799,7 +841,10 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       for (let i = 0; i < claimedIds.length; i++) {
         const researchChannelId = claimedIds[i];
 
-        if (remaining < CHANNELS_LIST_UNIT_COST) {
+        // Checked against the full worst-case cost, not just the next call's cost -- a channel is
+        // either fully processed or not started at all this run, never cut short partway (see
+        // PER_CHANNEL_WORST_CASE_UNIT_COST's own doc comment).
+        if (remaining < PER_CHANNEL_WORST_CASE_UNIT_COST) {
           attempted += 1;
           quotaLimited += 1;
           await deps.insertMarketIntelligenceCollectionRun({
@@ -821,9 +866,12 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         let videosReturned: number | null = null;
 
         try {
-          const snapshot = await deps.youtubeApi.getPublicChannelSnapshot({ credentials, channelId: researchChannelId });
+          // Charged BEFORE the call resolves, not after -- YouTube's own quota accounting charges
+          // a failed/invalid request too (its public quota docs), so a thrown error below must
+          // never erase this channel's real spend down to a fabricated 0 (found by advisor review).
           unitsSpentThisChannel += CHANNELS_LIST_UNIT_COST;
           remaining -= CHANNELS_LIST_UNIT_COST;
+          const snapshot = await deps.youtubeApi.getPublicChannelSnapshot({ credentials, channelId: researchChannelId });
 
           if (!snapshot) {
             throw new Error("YouTube reports no public channel for this id");
@@ -840,23 +888,22 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
             createdVia: "web_ui",
           });
 
-          if (snapshot.uploadsPlaylistId && remaining >= PLAYLIST_ITEMS_LIST_UNIT_COST) {
+          if (snapshot.uploadsPlaylistId) {
+            unitsSpentThisChannel += PLAYLIST_ITEMS_LIST_UNIT_COST;
+            remaining -= PLAYLIST_ITEMS_LIST_UNIT_COST;
             const videoIds = await deps.youtubeApi.listUploadsPlaylistFirstPageVideoIds({
               credentials,
               uploadsPlaylistId: snapshot.uploadsPlaylistId,
             });
-            unitsSpentThisChannel += PLAYLIST_ITEMS_LIST_UNIT_COST;
-            remaining -= PLAYLIST_ITEMS_LIST_UNIT_COST;
             videosRequested = videoIds.length;
-            videosReturned = 0;
 
-            if (videoIds.length > 0 && remaining >= VIDEOS_LIST_UNIT_COST) {
+            if (videoIds.length > 0) {
+              unitsSpentThisChannel += VIDEOS_LIST_UNIT_COST;
+              remaining -= VIDEOS_LIST_UNIT_COST;
               const videoSnapshots: PublicVideoSnapshot[] = await deps.youtubeApi.getPublicVideoSnapshots({
                 credentials,
                 videoIds,
               });
-              unitsSpentThisChannel += VIDEOS_LIST_UNIT_COST;
-              remaining -= VIDEOS_LIST_UNIT_COST;
               videosReturned = videoSnapshots.length;
 
               for (const videoSnapshot of videoSnapshots) {
@@ -872,6 +919,10 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
                   createdVia: "web_ui",
                 });
               }
+            } else {
+              // The playlist WAS enumerated and genuinely has no videos -- a real, known fact
+              // (distinct from "the videos.list step was never attempted", which stays null).
+              videosReturned = 0;
             }
           }
 
@@ -890,6 +941,11 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
             researchChannelId,
             status: "failed",
             unitsSpent: unitsSpentThisChannel,
+            // Preserves whatever was actually known before the failure (e.g. enumeration finished
+            // but the stats fetch itself threw) instead of discarding it back to null (found by
+            // advisor review).
+            videosRequested,
+            videosReturned,
             errorMessage: error instanceof Error ? error.message : String(error),
             ranAt: now,
           });

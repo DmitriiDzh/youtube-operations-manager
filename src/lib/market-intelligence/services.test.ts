@@ -957,20 +957,26 @@ test("AC-9B-05: a channel already claimed by a concurrent run in progress is exc
   assert.equal(snapshotCalls.length, 0, "an already-claimed channel must never receive a second concurrent attempt");
 });
 
-test("AC-9B-06: when the budget covers only the channel snapshot call, the channel still succeeds with videosRequested/videosReturned left null, never fabricated", async () => {
+// Rewritten (independent/advisor review, before merge): the original version of this test asserted
+// that a budget covering only the channel-snapshot call still yields a "success" -- but the plan
+// itself (PHASE_9_SLICE_9B_PLAN.md §2/§4) requires a budget-limited channel to stay stale and be
+// recorded skipped_quota_limited, never a partial success. Budget is now checked against the FULL
+// worst-case per-channel cost (3) before a channel is ever started, precisely to make this case
+// impossible -- this test now asserts THAT invariant instead of the old (incorrect) expectation.
+test("AC-9B-06: a budget below the full per-channel worst-case cost (3) never starts a channel at all -- no partial success, per plan §2/§4", async () => {
   const now = new Date("2026-09-27T12:00:00.000Z");
-  const { store, services, playlistCalls } = createFixture({ now, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO });
+  const { store, services, snapshotCalls } = createFixture({ now, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO });
   store.setQuotaBudget(1);
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
 
   const result = await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
-  assert.deepEqual(result, { attempted: 1, succeeded: 1, failed: 0, quotaLimited: 0, unitsSpent: 1 });
-  assert.equal(playlistCalls.length, 0, "must never issue a playlistItems.list call it can't afford");
+  assert.deepEqual(result, { attempted: 1, succeeded: 0, failed: 0, quotaLimited: 1, unitsSpent: 0 });
+  assert.equal(snapshotCalls.length, 0, "must never issue even the first call for a channel it can't afford to fully process");
 
   const [run] = store.collectionRuns;
-  assert.equal(run.videosRequested, null);
-  assert.equal(run.videosReturned, null);
-  assert.ok(store.channels.get(VALID_CHANNEL_ID)?.lastAutoCollectedAt, "a channel snapshot alone is still a real, successful refresh of that channel");
+  assert.equal(run.status, "skipped_quota_limited");
+  assert.equal(run.unitsSpent, 0, "nothing was attempted -- must never fabricate a partial spend");
+  assert.equal(store.channels.get(VALID_CHANNEL_ID)?.lastAutoCollectedAt, null, "must stay stale for the next trigger");
 });
 
 test("AC-9B-07: a channel whose most recent run failed within the last 24h is excluded from this run's claim (retry backoff)", async () => {
@@ -1037,4 +1043,59 @@ test("AC-9B-10: getDailyQuotaBudgetUnits/setDailyQuotaBudgetUnits round-trip thr
 
   await services.setDailyQuotaBudgetUnits(null);
   assert.equal(await services.getDailyQuotaBudgetUnits(), null);
+});
+
+test("AC-9B-11: a budget of 2 (still short of the full 3-unit worst case) also never starts a channel", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { store, services, snapshotCalls } = createFixture({ now, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO });
+  store.setQuotaBudget(2);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+
+  const result = await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+  assert.deepEqual(result, { attempted: 1, succeeded: 0, failed: 0, quotaLimited: 1, unitsSpent: 0 });
+  assert.equal(snapshotCalls.length, 0);
+  assert.equal(store.collectionRuns[0]?.videosRequested, null, "never attempted -- must never invent a requested/returned gap for a step that never ran");
+  assert.equal(store.collectionRuns[0]?.videosReturned, null);
+});
+
+test("AC-9B-12: a channel whose uploads playlist genuinely has zero videos gets videosReturned:0 (a known fact), distinct from a channel with no uploads playlist at all (stays null)", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { store, services } = createFixture({
+    now,
+    publicSnapshot: { ...FULL_SNAPSHOT_WITH_VIDEO, channelId: VALID_CHANNEL_ID },
+    uploadsPlaylistVideoIds: [],
+  });
+  store.setQuotaBudget(100);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+
+  await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+
+  const [run] = store.collectionRuns;
+  assert.equal(run.status, "success");
+  assert.equal(run.videosRequested, 0, "the playlist WAS enumerated -- a real, known zero, not an unattempted step");
+  assert.equal(run.videosReturned, 0);
+  assert.equal(run.unitsSpent, 2, "channels.list + playlistItems.list only -- videos.list is never called for zero ids");
+});
+
+test("AC-9B-13: remaining budget is recomputed from the ledger after the claim, catching spend a concurrent run already recorded before this run's own pre-check ran", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { store, services, snapshotCalls } = createFixture({ now, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO });
+  store.setQuotaBudget(3);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  // Simulates a concurrent run that already spent the whole budget and recorded it in the ledger
+  // AFTER this run's own initial (now stale) pre-check would have read `spentToday` as 0.
+  store.collectionRuns.push({
+    researchChannelId: OTHER_VALID_CHANNEL_ID,
+    status: "success",
+    unitsSpent: 3,
+    videosRequested: null,
+    videosReturned: null,
+    errorMessage: null,
+    ranAt: now,
+  });
+
+  const result = await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+  assert.deepEqual(result, { attempted: 0, succeeded: 0, failed: 0, quotaLimited: 0, unitsSpent: 0 });
+  assert.equal(snapshotCalls.length, 0);
+  assert.equal(store.channels.get(VALID_CHANNEL_ID)?.collectionClaimedAt, null, "the claim must be released, never left stuck, when the post-claim recheck finds no budget left");
 });

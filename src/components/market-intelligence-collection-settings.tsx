@@ -85,10 +85,12 @@ export function MarketIntelligenceCollectionSettings() {
           <InfoTooltip>
             Once per running dashboard session, this app checks every watchlisted competitor
             channel that hasn&rsquo;t been refreshed in the last 24h and refreshes as many as this
-            daily YouTube API unit budget allows (a channel snapshot plus its newest videos costs a
-            few units). This does not run on a background schedule while the app is closed &mdash;
-            only while the interface is open. Set to 0 to turn auto-refresh off. This budget resets
-            at UTC midnight, independent of the Cloud quota numbers shown elsewhere.
+            daily YouTube API unit budget allows. A full refresh (channel snapshot plus its newest
+            videos) costs up to 3 units &mdash; a channel is only ever refreshed if the full 3-unit
+            cost is available, never partially. This does not run on a background schedule while
+            the app is closed &mdash; only while the interface is open. Set to 0 to turn
+            auto-refresh off. This budget resets at UTC midnight, independent of the Cloud quota
+            numbers shown elsewhere.
           </InfoTooltip>
         </h3>
       </div>

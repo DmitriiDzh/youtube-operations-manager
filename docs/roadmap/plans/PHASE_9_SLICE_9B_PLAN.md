@@ -138,10 +138,28 @@ for today's UTC calendar day).
   "no cross-module import" constraint) -- the Settings UI labels this window explicitly
   ("resets at UTC midnight") so it is never confused with `cloud-quotas`' own Pacific-Time-based
   numbers.
-- Before each individual outbound call (`channels.list`, `playlistItems.list`, `videos.list`) the
-  collector checks `remaining = budget - spentToday - spentSoFarThisRun >= callCost`; if not, it
-  stops immediately (never partially issues a call it can't account for) and records this
-  channel's row as `status: "skipped_quota_limited"`.
+- **Correction (independent/advisor review, before merge): checked once per CHANNEL, against the
+  full worst-case cost, not once per individual call.** The original design above (per-call
+  checking) was implemented first and found, by review, to let a channel whose `channels.list` and
+  `playlistItems.list` succeeded but whose `videos.list` got cut short by budget still be recorded
+  `"success"` and marked collected -- directly contradicting this same section's own "records this
+  channel's row as skipped_quota_limited" sentence and §2's "a channel skipped because the budget
+  ran out must remain stale." Fixed: before a channel is started at all, the collector checks
+  `remaining >= PER_CHANNEL_WORST_CASE_UNIT_COST` (3 -- `channels.list` + `playlistItems.list` +
+  `videos.list`); if not, the channel is never started (0 units spent) and its row is
+  `status: "skipped_quota_limited"`. A channel that IS started is therefore always either fully
+  processed or fails outright -- never cut short by budget partway through. Each call's own cost is
+  still charged to `remaining` BEFORE that call resolves (not after), so a thrown error still
+  records real spend rather than a fabricated 0 (YouTube's own quota docs: a failed/invalid request
+  still costs at least 1 unit).
+- **Known residual race, stated plainly:** `remaining` is recomputed from the ledger once, right
+  after this run's own claim lands -- narrowing, but not eliminating, the race between two
+  concurrent callers (e.g. two dashboard tabs opened moments apart) each starting from the same
+  not-yet-updated spend total. Two such runs could each independently decide they have budget for
+  one full channel and both proceed, together spending up to `2 * 3` units against a budget that
+  only covered one. Judged an acceptable, bounded overshoot for a same-machine, low-frequency
+  trigger (never a distributed system) -- the channel-level claim still guarantees the two runs
+  never spend budget on the SAME channel twice.
 
 ## 5. New read-gateway functions/widenings (`src/lib/youtube-read-gateway/data-api.ts`)
 
@@ -232,14 +250,22 @@ after the two Phase-8 calls already there -- "while the app's interface is runni
 - `getPublicChannelSnapshot`'s existing behavior (title/subscriber/view/video count, hidden-count
   handling) is completely unchanged by adding `uploadsPlaylistId` -- existing 9A/slice-3 tests keep
   passing unmodified.
-- `listUploadsPlaylistVideoIds` with no `maxResults` given behaves identically to today (existing
-  channel-sync tests keep passing unmodified); with `maxResults: 50` and a 2-page fake response of
-  30+40 ids, stops after collecting 50, never issuing a third page request.
-- Two concurrent calls to `runMarketIntelligenceCollectionIfStale` (simulating two open tabs) never
-  both spend budget refreshing the same channel -- the second sees the first's in-progress mark and
-  skips it.
+- `listUploadsPlaylistVideoIds` (unchanged, no options added -- §5's correction) behaves identically
+  to today; the new `listUploadsPlaylistFirstPageVideoIds` issues exactly one `playlistItems.list`
+  call and never a second one, even when the response carries a `nextPageToken`.
+- Two concurrent calls to `runCollectionIfStale` (simulating two open tabs) never both spend budget
+  refreshing the same channel -- the second sees the first's claim and skips it.
 - Schema initialization succeeds against both a fresh empty database and the pre-migration re-apply
   path, matching every prior migration's own test coverage.
+- **Added by independent/advisor review, before merge (§2/§4's own corrections above):** a budget
+  below the full per-channel worst-case cost (3) never starts a channel at all -- no channel is ever
+  recorded `"success"` having only partially completed its 3 possible calls. A channel whose
+  uploads playlist genuinely enumerates to zero videos gets `videos_requested: 0`/
+  `videos_returned: 0` (a known fact); a channel with no uploads playlist at all, or one this run
+  never reaches, keeps both fields `null` (an unattempted step) -- these two must never be
+  conflated. A call that throws still records its own real spend in `units_spent`, never a
+  fabricated 0. A `failed` row preserves whatever `videos_requested`/`videos_returned` were already
+  known before the failure, never discards them back to `null`.
 
 ## 10. Where this is recorded
 
