@@ -641,23 +641,25 @@ Phase 9 over Telegram ("Создай новую ветку для Phase 9, Marke
 that explicit reprioritization for Phase 9 alone — it does not waive §2a for any other phase, and
 §2a's five workstreams remain open and still block everything else in this list.
 
-**DONE, slices 1-3:** Phase 9 — Market Discovery & Trend Intelligence (§5), merged to `dev` in
-`b83c9b2` (2026-09-26) — manually-seeded watchlist, Web UI/API, public-snapshot fetch. See
-`docs/ROADMAP_STATUS.md` and `docs/roadmap/plans/PHASE_9_PLAN.md` Part I for detail.
+**DONE, Part I (slices 1-4):** Phase 9 — Market Discovery & Trend Intelligence (§5), merged to
+`dev` in `b83c9b2` (slices 1-3) and `4a39b9f` (slice 4, agent-facing MCP/CLI surface), both
+2026-09-26 — manually-seeded watchlist, Web UI/API, public-snapshot fetch, and
+`query_market_intelligence`/`query_competitors`. See `docs/ROADMAP_STATUS.md` and
+`docs/roadmap/plans/PHASE_9_PLAN.md` Part I for detail.
 
-**EXTENDED SCOPE PLANNED, NOT ASSIGNED (2026-09-26):** the owner sent a much larger, detailed
-39-section description of this same phase the same day slices 1-3 merged (market data model,
-discovery, historical observation/trend/breakout detection, topic/creative intelligence, niche
-discovery, quota-budgeted collection, a full Agent Operations Interface surface) — verbatim in
-`docs/roadmap/plans/PHASE_9_OWNER_SPEC_2026-09-26.md`, analyzed with an execution plan in
-`docs/roadmap/plans/PHASE_9_PLAN.md` Part II (§10-17). **All 5 gating decisions Part II §12
-identifies (background-collection scheduling; YouTube API quota budget; real-AI spend for topic/
-creative analysis; when `search.list`-based discovery is authorized; cross-device history
-transfer) were resolved by the owner over Telegram the same day, 2026-09-26 — see `PHASE_9_PLAN.md`
-§12 for each item's own recorded wording.** Resolving the decisions is not itself an authorization
-to start 9A/9B — that still requires the owner's own explicit "start this slice" assignment,
-not yet given as of this update. `PHASE_9_PLAN.md` §14's own revised slice plan recommends 9A
-(structured, append-only market snapshot model) as the first slice once assigned.
+**EXTENDED SCOPE (PART II) — 9A/9B IN PROGRESS, REST STILL UNASSIGNED (2026-09-26):** the owner
+sent a much larger, detailed 39-section description of this same phase the same day slices 1-3
+merged (market data model, discovery, historical observation/trend/breakout detection,
+topic/creative intelligence, niche discovery, quota-budgeted collection, a full Agent Operations
+Interface surface) — verbatim in `docs/roadmap/plans/PHASE_9_OWNER_SPEC_2026-09-26.md`, analyzed
+with an execution plan in `docs/roadmap/plans/PHASE_9_PLAN.md` Part II (§10-17). All 5 gating
+decisions Part II §12 identifies (background-collection scheduling; YouTube API quota budget;
+real-AI spend for topic/creative analysis; when `search.list`-based discovery is authorized;
+cross-device history transfer) were resolved by the owner over Telegram the same day — see
+`PHASE_9_PLAN.md` §12 for each item's own recorded wording. The owner then explicitly assigned the
+first slice ("да, начинай новую ветку и продолжай с 9А") -- **9A/9B (structured, append-only
+market snapshot model + repeatable refresh, `docs/roadmap/BACKLOG.md` BL-102) is now in progress.**
+9C-9I (discovery onward, BL-103) remain unassigned.
 
 **DEPENDENCY:** Phase 10 (§6) depends on Phase 9 (§5) and Phase 8 (§4).
 
