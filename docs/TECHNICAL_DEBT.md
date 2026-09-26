@@ -401,7 +401,7 @@ None of these three gaps block Slice 4 (the write executor and its barrier) and 
 - **Acceptance criteria:** A dated, documented run (mirroring RISK-05's own format) on real macOS hardware covering at minimum: first-run app-data directory creation, a full export→import round trip, and one schema-migration boot.
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE` (for a release that will actually be used on macOS).
 - **Approval required from:** whoever performs the run must have access to real macOS hardware.
-- **Status:** OPEN — explicitly and honestly not closed by this task; see the final task report for the exact same caveat stated to the project owner.
+- **Status:** OPEN — explicitly and honestly not closed by this task; see the final task report for the exact same caveat stated to the project owner. **Update, 2026-09-26 (roadmap accuracy check):** this entry's own title is now stale/inverted relative to what actually happened afterward — see `docs/ROADMAP_STATUS.md`'s "Pre-Release — First Local Test Build" row: a real production build/launcher run was actually executed on real macOS hardware (server start, DB creation/schema/restart persistence, `BL-048`'s own real macOS verification), while the Windows launcher scripts were written and reasoned about but **never executed on real Windows hardware** — the reverse of this entry's title. The underlying gap this entry tracks (a real, dated acceptance-scenario run on the *other* platform) is unchanged; only which platform is unvalidated has flipped. Not rewritten in full here (that needs its own pass over this entry's acceptance criteria) — flagged so a future reader doesn't act on the stale direction.
 
 ---
 

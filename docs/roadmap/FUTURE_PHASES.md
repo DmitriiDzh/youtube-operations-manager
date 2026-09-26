@@ -50,6 +50,28 @@ Standing architectural principles for every phase below:
   development (this repository, Claude Code) stays structurally separate from any operational
   agent (Codex or otherwise) actually running a released version.
 
+**Prioritization principles for future planning** (added 2026-09-26, owner instruction — "Strategic
+Roadmap Update — Post Phase 8"), applied whenever a future phase is planned, reordered, or
+reprioritized:
+
+1. Validate completed functionality with real operational use before expanding it further (see
+   §2a's Operational Validation Gate).
+2. Prefer real operational feedback over speculative architecture polishing.
+3. Build reusable interfaces around actual use cases, not anticipated ones.
+4. Keep owned-channel analytics (private, Phase 8) and public market/competitor observations
+   (Phase 9) explicitly separate — never blend them into one dataset or one permission tier.
+5. Preserve provenance for every stored observation, evidence item, and decision.
+6. Treat AI-generated outputs as hypotheses or proposals, never as established fact or a
+   statistical probability.
+7. Preserve human approval for consequential operations until the project owner explicitly
+   changes that (restates, does not replace, `AGENTS.md` §G's existing approval model).
+8. Optimize for automation, scalability, and low manual operator workload once validated.
+9. Avoid premature graph databases, vector databases, or distributed systems unless a validated
+   use case actually requires one — a plain relational table exposed over the existing MCP/API
+   surface is this project's own established default (e.g. `analytics_collection_runs`).
+10. Design production/experiment workflows so an individual stage or asset can be replaced
+    without rebuilding the entire pipeline.
+
 ## 2. Immediate priority — first local test release (already in progress, not a future phase)
 
 This is not a new phase; it is the work already assigned and substantially completed in prior
@@ -65,6 +87,52 @@ Phase 5 write-safety barrier (`docs/TECHNICAL_DEBT.md` RISK-09/Gate B). This mil
 "complete" merely because tests pass or `npm run build` succeeds; it requires an actual manual
 smoke test (`docs/FIRST_LOCAL_TEST_BUILD.md` §7). Gate B (real YouTube writes) remains a wholly
 separate safety requirement, independent of this milestone's completion.
+
+## 2a. Immediate priority — Operational Validation Gate
+
+**Recorded 2026-09-26, owner instruction ("Strategic Roadmap Update — Post Phase 8").** This is
+not a new product-feature phase — its purpose is to prove the system already built (Phases 0-8,
+Phase 7's agent interface, the pre-release cross-platform foundations in §2 above) can actually be
+used safely and practically, before the product is expanded further. It sits ahead of Phase 9 in
+priority order: Phase 9 does not begin until this gate's workstreams are addressed, or the owner
+explicitly reprioritizes.
+
+Five independently-tracked workstreams — none is itself a new phase, and completing one does not
+imply the others are also complete:
+
+**A. Phase 5 Gate B.** Complete the previously defined live validation of the YouTube write
+pipeline (`docs/TECHNICAL_DEBT.md` RISK-09, `docs/acceptance/PHASE_5_ACCEPTANCE.md` §4). The write
+barrier (`assertLiveWritesAuthorized`) stays in place until that separately-authorized live
+validation actually succeeds — this gate does not weaken any Phase 5 safety requirement, and
+completing the other four workstreams below never substitutes for it.
+
+**B. Codex / external-agent end-to-end validation.** Validate the real operational-agent workflow
+through the released Agent Operations Interface (Phase 7), with the agent working entirely without
+development-repository access (`AGENTS.md` §B). At minimum validate: capability discovery; channel
+context retrieval; video context retrieval; analytics access; comparable-video discovery;
+asset-performance access; localization draft creation; Content Proposal creation;
+evidence/rationale recording; and that the agent genuinely cannot reach APPROVE/EXECUTE. Use real
+application data where safe; never grant the operational agent development permissions.
+
+**C. Cross-platform runtime validation.** Run the actual application on a real Windows machine and
+verify: launcher/startup; the persistent data directory; settings persistence; update behavior; a
+local build; and device handoff with the already-tested macOS installation. Per
+`docs/ROADMAP_STATUS.md`'s Pre-Release rows, macOS has actually been exercised (a real production
+build/launcher run); Windows runtime validation remains incomplete (`docs/TECHNICAL_DEBT.md`
+RISK-17, whose own title is stale on this exact point — see that entry's 2026-09-26 update). Do
+not claim Windows support is validated until it has actually been executed on Windows.
+
+**D. Device handoff validation.** Verify the existing single-active-device workflow on two real
+machines. Do not expand this into simultaneous multi-device synchronization — that remains its
+own, separately-tracked future direction (§7).
+
+**E. Phase 8 operational analytics validation.** Verify the analytics actually exposed to agents
+match what's visible in the product and are genuinely useful for real operational decisions: data
+freshness, date ranges, metric definitions, comparable-age behavior, missing-data behavior, and
+weekly-report consistency.
+
+**Completion criterion:** the product can be used for real, supervised operations without
+development-repository access, manual architecture bypasses, or silent safety degradation.
 
 ## 3. Phase 7 — Codex Operations Interface
 
@@ -109,6 +177,8 @@ owner's sign-off). The authoritative, continuously-updated technical design and 
 status document for this expanded scope is `docs/AGENT_OPERATIONS_INTERFACE.md` — this bullet
 records that the assignment happened and points there rather than duplicating the design here.
 
+## 4. Phase 8 — Owned-Channel Analytics
+
 **Objective:** give the product a reliable analytical foundation built on actual owned-channel
 data.
 
@@ -126,52 +196,149 @@ provenance and documented metric definitions.
 
 ## 5. Phase 9 — Market Discovery & Trend Intelligence
 
-**Objective:** continuously discover competitors, content formats, niches, and market
-opportunities beyond the channels already known to the system.
+**Objective:** extend the intelligence platform beyond owned-channel data — continuously discover
+and observe competitor channels, competitor videos, emerging formats, topics, niches, creative
+patterns, public trend signals, and potentially attractive new channel opportunities. Must not
+assume the operator already knows every relevant competitor; no fixed competitor-list cap — use
+discovery, prioritization, and resource budgets instead.
 
-Planned capabilities: public YouTube data collection through permitted interfaces; competitor
-and channel discovery; a dynamic, expanding research watchlist; video/channel history; emerging
-content-pattern and topic/niche discovery; public trend signals; source attribution and evidence
-storage; freshness/confidence indicators; candidate opportunities for further investigation.
+**Discovery.** Support discovery of new channels/videos/topics from public YouTube data, search
+queries, related content, channel/video relationships, observed growth patterns, and — where
+justified — future external trend sources.
+
+**Observation.** Persist public observations over time: channel/video identity, title,
+description, thumbnail reference, publication date, public views, channel public statistics where
+available, upload frequency, duration, category/topic signals, and historical observations. Only
+store data actually available through permitted sources — never fabricate or estimate a metric a
+source doesn't actually expose.
+
+**Watchlists.** Support dynamic watchlists — a channel/video/topic may enter or leave one based on
+operator choice, agent proposal, discovery rules, or observed relevance. A watchlist is not the
+same as a permanent competitor database; membership is expected to change over time.
+
+**Trend candidates.** Structured records containing observed evidence, source references,
+freshness, why the candidate was surfaced, affected topics/niches, and confidence/uncertainty
+notes. AI-stated confidence is never treated as a statistical probability (§1's prioritization
+principles).
+
+**Market opportunity candidates.** Broader candidates, including niches entirely outside the
+operator's current channels. Every candidate must be explainable through stored public
+observations — never conclude profitability from public view counts alone.
+
+**Agent integration.** Expose this intelligence through the existing Agent Operations Interface
+(Phase 7) — Codex-class agents should be able to query discovered channels, observed competitor
+history, trend candidates, topic/niche candidates, and the underlying public evidence. Keep OWNED
+PRIVATE ANALYTICS (Phase 8) and PUBLIC MARKET OBSERVATIONS (this phase) clearly distinguished
+throughout the interface — never let one silently stand in for the other. Never fabricate
+unavailable competitor metrics such as CTR, retention, traffic sources, revenue, or private
+subscriber-conversion data — these are not observable through public sources and must not appear
+even as an estimate.
 
 Constraints: no arbitrary fixed competitor-list limit — use resource budgets, prioritization, and
 discovery rules instead; never assume access to a competitor's private analytics, CTR, retention,
 or revenue; never treat publicly observed growth as proof of profitability; never restrict
 discovery to music or the operator's existing niches.
 
-**Deliverable:** the system identifies new research candidates and states which public
-observations support each one.
+**Deliverable / completion criterion:** the system identifies new research candidates — previously
+unknown channels, topics, or niches — and states which public observations, with freshness
+metadata, support each one, never an unexplained ranking.
 
 ## 6. Phase 10 — Decision & Experiment Engine
 
-**Objective:** turn the analytical and market-research foundation into a controlled,
-evidence-based experimentation workflow.
+**Objective:** create a controlled system for turning evidence (Phase 8 owned-channel analytics,
+Phase 9 market intelligence, historical content/assets, prior proposals and experiments, and
+operator goals) into testable actions, and for learning from the results.
 
-Planned capabilities: generating testable hypotheses; recommendations for existing channels;
-evaluation of new channel concepts; experiment design with success/stopping criteria and
-budget/resource estimates; human approval; controlled execution through already-authorized
-product interfaces; monitoring results against predefined baselines; recording lessons learned;
-a reusable decision history.
+**Core entities**, kept explicitly distinct throughout — no consequential action executes merely
+because an AI agent proposed it:
 
-Supports both (A) optimizing existing channels and (B) discovering/validating entirely new
-channel opportunities. Must keep observed evidence, AI-generated hypotheses, proposed decisions,
-approved actions, and actual outcomes as explicitly distinct categories throughout — no
-consequential action executes merely because an AI agent proposed it.
+- **Hypothesis** — a falsifiable proposition (e.g. a thumbnail pattern may improve CTR; a specific
+  video duration may improve watch time; a localized title structure may improve target-language
+  discovery; a new channel concept may have enough market evidence to justify a pilot).
+- **Evidence** — supports or contradicts a hypothesis, drawn from owned analytics, public market
+  observations, historical experiments, or external research; always retains provenance back to
+  its source.
+- **Experiment** — hypothesis, affected channel/content, treatment, control/baseline, start
+  conditions, duration, success criteria, stopping criteria, required sample/coverage constraints
+  where applicable, budget/resources, responsible agent/human, and approval status.
+- **Outcome** — actual data, comparison against baseline, data-quality limitations, and whether the
+  experiment's own criteria were actually met.
+- **Retrospective** — what was learned. An AI agent may never silently rewrite a past outcome or
+  piece of evidence.
 
-**Deliverable:** an experiment is traceable end-to-end, from initial hypothesis through approval,
-execution, measurement, and retrospective analysis.
+Supports both **(A) optimizing existing channels** (titles, thumbnails, localization, publication
+timing, format/duration, content concepts, packaging) and **(B) validating entirely new channel
+opportunities** via small pilot experiments — an AI recommendation is never itself permission to
+launch a new channel into production.
+
+**Agent integration.** Codex-class agents should be able to propose hypotheses, attach evidence,
+create experiment drafts, suggest criteria, review results, and produce retrospectives. Human
+approval is preserved before any consequential execution, until the project owner explicitly
+changes that.
+
+**Completion criterion:** a decision can be traced end-to-end — evidence → hypothesis → approved
+experiment → execution → analytics → outcome → retrospective — without losing provenance at any
+step.
+
+## 6a. Post-Phase-10 direction — Publishing Pipeline
+
+**Recorded 2026-09-26 as the next likely product direction after the Decision & Experiment
+Engine — not approved implementation work; do not implement now.** Objective: let a completed
+media package move safely toward YouTube publication. Conceptual workflow: Content Proposal →
+Production Package → Validation → Upload as Private → Human Review → Schedule/Publish.
+
+Potential future capabilities: register a final rendered video; validate required
+metadata/assets; upload the video through the YouTube Data API as private; upload its thumbnail;
+apply metadata/localizations; retrieve the resulting YouTube video ID; preserve upload
+audit/provenance; review inside YouTube Operations Manager; separately approve
+scheduling/publication.
+
+`UPLOAD_PRIVATE` and `PUBLISH` must be treated as separate permission classes/capabilities —
+uploading a private draft must never silently authorize public publication. Every external
+mutation this would introduce still passes through the product's existing controlled action model
+and never bypasses Phase 5 write safety (`AGENTS.md` §G).
+
+## 6b. Post-Phase-10 direction — Media Production Automation
+
+**Recorded 2026-09-26 as a strategic direction, not approved implementation.** Objective: let
+operational agents use the product's own intelligence to produce or coordinate new media, without
+this application internally implementing every generation model itself. Potential future workflow:
+Decision/Content Proposal → production specification → external audio/image/video tools →
+generated artifacts → quality control → artifact registration → final render → Publishing Pipeline
+(§6a) → outcome analytics.
+
+Potential domains: thumbnail generation, image generation, video generation, audio generation,
+script generation, rendering, quality-control checks, production manifests. This application's own
+role stays limited to context, analytics, historical references, production specifications, the
+asset registry, provenance, workflow state, and approval boundaries — avoid building monolithic,
+model-specific generation logic into the core application. Supersedes/absorbs the older, terser
+"automated media production" bullet §7 used to carry — not duplicated there anymore.
 
 ## 7. Future directions — not yet numbered phases
 
 Recorded as future opportunities only, not approved implementation work, and not to be
-implemented during Phases 7-10 unless separately approved:
+implemented during Phases 7-10 unless separately approved.
 
-- Simultaneous multi-device operation, with application-managed synchronization (do not assume
-  the existing Syncthing-based handoff, `docs/RELEASE_LAYOUT.md`, is sufficient for genuine
-  concurrent multi-device database synchronization — it explicitly is not, by design, Variant A
-  is one-active-device-at-a-time).
-- Automated media production: audio generation and quality control, video generation and
-  rendering, automated publishing workflows, livestream management.
+**Deferred infrastructure directions** (grouped 2026-09-26 per the owner's "Strategic Roadmap
+Update" — recorded as deferred, not planned in implementation detail):
+
+- **Simultaneous multi-device operation.** The current single-active-device model remains
+  acceptable. Do not assume the existing Syncthing-based handoff (`docs/RELEASE_LAYOUT.md`) is
+  sufficient for genuine concurrent multi-device database synchronization — it explicitly is not,
+  by design (Variant A is one-active-device-at-a-time). Future simultaneous operation will require
+  a deliberate synchronization/conflict model, not just embedding Syncthing further.
+- **Application-managed synchronization** — a potential future replacement for the external
+  Syncthing transport. `src/lib/sync-gateway/`'s existing transport-adapter design already keeps
+  this option open (Syncthing today, a custom transport later) — keep current sync/storage
+  abstractions transport-independent where practical.
+- **Localization transport modernization** — the same still-open direction as the "Replace XLSX as
+  the localization Change Set interface..." bullet below, restated under this grouping for
+  visibility. Safety-critical (feeds the write pipeline) — never migrate casually; requires its own
+  dedicated future design/acceptance process.
+- **Comments / subscriber capabilities** — require a feasibility analysis against current official
+  YouTube API capabilities (see the Studio-parity bullet below, which already flags this as an
+  unresolved feasibility question for Home's comment/subscriber cards) before adding either to the
+  roadmap as committed functionality. Do not promise unavailable YouTube Studio parity.
 - Scalable remote execution infrastructure.
 - **YouTube Studio UI parity — Home, Content, Analytics, Languages tabs** (recorded 2026-09-20,
   owner request via Telegram, after manually testing this app against real YouTube Studio).
@@ -296,8 +463,9 @@ implemented during Phases 7-10 unless separately approved:
   the Phase 7 `agent_*` DRAFT tier to `channel_sync`/`changeset_create_from_import`/
   `ai_localization_*`: "Согласен"; keep the new tables device-local, not synced: "Оставим
   локально"). All three slices (data model, enforcement at the 6 approved MCP tools + CLI
-  equivalents, Settings UI) are done on `feature/agent-connections`, not yet merged to `dev`. An
-  unassigned capability is rejected for everyone once one or more connections are enabled -- even
+  equivalents, Settings UI) are done and merged `--no-ff` into `dev` in `18f8854`, 2026-09-25
+  (owner approval, Telegram "Ок, мердж"). An unassigned capability is rejected for everyone once
+  one or more connections are enabled -- even
   with only one connection, since the owner explicitly rejected treating a sole connection as an
   implicit grant ("нельзя одну и ту же зону ответственности дать обоим... добавление одного
   агента не должно автоматом давать ему авторство над всеми модулями", Telegram 2026-09-25).
@@ -306,8 +474,7 @@ implemented during Phases 7-10 unless separately approved:
   separately tracks its own `RISK-60` (`write_channel_select`/`auth_user_select` mutate global,
   not per-connection, active-channel state). The independent-review cycle ran 13 rounds and was
   stopped by explicit owner instruction, 2026-09-25 (not because a round found zero issues) --
-  see `docs/roadmap/BACKLOG.md` BL-091 row for the tally. Remaining: the owner's "yes, merge"
-  before this feature reaches `dev`.
+  see `docs/roadmap/BACKLOG.md` BL-091 row for the tally.
 
 ## 8. How to use this roadmap in future sessions
 
@@ -358,6 +525,11 @@ issues) before it may start implementing, not just planning, the next phase. Thi
 only inside that skill's own autonomous loop; every other context — interactive sessions, any other
 skill — still follows this section exactly as written above.
 
+**Reinforced, 2026-09-26 (owner instruction):** this roadmap's existence is never itself
+authorization — do not automatically start Phase 9 because it is recorded here, and do not
+automatically proceed from Phase 9 to Phase 10 once Phase 9 is done. Each still requires its own
+explicit owner assignment, exactly as this section already requires for every phase.
+
 ## 10. Git and permissions
 
 Governed entirely by `AGENTS.md`'s existing git policy (§K) — nothing in this document changes
@@ -366,3 +538,24 @@ unrelated feature commit, and never disrupt an in-progress feature branch or mer
 updating this roadmap never itself authorizes a push of `dev` beyond the standing approval
 `AGENTS.md` §K.2 already records, a merge into `main`, a tag, or a release — each remains
 separately gated exactly as before.
+
+## 11. Current next-action marker
+
+Recorded 2026-09-26, owner instruction ("Strategic Roadmap Update — Post Phase 8") — kept short
+and updated in place rather than accumulating a new dated paragraph every time it changes, since
+its whole purpose is to answer "what's next" at a glance:
+
+**CURRENT NEXT PRIORITY:** Operational Validation Gate (§2a).
+
+**NEXT MAJOR PRODUCT PHASE:** Phase 9 — Market Discovery & Trend Intelligence (§5).
+
+**DEPENDENCY:** Phase 10 (§6) depends on Phase 9 (§5) and Phase 8 (§4).
+
+**POST-PHASE-10 DIRECTIONS:** Publishing Pipeline (§6a) and Media Production Automation (§6b).
+
+**DEFERRED:** simultaneous multi-device operation, application-managed synchronization,
+localization transport modernization, and other infrastructure improvements without immediate
+operational value — see §7's "Deferred infrastructure directions."
+
+None of the above is an authorization to start work — see §8's priority order and §9's planning
+policy, both unaffected by this marker's existence.
