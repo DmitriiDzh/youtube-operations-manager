@@ -243,34 +243,87 @@ test("adoptDivergentPeer throws when the named peer has no file in the sync fold
   );
 });
 
-test("adoptDivergentPeer and runSyncCycle are mutually exclusive: an overlapping adopt call while a cycle runs waits for it, and vice versa", async () => {
-  let adoptCalls = 0;
+// Independent test-suite audit (2026-09-26): this test previously only asserted
+// `adoptCalls === 1` and `backupPath === null` -- deleting the actual mutual-exclusion guard
+// from `sync-runner.ts` would still make this test pass (adopt still runs exactly once and
+// still returns `null` regardless of whether it waited for the in-flight cycle). Ported the
+// ordered-events assertion pattern already proven in this codebase's own sibling test
+// (`change-drafts-sync/services.test.ts`'s "runSyncCycle and adoptDivergentPeer are mutually
+// exclusive..."), which WOULD fail if exclusion broke, and added the reverse direction (adopt
+// in flight, then a sync cycle) the original test's own title claimed to cover but never tested.
+test("runSyncCycle and adoptDivergentPeer are mutually exclusive: adopt waits for an in-flight sync cycle to finish first", async () => {
+  const events: string[] = [];
+  let resolveSync: (() => void) | undefined;
+  const syncGate = new Promise<void>((resolve) => {
+    resolveSync = resolve;
+  });
+
   const runner = createSyncRunner(
     makeDeps({
-      listChannelIds: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        return ["UC_1"];
-      },
       transport: fakeTransport({
         async listPeerFiles() {
           return [{ deviceId: "device-b", bytes: new Uint8Array([1]) }];
         },
       }),
       family: fakeFamily({
+        async exportBytes() {
+          events.push("sync:start");
+          await syncGate;
+          events.push("sync:end");
+          return new Uint8Array([1]);
+        },
         async discardLocalAndAdoptPeer() {
-          adoptCalls += 1;
+          events.push("adopt:run");
           return { backupPath: null };
         },
       }),
     })
   );
 
-  const [, adoptResult] = await Promise.all([
-    runner.runSyncCycle(),
-    runner.adoptDivergentPeer({ channelId: "UC_1", peerDeviceId: "device-b" }),
-  ]);
-  assert.equal(adoptCalls, 1);
+  const syncPromise = runner.runSyncCycle();
+  const adoptPromise = runner.adoptDivergentPeer({ channelId: "UC_1", peerDeviceId: "device-b" });
+  resolveSync?.();
+  const [, adoptResult] = await Promise.all([syncPromise, adoptPromise]);
+
+  assert.deepEqual(events, ["sync:start", "sync:end", "adopt:run"], "adopt must wait for the in-flight sync cycle to finish first");
   assert.equal(adoptResult.backupPath, null);
+});
+
+test("runSyncCycle and adoptDivergentPeer are mutually exclusive: a sync cycle waits for an in-flight adopt to finish first (the reverse direction)", async () => {
+  const events: string[] = [];
+  let resolveAdopt: (() => void) | undefined;
+  const adoptGate = new Promise<void>((resolve) => {
+    resolveAdopt = resolve;
+  });
+
+  const runner = createSyncRunner(
+    makeDeps({
+      transport: fakeTransport({
+        async listPeerFiles() {
+          return [{ deviceId: "device-b", bytes: new Uint8Array([1]) }];
+        },
+      }),
+      family: fakeFamily({
+        async exportBytes() {
+          events.push("sync:run");
+          return new Uint8Array([1]);
+        },
+        async discardLocalAndAdoptPeer() {
+          events.push("adopt:start");
+          await adoptGate;
+          events.push("adopt:end");
+          return { backupPath: null };
+        },
+      }),
+    })
+  );
+
+  const adoptPromise = runner.adoptDivergentPeer({ channelId: "UC_1", peerDeviceId: "device-b" });
+  const syncPromise = runner.runSyncCycle();
+  resolveAdopt?.();
+  await Promise.all([adoptPromise, syncPromise]);
+
+  assert.deepEqual(events, ["adopt:start", "adopt:end", "sync:run"], "a sync cycle must wait for the in-flight adopt to finish first");
 });
 
 test("adoptDivergentPeer rejects a second overlapping call outright rather than coalescing (a different peer/channel must never receive the wrong result)", async () => {

@@ -901,6 +901,66 @@ test("a throwing projection does not fail createChangeSet/addChange/mergeIncomin
   assert.equal(doc.changes["c-1"].proposedValue, "Original");
 });
 
+// Independent test-suite audit (2026-09-26): the test above never actually called mergeIncoming
+// despite its own title claiming to -- saveDocument's own doc comment specifically singles out
+// mergeIncoming's `newConflicts` as the more delicate case a swallowed projection error could
+// silently corrupt (a caller retry would re-merge identical bytes and correctly-but-misleadingly
+// find zero *new* conflicts). This closes that gap: mirrors AC-CRDT-02's real-conflict setup, but
+// with the merging device's own projection throwing on every call.
+test("a throwing projection does not corrupt mergeIncoming's newConflicts result -- a real conflict is still correctly detected and reported", async () => {
+  const throwingProjection: SqlProjectionAdapter = {
+    async upsertChangeSet() {
+      throw new Error("simulated DB failure");
+    },
+    async upsertChange() {
+      throw new Error("simulated DB failure");
+    },
+    async deleteChangeSet() {
+      throw new Error("simulated DB failure");
+    },
+    async deleteChange() {
+      throw new Error("simulated DB failure");
+    },
+    async upsertProvenance() {
+      throw new Error("simulated DB failure");
+    },
+    async deleteProvenanceForChangeSet() {
+      throw new Error("simulated DB failure");
+    },
+  };
+
+  const deviceA = createChangeDraftsCore(makeDeps({ store: fakeStore(), projection: throwingProjection }));
+  await deviceA.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "ai_localization" });
+  await deviceA.addChange({
+    channelId: CHANNEL,
+    changeId: "c-1",
+    changeSetId: "cs-1",
+    videoId: "v1",
+    language: "es",
+    field: "title",
+    baselineValue: "Original Title",
+    proposedValue: "Original Title",
+    changeType: "modify",
+  });
+  const syncedBytes = await deviceA.exportBytes({ channelId: CHANNEL });
+
+  const deviceBStore = fakeStore();
+  await deviceBStore.saveDocumentBytes(CHANNEL, syncedBytes);
+  const deviceB = createChangeDraftsCore(makeDeps({ store: deviceBStore }));
+
+  await deviceA.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "Version from Device A" });
+  await deviceB.updateProposedValue({ channelId: CHANNEL, changeId: "c-1", proposedValue: "Version from Device B" });
+
+  const bBytes = await deviceB.exportBytes({ channelId: CHANNEL });
+  // Must not throw, despite deviceA's projection always throwing, AND must still correctly
+  // report the real conflict -- not silently swallow it along with the projection error.
+  const result = await deviceA.mergeIncoming({ channelId: CHANNEL, incomingBytes: bBytes });
+
+  assert.equal(result.newConflicts.length, 1);
+  assert.equal(result.newConflicts[0].changeId, "c-1");
+  assert.equal(result.newConflicts[0].field, "proposedValue");
+});
+
 test("addChange accepts explicit validationStatus/validationError/conflictStatus instead of always defaulting -- an importer's real per-row results must not be discarded", async () => {
   const core = createChangeDraftsCore(makeDeps());
   await core.createChangeSet({ channelId: CHANNEL, changeSetId: "cs-1", source: "xlsx_import" });

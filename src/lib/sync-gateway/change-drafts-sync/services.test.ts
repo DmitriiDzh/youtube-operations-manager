@@ -80,6 +80,10 @@ test("a channel with no local document yet (exportBytes throws not_found) is ski
 
   const result = await core.runSyncCycle();
   assert.equal(result.channels[0].pushed, false);
+  // Independent test-suite audit (2026-09-26): this test's own title promises "not treated as
+  // an error" but never checked pushError -- a regression that treated not_found as a real
+  // error (setting pushError) would have passed undetected.
+  assert.equal(result.channels[0].pushError, null);
 });
 
 test("a non-not_found error from exportBytes is isolated to its channel via pushError, never thrown (advisor review: a real push failure must not abort the whole cycle)", async () => {

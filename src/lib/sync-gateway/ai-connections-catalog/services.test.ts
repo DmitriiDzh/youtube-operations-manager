@@ -264,6 +264,11 @@ test("exportBytes throws not_found when the document has never been saved", asyn
   await assert.rejects(() => core.exportBytes(), (error: unknown) => error instanceof Error && "code" in error && (error as { code: string }).code === "not_found");
 });
 
+// Independent test-suite audit (2026-09-26): this test's own title named both exportBytes and
+// mergeIncoming, but only ever called createConnection -- the underlying "single global key"
+// property was legitimately covered elsewhere in this file (other tests that DO call
+// exportBytes/mergeIncoming and go through this same store), so this was a naming mismatch, not
+// a real coverage hole. Extended to actually exercise both named functions against the raw store.
 test("exportBytes/mergeIncoming operate on the single GLOBAL_DOCUMENT_KEY, confirmed via the raw store", async () => {
   const store = fakeStore();
   const core = createAiConnectionsCatalogCore(makeDeps({}, store));
@@ -271,4 +276,20 @@ test("exportBytes/mergeIncoming operate on the single GLOBAL_DOCUMENT_KEY, confi
 
   const bytes = await store.loadDocumentBytes(GLOBAL_DOCUMENT_KEY);
   assert.ok(bytes, "the document must be stored under the constant global key, not a per-caller one");
+
+  const exported = await core.exportBytes();
+  assert.deepEqual(exported, bytes, "exportBytes must read the same global-keyed document the raw store holds");
+
+  const peerDoc = Automerge.change(Automerge.load<AiConnectionsDocument>(exported), "peer edit", (d) => {
+    d.connections["conn-1"].displayName = "Peer name";
+  });
+  await core.mergeIncoming(Automerge.save(peerDoc));
+
+  const afterMerge = await store.loadDocumentBytes(GLOBAL_DOCUMENT_KEY);
+  const mergedDoc = Automerge.load<AiConnectionsDocument>(afterMerge!);
+  assert.equal(
+    mergedDoc.connections["conn-1"].displayName,
+    "Peer name",
+    "mergeIncoming must write back to the same global key exportBytes read from"
+  );
 });
