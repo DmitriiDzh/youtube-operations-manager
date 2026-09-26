@@ -411,12 +411,19 @@ real money/quota without authorization:
        own ADR first, not something to introduce as a side effect of one feature's scheduling need.
    **Recommendation: (b), or (a)+(b) together as a safety net** — (b) does not require an ADR and
    fits the existing single-operator local-tool model.
-2. **YouTube API quota budget for market intelligence.** Per §11, this phase shares the same
-   10,000-unit/day project quota as everything else. **Recommendation:** a fixed, configurable
-   daily unit reservation for market-intelligence collection (conservative default, e.g.
-   1,000-2,000 units/day — leaves headroom for owned-channel sync and any future live writes),
-   enforced by a new pre-call reservation check (new infrastructure, per §10), surfaced next to
-   `cloud-quotas`' existing display rather than replacing it.
+2. **YouTube API quota budget for market intelligence -- RESOLVED, 2026-09-26 (Telegram).**
+   Per §11, this phase shares the same 10,000-unit/day project quota as everything else. Owner's
+   decision, after confirming the YouTube Data API v3 itself is free (quota-limited, not billed --
+   the only genuinely paid item in this list is decision 3 below): **"Давай просто добавим ползунок
+   чтобы пользователь сам в настройках мог это выставить и все. И от того числа строить логику"**
+   (add a Settings-tab slider/control so the operator sets the daily unit reservation directly, no
+   hardcoded default assumed -- build the reservation-check logic off whatever value is set). This
+   confirms this section's own original recommendation's *mechanism* (a configurable daily unit
+   reservation, enforced by a new pre-call check, §10, surfaced next to `cloud-quotas`' existing
+   display) while removing the specific 1,000-2,000 conservative-default suggestion -- the operator
+   sets the number, not this plan. Still not itself an authorization to start 9A/9B -- decisions
+   1/3/4/5 below remain open, and Part II's own scope gate (§1 above) requires all five resolved
+   before implementation begins.
 3. **Real (paid) AI usage for topic modeling (§13) and creative/visual analysis (§17).** Both
    plausibly need a real AI provider call (a vision-capable model for thumbnails, a classifier for
    topics) — the same category of decision as Phase 6's still-open "which real `LocalizationProvider`
