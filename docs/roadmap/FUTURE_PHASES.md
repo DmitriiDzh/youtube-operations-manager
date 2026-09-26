@@ -345,6 +345,12 @@ Update" — recorded as deferred, not planned in implementation detail):
   YouTube API capabilities (see the Studio-parity bullet below, which already flags this as an
   unresolved feasibility question for Home's comment/subscriber cards) before adding either to the
   roadmap as committed functionality. Do not promise unavailable YouTube Studio parity.
+- **Manual workflow-shortcut launcher** (recorded 2026-09-26, owner follow-up while scoping down
+  Phase 11 §11's Workflow Registry — see that section). A possible future interface where the
+  operator points this product at specific external workflow paths, so its own UI can serve as a
+  manual-launch shortcut for a given production workflow (e.g. "create a video"). Explicitly
+  deferred — "это детальнее мы продумаем позже" — not designed, not scoped, not part of Phase 11's
+  own deliverable.
 - Scalable remote execution infrastructure.
 - **YouTube Studio UI parity — Home, Content, Analytics, Languages tabs** (recorded 2026-09-20,
   owner request via Telegram, after manually testing this app against real YouTube Studio).
@@ -552,54 +558,68 @@ CHANNEL_WORKSPACES_WORKFLOW_RUNTIME_ANALYSIS.md`) — "Согласен, мож�
 11." Recording only; not assigned, not sequenced relative to Phase 9/10, and not authorized for
 implementation (`AGENTS.md` §C — recording a phase here is planning only).**
 
-**Objective:** let operational agents work not only with this product's own structured data, but
-also with channel-specific local production workspaces — filesystem locations holding a channel's
-branding, audio, video, and other production material, plus channel-specific agent-context
-documents — and with a registry of reusable production procedures ("workflows") that describe how
-known production tasks are carried out, without this phase implementing any actual media
-generation or execution.
+**Scope resolved the same day, in follow-up discussion of the analysis document's two flagged
+conflicts — both are now closed, and the phase is substantially narrower than the original
+26-section proposal.** The two follow-up discussions are summarized here; the analysis document
+itself is left as a historical snapshot of the pre-discussion research, not rewritten to match.
 
-**Core concepts, kept distinct:**
+**Objective:** give operational agents (Codex, or a future Claude session managing a channel) a
+production-cycle substrate that pairs this product's own structured context (Phase 8 analytics,
+Content Proposals) with a device-local production-file location per channel — without this product
+itself brokering, cataloging, or executing anything inside that location.
 
-- **Global Operations Workspace** — the already-existing, human-configured, read-only,
-  text-file-only path (`docs/AGENT_OPERATIONS_INTERFACE.md` §4j, BL-087) stays exactly what it is:
-  shared operational-agent instructions applicable to every channel, never conflated with the
-  per-channel concept below.
-- **Channel Workspace** — a per-channel, device-local filesystem workspace, bound via a logical
-  workspace identity (never a portable absolute path — the same logical workspace may sit at a
-  different real path on each device, keyed on this app's existing `deviceId`,
-  `src/lib/bootstrap-config/`) plus a semantic map of named directory roles (branding, audio,
-  video, agent context, workflows, ...) that can grow without a schema migration for each new role.
-- **Workflow Registry** — a metadata-only catalog of registered production procedures (a thumbnail
-  generator, an audio mix, a full video render, ...), describing what a workflow needs and
-  produces and where to find it, without assuming or hard-coding one execution technology (a local
-  script, ComfyUI, RunPod, a future native module) and without executing anything in this phase.
+**Resolved: Global Operations Workspace stays exactly as already implemented.** One shared,
+human-configured, read-only, text-file-only path (`docs/AGENT_OPERATIONS_INTERFACE.md` §4j,
+BL-087), set once on the "AI Agent" Settings tab, independent of channel or which agent connects
+(Codex or a future Claude-as-channel-manager both read the same shared instructions). **Claude Code
+(the development agent working in this repository) has no access to this path — not read, not
+write** — resolving the analysis's conflict #2 by removing the write-access question rather than
+answering it: the coding agent was never a candidate writer here, and the "keep instructions
+current for operational agents" need this raised is already served by this repository's own
+technical/release documentation (`docs/interfaces.md`, `docs/AGENT_OPERATIONS_INTERFACE.md`, and
+each MCP tool's own self-describing schema via `agent_get_capabilities`) — content operational
+agents already discover through the interface itself, never through a hand-written instructions
+file that could be confused with editorial/channel-strategy content.
 
-**Constraints:** never grant an agent unrestricted filesystem access merely because a workspace
-exists; validate every resolved path stays inside its authorized workspace root; never let a
-channel-workspace instruction override a product safety/permission decision
-(`docs/AGENT_OPERATIONS_INTERFACE.md` §8's existing invariants apply unchanged); never assume one
-channel's workspace/workflow shape (e.g. music-channel folder names) generalizes to another;
-respect existing multi-agent responsibility zoning (`src/lib/agent-connections/`) rather than
-building a parallel access-control mechanism.
+**Resolved: Channel Workspace is just a per-channel local path, nothing more.** This product's own
+responsibility is limited to: a Settings field, next to each linked channel, where the operator
+sets a local filesystem path on that device; storing it (device-local, never synced — the same
+"deliberately excluded from sync/snapshot" shape `cloud_connection`/`agent_connections` already
+use, keyed on this app's existing `deviceId`, `src/lib/bootstrap-config/`, if the same channel is
+ever managed from more than one device); and exposing it read-only to an already-channel-scoped,
+already-authorized agent through the existing Agent Operations Interface (no new access-control
+dimension needed — the existing `assertActiveChannel` channel-scoping already gates who can even
+ask). **This product never enumerates, reads, writes, or validates anything inside that path.**
+What the folder contains and how it's organized is entirely the operational agent's own concern,
+governed by that agent's own instructions living outside this repository — this removes conflict
+#1's read/write/binary-file risk by construction: there is no file-access surface on this
+product's side to secure, because it never touches the files themselves (the agent uses its own
+native filesystem tools, the same way Claude Code uses `Read`/`Write`/`Bash` locally, not a
+brokered MCP call).
 
-**Open, owner-level decision this phase does not resolve on its own:** the proposal's file-access
-model (per-channel, potentially read/write, binary media) is a substantial widening of the
-narrower, read-only, text-only, global boundary the owner deliberately drew for the Global
-Operations Workspace nine days before this phase was recorded (BL-087, 2026-09-24) — see the
-analysis document's TL;DR for the full reasoning, currently under discussion. This phase's own
-eventual acceptance criteria must state explicitly which parts of the original spec's file-access
-and future-execution sections are authorized versus left as extension points only, rather than
-inheriting an assumption either way.
+**Resolved: no Workflow Registry in this phase.** Dropped entirely for now, per explicit owner
+decision (2026-09-26): *"Пока что убираем полностью, в будущем сделаем интерфейс в котором
+пользователь сам сможет прокидывать пути до конкретных воркфлоу и таким образом наш интерфейс
+будет служить условным 'ярлыком' для запуска в ручном режиме тот или иной воркфлоу... но это
+детальнее мы продумаем позже."* (For now, removed entirely; a future interface may let the
+operator point at specific workflow paths so this product's own UI can serve as a manual-launch
+shortcut for a given workflow — design deferred, not scoped here.) This is recorded as its own,
+separate, not-yet-designed future direction (§7's "Deferred infrastructure directions" territory,
+once it's actually planned) — not part of Phase 11's own deliverable.
 
-**Deliverable:** an operational agent can discover which channel workspace and which workflows
-exist for a channel it's authorized to work on, understand a workflow's declared inputs/outputs
-without executing it, and reference workspace-resident files from the existing asset catalog by
-logical workspace identity plus relative path — with channel scoping, multi-agent zoning, and
-every existing product safety boundary preserved unchanged.
+**Constraints:** never let a channel-workspace path imply or grant filesystem access beyond
+returning that one string; never let this feature take on any file-brokering responsibility later
+without a fresh, explicit design/acceptance pass (this phase's whole safety posture depends on
+never touching the files); respect existing channel-scoping (`assertActiveChannel`) and multi-agent
+responsibility zoning (`src/lib/agent-connections/`) rather than inventing a parallel mechanism.
 
-Full technical analysis, reusable-vs-new inventory, and the original spec's section-by-section
-feasibility assessment: `docs/roadmap/plans/CHANNEL_WORKSPACES_WORKFLOW_RUNTIME_ANALYSIS.md`.
+**Deliverable:** the operator can set a local production-workspace path per linked channel per
+device; a connected, channel-authorized operational agent can read that path back through the
+existing interface; this product's own responsibility ends at the path string.
+
+Original 26-section proposal, initial reusable-vs-new inventory, and the two conflicts this
+follow-up discussion resolved: `docs/roadmap/plans/CHANNEL_WORKSPACES_WORKFLOW_RUNTIME_ANALYSIS.md`
+(left as a historical snapshot — read this section for the phase's actual, current scope).
 
 ## 12. Current next-action marker
 

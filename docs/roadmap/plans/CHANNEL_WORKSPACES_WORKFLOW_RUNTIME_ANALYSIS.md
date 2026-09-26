@@ -13,6 +13,19 @@ sync-gateway; (3) `docs/PROJECT_SPEC.md`, the roadmap documents, `docs/TECHNICAL
 ADR index, plus an `AGENTS.md` §A governance check. Every claim below traces to a specific file,
 line, or document section — see "Evidence index" at the end.
 
+**Resolution, same day (left here for history — this document itself is NOT rewritten to match):**
+after this analysis was presented, the project owner resolved both conflicts in the TL;DR directly
+in follow-up discussion, and recorded the outcome as **Phase 11 — Channel Workspaces & Production
+Orchestration** in `docs/roadmap/FUTURE_PHASES.md` §11. In short: conflict #1 (sequencing) is
+resolved by giving this its own phase number rather than folding it into §6b or waiting for
+Phase 9/10. Conflict #2 (the file-access widening) is resolved by narrowing the scope so far that
+the conflict no longer applies — this product now only stores and returns a per-channel local path
+string, never touching the files themselves, and the coding agent (this repository's own assistant)
+is confirmed to have no access to the Global Operations Workspace at all. The Workflow Registry
+(§11-15 below) was dropped entirely for this phase. **`FUTURE_PHASES.md` §11 is the current,
+authoritative scope — read it, not the rest of this document, for what Phase 11 actually is now.**
+The analysis below is preserved as the research that led there.
+
 ## TL;DR — two conflicts to resolve before any design work starts
 
 **1. This is not a Phase 7 extension — it is the already-recorded, deliberately-deferred §6b
