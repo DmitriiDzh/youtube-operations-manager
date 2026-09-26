@@ -650,11 +650,14 @@ that explicit reprioritization for Phase 9 alone — it does not waive §2a for 
 discovery, historical observation/trend/breakout detection, topic/creative intelligence, niche
 discovery, quota-budgeted collection, a full Agent Operations Interface surface) — verbatim in
 `docs/roadmap/plans/PHASE_9_OWNER_SPEC_2026-09-26.md`, analyzed with an execution plan in
-`docs/roadmap/plans/PHASE_9_PLAN.md` Part II (§10-17). **This is a plan only — none of it is
-authorized to start** until the owner resolves the 5 decisions Part II §12 identifies (background-
-collection scheduling; a YouTube API quota budget shared with the rest of this app; whether/when
-to spend on real AI for topic/creative analysis; when `search.list`-based discovery is authorized;
-cross-device history transfer for the new observation tables) and explicitly assigns a next slice.
+`docs/roadmap/plans/PHASE_9_PLAN.md` Part II (§10-17). **All 5 gating decisions Part II §12
+identifies (background-collection scheduling; YouTube API quota budget; real-AI spend for topic/
+creative analysis; when `search.list`-based discovery is authorized; cross-device history
+transfer) were resolved by the owner over Telegram the same day, 2026-09-26 — see `PHASE_9_PLAN.md`
+§12 for each item's own recorded wording.** Resolving the decisions is not itself an authorization
+to start 9A/9B — that still requires the owner's own explicit "start this slice" assignment,
+not yet given as of this update. `PHASE_9_PLAN.md` §14's own revised slice plan recommends 9A
+(structured, append-only market snapshot model) as the first slice once assigned.
 
 **DEPENDENCY:** Phase 10 (§6) depends on Phase 9 (§5) and Phase 8 (§4).
 

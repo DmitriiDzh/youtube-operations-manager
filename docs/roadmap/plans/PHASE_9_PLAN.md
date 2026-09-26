@@ -398,19 +398,23 @@ discovery of *new* entities.
 Unlike Part I (where the owner's "Приступай к выполнению плану" itself resolved the equivalent
 open questions), this Part II's scope depends on decisions only the owner can make — implementing
 past these points on an assumed default would risk building on the wrong architecture or spending
-real money/quota without authorization:
+real money/quota without authorization.
 
-1. **Scheduling (§10's central finding).** No background scheduler exists today. Options:
-   (a) keep today's pattern — check staleness when the Research tab (or dashboard) is open;
-       cheapest, but any day nobody opens the app, no snapshot is taken, and that day's history is
-       permanently unrecoverable (directly conflicts with the spec's own §38 priority);
-   (b) an OS-level cron/`launchd`/Task Scheduler job invoking a new CLI refresh command — keeps
-       this application's existing "no in-app daemon" architecture unchanged, most reliable;
-   (c) an in-app long-running background timer — a genuine change to this app's core architecture
-       (every other feature assumes "runs only while a request/page is active"), would need its
-       own ADR first, not something to introduce as a side effect of one feature's scheduling need.
-   **Recommendation: (b), or (a)+(b) together as a safety net** — (b) does not require an ADR and
-   fits the existing single-operator local-tool model.
+**All five resolved as of 2026-09-26 (Telegram) — see each item below for the owner's own
+wording.** This closes §1's own scope gate for *decisions*, but per that same section and
+`AGENTS.md` §C, resolving the gating decisions is not itself an assignment to begin 9A/9B's
+implementation — that still requires its own explicit, separate "start this slice" instruction,
+not inferred from the decisions alone.
+
+1. **Scheduling (§10's central finding) -- RESOLVED, 2026-09-26 (Telegram).** No background
+   scheduler exists today. Owner's decision, verbatim: **"Планировщик сбора — пока просто во время
+   запущенного интерфейса"** (for now, just check/refresh while the app's own interface is
+   running) -- option (a) from this section's own list, NOT (b)/(c). Mirrors Phase 8's existing
+   `runAutoCollectionIfStale`/dashboard-mount-trigger pattern exactly (`src/lib/analytics/
+   staleness.ts`) -- no OS-level cron/launchd job, no new in-app daemon, no ADR needed. The
+   accepted tradeoff this section originally flagged (a day nobody opens the app is a day with no
+   snapshot, permanently unrecoverable) is explicitly accepted "for now" -- revisit only if the
+   owner raises it again.
 2. **YouTube API quota budget for market intelligence -- RESOLVED, 2026-09-26 (Telegram).**
    Per §11, this phase shares the same 10,000-unit/day project quota as everything else. Owner's
    decision, after confirming the YouTube Data API v3 itself is free (quota-limited, not billed --
@@ -424,28 +428,46 @@ real money/quota without authorization:
    sets the number, not this plan. Still not itself an authorization to start 9A/9B -- decisions
    1/3/4/5 below remain open, and Part II's own scope gate (§1 above) requires all five resolved
    before implementation begins.
-3. **Real (paid) AI usage for topic modeling (§13) and creative/visual analysis (§17).** Both
-   plausibly need a real AI provider call (a vision-capable model for thumbnails, a classifier for
-   topics) — the same category of decision as Phase 6's still-open "which real `LocalizationProvider`
-   to fund" question (`docs/ai-localization/PROVIDER_INTEGRATION_PLAN.md`), never inferred from
-   this planning pass. **Recommendation:** keep both AI-connection-optional from the start (mock
-   provider produces a clearly-labeled placeholder derivation, exactly like `ai-localization`/
-   `content-proposals` already do), defer any real spend until an explicit AI Connection is
-   selected for this specific purpose.
-4. **When `search.list`-based discovery (100 units/call) is authorized to run at all** — not
-   before decisions 1 and 2 are made, since running it against an unbounded/unbudgeted schedule is
-   exactly the failure mode §26 warns against. **Recommendation:** the first slices (9A/9B) use
-   only `channels.list`/`videos.list` (1 unit/call) refreshing entities already on the manually-
-   curated watchlist — this is a direct, cheap extension of what slice 3 already ships. Search-
-   based discovery (9C) is a distinct, later, separately-approved step.
-5. **Cross-device history transfer (`docs/TECHNICAL_DEBT.md` RISK-52).** This existing, already-
-   accepted limitation ("doesn't travel with device handoff") becomes materially more consequential
-   for Part II's new observation tables than it ever was for `creative_assets`/`content_proposals`
-   — per the spec's own §38, "historical public data that is not collected today often cannot be
-   reconstructed later," and losing it on a device switch is exactly that scenario, not a cosmetic
-   gap. **Recommendation:** decide this explicitly when slice 9A/9B actually adds new tables (add
-   them to `SNAPSHOT_TRANSFERRED_TABLES`, or accept the loss explicitly and record why) — do not
-   let the new tables silently inherit the old default by omission.
+3. **Real (paid) AI usage for topic modeling (§13) and creative/visual analysis (§17) -- RESOLVED,
+   2026-09-26 (Telegram).** Both plausibly need a real AI provider call (a vision-capable model for
+   thumbnails, a classifier for topics). Owner's decision, verbatim: **"Тот же что подключен к
+   настройках канала в настройках"** (the same one already connected in the channel's own
+   settings) -- reuse the existing per-channel `ai-connections` mechanism (`src/lib/ai-connections/`)
+   already built for `ai-localization`/`content-proposals`, never a second, market-intelligence-
+   specific connection concept. Confirms this section's own original recommendation (AI-connection-
+   optional, mock provider produces a clearly-labeled placeholder derivation until a real
+   connection is actually configured) -- no new infrastructure needed here, only a new caller of
+   the existing one once 9E (topics & trends) is actually built.
+4. **When `search.list`-based discovery (100 units/call) is authorized to run at all -- RESOLVED,
+   2026-09-26 (Telegram).** Owner's decision, verbatim: **"По запросу из UI пользователем"**
+   (only on the operator's own explicit UI request) -- never automatic, never scheduled, never
+   triggered by decision 1's own check-on-open mechanism. This is stricter than this section's own
+   original recommendation (defer 9C, the discovery slice, entirely) -- it additionally rules out
+   ever running discovery unattended even once 9C is eventually built, which directly satisfies
+   the spec's own §26 concern this section already cited ("do not allow uncontrolled recursive
+   search to consume the daily quota").
+5. **Cross-device history transfer (`docs/TECHNICAL_DEBT.md` RISK-52) -- RESOLVED, 2026-09-26
+   (Telegram).** This existing, already-accepted limitation ("doesn't travel with device handoff")
+   becomes materially more consequential for Part II's new observation tables than it ever was for
+   `creative_assets`/`content_proposals`. Owner's decision, verbatim: **"Да, я бы объединял"** (yes,
+   I would merge/combine them) -- market-intelligence's tables (`research_channels`/
+   `research_evidence` today, plus 9A's new snapshot tables once built) SHOULD travel with device
+   handoff and be reconciled/merged across devices, not left device-local. The owner separately
+   reinforced this with an explicit, standing requirement in the same message: **"Так же важно
+   чтобы и наша аналитика сохранялась и хранилась у нас локально и то же самое по
+   исследованиям"** (it's also important that both our [Phase 8] analytics and this research/market-
+   intelligence data are saved and stored locally by us) -- i.e., local persistence remains
+   mandatory (unchanged from the existing architecture) AND that same local data must not be
+   silently lost on a device switch. Required remediation: add `research_channels`/
+   `research_evidence` (and 9A's future tables) to `src/lib/snapshot/contracts.ts`'s
+   `SNAPSHOT_TRANSFERRED_TABLES` allowlist, closing this specific instance of RISK-52 -- not yet
+   done as of this recording (a code change, tracked as its own follow-up, not bundled into this
+   documentation-only decision record). Per the spec's own §38, "historical public data that is not
+   collected today often cannot be reconstructed later," and losing it on a device switch is exactly
+   that scenario, not a cosmetic gap — now resolved in favor of transferring rather than accepting
+   the loss (see above); 9A/9B's own implementation must add its new tables to
+   `SNAPSHOT_TRANSFERRED_TABLES` alongside the existing ones, never silently inherit the old
+   omit-by-default behavior.
 
 ## 13. Entity mapping — the owner spec's vocabulary onto this repository's actual/planned entities
 
