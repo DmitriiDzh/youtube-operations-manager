@@ -76,7 +76,7 @@ This mirrors the plan's own explicit fallback wording (`PHASE_9_PLAN.md` §6 ite
 
 - Two new MCP tools, `query_market_intelligence` and `query_competitors`, registered directly in
   `src/mcp/server.ts`, calling `createMarketIntelligenceCore()` (no new wrapper module).
-- CLI parity: `agent market-intelligence --channelId=...` and `agent competitors` in
+- CLI parity: `agent market-intelligence --channelId <UC...>` and `agent competitors` in
   `src/cli/video-metadata.ts`, mirroring the existing `agent channel-analytics`/`agent
   video-analytics` pattern (no `assertActiveChannel` — this data is global, not owned-channel
   scoped, same as `agent list-operations-files`).

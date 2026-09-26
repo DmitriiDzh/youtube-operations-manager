@@ -328,6 +328,23 @@ test("MCP server registers auth_user_select tool", () => {
   assert.equal(Boolean(tools?.auth_user_select), true);
 });
 
+// Phase 9 slice 4 -- the handler tests above only prove createMcpToolHandlers().queryCompetitors/
+// queryMarketIntelligence behave correctly when called directly; this proves the two literal MCP
+// tool names PLANNED_FUTURE_CAPABILITIES reserved are actually wired into createMcpServer's real
+// registration, using the real default createMarketIntelligenceCore() (an empty local watchlist,
+// so both calls succeed with an empty/not-found result rather than needing a fixture).
+test("MCP server registers query_competitors and query_market_intelligence tools", async () => {
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
+  const tools = (server as unknown as { _registeredTools?: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean }> }> })
+    ._registeredTools;
+
+  assert.ok(tools?.query_competitors, "query_competitors must be registered");
+  assert.ok(tools?.query_market_intelligence, "query_market_intelligence must be registered");
+
+  const competitorsResult = await tools!.query_competitors.handler({});
+  assert.equal(competitorsResult.isError, undefined);
+});
+
 // The SDK validates an incoming tool call against the REGISTERED inputSchema, using its OWN
 // parsed output as what the handler actually receives -- BEFORE agentFindComparableVideos ever
 // runs (McpServer.validateToolInput -> executeToolHandler, node_modules/@modelcontextprotocol/

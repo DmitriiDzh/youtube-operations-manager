@@ -917,7 +917,7 @@ plugs into this interface.
 
 - **`query_competitors`** (MCP)/`agent competitors` (CLI) -- every channel on the research
   watchlist (`channelId`, `handleOrUrl`, `reason`, `addedAt`), no evidence attached.
-- **`query_market_intelligence`** (MCP)/`agent market-intelligence --channelId=...` (CLI) -- one
+- **`query_market_intelligence`** (MCP)/`agent market-intelligence --channelId <UC...>` (CLI) -- one
   watchlisted channel's own record plus its full evidence history; `RESEARCH_CHANNEL_NOT_AVAILABLE`
   if the given `channelId` isn't on the watchlist.
 - Both registered directly in `src/mcp/server.ts`/`src/cli/video-metadata.ts` against

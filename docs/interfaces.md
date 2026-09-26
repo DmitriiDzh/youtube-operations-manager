@@ -301,8 +301,8 @@ draft/unactioned relationship). `--limit` above the maximum is silently clamped,
 
 `agent competitors` (Phase 9 slice 4, `docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`) takes no
 flags and returns the whole research watchlist (no evidence attached) -- global data, no
-`--channelId`/active-channel check, no auth resolution. `agent market-intelligence --channelId=...`
-returns that one watchlisted channel's own record plus its full evidence history, failing with
+`--channelId`/active-channel check, no auth resolution. `agent market-intelligence --channelId
+<UC...>` returns that one watchlisted channel's own record plus its full evidence history, failing with
 `RESEARCH_CHANNEL_NOT_AVAILABLE` if it isn't on the watchlist. Neither makes a live YouTube call.
 Both are wired via `createMarketIntelligenceCore()` directly, not through `agentOperationsCore` --
 see `docs/AGENT_OPERATIONS_INTERFACE.md` §4k for the full design.
@@ -625,14 +625,19 @@ Key MCP tools:
     just the roster. Local read only, a direct passthrough of the existing `listWatchlist` service
     call.
   - `query_market_intelligence` — `{ channelId }` → `{ channel: ResearchChannel, evidence:
-    ResearchEvidence[] }`, one watchlisted channel's own record plus its full evidence history.
-    Fails with `RESEARCH_CHANNEL_NOT_AVAILABLE` if `channelId` is not on the watchlist (the
-    existing `getWatchlistEntry`'s own error — `listEvidence` is never called for a channel that
-    doesn't exist). Local read only.
+    ResearchEvidence[] }`, one watchlisted channel's own record plus its full evidence history, via
+    the single `getWatchlistEntryContext` service call (one existence check feeding both the
+    channel and evidence lookups — an earlier version called `getWatchlistEntry`/`listEvidence`
+    separately, found by independent review to double the existence check and risk a
+    non-deterministic error shape). Fails with `RESEARCH_CHANNEL_NOT_AVAILABLE` (`details:
+    { channelId }`) if `channelId` is not on the watchlist. Local read only. `confidence` on an
+    evidence row is uncalibrated free text, not a statistical measure — a `fetchPublicSnapshot`-
+    sourced row can read `"high"` even when every underlying count was hidden/absent
+    (`docs/roadmap/plans/PHASE_9_PLAN.md` §8, still an open vocabulary decision).
   - Both registered directly against `createMarketIntelligenceCore()` in `src/mcp/server.ts`/
     `src/cli/video-metadata.ts`, not through `agent-operations`'s own service layer —
     `docs/ARCHITECTURE.md` §18 records why (module-independence, `PHASE_9_PLAN.md` §5).
-    CLI parity: `agent competitors` / `agent market-intelligence --channelId=...`.
+    CLI parity: `agent competitors` / `agent market-intelligence --channelId <UC...>`.
 
 Most tools accept optional `credentialRef`; if omitted, server falls back to active local auth context.
 

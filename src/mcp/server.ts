@@ -2244,7 +2244,7 @@ export function createMcpServer(
     "query_market_intelligence",
     {
       description:
-        "Single-channel deep dive into the research watchlist: one watchlisted channel's own record (channelId, handleOrUrl, reason, addedAt) plus its full evidence history (each row's observation, source, confidence, collectedAt), by channelId. Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. A local read only, never a live YouTube call. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (docs/roadmap/plans/PHASE_9_PLAN.md §4/§7).",
+        "Single-channel deep dive into the research watchlist: one watchlisted channel's own record (channelId, handleOrUrl, reason, addedAt) plus its full evidence history (each row's observation, source, confidence, collectedAt), by channelId. Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. A local read only, never a live YouTube call. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (docs/roadmap/plans/PHASE_9_PLAN.md §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (this vocabulary is a known, still-open design question, docs/roadmap/plans/PHASE_9_PLAN.md §8).",
       inputSchema: getWatchlistEntryInputSchema,
     },
     (args) => handlers.queryMarketIntelligence(args)
