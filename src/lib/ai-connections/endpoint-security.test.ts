@@ -80,12 +80,8 @@ test("IPv6 literal URLs are checked directly and never trigger a DNS lookup (fas
 });
 
 // Independent test-suite audit (2026-09-26): isBlockedIpv6's `::ffff:`-prefix unwrap-and-recheck
-// branch had zero test coverage. Verified separately that a LITERAL bracketed URL never actually
-// reaches this branch either way -- `new URL("https://[::ffff:169.254.169.254]/").hostname`
-// normalizes to the WHATWG hex form (e.g. "[::ffff:a9fe:a9fe]"), not the dotted-quad form this
-// unwrap logic parses, so a literal URL always falls through to "block conservatively" instead.
-// The only way to actually exercise the dotted-quad-aware branch is via a DNS resolver returning
-// a raw `{address: "::ffff:x.x.x.x", family: 6}` record, which these two tests do directly.
+// branch had zero test coverage against the DNS-resolution path, where a resolver can hand back
+// the dotted-quad form directly (`{address: "::ffff:x.x.x.x", family: 6}`).
 test("a DNS resolution returning an IPv4-mapped IPv6 metadata address (::ffff:169.254.169.254) is blocked", async () => {
   await assert.rejects(
     validateEndpointUrl("https://looks-public.example.com/v1", {
@@ -100,6 +96,47 @@ test("a DNS resolution returning an IPv4-mapped IPv6 genuinely public address (:
   await validateEndpointUrl("https://looks-public.example.com/v1", {
     allowLocal: false,
     dnsLookup: async () => [{ address: "::ffff:8.8.8.8", family: 6 }],
+  });
+});
+
+// A LITERAL bracketed URL is canonicalized by the WHATWG URL parser to the hex-group form, not
+// the dotted-quad form above -- `new URL("https://[::ffff:8.8.8.8]/").hostname` normalizes to
+// "[::ffff:808:808]" (verified: 8.8.8.8 -> 0x0808:0x0808 -> "808:808" with leading zeros dropped).
+// Before unwrapEmbeddedIpv4 understood the hex-group form, this fell through to isBlockedIpv6's
+// "unparseable mapped address -> block conservatively" branch and was incorrectly REJECTED despite
+// being a genuinely public address -- a false positive, not a security hole, but still wrong.
+test("a literal IPv4-mapped IPv6 URL for a genuinely public address (::ffff:8.8.8.8, normalized to hex form by URL parsing) is accepted", async () => {
+  await expectAccepted("https://[::ffff:8.8.8.8]/", false);
+});
+
+// RFC 6052's NAT64 well-known prefix (64:ff9b::/96) embeds an IPv4 address in its low 32 bits,
+// exactly like `::ffff:`-mapped addresses do, but isBlockedIpv6 never recognized this prefix at
+// all -- a NAT64-embedded metadata/private address fell all the way through to `return false`
+// (not blocked). Verified: `new URL("https://[64:ff9b::169.254.169.254]/").hostname` normalizes
+// to "[64:ff9b::a9fe:a9fe]" (169.254.169.254 -> 0xA9FE:0xA9FE), so this is exercised via the same
+// literal-URL fast path production traffic actually uses, not only via DNS-lookup injection.
+test("a literal NAT64 URL embedding the cloud-metadata address (64:ff9b::169.254.169.254) is blocked", async () => {
+  await expectRejected("https://[64:ff9b::169.254.169.254]/", false);
+});
+
+test("a literal NAT64 URL embedding a genuinely public address (64:ff9b::8.8.8.8) is accepted", async () => {
+  await expectAccepted("https://[64:ff9b::8.8.8.8]/", false);
+});
+
+test("a DNS resolution returning a NAT64-embedded metadata address (64:ff9b::169.254.169.254) is blocked", async () => {
+  await assert.rejects(
+    validateEndpointUrl("https://looks-public.example.com/v1", {
+      allowLocal: false,
+      dnsLookup: async () => [{ address: "64:ff9b::169.254.169.254", family: 6 }],
+    }),
+    (err: unknown) => err instanceof DomainError && err.code === "endpoint_not_allowed"
+  );
+});
+
+test("a DNS resolution returning a NAT64-embedded genuinely public address (64:ff9b::8.8.8.8) is accepted", async () => {
+  await validateEndpointUrl("https://looks-public.example.com/v1", {
+    allowLocal: false,
+    dnsLookup: async () => [{ address: "64:ff9b::8.8.8.8", family: 6 }],
   });
 });
 
