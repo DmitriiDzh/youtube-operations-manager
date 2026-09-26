@@ -298,4 +298,4 @@ finding 1's fix made its claim actually true.
 the way ran a mix of targeted and full validation, not uniformly the full set every time; see each
 commit's own message for exactly what it ran): `npx tsc --noEmit`, `npm run lint`,
 `npm run build`, `git diff --check` all clean; `npm test` grew from the `dev` baseline of 1487 to
-1525, with zero pre-existing test weakened or deleted to make a change pass.
+1529, with zero pre-existing test weakened or deleted to make a change pass.
