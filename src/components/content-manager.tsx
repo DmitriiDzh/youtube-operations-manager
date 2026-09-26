@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { formatDisplayDate } from "@/lib/shared-formatting";
 import { VideoDetailModal } from "./video-detail-modal";
 import { VideoDetailsPanel } from "./video-details-panel";
 
@@ -30,9 +31,20 @@ type SyncedVideo = {
   viewCount: number | null;
   commentCount: number | null;
   likeCount: number | null;
+  publishAt: string | null;
 };
 
 type PrivacyFilter = "all" | "public" | "unlisted" | "private";
+
+// Owner instruction, 2026-09-26: the "Publish" column shows the video's real publish date once
+// it's actually public; while it's still private and scheduled, it shows YouTube's own
+// `status.publishAt` (a distinct field from `publishedAt`, only present for a scheduled video);
+// otherwise there is nothing to show.
+function formatPublishColumn(video: SyncedVideo): string {
+  if (video.privacyStatus === "public") return formatDisplayDate(video.publishedAt);
+  if (video.publishAt) return formatDisplayDate(video.publishAt);
+  return "—";
+}
 
 // A tab switch already re-mounts this component (dashboard/page.tsx's conditional tab
 // rendering), so this only needs to decide, once per mount, whether the already-local data is
@@ -263,7 +275,7 @@ export function ContentManager() {
               <tr className="border-b border-zinc-800 text-left text-xs uppercase text-zinc-500">
                 <th className="px-4 py-2 font-medium">Video</th>
                 <th className="px-4 py-2 font-medium">Access</th>
-                <th className="px-4 py-2 font-medium">Date</th>
+                <th className="px-4 py-2 font-medium">Publish</th>
                 <th className="px-4 py-2 text-right font-medium">Views</th>
                 <th className="px-4 py-2 text-right font-medium">Comments</th>
               </tr>
@@ -311,9 +323,7 @@ export function ContentManager() {
                       </div>
                     </td>
                     <td className="truncate px-4 py-3 text-zinc-400">{video.privacyStatus}</td>
-                    <td className="truncate px-4 py-3 text-zinc-400">
-                      {video.publishedAt ? new Date(video.publishedAt).toLocaleDateString() : "—"}
-                    </td>
+                    <td className="truncate px-4 py-3 text-zinc-400">{formatPublishColumn(video)}</td>
                     <td className="truncate px-4 py-3 text-right text-zinc-400">
                       {formatCount(video.viewCount)}
                     </td>

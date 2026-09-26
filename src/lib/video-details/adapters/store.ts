@@ -49,6 +49,7 @@ export function createVideoDetailsLocalCacheAdapter() {
             commentCount: current.commentCount,
             likeCount: current.likeCount,
             durationSeconds: current.durationSeconds,
+            publishAt: args.after.publishAt ?? current.publishAt,
           },
         ],
         // Deliberately the ORIGINAL row's own lastSyncedAt, not "now" -- this is a targeted

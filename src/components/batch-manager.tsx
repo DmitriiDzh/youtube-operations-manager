@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { ConfirmDialog } from "./confirm-dialog";
 
 type ChangeSetSummary = {
@@ -344,7 +345,7 @@ export function BatchManager({
             >
               <span className="font-mono text-zinc-400">{b.id.slice(0, 8)}</span>{" "}
               <span className="text-zinc-500">
-                &mdash; {b.status}, {b.dryRun ? "dry-run" : "live"}, created {new Date(b.createdAt).toLocaleString()}
+                &mdash; {b.status}, {b.dryRun ? "dry-run" : "live"}, created {formatDisplayDateTime(b.createdAt)}
               </span>
             </button>
           ))}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { formatDisplayDateTime } from "@/lib/shared-formatting";
 
 type BuildInfo = {
   version: string;
@@ -50,7 +51,7 @@ export function AppVersionInfo() {
           <dt>Commit</dt>
           <dd>{buildInfo.gitCommit ? buildInfo.gitCommit.slice(0, 12) : "unknown"}</dd>
           <dt>Built</dt>
-          <dd>{new Date(buildInfo.builtAt).toLocaleString()}</dd>
+          <dd>{formatDisplayDateTime(buildInfo.builtAt)}</dd>
         </dl>
       )}
     </div>

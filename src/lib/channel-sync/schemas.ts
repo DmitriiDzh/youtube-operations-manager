@@ -47,6 +47,7 @@ const syncedVideoSchema = z
     viewCount: z.number().int().nullable(),
     commentCount: z.number().int().nullable(),
     likeCount: z.number().int().nullable(),
+    publishAt: z.string().nullable(),
   })
   .strict();
 

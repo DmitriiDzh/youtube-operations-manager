@@ -1925,6 +1925,7 @@ test("MCP channel_video_list returns synced videos for a channel", async () => {
         viewCount: null,
         commentCount: null,
         likeCount: null,
+        publishAt: null,
       },
     ],
   });

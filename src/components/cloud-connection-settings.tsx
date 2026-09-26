@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { CloudQuotaProgressPerMinute, type PerMinuteQuotaStatusView } from "./cloud-quota-progress";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 import { InfoTooltip } from "./info-tooltip";
@@ -128,7 +129,7 @@ export function CloudConnectionSettings() {
               <p className="text-sm text-zinc-300">
                 Connected as <span className="font-mono text-zinc-100">{status.connectedEmail}</span>
               </p>
-              <p className="text-xs text-zinc-500">Since {new Date(status.connectedAt).toLocaleString()}</p>
+              <p className="text-xs text-zinc-500">Since {formatDisplayDateTime(status.connectedAt)}</p>
               <button
                 onClick={handleDisconnect}
                 disabled={disconnecting}

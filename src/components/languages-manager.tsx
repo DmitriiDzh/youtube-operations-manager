@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { formatDisplayDate, formatDisplayDateTime } from "@/lib/shared-formatting";
 import { VideoDetailModal } from "./video-detail-modal";
 import { ChangeSetReview } from "./change-set-review";
 import { ConfirmDialog } from "./confirm-dialog";
@@ -1226,7 +1227,7 @@ export function LanguagesManager() {
             {syncing ? "Syncing..." : "Sync now"}
           </button>
           <p className="text-xs text-zinc-500">
-            Last synced: {lastSyncedAt ? new Date(lastSyncedAt).toLocaleString() : "never"}
+            Last synced: {lastSyncedAt ? formatDisplayDateTime(lastSyncedAt) : "never"}
           </p>
         </div>
       )}
@@ -1425,7 +1426,7 @@ export function LanguagesManager() {
                         </div>
                       </td>
                       <td className="truncate px-4 py-3 text-zinc-400">
-                        {new Date(video.publishedAt).toLocaleDateString()}
+                        {formatDisplayDate(video.publishedAt)}
                       </td>
                       {languages.map((lang) => (
                         <td key={lang} className="px-2 py-3 text-center">
@@ -1441,7 +1442,7 @@ export function LanguagesManager() {
                         </td>
                       ))}
                       <td className="truncate px-4 py-3 text-zinc-400">
-                        {new Date(video.lastSyncedAt).toLocaleDateString()}
+                        {formatDisplayDate(video.lastSyncedAt)}
                       </td>
                     </tr>
                 ))}
@@ -1496,7 +1497,7 @@ export function LanguagesManager() {
                             ? "Deletion"
                             : "XLSX Import")}{" "}
                       &middot;{" "}
-                      {cs.totalChanges} changes &middot; {new Date(cs.createdAt).toLocaleString()}
+                      {cs.totalChanges} changes &middot; {formatDisplayDateTime(cs.createdAt)}
                     </span>
                     <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-300">
                       {cs.status}

@@ -51,6 +51,7 @@ export type SyncedVideo = {
   viewCount: number | null;
   commentCount: number | null;
   likeCount: number | null;
+  publishAt: string | null;
 };
 
 export type ChannelForSync = {
@@ -77,6 +78,7 @@ export type VideoSyncMetadata = {
   commentCount: number | null;
   likeCount: number | null;
   durationSeconds: number | null;
+  publishAt: string | null;
 };
 
 export type SyncChannelResult = {

@@ -70,6 +70,7 @@ function createFakeStore() {
         commentCount: number | null;
         likeCount: number | null;
         durationSeconds: number | null;
+        publishAt: string | null;
       }>,
       syncedAt: Date
     ) {
@@ -132,6 +133,7 @@ function createServicesFixture(
           commentCount: 10,
           likeCount: 20,
           durationSeconds: 630,
+          publishAt: null,
         }));
       },
     },
