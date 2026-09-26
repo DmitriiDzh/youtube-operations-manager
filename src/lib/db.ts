@@ -4722,9 +4722,13 @@ export async function releaseResearchChannelCollectionClaim(
 /**
  * The failure-retry backoff (advisor review before implementation: without this, a permanently
  * broken channel -- e.g. deleted or made private -- would be re-attempted, spending at least one
- * real YouTube API unit, on every single dashboard mount, all day, forever). A channel whose most
- * recent collection-run row is `status: "failed"` within `since` is excluded from the next claim --
- * reuses the same window as the staleness check itself (this module owns no separate
+ * real YouTube API unit, on every single dashboard mount, all day, forever). A channel with ANY
+ * `status: "failed"` row within `since` is excluded from the next claim -- not specifically its
+ * MOST RECENT row (found by independent review: the two are equivalent today, since a failure
+ * itself blocks re-claiming that same channel again within this same window, so no later row can
+ * exist yet -- but this function's own behavior, not that current-callsite equivalence, is what's
+ * documented here, so a future second writer to this table doesn't inherit a stale assumption).
+ * Reuses the same window as the staleness check itself (this module owns no separate
  * backoff-duration concept, `AGENTS.md` §M: no new shared constant introduced for one caller).
  */
 export async function listRecentlyFailedResearchChannelIds(since: Date, database: AppDb = db): Promise<string[]> {

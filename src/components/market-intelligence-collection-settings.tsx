@@ -28,13 +28,25 @@ export function MarketIntelligenceCollectionSettings() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
+  // Found by independent review: without try/catch and an error branch, a failed/non-ok fetch
+  // (network blip, expired session) left this card stuck on "Loading..." forever, with no way for
+  // the operator to retry short of a full page reload.
   const fetchSettings = useCallback(async () => {
-    const res = await fetch("/api/settings");
-    if (!res.ok) return;
-    const data = (await res.json()) as Settings;
-    setSettings(data);
-    setDraftUnits(data.marketIntelligenceDailyQuotaBudgetUnits ?? 0);
+    try {
+      const res = await fetch("/api/settings");
+      if (!res.ok) {
+        setLoadError("Failed to load settings.");
+        return;
+      }
+      const data = (await res.json()) as Settings;
+      setLoadError(null);
+      setSettings(data);
+      setDraftUnits(data.marketIntelligenceDailyQuotaBudgetUnits ?? 0);
+    } catch {
+      setLoadError("Failed to load settings.");
+    }
   }, []);
 
   useEffect(() => {
@@ -69,7 +81,19 @@ export function MarketIntelligenceCollectionSettings() {
   if (!settings) {
     return (
       <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-        <p className="text-sm text-zinc-400">Loading...</p>
+        {loadError ? (
+          <div className="flex items-center gap-3">
+            <p className="text-sm text-red-400">{loadError}</p>
+            <button
+              onClick={() => void fetchSettings()}
+              className="rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-800"
+            >
+              Retry
+            </button>
+          </div>
+        ) : (
+          <p className="text-sm text-zinc-400">Loading...</p>
+        )}
       </div>
     );
   }
@@ -96,6 +120,9 @@ export function MarketIntelligenceCollectionSettings() {
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
+        {/* Disabled while saving (found by independent review): otherwise an edit made while a
+            previous save is still in flight gets silently clobbered the moment that request's own
+            server echo resolves and overwrites draftUnits. */}
         <input
           type="range"
           min={0}
@@ -103,7 +130,8 @@ export function MarketIntelligenceCollectionSettings() {
           step={1}
           value={Math.min(draftUnits, SLIDER_MAX_UNITS)}
           onChange={(e) => setDraftUnits(Number(e.target.value))}
-          className="w-64 accent-red-600"
+          disabled={saving}
+          className="w-64 accent-red-600 disabled:opacity-50"
         />
         <input
           type="number"
@@ -115,7 +143,8 @@ export function MarketIntelligenceCollectionSettings() {
             const parsed = Number(e.target.value);
             setDraftUnits(Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : 0);
           }}
-          className="w-24 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100"
+          disabled={saving}
+          className="w-24 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 disabled:opacity-50"
         />
         <span className="text-xs text-zinc-400">units/day</span>
         <button

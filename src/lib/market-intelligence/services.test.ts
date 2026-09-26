@@ -91,6 +91,9 @@ function createFakeStore() {
   const collectionRuns: CollectionRunRow[] = [];
   let quotaBudget: number | null = null;
   let nextId = 1;
+  let failNextSuccessRunInsert = false;
+  let failVideoSnapshotInsertAfter: number | null = null;
+  let videoSnapshotInsertCount = 0;
 
   return {
     channels,
@@ -100,6 +103,14 @@ function createFakeStore() {
     collectionRuns,
     setQuotaBudget(units: number | null) {
       quotaBudget = units;
+    },
+    // Test-only fault injection for AC-9B-14/15 below -- simulates a write throwing partway
+    // through a real collection attempt, since a fake in-memory store otherwise never fails.
+    failNextSuccessRunInsertOnce() {
+      failNextSuccessRunInsert = true;
+    },
+    failVideoSnapshotInsertAfterNth(n: number) {
+      failVideoSnapshotInsertAfter = n;
     },
     idGenerator: () => `evidence-${nextId++}`,
     async insertResearchChannel(input: { id: string; handleOrUrl?: string | null; reason: string; createdVia: string }) {
@@ -182,6 +193,10 @@ function createFakeStore() {
       source: string;
       createdVia: string;
     }) {
+      videoSnapshotInsertCount += 1;
+      if (failVideoSnapshotInsertAfter !== null && videoSnapshotInsertCount > failVideoSnapshotInsertAfter) {
+        throw new Error("simulated insertMarketVideoSnapshot failure");
+      }
       videoSnapshots.push({
         id: input.id,
         researchChannelId: input.researchChannelId,
@@ -253,6 +268,10 @@ function createFakeStore() {
       errorMessage?: string | null;
       ranAt?: Date;
     }) {
+      if (failNextSuccessRunInsert && input.status === "success") {
+        failNextSuccessRunInsert = false;
+        throw new Error("simulated insertMarketIntelligenceCollectionRun failure");
+      }
       collectionRuns.push({
         researchChannelId: input.researchChannelId,
         status: input.status,
@@ -1098,4 +1117,52 @@ test("AC-9B-13: remaining budget is recomputed from the ledger after the claim, 
   assert.deepEqual(result, { attempted: 0, succeeded: 0, failed: 0, quotaLimited: 0, unitsSpent: 0 });
   assert.equal(snapshotCalls.length, 0);
   assert.equal(store.channels.get(VALID_CHANNEL_ID)?.collectionClaimedAt, null, "the claim must be released, never left stuck, when the post-claim recheck finds no budget left");
+});
+
+// Found by independent review, before merge: an earlier version marked the channel BEFORE writing
+// its own success audit row -- if that write then threw, the channel ended up marked "fresh"
+// (skipped for 24h) while its own audit trail said nothing about the attempt at all, contradicting
+// this module's own "marked ONLY on full success" invariant.
+test("AC-9B-14: if the success audit-row write itself fails, the channel is recorded failed and stays stale (never marked fresh with no successful audit trail)", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { store, services } = createFixture({ now, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO });
+  store.setQuotaBudget(100);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.failNextSuccessRunInsertOnce();
+
+  const result = await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+  // FULL_SNAPSHOT_WITH_VIDEO has an uploadsPlaylistId, so playlistItems.list is still called (2
+  // units: channels.list + playlistItems.list) even though the default fixture returns 0 video ids.
+  assert.deepEqual(result, { attempted: 1, succeeded: 0, failed: 1, quotaLimited: 0, unitsSpent: 2 });
+  assert.equal(store.channels.get(VALID_CHANNEL_ID)?.lastAutoCollectedAt, null, "must never be marked fresh without a corresponding successful audit row");
+  assert.equal(store.collectionRuns[0]?.status, "failed");
+});
+
+// Found by independent review, before merge: an earlier version set videosReturned from the raw API
+// response length BEFORE the per-video insert loop ran, so a mid-loop insert failure left the audit
+// row overstating what was actually persisted to market_video_snapshots.
+test("AC-9B-15: videosReturned counts only videos actually persisted, never the raw API response length, when an insert fails partway through", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { store, services } = createFixture({
+    now,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    uploadsPlaylistVideoIds: ["v1", "v2", "v3"],
+    publicVideoSnapshots: [
+      { videoId: "v1", title: "V1", publishedAt: null, viewCount: 1, likeCount: null, commentCount: null },
+      { videoId: "v2", title: "V2", publishedAt: null, viewCount: 2, likeCount: null, commentCount: null },
+      { videoId: "v3", title: "V3", publishedAt: null, viewCount: 3, likeCount: null, commentCount: null },
+    ],
+  });
+  store.setQuotaBudget(100);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.failVideoSnapshotInsertAfterNth(2);
+
+  const result = await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+  assert.deepEqual(result, { attempted: 1, succeeded: 0, failed: 1, quotaLimited: 0, unitsSpent: 3 });
+  assert.equal(store.videoSnapshots.length, 2, "the 2 videos that DID insert successfully before the failure must be persisted");
+
+  const [run] = store.collectionRuns;
+  assert.equal(run.status, "failed");
+  assert.equal(run.videosRequested, 3);
+  assert.equal(run.videosReturned, 2, "must report exactly what was actually persisted (2), never the raw API response length (3)");
 });

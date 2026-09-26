@@ -196,9 +196,10 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     } else {
-      // 0 means the same thing as null (off) at the storage layer -- passed through as-is rather
-      // than silently rewritten to null here, so the stored value always matches exactly what
-      // this route accepted.
+      // 0 means the same thing as null (off) at the storage layer -- normalized to null here
+      // (found by independent review: an earlier comment claimed this was passed through as-is,
+      // which the code below never actually did) so a caller reading the setting back afterward
+      // sees null either way, never a stored literal 0 sometimes and null other times.
       await marketIntelligenceCore.setDailyQuotaBudgetUnits(
         body.marketIntelligenceDailyQuotaBudgetUnits === 0 ? null : body.marketIntelligenceDailyQuotaBudgetUnits
       );

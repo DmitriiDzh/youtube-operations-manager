@@ -904,8 +904,13 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
                 credentials,
                 videoIds,
               });
-              videosReturned = videoSnapshots.length;
 
+              // Counts only what was ACTUALLY persisted, not the raw API response length (found by
+              // independent review: the previous version set videosReturned from the response
+              // length before this loop ran, so a mid-loop insert failure left the audit row
+              // overstating what genuinely landed in market_video_snapshots). videosReturned stays
+              // accurate even if a later iteration throws, since it only counts completed inserts.
+              videosReturned = 0;
               for (const videoSnapshot of videoSnapshots) {
                 await deps.insertMarketVideoSnapshot({
                   id: deps.idGenerator(),
@@ -918,6 +923,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
                   source: "youtube.videos.list",
                   createdVia: "web_ui",
                 });
+                videosReturned += 1;
               }
             } else {
               // The playlist WAS enumerated and genuinely has no videos -- a real, known fact
@@ -926,7 +932,16 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
             }
           }
 
-          await deps.markResearchChannelAutoCollected(researchChannelId, now);
+          // The audit row is written BEFORE the mark, not after (found by independent review): if
+          // this insert itself throws, the catch below correctly records "failed" and
+          // last_auto_collected_at is never touched. The reverse order left a window where
+          // markResearchChannelAutoCollected could succeed and this insert then fail -- the channel
+          // would end up marked fresh (skipped for 24h) while its own audit trail said "failed",
+          // directly contradicting this module's own "marked ONLY on full success" invariant. This
+          // is not a full transaction (neither write shares one), so a failure of the MARK itself
+          // (after this insert succeeds) can still leave a "success" row with the channel still
+          // stale -- accepted as the strictly less harmful direction: a wasted, redundant retry next
+          // run, never a false "already fresh" claim.
           await deps.insertMarketIntelligenceCollectionRun({
             researchChannelId,
             status: "success",
@@ -935,6 +950,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
             videosReturned,
             ranAt: now,
           });
+          await deps.markResearchChannelAutoCollected(researchChannelId, now);
           succeeded += 1;
         } catch (error) {
           await deps.insertMarketIntelligenceCollectionRun({

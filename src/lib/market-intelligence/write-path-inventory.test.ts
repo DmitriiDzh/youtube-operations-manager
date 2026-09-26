@@ -117,7 +117,14 @@ async function deriveForbiddenDbSymbols(): Promise<string[]> {
   const pattern = /\bexport\s+(?:async function|function|const)\s+(\w*(?:[Rr]esearch|[Mm]arket)\w*)\b/g;
   const derived = new Set<string>();
   for (const match of dbTsContent.matchAll(pattern)) derived.add(match[1]);
-  return [...derived, "research_channels", "research_evidence", "market_channel_snapshots", "market_video_snapshots"];
+  return [
+    ...derived,
+    "research_channels",
+    "research_evidence",
+    "market_channel_snapshots",
+    "market_video_snapshots",
+    "market_intelligence_collection_runs",
+  ];
 }
 
 test("PHASE9-INV-02: no file outside market-intelligence's own module references its db.ts symbols", async () => {
@@ -131,6 +138,10 @@ test("PHASE9-INV-02: no file outside market-intelligence's own module references
     "derivation must find slice 9A's insertMarketChannelSnapshot (independent review, 2026-09-26 -- the original pattern missed every Market*Snapshot export entirely)"
   );
   assert.ok(forbiddenDbSymbols.includes("marketChannelSnapshots"), "derivation must find the marketChannelSnapshots table export");
+  assert.ok(
+    forbiddenDbSymbols.includes("market_intelligence_collection_runs"),
+    "the raw table name (found missing by independent review, 2026-09-27 -- present in every camelCase-derived symbol's sibling list except this literal one) must be in the explicit literal list, since it cannot be derived by the export-name regex"
+  );
   assert.ok(forbiddenDbSymbols.length >= 16, "derivation returned suspiciously few symbols -- regex likely broke");
 
   // Also scans scripts/, not just src/ -- same same-day widening the read/write gateway

@@ -920,6 +920,8 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-61 | `market-intelligence`'s `getWatchlistEntry`/`listEvidence` throw `RESEARCH_CHANNEL_NOT_AVAILABLE` with different `details` key names (`channelId` vs `researchChannelId`) for the same condition -- the two still-used Web API routes forward this verbatim | none blocking, cosmetic | OPEN |
 | RISK-62 | `market-intelligence/services.ts` hand-duplicates its "look up researchChannelId, throw RESEARCH_CHANNEL_NOT_AVAILABLE if missing" guard across ~15 call sites, and 3 write functions each re-fetch a whole channel's snapshot history just to `.find()` the row just inserted, instead of a shared guard helper / `.insert(...).returning()` | none blocking, efficiency/duplication only | OPEN |
 | RISK-63 | The project owner's real local app-data database was advanced to schema v24 (Phase 9 slices 9A/9B) by this session's own live-verification scripts, while `dev`/`main` remain at v22 -- a `dev`/`main` build on this machine will now refuse to start against that real database until Phase 9 Part II is merged | BLOCKS local `dev`/`main` runtime on this machine until merge | OPEN, owner informed |
+| RISK-64 | `runCollectionIfStale` reconstructs a fresh OAuth2/YouTube client (and re-checks the "reads enabled" toggle) independently on each of its 3 `youtubeApi` calls per channel, instead of once per channel/run | none blocking, efficiency only | OPEN |
+| RISK-65 | Slice 9A's manual `captureChannelSnapshot` never marks `last_auto_collected_at`, so slice 9B's automatic trigger can immediately re-fetch (spending real units) a channel just manually refreshed | none blocking, wasted-quota only | OPEN |
 
 ## RISK-53 — `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` — RESOLVED, 2026-09-24
 
@@ -1042,5 +1044,27 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Gate(s):** BLOCKS local `dev`/`main` runtime on this machine until Phase 9 Part II merges (or the owner chooses remediation option (b)/(c) above).
 - **Approval required from:** project owner -- which remediation option to take, if any, before Phase 9 Part II's own merge.
 - **Status:** OPEN, owner informed via Telegram 2026-09-27.
+
+## RISK-64 — `runCollectionIfStale` reconstructs a YouTube client on every call instead of once per channel/run — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/adapters/youtube-api.ts`'s `getPublicChannelSnapshot`/`listUploadsPlaylistFirstPageVideoIds`/`getPublicVideoSnapshots` -- each independently calls `createAuthorizedClient(args.credentials)`, which builds a fresh `googleapis` OAuth2 client and a fresh wrapped `youtube_v3.Youtube` client (via the read gateway's own `createYoutubeClient`, which also re-checks the "Data API reads enabled" toggle) on every single call.
+- **Found during:** independent code review of Phase 9 slice 9B.
+- **Actual risk:** pure overhead, no correctness impact -- for a channel with an uploads playlist and videos, this is 3 redundant client constructions + 3 redundant DB toggle reads per channel instead of 1, multiplying by however many channels a single `runCollectionIfStale` run processes. Never a network round trip by itself (client construction is local object setup), so the real-world cost is small, but it scales with watchlist size for no benefit.
+- **Why not fixed as part of 9B:** fixing this means changing the adapter's own per-call `{credentials, ...}` contract to instead expose (or accept) an already-constructed client shared across a whole channel's or run's calls -- a shape change to `MarketIntelligenceServices`' `youtubeApi` dependency, not a one-line fix, and out of proportion for a post-review bug-fix pass whose other findings are all real correctness bugs.
+- **Required remediation (not yet scheduled):** widen the adapter to construct one client per `credentials` value and reuse it across a channel's (or a whole run's, since `credentials` is already resolved once per run) 3 calls.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2) -- an internal efficiency refactor with no behavior change.
+- **Status:** OPEN, tracked.
+
+## RISK-65 — manual `captureChannelSnapshot` doesn't mark a channel as auto-collected, so 9B's automatic trigger can immediately re-fetch it — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `captureChannelSnapshot` (Phase 9 slice 9A, already shipped) and `runCollectionIfStale` (slice 9B) -- the two ways a channel's `research_channels.last_auto_collected_at` staleness is observed/set are not consistent with each other.
+- **Found during:** independent code review of Phase 9 slice 9B.
+- **Actual risk:** an operator who manually captures a channel snapshot via the Research tab, then loads (or already has open) a dashboard that fires `collect-if-stale` shortly after, sees that same channel immediately re-claimed and re-fetched automatically -- spending 1-3 more real YouTube API units re-collecting data just manually captured seconds earlier, working against the whole point of an operator-set daily budget.
+- **Why not fixed as part of 9B:** `captureChannelSnapshot` never enumerates or captures VIDEO snapshots (it is channel-snapshot-only, by 9A's own explicit design) -- marking it as "auto-collected" would make the automatic trigger skip that channel's VIDEO collection for a full 24h based on a manual action that never touched video data at all, which is arguably a worse bug than the wasted-quota one being described here. `captureChannelSnapshot` is also already-shipped, already-reviewed Phase 9 slice 9A code; changing its behavior as a side effect of a 9B bug-fix pass would be an unscoped change to unrelated, already-accepted code (`AGENTS.md` §C), not something to bolt on without its own proper design pass.
+- **Required remediation (not yet scheduled):** needs an actual design decision, not a quick fix -- e.g. a distinct "channel-level freshness" timestamp separate from "full (channel+video) freshness," or accepting the redundant re-fetch as a rare, low-cost annoyance. Needs owner input on which tradeoff they prefer once reached.
+- **Gate(s):** none.
+- **Approval required from:** project owner, on which remediation direction to take.
+- **Status:** OPEN, tracked.
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
