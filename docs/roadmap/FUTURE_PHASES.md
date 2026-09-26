@@ -635,9 +635,10 @@ Phase 9 over Telegram ("Создай новую ветку для Phase 9, Marke
 that explicit reprioritization for Phase 9 alone — it does not waive §2a for any other phase, and
 §2a's five workstreams remain open and still block everything else in this list.
 
-**IN PROGRESS:** Phase 9 — Market Discovery & Trend Intelligence (§5), `feature/phase-9-market-discovery`,
-slices 1-3 of `docs/roadmap/plans/PHASE_9_PLAN.md` implemented (manually-seeded watchlist,
-Web UI/API, public-snapshot fetch) — see `docs/ROADMAP_STATUS.md` for the current merge state.
+**DONE, slices 1-3:** Phase 9 — Market Discovery & Trend Intelligence (§5), merged to `dev` in
+`b83c9b2` (2026-09-26) — manually-seeded watchlist, Web UI/API, public-snapshot fetch. Slice 4
+(agent-facing MCP/CLI surface) and automatic discovery remain unassigned — see
+`docs/ROADMAP_STATUS.md` and `docs/roadmap/plans/PHASE_9_PLAN.md` for detail.
 
 **DEPENDENCY:** Phase 10 (§6) depends on Phase 9 (§5) and Phase 8 (§4).
 
