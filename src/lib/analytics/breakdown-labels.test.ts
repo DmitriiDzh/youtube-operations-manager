@@ -102,6 +102,15 @@ test("labelCountry converts a real ISO country code to its English display name"
   assert.equal(labelCountry(["MX"]), "Mexico");
 });
 
+// Independent review round 6 (2026-09-26): "ZZ" is the one special value Google's own `country`
+// dimension docs explicitly document ("YouTube could not identify the associated country") -- never
+// exercised by a test until now. `Intl.DisplayNames.of("ZZ")` returns "Unknown Region" rather than
+// throwing (confirmed directly, not assumed), so the existing fallback-free code path already
+// handles this correctly; this test just locks that behavior in.
+test("labelCountry handles ZZ (YouTube's own \"country could not be identified\" value) without throwing", () => {
+  assert.equal(labelCountry(["ZZ"]), "Unknown Region");
+});
+
 test("labelSubscribedStatus maps both real values the live probe observed", () => {
   assert.equal(labelSubscribedStatus(["SUBSCRIBED"]), "Subscribed");
   assert.equal(labelSubscribedStatus(["UNSUBSCRIBED"]), "Not subscribed");

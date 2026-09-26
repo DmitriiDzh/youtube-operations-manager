@@ -111,6 +111,10 @@ export function AudienceAnalyticsPanel() {
           metricName="viewerPercentage"
           labelFor={labelAgeGender}
           formatValue={(v) => `${v.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`}
+          // Live-observed against the real "Rural Japan Music" channel (docs/roadmap/plans/
+          // ANALYTICS_TAB_DEEP_PARITY_PLAN.md §4.2) -- Studio's own exact wording for this specific
+          // empty state, not a guess.
+          emptyMessage="Not enough demographic data to show this report"
         />
         <AnalyticsBreakdownCard
           channelId={channel.channelId}

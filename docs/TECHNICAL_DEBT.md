@@ -820,8 +820,9 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   incidentally as part of an unrelated slice.
 - **Required remediation:** if a third, genuinely independent implementation is ever about to be
   written (client or server), extract the pure summing/sorting step into one shared function in
-  `src/lib/analytics/` and have all existing call sites (both `use-top-videos.ts`'s two consumers
-  and `weekly-report.ts`) adopt it, rather than adding another copy.
+  `src/lib/analytics/` and have both existing implementations (`use-top-videos.ts` itself -- its two
+  consumers only ever call the hook, they never do the summing/sorting themselves -- and
+  `weekly-report.ts`) adopt it, rather than adding another copy.
 - **Gate(s):** none blocking -- a duplicated small pure computation, not a correctness or safety issue.
 - **Approval required from:** none -- routine cleanup, whenever it's next touched.
 - **Status:** OPEN — tracked, not yet consolidated.

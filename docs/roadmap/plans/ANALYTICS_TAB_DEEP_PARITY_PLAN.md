@@ -369,7 +369,7 @@ approval, per their instruction):
    research probes; traffic sources, retention curve, and top videos (Content); device type,
    age/gender, geography, subscribed status, and content format (Audience). All live-verified in the
    browser against the real "Tropico Jazz" channel with real data; `npm test` clean at every step
-   (final count, after 4 independent-review rounds' own fixes: 1464/1464, dev's own baseline was
+   (final count, after 6 independent-review rounds' own fixes: 1465/1465, dev's own baseline was
    1432); no console errors. Seven backlog rows (BL-092 through BL-098) record the detailed
    history.
 2. **CONFIRMED OUT OF SCOPE, not merely deferred: O3 (realtime panel) and C3 (impressions/CTR

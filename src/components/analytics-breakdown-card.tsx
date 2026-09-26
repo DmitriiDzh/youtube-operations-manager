@@ -21,6 +21,13 @@ export function AnalyticsBreakdownCard({
   metricName,
   labelFor,
   formatValue = (v) => v.toLocaleString(),
+  // Independent review round 6 (2026-09-26): the plan's own §1 cross-cutting note requires an
+  // empty state matching Studio's own wording/tone per card, not one generic message for every
+  // breakdown kind -- Studio's real, live-observed message for age/gender specifically
+  // ("Not enough demographic data to show this report") is genuinely different in tone from a
+  // plain "no data yet." Callers with a known Studio wording pass it here; others keep the
+  // generic default rather than a guessed-at Studio phrase this session never actually observed.
+  emptyMessage = "No data for this period yet.",
 }: {
   channelId: string;
   periodDays: number;
@@ -29,6 +36,7 @@ export function AnalyticsBreakdownCard({
   metricName: string;
   labelFor: (dimensionValues: string[]) => string;
   formatValue?: (value: number) => string;
+  emptyMessage?: string;
 }) {
   const [rows, setRows] = useState<BreakdownRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -72,7 +80,7 @@ export function AnalyticsBreakdownCard({
       ) : rows === null ? (
         <p className="text-sm text-zinc-500">Loading...</p>
       ) : ranked.length === 0 ? (
-        <p className="text-sm text-zinc-500">No data for this period yet.</p>
+        <p className="text-sm text-zinc-500">{emptyMessage}</p>
       ) : (
         <ul className="space-y-2">
           {ranked.map((row) => (
