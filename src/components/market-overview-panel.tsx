@@ -129,7 +129,11 @@ export function MarketOverviewPanel() {
           <section>
             <p className="mb-1 text-xs font-semibold text-zinc-300">Breakout videos</p>
             {overview.breakoutVideos.length === 0 ? (
-              <p className="text-xs text-zinc-500">No breakout videos detected yet.</p>
+              <p className="text-xs text-zinc-500">
+                {overview.watchlistCount === 0
+                  ? "No channels on the watchlist yet -- add one in Channels below."
+                  : "No breakout videos detected yet."}
+              </p>
             ) : (
               <ul className="space-y-1">
                 {overview.breakoutVideos.map((v) => (
@@ -144,7 +148,11 @@ export function MarketOverviewPanel() {
           <section>
             <p className="mb-1 text-xs font-semibold text-zinc-300">Emerging channels</p>
             {overview.emergingChannels.length === 0 ? (
-              <p className="text-xs text-zinc-500">No emerging channels detected yet.</p>
+              <p className="text-xs text-zinc-500">
+                {overview.watchlistCount === 0
+                  ? "No channels on the watchlist yet -- add one in Channels below."
+                  : "No emerging channels detected yet."}
+              </p>
             ) : (
               <ul className="space-y-1">
                 {overview.emergingChannels.map((c) => (
@@ -176,7 +184,11 @@ export function MarketOverviewPanel() {
           <section>
             <p className="mb-1 text-xs font-semibold text-zinc-300">Stale/failed collection warnings</p>
             {overview.collectionWarnings.length === 0 ? (
-              <p className="text-xs text-zinc-500">No collection warnings -- every tracked channel looks current.</p>
+              <p className="text-xs text-zinc-500">
+                {overview.watchlistCount === 0
+                  ? "No channels on the watchlist yet -- add one in Channels below."
+                  : "No collection warnings -- every tracked channel looks current."}
+              </p>
             ) : (
               <ul className="space-y-1">
                 {overview.collectionWarnings.map((w) => (

@@ -191,9 +191,11 @@ breakout exactly like the Channels view already does):
 - **Emerging channels** — channelId, reasons (joined list, reuses `EmergingChannelAssessment.reasons`
   verbatim).
 - **Trend candidates** — title, status, freshness badge (reuses `MarketTrendsPanel`'s own freshness
-  wording exactly: "fresh"/"needs_attention" → the same "Evidence added within 30 days"/"No new
-  evidence in 30+ days" phrasing part A already introduced, kept in one place rather than reworded a
-  second way here).
+  wording exactly. **Correction (advisor review, post-implementation):** this section originally
+  guessed the exact phrasing part A introduced ("Evidence added within 30 days"/"No new evidence in
+  30+ days") without checking the real shipped component -- `market-trends-panel.tsx` actually
+  renders "evidence added recently"/"no recent evidence" for `fresh`/`needs_attention`, and that is
+  the exact wording this part's own component reuses, not the guessed phrasing above).
 - **Collection warnings** — channelId, narrowed flags (amber pills, same style as the Channels view),
   a distinct red pill for `latestRunStatus === "failed"` (visually distinguishable from the amber
   staleness/quota pills, since a hard failure is a different, more actionable severity than

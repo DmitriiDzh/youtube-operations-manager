@@ -198,6 +198,7 @@ function createFakeStore() {
   let failNextMark = false;
   let failInsertMarketDiscoveryCandidateFor: string | null = null;
   let failNextGetResearchChannelByIdFor: string | null = null;
+  let throwNextGetResearchChannelByIdFor: string | null = null;
 
   return {
     channels,
@@ -237,6 +238,12 @@ function createFakeStore() {
     failNextGetResearchChannelByIdOnce(channelId: string) {
       failNextGetResearchChannelByIdFor = channelId;
     },
+    // AC-9HB-11b: a genuine, unrelated failure (e.g. a real DB error) from inside the per-channel
+    // fetch -- unlike failNextGetResearchChannelByIdOnce above, this must NOT be swallowed by
+    // getMarketOverview's own narrow catch (which only skips RESEARCH_CHANNEL_NOT_AVAILABLE).
+    throwNextGetResearchChannelByIdOnce(channelId: string) {
+      throwNextGetResearchChannelByIdFor = channelId;
+    },
     idGenerator: () => `evidence-${nextId++}`,
     async insertResearchChannel(input: { id: string; handleOrUrl?: string | null; reason: string; createdVia: string }) {
       channels.set(input.id, {
@@ -253,6 +260,10 @@ function createFakeStore() {
       return [...channels.values()];
     },
     async getResearchChannelById(id: string) {
+      if (throwNextGetResearchChannelByIdFor === id) {
+        throwNextGetResearchChannelByIdFor = null;
+        throw new Error("simulated getResearchChannelById failure");
+      }
       if (failNextGetResearchChannelByIdFor === id) {
         failNextGetResearchChannelByIdFor = null;
         return null;
@@ -1887,7 +1898,113 @@ test("AC-9HB-11: a channel removed mid-request (present in listWatchlist, gone b
 
   const result = await services.getMarketOverview();
   assert.equal(result.watchlistCount, 2, "listWatchlist's own count is unaffected -- the race is in the per-channel fetch, not here");
-  assert.equal(result.collectionWarnings.some((w) => w.channelId === VALID_CHANNEL_ID), false);
+  assert.equal(result.collectionWarnings.some((w) => w.channelId === VALID_CHANNEL_ID), false, "the removed channel must be skipped");
+  const other = result.collectionWarnings.find((w) => w.channelId === OTHER_VALID_CHANNEL_ID);
+  assert.ok(other, "the OTHER channel must still be processed normally (never-collected, so it gets its own row)");
+  assert.equal(other!.neverObserved, true);
+});
+
+test("AC-9HB-11b: a genuine, unrelated error from inside the per-channel fetch is NOT swallowed -- only RESEARCH_CHANNEL_NOT_AVAILABLE is caught", async () => {
+  const { services, store } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.throwNextGetResearchChannelByIdOnce(VALID_CHANNEL_ID);
+
+  await assert.rejects(
+    () => services.getMarketOverview(),
+    (error: unknown) => error instanceof Error && error.message === "simulated getResearchChannelById failure"
+  );
+});
+
+test("AC-9HB-12: a channel with a stale (25h-old) snapshot AND hidden_subscriber_count appears with ONLY 'stale_observation' -- the narrowed filter keeps stale, strips hidden, in the same row", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.channelSnapshots.push({
+    id: "snap-stale",
+    researchChannelId: VALID_CHANNEL_ID,
+    observedAt: new Date(now.getTime() - 25 * 60 * 60 * 1000), // 25h ago, past MARKET_INTELLIGENCE_STALE_WINDOW_MS (24h)
+    subscriberCount: null,
+    viewCount: 1000,
+    videoCount: 5,
+    hiddenSubscriberCount: true,
+    source: "youtube.channels.list",
+    createdVia: "web_ui",
+  });
+  store.collectionRuns.push({
+    researchChannelId: VALID_CHANNEL_ID,
+    status: "success",
+    unitsSpent: 1,
+    videosRequested: 3,
+    videosReturned: 3,
+    errorMessage: null,
+    ranAt: new Date(now.getTime() - 25 * 60 * 60 * 1000),
+  });
+
+  const result = await services.getMarketOverview();
+  assert.equal(result.collectionWarnings.length, 1);
+  assert.deepEqual(result.collectionWarnings[0].dataQualityFlags, ["stale_observation"]);
+  assert.equal(result.collectionWarnings[0].neverObserved, false);
+});
+
+test("AC-9HB-13: a channel with a fresh snapshot but a 'skipped_quota_limited' latest run appears with 'quota_limited'", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.channelSnapshots.push({
+    id: "snap-fresh",
+    researchChannelId: VALID_CHANNEL_ID,
+    observedAt: now,
+    subscriberCount: 100,
+    viewCount: 1000,
+    videoCount: 5,
+    hiddenSubscriberCount: false,
+    source: "youtube.channels.list",
+    createdVia: "web_ui",
+  });
+  store.collectionRuns.push({
+    researchChannelId: VALID_CHANNEL_ID,
+    status: "skipped_quota_limited",
+    unitsSpent: 0,
+    videosRequested: null,
+    videosReturned: null,
+    errorMessage: null,
+    ranAt: now,
+  });
+
+  const result = await services.getMarketOverview();
+  assert.equal(result.collectionWarnings.length, 1);
+  assert.deepEqual(result.collectionWarnings[0].dataQualityFlags, ["quota_limited"]);
+  assert.equal(result.collectionWarnings[0].latestRunStatus, "skipped_quota_limited");
+});
+
+test("AC-9HB-14: a channel with a fresh snapshot but an incomplete latest run (videosReturned < videosRequested) appears with 'missing_snapshot'", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.channelSnapshots.push({
+    id: "snap-fresh",
+    researchChannelId: VALID_CHANNEL_ID,
+    observedAt: now,
+    subscriberCount: 100,
+    viewCount: 1000,
+    videoCount: 5,
+    hiddenSubscriberCount: false,
+    source: "youtube.channels.list",
+    createdVia: "web_ui",
+  });
+  store.collectionRuns.push({
+    researchChannelId: VALID_CHANNEL_ID,
+    status: "success",
+    unitsSpent: 3,
+    videosRequested: 5,
+    videosReturned: 3,
+    errorMessage: null,
+    ranAt: now,
+  });
+
+  const result = await services.getMarketOverview();
+  assert.equal(result.collectionWarnings.length, 1);
+  assert.deepEqual(result.collectionWarnings[0].dataQualityFlags, ["missing_snapshot"]);
 });
 
 function pushVideoSnapshotForChannel(
