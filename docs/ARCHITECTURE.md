@@ -1419,7 +1419,7 @@ content-proposal/artifact registration, a Codex operations-workspace template, a
 review -- **which of these is actually implemented as of any given moment is tracked exclusively
 in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here**.
 
-## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9E
+## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9E + 9I
 
 Owner instruction, Telegram 2026-09-26: an explicit assignment to research, plan, and begin
 implementing Phase 9 (`docs/roadmap/FUTURE_PHASES.md` §5) as its own feature branch, superseding
@@ -1594,3 +1594,20 @@ canonical single-row table to reference in the first place); `deleteMarketTopic`
 own assignments but only detaches (`topicId` set `NULL`, never deletes) any trend candidate tagged
 with the removed topic, since losing a label should never destroy an otherwise-independent trend
 candidate's own evidence history.
+
+**Slice 9I (`docs/roadmap/plans/PHASE_9_SLICE_9I_PLAN.md`, 2026-09-27) -- shared data-quality
+vocabulary (owner spec §27), taken ahead of 9F/9G/9H per advisor review.** Code-complete, no calling
+code yet (`data-quality.ts`, mirroring 9A's `derived-metrics.ts`/9D's `historical-intelligence.ts`
+at that same stage). The one architectural point worth recording here: a new `DataQualityFlag` union
+(`contracts.ts`) collapses several previously-independent, bespoke local shapes (9A's
+`hiddenSubscriberCount` boolean, 9D's `basis` return value, 9B's `"skipped_quota_limited"` status,
+9C's partial-progress-before-failure counts) into one name other code can pattern-match on, rather
+than each module keeping its own ad-hoc vocabulary indefinitely. **A documented spec/API-capability
+discrepancy, not a silent drop (`AGENTS.md` §A):** the union has seven entries, not the spec's
+literal eight -- `deleted_video`/`private_video` are collapsed into one `video_no_longer_public`,
+because the real YouTube Data API v3 genuinely cannot distinguish the two for a non-owned channel's
+video (verified against the API's own documented behavior: a multi-id `videos.list` call simply
+omits an id from `items` with no per-id error explaining why, and a private video is never visible to
+an unauthenticated/public caller in the first place). `MARKET_INTELLIGENCE_STALE_WINDOW_MS` moved
+from a private `services.ts` constant to `contracts.ts` so this module's own staleness threshold and
+9B's real collection-staleness check share the exact same value, never two copies that could drift.

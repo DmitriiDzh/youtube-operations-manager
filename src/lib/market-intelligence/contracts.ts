@@ -181,3 +181,36 @@ export type MarketTrendEvidence = {
   description: string;
   recordedAt: string;
 };
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9I (docs/roadmap/plans/PHASE_9_SLICE_9I_PLAN.md) -- shared data-quality vocabulary
+// (owner spec §27). Lives in this leaf module (no internal imports of its own) so both
+// `services.ts` and `data-quality.ts` can depend on it without either depending on the other --
+// `data-quality.ts`'s functions are meant to eventually be called FROM `services.ts` (9H), so
+// `services.ts` must never be something `data-quality.ts` itself imports from (AGENTS.md §D: one
+// direction of dependency, never a cycle).
+// ---------------------------------------------------------------------------
+
+/**
+ * Seven entries, not the spec's literal eight -- `deleted_video`/`private_video` are deliberately
+ * collapsed into `video_no_longer_public`. See `PHASE_9_SLICE_9I_PLAN.md` §2 for the full
+ * discrepancy report (AGENTS.md §A): the real YouTube Data API v3 cannot distinguish the two for a
+ * non-owned channel's video, so auto-detecting a split this codebase's own research found the API
+ * does not support would be dishonest, not a "more complete" implementation of the spec's list.
+ */
+export type DataQualityFlag =
+  | "insufficient_history"
+  | "missing_snapshot"
+  | "stale_observation"
+  | "video_no_longer_public"
+  | "hidden_subscriber_count"
+  | "partial_discovery"
+  | "quota_limited";
+
+/**
+ * A channel/video observation older than this is `"stale_observation"` (9I) -- the SAME constant
+ * `services.ts`'s own `runCollectionIfStale` (9B) uses to decide when a channel is due for
+ * re-collection, imported by both from here rather than each defining its own copy (AGENTS.md §D:
+ * one guardrail/threshold, not two that could silently drift apart).
+ */
+export const MARKET_INTELLIGENCE_STALE_WINDOW_MS = 24 * 60 * 60 * 1000;

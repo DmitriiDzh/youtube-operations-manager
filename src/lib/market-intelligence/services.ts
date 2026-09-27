@@ -1,6 +1,7 @@
 import { YOUTUBE_READ_SCOPE } from "@/lib/auth";
 import {
   DomainError,
+  MARKET_INTELLIGENCE_STALE_WINDOW_MS,
   type DiscoveryCandidateStatus,
   type MarketChannelSnapshot,
   type MarketDiscoveryCandidate,
@@ -512,7 +513,8 @@ const SEARCH_LIST_UNIT_COST = 100;
 // A channel is stale after 24h with no successful collection -- deliberately a plain elapsed-time
 // check, not Phase 8's own local-wall-clock-boundary rule (`AGENTS.md` §M: no cross-feature-module
 // import of `analytics/staleness.ts` for a requirement this feature does not actually share).
-const MARKET_INTELLIGENCE_STALE_WINDOW_MS = 24 * 60 * 60 * 1000;
+// `MARKET_INTELLIGENCE_STALE_WINDOW_MS` itself now lives in `./contracts` (9I) so `data-quality.ts`
+// can share the exact same threshold without importing this file.
 // A claim older than this is treated as an abandoned (crashed) attempt and may be reclaimed --
 // generous relative to a single channel's real work (at most 3 outbound HTTP calls).
 const MARKET_INTELLIGENCE_CLAIM_EXPIRY_MS = 15 * 60 * 1000;
