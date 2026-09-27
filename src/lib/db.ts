@@ -1738,8 +1738,10 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     // database (never a disposable copy -- see RISK-63, docs/TECHNICAL_DEBT.md) had already run this
     // migration's ORIGINAL body (inline `UNIQUE(...)` constraint) before this edit landed, via a
     // `next build` invocation missing its `NODE_TEST_CONTEXT=1` guard (RISK-63's own root cause).
-    // That real database is confirmed (`sqlite3 -readonly`, 2026-09-27) to still carry the old
-    // SQLite-auto-named index (`sqlite_autoindex_market_topic_assignments_1`), permanently diverging
+    // That real database is confirmed (`sqlite3 -readonly ... "PRAGMA index_list/index_info"`,
+    // 2026-09-27) to still carry the old SQLite-auto-named index for the 3-column UNIQUE constraint
+    // (`sqlite_autoindex_market_topic_assignments_2`, origin `u` -- `_1` is the primary key's own
+    // autoindex on `id`, origin `pk`, a different index entirely), permanently diverging
     // from every fresh v26 database created after this fix, which gets the intended
     // `market_topic_assignments_unique_idx` name instead -- a naming-only divergence (both enforce
     // the identical constraint), tracked as part of RISK-63, not silently accepted here. See RISK-63
@@ -1776,7 +1778,9 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       // A separate, explicitly-named CREATE UNIQUE INDEX -- not an inline table-level UNIQUE(...)
       // constraint -- so the index name matches the Drizzle schema's own `uniqueIndex(...)`
       // declaration exactly (found by independent code review: an inline constraint lets SQLite
-      // auto-name the index, e.g. `sqlite_autoindex_market_topic_assignments_1`, silently diverging
+      // auto-name the index (e.g. `sqlite_autoindex_market_topic_assignments_2`, confirmed the
+      // actual real name this table's real inline constraint got -- `_1` here would have been the
+      // primary key's own autoindex, a different index), silently diverging
       // from `market_topic_assignments_unique_idx` and breaking any future maintenance code that
       // assumes the declared name exists). Mirrors this file's own established precedent (e.g.
       // `analytics_weekly_reports_channel_week_idx`).

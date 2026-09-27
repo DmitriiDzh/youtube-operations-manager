@@ -934,6 +934,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-75 | A `market_research_requests` row can be left stuck in `"approved"` forever if the process is interrupted between the atomic approve transition and the later execution-outcome write -- no code path can re-approve or reject a non-`pending` row | none yet, revisit before any Gate B sign-off relying on this pipeline running unsupervised | OPEN |
 | RISK-76 | The research-request reject modal hand-rolls `ConfirmDialog`'s shell instead of extending the shared component | none, UI polish only | OPEN |
 | RISK-77 | `market-trends-panel.tsx`/`market-topics-panel.tsx` each implement an identical stale-fetch-response guard independently instead of a shared hook | none, DRY/maintainability only | OPEN |
+| RISK-78 | `listMarketChannelSnapshotsByChannel`/`listMarketVideoSnapshotsByChannel` have no pagination/limit -- an append-only series returned in full, about to get its first UI (non-agent) caller in 9H | none yet, revisit if payload size becomes a practical problem | OPEN |
 
 ## RISK-53 — `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` — RESOLVED, 2026-09-24
 
@@ -1054,7 +1055,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Mitigation available, not applied unilaterally:** every migration this codebase runs takes an automatic pre-migration backup (`backups/migrations/pre-migration-<timestamp>-<id>.db`). A backup stamped exactly v22 exists (taken immediately before slice 9A's own migration) and could restore full `dev`/`main` compatibility -- but restoring it would also discard any real app usage between that backup's timestamp and now, which only the project owner can judge acceptable. Not restored as part of this entry; the owner was informed via Telegram the same day this was found, and again once this correction (v24 → v26) was found.
 - **Why not "fixed" by bumping `dev`/`main`'s own `SCHEMA_CURRENT_VERSION` instead:** that would require merging Phase 9 Part II's schema (and ideally its code) into `dev`/`main` now, which directly contradicts the owner's own explicit instruction for this phase ("делаем всю фазу до конца в этой ветке" -- build the whole phase on one branch first, merge once, with explicit approval) and this project's standing `dev`-merge-only-complete-features rule.
 - **Required remediation (owner's call):** either (a) accept `dev`/`main` being unrunnable on this specific machine until Phase 9 Part II merges (the fastest path, if this machine isn't needed to run `dev`/`main` in the meantime), or (b) restore the real database from the pre-v23 backup now, accepting the loss of any real usage since 2026-09-26 23:51, or (c) some other owner-directed approach. **Any future slice 9F-9I schema change must land as v27 or later, never edit v26 in place** -- the real database is already stamped 26, and a schema-mutating migration a database has already recorded as applied is silently skipped, not re-run.
-- **Correction (2026-09-27, later the same day) -- one exception to the rule immediately above, already taken, deliberately, before this correction was written:** commit `2c3662f` (a code-review fix) edited v26's own migration source in place -- replacing an inline `UNIQUE(topic_id, subject_type, subject_id)` table constraint on `market_topic_assignments` with a separately-named `CREATE UNIQUE INDEX market_topic_assignments_unique_idx`, to match the Drizzle schema's own declared index name. This was judged safe at the time because `dev`/`main` had never run v26 yet (still at v22), so no already-released database could be affected -- but it does mean this machine's own already-migrated real database (still stamped v26 from before that commit) now permanently diverges from any fresh database created after it: the real DB keeps SQLite's auto-generated name (`sqlite_autoindex_market_topic_assignments_1`) for that constraint, while every fresh v26 database (future `dev`/`main`, new installs, test runs) gets the correctly-named index. Both enforce the identical constraint correctly -- this is a naming-only divergence, not a functional one -- but any future maintenance code that assumes the named index exists on THIS SPECIFIC machine's real database would be wrong. Restoring the pre-v23 backup (option (b) above) would also resolve this divergence as a side effect, since a migration re-applied from v22 would run the corrected source. **The "v27 and later" rule stated above is unaffected and remains the operative rule from this point forward** -- this is a record of the one already-taken, already-justified exception, not a reopening of the rule itself.
+- **Correction (2026-09-27, later the same day) -- one exception to the rule immediately above, already taken, deliberately, before this correction was written:** commit `2c3662f` (a code-review fix) edited v26's own migration source in place -- replacing an inline `UNIQUE(topic_id, subject_type, subject_id)` table constraint on `market_topic_assignments` with a separately-named `CREATE UNIQUE INDEX market_topic_assignments_unique_idx`, to match the Drizzle schema's own declared index name. This was judged safe at the time because `dev`/`main` had never run v26 yet (still at v22), so no already-released database could be affected -- but it does mean this machine's own already-migrated real database (still stamped v26 from before that commit) now permanently diverges from any fresh database created after it: the real DB keeps SQLite's auto-generated name for that constraint (**correction, 2026-09-27, verified via `sqlite3 -readonly ... "PRAGMA index_list('market_topic_assignments')"`: it is `sqlite_autoindex_market_topic_assignments_2`, not `_1` as an earlier version of this entry claimed** -- `_1` is the primary key's own autoindex on `id`, origin `pk`; `_2` is the actual 3-column `UNIQUE(topic_id, subject_type, subject_id)` constraint's index, origin `u`, confirmed via `PRAGMA index_info` on both), while every fresh v26 database (future `dev`/`main`, new installs, test runs) gets the correctly-named index. Both enforce the identical constraint correctly -- this is a naming-only divergence, not a functional one -- but any future maintenance code that assumes the named index exists on THIS SPECIFIC machine's real database would be wrong. Restoring the pre-v23 backup (option (b) above) would also resolve this divergence as a side effect, since a migration re-applied from v22 would run the corrected source. **The "v27 and later" rule stated above is unaffected and remains the operative rule from this point forward** -- this is a record of the one already-taken, already-justified exception, not a reopening of the rule itself.
 - **Gate(s):** BLOCKS local `dev`/`main` runtime on this machine until Phase 9 Part II merges (or the owner chooses remediation option (b)/(c) above).
 - **Approval required from:** project owner -- which remediation option to take, if any, before Phase 9 Part II's own merge.
 - **Status:** OPEN, owner informed via Telegram 2026-09-27 (and again on the v24 → v26 correction, same day).
@@ -1208,6 +1209,34 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Why not fixed immediately:** pure DRY/maintainability concern, no observed or reachable correctness bug -- deprioritized behind the real bugs found in the same review pass.
 - **Required remediation:** extract a shared `useLatestRequestGuard`/`fetchForSelected`-shaped hook alongside this codebase's other shared UI hooks, and migrate both panels onto it.
 - **Gate(s):** none.
+- **Status:** OPEN, 2026-09-27.
+
+## RISK-78 — `listMarketChannelSnapshotsByChannel`/`listMarketVideoSnapshotsByChannel` have no pagination or limit — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/db.ts`'s `listMarketChannelSnapshotsByChannel`/
+  `listMarketVideoSnapshotsByChannel` (both plain `SELECT ... WHERE researchChannelId = ? ORDER BY
+  observedAt ASC`, no `LIMIT`), and `src/lib/market-intelligence/services.ts`'s
+  `getWatchlistEntryContext` (9G-a), which returns both arrays in full to its caller.
+- **Found during:** planning `docs/roadmap/plans/PHASE_9_SLICE_9H_PART_A_PLAN.md` (9H part A),
+  advisor review.
+- **Actual risk:** `market_channel_snapshots`/`market_video_snapshots` are append-only series (9A) —
+  every past 9B collection run adds rows, never replaces them, so both queries' result size grows
+  without bound over a channel's lifetime on the watchlist. Harmless while `getWatchlistEntryContext`
+  had exactly one caller (a single bounded MCP/CLI request an agent makes deliberately, 9G-a) — it
+  becomes a real, growing per-request cost the moment anything renders it repeatedly for a human
+  (9H's own Channels UI, planned to be this function's first UI caller).
+- **Why not fixed as part of 9H part A:** that part bounds what it actually RENDERS (latest snapshot
+  per video, one video's own series at a time) without touching this read's own contract or adding
+  real pagination at the query level -- a query-level fix changes `getWatchlistEntryContext`'s own
+  output shape, which is an existing MCP/CLI agent contract (9G-a) that a UI-scoped slice should not
+  alter as a side effect (`AGENTS.md` §A).
+- **Required remediation (not yet scheduled):** add a real `LIMIT`/cursor to both `db.ts` functions
+  (e.g. "most recent N" plus an explicit "load more"/date-range parameter), then decide, as its own
+  scoped decision, whether `getWatchlistEntryContext`'s existing agent contract also needs the same
+  bound (likely yes, for the identical reason) -- an `AGENT_API_VERSION`-bumping change, not a silent
+  one.
+- **Gate(s):** none yet -- revisit if watchlist channels accumulate enough real collection history for
+  a single request's payload size to become a practical (not just theoretical) problem.
 - **Status:** OPEN, 2026-09-27.
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
