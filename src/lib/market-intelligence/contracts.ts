@@ -99,6 +99,10 @@ export type MarketVideoSnapshot = {
   likeCount: number | null;
   commentCount: number | null;
   publishedAt: string | null;
+  /** Phase 9 slice 9H part C (v28) -- `null` for any snapshot taken before this field existed, or
+   * when YouTube's own response omitted a title (never the empty string -- normalized at capture
+   * time, see `runCollectionIfStale`). */
+  title: string | null;
   source: string;
 };
 

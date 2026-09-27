@@ -1010,6 +1010,10 @@ export const marketVideoSnapshots = sqliteTable(
     likeCount: integer("like_count"),
     commentCount: integer("comment_count"),
     publishedAt: integer("published_at", { mode: "timestamp" }),
+    // Phase 9 slice 9H part C (v28) -- nullable: `NULL` honestly means "not captured" for any
+    // snapshot taken before this column existed; never backfilled or guessed from a later
+    // snapshot's own (possibly since-changed) title.
+    title: text("title"),
     source: text("source").notNull(),
     createdVia: text("created_via").notNull(),
   },
@@ -1839,6 +1843,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute(
         "CREATE INDEX IF NOT EXISTS market_research_requests_status_idx ON market_research_requests(status)"
       );
+    },
+  },
+  {
+    version: 28,
+    description:
+      "market_video_snapshots.title -- Phase 9 slice 9H part C, capturing a field getPublicVideoSnapshots already fetches at zero extra quota cost but 9B's own collector previously discarded (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_C_PLAN.md)",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE market_video_snapshots ADD COLUMN title TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
     },
   },
 ];
@@ -4925,6 +4941,7 @@ export type StoredMarketVideoSnapshot = {
   likeCount: number | null;
   commentCount: number | null;
   publishedAt: Date | null;
+  title: string | null;
   source: string;
   createdVia: string;
 };
@@ -4938,6 +4955,7 @@ export async function insertMarketVideoSnapshot(
     likeCount?: number | null;
     commentCount?: number | null;
     publishedAt?: Date | null;
+    title?: string | null;
     source: string;
     createdVia: string;
   },
@@ -4951,6 +4969,7 @@ export async function insertMarketVideoSnapshot(
     likeCount: input.likeCount ?? null,
     commentCount: input.commentCount ?? null,
     publishedAt: input.publishedAt ?? null,
+    title: input.title ?? null,
     source: input.source,
     createdVia: input.createdVia,
   });
@@ -5348,6 +5367,21 @@ export async function listTopicsForSubject(
     .select()
     .from(marketTopicAssignments)
     .where(and(eq(marketTopicAssignments.subjectType, subjectType), eq(marketTopicAssignments.subjectId, subjectId)));
+}
+
+/**
+ * Phase 9 slice 9H part C -- every assignment for one `subjectType` regardless of `subjectId`,
+ * covered by the existing `market_topic_assignments_subject_idx(subject_type, subject_id)`
+ * composite index. `listTopicsForSubject` above takes one `subjectId` at a time; a caller needing
+ * every video-subject assignment across a whole watchlist (this slice's own `getMarketVideosOverview`)
+ * would otherwise have to call it once per video (a real N+1) -- this is the single bulk read
+ * instead.
+ */
+export async function listMarketTopicAssignmentsBySubjectType(
+  subjectType: TopicAssignmentSubjectType,
+  database: AppDb = db
+): Promise<StoredMarketTopicAssignment[]> {
+  return database.select().from(marketTopicAssignments).where(eq(marketTopicAssignments.subjectType, subjectType));
 }
 
 export async function getTopicAssignment(

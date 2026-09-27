@@ -18,6 +18,7 @@ import { AgentConnectionsManager } from "@/components/agent-connections-manager"
 import { OperationsWorkspaceSettings } from "@/components/operations-workspace-settings";
 import { MarketOverviewPanel } from "@/components/market-overview-panel";
 import { MarketResearchPanel } from "@/components/market-research-panel";
+import { MarketVideosPanel } from "@/components/market-videos-panel";
 import { MarketDiscoveryPanel } from "@/components/market-discovery-panel";
 import { MarketTopicsPanel } from "@/components/market-topics-panel";
 import { MarketTrendsPanel } from "@/components/market-trends-panel";
@@ -330,6 +331,7 @@ export default function Dashboard() {
             </p>
             <MarketOverviewPanel />
             <MarketResearchPanel />
+            <MarketVideosPanel />
             <MarketDiscoveryPanel />
             <MarketTopicsPanel />
             <MarketTrendsPanel />

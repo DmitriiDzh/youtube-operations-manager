@@ -67,6 +67,7 @@ import {
   getChannelVideoSnapshotHistoryOutputSchema,
   getMarketOverviewOutputSchema,
   getMarketResearchRequestInputSchema,
+  getMarketVideosOverviewOutputSchema,
   getTrendEvidenceSummaryOutputSchema,
   getWatchlistEntryContextOutputSchema,
   getWatchlistEntryInputSchema,
@@ -188,6 +189,7 @@ type StoredMarketVideoSnapshotForService = {
   likeCount: number | null;
   commentCount: number | null;
   publishedAt: Date | null;
+  title: string | null;
   source: string;
   createdVia: string;
 };
@@ -243,6 +245,7 @@ function toMarketVideoSnapshot(row: StoredMarketVideoSnapshotForService): Market
     likeCount: row.likeCount,
     commentCount: row.commentCount,
     publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
+    title: row.title,
     source: row.source,
   };
 }
@@ -458,6 +461,7 @@ type ServiceDependencies = {
     likeCount?: number | null;
     commentCount?: number | null;
     publishedAt?: Date | null;
+    title?: string | null;
     source: string;
     createdVia: string;
   }): Promise<void>;
@@ -522,6 +526,11 @@ type ServiceDependencies = {
   listTopicsForSubject(
     subjectType: TopicAssignmentSubjectType,
     subjectId: string
+  ): Promise<StoredMarketTopicAssignmentForService[]>;
+  // Phase 9 slice 9H part C -- bulk read across every subject of one type, for
+  // getMarketVideosOverview's own aggregation (never one call per video).
+  listMarketTopicAssignmentsBySubjectType(
+    subjectType: TopicAssignmentSubjectType
   ): Promise<StoredMarketTopicAssignmentForService[]>;
   getTopicAssignment(
     topicId: string,
@@ -626,6 +635,77 @@ export const RECENT_VIDEO_WINDOW_DAYS = 180;
 // badge would visibly contradict itself). A named, adjustable starting point, not a claimed-correct
 // number, exactly like `BREAKOUT_RATIO_THRESHOLD`'s own precedent.
 export const TREND_EVIDENCE_FRESH_WINDOW_DAYS = 30;
+
+/**
+ * Phase 9 slice 9H part C -- extracted, verbatim in logic, from `getChannelIntelligenceSummary`'s
+ * own original inline block (9H part A), so `getMarketVideosOverview` can reuse the identical
+ * age-normalized, leave-one-out breakout methodology per video without a second, drifting copy of
+ * it. Returns a verdict only for a video whose `publishedAt` is known AND within
+ * `RECENT_VIDEO_WINDOW_DAYS` of `now` -- absent from the returned map for every other video (too
+ * old, or no publish date on record at all), never a fabricated non-breakout entry for those.
+ */
+function computeRecentVideoBreakouts(
+  videoSnapshotsByVideoId: Map<string, MarketVideoSnapshot[]>,
+  now: Date
+): Map<string, BreakoutAssessment> {
+  // Recent-video age-normalized points at CHANNEL_BASELINE_DAY_OFFSET, one per video that has a
+  // publishedAt within RECENT_VIDEO_WINDOW_DAYS -- see the plan's own §2/§4 for why 180 days and
+  // why a video with no publishedAt is excluded entirely rather than guessed. `basis` is kept
+  // alongside `viewCount` (found necessary by advisor review: collapsing "not yet old enough",
+  // "no snapshot close enough to day 7", and "no baseline data" into assessBreakout's own single
+  // generic "no view count available" reason is exactly the ambiguity 9D's own basis vocabulary
+  // exists to avoid).
+  const recentVideoPoints: { videoId: string; viewCount: number | null; basis: AgeNormalizedBasis }[] = [];
+  for (const [videoId, snapshots] of videoSnapshotsByVideoId) {
+    const publishedAtRaw = snapshots.find((s) => s.publishedAt !== null)?.publishedAt ?? null;
+    if (publishedAtRaw === null) continue;
+    const publishedAt = new Date(publishedAtRaw);
+    const ageDays = (now.getTime() - publishedAt.getTime()) / MS_PER_DAY;
+    if (ageDays > RECENT_VIDEO_WINDOW_DAYS) continue;
+
+    const snapshotsWithTime: VideoSnapshotWithTime[] = snapshots.map((s) => ({
+      viewCount: s.viewCount,
+      observedAt: new Date(s.observedAt),
+    }));
+    const [point] = computeAgeNormalizedViews(snapshotsWithTime, publishedAt, [CHANNEL_BASELINE_DAY_OFFSET], now);
+    recentVideoPoints.push({ videoId, viewCount: point.viewCount, basis: point.basis });
+  }
+
+  // LEAVE-ONE-OUT baseline, computed separately per video from every OTHER recent video's own
+  // point -- never including the video being assessed in its own baseline (plan §4's own
+  // hand-computed disagreement fixture explains why this, not "include-self", was chosen).
+  // `computeChannelVideoBaseline` already filters out null viewCounts on its own, so a video
+  // with no usable day-offset point (insufficient_history/not_yet_reached) is automatically
+  // excluded from every OTHER video's baseline sample, with no extra filtering needed here.
+  const result = new Map<string, BreakoutAssessment>();
+  for (const { videoId, viewCount, basis } of recentVideoPoints) {
+    const others = recentVideoPoints.filter((p) => p.videoId !== videoId).map((p) => ({ viewCount: p.viewCount }));
+    const baseline = computeChannelVideoBaseline(others, CHANNEL_BASELINE_DAY_OFFSET);
+    if (basis !== "observed") {
+      // An honest, specific reason instead of assessBreakout's own generic "no view count
+      // available for this video or the channel baseline" -- that single generic reason cannot
+      // distinguish "too young to measure yet" from "old enough, but never observed close enough
+      // to day 7", the exact distinction spec §10's own "no data is inherently ambiguous" finding
+      // (9I's own DataQualityFlag vocabulary) was built to preserve.
+      const reason =
+        basis === "not_yet_reached"
+          ? `this video is not yet ${CHANNEL_BASELINE_DAY_OFFSET} days old`
+          : `no snapshot observed within ${ageNormalizedTolerance(CHANNEL_BASELINE_DAY_OFFSET)} days of this video's own day ${CHANNEL_BASELINE_DAY_OFFSET} mark`;
+      result.set(videoId, {
+        videoId,
+        dayOffset: CHANNEL_BASELINE_DAY_OFFSET,
+        videoViewCount: null,
+        channelBaselineMedianViewCount: baseline.medianViewCount,
+        ratio: null,
+        isBreakout: false,
+        reason,
+      });
+      continue;
+    }
+    result.set(videoId, assessBreakout(videoId, { viewCount, dayOffset: CHANNEL_BASELINE_DAY_OFFSET }, baseline));
+  }
+  return result;
+}
 
 // Phase 9 slice 9B -- real YouTube Data API v3 quota costs (`channels.list`/`playlistItems.list`/
 // `videos.list` are each a flat 1 unit regardless of requested parts, per the API's own published
@@ -1067,60 +1147,12 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         };
       });
 
-      // Recent-video age-normalized points at CHANNEL_BASELINE_DAY_OFFSET, one per video that has a
-      // publishedAt within RECENT_VIDEO_WINDOW_DAYS -- see the plan's own §2/§4 for why 180 days and
-      // why a video with no publishedAt is excluded entirely rather than guessed. `basis` is kept
-      // alongside `viewCount` (found necessary by advisor review: collapsing "not yet old enough",
-      // "no snapshot close enough to day 7", and "no baseline data" into assessBreakout's own single
-      // generic "no view count available" reason is exactly the ambiguity 9D's own basis vocabulary
-      // exists to avoid).
-      const recentVideoPoints: { videoId: string; viewCount: number | null; basis: AgeNormalizedBasis }[] = [];
-      for (const [videoId, snapshots] of videoSnapshotsByVideoId) {
-        const publishedAtRaw = snapshots.find((s) => s.publishedAt !== null)?.publishedAt ?? null;
-        if (publishedAtRaw === null) continue;
-        const publishedAt = new Date(publishedAtRaw);
-        const ageDays = (now.getTime() - publishedAt.getTime()) / MS_PER_DAY;
-        if (ageDays > RECENT_VIDEO_WINDOW_DAYS) continue;
-
-        const snapshotsWithTime: VideoSnapshotWithTime[] = snapshots.map((s) => ({
-          viewCount: s.viewCount,
-          observedAt: new Date(s.observedAt),
-        }));
-        const [point] = computeAgeNormalizedViews(snapshotsWithTime, publishedAt, [CHANNEL_BASELINE_DAY_OFFSET], now);
-        recentVideoPoints.push({ videoId, viewCount: point.viewCount, basis: point.basis });
-      }
-
-      // LEAVE-ONE-OUT baseline, computed separately per video from every OTHER recent video's own
-      // point -- never including the video being assessed in its own baseline (plan §4's own
-      // hand-computed disagreement fixture explains why this, not "include-self", was chosen).
-      // `computeChannelVideoBaseline` already filters out null viewCounts on its own, so a video
-      // with no usable day-offset point (insufficient_history/not_yet_reached) is automatically
-      // excluded from every OTHER video's baseline sample, with no extra filtering needed here.
-      const recentBreakoutVideos: BreakoutAssessment[] = recentVideoPoints.map(({ videoId, viewCount, basis }) => {
-        const others = recentVideoPoints.filter((p) => p.videoId !== videoId).map((p) => ({ viewCount: p.viewCount }));
-        const baseline = computeChannelVideoBaseline(others, CHANNEL_BASELINE_DAY_OFFSET);
-        if (basis !== "observed") {
-          // An honest, specific reason instead of assessBreakout's own generic "no view count
-          // available for this video or the channel baseline" -- that single generic reason cannot
-          // distinguish "too young to measure yet" from "old enough, but never observed close enough
-          // to day 7", the exact distinction spec §10's own "no data is inherently ambiguous" finding
-          // (9I's own DataQualityFlag vocabulary) was built to preserve.
-          const reason =
-            basis === "not_yet_reached"
-              ? `this video is not yet ${CHANNEL_BASELINE_DAY_OFFSET} days old`
-              : `no snapshot observed within ${ageNormalizedTolerance(CHANNEL_BASELINE_DAY_OFFSET)} days of this video's own day ${CHANNEL_BASELINE_DAY_OFFSET} mark`;
-          return {
-            videoId,
-            dayOffset: CHANNEL_BASELINE_DAY_OFFSET,
-            videoViewCount: null,
-            channelBaselineMedianViewCount: baseline.medianViewCount,
-            ratio: null,
-            isBreakout: false,
-            reason,
-          };
-        }
-        return assessBreakout(videoId, { viewCount, dayOffset: CHANNEL_BASELINE_DAY_OFFSET }, baseline);
-      });
+      // Phase 9 slice 9H part C -- extracted into computeRecentVideoBreakouts (a shared helper also
+      // used by getMarketVideosOverview), verbatim in logic; a video absent from the returned map
+      // (too old, or no publishedAt at all) is simply excluded from this array, exactly as before.
+      const recentBreakoutVideos: BreakoutAssessment[] = [
+        ...computeRecentVideoBreakouts(videoSnapshotsByVideoId, now).values(),
+      ];
 
       const recentBreakoutVideoCount = recentBreakoutVideos.filter((v) => v.isBreakout).length;
       const emergingChannel = assessEmergingChannel(context.channel.channelId, recentBreakoutVideoCount, velocity.subscriberCount);
@@ -1281,6 +1313,135 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           collectionWarnings,
         },
         "get market overview output"
+      );
+    },
+
+    /**
+     * Phase 9 slice 9H, part C -- Videos tab, per-video aggregation across the WHOLE watchlist.
+     * Deliberately calls `getWatchlistEntryContext` directly, not `getChannelIntelligenceSummary`
+     * (unlike `getMarketOverview` above) -- that action deliberately does NOT return the full
+     * `videoSnapshots` array (RISK-78), and this action genuinely needs each video's own full
+     * snapshot series (for `velocity`), not just its already-summarized latest point.
+     */
+    async getMarketVideosOverview(): Promise<{
+      videos: {
+        videoId: string;
+        channelId: string;
+        channelHandleOrUrl: string | null;
+        title: string | null;
+        publishedAt: string | null;
+        viewCount: number | null;
+        observedAt: string;
+        velocity: FieldVelocity;
+        breakout: BreakoutAssessment | null;
+        topics: { topicId: string; name: string }[];
+      }[];
+      // Named constants driving `velocity`/`breakout` above, returned rather than hardcoded a
+      // second time client-side where they could drift (found necessary by advisor review, same
+      // discipline `getChannelIntelligenceSummary`'s own `methodology` field already established --
+      // `docs/ARCHITECTURE.md` §18 names hardcoding these client-side as the exact anti-pattern).
+      methodology: {
+        velocityWindowDays: number;
+        recentVideoWindowDays: number;
+        baselineDayOffset: number;
+      };
+    }> {
+      const { channels } = await services.listWatchlist();
+      const now = deps.clock.now();
+
+      const { topics } = await services.listTopics();
+      const topicNameById = new Map(topics.map((t) => [t.topicId, t.name]));
+      const videoTopicAssignments = await deps.listMarketTopicAssignmentsBySubjectType("video");
+      const topicsByVideoId = new Map<string, { topicId: string; name: string }[]>();
+      for (const assignment of videoTopicAssignments) {
+        const entry = { topicId: assignment.topicId, name: topicNameById.get(assignment.topicId) ?? "" };
+        const existing = topicsByVideoId.get(assignment.subjectId);
+        if (existing) existing.push(entry);
+        else topicsByVideoId.set(assignment.subjectId, [entry]);
+      }
+
+      const videos: {
+        videoId: string;
+        channelId: string;
+        channelHandleOrUrl: string | null;
+        title: string | null;
+        publishedAt: string | null;
+        viewCount: number | null;
+        observedAt: string;
+        velocity: FieldVelocity;
+        breakout: BreakoutAssessment | null;
+        topics: { topicId: string; name: string }[];
+      }[] = [];
+
+      for (const channel of channels) {
+        let context: Awaited<ReturnType<typeof services.getWatchlistEntryContext>>;
+        try {
+          context = await services.getWatchlistEntryContext({ channelId: channel.channelId });
+        } catch (error) {
+          // Same narrow, code-checked per-channel race handling as getMarketOverview above -- a
+          // channel removed from the watchlist between listWatchlist() and this fetch is skipped,
+          // never a 500 over one already-stale row; any other error propagates unchanged.
+          if (isDomainError(error) && error.code === "RESEARCH_CHANNEL_NOT_AVAILABLE") continue;
+          throw error;
+        }
+
+        const videoSnapshotsByVideoId = new Map<string, MarketVideoSnapshot[]>();
+        for (const snapshot of context.videoSnapshots) {
+          const existing = videoSnapshotsByVideoId.get(snapshot.videoId);
+          if (existing) existing.push(snapshot);
+          else videoSnapshotsByVideoId.set(snapshot.videoId, [snapshot]);
+        }
+
+        const breakoutsByVideoId = computeRecentVideoBreakouts(videoSnapshotsByVideoId, now);
+
+        for (const [videoId, snapshots] of videoSnapshotsByVideoId) {
+          const latest = snapshots[snapshots.length - 1];
+          const snapshotsWithTime: SnapshotWithTime[] = snapshots.map((s) => ({
+            subscriberCount: null,
+            videoCount: null,
+            viewCount: s.viewCount,
+            observedAt: new Date(s.observedAt),
+          }));
+          const velocity = computeSnapshotVelocity(snapshotsWithTime, CHANNEL_VELOCITY_WINDOW_DAYS, now);
+
+          videos.push({
+            videoId,
+            channelId: channel.channelId,
+            channelHandleOrUrl: context.channel.handleOrUrl,
+            title: latest.title,
+            publishedAt: latest.publishedAt,
+            viewCount: latest.viewCount,
+            observedAt: latest.observedAt,
+            velocity: velocity.viewCount,
+            breakout: breakoutsByVideoId.get(videoId) ?? null,
+            topics: topicsByVideoId.get(videoId) ?? [],
+          });
+        }
+      }
+
+      // Deterministic order (plan §3): newest-published first, nulls last, then channelId/videoId.
+      videos.sort((a, b) => {
+        const timeA = a.publishedAt ? new Date(a.publishedAt).getTime() : -Infinity;
+        const timeB = b.publishedAt ? new Date(b.publishedAt).getTime() : -Infinity;
+        if (timeA !== timeB) return timeB - timeA;
+        if (a.channelId !== b.channelId) return a.channelId.localeCompare(b.channelId);
+        return a.videoId.localeCompare(b.videoId);
+      });
+      for (const video of videos) {
+        video.topics.sort((a, b) => a.name.localeCompare(b.name) || a.topicId.localeCompare(b.topicId));
+      }
+
+      return parseWithSchema(
+        getMarketVideosOverviewOutputSchema,
+        {
+          videos,
+          methodology: {
+            velocityWindowDays: CHANNEL_VELOCITY_WINDOW_DAYS,
+            recentVideoWindowDays: RECENT_VIDEO_WINDOW_DAYS,
+            baselineDayOffset: CHANNEL_BASELINE_DAY_OFFSET,
+          },
+        },
+        "get market videos overview output"
       );
     },
 
@@ -1696,6 +1857,11 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
                   likeCount: videoSnapshot.likeCount,
                   commentCount: videoSnapshot.commentCount,
                   publishedAt: videoSnapshot.publishedAt ? new Date(videoSnapshot.publishedAt) : null,
+                  // Phase 9 slice 9H part C -- costs zero additional quota, getPublicVideoSnapshots
+                  // already fetches this. Normalized to null (never "") -- data-api.ts's own `?? ""`
+                  // fallback for a response that omits snippet.title must not be stored as a
+                  // different-looking "known, empty" title from a genuinely uncaptured one.
+                  title: videoSnapshot.title.length > 0 ? videoSnapshot.title : null,
                   source: "youtube.videos.list",
                   createdVia: "web_ui",
                 });

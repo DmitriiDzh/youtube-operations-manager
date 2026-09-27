@@ -173,6 +173,7 @@ type VideoSnapshotRow = {
   likeCount: number | null;
   commentCount: number | null;
   publishedAt: Date | null;
+  title: string | null;
   source: string;
   createdVia: string;
 };
@@ -330,6 +331,7 @@ function createFakeStore() {
       likeCount?: number | null;
       commentCount?: number | null;
       publishedAt?: Date | null;
+      title?: string | null;
       source: string;
       createdVia: string;
     }) {
@@ -346,6 +348,7 @@ function createFakeStore() {
         likeCount: input.likeCount ?? null,
         commentCount: input.commentCount ?? null,
         publishedAt: input.publishedAt ?? null,
+        title: input.title ?? null,
         source: input.source,
         createdVia: input.createdVia,
       });
@@ -521,6 +524,9 @@ function createFakeStore() {
     },
     async listTopicsForSubject(subjectType: TopicAssignmentSubjectType, subjectId: string) {
       return topicAssignments.filter((row) => row.subjectType === subjectType && row.subjectId === subjectId);
+    },
+    async listMarketTopicAssignmentsBySubjectType(subjectType: TopicAssignmentSubjectType) {
+      return topicAssignments.filter((row) => row.subjectType === subjectType);
     },
     async getTopicAssignment(topicId: string, subjectType: TopicAssignmentSubjectType, subjectId: string) {
       return (
@@ -1367,6 +1373,7 @@ function pushDay7VideoSnapshot(
     likeCount: null,
     commentCount: null,
     publishedAt,
+    title: null,
     source: "youtube.videos.list",
     createdVia: "web_ui",
   });
@@ -1428,6 +1435,7 @@ test("AC-9H-06: a video whose only snapshot lands at day 30 (outside the ±1.75-
     likeCount: null,
     commentCount: null,
     publishedAt: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
+    title: null,
     source: "youtube.videos.list",
     createdVia: "web_ui",
   });
@@ -1464,6 +1472,7 @@ test("AC-9H-06b: a video published less than 7 days ago reports 'not_yet_reached
     likeCount: null,
     commentCount: null,
     publishedAt: new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000),
+    title: null,
     source: "youtube.videos.list",
     createdVia: "web_ui",
   });
@@ -1487,6 +1496,7 @@ test("AC-9H-07: zero videos with a publishedAt produces an empty recentBreakoutV
     likeCount: null,
     commentCount: null,
     publishedAt: null,
+    title: null,
     source: "youtube.videos.list",
     createdVia: "web_ui",
   });
@@ -1521,6 +1531,7 @@ test("AC-9H-09: latestSnapshotPerVideo holds exactly one row per distinct videoI
       likeCount: 20,
       commentCount: 4,
       publishedAt: new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000),
+      title: null,
       source: "youtube.videos.list",
       createdVia: "web_ui",
     },
@@ -1533,6 +1544,7 @@ test("AC-9H-09: latestSnapshotPerVideo holds exactly one row per distinct videoI
       likeCount: 5,
       commentCount: 1,
       publishedAt: new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000),
+      title: null,
       source: "youtube.videos.list",
       createdVia: "web_ui",
     }
@@ -1557,6 +1569,7 @@ test("AC-9H-10: getChannelVideoSnapshotHistory returns only the requested video'
       likeCount: null,
       commentCount: null,
       publishedAt: null,
+      title: null,
       source: "youtube.videos.list",
       createdVia: "web_ui",
     },
@@ -1569,6 +1582,7 @@ test("AC-9H-10: getChannelVideoSnapshotHistory returns only the requested video'
       likeCount: null,
       commentCount: null,
       publishedAt: null,
+      title: null,
       source: "youtube.videos.list",
       createdVia: "web_ui",
     }
@@ -1730,6 +1744,7 @@ test("AC-9HB-04: breakoutVideos aggregates across channels, tagging each entry w
     likeCount: null,
     commentCount: null,
     publishedAt: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000),
+    title: null,
     source: "youtube.videos.list",
     createdVia: "web_ui",
   });
@@ -2022,10 +2037,219 @@ function pushVideoSnapshotForChannel(
     likeCount: null,
     commentCount: null,
     publishedAt: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000),
+    title: null,
     source: "youtube.videos.list",
     createdVia: "web_ui",
   });
 }
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9H, part C (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_C_PLAN.md) -- Videos tab.
+// ---------------------------------------------------------------------------
+
+test("AC-9HC-01: runCollectionIfStale captures title from getPublicVideoSnapshots, normalizing an empty-string title to null (never a different-looking 'known empty' title)", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { store, services } = createFixture({
+    now,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    uploadsPlaylistVideoIds: ["v1", "v2"],
+    publicVideoSnapshots: [
+      { videoId: "v1", title: "Real Title", publishedAt: null, viewCount: 10, likeCount: null, commentCount: null },
+      { videoId: "v2", title: "", publishedAt: null, viewCount: 20, likeCount: null, commentCount: null },
+    ],
+  });
+  store.setQuotaBudget(100);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+
+  await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+
+  const byVideoId = new Map(store.videoSnapshots.map((s) => [s.videoId, s]));
+  assert.equal(byVideoId.get("v1")?.title, "Real Title");
+  assert.equal(
+    byVideoId.get("v2")?.title,
+    null,
+    "an empty-string title from the API must be normalized to null, never stored as a different-looking 'known empty' title"
+  );
+});
+
+test("AC-9HC-02: getMarketVideosOverview with an empty watchlist returns videos: []", async () => {
+  const { services } = createFixture();
+  const result = await services.getMarketVideosOverview();
+  assert.deepEqual(result.videos, []);
+});
+
+test("AC-9HC-02b: methodology reports the real, checked constants (found necessary by advisor review -- the UI must never hardcode a second copy)", async () => {
+  const { services } = createFixture();
+  const result = await services.getMarketVideosOverview();
+  assert.deepEqual(result.methodology, { velocityWindowDays: 7, recentVideoWindowDays: 180, baselineDayOffset: 7 });
+});
+
+test("AC-9HC-03: velocity is hand-derived from derived-metrics.ts's own documented rules (day 0 -> day 5, now pinned at day 5, CHANNEL_VELOCITY_WINDOW_DAYS=7 -> value 10, basis 'partial_window')", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.videoSnapshots.push(
+    {
+      id: "s-day0",
+      researchChannelId: VALID_CHANNEL_ID,
+      videoId: "vVelocity000000000000A",
+      observedAt: new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000),
+      viewCount: 100,
+      likeCount: null,
+      commentCount: null,
+      publishedAt: null,
+      title: "Velocity Test",
+      source: "youtube.videos.list",
+      createdVia: "web_ui",
+    },
+    {
+      id: "s-day5",
+      researchChannelId: VALID_CHANNEL_ID,
+      videoId: "vVelocity000000000000A",
+      observedAt: now,
+      viewCount: 150,
+      likeCount: null,
+      commentCount: null,
+      publishedAt: null,
+      title: "Velocity Test",
+      source: "youtube.videos.list",
+      createdVia: "web_ui",
+    }
+  );
+
+  const result = await services.getMarketVideosOverview();
+  assert.equal(result.videos.length, 1);
+  assert.deepEqual(result.videos[0].velocity, { value: 10, basis: "partial_window" });
+});
+
+test("AC-9HC-04: breakout parity -- the plan's own hand-computed day-7 fixture ([10,20,30,65]) produces the identical verdict through getMarketVideosOverview as getChannelIntelligenceSummary already does", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  pushDay7VideoSnapshot(store, now, { id: "s-a", videoId: "vA00000000000000000000A", viewCount: 10 });
+  pushDay7VideoSnapshot(store, now, { id: "s-b", videoId: "vB00000000000000000000B", viewCount: 20 });
+  pushDay7VideoSnapshot(store, now, { id: "s-c", videoId: "vC00000000000000000000C", viewCount: 30 });
+  pushDay7VideoSnapshot(store, now, { id: "s-d", videoId: "vD00000000000000000000D", viewCount: 65 });
+
+  const result = await services.getMarketVideosOverview();
+  const d = result.videos.find((v) => v.videoId === "vD00000000000000000000D")!;
+  assert.ok(d.breakout, "a video within the recent window with a known publishedAt must never be null");
+  assert.equal(d.breakout!.isBreakout, true);
+  assert.equal(d.breakout!.ratio, 3.25);
+});
+
+test("AC-9HC-05: a video older than RECENT_VIDEO_WINDOW_DAYS gets breakout: null (excluded entirely, never a fabricated non-breakout verdict); a video with no publishedAt also gets breakout: null", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.videoSnapshots.push(
+    {
+      id: "s-old",
+      researchChannelId: VALID_CHANNEL_ID,
+      videoId: "vOld00000000000000000A",
+      observedAt: now,
+      viewCount: 500,
+      likeCount: null,
+      commentCount: null,
+      publishedAt: new Date(now.getTime() - 200 * 24 * 60 * 60 * 1000),
+      title: "Old video",
+      source: "youtube.videos.list",
+      createdVia: "web_ui",
+    },
+    {
+      id: "s-no-published-at",
+      researchChannelId: VALID_CHANNEL_ID,
+      videoId: "vNoPub0000000000000000A",
+      observedAt: now,
+      viewCount: 10,
+      likeCount: null,
+      commentCount: null,
+      publishedAt: null,
+      title: "No publish date",
+      source: "youtube.videos.list",
+      createdVia: "web_ui",
+    }
+  );
+
+  const result = await services.getMarketVideosOverview();
+  const old = result.videos.find((v) => v.videoId === "vOld00000000000000000A")!;
+  const noPub = result.videos.find((v) => v.videoId === "vNoPub0000000000000000A")!;
+  assert.equal(old.breakout, null);
+  assert.equal(noPub.breakout, null);
+});
+
+test("AC-9HC-06: topic resolution -- a video's topic assignments resolve to real names via listTopics(), sorted by name ascending; a video with zero assignments gets topics: []", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.videoSnapshots.push(
+    {
+      id: "s-tagged",
+      researchChannelId: VALID_CHANNEL_ID,
+      videoId: "vTagged0001", // exactly 11 chars -- a real assignTopic() call validates this as a YouTube video id
+      observedAt: now,
+      viewCount: 10,
+      likeCount: null,
+      commentCount: null,
+      publishedAt: null,
+      title: "Tagged video",
+      source: "youtube.videos.list",
+      createdVia: "web_ui",
+    },
+    {
+      id: "s-untagged",
+      researchChannelId: VALID_CHANNEL_ID,
+      videoId: "vUntagged01",
+      observedAt: now,
+      viewCount: 20,
+      likeCount: null,
+      commentCount: null,
+      publishedAt: null,
+      title: "Untagged video",
+      source: "youtube.videos.list",
+      createdVia: "web_ui",
+    }
+  );
+  const jazz = await services.createTopic({ name: "Jazz" }, { createdVia: "web_ui" });
+  const ambient = await services.createTopic({ name: "Ambient" }, { createdVia: "web_ui" });
+  await services.assignTopic({ topicId: jazz.topicId, subjectType: "video", subjectId: "vTagged0001" }, { createdVia: "web_ui" });
+  await services.assignTopic({ topicId: ambient.topicId, subjectType: "video", subjectId: "vTagged0001" }, { createdVia: "web_ui" });
+
+  const result = await services.getMarketVideosOverview();
+  const tagged = result.videos.find((v) => v.videoId === "vTagged0001")!;
+  const untagged = result.videos.find((v) => v.videoId === "vUntagged01")!;
+  assert.deepEqual(
+    tagged.topics.map((t) => t.name),
+    ["Ambient", "Jazz"],
+    "sorted by name ascending, not assignment order"
+  );
+  assert.deepEqual(untagged.topics, []);
+});
+
+test("AC-9HC-07: a channel removed mid-request (present in listWatchlist, gone by its own context fetch) is skipped, not a 500 -- a different, unrelated error still propagates", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.addToWatchlist({ channelId: OTHER_VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  pushVideoSnapshotForChannel(store, OTHER_VALID_CHANNEL_ID, now, { id: "s-other", videoId: "vOther0000000000000000A", viewCount: 10 });
+
+  store.failNextGetResearchChannelByIdOnce(VALID_CHANNEL_ID);
+
+  const result = await services.getMarketVideosOverview();
+  assert.equal(result.videos.length, 1, "the removed channel's videos must be skipped, but the other channel's own video must still appear");
+  assert.equal(result.videos[0].channelId, OTHER_VALID_CHANNEL_ID);
+});
+
+test("AC-9HC-07b: a genuine, unrelated error from inside the per-channel fetch is NOT swallowed -- only RESEARCH_CHANNEL_NOT_AVAILABLE is caught", async () => {
+  const { services, store } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.throwNextGetResearchChannelByIdOnce(VALID_CHANNEL_ID);
+
+  await assert.rejects(
+    () => services.getMarketVideosOverview(),
+    (error: unknown) => error instanceof Error && error.message === "simulated getResearchChannelById failure"
+  );
+});
 
 // ---------------------------------------------------------------------------
 // Phase 9 slice 9A -- service-layer acceptance criteria from

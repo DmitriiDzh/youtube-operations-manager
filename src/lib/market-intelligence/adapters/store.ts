@@ -29,6 +29,7 @@ import {
   listMarketChannelSnapshotsByChannel,
   listMarketDiscoveryCandidates,
   listMarketResearchRequests,
+  listMarketTopicAssignmentsBySubjectType,
   listMarketTopics,
   listMarketTrendCandidates,
   listMarketVideoSnapshotsByChannel,
@@ -88,6 +89,8 @@ export function createMarketIntelligenceStoreAdapter() {
     deleteMarketTopic,
     listAssignmentsForTopic,
     listTopicsForSubject,
+    // Phase 9 slice 9H part C (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_C_PLAN.md).
+    listMarketTopicAssignmentsBySubjectType,
     getTopicAssignment,
     insertMarketTopicAssignment,
     deleteMarketTopicAssignment,

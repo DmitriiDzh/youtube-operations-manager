@@ -1125,6 +1125,50 @@ test("initializeDatabaseSchema: an existing pre-versioning database (baseline ta
         `a later migration (v26) must still apply correctly on the pre-versioning re-apply path (${table})`
       );
     }
+    // Phase 9 slice 9H part C -- a later ADD-COLUMN migration (v28) must also survive the
+    // pre-versioning re-apply path, same discipline as v19/v21/v24's own ADD-COLUMN assertions.
+    const marketVideoSnapshotColumns = await client.execute("PRAGMA table_info(market_video_snapshots)");
+    const marketVideoSnapshotColumnNames = marketVideoSnapshotColumns.rows.map((row) => row.name);
+    assert.ok(
+      marketVideoSnapshotColumnNames.includes("title"),
+      "a later ADD-COLUMN migration (v28) must still apply correctly on the pre-versioning re-apply path"
+    );
+  }));
+
+// Phase 9 slice 9H part C -- proves market_video_snapshots.title round-trips through the real
+// Drizzle schema, and stays null when never provided (a pre-migration/omitted title, never
+// fabricated as an empty string or guessed from another row).
+test("market_video_snapshots.title round-trips through the real Drizzle schema, and stays null when never provided", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({
+      id: "UC_RESEARCH_A",
+      handleOrUrl: null,
+      reason: "test",
+      createdVia: "web_ui",
+    });
+
+    await isolatedDb.insert(marketVideoSnapshots).values({
+      id: "snap-with-title",
+      researchChannelId: "UC_RESEARCH_A",
+      videoId: "v_with_title",
+      title: "Real Title",
+      source: "youtube.videos.list",
+      createdVia: "web_ui",
+    });
+    await isolatedDb.insert(marketVideoSnapshots).values({
+      id: "snap-without-title",
+      researchChannelId: "UC_RESEARCH_A",
+      videoId: "v_without_title",
+      source: "youtube.videos.list",
+      createdVia: "web_ui",
+    });
+
+    const rows = await isolatedDb.select().from(marketVideoSnapshots).where(eq(marketVideoSnapshots.researchChannelId, "UC_RESEARCH_A"));
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    assert.equal(byId.get("snap-with-title")?.title, "Real Title");
+    assert.equal(byId.get("snap-without-title")?.title, null);
   }));
 
 // Phase 7 slice K (owner spec §10 -- AC-DUR-01). `upsertVideos`/`listStoredVideosByChannel`

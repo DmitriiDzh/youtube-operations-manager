@@ -186,6 +186,9 @@ export const marketVideoSnapshotSchema = z
     likeCount: z.number().int().nullable(),
     commentCount: z.number().int().nullable(),
     publishedAt: z.string().nullable(),
+    // Phase 9 slice 9H part C (v28) -- additive; every existing consumer (Web UI, MCP
+    // query_market_intelligence, CLI agent market-intelligence) gains one new field.
+    title: z.string().nullable(),
     source: z.string(),
   })
   .strict();
@@ -689,6 +692,43 @@ export const getMarketOverviewOutputSchema = z
         })
         .strict()
     ),
+  })
+  .strict();
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9H, part C (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_C_PLAN.md) -- Videos tab,
+// per-video aggregation across the whole watchlist. No input (mirrors part B's own no-input
+// shape); UI-only, no MCP/CLI contract of its own (unlike the `title` field it depends on, which
+// DOES reach the agent-facing getWatchlistEntryContext output -- see §1 of that plan).
+// ---------------------------------------------------------------------------
+
+const marketVideoTopicSchema = z.object({ topicId: z.string().min(1), name: z.string() }).strict();
+
+export const getMarketVideosOverviewOutputSchema = z
+  .object({
+    videos: z.array(
+      z
+        .object({
+          videoId: z.string().min(1),
+          channelId: z.string().min(1),
+          channelHandleOrUrl: z.string().nullable(),
+          title: z.string().nullable(),
+          publishedAt: z.string().nullable(),
+          viewCount: z.number().int().nullable(),
+          observedAt: z.string(),
+          velocity: fieldVelocitySchema,
+          breakout: breakoutAssessmentSchema.nullable(),
+          topics: z.array(marketVideoTopicSchema),
+        })
+        .strict()
+    ),
+    methodology: z
+      .object({
+        velocityWindowDays: z.number().int().positive(),
+        recentVideoWindowDays: z.number().int().positive(),
+        baselineDayOffset: z.number().int().positive(),
+      })
+      .strict(),
   })
   .strict();
 

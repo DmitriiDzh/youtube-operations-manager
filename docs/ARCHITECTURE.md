@@ -1426,7 +1426,7 @@ content-proposal/artifact registration, a Codex operations-workspace template, a
 review -- **which of these is actually implemented as of any given moment is tracked exclusively
 in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here**.
 
-## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9E + 9G + 9H (parts A-B) + 9I
+## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9E + 9G + 9H (parts A-C) + 9I
 
 Owner instruction, Telegram 2026-09-26: an explicit assignment to research, plan, and begin
 implementing Phase 9 (`docs/roadmap/FUTURE_PHASES.md` §5) as its own feature branch, superseding
@@ -1783,3 +1783,39 @@ building block first); a "Videos" tab (`market_video_snapshots` has no `title` c
 discards it today, a separately-scoped schema change); an "Opportunities" tab (needs 9F's niche
 candidates, which don't exist yet); wiring `detectDisappearedVideoIds` (9I) into any UI (its own doc
 comment warns against a naive two-snapshot diff, real design work belonging with the Videos tab).
+
+**Slice 9H, part C (`docs/roadmap/plans/PHASE_9_SLICE_9H_PART_C_PLAN.md`, 2026-09-27/28) -- Videos
+tab, closing the schema gap part B's own entry named above.** Migration v28 adds
+`market_video_snapshots.title` (nullable -- `NULL` for any snapshot taken before this column
+existed, never backfilled or guessed from a later, possibly-since-changed title of the same video);
+`runCollectionIfStale` (9B) now passes `title` through to `insertMarketVideoSnapshot`, at zero
+additional YouTube quota cost (`getPublicVideoSnapshots` already fetched it). An empty-string title
+(the read gateway's own fallback when YouTube's response omits `snippet.title`) is normalized to
+`null` at capture time, so "not captured" has exactly one representation, never two.
+
+**The one architectural point worth recording is a refactor, not a new mechanism:** the per-video,
+age-normalized, leave-one-out breakout assessment 9H part A built inline inside
+`getChannelIntelligenceSummary` is extracted into a shared helper, `computeRecentVideoBreakouts`
+(`services.ts`, module scope) -- identical logic, now called by both that action (output schema and
+behavior unchanged, pinned by its own pre-existing tests continuing to pass unmodified) and this
+slice's new `getMarketVideosOverview`, which needed the same methodology per video across the WHOLE
+watchlist rather than reimplementing a second, drifting copy of it.
+
+`getMarketVideosOverview` deliberately calls `getWatchlistEntryContext` directly per watchlisted
+channel, not `getChannelIntelligenceSummary` (unlike part B's `getMarketOverview`) -- that action
+deliberately omits the full `videoSnapshots` array (RISK-78), and this slice genuinely needs each
+video's own full snapshot series to compute a per-video view-count velocity (`computeSnapshotVelocity`,
+9A, reused by feeding a video's own `viewCount` series into the same `subscriberCount`/`videoCount`-
+shaped function part A's own `uploadCadence` field already reuses this way). Topic/format resolution
+needed a new bulk read, `listMarketTopicAssignmentsBySubjectType(subjectType)` (`db.ts`) -- the
+existing `listTopicsForSubject` takes one `subjectId` at a time, and calling it once per video across
+a watchlist would have been a real N+1; `getWatchlistEntryContext`'s own `topicAssignments` field is
+channel-subject-only by construction and could not have served this need either way.
+
+Adding `title` to `marketVideoSnapshotSchema` additively widens `getWatchlistEntryContextOutputSchema`
+(MCP `query_market_intelligence`/CLI `agent market-intelligence`'s own contract, since it already
+embeds `videoSnapshots: z.array(marketVideoSnapshotSchema)`) -- a real agent-contract change, but
+**not** an `AGENT_API_VERSION` bump: `src/lib/agent-operations/contracts.ts`'s own doc comment on
+that constant explicitly excludes exactly this shape of change ("a new optional input/output field
+an existing caller can simply ignore... not every field-level widening"), reserving MINOR bumps for
+capability-discovery-relevant changes only. `getMarketVideosOverview` itself has no MCP/CLI surface.

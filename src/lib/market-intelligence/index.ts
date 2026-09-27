@@ -50,6 +50,8 @@ export function createMarketIntelligenceCore() {
     deleteMarketTopic: store.deleteMarketTopic,
     listAssignmentsForTopic: store.listAssignmentsForTopic,
     listTopicsForSubject: store.listTopicsForSubject,
+    // Phase 9 slice 9H part C (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_C_PLAN.md).
+    listMarketTopicAssignmentsBySubjectType: store.listMarketTopicAssignmentsBySubjectType,
     getTopicAssignment: store.getTopicAssignment,
     insertMarketTopicAssignment: store.insertMarketTopicAssignment,
     deleteMarketTopicAssignment: store.deleteMarketTopicAssignment,
