@@ -922,6 +922,10 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-63 | The project owner's real local app-data database was advanced to schema v24 (Phase 9 slices 9A/9B) by this session's own live-verification scripts, while `dev`/`main` remain at v22 -- a `dev`/`main` build on this machine will now refuse to start against that real database until Phase 9 Part II is merged | BLOCKS local `dev`/`main` runtime on this machine until merge | OPEN, owner informed |
 | RISK-64 | `runCollectionIfStale` reconstructs a fresh OAuth2/YouTube client (and re-checks the "reads enabled" toggle) independently on each of its 3 `youtubeApi` calls per channel, instead of once per channel/run | none blocking, efficiency only | OPEN |
 | RISK-65 | Slice 9A's manual `captureChannelSnapshot` never marks `last_auto_collected_at`, so slice 9B's automatic trigger can immediately re-fetch (spending real units) a channel just manually refreshed | none blocking, wasted-quota only | OPEN |
+| RISK-66 | `deleteResearchChannel` cascade-deletes `market_intelligence_collection_runs` (required by its own `NOT NULL` FK) -- removing then re-adding a channel the same UTC day silently drops that channel's already-recorded spend from the shared daily ledger sum | none blocking, narrow/bounded (≤3 units per incident, requires a specific same-day remove-then-reuse) | OPEN |
+| RISK-67 | `runCollectionIfStale`'s per-channel snapshot inserts, its own collection-run audit row, and `markResearchChannelAutoCollected` are 3+ separate non-transactional writes -- a throw partway through can leave orphaned snapshot rows and forces a real quota re-spend on retry, not a free one | none blocking, no data-integrity risk (append-only tables tolerate an orphan row; worst case is wasted quota) | OPEN |
+| RISK-68 | `discoverChannels` has no atomic claim/lock guarding its own budget check (unlike `runCollectionIfStale`'s `claimStaleResearchChannelsForCollection`) -- two concurrent Discover clicks can each pass the same `remaining >= 100` check and together overspend the shared budget | none blocking, narrow (requires two near-simultaneous manual UI actions, not an automatic/background path) | OPEN |
+| RISK-69 | `promoteDiscoveryCandidate`'s not-yet-promoted check and its `research_channels` insert are not wrapped in a transaction -- a double-click/double-tab race surfaces a raw constraint error as a generic 500 instead of the intended `DISCOVERY_CANDIDATE_ALREADY_PROMOTED` | none blocking, cosmetic (no incorrect end state; the first request's promotion still succeeds) | OPEN |
 
 ## RISK-53 — `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` — RESOLVED, 2026-09-24
 
@@ -1065,6 +1069,50 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Required remediation (not yet scheduled):** needs an actual design decision, not a quick fix -- e.g. a distinct "channel-level freshness" timestamp separate from "full (channel+video) freshness," or accepting the redundant re-fetch as a rare, low-cost annoyance. Needs owner input on which tradeoff they prefer once reached.
 - **Gate(s):** none.
 - **Approval required from:** project owner, on which remediation direction to take.
+- **Status:** OPEN, tracked.
+
+## RISK-66 — `deleteResearchChannel` cascade-deletes `market_intelligence_collection_runs`, silently dropping that channel's spend from the shared daily ledger — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/db.ts`'s `deleteResearchChannel` (cascade includes `marketIntelligenceCollectionRuns`, required by that table's own `NOT NULL` FK to `researchChannels.id` -- this connection runs with `foreign_keys=ON`, so the delete would otherwise fail outright while any run row still references the channel); `getMarketIntelligenceUnitsSpentSince` (Phase 9 slice 9B/9C's shared quota-ledger read).
+- **Found during:** independent code review of Phase 9 slices 9A-9C.
+- **Actual risk:** if an operator removes a channel from the watchlist and re-adds it (or simply lets another channel's own budget check run) within the SAME UTC calendar day, that channel's already-recorded `units_spent` rows are gone from the ledger `deleteResearchChannel` just cascaded away -- `getMarketIntelligenceUnitsSpentSince`'s sum for today is now lower than what was actually spent against YouTube's real quota, letting a later collection/discovery call spend more than the operator's configured daily budget. Bounded in magnitude (at most the deleted channel's own spend that day, typically ≤3 units for a single collection run -- `market_discovery_runs` is unaffected, since it carries no FK to `research_channels` at all) and requires a specific, deliberate same-day remove-then-reuse sequence, not an everyday occurrence.
+- **Why not fixed immediately:** a correct fix means the ledger surviving a channel's own deletion, which requires either dropping the FK constraint (SQLite cannot drop a `REFERENCES` clause via `ALTER TABLE` -- needs a full recreate-table migration, and this table's schema has already been applied to the real local database at v24, `docs/TECHNICAL_DEBT.md` RISK-63) or a `SET NULL`-style column change with its own migration. Both are real schema-migration work, not a one-line fix, and the practical impact is narrow/bounded as described above -- not proportionate to rush ahead of the rest of Phase 9 Part II's own already-in-progress work.
+- **Required remediation (not yet scheduled):** a v27+ migration recreating `market_intelligence_collection_runs` with `research_channel_id` as a plain, unvalidated text column (mirroring `market_discovery_candidates.subject_id`'s already-accepted "no FK for an informal reference" pattern), then removing it from `deleteResearchChannel`'s cascade list -- the ledger becomes a permanent record independent of whether the channel is still tracked.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2) once scheduled -- a schema/behavior fix with no observable change for the normal (non-same-day-reuse) case.
+- **Status:** OPEN, tracked.
+
+## RISK-67 — `runCollectionIfStale`'s per-channel writes are not transactional — a partial failure can leave orphan snapshot rows and forces a real quota re-spend on retry — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `runCollectionIfStale` -- `insertMarketChannelSnapshot`/`insertMarketVideoSnapshot`, its own `market_intelligence_collection_runs` audit row, and `markResearchChannelAutoCollected` are 3+ separate `db.ts` writes with no shared transaction wrapping them.
+- **Found during:** independent code review of Phase 9 slices 9A-9C.
+- **Actual risk:** if a channel's snapshot (and possibly some video snapshots) insert successfully -- real API calls already paid for -- and a later write in the SAME attempt then throws (e.g. a transient local DB error), the channel is recorded `failed` and retried on the next run, re-spending real quota a second time to re-fetch data that, in part, was already correctly captured; the orphaned snapshot row(s) from the failed attempt also remain (harmless for these append-only tables, but not deduplicated against the eventual successful retry's own new rows).
+- **Why not fixed immediately:** a full fix needs either wrapping the whole per-channel sequence in one `db.transaction()` (a real refactor of `ServiceDependencies`' individual-function shape into something transaction-aware) or accepting the current design's own explicitly-documented tradeoff (the `successRowWritten` flag already added specifically to avoid the WORSE failure mode -- a false "already fresh" mark). The residual risk here is strictly a wasted-quota/duplicate-observation concern, not a data-integrity one.
+- **Required remediation (not yet scheduled):** wrap the per-channel write sequence in a single database transaction once `ServiceDependencies`' shape supports it, or accept this as a permanent, documented tradeoff of the current dependency-injection design.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2), if scheduled.
+- **Status:** OPEN, tracked.
+
+## RISK-68 — `discoverChannels` has no atomic claim/lock against a concurrent overspend — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `discoverChannels` (Phase 9 slice 9C) -- unlike `runCollectionIfStale`'s `claimStaleResearchChannelsForCollection`, there is no server-side single-flight guard around this action's own `remaining >= 100` budget check.
+- **Found during:** independent code review of Phase 9 slice 9C.
+- **Actual risk:** two concurrent `discoverChannels` calls (e.g. two open browser tabs) can each read the same `spentToday`, both pass the budget check, and both spend a real 100 units -- together overspending the operator's configured daily budget by up to 100 units. Narrower than 9B's own equivalent concern: discovery is always an explicit, one-at-a-time manual UI click (never an automatic/background trigger the way collection is), so the realistic likelihood of two truly simultaneous attempts is low.
+- **Why not fixed immediately:** a proper fix needs a claim/lock mechanism shaped like 9B's own channel-claim, but keyed on "a discovery run is in progress" rather than a specific channel id -- a real addition, not proportionate to add speculatively without a concrete report of it happening in practice.
+- **Required remediation (not yet scheduled):** a single-row "discovery in progress" claim (mirroring `research_channels.collection_claimed_at`'s own shape) checked/set atomically before the `search.list` call.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2), if scheduled.
+- **Status:** OPEN, tracked.
+
+## RISK-69 — `promoteDiscoveryCandidate`'s race surfaces a generic 500 instead of a clean domain error — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `promoteDiscoveryCandidate` -- the `status !== "promoted"` check and the subsequent `insertResearchChannel` are two separate, non-transactional steps.
+- **Found during:** independent code review of Phase 9 slice 9C.
+- **Actual risk:** a double-click or two-tab race on the same candidate's "Promote" action can let both requests pass the not-yet-promoted check; the second's `insertResearchChannel` then hits a raw primary-key constraint violation, which the API route's generic catch-all turns into an unhelpful `internal_error`/500 instead of the intended `DISCOVERY_CANDIDATE_ALREADY_PROMOTED`. Purely cosmetic -- no incorrect end state results (the first request's promotion still succeeds correctly; the candidate is not double-promoted or corrupted).
+- **Why not fixed immediately:** a full fix needs the same kind of atomic claim/transaction wrapping as RISK-68; not proportionate to add speculatively for a rare double-click race with no actual incorrect outcome.
+- **Required remediation (not yet scheduled):** catch the specific constraint-violation shape in `promoteDiscoveryCandidate` and re-map it to `DISCOVERY_CANDIDATE_ALREADY_PROMOTED`, or add a claim/lock.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2), if scheduled.
 - **Status:** OPEN, tracked.
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

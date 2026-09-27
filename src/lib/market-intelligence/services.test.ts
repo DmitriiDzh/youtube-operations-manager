@@ -24,6 +24,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createMarketIntelligenceServices, describePublicChannelSnapshot } from "./services";
 import {
+  DomainError,
   isDomainError,
   type DiscoveryCandidateStatus,
   type PublicChannelSearchResult,
@@ -126,6 +127,7 @@ function createFakeStore() {
   let failVideoSnapshotInsertAfter: number | null = null;
   let videoSnapshotInsertCount = 0;
   let failNextMark = false;
+  let failInsertMarketDiscoveryCandidateFor: string | null = null;
 
   return {
     channels,
@@ -148,6 +150,9 @@ function createFakeStore() {
     },
     failNextMarkOnce() {
       failNextMark = true;
+    },
+    failInsertMarketDiscoveryCandidateForChannel(channelId: string) {
+      failInsertMarketDiscoveryCandidateFor = channelId;
     },
     idGenerator: () => `evidence-${nextId++}`,
     async insertResearchChannel(input: { id: string; handleOrUrl?: string | null; reason: string; createdVia: string }) {
@@ -342,6 +347,9 @@ function createFakeStore() {
       reasonDiscovered?: string | null;
       createdVia: string;
     }) {
+      if (failInsertMarketDiscoveryCandidateFor === input.id) {
+        throw new Error("simulated insertMarketDiscoveryCandidate failure");
+      }
       const now = new Date();
       discoveryCandidates.set(input.id, {
         id: input.id,
@@ -397,6 +405,7 @@ function createFixture(overrides?: {
   publicVideoSnapshots?: PublicVideoSnapshot[];
   searchResults?: PublicChannelSearchResult[];
   searchImpl?: (args: { credentials: ResolvedCredentials; query: string }) => Promise<PublicChannelSearchResult[]>;
+  dataApiReadsDisabled?: boolean;
 }) {
   const store = createFakeStore();
   const resolveCalls: unknown[] = [];
@@ -404,6 +413,7 @@ function createFixture(overrides?: {
   const playlistCalls: unknown[] = [];
   const videoSnapshotCalls: unknown[] = [];
   const searchCalls: unknown[] = [];
+  const assertReadsAvailableCalls: undefined[] = [];
   let currentNow = overrides?.now ?? new Date();
   const services = createMarketIntelligenceServices({
     ...store,
@@ -444,6 +454,12 @@ function createFixture(overrides?: {
         if (overrides?.searchImpl) return overrides.searchImpl(args);
         return overrides?.searchResults ?? [];
       },
+      async assertReadsAvailable() {
+        assertReadsAvailableCalls.push(undefined);
+        if (overrides?.dataApiReadsDisabled) {
+          throw new DomainError({ code: "data_api_reads_disabled", message: "YouTube Data API v3 reads are disabled" });
+        }
+      },
     },
   });
   return {
@@ -454,6 +470,7 @@ function createFixture(overrides?: {
     playlistCalls,
     videoSnapshotCalls,
     searchCalls,
+    assertReadsAvailableCalls,
     setNow(date: Date) {
       currentNow = date;
     },
@@ -1509,4 +1526,59 @@ test("AC-9C-09: getMarketIntelligenceUnitsSpentSince (via the shared budget chec
     (error: unknown) => isDomainError(error) && error.code === "MARKET_INTELLIGENCE_QUOTA_EXCEEDED"
   );
   assert.equal(searchCalls.length, 0);
+});
+
+// Found by independent/advisor review: an earlier version only wrapped the search.list call itself
+// in try/catch -- a throw from the dedup loop afterward (e.g. a duplicate-insert race) propagated
+// with NO run row written at all, silently losing the audit trail for real, already-spent quota.
+test("AC-9C-10: a throw from the dedup loop (after search.list itself succeeded) still records the full 100-unit spend, with whatever partial candidate counts were actually reached", async () => {
+  const { store, services } = createFixture({
+    searchResults: [
+      { channelId: "UC_FIRST00000000000000", title: "First", description: null },
+      { channelId: "UC_SECOND000000000000", title: "Second", description: null },
+      { channelId: "UC_THIRD0000000000000", title: "Third", description: null },
+    ],
+  });
+  store.setQuotaBudget(1000);
+  store.failInsertMarketDiscoveryCandidateForChannel("UC_SECOND000000000000");
+
+  await assert.rejects(() => services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }));
+
+  assert.equal(store.discoveryRuns.length, 1);
+  const [run] = store.discoveryRuns;
+  assert.equal(run.status, "failed");
+  assert.equal(run.unitsSpent, 100, "the search.list call itself succeeded and really cost 100 units -- must never be lost");
+  assert.equal(run.candidatesFound, 3);
+  assert.equal(run.candidatesNew, 1, "only the first candidate was actually inserted before the second one threw");
+  assert.equal(store.discoveryCandidates.has("UC_FIRST00000000000000"), true);
+  assert.equal(store.discoveryCandidates.has("UC_THIRD0000000000000"), false, "the loop must stop at the throw, never skip ahead");
+});
+
+// Found by independent review: a disabled "Data API reads" toggle is a purely local, no-network
+// condition -- charging the call's own cost for it (as a generic per-call catch would) is dishonest,
+// since no real YouTube quota was ever spent.
+test("AC-9C-11: discoverChannels checks Data API reads availability BEFORE spending any budget, and records no run at all when reads are disabled", async () => {
+  const { store, services, searchCalls } = createFixture({ dataApiReadsDisabled: true });
+  store.setQuotaBudget(1000);
+
+  await assert.rejects(
+    () => services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "data_api_reads_disabled"
+  );
+  assert.equal(searchCalls.length, 0, "must never reach the real search.list call");
+  assert.equal(store.discoveryRuns.length, 0, "no run row -- nothing was ever attempted, let alone charged");
+});
+
+test("AC-9B-17: runCollectionIfStale checks Data API reads availability BEFORE claiming any channel, and charges nothing when reads are disabled", async () => {
+  const { store, services, snapshotCalls } = createFixture({ dataApiReadsDisabled: true, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO });
+  store.setQuotaBudget(1000);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+
+  await assert.rejects(
+    () => services.runCollectionIfStale({ credentialRef: { userId: "u1" } }),
+    (error: unknown) => isDomainError(error) && error.code === "data_api_reads_disabled"
+  );
+  assert.equal(snapshotCalls.length, 0);
+  assert.equal(store.collectionRuns.length, 0);
+  assert.equal(store.channels.get(VALID_CHANNEL_ID)?.collectionClaimedAt, null, "no channel was ever claimed");
 });

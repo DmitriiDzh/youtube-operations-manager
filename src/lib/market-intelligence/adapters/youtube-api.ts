@@ -1,5 +1,6 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
 import {
+  assertDataApiReadsAuthorized,
   createYoutubeClient,
   getPublicChannelSnapshot,
   getPublicVideoSnapshots,
@@ -39,6 +40,14 @@ export function createMarketIntelligenceYoutubeApiAdapter() {
     async searchPublicChannels(args: { credentials: ResolvedCredentials; query: string }) {
       const youtube = await createAuthorizedClient(args.credentials);
       return searchPublicChannels(youtube, args.query);
+    },
+    // Phase 9 slices 9B/9C (found by independent review): an upfront, cheap check the orchestrator
+    // calls BEFORE claiming any channel or charging any quota unit -- without it, a client
+    // construction failing on this exact toggle (a purely local check, never reaching YouTube's
+    // network) still fell into the generic per-call catch block, which charged the full call cost
+    // for spend that never actually happened.
+    async assertReadsAvailable() {
+      await assertDataApiReadsAuthorized();
     },
   };
 }

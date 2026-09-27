@@ -241,6 +241,10 @@ type ServiceDependencies = {
       credentials: ResolvedCredentials;
       query: string;
     }): Promise<PublicChannelSearchResult[]>;
+    // Found by independent review -- a cheap, upfront, local-only check called BEFORE any channel
+    // is claimed or any budget spent, so a disabled toggle never gets mischarged as if it were a
+    // real, failed network call.
+    assertReadsAvailable(): Promise<void>;
   };
   // Phase 9 slice 9A (docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md).
   insertMarketChannelSnapshot(input: {
@@ -323,6 +327,13 @@ type ServiceDependencies = {
 // deterministically, never dependent on how many ids happen to come back).
 const CHANNELS_LIST_UNIT_COST = 1;
 const PLAYLIST_ITEMS_LIST_UNIT_COST = 1;
+// This flat charge is only correct because `getPublicVideoSnapshots` is fed at most
+// `YOUTUBE_VIDEOS_LIST_BATCH_SIZE` (50) ids -- itself only true because
+// `listUploadsPlaylistFirstPageVideoIds` (the sole source of the ids passed here) caps its own
+// single-page result to that same limit. If either constant ever changes independently of the
+// other, this flat 1-unit charge would silently under-count a real `videos.list` call that had to
+// batch into 2+ requests (found by independent review -- not currently reachable, since both call
+// sites are fixed in this file, but the coupling itself is otherwise undocumented).
 const VIDEOS_LIST_UNIT_COST = 1;
 // A channel is only ever started once `remaining` can cover ALL 3 possible calls (found by
 // independent review: an earlier version checked budget per-call instead, which let a channel that
@@ -864,6 +875,13 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         return parseWithSchema(runCollectionIfStaleOutputSchema, zeroed, "run collection if stale output");
       }
 
+      // A disabled "Data API reads" toggle is a purely local, no-network condition -- checked
+      // upfront, before any channel is claimed or any budget spent, so it can never be mischarged
+      // as if it were a real, failed call (found by independent review: the per-call catch blocks
+      // below charge the call's own cost unconditionally, which is correct for a genuine network
+      // failure but wrong for a precondition that never reached YouTube at all).
+      await deps.youtubeApi.assertReadsAvailable();
+
       // Credentials must resolve BEFORE any channel is claimed -- a scope/credential failure must
       // never leave a channel claimed with nothing actually attempted (advisor review).
       const credentials = await deps.authResolver.resolve({
@@ -1078,6 +1096,14 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * A result already on the watchlist is never turned into a candidate; a result matching an
      * existing candidate only touches `lastSeenAt`, never duplicates the row or resets an
      * operator-set `status`.
+     *
+     * **The 100-unit spend is recorded on every exit path, not just when the `search.list` call
+     * itself throws** (found by independent/advisor review: an earlier version only wrapped the
+     * `search.list` call itself in try/catch -- a throw from the dedup loop afterward, e.g. a
+     * `insertMarketDiscoveryCandidate` primary-key violation from an overlapping concurrent
+     * request, propagated uncaught with NO run row written at all. YouTube had already been
+     * charged the real 100 units for the search itself; the ledger would have silently
+     * undercounted them, letting a later collection/discovery call overspend the shared budget).
      */
     async discoverChannels(
       input: unknown,
@@ -1105,61 +1131,73 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         });
       }
 
+      // A disabled "Data API reads" toggle is a purely local, no-network condition -- checked
+      // upfront, before spending any budget, so it can never be mischarged as a real, failed call.
+      await deps.youtubeApi.assertReadsAvailable();
+
       const credentials = await deps.authResolver.resolve({
         credentialRef: parsedInput.credentialRef,
         requiredScopes: [YOUTUBE_READ_SCOPE],
       });
 
-      let results: PublicChannelSearchResult[];
+      // candidatesFound/candidatesNew are tracked outside the try so the catch below can record
+      // whatever partial progress was actually made before a later throw, never fabricating a
+      // count for work that never happened.
+      let candidatesFound: number | null = null;
+      let candidatesNewCount: number | null = null;
+
       try {
-        results = await deps.youtubeApi.searchPublicChannels({ credentials, query: parsedInput.query });
+        const results = await deps.youtubeApi.searchPublicChannels({ credentials, query: parsedInput.query });
+        candidatesFound = results.length;
+        candidatesNewCount = 0;
+
+        for (const result of results) {
+          const alreadyWatchlisted = await deps.getResearchChannelById(result.channelId);
+          if (alreadyWatchlisted) continue;
+
+          const existingCandidate = await deps.getMarketDiscoveryCandidateById(result.channelId);
+          if (existingCandidate) {
+            await deps.touchMarketDiscoveryCandidateLastSeen(result.channelId, now);
+            continue;
+          }
+
+          await deps.insertMarketDiscoveryCandidate({
+            id: result.channelId,
+            title: result.title,
+            discoverySource: "youtube.search.list",
+            discoveryQuery: parsedInput.query,
+            reasonDiscovered: result.description,
+            createdVia: callOrigin.createdVia,
+          });
+          candidatesNewCount += 1;
+        }
+
+        await deps.insertMarketDiscoveryRun({
+          query: parsedInput.query,
+          status: "success",
+          unitsSpent: SEARCH_LIST_UNIT_COST,
+          candidatesFound,
+          candidatesNew: candidatesNewCount,
+          ranAt: now,
+        });
+
+        return parseWithSchema(
+          discoverChannelsOutputSchema,
+          { candidatesFound, candidatesNew: candidatesNewCount },
+          "discover channels output"
+        );
       } catch (error) {
         await deps.insertMarketDiscoveryRun({
           query: parsedInput.query,
           status: "failed",
           unitsSpent: SEARCH_LIST_UNIT_COST,
+          candidatesFound,
+          candidatesNew: candidatesNewCount,
           errorMessage: error instanceof Error ? error.message : String(error),
           ranAt: now,
         });
         throw error;
       }
-
-      let candidatesNewCount = 0;
-      for (const result of results) {
-        const alreadyWatchlisted = await deps.getResearchChannelById(result.channelId);
-        if (alreadyWatchlisted) continue;
-
-        const existingCandidate = await deps.getMarketDiscoveryCandidateById(result.channelId);
-        if (existingCandidate) {
-          await deps.touchMarketDiscoveryCandidateLastSeen(result.channelId, now);
-          continue;
-        }
-
-        await deps.insertMarketDiscoveryCandidate({
-          id: result.channelId,
-          title: result.title,
-          discoverySource: "youtube.search.list",
-          discoveryQuery: parsedInput.query,
-          reasonDiscovered: result.description,
-          createdVia: callOrigin.createdVia,
-        });
-        candidatesNewCount += 1;
-      }
-
-      await deps.insertMarketDiscoveryRun({
-        query: parsedInput.query,
-        status: "success",
-        unitsSpent: SEARCH_LIST_UNIT_COST,
-        candidatesFound: results.length,
-        candidatesNew: candidatesNewCount,
-        ranAt: now,
-      });
-
-      return parseWithSchema(
-        discoverChannelsOutputSchema,
-        { candidatesFound: results.length, candidatesNew: candidatesNewCount },
-        "discover channels output"
-      );
     },
 
     async listDiscoveryCandidates(): Promise<{ candidates: MarketDiscoveryCandidate[] }> {
