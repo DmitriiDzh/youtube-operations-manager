@@ -2055,10 +2055,22 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           status: "execution_failed",
           executionError: error instanceof Error ? error.message : String(error),
         });
-        const row = failed ?? (await deps.getMarketResearchRequestById(parsedInput.requestId))!;
+        // Same discipline as the success path below, and the same reason: `null` here means the
+        // row was no longer `"approved"` when we went to record discovery's own failure (e.g. a
+        // concurrent reject already moved it) -- falling back to a plain read would silently
+        // discard that fact and return whatever state the row is actually in as if this call had
+        // succeeded (found by independent code review -- the identical swallowed-null shape as the
+        // success path, just in this branch).
+        if (!failed) {
+          throw new DomainError({
+            code: "RESEARCH_REQUEST_NOT_PENDING",
+            message: "This research request was no longer 'approved' when its execution outcome was recorded",
+            details: { requestId: parsedInput.requestId },
+          });
+        }
         return parseWithSchema(
           approveMarketResearchRequestOutputSchema,
-          toMarketResearchRequest(row),
+          toMarketResearchRequest(failed),
           "approve market research request output"
         );
       }

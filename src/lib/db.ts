@@ -1734,14 +1734,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     // it was first introduced (commit e1b43bf) rather than shipped as a new version -- normally
     // forbidden by this file's own additive-only schema-versioning discipline (docs/decisions/0002),
     // since the migration runner only re-applies a version once, via `version > stampedBeforeMigrations`.
-    // Accepted as a single, deliberate, already-closed exception here specifically because this
-    // branch has never merged into dev/main: no shared/released database was ever stamped at 26
-    // with the old inline `UNIQUE(...)` constraint, so nothing needs to migrate away from it. The
-    // only databases at risk are a local dev/test database created from this same still-open branch
-    // between those two commits -- such a database keeps the old SQLite-auto-named index and must be
-    // deleted/recreated, since this fix will never re-run against it. This is not a repeatable
-    // pattern: every later correction on this branch (e.g. `market_research_requests` below) got its
-    // own new version number, exactly as this file's discipline requires.
+    // This was NOT actually safe in practice: this development machine's own real, production
+    // database (never a disposable copy -- see RISK-63, docs/TECHNICAL_DEBT.md) had already run this
+    // migration's ORIGINAL body (inline `UNIQUE(...)` constraint) before this edit landed, via a
+    // `next build` invocation missing its `NODE_TEST_CONTEXT=1` guard (RISK-63's own root cause).
+    // That real database is confirmed (`sqlite3 -readonly`, 2026-09-27) to still carry the old
+    // SQLite-auto-named index (`sqlite_autoindex_market_topic_assignments_1`), permanently diverging
+    // from every fresh v26 database created after this fix, which gets the intended
+    // `market_topic_assignments_unique_idx` name instead -- a naming-only divergence (both enforce
+    // the identical constraint), tracked as part of RISK-63, not silently accepted here. See RISK-63
+    // for the full history and the owner's remediation options. This is not a repeatable pattern:
+    // every later correction on this branch (e.g. `market_research_requests` below) got its own new
+    // version number, exactly as this file's discipline requires.
     version: 26,
     description:
       "market_topics + market_topic_assignments + market_trend_candidates + market_trend_evidence -- Phase 9 slice 9E topic model and manual/structural trend candidates (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md)",

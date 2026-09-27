@@ -2541,6 +2541,29 @@ test("AC-9G-B-07: a successful approval calls discoverChannels with the request'
   assert.equal(store.discoveryRuns.length, 1, "must reuse discoverChannels's own existing quota ledger, never a second parallel one");
 });
 
+test("AC-9G-B-07b: if the row is no longer 'approved' by the time discovery succeeds (e.g. an external actor moved it away mid-flight), approveMarketResearchRequest rejects with RESEARCH_REQUEST_NOT_PENDING instead of silently returning success (found by independent code review: this guard's own throw was previously swallowed by an enclosing try/catch)", async () => {
+  let requestId = "";
+  const { store, services } = createFixture({
+    searchImpl: async () => {
+      // Simulates a real-world race: something else (a concurrent reject, a reconciliation pass)
+      // moves the row away from "approved" while discovery is still in flight, strictly BEFORE
+      // recordMarketResearchRequestExecutionOutcome's own guarded write runs.
+      const row = store.marketResearchRequests.get(requestId)!;
+      store.marketResearchRequests.set(requestId, { ...row, status: "rejected" });
+      return [{ channelId: "UC_DISCOVERED00000000000", title: "Discovered Channel", description: null }];
+    },
+  });
+  store.setQuotaBudget(1000);
+  const created = await services.createMarketResearchRequest({ query: "night jazz", rationale: "worth watching" }, { createdVia: "mcp" });
+  requestId = created.requestId;
+
+  await assert.rejects(
+    () => services.approveMarketResearchRequest({ requestId, credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_REQUEST_NOT_PENDING"
+  );
+  assert.equal(store.marketResearchRequests.get(requestId)?.status, "rejected", "the row must be left exactly as the external actor set it, never overwritten with 'executed'");
+});
+
 test("AC-9G-B-08: a discoverChannels failure after the atomic transition sets status 'execution_failed' with executionError, never reverting the approval", async () => {
   const { store, services } = createFixture({
     searchImpl: async () => {
@@ -2558,6 +2581,26 @@ test("AC-9G-B-08: a discoverChannels failure after the atomic transition sets st
   assert.equal(result.status, "execution_failed");
   assert.match(result.executionError ?? "", /simulated search\.list failure/);
   assert.notEqual(store.marketResearchRequests.get(created.requestId)?.resolvedAt, null, "the approval itself must not be undone by a downstream execution failure");
+});
+
+test("AC-9G-B-08b: if the row is no longer 'approved' by the time a FAILED discovery's own outcome is recorded, approveMarketResearchRequest rejects with RESEARCH_REQUEST_NOT_PENDING instead of silently returning the row's current (unrelated) state (found by independent code review: the catch branch's own guarded write result was discarded exactly like the success path's was)", async () => {
+  let requestId = "";
+  const { store, services } = createFixture({
+    searchImpl: async () => {
+      const row = store.marketResearchRequests.get(requestId)!;
+      store.marketResearchRequests.set(requestId, { ...row, status: "rejected" });
+      throw new Error("simulated search.list failure");
+    },
+  });
+  store.setQuotaBudget(1000);
+  const created = await services.createMarketResearchRequest({ query: "night jazz", rationale: "worth watching" }, { createdVia: "mcp" });
+  requestId = created.requestId;
+
+  await assert.rejects(
+    () => services.approveMarketResearchRequest({ requestId, credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_REQUEST_NOT_PENDING"
+  );
+  assert.equal(store.marketResearchRequests.get(requestId)?.status, "rejected", "the row must be left exactly as the external actor set it, never overwritten with 'execution_failed'");
 });
 
 test("AC-9G-B-09: rejectMarketResearchRequest requires a non-empty reason and transitions pending -> rejected", async () => {
