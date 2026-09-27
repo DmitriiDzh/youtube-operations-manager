@@ -936,6 +936,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-76 | The research-request reject modal hand-rolls `ConfirmDialog`'s shell instead of extending the shared component | none, UI polish only | OPEN |
 | RISK-77 | `market-trends-panel.tsx`/`market-topics-panel.tsx` each implement an identical stale-fetch-response guard independently instead of a shared hook | none, DRY/maintainability only | OPEN |
 | RISK-78 | `listMarketChannelSnapshotsByChannel`/`listMarketVideoSnapshotsByChannel` have no pagination/limit -- an append-only series returned in full, about to get its first UI (non-agent) caller in 9H | none yet, revisit if payload size becomes a practical problem | OPEN |
+| RISK-79 | 9H part A code review: no tiebreaker for same-second "latest snapshot", no structural guard against a future RISK-52 repeat, O(n^2) leave-one-out recompute | none, narrow/hardening/efficiency only | OPEN |
 
 ## RISK-53 — `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` — RESOLVED, 2026-09-24
 
@@ -1047,7 +1048,9 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2) -- an internal refactor with no behavior change.
 - **Status:** OPEN, tracked.
 
-## RISK-63 — the real local app-data database is now schema v26, ahead of `dev`/`main`'s v22 — OPEN, 2026-09-27
+## RISK-63 — the real local app-data database is now schema v27, ahead of `dev`/`main`'s v22 — OPEN, 2026-09-27
+
+- **Correction (2026-09-27, later the same day, during 9H part A's own follow-up work):** the real database has drifted YET FURTHER since the v24→v26 correction below -- confirmed read-only via `sqlite3` immediately after a routine `npm test`/`npm run build` validation cycle for an unrelated fix, it is now stamped **v27**, not v26. All 12 Phase 9 tables (including the new `market_research_requests`) were verified to hold **zero rows** -- pure schema drift again, no real data created or lost, and a fresh automatic pre-migration backup exists (`backups/migrations/pre-migration-1790485488388-9994if.db`). The likely cause is the same class of gap as before: some validation step in this session (very possibly the background `/code-review` subagent's own re-run of `npm run build`, which this session does not fully control) ran without the `NODE_TEST_CONTEXT=1` guard. This does not change any of this entry's own remediation options below -- it only means the real database has moved one version further while a decision was pending, and the owner should be aware the gap between "accept it" and "restore a backup" keeps growing the longer this stays undecided.
 
 - **Affected components:** `~/Library/Application Support/YouTubeOperationsManager/playlist-manager.db` (this machine's actual production database, `src/lib/platform-paths`, `resolveAppPaths`) -- **not** `<repo>/data/playlist-manager.db`, which is a legacy path only used as a one-time migration source and was never the real one.
 - **Found during:** Phase 9 slice 9B implementation. This session's own live-verification scripts (a throwaway `tsx` script importing `@/lib/db`, run outside `NODE_TEST_CONTEXT`) triggered this codebase's real, production `databaseInitialization` side effect, applying SCHEMA_MIGRATIONS up through v24 to the operator's actual local database -- not a disposable copy. Direct inspection found the identical thing already happened one migration earlier, during slice 9A's own live verification (v22 → v23); `docs/SYSTEM_MAP.md` §2.9v's own 9A/9B live-verification notes originally (incorrectly) described this as touching `data/playlist-manager.db`, corrected in the same commit that added this entry.
@@ -1204,9 +1207,9 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 ## RISK-77 — duplicated stale-response-fetch-guard pattern across market-intelligence panels — OPEN, 2026-09-27
 
-- **Affected components:** `src/components/market-trends-panel.tsx`'s `fetchEvidence` and `src/components/market-topics-panel.tsx`'s `fetchAssignments`.
-- **Found during:** combined `/code-review high` pass over 9I/9G-a/9G-b.
-- **Actual risk:** both functions implement the identical shape of guard (a ref tracking the most-recently-requested id, checked before applying the response, to discard a stale response from an earlier selection) independently, byte-for-byte in structure. This codebase already has a shared-hooks convention for cross-panel fetch logic (e.g. `use-top-videos.ts`, `use-connected-channels.ts`) that this pattern should have used instead. A future third panel needing the same per-item detail-fetch behavior will likely copy it a third time, and any future fix to the race-guard logic must be applied in every copy.
+- **Affected components:** `src/components/market-trends-panel.tsx`'s `fetchEvidence`, `src/components/market-topics-panel.tsx`'s `fetchAssignments`, and (found by independent code review during 9H part A, widening this entry's own count from 2 to 4) `src/components/market-research-panel.tsx`'s `fetchIntelligenceSummary`/`handleToggleVideoHistory`.
+- **Found during:** combined `/code-review high` pass over 9I/9G-a/9G-b; widened by the same kind of pass over 9H part A.
+- **Actual risk:** all four functions implement the identical shape of guard (a ref tracking the most-recently-requested id, checked before applying the response, to discard a stale response from an earlier selection) independently, byte-for-byte in structure. This codebase already has a shared-hooks convention for cross-panel fetch logic (e.g. `use-top-videos.ts`, `use-connected-channels.ts`) that this pattern should have used instead. Copying it a third and fourth time instead of extracting the hook means any future fix to the race-guard logic (e.g. `AbortController` cancellation, or the same-id-reselection edge case 9H part A's own copy was found to still miss) must now be applied in four places, not one.
 - **Why not fixed immediately:** pure DRY/maintainability concern, no observed or reachable correctness bug -- deprioritized behind the real bugs found in the same review pass.
 - **Required remediation:** extract a shared `useLatestRequestGuard`/`fetchForSelected`-shaped hook alongside this codebase's other shared UI hooks, and migrate both panels onto it.
 - **Gate(s):** none.
@@ -1238,6 +1241,15 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   one.
 - **Gate(s):** none yet -- revisit if watchlist channels accumulate enough real collection history for
   a single request's payload size to become a practical (not just theoretical) problem.
+- **Status:** OPEN, 2026-09-27.
+
+## RISK-79 — three lower-severity findings from 9H part A's own independent code review, not fixed in that pass — OPEN, 2026-09-27
+
+- **`observedAt` has no tiebreaker for "which snapshot is latest."** `getChannelIntelligenceSummary`'s `latestSnapshotPerVideo`/leave-one-out baseline assume the last row `listMarketVideoSnapshotsByChannel`'s `ORDER BY observed_at ASC` returns is genuinely the latest -- but `observed_at` is stored with whole-second precision, and `derived-metrics.ts` already documents hitting a same-second collision once (its own round-2 fix). Two snapshots of the same video landing in the same wall-clock second can sort in either order, silently using a stale value with no error or data-quality flag. **Required remediation:** an explicit secondary sort key (an autoincrement rowid or insertion-order column) for these two queries.
+- **No structural guard against the next new table repeating RISK-52.** `SNAPSHOT_TRANSFERRED_TABLES`'s own doc comment claims fail-safe-by-construction design, but that safety depended entirely on a reviewer remembering to add each new table -- exactly what failed across every Phase 9 slice from 9A through 9G before RISK-52's fix. **Required remediation:** a test asserting every `sqliteTable(...)` in `db.ts` is either on `SNAPSHOT_TRANSFERRED_TABLES` or on an explicit, named exclusion list (mirroring `PHASE9-INV-02`'s own derive-don't-hand-maintain approach).
+- **`getChannelIntelligenceSummary`'s leave-one-out baseline is recomputed per video, from scratch.** `computeChannelVideoBaseline` filters and sorts its input array on every call, once per recent video (O(n² log n) instead of one sort plus O(1)/O(log n) leave-one-out lookups) -- a real, growing cost only for a channel with many videos inside the 180-day `RECENT_VIDEO_WINDOW_DAYS` window (a near-daily uploader), not a correctness issue.
+- **Why not fixed in the same pass:** none of the three is a correctness bug reachable with today's real data volumes (the first is a narrow timing race, the second and third are pure hardening/efficiency); fixing all three would have meant reopening the same files a fourth time in one review cycle instead of shipping the real bugs' fixes.
+- **Gate(s):** none.
 - **Status:** OPEN, 2026-09-27.
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

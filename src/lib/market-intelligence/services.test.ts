@@ -327,7 +327,12 @@ function createFakeStore() {
       });
     },
     async listMarketVideoSnapshotsByChannel(researchChannelId: string) {
-      return videoSnapshots.filter((row) => row.researchChannelId === researchChannelId);
+      // Sorted ascending by observedAt, mirroring db.ts's own real ORDER BY -- found necessary by
+      // independent code review: AC-9H-09's "last element is latest" assertion only proved anything
+      // once this fake stopped relying on the fixture happening to push rows in chronological order.
+      return videoSnapshots
+        .filter((row) => row.researchChannelId === researchChannelId)
+        .sort((a, b) => a.observedAt.getTime() - b.observedAt.getTime());
     },
     // Phase 9 slice 9B -- mirrors db.ts's own atomic-claim semantics closely enough for a
     // single-threaded test (the real atomicity is proven against the actual SQLite driver in
@@ -1478,19 +1483,11 @@ test("AC-9H-09: latestSnapshotPerVideo holds exactly one row per distinct videoI
   const now = new Date("2026-09-27T12:00:00.000Z");
   const { services, store } = createFixture({ now });
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  // Pushed LATE-then-EARLY (reverse of chronological order) -- found necessary by independent code
+  // review: pushing in chronological order let this test pass merely because the fake store
+  // returned insertion order, never actually exercising the "sort by observedAt, take the last"
+  // logic the production code's own comment relies on.
   store.videoSnapshots.push(
-    {
-      id: "s-early",
-      researchChannelId: VALID_CHANNEL_ID,
-      videoId: "vRepeated0000000000000A",
-      observedAt: new Date(now.getTime() - 24 * 60 * 60 * 1000),
-      viewCount: 100,
-      likeCount: 5,
-      commentCount: 1,
-      publishedAt: new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000),
-      source: "youtube.videos.list",
-      createdVia: "web_ui",
-    },
     {
       id: "s-late",
       researchChannelId: VALID_CHANNEL_ID,
@@ -1499,6 +1496,18 @@ test("AC-9H-09: latestSnapshotPerVideo holds exactly one row per distinct videoI
       viewCount: 500,
       likeCount: 20,
       commentCount: 4,
+      publishedAt: new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000),
+      source: "youtube.videos.list",
+      createdVia: "web_ui",
+    },
+    {
+      id: "s-early",
+      researchChannelId: VALID_CHANNEL_ID,
+      videoId: "vRepeated0000000000000A",
+      observedAt: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+      viewCount: 100,
+      likeCount: 5,
+      commentCount: 1,
       publishedAt: new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000),
       source: "youtube.videos.list",
       createdVia: "web_ui",

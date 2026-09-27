@@ -890,8 +890,9 @@ export const agentCapabilityZones = sqliteTable("agent_capability_zones", {
  * one operator per local install, and a competitor is often relevant research context for more
  * than one of the operator's own channels at once.
  *
- * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** -- same accepted device-local limitation
- * `creative_assets`/`content_proposals` already have (`docs/TECHNICAL_DEBT.md` RISK-52).
+ * **Correction, 2026-09-27 (RISK-52, closed by slice 9H part A):** now IS in
+ * `SNAPSHOT_TRANSFERRED_TABLES` (`src/lib/snapshot/contracts.ts`) -- travels with device handoff,
+ * per the owner's 2026-09-26 decision. This comment previously said the opposite.
  */
 export const researchChannels = sqliteTable("research_channels", {
   id: text("id").primaryKey(),
@@ -928,7 +929,8 @@ export const researchChannels = sqliteTable("research_channels", {
  * "worth copying") -- a raw, sourced observation only. `confidence` is free text for this slice
  * (an enum is deferred until a real consumer needs to filter/sort by it).
  *
- * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** -- same reasoning as `research_channels` above.
+ * **Correction, 2026-09-27 (RISK-52, closed by slice 9H part A):** now IS in
+ * `SNAPSHOT_TRANSFERRED_TABLES`, same as `research_channels` above.
  */
 export const researchEvidence = sqliteTable(
   "research_evidence",
@@ -958,10 +960,10 @@ export const researchEvidence = sqliteTable(
  * this, a known fact" from "we don't know" (spec §27's data-quality vocabulary, the one item
  * actually knowable from a `channels.list` response today).
  *
- * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** -- same accepted device-local limitation
- * `research_channels`/`research_evidence` already have (`docs/TECHNICAL_DEBT.md` RISK-52); the
- * owner's 2026-09-26 decision to eventually transfer this data is a separate, not-yet-scoped
- * engineering choice (whole-copy snapshot vs. continuous CRDT merge), not bundled into this slice.
+ * **Correction, 2026-09-27 (RISK-52, closed by slice 9H part A):** now IS in
+ * `SNAPSHOT_TRANSFERRED_TABLES`, same as `research_channels`/`research_evidence` -- the owner's
+ * 2026-09-26 decision to transfer this data was implemented, not left as a separate engineering
+ * choice, once the omission was found during 9H part A planning.
  */
 export const marketChannelSnapshots = sqliteTable(
   "market_channel_snapshots",

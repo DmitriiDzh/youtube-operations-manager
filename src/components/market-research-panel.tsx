@@ -81,7 +81,10 @@ function formatFieldVelocity(field: FieldVelocity, unit: string, windowDays: num
   const rate = `${perDay} ${unit}/day`;
   switch (field.basis) {
     case "full_window":
-      return `${rate} over the last ${windowDays} days`;
+      // NOT "over the last N days" -- computeSnapshotVelocity's own full_window basis only
+      // guarantees a snapshot exists AT OR BEFORE the window's start, not AT it; the real span used
+      // can be arbitrarily longer than windowDays (found by independent code review).
+      return `${rate} (at least the last ${windowDays} days, possibly longer -- an earlier snapshot exists)`;
     case "partial_window":
       return `${rate} (partial -- covers only the span actually observed, less than ${windowDays} days)`;
     case "stale_latest":
@@ -292,9 +295,14 @@ export function MarketResearchPanel() {
         setEvidence([]);
         setIntelligence(null);
         setIntelligenceError(null);
+        // Not just the state -- the stale-response guard refs too (found by independent code
+        // review), or an in-flight fetch for this now-removed channel can still pass its own guard
+        // and write into state after removal.
+        intelligenceRequestChannelIdRef.current = null;
         setExpandedVideoId(null);
         setVideoHistory([]);
         setVideoHistoryError(null);
+        videoHistoryRequestIdRef.current = null;
       }
       await fetchChannels();
     } finally {
