@@ -7,6 +7,7 @@ import {
   getMarketIntelligenceDailyQuotaBudgetUnits,
   getMarketIntelligenceUnitsSpentSince,
   getMarketTopicById,
+  getMarketTrendCandidateById,
   getResearchChannelById,
   getTopicAssignment,
   insertMarketChannelSnapshot,
@@ -15,6 +16,8 @@ import {
   insertMarketIntelligenceCollectionRun,
   insertMarketTopic,
   insertMarketTopicAssignment,
+  insertMarketTrendCandidate,
+  insertMarketTrendEvidence,
   insertMarketVideoSnapshot,
   insertResearchChannel,
   insertResearchEvidence,
@@ -22,16 +25,20 @@ import {
   listMarketChannelSnapshotsByChannel,
   listMarketDiscoveryCandidates,
   listMarketTopics,
+  listMarketTrendCandidates,
   listMarketVideoSnapshotsByChannel,
   listRecentlyFailedResearchChannelIds,
   listResearchChannels,
   listResearchEvidenceByChannel,
   listTopicsForSubject,
+  listTrendEvidence,
   markResearchChannelAutoCollected,
   releaseResearchChannelCollectionClaim,
   setMarketDiscoveryCandidateStatus,
   setMarketIntelligenceDailyQuotaBudgetUnits,
   touchMarketDiscoveryCandidateLastSeen,
+  touchMarketTrendCandidateLastObservedAt,
+  updateMarketTrendCandidateStatusAndObservedAt,
 } from "@/lib/db";
 import { createIdGenerator } from "../contracts";
 
@@ -77,6 +84,14 @@ export function createMarketIntelligenceStoreAdapter() {
     getTopicAssignment,
     insertMarketTopicAssignment,
     deleteMarketTopicAssignment,
+    // Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- trend candidates, part B.
+    listMarketTrendCandidates,
+    getMarketTrendCandidateById,
+    insertMarketTrendCandidate,
+    updateMarketTrendCandidateStatusAndObservedAt,
+    touchMarketTrendCandidateLastObservedAt,
+    listTrendEvidence,
+    insertMarketTrendEvidence,
   };
 }
 

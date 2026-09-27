@@ -751,7 +751,7 @@ All routes are App Router handlers and require authenticated session user.
   `agent_get_capabilities` above (see `docs/AGENT_OPERATIONS_INTERFACE.md`). Read-only, gated by
   the same NextAuth session check as every other route in this app; not channel-scoped.
 
-### Market Intelligence API (Phase 9 slices 1-4/9A-9C — previously undocumented here, per `AGENTS.md` §H)
+### Market Intelligence API (Phase 9 slices 1-4/9A-9E — previously undocumented here, per `AGENTS.md` §H)
 
 All routes are global (not scoped to one owned channel) -- the research watchlist tracks channels
 the operator does not necessarily own (`docs/ARCHITECTURE.md` §18).
@@ -765,6 +765,13 @@ the operator does not necessarily own (`docs/ARCHITECTURE.md` §18).
 - `GET /api/market-intelligence/discovery-candidates` — list all discovery candidates, newest `lastSeenAt` first
 - `PATCH /api/market-intelligence/discovery-candidates/[channelId]` — `{ status: "watching" | "ignored" | "archived" }` (never `"promoted"`, which has its own route below)
 - `POST /api/market-intelligence/discovery-candidates/[channelId]/promote` — `{ reason }`; adds the candidate to the watchlist and marks it `"promoted"`
+- `GET /api/market-intelligence/topics` (Phase 9 slice 9E, part A) — list topics; `POST` — create one (`{ name }`, rejects a normalized-comparison duplicate)
+- `DELETE /api/market-intelligence/topics/[topicId]` — removes a topic, cascades its own assignments, detaches (never deletes) any trend candidate tagged with it
+- `GET /api/market-intelligence/topics/[topicId]/assignments` — assignments for a topic; `POST` — assign a subject (`{ subjectType: "channel" | "video", subjectId }`; a channel subject must already be on the watchlist, a video subject id is only format-checked)
+- `DELETE /api/market-intelligence/topic-assignments/[assignmentId]` — removes one assignment
+- `GET /api/market-intelligence/trend-candidates` (Phase 9 slice 9E, part B) — list trend candidates; `POST` — create one (`{ title, description?, topicId?, initialEvidence: { evidenceType, referenceId?, description } }`; always starts at status `"emerging"`; creation is rejected without `initialEvidence`, spec §14)
+- `PATCH /api/market-intelligence/trend-candidates/[trendCandidateId]` — `{ status, reason }`; changes lifecycle status, writing `reason` as a `"signal"` evidence row in the same action (a status can never move without a corresponding evidence trail)
+- `GET /api/market-intelligence/trend-candidates/[trendCandidateId]/evidence` — every evidence row for the trend candidate; `POST` — record one (`{ evidenceType, referenceId?, description }`; `referenceId` required for `supporting_channel`/`supporting_video`) without changing status
 
 ### Analytics API (Phase 8 + Studio-Parity S6b, BL-055..059/BL-072 — previously undocumented here)
 

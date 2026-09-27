@@ -53,6 +53,14 @@ export function createMarketIntelligenceCore() {
     getTopicAssignment: store.getTopicAssignment,
     insertMarketTopicAssignment: store.insertMarketTopicAssignment,
     deleteMarketTopicAssignment: store.deleteMarketTopicAssignment,
+    // Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- trend candidates, part B.
+    listMarketTrendCandidates: store.listMarketTrendCandidates,
+    getMarketTrendCandidateById: store.getMarketTrendCandidateById,
+    insertMarketTrendCandidate: store.insertMarketTrendCandidate,
+    updateMarketTrendCandidateStatusAndObservedAt: store.updateMarketTrendCandidateStatusAndObservedAt,
+    touchMarketTrendCandidateLastObservedAt: store.touchMarketTrendCandidateLastObservedAt,
+    listTrendEvidence: store.listTrendEvidence,
+    insertMarketTrendEvidence: store.insertMarketTrendEvidence,
   });
 }
 
@@ -65,5 +73,7 @@ export type {
   MarketDiscoveryCandidate,
   MarketTopic,
   MarketTopicAssignment,
+  MarketTrendCandidate,
+  MarketTrendEvidence,
 } from "./contracts";
 export { DomainError, isDomainError } from "./contracts";

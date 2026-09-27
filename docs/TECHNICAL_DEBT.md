@@ -926,6 +926,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-67 | `runCollectionIfStale`'s per-channel snapshot inserts, its own collection-run audit row, and `markResearchChannelAutoCollected` are 3+ separate non-transactional writes -- a throw partway through can leave orphaned snapshot rows and forces a real quota re-spend on retry, not a free one | none blocking, no data-integrity risk (append-only tables tolerate an orphan row; worst case is wasted quota) | OPEN |
 | RISK-68 | `discoverChannels` has no atomic claim/lock guarding its own budget check (unlike `runCollectionIfStale`'s `claimStaleResearchChannelsForCollection`) -- two concurrent Discover clicks can each pass the same `remaining >= 100` check and together overspend the shared budget | none blocking, narrow (requires two near-simultaneous manual UI actions, not an automatic/background path) | OPEN |
 | RISK-69 | `promoteDiscoveryCandidate`'s not-yet-promoted check and its `research_channels` insert are not wrapped in a transaction -- a double-click/double-tab race surfaces a raw constraint error as a generic 500 instead of the intended `DISCOVERY_CANDIDATE_ALREADY_PROMOTED` | none blocking, cosmetic (no incorrect end state; the first request's promotion still succeeds) | OPEN |
+| RISK-70 | `createTrendCandidate`'s candidate insert and its required initial-evidence write are not wrapped in a transaction -- a crash between them could briefly leave a trend candidate with zero evidence, the exact invariant this slice's schema exists to prevent | none blocking, narrow (requires a mid-request crash) and self-correcting (visible via `listTrendCandidates`, not silently permanent) | OPEN |
 
 ## RISK-53 — `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` — RESOLVED, 2026-09-24
 
@@ -1111,6 +1112,17 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Actual risk:** a double-click or two-tab race on the same candidate's "Promote" action can let both requests pass the not-yet-promoted check; the second's `insertResearchChannel` then hits a raw primary-key constraint violation, which the API route's generic catch-all turns into an unhelpful `internal_error`/500 instead of the intended `DISCOVERY_CANDIDATE_ALREADY_PROMOTED`. Purely cosmetic -- no incorrect end state results (the first request's promotion still succeeds correctly; the candidate is not double-promoted or corrupted).
 - **Why not fixed immediately:** a full fix needs the same kind of atomic claim/transaction wrapping as RISK-68; not proportionate to add speculatively for a rare double-click race with no actual incorrect outcome.
 - **Required remediation (not yet scheduled):** catch the specific constraint-violation shape in `promoteDiscoveryCandidate` and re-map it to `DISCOVERY_CANDIDATE_ALREADY_PROMOTED`, or add a claim/lock.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2), if scheduled.
+- **Status:** OPEN, tracked.
+
+## RISK-70 — `createTrendCandidate`'s candidate insert and its required initial-evidence write are not transactional — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `createTrendCandidate` (Phase 9 slice 9E, part B) -- `insertMarketTrendCandidate`, `insertMarketTrendEvidence`, and `touchMarketTrendCandidateLastObservedAt` are 3 separate, non-transactional `db.ts` writes.
+- **Found during:** own implementation review of Phase 9 slice 9E, part B (same non-transactional-writes pattern already tracked for 9B/9C as RISK-67/68/69).
+- **Actual risk:** if the candidate row insert succeeds but the following evidence insert then throws (e.g. a transient local DB error), the trend candidate briefly exists with zero evidence rows -- the exact invariant this slice's own schema-level `initialEvidence` requirement exists to prevent (spec §14, "do not allow lifecycle labels to exist without supporting observable rules or evidence"). Narrower than it sounds: `listTrendCandidates()` would still surface this orphaned row (nothing hides it), so it is visible/correctable rather than silently permanent, and requires a mid-request crash between two adjacent local writes to occur at all.
+- **Why not fixed immediately:** a full fix needs the same `db.transaction()`-wrapping refactor already deferred for RISK-67, applied consistently across the module rather than one-off for this single action.
+- **Required remediation (not yet scheduled):** wrap `createTrendCandidate`'s writes in a single database transaction once `ServiceDependencies`' shape supports it (same remediation as RISK-67, ideally done together).
 - **Gate(s):** none.
 - **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2), if scheduled.
 - **Status:** OPEN, tracked.

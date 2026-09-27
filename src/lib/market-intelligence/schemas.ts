@@ -377,6 +377,96 @@ export const listTopicsForSubjectInputSchema = z.discriminatedUnion("subjectType
 ]);
 export const listTopicsForSubjectOutputSchema = z.object({ assignments: z.array(marketTopicAssignmentSchema) }).strict();
 
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9E, part B (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- manual/structural trend
+// candidates.
+// ---------------------------------------------------------------------------
+
+const trendCandidateStatusSchema = z.enum(["emerging", "growing", "established", "declining", "stale"]);
+const trendEvidenceTypeSchema = z.enum(["supporting_channel", "supporting_video", "signal"]);
+
+// `referenceId` is required for supporting_channel/supporting_video (a citation needs something to
+// cite) but optional for `signal` (a free-standing observation, e.g. "3 independent channels now
+// show this pattern" -- no single reference id fits).
+function trendEvidenceRequiresReferenceId(input: { evidenceType: string; referenceId?: string }): boolean {
+  return input.evidenceType === "signal" || input.referenceId !== undefined;
+}
+
+export const marketTrendEvidenceSchema = z
+  .object({
+    evidenceId: z.string().min(1),
+    trendCandidateId: z.string().min(1),
+    evidenceType: trendEvidenceTypeSchema,
+    referenceId: z.string().nullable(),
+    description: z.string(),
+    recordedAt: z.string(),
+  })
+  .strict();
+
+// Owner spec §14: "do not allow lifecycle labels to exist without supporting observable rules or
+// evidence" -- a trend candidate can never be created without its own first evidence item.
+export const createTrendCandidateInputSchema = z
+  .object({
+    title: z.string().min(1, "title is required").max(500),
+    description: z.string().max(2000).optional(),
+    topicId: z.string().min(1).optional(),
+    initialEvidence: z
+      .object({
+        evidenceType: trendEvidenceTypeSchema,
+        referenceId: z.string().min(1).optional(),
+        description: z.string().min(1, "description is required").max(2000),
+      })
+      .strict(),
+  })
+  .strict()
+  .refine((input) => trendEvidenceRequiresReferenceId(input.initialEvidence), {
+    message: "referenceId is required for supporting_channel/supporting_video evidence",
+    path: ["initialEvidence", "referenceId"],
+  });
+
+export const marketTrendCandidateSchema = z
+  .object({
+    trendCandidateId: z.string().min(1),
+    title: z.string(),
+    description: z.string().nullable(),
+    topicId: z.string().nullable(),
+    status: trendCandidateStatusSchema,
+    firstObservedAt: z.string(),
+    lastObservedAt: z.string(),
+  })
+  .strict();
+
+export const createTrendCandidateOutputSchema = marketTrendCandidateSchema;
+export const listTrendCandidatesOutputSchema = z.object({ trendCandidates: z.array(marketTrendCandidateSchema) }).strict();
+
+// `reason` is required -- every status change is itself recorded as a `signal` evidence row in the
+// same action (owner spec §14's own requirement, applied to lifecycle CHANGES too, not only to a
+// candidate's initial creation).
+export const updateTrendCandidateStatusInputSchema = z
+  .object({
+    trendCandidateId: z.string().min(1),
+    status: trendCandidateStatusSchema,
+    reason: z.string().min(1, "reason is required").max(2000),
+  })
+  .strict();
+
+export const recordTrendEvidenceInputSchema = z
+  .object({
+    trendCandidateId: z.string().min(1),
+    evidenceType: trendEvidenceTypeSchema,
+    referenceId: z.string().min(1).optional(),
+    description: z.string().min(1, "description is required").max(2000),
+  })
+  .strict()
+  .refine(trendEvidenceRequiresReferenceId, {
+    message: "referenceId is required for supporting_channel/supporting_video evidence",
+    path: ["referenceId"],
+  });
+
+export const recordTrendEvidenceOutputSchema = marketTrendEvidenceSchema;
+export const listTrendEvidenceInputSchema = z.object({ trendCandidateId: z.string().min(1) }).strict();
+export const listTrendEvidenceOutputSchema = z.object({ evidence: z.array(marketTrendEvidenceSchema) }).strict();
+
 // Re-exported so services.ts/adapters never need their own separate import of the shared
 // provenance vocabulary's schema (AGENTS.md §M: market-intelligence is a caller of
 // shared-provenance, not a second owner of it).
@@ -399,3 +489,6 @@ export type PromoteDiscoveryCandidateInput = z.infer<typeof promoteDiscoveryCand
 export type CreateTopicInput = z.infer<typeof createTopicInputSchema>;
 export type AssignTopicInput = z.infer<typeof assignTopicInputSchema>;
 export type ListTopicsForSubjectInput = z.infer<typeof listTopicsForSubjectInputSchema>;
+export type CreateTrendCandidateInput = z.infer<typeof createTrendCandidateInputSchema>;
+export type UpdateTrendCandidateStatusInput = z.infer<typeof updateTrendCandidateStatusInputSchema>;
+export type RecordTrendEvidenceInput = z.infer<typeof recordTrendEvidenceInputSchema>;

@@ -1419,7 +1419,7 @@ content-proposal/artifact registration, a Codex operations-workspace template, a
 review -- **which of these is actually implemented as of any given moment is tracked exclusively
 in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here**.
 
-## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9D
+## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9E
 
 Owner instruction, Telegram 2026-09-26: an explicit assignment to research, plan, and begin
 implementing Phase 9 (`docs/roadmap/FUTURE_PHASES.md` §5) as its own feature branch, superseding
@@ -1550,3 +1550,47 @@ to `research_channels` itself than to `market_channel_snapshots`. Its own run-lo
 -- not about any one watchlisted channel -- cannot satisfy), but both feed the SAME
 `getMarketIntelligenceUnitsSpentSince` sum, since owner decision 2 set one shared daily budget, not
 one per sub-feature.
+
+**Slice 9D (`docs/roadmap/plans/PHASE_9_SLICE_9D_PLAN.md`, 2026-09-27) -- historical intelligence,
+code-complete with no calling code yet (`historical-intelligence.ts`, mirroring 9A's own
+`derived-metrics.ts` at that same stage).** The one architectural point worth recording here: every
+comparison this file makes is **age-normalized by construction**, never a raw lifetime-view
+comparison -- `ChannelVideoBaseline` and the video argument to `assessBreakout` both carry an
+explicit `dayOffset`, and the function refuses the comparison outright when they don't match, rather
+than silently comparing across mismatched ages. This closes a real defect advisor review found
+before merge: an earlier draft computed a channel's baseline and a candidate breakout video from
+raw, un-normalized total view counts, which made every old video look like a "breakout" purely by
+having had more time to accumulate views -- a direct violation of spec §9's "avoid comparing old and
+new videos only by total views" one level up, at the baseline-comparison layer rather than the
+single-video layer the spec text names literally. `computeAgeNormalizedViews` additionally rejects a
+snapshot that is merely the *closest available* candidate for a target day-offset when it falls
+outside a tolerance window (`max(1 day, 25% of dayOffset)`), returning `insufficient_history` rather
+than silently mislabeling, say, a day-30 snapshot as "day 7" data. Real service/API/UI wiring over
+these functions, and live verification against real accumulated multi-day history, are both
+out of scope here (BL-105) -- this slice ships only the pure comparison logic, hand-tested against
+synthetic fixtures derived from the spec, not from the implementation.
+
+**Slice 9E (`docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md`, 2026-09-27) -- manual/structural topic and
+trend model, two parts.** Part A (`market_topics`/`market_topic_assignments`) is a plain manual
+tagging layer: a topic is a name an operator declares by hand, assignable to either a watchlisted
+channel or a bare video id, with no AI classification anywhere in this slice (an explicit exemption
+from owner decision 3's AI-connection gating, since nothing here calls an AI provider at all).
+
+Part B (`market_trend_candidates`/`market_trend_evidence`) is where spec §14's "do not allow
+lifecycle labels to exist without supporting observable rules or evidence" becomes a structural,
+not merely documented, constraint: `createTrendCandidate`'s own input schema requires an
+`initialEvidence` object, so there is no code path in this module that can create a trend candidate
+with zero evidence rows. The same discipline extends to status changes -- `updateTrendCandidateStatus`
+requires a non-empty `reason`, which the service layer writes as a `"signal"`-type evidence row in
+the exact same action as the status change (advisor review, before implementation: "every status
+change should require a reason, written as a signal evidence row in the same action"), so a status
+can never move without a corresponding entry in that trend candidate's own evidence history.
+`lastObservedAt` is deliberately only ever moved by an evidence write (including the evidence row a
+status change itself produces), never by a bare status mutation alone -- there is no code path that
+advances `lastObservedAt` without also appending to the evidence trail that justifies it.
+`market_topic_assignments.subjectId` deliberately carries no foreign key (a single column cannot
+conditionally reference two different tables depending on `subjectType`, and a video has no
+canonical single-row table to reference in the first place); `deleteMarketTopic` cascade-deletes its
+own assignments but only detaches (`topicId` set `NULL`, never deletes) any trend candidate tagged
+with the removed topic, since losing a label should never destroy an otherwise-independent trend
+candidate's own evidence history.

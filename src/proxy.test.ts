@@ -201,3 +201,35 @@ test("proxy gates the market-intelligence topic-assignments route like any other
     await releaseOperationLock(rawSqlClient);
   }
 });
+
+// Phase 9 slice 9E, part B: trend-candidate/evidence routes are real mutations (write trend
+// candidate/evidence rows) -- gated the same way, never exempted.
+test("proxy gates the market-intelligence trend-candidates route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/trend-candidates"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("proxy gates the market-intelligence trend-candidate status-update route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(patchRequest("/api/market-intelligence/trend-candidates/trend-1"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("proxy gates the market-intelligence trend-candidate evidence route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/trend-candidates/trend-1/evidence"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});

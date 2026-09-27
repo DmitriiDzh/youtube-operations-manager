@@ -32,6 +32,8 @@ import {
   type PublicVideoSnapshot,
   type ResolvedCredentials,
   type TopicAssignmentSubjectType,
+  type TrendCandidateStatus,
+  type TrendEvidenceType,
 } from "./contracts";
 
 const VALID_CHANNEL_ID = "UC1234567890123456789012"; // "UC" + 22 chars, matches the schema regex
@@ -106,6 +108,27 @@ type EvidenceRow = {
   collectedAt: Date;
 };
 
+type TrendCandidateRow = {
+  id: string;
+  title: string;
+  description: string | null;
+  topicId: string | null;
+  status: TrendCandidateStatus;
+  firstObservedAt: Date;
+  lastObservedAt: Date;
+  createdVia: string;
+};
+
+type TrendEvidenceRow = {
+  id: string;
+  trendCandidateId: string;
+  evidenceType: TrendEvidenceType;
+  referenceId: string | null;
+  description: string;
+  createdVia: string;
+  recordedAt: Date;
+};
+
 type ChannelSnapshotRow = {
   id: string;
   researchChannelId: string;
@@ -141,6 +164,8 @@ function createFakeStore() {
   const discoveryRuns: DiscoveryRunRow[] = [];
   const topics = new Map<string, TopicRow>();
   const topicAssignments: TopicAssignmentRow[] = [];
+  const trendCandidates = new Map<string, TrendCandidateRow>();
+  const trendEvidence: TrendEvidenceRow[] = [];
   let quotaBudget: number | null = null;
   let nextId = 1;
   let failNextSuccessRunInsert = false;
@@ -158,6 +183,8 @@ function createFakeStore() {
     discoveryCandidates,
     topics,
     topicAssignments,
+    trendCandidates,
+    trendEvidence,
     discoveryRuns,
     setQuotaBudget(units: number | null) {
       quotaBudget = units;
@@ -460,6 +487,64 @@ function createFakeStore() {
     async deleteMarketTopicAssignment(assignmentId: string) {
       const index = topicAssignments.findIndex((row) => row.id === assignmentId);
       if (index >= 0) topicAssignments.splice(index, 1);
+    },
+    // Phase 9 slice 9E -- trend candidates, part B.
+    async listMarketTrendCandidates() {
+      return [...trendCandidates.values()].sort((a, b) => a.firstObservedAt.getTime() - b.firstObservedAt.getTime());
+    },
+    async getMarketTrendCandidateById(trendCandidateId: string) {
+      return trendCandidates.get(trendCandidateId) ?? null;
+    },
+    async insertMarketTrendCandidate(input: {
+      id: string;
+      title: string;
+      description?: string | null;
+      topicId?: string | null;
+      createdVia: string;
+    }) {
+      const now = new Date();
+      trendCandidates.set(input.id, {
+        id: input.id,
+        title: input.title,
+        description: input.description ?? null,
+        topicId: input.topicId ?? null,
+        status: "emerging",
+        firstObservedAt: now,
+        lastObservedAt: now,
+        createdVia: input.createdVia,
+      });
+    },
+    async updateMarketTrendCandidateStatusAndObservedAt(trendCandidateId: string, status: TrendCandidateStatus, at: Date) {
+      const row = trendCandidates.get(trendCandidateId);
+      if (row) {
+        row.status = status;
+        row.lastObservedAt = at;
+      }
+    },
+    async touchMarketTrendCandidateLastObservedAt(trendCandidateId: string, at: Date) {
+      const row = trendCandidates.get(trendCandidateId);
+      if (row) row.lastObservedAt = at;
+    },
+    async listTrendEvidence(trendCandidateId: string) {
+      return trendEvidence.filter((row) => row.trendCandidateId === trendCandidateId);
+    },
+    async insertMarketTrendEvidence(input: {
+      id: string;
+      trendCandidateId: string;
+      evidenceType: TrendEvidenceType;
+      referenceId?: string | null;
+      description: string;
+      createdVia: string;
+    }) {
+      trendEvidence.push({
+        id: input.id,
+        trendCandidateId: input.trendCandidateId,
+        evidenceType: input.evidenceType,
+        referenceId: input.referenceId ?? null,
+        description: input.description,
+        createdVia: input.createdVia,
+        recordedAt: new Date(),
+      });
     },
   };
 }
@@ -1764,5 +1849,209 @@ test("AC-9E-07: listAssignmentsForTopic rejects an unknown topicId with TOPIC_NO
   await assert.rejects(
     () => services.listAssignmentsForTopic({ topicId: "nonexistent-topic" }),
     (error: unknown) => isDomainError(error) && error.code === "TOPIC_NOT_FOUND"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9E, part B -- trend candidates (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md §14,
+// "do not allow lifecycle labels to exist without supporting observable rules or evidence").
+// Acceptance criteria derived from the plan and from advisor's design corrections (recorded in the
+// plan doc) BEFORE this file's own service-layer implementation was written:
+//
+// AC-9E-08: createTrendCandidate rejects an input with no initialEvidence (schema-level -- there is
+//           no code path that creates a trend candidate with zero evidence rows).
+// AC-9E-09: createTrendCandidate rejects supporting_channel/supporting_video evidence with no
+//           referenceId, but accepts a bare "signal" with no referenceId.
+// AC-9E-10: createTrendCandidate rejects an unknown topicId with TOPIC_NOT_FOUND.
+// AC-9E-11: a successful create always starts at status "emerging", writes exactly one evidence
+//           row, and moves lastObservedAt off its raw insert-time default.
+// AC-9E-12: updateTrendCandidateStatus rejects a missing/empty reason before storage (schema).
+// AC-9E-13: updateTrendCandidateStatus rejects an unknown trendCandidateId with
+//           TREND_CANDIDATE_NOT_FOUND.
+// AC-9E-14: a successful status update writes a new "signal" evidence row embedding the reason,
+//           changes status, and bumps lastObservedAt -- status can never move without a
+//           corresponding evidence trail.
+// AC-9E-15: recordTrendEvidence rejects an unknown trendCandidateId with TREND_CANDIDATE_NOT_FOUND,
+//           and a successful call never changes status while still bumping lastObservedAt.
+// AC-9E-16: listTrendCandidates/listTrendEvidence round-trip; listTrendEvidence rejects an unknown
+//           trendCandidateId with TREND_CANDIDATE_NOT_FOUND.
+// ---------------------------------------------------------------------------
+
+test("AC-9E-08: createTrendCandidate rejects an input with no initialEvidence", async () => {
+  const { store, services } = createFixture();
+
+  await assert.rejects(
+    () => services.createTrendCandidate({ title: "AI cover songs" }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+  assert.equal(store.trendCandidates.size, 0);
+});
+
+test("AC-9E-09: createTrendCandidate rejects supporting_channel/supporting_video evidence with no referenceId, but accepts a bare signal with no referenceId", async () => {
+  const { store, services } = createFixture();
+
+  await assert.rejects(
+    () =>
+      services.createTrendCandidate(
+        { title: "AI cover songs", initialEvidence: { evidenceType: "supporting_channel", description: "Seen on a competitor" } },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+  await assert.rejects(
+    () =>
+      services.createTrendCandidate(
+        { title: "AI cover songs", initialEvidence: { evidenceType: "supporting_video", description: "One viral video" } },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+  assert.equal(store.trendCandidates.size, 0);
+
+  const created = await services.createTrendCandidate(
+    { title: "AI cover songs", initialEvidence: { evidenceType: "signal", description: "Noticed rising search volume" } },
+    { createdVia: "web_ui" }
+  );
+  assert.equal(created.title, "AI cover songs");
+});
+
+test("AC-9E-10: createTrendCandidate rejects an unknown topicId with TOPIC_NOT_FOUND", async () => {
+  const { store, services } = createFixture();
+
+  await assert.rejects(
+    () =>
+      services.createTrendCandidate(
+        { title: "AI cover songs", topicId: "nonexistent-topic", initialEvidence: { evidenceType: "signal", description: "x" } },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "TOPIC_NOT_FOUND"
+  );
+  assert.equal(store.trendCandidates.size, 0);
+});
+
+test("AC-9E-11: a successful create starts at status 'emerging', writes exactly one evidence row, and moves lastObservedAt off its raw insert-time default", async () => {
+  const { store, services } = createFixture();
+
+  const created = await services.createTrendCandidate(
+    { title: "AI cover songs", description: "Short-form covers using AI voice cloning", initialEvidence: { evidenceType: "signal", description: "Rising search volume" } },
+    { createdVia: "web_ui" }
+  );
+
+  assert.equal(created.status, "emerging");
+  assert.equal(created.description, "Short-form covers using AI voice cloning");
+  assert.equal(created.topicId, null);
+  assert.equal(store.trendEvidence.length, 1);
+  assert.equal(store.trendEvidence[0].trendCandidateId, created.trendCandidateId);
+  assert.equal(store.trendEvidence[0].description, "Rising search volume");
+  assert.equal(created.lastObservedAt, store.trendCandidates.get(created.trendCandidateId)!.lastObservedAt.toISOString());
+});
+
+test("AC-9E-12: updateTrendCandidateStatus rejects a missing/empty reason before storage", async () => {
+  const { services } = createFixture();
+  const created = await services.createTrendCandidate(
+    { title: "AI cover songs", initialEvidence: { evidenceType: "signal", description: "x" } },
+    { createdVia: "web_ui" }
+  );
+
+  await assert.rejects(
+    () => services.updateTrendCandidateStatus({ trendCandidateId: created.trendCandidateId, status: "growing" }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+  await assert.rejects(
+    () =>
+      services.updateTrendCandidateStatus(
+        { trendCandidateId: created.trendCandidateId, status: "growing", reason: "" },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+});
+
+test("AC-9E-13: updateTrendCandidateStatus rejects an unknown trendCandidateId with TREND_CANDIDATE_NOT_FOUND", async () => {
+  const { services } = createFixture();
+  await assert.rejects(
+    () =>
+      services.updateTrendCandidateStatus(
+        { trendCandidateId: "nonexistent-trend", status: "growing", reason: "Picking up" },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "TREND_CANDIDATE_NOT_FOUND"
+  );
+});
+
+test("AC-9E-14: a successful status update writes a signal evidence row embedding the reason, changes status, and bumps lastObservedAt", async () => {
+  const { store, services, setNow } = createFixture({ now: new Date("2026-01-01T00:00:00.000Z") });
+  const created = await services.createTrendCandidate(
+    { title: "AI cover songs", initialEvidence: { evidenceType: "signal", description: "Rising search volume" } },
+    { createdVia: "web_ui" }
+  );
+  const firstObservedAt = created.lastObservedAt;
+  setNow(new Date("2026-01-02T00:00:00.000Z"));
+
+  const updated = await services.updateTrendCandidateStatus(
+    { trendCandidateId: created.trendCandidateId, status: "growing", reason: "Three more channels covering it this week" },
+    { createdVia: "web_ui" }
+  );
+
+  assert.equal(updated.status, "growing");
+  assert.notEqual(updated.lastObservedAt, firstObservedAt);
+  assert.equal(store.trendEvidence.length, 2);
+  const signalRow = store.trendEvidence[1];
+  assert.equal(signalRow.evidenceType, "signal");
+  assert.match(signalRow.description, /Three more channels covering it this week/);
+  assert.match(signalRow.description, /growing/);
+});
+
+test("AC-9E-15: recordTrendEvidence rejects an unknown trendCandidateId with TREND_CANDIDATE_NOT_FOUND, and a successful call never changes status while still bumping lastObservedAt", async () => {
+  const { store, services, setNow } = createFixture({ now: new Date("2026-01-01T00:00:00.000Z") });
+
+  await assert.rejects(
+    () =>
+      services.recordTrendEvidence(
+        { trendCandidateId: "nonexistent-trend", evidenceType: "signal", description: "x" },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "TREND_CANDIDATE_NOT_FOUND"
+  );
+
+  const created = await services.createTrendCandidate(
+    { title: "AI cover songs", initialEvidence: { evidenceType: "signal", description: "Rising search volume" } },
+    { createdVia: "web_ui" }
+  );
+  const firstObservedAt = created.lastObservedAt;
+  setNow(new Date("2026-01-02T00:00:00.000Z"));
+
+  const evidence = await services.recordTrendEvidence(
+    { trendCandidateId: created.trendCandidateId, evidenceType: "supporting_video", referenceId: "dQw4w9WgXcQ", description: "Another example" },
+    { createdVia: "web_ui" }
+  );
+
+  assert.equal(evidence.evidenceType, "supporting_video");
+  assert.equal(evidence.referenceId, "dQw4w9WgXcQ");
+  assert.equal(store.trendCandidates.get(created.trendCandidateId)!.status, "emerging");
+  assert.notEqual(store.trendCandidates.get(created.trendCandidateId)!.lastObservedAt.toISOString(), firstObservedAt);
+});
+
+test("AC-9E-16: listTrendCandidates/listTrendEvidence round-trip; listTrendEvidence rejects an unknown trendCandidateId with TREND_CANDIDATE_NOT_FOUND", async () => {
+  const { services } = createFixture();
+  const created = await services.createTrendCandidate(
+    { title: "AI cover songs", initialEvidence: { evidenceType: "signal", description: "Rising search volume" } },
+    { createdVia: "web_ui" }
+  );
+  await services.recordTrendEvidence(
+    { trendCandidateId: created.trendCandidateId, evidenceType: "signal", description: "Another data point" },
+    { createdVia: "web_ui" }
+  );
+
+  const list = await services.listTrendCandidates();
+  assert.equal(list.trendCandidates.length, 1);
+  assert.equal(list.trendCandidates[0].trendCandidateId, created.trendCandidateId);
+
+  const evidenceList = await services.listTrendEvidence({ trendCandidateId: created.trendCandidateId });
+  assert.equal(evidenceList.evidence.length, 2);
+
+  await assert.rejects(
+    () => services.listTrendEvidence({ trendCandidateId: "nonexistent-trend" }),
+    (error: unknown) => isDomainError(error) && error.code === "TREND_CANDIDATE_NOT_FOUND"
   );
 });

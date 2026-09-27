@@ -6,6 +6,8 @@ import {
   type MarketDiscoveryCandidate,
   type MarketTopic,
   type MarketTopicAssignment,
+  type MarketTrendCandidate,
+  type MarketTrendEvidence,
   type MarketVideoSnapshot,
   type PublicChannelSearchResult,
   type PublicChannelSnapshot,
@@ -14,6 +16,8 @@ import {
   type ResearchEvidence,
   type ResolvedCredentials,
   type TopicAssignmentSubjectType,
+  type TrendCandidateStatus,
+  type TrendEvidenceType,
 } from "./contracts";
 import {
   addToWatchlistInputSchema,
@@ -24,6 +28,8 @@ import {
   captureChannelSnapshotOutputSchema,
   createTopicInputSchema,
   createTopicOutputSchema,
+  createTrendCandidateInputSchema,
+  createTrendCandidateOutputSchema,
   deleteTopicInputSchema,
   discoverChannelsInputSchema,
   discoverChannelsOutputSchema,
@@ -42,10 +48,14 @@ import {
   listTopicsForSubjectInputSchema,
   listTopicsForSubjectOutputSchema,
   listTopicsOutputSchema,
+  listTrendCandidatesOutputSchema,
+  listTrendEvidenceInputSchema,
+  listTrendEvidenceOutputSchema,
   listVideoSnapshotsInputSchema,
   listVideoSnapshotsOutputSchema,
   listWatchlistOutputSchema,
   marketDiscoveryCandidateSchema,
+  marketTrendCandidateSchema,
   parseWithSchema,
   promoteDiscoveryCandidateInputSchema,
   promoteDiscoveryCandidateOutputSchema,
@@ -53,6 +63,8 @@ import {
   recordChannelSnapshotOutputSchema,
   recordEvidenceInputSchema,
   recordEvidenceOutputSchema,
+  recordTrendEvidenceInputSchema,
+  recordTrendEvidenceOutputSchema,
   recordVideoSnapshotInputSchema,
   recordVideoSnapshotOutputSchema,
   removeFromWatchlistInputSchema,
@@ -60,6 +72,7 @@ import {
   runCollectionIfStaleInputSchema,
   runCollectionIfStaleOutputSchema,
   updateDiscoveryCandidateStatusInputSchema,
+  updateTrendCandidateStatusInputSchema,
 } from "./schemas";
 import type { CreatedVia } from "@/lib/shared-provenance";
 
@@ -253,6 +266,50 @@ function normalizeTopicNameForComparison(name: string): string {
   return name.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
+type StoredMarketTrendCandidateForService = {
+  id: string;
+  title: string;
+  description: string | null;
+  topicId: string | null;
+  status: TrendCandidateStatus;
+  firstObservedAt: Date;
+  lastObservedAt: Date;
+  createdVia: string;
+};
+
+function toMarketTrendCandidate(row: StoredMarketTrendCandidateForService): MarketTrendCandidate {
+  return {
+    trendCandidateId: row.id,
+    title: row.title,
+    description: row.description,
+    topicId: row.topicId,
+    status: row.status,
+    firstObservedAt: row.firstObservedAt.toISOString(),
+    lastObservedAt: row.lastObservedAt.toISOString(),
+  };
+}
+
+type StoredMarketTrendEvidenceForService = {
+  id: string;
+  trendCandidateId: string;
+  evidenceType: TrendEvidenceType;
+  referenceId: string | null;
+  description: string;
+  createdVia: string;
+  recordedAt: Date;
+};
+
+function toMarketTrendEvidence(row: StoredMarketTrendEvidenceForService): MarketTrendEvidence {
+  return {
+    evidenceId: row.id,
+    trendCandidateId: row.trendCandidateId,
+    evidenceType: row.evidenceType,
+    referenceId: row.referenceId,
+    description: row.description,
+    recordedAt: row.recordedAt.toISOString(),
+  };
+}
+
 type ServiceDependencies = {
   idGenerator(): string;
   insertResearchChannel(input: {
@@ -395,6 +452,31 @@ type ServiceDependencies = {
     createdVia: string;
   }): Promise<void>;
   deleteMarketTopicAssignment(assignmentId: string): Promise<void>;
+  // Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- trend candidates, part B.
+  listMarketTrendCandidates(): Promise<StoredMarketTrendCandidateForService[]>;
+  getMarketTrendCandidateById(trendCandidateId: string): Promise<StoredMarketTrendCandidateForService | null>;
+  insertMarketTrendCandidate(input: {
+    id: string;
+    title: string;
+    description?: string | null;
+    topicId?: string | null;
+    createdVia: string;
+  }): Promise<void>;
+  updateMarketTrendCandidateStatusAndObservedAt(
+    trendCandidateId: string,
+    status: TrendCandidateStatus,
+    at: Date
+  ): Promise<void>;
+  touchMarketTrendCandidateLastObservedAt(trendCandidateId: string, at: Date): Promise<void>;
+  listTrendEvidence(trendCandidateId: string): Promise<StoredMarketTrendEvidenceForService[]>;
+  insertMarketTrendEvidence(input: {
+    id: string;
+    trendCandidateId: string;
+    evidenceType: TrendEvidenceType;
+    referenceId?: string | null;
+    description: string;
+    createdVia: string;
+  }): Promise<void>;
 };
 
 // Phase 9 slice 9B -- real YouTube Data API v3 quota costs (`channels.list`/`playlistItems.list`/
@@ -1500,6 +1582,168 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         listTopicsForSubjectOutputSchema,
         { assignments: rows.map(toMarketTopicAssignment) },
         "list topics for subject output"
+      );
+    },
+
+    /**
+     * Creates a new manually-declared trend candidate (Phase 9 slice 9E, part B; spec §14: "do not
+     * allow lifecycle labels to exist without supporting observable rules or evidence"). Requires
+     * at least one evidence item up front (enforced by `createTrendCandidateInputSchema`'s own
+     * shape, not re-checked here) -- there is no code path that creates a trend candidate with zero
+     * evidence rows. Always starts at status "emerging" (`insertMarketTrendCandidate`'s own db.ts
+     * contract, not overridable from this input).
+     */
+    async createTrendCandidate(
+      input: unknown,
+      callOrigin: { createdVia: CreatedVia }
+    ): Promise<MarketTrendCandidate> {
+      const parsedInput = parseWithSchema(createTrendCandidateInputSchema, input, "create trend candidate input");
+
+      if (parsedInput.topicId) {
+        const topic = await deps.getMarketTopicById(parsedInput.topicId);
+        if (!topic) {
+          throw new DomainError({
+            code: "TOPIC_NOT_FOUND",
+            message: "No topic with this id",
+            details: { topicId: parsedInput.topicId },
+          });
+        }
+      }
+
+      const id = deps.idGenerator();
+      await deps.insertMarketTrendCandidate({
+        id,
+        title: parsedInput.title,
+        description: parsedInput.description ?? null,
+        topicId: parsedInput.topicId ?? null,
+        createdVia: callOrigin.createdVia,
+      });
+
+      await deps.insertMarketTrendEvidence({
+        id: deps.idGenerator(),
+        trendCandidateId: id,
+        evidenceType: parsedInput.initialEvidence.evidenceType,
+        referenceId: parsedInput.initialEvidence.referenceId ?? null,
+        description: parsedInput.initialEvidence.description,
+        createdVia: callOrigin.createdVia,
+      });
+      // The evidence write above is this candidate's first observation -- moves lastObservedAt off
+      // its insert-time default so it reflects the evidence, not just row creation.
+      await deps.touchMarketTrendCandidateLastObservedAt(id, deps.clock.now());
+
+      const row = (await deps.getMarketTrendCandidateById(id))!;
+      return parseWithSchema(createTrendCandidateOutputSchema, toMarketTrendCandidate(row), "create trend candidate output");
+    },
+
+    async listTrendCandidates(): Promise<{ trendCandidates: MarketTrendCandidate[] }> {
+      const rows = await deps.listMarketTrendCandidates();
+      return parseWithSchema(
+        listTrendCandidatesOutputSchema,
+        { trendCandidates: rows.map(toMarketTrendCandidate) },
+        "list trend candidates output"
+      );
+    },
+
+    /**
+     * Changes a trend candidate's lifecycle status. Requires a `reason` (schema-enforced), which is
+     * written as a `signal`-type evidence row in this SAME action (advisor review, before
+     * implementation: "every status change should require a reason, written as a signal evidence
+     * row in the same action") -- a status can never move without a corresponding evidence trail
+     * explaining why.
+     */
+    async updateTrendCandidateStatus(
+      input: unknown,
+      callOrigin: { createdVia: CreatedVia }
+    ): Promise<MarketTrendCandidate> {
+      const parsedInput = parseWithSchema(
+        updateTrendCandidateStatusInputSchema,
+        input,
+        "update trend candidate status input"
+      );
+
+      const candidate = await deps.getMarketTrendCandidateById(parsedInput.trendCandidateId);
+      if (!candidate) {
+        throw new DomainError({
+          code: "TREND_CANDIDATE_NOT_FOUND",
+          message: "No trend candidate with this id",
+          details: { trendCandidateId: parsedInput.trendCandidateId },
+        });
+      }
+
+      await deps.insertMarketTrendEvidence({
+        id: deps.idGenerator(),
+        trendCandidateId: parsedInput.trendCandidateId,
+        evidenceType: "signal",
+        description: `Status changed to "${parsedInput.status}": ${parsedInput.reason}`,
+        createdVia: callOrigin.createdVia,
+      });
+      // Single combined write for the status move and its observation timestamp (rather than a
+      // separate touch call) -- advisor review, before implementation: "move lastObservedAt on
+      // evidence writes, not on a bare status change alone," and a status change here is never
+      // "bare" since the evidence row above always accompanies it.
+      await deps.updateMarketTrendCandidateStatusAndObservedAt(
+        parsedInput.trendCandidateId,
+        parsedInput.status,
+        deps.clock.now()
+      );
+
+      const row = (await deps.getMarketTrendCandidateById(parsedInput.trendCandidateId))!;
+      return parseWithSchema(marketTrendCandidateSchema, toMarketTrendCandidate(row), "update trend candidate status output");
+    },
+
+    /**
+     * Records an additional observation against an existing trend candidate without changing its
+     * status (e.g. another supporting channel/video, or a plain signal note).
+     */
+    async recordTrendEvidence(
+      input: unknown,
+      callOrigin: { createdVia: CreatedVia }
+    ): Promise<MarketTrendEvidence> {
+      const parsedInput = parseWithSchema(recordTrendEvidenceInputSchema, input, "record trend evidence input");
+
+      const candidate = await deps.getMarketTrendCandidateById(parsedInput.trendCandidateId);
+      if (!candidate) {
+        throw new DomainError({
+          code: "TREND_CANDIDATE_NOT_FOUND",
+          message: "No trend candidate with this id",
+          details: { trendCandidateId: parsedInput.trendCandidateId },
+        });
+      }
+
+      const id = deps.idGenerator();
+      await deps.insertMarketTrendEvidence({
+        id,
+        trendCandidateId: parsedInput.trendCandidateId,
+        evidenceType: parsedInput.evidenceType,
+        referenceId: parsedInput.referenceId ?? null,
+        description: parsedInput.description,
+        createdVia: callOrigin.createdVia,
+      });
+      await deps.touchMarketTrendCandidateLastObservedAt(parsedInput.trendCandidateId, deps.clock.now());
+
+      const rows = await deps.listTrendEvidence(parsedInput.trendCandidateId);
+      // Guaranteed to exist -- this call itself just inserted it.
+      const row = rows.find((candidate) => candidate.id === id)!;
+      return parseWithSchema(recordTrendEvidenceOutputSchema, toMarketTrendEvidence(row), "record trend evidence output");
+    },
+
+    async listTrendEvidence(input: unknown): Promise<{ evidence: MarketTrendEvidence[] }> {
+      const parsedInput = parseWithSchema(listTrendEvidenceInputSchema, input, "list trend evidence input");
+
+      const candidate = await deps.getMarketTrendCandidateById(parsedInput.trendCandidateId);
+      if (!candidate) {
+        throw new DomainError({
+          code: "TREND_CANDIDATE_NOT_FOUND",
+          message: "No trend candidate with this id",
+          details: { trendCandidateId: parsedInput.trendCandidateId },
+        });
+      }
+
+      const rows = await deps.listTrendEvidence(parsedInput.trendCandidateId);
+      return parseWithSchema(
+        listTrendEvidenceOutputSchema,
+        { evidence: rows.map(toMarketTrendEvidence) },
+        "list trend evidence output"
       );
     },
   };
