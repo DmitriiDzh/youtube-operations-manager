@@ -73,6 +73,22 @@ import {
   touchMarketDiscoveryCandidateLastSeen,
   setMarketDiscoveryCandidateStatus,
   insertMarketDiscoveryRun,
+  marketTopicAssignments,
+  listMarketTopics,
+  getMarketTopicById,
+  insertMarketTopic,
+  deleteMarketTopic,
+  listAssignmentsForTopic,
+  listTopicsForSubject,
+  insertMarketTopicAssignment,
+  deleteMarketTopicAssignment,
+  listMarketTrendCandidates,
+  getMarketTrendCandidateById,
+  insertMarketTrendCandidate,
+  updateMarketTrendCandidateStatusAndObservedAt,
+  touchMarketTrendCandidateLastObservedAt,
+  listTrendEvidence,
+  insertMarketTrendEvidence,
 } from "./db";
 import { readSchemaVersion } from "@/lib/schema-versioning";
 import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
@@ -151,6 +167,10 @@ test("initializeDatabaseSchema: a fresh database ends stamped at SCHEMA_CURRENT_
     assert.equal(await tableExists(client, "market_intelligence_collection_runs"), true);
     assert.equal(await tableExists(client, "market_discovery_candidates"), true);
     assert.equal(await tableExists(client, "market_discovery_runs"), true);
+    assert.equal(await tableExists(client, "market_topics"), true);
+    assert.equal(await tableExists(client, "market_topic_assignments"), true);
+    assert.equal(await tableExists(client, "market_trend_candidates"), true);
+    assert.equal(await tableExists(client, "market_trend_evidence"), true);
   }));
 
 // Phase 7 slice D (docs/AGENT_OPERATIONS_INTERFACE.md §4c).
@@ -1089,6 +1109,15 @@ test("initializeDatabaseSchema: an existing pre-versioning database (baseline ta
       true,
       "a later migration (v25) must still apply correctly on the pre-versioning re-apply path"
     );
+    // Phase 9 slice 9E -- a later CREATE-TABLE migration (v26) must also survive the
+    // pre-versioning re-apply path, same as v22/v23/v24/v25's own assertions above.
+    for (const table of ["market_topics", "market_topic_assignments", "market_trend_candidates", "market_trend_evidence"]) {
+      assert.equal(
+        await tableExists(client, table),
+        true,
+        `a later migration (v26) must still apply correctly on the pre-versioning re-apply path (${table})`
+      );
+    }
   }));
 
 // Phase 7 slice K (owner spec §10 -- AC-DUR-01). `upsertVideos`/`listStoredVideosByChannel`
@@ -1602,6 +1631,144 @@ test("getMarketIntelligenceUnitsSpentSince sums market_intelligence_collection_r
     const [discoveryRunRow] = await isolatedDb.select().from(marketDiscoveryRuns).where(eq(marketDiscoveryRuns.status, "success"));
     assert.equal(discoveryRunRow.candidatesFound, 5, "candidatesFound must round-trip, never fabricated");
     assert.equal(discoveryRunRow.candidatesNew, 2);
+  }));
+
+// Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- topics/assignments round-trip.
+test("market_topics/market_topic_assignments round-trip through the real Drizzle schema; the unique index rejects a duplicate (topic, subject) pair", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_TOPIC_SUBJECT00000", reason: "r", createdVia: "web_ui" });
+
+    await insertMarketTopic({ id: "topic-1", name: "Night Jazz Bar", createdVia: "web_ui" }, isolatedDb);
+    const topic = await getMarketTopicById("topic-1", isolatedDb);
+    assert.equal(topic?.name, "Night Jazz Bar");
+
+    await insertMarketTopicAssignment(
+      { id: "assign-1", topicId: "topic-1", subjectType: "channel", subjectId: "UC_TOPIC_SUBJECT00000", source: "manual", createdVia: "web_ui" },
+      isolatedDb
+    );
+    const assignments = await listAssignmentsForTopic("topic-1", isolatedDb);
+    assert.equal(assignments.length, 1);
+    assert.equal(assignments[0].subjectType, "channel");
+
+    const forSubject = await listTopicsForSubject("channel", "UC_TOPIC_SUBJECT00000", isolatedDb);
+    assert.equal(forSubject.length, 1);
+
+    await assert.rejects(
+      () =>
+        insertMarketTopicAssignment(
+          { id: "assign-2", topicId: "topic-1", subjectType: "channel", subjectId: "UC_TOPIC_SUBJECT00000", source: "manual", createdVia: "web_ui" },
+          isolatedDb
+        ),
+      "the real UNIQUE(topic_id, subject_type, subject_id) index must reject an exact-duplicate pair"
+    );
+  }));
+
+test("deleteResearchChannel cascade-deletes channel-type market_topic_assignments for the same channel", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_TOPIC_CASCADE00000", reason: "r", createdVia: "web_ui" });
+    await insertMarketTopic({ id: "topic-1", name: "Some Topic", createdVia: "web_ui" }, isolatedDb);
+    await insertMarketTopicAssignment(
+      { id: "assign-1", topicId: "topic-1", subjectType: "channel", subjectId: "UC_TOPIC_CASCADE00000", source: "manual", createdVia: "web_ui" },
+      isolatedDb
+    );
+
+    await deleteResearchChannel("UC_TOPIC_CASCADE00000", isolatedDb);
+
+    const remaining = await isolatedDb.select().from(marketTopicAssignments);
+    assert.equal(remaining.length, 0, "the channel-type assignment must be cascade-deleted, never orphaned");
+    const topicStillExists = await getMarketTopicById("topic-1", isolatedDb);
+    assert.ok(topicStillExists, "the topic itself must survive -- only the assignment is scoped to the deleted channel");
+  }));
+
+test("deleteMarketTopic cascades its own assignments and detaches (never deletes) trend candidates tagged with it", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_TOPIC_DELETE000000", reason: "r", createdVia: "web_ui" });
+    await insertMarketTopic({ id: "topic-1", name: "Some Topic", createdVia: "web_ui" }, isolatedDb);
+    await insertMarketTopicAssignment(
+      { id: "assign-1", topicId: "topic-1", subjectType: "channel", subjectId: "UC_TOPIC_DELETE000000", source: "manual", createdVia: "web_ui" },
+      isolatedDb
+    );
+    await insertMarketTrendCandidate({ id: "trend-1", title: "A Trend", topicId: "topic-1", createdVia: "web_ui" }, isolatedDb);
+
+    await deleteMarketTopic("topic-1", isolatedDb);
+
+    const remainingAssignments = await isolatedDb.select().from(marketTopicAssignments);
+    assert.equal(remainingAssignments.length, 0);
+    const trend = await getMarketTrendCandidateById("trend-1", isolatedDb);
+    assert.ok(trend, "the trend candidate itself must survive topic deletion");
+    assert.equal(trend?.topicId, null, "its topicId must be detached (set null), never left dangling");
+  }));
+
+test("deleteMarketTopicAssignment removes exactly one assignment", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_TOPIC_REMOVE000000", reason: "r", createdVia: "web_ui" });
+    await insertMarketTopic({ id: "topic-1", name: "Some Topic", createdVia: "web_ui" }, isolatedDb);
+    await insertMarketTopicAssignment(
+      { id: "assign-1", topicId: "topic-1", subjectType: "channel", subjectId: "UC_TOPIC_REMOVE000000", source: "manual", createdVia: "web_ui" },
+      isolatedDb
+    );
+
+    await deleteMarketTopicAssignment("assign-1", isolatedDb);
+    assert.equal((await listAssignmentsForTopic("topic-1", isolatedDb)).length, 0);
+    const topicStillExists = await getMarketTopicById("topic-1", isolatedDb);
+    assert.ok(topicStillExists);
+  }));
+
+test("listMarketTopics orders by name; the real UNIQUE(name) index rejects an exact-duplicate topic name", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertMarketTopic({ id: "topic-b", name: "Beta", createdVia: "web_ui" }, isolatedDb);
+    await insertMarketTopic({ id: "topic-a", name: "Alpha", createdVia: "web_ui" }, isolatedDb);
+
+    const topics = await listMarketTopics(isolatedDb);
+    assert.deepEqual(topics.map((t) => t.name), ["Alpha", "Beta"]);
+
+    await assert.rejects(() => insertMarketTopic({ id: "topic-c", name: "Alpha", createdVia: "web_ui" }, isolatedDb));
+  }));
+
+// Phase 9 slice 9E -- trend candidates/evidence round-trip.
+test("market_trend_candidates/market_trend_evidence round-trip through the real Drizzle schema; new candidates start as 'emerging'", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await insertMarketTrendCandidate({ id: "trend-1", title: "Retro Cocktail Lounge", description: "desc", createdVia: "web_ui" }, isolatedDb);
+    const candidate = await getMarketTrendCandidateById("trend-1", isolatedDb);
+    assert.equal(candidate?.status, "emerging", "every new trend candidate must start as 'emerging'");
+    assert.equal(candidate?.topicId, null);
+
+    await insertMarketTrendEvidence(
+      { id: "evidence-1", trendCandidateId: "trend-1", evidenceType: "supporting_channel", referenceId: "UC_SOME_CHANNEL0000000", description: "This channel shows the pattern", createdVia: "web_ui" },
+      isolatedDb
+    );
+    const evidence = await listTrendEvidence("trend-1", isolatedDb);
+    assert.equal(evidence.length, 1);
+    assert.equal(evidence[0].evidenceType, "supporting_channel");
+    assert.equal(evidence[0].referenceId, "UC_SOME_CHANNEL0000000");
+
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    await updateMarketTrendCandidateStatusAndObservedAt("trend-1", "growing", now, isolatedDb);
+    const updated = await getMarketTrendCandidateById("trend-1", isolatedDb);
+    assert.equal(updated?.status, "growing");
+    assert.equal(updated?.lastObservedAt.getTime(), now.getTime());
+
+    const laterAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    await touchMarketTrendCandidateLastObservedAt("trend-1", laterAt, isolatedDb);
+    const touched = await getMarketTrendCandidateById("trend-1", isolatedDb);
+    assert.equal(touched?.status, "growing", "touching lastObservedAt alone must never change status");
+    assert.equal(touched?.lastObservedAt.getTime(), laterAt.getTime());
+
+    const list = await listMarketTrendCandidates(isolatedDb);
+    assert.equal(list.length, 1);
   }));
 
 // AC-SCHEMA-04

@@ -1100,6 +1100,96 @@ export const marketDiscoveryRuns = sqliteTable(
   (table) => [index("market_discovery_runs_ran_at_idx").on(table.ranAt)]
 );
 
+/**
+ * Phase 9 slice 9E (`docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md`) -- a flat, operator-defined list
+ * of topic labels (owner spec §13). `name` is stored as the operator typed it (display-preserving),
+ * with a SERVICE-LEVEL normalized-uniqueness check (trim/collapse whitespace/lowercase) run before
+ * insert -- the raw SQL `UNIQUE` below is a defense-in-depth backstop for an exact-string race, not
+ * the primary duplicate-prevention mechanism (which needs case-insensitive/whitespace-normalized
+ * comparison this column's own collation cannot express).
+ */
+export const marketTopics = sqliteTable("market_topics", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  createdVia: text("created_via").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+/**
+ * Links a topic to a watchlisted channel or a video (owner spec §13's "manual associations").
+ * `subjectId` is NOT a foreign key -- a single column can't conditionally reference two different
+ * tables depending on `subjectType`, and a video has no canonical one-row-per-video table to
+ * reference anyway (9A's `market_video_snapshots` is an append-only series). A channel-type
+ * assignment is instead cascade-deleted explicitly inside `deleteResearchChannel` below, the same
+ * way every other channel-scoped table already is.
+ */
+export const marketTopicAssignments = sqliteTable(
+  "market_topic_assignments",
+  {
+    id: text("id").primaryKey(),
+    topicId: text("topic_id")
+      .notNull()
+      .references(() => marketTopics.id),
+    subjectType: text("subject_type", { enum: ["channel", "video"] }).notNull(),
+    subjectId: text("subject_id").notNull(),
+    source: text("source", { enum: ["manual", "ai_assisted"] }).notNull(),
+    createdVia: text("created_via").notNull(),
+    assignedAt: integer("assigned_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    index("market_topic_assignments_topic_id_idx").on(table.topicId),
+    index("market_topic_assignments_subject_idx").on(table.subjectType, table.subjectId),
+    uniqueIndex("market_topic_assignments_unique_idx").on(table.topicId, table.subjectType, table.subjectId),
+  ]
+);
+
+/**
+ * Owner spec §14-16 -- entirely operator-created and evidenced by hand this slice (no automatic
+ * cross-referencing of 9D's own breakout/emerging signals yet, `docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md`
+ * §1). `topicId` is nullable -- a trend need not be topic-tagged yet.
+ */
+export const marketTrendCandidates = sqliteTable("market_trend_candidates", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(),
+  description: text("description"),
+  topicId: text("topic_id").references(() => marketTopics.id),
+  status: text("status", { enum: ["emerging", "growing", "established", "declining", "stale"] }).notNull(),
+  firstObservedAt: integer("first_observed_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  lastObservedAt: integer("last_observed_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  createdVia: text("created_via").notNull(),
+});
+
+/**
+ * Purpose-built for this slice, NOT a reuse of `shared-provenance`'s `EvidenceReference` -- that
+ * shape is for citing an EXTERNAL url-based source (an agent's own outside research), a mismatch
+ * for "this trend is supported by these N of our own already-tracked channels/videos."
+ */
+export const marketTrendEvidence = sqliteTable(
+  "market_trend_evidence",
+  {
+    id: text("id").primaryKey(),
+    trendCandidateId: text("trend_candidate_id")
+      .notNull()
+      .references(() => marketTrendCandidates.id),
+    evidenceType: text("evidence_type", { enum: ["supporting_channel", "supporting_video", "signal"] }).notNull(),
+    referenceId: text("reference_id"),
+    description: text("description").notNull(),
+    createdVia: text("created_via").notNull(),
+    recordedAt: integer("recorded_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [index("market_trend_evidence_trend_candidate_id_idx").on(table.trendCandidateId)]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -1602,6 +1692,61 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
       await client.execute(
         "CREATE INDEX IF NOT EXISTS market_discovery_runs_ran_at_idx ON market_discovery_runs(ran_at)"
+      );
+    },
+  },
+  {
+    version: 26,
+    description:
+      "market_topics + market_topic_assignments + market_trend_candidates + market_trend_evidence -- Phase 9 slice 9E topic model and manual/structural trend candidates (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_topics (" +
+          "id TEXT PRIMARY KEY, " +
+          "name TEXT NOT NULL UNIQUE, " +
+          "created_via TEXT NOT NULL, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_topic_assignments (" +
+          "id TEXT PRIMARY KEY, " +
+          "topic_id TEXT NOT NULL REFERENCES market_topics(id), " +
+          "subject_type TEXT NOT NULL, " +
+          "subject_id TEXT NOT NULL, " +
+          "source TEXT NOT NULL, " +
+          "created_via TEXT NOT NULL, " +
+          "assigned_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "UNIQUE(topic_id, subject_type, subject_id))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_topic_assignments_topic_id_idx ON market_topic_assignments(topic_id)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_topic_assignments_subject_idx ON market_topic_assignments(subject_type, subject_id)"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_trend_candidates (" +
+          "id TEXT PRIMARY KEY, " +
+          "title TEXT NOT NULL, " +
+          "description TEXT, " +
+          "topic_id TEXT REFERENCES market_topics(id), " +
+          "status TEXT NOT NULL, " +
+          "first_observed_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "last_observed_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "created_via TEXT NOT NULL)"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_trend_evidence (" +
+          "id TEXT PRIMARY KEY, " +
+          "trend_candidate_id TEXT NOT NULL REFERENCES market_trend_candidates(id), " +
+          "evidence_type TEXT NOT NULL, " +
+          "reference_id TEXT, " +
+          "description TEXT NOT NULL, " +
+          "created_via TEXT NOT NULL, " +
+          "recorded_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_trend_evidence_trend_candidate_id_idx ON market_trend_evidence(trend_candidate_id)"
       );
     },
   },
@@ -4609,6 +4754,15 @@ export async function deleteResearchChannel(id: string, database: AppDb = db): P
     await tx.delete(marketVideoSnapshots).where(eq(marketVideoSnapshots.researchChannelId, id));
     // Phase 9 slice 9B -- widened for the same FK-ordering reason as the two tables above.
     await tx.delete(marketIntelligenceCollectionRuns).where(eq(marketIntelligenceCollectionRuns.researchChannelId, id));
+    // Phase 9 slice 9E -- market_topic_assignments carries no FK for subjectId (see its own doc
+    // comment), so this delete would not fail without this line -- cascaded anyway for data
+    // hygiene, the same discipline every other channel-scoped table here already follows (found
+    // necessary by advisor review: an orphaned assignment row pointing at a deleted channel id is
+    // exactly the kind of stale reference this codebase's own cascade-delete convention exists to
+    // prevent).
+    await tx
+      .delete(marketTopicAssignments)
+      .where(and(eq(marketTopicAssignments.subjectType, "channel"), eq(marketTopicAssignments.subjectId, id)));
     await tx.delete(researchChannels).where(eq(researchChannels.id, id));
   });
 }
@@ -4996,5 +5150,225 @@ export async function insertMarketDiscoveryRun(
     candidatesNew: input.candidatesNew ?? null,
     errorMessage: input.errorMessage ?? null,
     ...(input.ranAt ? { ranAt: input.ranAt } : {}),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9E (`docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md`) -- topic model and manual/
+// structural trend candidates. Read/written only by `src/lib/market-intelligence/adapters/store.ts`.
+// ---------------------------------------------------------------------------
+
+export type TopicAssignmentSubjectType = "channel" | "video";
+export type TopicAssignmentSource = "manual" | "ai_assisted";
+export type TrendCandidateStatus = "emerging" | "growing" | "established" | "declining" | "stale";
+export type TrendEvidenceType = "supporting_channel" | "supporting_video" | "signal";
+
+export type StoredMarketTopic = {
+  id: string;
+  name: string;
+  createdVia: string;
+  createdAt: Date;
+};
+
+export async function listMarketTopics(database: AppDb = db): Promise<StoredMarketTopic[]> {
+  return database.select().from(marketTopics).orderBy(asc(marketTopics.name));
+}
+
+export async function getMarketTopicById(topicId: string, database: AppDb = db): Promise<StoredMarketTopic | null> {
+  const [row] = await database.select().from(marketTopics).where(eq(marketTopics.id, topicId));
+  return row ?? null;
+}
+
+export async function insertMarketTopic(
+  input: { id: string; name: string; createdVia: string },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketTopics).values({ id: input.id, name: input.name, createdVia: input.createdVia });
+}
+
+/**
+ * Cascades its own assignments first, same FK-ordering discipline as `deleteResearchChannel`.
+ * `market_trend_candidates.topic_id` is a NULLABLE FK -- a trend candidate tagged with this topic
+ * is detached (its own `topic_id` set `NULL`), never deleted, since removing a topic label is not a
+ * reason to lose an otherwise-independent trend candidate's own evidence history.
+ */
+export async function deleteMarketTopic(topicId: string, database: AppDb = db): Promise<void> {
+  await database.transaction(async (tx) => {
+    await tx.delete(marketTopicAssignments).where(eq(marketTopicAssignments.topicId, topicId));
+    await tx.update(marketTrendCandidates).set({ topicId: null }).where(eq(marketTrendCandidates.topicId, topicId));
+    await tx.delete(marketTopics).where(eq(marketTopics.id, topicId));
+  });
+}
+
+export type StoredMarketTopicAssignment = {
+  id: string;
+  topicId: string;
+  subjectType: TopicAssignmentSubjectType;
+  subjectId: string;
+  source: TopicAssignmentSource;
+  createdVia: string;
+  assignedAt: Date;
+};
+
+export async function listAssignmentsForTopic(topicId: string, database: AppDb = db): Promise<StoredMarketTopicAssignment[]> {
+  return database
+    .select()
+    .from(marketTopicAssignments)
+    .where(eq(marketTopicAssignments.topicId, topicId))
+    .orderBy(desc(marketTopicAssignments.assignedAt));
+}
+
+export async function listTopicsForSubject(
+  subjectType: TopicAssignmentSubjectType,
+  subjectId: string,
+  database: AppDb = db
+): Promise<StoredMarketTopicAssignment[]> {
+  return database
+    .select()
+    .from(marketTopicAssignments)
+    .where(and(eq(marketTopicAssignments.subjectType, subjectType), eq(marketTopicAssignments.subjectId, subjectId)));
+}
+
+export async function getTopicAssignment(
+  topicId: string,
+  subjectType: TopicAssignmentSubjectType,
+  subjectId: string,
+  database: AppDb = db
+): Promise<StoredMarketTopicAssignment | null> {
+  const [row] = await database
+    .select()
+    .from(marketTopicAssignments)
+    .where(
+      and(
+        eq(marketTopicAssignments.topicId, topicId),
+        eq(marketTopicAssignments.subjectType, subjectType),
+        eq(marketTopicAssignments.subjectId, subjectId)
+      )
+    );
+  return row ?? null;
+}
+
+export async function insertMarketTopicAssignment(
+  input: {
+    id: string;
+    topicId: string;
+    subjectType: TopicAssignmentSubjectType;
+    subjectId: string;
+    source: TopicAssignmentSource;
+    createdVia: string;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketTopicAssignments).values({
+    id: input.id,
+    topicId: input.topicId,
+    subjectType: input.subjectType,
+    subjectId: input.subjectId,
+    source: input.source,
+    createdVia: input.createdVia,
+  });
+}
+
+export async function deleteMarketTopicAssignment(assignmentId: string, database: AppDb = db): Promise<void> {
+  await database.delete(marketTopicAssignments).where(eq(marketTopicAssignments.id, assignmentId));
+}
+
+export type StoredMarketTrendCandidate = {
+  id: string;
+  title: string;
+  description: string | null;
+  topicId: string | null;
+  status: TrendCandidateStatus;
+  firstObservedAt: Date;
+  lastObservedAt: Date;
+  createdVia: string;
+};
+
+export async function listMarketTrendCandidates(database: AppDb = db): Promise<StoredMarketTrendCandidate[]> {
+  return database.select().from(marketTrendCandidates).orderBy(desc(marketTrendCandidates.lastObservedAt));
+}
+
+export async function getMarketTrendCandidateById(
+  trendCandidateId: string,
+  database: AppDb = db
+): Promise<StoredMarketTrendCandidate | null> {
+  const [row] = await database.select().from(marketTrendCandidates).where(eq(marketTrendCandidates.id, trendCandidateId));
+  return row ?? null;
+}
+
+export async function insertMarketTrendCandidate(
+  input: { id: string; title: string; description?: string | null; topicId?: string | null; createdVia: string },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketTrendCandidates).values({
+    id: input.id,
+    title: input.title,
+    description: input.description ?? null,
+    topicId: input.topicId ?? null,
+    status: "emerging",
+    createdVia: input.createdVia,
+  });
+}
+
+/** Status and `lastObservedAt` are set together here ONLY because the service layer always writes
+ * a `market_trend_evidence` row (the real "observation") in the same action that calls this --
+ * never called on its own from a bare status change with no accompanying evidence (owner spec §14:
+ * "do not allow lifecycle labels to exist without supporting observable rules or evidence"). */
+export async function updateMarketTrendCandidateStatusAndObservedAt(
+  trendCandidateId: string,
+  status: TrendCandidateStatus,
+  at: Date,
+  database: AppDb = db
+): Promise<void> {
+  await database
+    .update(marketTrendCandidates)
+    .set({ status, lastObservedAt: at })
+    .where(eq(marketTrendCandidates.id, trendCandidateId));
+}
+
+export async function touchMarketTrendCandidateLastObservedAt(
+  trendCandidateId: string,
+  at: Date,
+  database: AppDb = db
+): Promise<void> {
+  await database.update(marketTrendCandidates).set({ lastObservedAt: at }).where(eq(marketTrendCandidates.id, trendCandidateId));
+}
+
+export type StoredMarketTrendEvidence = {
+  id: string;
+  trendCandidateId: string;
+  evidenceType: TrendEvidenceType;
+  referenceId: string | null;
+  description: string;
+  createdVia: string;
+  recordedAt: Date;
+};
+
+export async function listTrendEvidence(trendCandidateId: string, database: AppDb = db): Promise<StoredMarketTrendEvidence[]> {
+  return database
+    .select()
+    .from(marketTrendEvidence)
+    .where(eq(marketTrendEvidence.trendCandidateId, trendCandidateId))
+    .orderBy(asc(marketTrendEvidence.recordedAt));
+}
+
+export async function insertMarketTrendEvidence(
+  input: {
+    id: string;
+    trendCandidateId: string;
+    evidenceType: TrendEvidenceType;
+    referenceId?: string | null;
+    description: string;
+    createdVia: string;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketTrendEvidence).values({
+    id: input.id,
+    trendCandidateId: input.trendCandidateId,
+    evidenceType: input.evidenceType,
+    referenceId: input.referenceId ?? null,
+    description: input.description,
+    createdVia: input.createdVia,
   });
 }
