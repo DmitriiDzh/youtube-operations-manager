@@ -73,9 +73,16 @@ export function toAgeNormalizedBasisFlag(
  * deleted/private, since whether the real YouTube Data API v3 even CAN make that distinction is
  * itself undocumented and unverified (corrected 2026-09-27; see `PHASE_9_SLICE_9I_PLAN.md` §2's own
  * correction note), and this codebase's own real call doesn't currently request the API part that
- * might carry a signal either way. No real caller in this slice -- needs the same before/after
- * video-id enumeration a real 9B collection run produces, which is a service-layer wiring decision
- * belonging to 9H.
+ * might carry a signal either way. No real caller in this slice.
+ *
+ * IMPORTANT for 9H's future caller (corrected 2026-09-27, advisor review): never feed this two
+ * successive raw first-page enumerations from `listUploadsPlaylistFirstPageVideoIds` (9B's own
+ * uploads-playlist read, capped to the ≤50 newest videos by design) -- that would falsely flag a
+ * channel's own Nth-newest video as "disappeared" every time a newer upload pushes it off the page
+ * boundary, when nothing actually happened to it. The real caller must either (a) re-check each
+ * previously-known id directly via a real `videos.list` call, or (b) restrict the comparison to ids
+ * still at or newer than the oldest id on the current first page. See
+ * `PHASE_9_SLICE_9I_PLAN.md` §3 for the full explanation.
  */
 export function detectDisappearedVideoIds(
   previousVideoIds: readonly string[],

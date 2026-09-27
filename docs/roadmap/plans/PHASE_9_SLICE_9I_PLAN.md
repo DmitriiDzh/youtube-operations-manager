@@ -115,9 +115,21 @@ Zero I/O, `now` always an explicit argument (matches `derived-metrics.ts`/`histo
 - **`detectDisappearedVideoIds(previousVideoIds: readonly string[], currentVideoIds: readonly
   string[]): string[]`** — a pure set-difference (`previousVideoIds` not in `currentVideoIds`),
   returning the ids a caller should label `"video_no_longer_public"`. Ships with **no real caller in
-  this slice** — the caller needs the same before/after enumeration a real 9B collection run
-  produces, which is a service-layer wiring decision belonging to 9H (its first consumer), exactly
-  like 9D's own functions waited for their first caller.
+  this slice**, and correcting this plan's own original claim about what feeds it (found by advisor
+  review, before 9H starts wiring a caller): **it must NOT be fed two successive first-page
+  enumerations from `listUploadsPlaylistFirstPageVideoIds`** (9B's own uploads-playlist read, capped
+  to the ≤50 newest videos by design). Diffing two raw first pages against each other would falsely
+  flag the channel's own 50th-newest (or Nth-newest) video as `"video_no_longer_public"` every single
+  time the channel publishes past that page boundary -- the video didn't disappear, it was merely
+  pushed off a bounded page by a newer upload. 9H's real caller must instead do one of: (a) re-check
+  each previously-known video id directly via a real `videos.list` call (1 unit per ≤50 ids,
+  `getPublicVideoSnapshots`'s own existing shape) rather than relying on enumeration order/position
+  at all, or (b) restrict the comparison to only ids that are still at or newer than the oldest id
+  present on the CURRENT first page (never flagging an id that legitimately aged out of the window
+  because of real new uploads, only one that vanished from within the still-comparable range). This
+  is a service-layer wiring decision belonging to 9H (its first consumer), exactly like 9D's own
+  functions waited for their first caller -- but 9H must pick (a) or (b) above, never a naive raw
+  diff of two first pages.
 
 ## 4. Acceptance criteria (drafted before implementation, `AGENTS.md` §L)
 

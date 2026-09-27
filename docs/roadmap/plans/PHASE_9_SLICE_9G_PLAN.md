@@ -120,3 +120,14 @@ unzoned, same as `query_competitors`/`query_market_intelligence`.
 The DRAFT "create research request" capability (spec §29), its approval gate, `ZONED_CAPABILITIES`
 entry, and the real `discoverChannels` trigger on approval — full `AGENTS.md` §A reading pass and
 its own acceptance criteria required first, per advisor review's explicit split.
+
+## 8. Known limitation (recorded, not fixed here)
+
+`getWatchlistEntryContext`'s extended output returns every append-only `market_video_snapshots` row
+ever recorded for the channel, with no upper bound and no pagination -- a channel collected daily
+for months could return hundreds of rows in one MCP/CLI response. Not fixed in this document (found
+by advisor review, after implementation): a real fix (a `since`/latest-per-video option, or
+pagination) belongs to whichever of 9G part B or 9H first has an actual reason to bound this --
+inventing one un-asked-for here would be scope creep this slice doesn't need. Recorded so the
+project owner's merge review sees it explicitly rather than discovering it only once a channel has
+enough real accumulated history to make it noticeable.
