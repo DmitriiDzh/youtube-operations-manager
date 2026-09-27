@@ -385,12 +385,31 @@ export const listTopicsForSubjectOutputSchema = z.object({ assignments: z.array(
 const trendCandidateStatusSchema = z.enum(["emerging", "growing", "established", "declining", "stale"]);
 const trendEvidenceTypeSchema = z.enum(["supporting_channel", "supporting_video", "signal"]);
 
-// `referenceId` is required for supporting_channel/supporting_video (a citation needs something to
-// cite) but optional for `signal` (a free-standing observation, e.g. "3 independent channels now
-// show this pattern" -- no single reference id fits).
-function trendEvidenceRequiresReferenceId(input: { evidenceType: string; referenceId?: string }): boolean {
-  return input.evidenceType === "signal" || input.referenceId !== undefined;
-}
+const trendEvidenceDescriptionSchema = z.string().min(1, "description is required").max(2000);
+
+// Each evidence type carries a differently-shaped, actually-validated reference: `supporting_video`
+// must be a real YouTube video id and `supporting_channel` a real YouTube channel id (AGENTS.md §F
+// -- never identify a video/channel by a free-typed title/name when a canonical id format exists;
+// an earlier version of this schema accepted any non-empty string here, which let a title be
+// smuggled in as "the reference"). `signal` carries no reference at all -- a free-standing
+// observation (e.g. "3 independent channels now show this pattern") with nothing single to cite.
+const trendEvidenceContentSchema = z.discriminatedUnion("evidenceType", [
+  z.object({ evidenceType: z.literal("signal"), description: trendEvidenceDescriptionSchema }).strict(),
+  z
+    .object({
+      evidenceType: z.literal("supporting_channel"),
+      referenceId: youtubeChannelIdSchema,
+      description: trendEvidenceDescriptionSchema,
+    })
+    .strict(),
+  z
+    .object({
+      evidenceType: z.literal("supporting_video"),
+      referenceId: youtubeVideoIdSchema,
+      description: trendEvidenceDescriptionSchema,
+    })
+    .strict(),
+]);
 
 export const marketTrendEvidenceSchema = z
   .object({
@@ -410,19 +429,9 @@ export const createTrendCandidateInputSchema = z
     title: z.string().min(1, "title is required").max(500),
     description: z.string().max(2000).optional(),
     topicId: z.string().min(1).optional(),
-    initialEvidence: z
-      .object({
-        evidenceType: trendEvidenceTypeSchema,
-        referenceId: z.string().min(1).optional(),
-        description: z.string().min(1, "description is required").max(2000),
-      })
-      .strict(),
+    initialEvidence: trendEvidenceContentSchema,
   })
-  .strict()
-  .refine((input) => trendEvidenceRequiresReferenceId(input.initialEvidence), {
-    message: "referenceId is required for supporting_channel/supporting_video evidence",
-    path: ["initialEvidence", "referenceId"],
-  });
+  .strict();
 
 export const marketTrendCandidateSchema = z
   .object({
@@ -450,18 +459,25 @@ export const updateTrendCandidateStatusInputSchema = z
   })
   .strict();
 
-export const recordTrendEvidenceInputSchema = z
-  .object({
-    trendCandidateId: z.string().min(1),
-    evidenceType: trendEvidenceTypeSchema,
-    referenceId: z.string().min(1).optional(),
-    description: z.string().min(1, "description is required").max(2000),
-  })
-  .strict()
-  .refine(trendEvidenceRequiresReferenceId, {
-    message: "referenceId is required for supporting_channel/supporting_video evidence",
-    path: ["referenceId"],
-  });
+export const recordTrendEvidenceInputSchema = z.discriminatedUnion("evidenceType", [
+  z.object({ trendCandidateId: z.string().min(1), evidenceType: z.literal("signal"), description: trendEvidenceDescriptionSchema }).strict(),
+  z
+    .object({
+      trendCandidateId: z.string().min(1),
+      evidenceType: z.literal("supporting_channel"),
+      referenceId: youtubeChannelIdSchema,
+      description: trendEvidenceDescriptionSchema,
+    })
+    .strict(),
+  z
+    .object({
+      trendCandidateId: z.string().min(1),
+      evidenceType: z.literal("supporting_video"),
+      referenceId: youtubeVideoIdSchema,
+      description: trendEvidenceDescriptionSchema,
+    })
+    .strict(),
+]);
 
 export const recordTrendEvidenceOutputSchema = marketTrendEvidenceSchema;
 export const listTrendEvidenceInputSchema = z.object({ trendCandidateId: z.string().min(1) }).strict();

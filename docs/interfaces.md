@@ -769,9 +769,9 @@ the operator does not necessarily own (`docs/ARCHITECTURE.md` §18).
 - `DELETE /api/market-intelligence/topics/[topicId]` — removes a topic, cascades its own assignments, detaches (never deletes) any trend candidate tagged with it
 - `GET /api/market-intelligence/topics/[topicId]/assignments` — assignments for a topic; `POST` — assign a subject (`{ subjectType: "channel" | "video", subjectId }`; a channel subject must already be on the watchlist, a video subject id is only format-checked)
 - `DELETE /api/market-intelligence/topic-assignments/[assignmentId]` — removes one assignment
-- `GET /api/market-intelligence/trend-candidates` (Phase 9 slice 9E, part B) — list trend candidates; `POST` — create one (`{ title, description?, topicId?, initialEvidence: { evidenceType, referenceId?, description } }`; always starts at status `"emerging"`; creation is rejected without `initialEvidence`, spec §14)
+- `GET /api/market-intelligence/trend-candidates` (Phase 9 slice 9E, part B) — list trend candidates; `POST` — create one (`{ title, description?, topicId?, initialEvidence: { evidenceType, referenceId?, description } }`; always starts at status `"emerging"`; creation is rejected without `initialEvidence`, spec §14; a discriminated union on `evidenceType` requires `referenceId` to be a real YouTube channel id for `supporting_channel` / a real video id for `supporting_video`, absent for `signal` — never a free-typed title, `AGENTS.md` §F)
 - `PATCH /api/market-intelligence/trend-candidates/[trendCandidateId]` — `{ status, reason }`; changes lifecycle status, writing `reason` as a `"signal"` evidence row in the same action (a status can never move without a corresponding evidence trail)
-- `GET /api/market-intelligence/trend-candidates/[trendCandidateId]/evidence` — every evidence row for the trend candidate; `POST` — record one (`{ evidenceType, referenceId?, description }`; `referenceId` required for `supporting_channel`/`supporting_video`) without changing status
+- `GET /api/market-intelligence/trend-candidates/[trendCandidateId]/evidence` — every evidence row for the trend candidate; `POST` — record one (`{ evidenceType, referenceId?, description }`, same per-type `referenceId` shape as above) without changing status
 
 ### Analytics API (Phase 8 + Studio-Parity S6b, BL-055..059/BL-072 — previously undocumented here)
 

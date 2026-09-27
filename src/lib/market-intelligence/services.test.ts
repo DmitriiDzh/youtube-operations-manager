@@ -1915,6 +1915,46 @@ test("AC-9E-09: createTrendCandidate rejects supporting_channel/supporting_video
   assert.equal(created.title, "AI cover songs");
 });
 
+// AGENTS.md §F: "never identify YouTube videos by title when a canonical video ID is available" --
+// found by independent review, before this reached the code-review pass: an earlier version of
+// this schema accepted ANY non-empty string as referenceId, which let a free-typed video/channel
+// TITLE be smuggled in as "the reference" for supporting_video/supporting_channel evidence.
+test("AC-9E-09b: createTrendCandidate rejects a non-id string (e.g. a title) as referenceId for supporting_channel/supporting_video, but accepts a real id", async () => {
+  const { services } = createFixture();
+
+  await assert.rejects(
+    () =>
+      services.createTrendCandidate(
+        {
+          title: "AI cover songs",
+          initialEvidence: { evidenceType: "supporting_video", referenceId: "My Viral Video Title", description: "x" },
+        },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+  await assert.rejects(
+    () =>
+      services.createTrendCandidate(
+        {
+          title: "AI cover songs",
+          initialEvidence: { evidenceType: "supporting_channel", referenceId: "Some Competitor Channel", description: "x" },
+        },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+
+  const created = await services.createTrendCandidate(
+    {
+      title: "AI cover songs",
+      initialEvidence: { evidenceType: "supporting_channel", referenceId: OTHER_VALID_CHANNEL_ID, description: "x" },
+    },
+    { createdVia: "web_ui" }
+  );
+  assert.equal(created.title, "AI cover songs");
+});
+
 test("AC-9E-10: createTrendCandidate rejects an unknown topicId with TOPIC_NOT_FOUND", async () => {
   const { store, services } = createFixture();
 
@@ -1930,7 +1970,7 @@ test("AC-9E-10: createTrendCandidate rejects an unknown topicId with TOPIC_NOT_F
 });
 
 test("AC-9E-11: a successful create starts at status 'emerging', writes exactly one evidence row, and moves lastObservedAt off its raw insert-time default", async () => {
-  const { store, services } = createFixture();
+  const { store, services } = createFixture({ now: new Date("2026-01-01T00:00:00.000Z") });
 
   const created = await services.createTrendCandidate(
     { title: "AI cover songs", description: "Short-form covers using AI voice cloning", initialEvidence: { evidenceType: "signal", description: "Rising search volume" } },
@@ -1943,7 +1983,11 @@ test("AC-9E-11: a successful create starts at status 'emerging', writes exactly 
   assert.equal(store.trendEvidence.length, 1);
   assert.equal(store.trendEvidence[0].trendCandidateId, created.trendCandidateId);
   assert.equal(store.trendEvidence[0].description, "Rising search volume");
-  assert.equal(created.lastObservedAt, store.trendCandidates.get(created.trendCandidateId)!.lastObservedAt.toISOString());
+  // Hand-derived expected value (AGENTS.md §L) -- the fixture's fake clock is pinned to this exact
+  // instant, distinct from the fake store's own wall-clock insert default, so this proves
+  // lastObservedAt was actually set from the evidence write's `deps.clock.now()`, not merely
+  // read back unchanged from whatever the row already held.
+  assert.equal(created.lastObservedAt, "2026-01-01T00:00:00.000Z");
 });
 
 test("AC-9E-12: updateTrendCandidateStatus rejects a missing/empty reason before storage", async () => {
@@ -1985,7 +2029,7 @@ test("AC-9E-14: a successful status update writes a signal evidence row embeddin
     { title: "AI cover songs", initialEvidence: { evidenceType: "signal", description: "Rising search volume" } },
     { createdVia: "web_ui" }
   );
-  const firstObservedAt = created.lastObservedAt;
+  assert.equal(created.lastObservedAt, "2026-01-01T00:00:00.000Z");
   setNow(new Date("2026-01-02T00:00:00.000Z"));
 
   const updated = await services.updateTrendCandidateStatus(
@@ -1994,7 +2038,8 @@ test("AC-9E-14: a successful status update writes a signal evidence row embeddin
   );
 
   assert.equal(updated.status, "growing");
-  assert.notEqual(updated.lastObservedAt, firstObservedAt);
+  // Hand-derived (AGENTS.md §L): the clock moved to exactly this instant between the two calls.
+  assert.equal(updated.lastObservedAt, "2026-01-02T00:00:00.000Z");
   assert.equal(store.trendEvidence.length, 2);
   const signalRow = store.trendEvidence[1];
   assert.equal(signalRow.evidenceType, "signal");
@@ -2018,7 +2063,7 @@ test("AC-9E-15: recordTrendEvidence rejects an unknown trendCandidateId with TRE
     { title: "AI cover songs", initialEvidence: { evidenceType: "signal", description: "Rising search volume" } },
     { createdVia: "web_ui" }
   );
-  const firstObservedAt = created.lastObservedAt;
+  assert.equal(created.lastObservedAt, "2026-01-01T00:00:00.000Z");
   setNow(new Date("2026-01-02T00:00:00.000Z"));
 
   const evidence = await services.recordTrendEvidence(
@@ -2029,7 +2074,8 @@ test("AC-9E-15: recordTrendEvidence rejects an unknown trendCandidateId with TRE
   assert.equal(evidence.evidenceType, "supporting_video");
   assert.equal(evidence.referenceId, "dQw4w9WgXcQ");
   assert.equal(store.trendCandidates.get(created.trendCandidateId)!.status, "emerging");
-  assert.notEqual(store.trendCandidates.get(created.trendCandidateId)!.lastObservedAt.toISOString(), firstObservedAt);
+  // Hand-derived (AGENTS.md §L): the clock moved to exactly this instant before recordTrendEvidence.
+  assert.equal(store.trendCandidates.get(created.trendCandidateId)!.lastObservedAt.toISOString(), "2026-01-02T00:00:00.000Z");
 });
 
 test("AC-9E-16: listTrendCandidates/listTrendEvidence round-trip; listTrendEvidence rejects an unknown trendCandidateId with TREND_CANDIDATE_NOT_FOUND", async () => {

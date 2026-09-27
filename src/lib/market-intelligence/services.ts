@@ -1619,12 +1619,13 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         createdVia: callOrigin.createdVia,
       });
 
+      const initialEvidence = parsedInput.initialEvidence;
       await deps.insertMarketTrendEvidence({
         id: deps.idGenerator(),
         trendCandidateId: id,
-        evidenceType: parsedInput.initialEvidence.evidenceType,
-        referenceId: parsedInput.initialEvidence.referenceId ?? null,
-        description: parsedInput.initialEvidence.description,
+        evidenceType: initialEvidence.evidenceType,
+        referenceId: initialEvidence.evidenceType === "signal" ? null : initialEvidence.referenceId,
+        description: initialEvidence.description,
         createdVia: callOrigin.createdVia,
       });
       // The evidence write above is this candidate's first observation -- moves lastObservedAt off
@@ -1715,7 +1716,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         id,
         trendCandidateId: parsedInput.trendCandidateId,
         evidenceType: parsedInput.evidenceType,
-        referenceId: parsedInput.referenceId ?? null,
+        referenceId: parsedInput.evidenceType === "signal" ? null : parsedInput.referenceId,
         description: parsedInput.description,
         createdVia: callOrigin.createdVia,
       });
