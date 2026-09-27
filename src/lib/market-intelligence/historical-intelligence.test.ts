@@ -8,12 +8,16 @@
 // AC-9D-02: computeAgeNormalizedViews reports insufficient_history for an old-enough video with no
 //           snapshot at or after publishedAt.
 // AC-9D-03: computeAgeNormalizedViews picks the snapshot closest to the target offset, reporting
-//           its own real elapsed days.
+//           its own real elapsed days, when that snapshot is within tolerance of the offset.
+// AC-9D-03b: computeAgeNormalizedViews reports insufficient_history (never a misleading "observed")
+//            when the only available snapshot is too far from the target offset to trust.
 // AC-9D-04: computeChannelVideoBaseline returns null/sample size 0 for an empty input, the correct
 //           median for an odd/even count of non-null values, and never fabricates for a null value.
 // AC-9D-05: assessBreakout never flags a breakout below the minimum baseline sample size, even when
 //           the raw ratio would otherwise qualify.
 // AC-9D-06: assessBreakout never fabricates a ratio when the video or baseline view count is null.
+// AC-9D-06b: assessBreakout refuses to compare a video against a baseline computed at a DIFFERENT
+//            dayOffset, never silently producing an age-mismatched ratio.
 // AC-9D-07: assessEmergingChannel's reasons array names exactly which signal(s) fired.
 // ---------------------------------------------------------------------------
 
@@ -39,11 +43,11 @@ test("AC-9D-01: computeAgeNormalizedViews reports not_yet_reached for an offset 
 
   const points = computeAgeNormalizedViews(snapshots, publishedAt, [1, 2, 7, 30], now);
 
-  // day 1 and day 2 have already elapsed for this 2-day-old video -- day 1 finds the real snapshot,
-  // day 2 has no snapshot exactly there but the video IS old enough, so it's insufficient_history,
-  // never not_yet_reached.
-  assert.equal(points[0].basis, "observed");
-  assert.equal(points[1].basis, "observed", "the day-1 snapshot is still the closest available candidate for day 2");
+  // day 1 has already elapsed and has a real snapshot exactly there.
+  assert.deepEqual(points[0], { dayOffset: 1, viewCount: 500, basis: "observed", actualDaysSincePublish: 1 });
+  // day 2 has also elapsed; no snapshot lands exactly there, but the day-1 snapshot is within
+  // day-2's own tolerance (max(1, 2*0.25) = 1 day), so it's still usable.
+  assert.equal(points[1].basis, "observed", "the day-1 snapshot is within day-2's own tolerance");
   // day 7 and day 30 have NOT elapsed yet for a 2-day-old video.
   assert.deepEqual(points[2], { dayOffset: 7, viewCount: null, basis: "not_yet_reached", actualDaysSincePublish: null });
   assert.deepEqual(points[3], { dayOffset: 30, viewCount: null, basis: "not_yet_reached", actualDaysSincePublish: null });
@@ -58,12 +62,12 @@ test("AC-9D-02: computeAgeNormalizedViews reports insufficient_history for an ol
   assert.deepEqual(points, [{ dayOffset: 7, viewCount: null, basis: "insufficient_history", actualDaysSincePublish: null }]);
 });
 
-test("AC-9D-03: computeAgeNormalizedViews picks the snapshot closest to the target offset, reporting its own real elapsed days", () => {
+test("AC-9D-03: computeAgeNormalizedViews picks the snapshot closest to the target offset, reporting its own real elapsed days, when within tolerance", () => {
   const publishedAt = new Date("2026-09-01T00:00:00.000Z");
   const now = new Date("2026-09-27T00:00:00.000Z");
   const snapshots: VideoSnapshotWithTime[] = [
     { viewCount: 100, observedAt: new Date(publishedAt.getTime() + 1 * DAY) }, // day 1
-    { viewCount: 500, observedAt: new Date(publishedAt.getTime() + 6 * DAY) }, // day 6 -- closest to target 7
+    { viewCount: 500, observedAt: new Date(publishedAt.getTime() + 6 * DAY) }, // day 6 -- closest to target 7, within its 1.75-day tolerance
     { viewCount: 900, observedAt: new Date(publishedAt.getTime() + 10 * DAY) }, // day 10
   ];
 
@@ -71,51 +75,72 @@ test("AC-9D-03: computeAgeNormalizedViews picks the snapshot closest to the targ
   assert.deepEqual(points, [{ dayOffset: 7, viewCount: 500, basis: "observed", actualDaysSincePublish: 6 }]);
 });
 
+test("AC-9D-03b: computeAgeNormalizedViews reports insufficient_history, never a misleading 'observed', when the only available snapshot is too far from the target offset", () => {
+  const publishedAt = new Date("2026-09-01T00:00:00.000Z");
+  const now = new Date("2026-09-27T00:00:00.000Z");
+  // Only a day-30 snapshot exists; asked for day-7 (tolerance = max(1, 7*0.25) = 1.75 days) --
+  // the day-30 snapshot is 23 days away, far outside tolerance.
+  const snapshots: VideoSnapshotWithTime[] = [{ viewCount: 5000, observedAt: new Date(publishedAt.getTime() + 30 * DAY) }];
+
+  const points = computeAgeNormalizedViews(snapshots, publishedAt, [7], now);
+  assert.deepEqual(points, [{ dayOffset: 7, viewCount: null, basis: "insufficient_history", actualDaysSincePublish: null }]);
+});
+
 test("AC-9D-04: computeChannelVideoBaseline computes the correct median, handles empty/null input honestly", () => {
-  assert.deepEqual(computeChannelVideoBaseline([]), { medianViewCount: null, sampleSize: 0 });
+  assert.deepEqual(computeChannelVideoBaseline([], 7), { dayOffset: 7, medianViewCount: null, sampleSize: 0 });
 
   // Odd count: [10, 20, 30] -> median 20.
   assert.deepEqual(
-    computeChannelVideoBaseline([{ viewCount: 30 }, { viewCount: 10 }, { viewCount: 20 }]),
-    { medianViewCount: 20, sampleSize: 3 }
+    computeChannelVideoBaseline([{ viewCount: 30 }, { viewCount: 10 }, { viewCount: 20 }], 7),
+    { dayOffset: 7, medianViewCount: 20, sampleSize: 3 }
   );
 
   // Even count: [10, 20, 30, 40] -> median (20+30)/2 = 25.
   assert.deepEqual(
-    computeChannelVideoBaseline([{ viewCount: 10 }, { viewCount: 40 }, { viewCount: 20 }, { viewCount: 30 }]),
-    { medianViewCount: 25, sampleSize: 4 }
+    computeChannelVideoBaseline([{ viewCount: 10 }, { viewCount: 40 }, { viewCount: 20 }, { viewCount: 30 }], 7),
+    { dayOffset: 7, medianViewCount: 25, sampleSize: 4 }
   );
 
   // A null viewCount is excluded from both the median and the sample size, never coerced to 0.
   assert.deepEqual(
-    computeChannelVideoBaseline([{ viewCount: 10 }, { viewCount: null }, { viewCount: 20 }]),
-    { medianViewCount: 15, sampleSize: 2 }
+    computeChannelVideoBaseline([{ viewCount: 10 }, { viewCount: null }, { viewCount: 20 }], 7),
+    { dayOffset: 7, medianViewCount: 15, sampleSize: 2 }
   );
 });
 
 test("AC-9D-05: assessBreakout never flags a breakout below the minimum baseline sample size, even when the raw ratio would otherwise qualify", () => {
   // Ratio would be 10x (well above BREAKOUT_RATIO_THRESHOLD=3), but sample size is only 2 (< 3).
-  const result = assessBreakout("v1", 10000, { medianViewCount: 1000, sampleSize: BREAKOUT_MIN_BASELINE_SAMPLE_SIZE - 1 });
+  const result = assessBreakout("v1", { viewCount: 10000, dayOffset: 7 }, { dayOffset: 7, medianViewCount: 1000, sampleSize: BREAKOUT_MIN_BASELINE_SAMPLE_SIZE - 1 });
   assert.equal(result.isBreakout, false);
   assert.equal(result.ratio, null, "a ratio is not even computed/reported when the sample size is too small");
   assert.match(result.reason, /sample size/);
 });
 
-test("AC-9D-05b: assessBreakout flags a breakout when the ratio meets the threshold with a sufficient sample size", () => {
-  const result = assessBreakout("v1", 9000, { medianViewCount: 1000, sampleSize: BREAKOUT_MIN_BASELINE_SAMPLE_SIZE });
+test("AC-9D-05b: assessBreakout flags a breakout when the ratio meets the threshold with a sufficient sample size, at the same day offset", () => {
+  const result = assessBreakout("v1", { viewCount: 9000, dayOffset: 7 }, { dayOffset: 7, medianViewCount: 1000, sampleSize: BREAKOUT_MIN_BASELINE_SAMPLE_SIZE });
   assert.equal(result.isBreakout, true);
   assert.equal(result.ratio, 9);
   assert.ok(result.ratio! >= BREAKOUT_RATIO_THRESHOLD);
+  assert.match(result.reason, /day-7/);
 });
 
 test("AC-9D-06: assessBreakout never fabricates a ratio when the video or baseline view count is null", () => {
-  const nullVideo = assessBreakout("v1", null, { medianViewCount: 1000, sampleSize: 5 });
+  const nullVideo = assessBreakout("v1", { viewCount: null, dayOffset: 7 }, { dayOffset: 7, medianViewCount: 1000, sampleSize: 5 });
   assert.equal(nullVideo.isBreakout, false);
   assert.equal(nullVideo.ratio, null);
 
-  const nullBaseline = assessBreakout("v1", 5000, { medianViewCount: null, sampleSize: 0 });
+  const nullBaseline = assessBreakout("v1", { viewCount: 5000, dayOffset: 7 }, { dayOffset: 7, medianViewCount: null, sampleSize: 0 });
   assert.equal(nullBaseline.isBreakout, false);
   assert.equal(nullBaseline.ratio, null);
+});
+
+test("AC-9D-06b: assessBreakout refuses to compare a video against a baseline computed at a different day offset", () => {
+  // Ratio would be 9x if compared naively, but the video is measured at day-30 and the baseline at
+  // day-7 -- an age-mismatched comparison, refused outright rather than silently computed.
+  const result = assessBreakout("v1", { viewCount: 9000, dayOffset: 30 }, { dayOffset: 7, medianViewCount: 1000, sampleSize: 10 });
+  assert.equal(result.isBreakout, false);
+  assert.equal(result.ratio, null);
+  assert.match(result.reason, /does not match/);
 });
 
 test("AC-9D-07: assessEmergingChannel's reasons array names exactly which signal(s) fired", () => {

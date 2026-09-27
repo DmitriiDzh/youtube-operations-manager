@@ -28,32 +28,43 @@ when history is incomplete").
 
 `computeAgeNormalizedViews(snapshots, publishedAt, dayOffsets, now)`: for each requested day offset
 (e.g. 1/3/7/30), picks the video snapshot whose elapsed time since `publishedAt` is closest to that
-offset, among snapshots observed at or after `publishedAt`. Reports `actualDaysSincePublish`
-alongside the picked value (transparency when the closest available snapshot doesn't land exactly
-on the target day) and a `basis`:
+offset, among snapshots observed at or after `publishedAt` AND within a tolerance of the target
+(`max(1 day, 25% of the offset)` -- **added by advisor review, before this was caught live**: without
+a tolerance, a video's only snapshot at day 30 would be silently reported as its "day 7" value if it
+happened to be the closest candidate, defeating age-normalization entirely). Reports
+`actualDaysSincePublish` alongside the picked value (transparency for how close the match really was)
+and a `basis`:
 
 - `not_yet_reached` — the video hasn't existed long enough yet for this offset to apply (`now -
   publishedAt < dayOffset`) -- a physically different case from merely missing a snapshot.
-- `insufficient_history` — the video is old enough, but no snapshot exists at or after publish.
-- `observed` — a real snapshot was used.
+- `insufficient_history` — the video is old enough, but no snapshot exists close enough to that
+  point (either none at all, or the closest one is outside tolerance).
+- `observed` — a real, sufficiently-close snapshot was used.
 
 ## 3. Channel baselines (spec §10)
 
 **Deliberately one simple, named methodology, not a claimed-universal formula** (spec's own "do not
 assume one universal baseline formula" / "store enough raw data to change the methodology later").
-`computeChannelVideoBaseline(latestSnapshotPerVideo)`: median `viewCount` across the caller-supplied
-set of videos (the caller decides "recent" -- e.g. published in the last 90 days -- and dedupes to
-each video's own latest snapshot; this function only computes the median and reports its own sample
-size, never silently trusting a tiny sample as representative).
+**Correction (advisor review, before merge): the baseline itself must be age-normalized, not built
+from lifetime view counts** -- an earlier version used each video's LATEST (lifetime) snapshot,
+which would make every old video look inflated relative to a new one regardless of real relative
+performance, precisely the "old vs. new by total views" comparison spec §9 forbids applied one level
+up. `computeChannelVideoBaseline(ageNormalizedViewCountsAtOffset, dayOffset)`: median `viewCount`
+across the caller-supplied set of videos' OWN `computeAgeNormalizedViews` points at a single, chosen
+`dayOffset` (e.g. every recent video's own day-7 value) -- this function only computes the median and
+reports its own sample size and the `dayOffset` it was measured at, never silently trusting a tiny
+sample as representative.
 
 ## 4. Breakout detection (spec §11)
 
-`assessBreakout(videoId, videoViewCount, channelBaseline)`: exposes the full comparison (video's own
-count, the channel's baseline median, the ratio) rather than an opaque score (spec's own explicit
-requirement). `isBreakout` requires both `ratio >= BREAKOUT_RATIO_THRESHOLD` (3x, a named, adjustable
-constant -- not the spec's own 9x illustrative example, which was never stated as a mandated cutoff)
-AND a minimum baseline sample size (3 videos) -- a "median of 1" is not a baseline worth comparing
-against.
+`assessBreakout(videoId, { viewCount, dayOffset }, channelBaseline)`: exposes the full comparison
+(video's own count, the channel's baseline median, the ratio) rather than an opaque score (spec's own
+explicit requirement). **Refuses the comparison outright (`ratio: null`, `isBreakout: false`) when the
+video's own `dayOffset` does not match the baseline's own `dayOffset`** -- the same age-normalization
+correction as §3 above, applied at the comparison site. `isBreakout` requires both `ratio >=
+BREAKOUT_RATIO_THRESHOLD` (3x, a named, adjustable constant -- not the spec's own 9x illustrative
+example, which was never stated as a mandated cutoff) AND a minimum baseline sample size (3 videos)
+-- a "median of 1" is not a baseline worth comparing against.
 
 ## 5. Emerging channel detection (spec §12)
 
@@ -73,11 +84,17 @@ signal(s) fired (spec's own "do not label a channel 'promising' without observab
 - A video published 30 days ago with no snapshot ever recorded reports `insufficient_history` for
   every offset.
 - The snapshot closest to (not necessarily exactly at) the target day offset is picked, with its
-  own real elapsed-days value reported alongside it.
+  own real elapsed-days value reported alongside it, PROVIDED it is within tolerance
+  (`max(1 day, 25% of the offset)`) -- a snapshot too far from the target reports
+  `insufficient_history` instead, never a misleadingly-labeled `observed` value.
 - `computeChannelVideoBaseline` returns `null`/sample size 0 for an empty input, never a fabricated
-  median.
+  median; it is computed from AGE-NORMALIZED (same day-offset) view counts, never raw lifetime
+  counts.
 - `assessBreakout` never flags a breakout when the baseline sample size is below the minimum, even
   if the raw ratio would otherwise qualify.
+- `assessBreakout` refuses the comparison (`ratio: null`, `isBreakout: false`) when the video's own
+  `dayOffset` does not match the baseline's `dayOffset`, never silently computing an age-mismatched
+  ratio.
 - `assessBreakout`/`assessEmergingChannel` never fabricate a ratio/velocity when the underlying
   input is `null` -- `isBreakout`/`isEmerging` is `false` with an explicit reason, never silently
   `false` with no explanation.

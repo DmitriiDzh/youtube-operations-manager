@@ -30,17 +30,29 @@ export type AgeNormalizedPoint = {
 };
 
 /**
+ * How far (in days) the closest available snapshot may sit from the requested `dayOffset` and
+ * still count as "observed" for that offset -- `max(1 day, 25% of the offset)` (found necessary by
+ * advisor review: without a tolerance, a video's ONLY snapshot at day 30 would be reported as its
+ * "day 7" performance if it happened to be the closest candidate, silently no longer age-normalized
+ * at all -- exactly what spec §9 exists to prevent). Outside this tolerance, the offset reports
+ * `insufficient_history` instead.
+ */
+function ageNormalizedTolerance(dayOffset: number): number {
+  return Math.max(1, dayOffset * 0.25);
+}
+
+/**
  * Owner spec §9 (age-normalized comparison): for each requested day offset (e.g. 1/3/7/30), picks
  * the video snapshot whose elapsed time since `publishedAt` is closest to that offset, among
  * snapshots observed AT OR AFTER `publishedAt` (a snapshot somehow timestamped before the video's
  * own publish date is not a valid candidate for "views at day N" and is excluded, not treated as a
- * negative-day observation).
+ * negative-day observation) AND within `ageNormalizedTolerance` of the target offset.
  *
  * Two distinct "no answer" cases, deliberately not conflated (owner spec §10's own "no data is
  * inherently ambiguous" finding, applied here): `not_yet_reached` (the video is physically too
  * young for this offset to apply yet -- `now - publishedAt < dayOffset`) is a fundamentally
- * different fact from `insufficient_history` (the video is old enough, but no snapshot exists near
- * that point -- a real gap in observation, not a property of the video itself).
+ * different fact from `insufficient_history` (the video is old enough, but no snapshot exists close
+ * enough to that point -- a real gap in observation, not a property of the video itself).
  */
 export function computeAgeNormalizedViews(
   snapshots: VideoSnapshotWithTime[],
@@ -64,6 +76,9 @@ export function computeAgeNormalizedViews(
     const closest = candidates.reduce((best, candidate) =>
       Math.abs(candidate.daysSincePublish - dayOffset) < Math.abs(best.daysSincePublish - dayOffset) ? candidate : best
     );
+    if (Math.abs(closest.daysSincePublish - dayOffset) > ageNormalizedTolerance(dayOffset)) {
+      return { dayOffset, viewCount: null, basis: "insufficient_history", actualDaysSincePublish: null };
+    }
     return {
       dayOffset,
       viewCount: closest.snapshot.viewCount,
@@ -81,6 +96,15 @@ function median(values: number[]): number | null {
 }
 
 export type ChannelVideoBaseline = {
+  /** The age (in days since each video's own publish date) this baseline's view counts were
+   * measured at -- e.g. 7 for a "day-7 performance" baseline. `assessBreakout` below refuses to
+   * compare a video against a baseline computed at a DIFFERENT `dayOffset` (found necessary by
+   * advisor review: comparing a video's LIFETIME view count against a baseline of other videos'
+   * own lifetime counts is not age-normalized at all -- spec §9's own "avoid comparing old and new
+   * videos only by total views" applies to baselines exactly as much as to raw comparisons; an old
+   * video's lifetime count would always dwarf a new video's, making every old video look like a
+   * "breakout" and no new video ever qualify, regardless of its real relative performance). */
+  dayOffset: number;
   medianViewCount: number | null;
   /** How many videos actually contributed a non-null viewCount -- transparency for judging whether
    * the median is representative (owner spec §10: "do not assume one universal baseline formula",
@@ -89,14 +113,18 @@ export type ChannelVideoBaseline = {
 };
 
 /**
- * Owner spec §10 (channel baselines) -- deliberately ONE simple, named methodology (median video
- * view count), not a claimed-universal formula: the caller decides what counts as "recent" (e.g.
- * published in the last 90 days) and dedupes to each video's own latest snapshot before calling
- * this -- this function only computes the median over whatever set it's given.
+ * Owner spec §10 (channel baselines) -- deliberately ONE simple, named methodology (median
+ * age-normalized video view count at a single, caller-chosen `dayOffset`), not a claimed-universal
+ * formula: the caller decides what counts as "recent" (e.g. published in the last 90 days) and
+ * computes each video's own `computeAgeNormalizedViews` point at `dayOffset` before calling this --
+ * this function only computes the median over whatever set of same-age-offset points it's given.
  */
-export function computeChannelVideoBaseline(latestSnapshotPerVideo: { viewCount: number | null }[]): ChannelVideoBaseline {
-  const nonNullViewCounts = latestSnapshotPerVideo.map((v) => v.viewCount).filter((v): v is number => v !== null);
-  return { medianViewCount: median(nonNullViewCounts), sampleSize: nonNullViewCounts.length };
+export function computeChannelVideoBaseline(
+  ageNormalizedViewCountsAtOffset: { viewCount: number | null }[],
+  dayOffset: number
+): ChannelVideoBaseline {
+  const nonNullViewCounts = ageNormalizedViewCountsAtOffset.map((v) => v.viewCount).filter((v): v is number => v !== null);
+  return { dayOffset, medianViewCount: median(nonNullViewCounts), sampleSize: nonNullViewCounts.length };
 }
 
 // A "materially outperform" ratio -- a named, adjustable starting point, deliberately NOT the owner
@@ -109,6 +137,7 @@ export const BREAKOUT_MIN_BASELINE_SAMPLE_SIZE = 3;
 
 export type BreakoutAssessment = {
   videoId: string;
+  dayOffset: number;
   videoViewCount: number | null;
   channelBaselineMedianViewCount: number | null;
   ratio: number | null;
@@ -119,12 +148,33 @@ export type BreakoutAssessment = {
 /**
  * Owner spec §11 (breakout detection) -- exposes the full comparison (the video's own count, the
  * channel's baseline, the ratio) rather than an opaque score, per the spec's own explicit
- * requirement ("do not provide opaque 'viral scores' without components").
+ * requirement ("do not provide opaque 'viral scores' without components"). The video's own view
+ * count MUST be measured at the same `dayOffset` as the channel baseline (both from
+ * `computeAgeNormalizedViews`) -- comparing at mismatched ages is exactly the "old vs. new by total
+ * views" comparison spec §9 forbids, and is refused outright rather than silently computing a
+ * misleading ratio.
  */
-export function assessBreakout(videoId: string, videoViewCount: number | null, channelBaseline: ChannelVideoBaseline): BreakoutAssessment {
-  const base = { videoId, videoViewCount, channelBaselineMedianViewCount: channelBaseline.medianViewCount };
+export function assessBreakout(
+  videoId: string,
+  video: { viewCount: number | null; dayOffset: number },
+  channelBaseline: ChannelVideoBaseline
+): BreakoutAssessment {
+  const base = {
+    videoId,
+    dayOffset: video.dayOffset,
+    videoViewCount: video.viewCount,
+    channelBaselineMedianViewCount: channelBaseline.medianViewCount,
+  };
 
-  if (videoViewCount === null || channelBaseline.medianViewCount === null) {
+  if (video.dayOffset !== channelBaseline.dayOffset) {
+    return {
+      ...base,
+      ratio: null,
+      isBreakout: false,
+      reason: `video's own day offset (${video.dayOffset}) does not match the channel baseline's day offset (${channelBaseline.dayOffset}) -- refusing an age-mismatched comparison`,
+    };
+  }
+  if (video.viewCount === null || channelBaseline.medianViewCount === null) {
     return { ...base, ratio: null, isBreakout: false, reason: "no view count available for this video or the channel baseline" };
   }
   if (channelBaseline.sampleSize < BREAKOUT_MIN_BASELINE_SAMPLE_SIZE) {
@@ -139,15 +189,16 @@ export function assessBreakout(videoId: string, videoViewCount: number | null, c
     return { ...base, ratio: null, isBreakout: false, reason: "channel baseline median view count is 0 -- ratio is undefined" };
   }
 
-  const ratio = videoViewCount / channelBaseline.medianViewCount;
+  const ratio = video.viewCount / channelBaseline.medianViewCount;
   const isBreakout = ratio >= BREAKOUT_RATIO_THRESHOLD;
+  const dayLabel = `day-${channelBaseline.dayOffset}`;
   return {
     ...base,
     ratio,
     isBreakout,
     reason: isBreakout
-      ? `${ratio.toFixed(1)}x the channel's median recent video views (${channelBaseline.medianViewCount})`
-      : `${ratio.toFixed(1)}x the channel's median recent video views (${channelBaseline.medianViewCount}), below the ${BREAKOUT_RATIO_THRESHOLD}x threshold`,
+      ? `${ratio.toFixed(1)}x the channel's median ${dayLabel} views (${channelBaseline.medianViewCount})`
+      : `${ratio.toFixed(1)}x the channel's median ${dayLabel} views (${channelBaseline.medianViewCount}), below the ${BREAKOUT_RATIO_THRESHOLD}x threshold`,
   };
 }
 
