@@ -1426,7 +1426,7 @@ content-proposal/artifact registration, a Codex operations-workspace template, a
 review -- **which of these is actually implemented as of any given moment is tracked exclusively
 in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here**.
 
-## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9E + 9G + 9H (part A) + 9I
+## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9E + 9G + 9H (parts A-B) + 9I
 
 Owner instruction, Telegram 2026-09-26: an explicit assignment to research, plan, and begin
 implementing Phase 9 (`docs/roadmap/FUTURE_PHASES.md` §5) as its own feature branch, superseding
@@ -1732,6 +1732,37 @@ rendering of it is bounded. `latestSnapshotPerVideo` (one row per distinct video
 server-side) replaces it for the main view; a separate `getChannelVideoSnapshotHistory` action
 (its own new route) serves one video's own full series on demand, filtering server-side before
 returning so the bounded response, not just the bounded render, is the actual fix.
+
+**Slice 9H, part B (`docs/roadmap/plans/PHASE_9_SLICE_9H_PART_B_PLAN.md`, 2026-09-27) -- Market
+Overview, aggregating part A's own per-channel composition across the WHOLE watchlist.** A new
+`getMarketOverview()` action calls `getChannelIntelligenceSummary` once per watchlisted channel and
+folds the results into `breakoutVideos`/`emergingChannels` (filtered to `isBreakout`/`isEmerging`,
+each entry tagged with its own `channelId`), alongside two watchlist-independent reads
+(`listDiscoveryCandidates` filtered to `status: "new"`, and a direct passthrough of
+`listTrendCandidatesWithFreshness`). No existing action's output schema changes -- the same
+"compose, don't extend" precedent part A established.
+
+Two findings from this slice's own pre-implementation advisor review are worth recording structurally,
+since both are the kind of gap that is easy to reintroduce in a future aggregation over this same
+data: (1) **a channel-level `DataQualityFlag` is not automatically a "collection warning"** --
+`hidden_subscriber_count` is a property of the channel (the owner hides it on YouTube), not a
+collection-freshness problem, so `getMarketOverview` narrows the flag set it surfaces here to exactly
+`stale_observation`/`quota_limited`/`missing_snapshot`, never the full seven-value vocabulary. (2)
+**"never observed" produces no flag at all from `assessObservationFreshness`/`assessSnapshotCompleteness`**
+(both explicitly treat a `null` last-observation as outside their own scope) -- naively surfacing only
+non-empty `dataQualityFlags` would show a never-collected channel (the realistic first-render state
+on a fresh watchlist, before any real collection has run) as having zero warnings, a false all-clear
+that is actively worse than showing nothing. `getMarketOverview` adds its own explicit
+`neverObserved: true` case for a channel with zero channel snapshots, and separately reads
+`getLatestMarketIntelligenceCollectionRunForChannel` directly (one extra, already-indexed read per
+channel) to surface a `"failed"` latest run immediately -- not only once `stale_observation` would
+eventually fire 24h later.
+
+A channel removed from the watchlist between this action's own `listWatchlist()` call and the
+per-channel `getChannelIntelligenceSummary` fetch that follows for it (a real race, since the Remove
+button lives on this same Research tab) is caught narrowly by `DomainError` code
+(`RESEARCH_CHANNEL_NOT_AVAILABLE` only) and skipped -- every other error propagates unchanged, never
+the broad/bare-catch pattern RISK-19/21/33 already removed elsewhere in this codebase.
 
 Trend freshness deliberately does NOT reuse 9I's `MARKET_INTELLIGENCE_STALE_WINDOW_MS`/the word
 "stale" -- that constant means "a channel collection run hasn't happened in a day," a daily-cadence

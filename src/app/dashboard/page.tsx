@@ -16,6 +16,7 @@ import { LiveWritesSettings } from "@/components/live-writes-settings";
 import { McpConnectionSettings } from "@/components/mcp-connection-settings";
 import { AgentConnectionsManager } from "@/components/agent-connections-manager";
 import { OperationsWorkspaceSettings } from "@/components/operations-workspace-settings";
+import { MarketOverviewPanel } from "@/components/market-overview-panel";
 import { MarketResearchPanel } from "@/components/market-research-panel";
 import { MarketDiscoveryPanel } from "@/components/market-discovery-panel";
 import { MarketTopicsPanel } from "@/components/market-topics-panel";
@@ -327,6 +328,7 @@ export default function Dashboard() {
               runs on your own explicit request below, never automatically, and this is never a
               source of private analytics for a channel you don&rsquo;t own.
             </p>
+            <MarketOverviewPanel />
             <MarketResearchPanel />
             <MarketDiscoveryPanel />
             <MarketTopicsPanel />

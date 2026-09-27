@@ -19,6 +19,7 @@ import {
 } from "./historical-intelligence";
 import {
   DomainError,
+  isDomainError,
   MARKET_INTELLIGENCE_STALE_WINDOW_MS,
   type DataQualityFlag,
   type DiscoveryCandidateStatus,
@@ -64,6 +65,7 @@ import {
   getChannelIntelligenceSummaryOutputSchema,
   getChannelVideoSnapshotHistoryInputSchema,
   getChannelVideoSnapshotHistoryOutputSchema,
+  getMarketOverviewOutputSchema,
   getMarketResearchRequestInputSchema,
   getTrendEvidenceSummaryOutputSchema,
   getWatchlistEntryContextOutputSchema,
@@ -1177,6 +1179,108 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         getChannelVideoSnapshotHistoryOutputSchema,
         { snapshots: filtered.map(toMarketVideoSnapshot) },
         "get channel video snapshot history output"
+      );
+    },
+
+    /**
+     * Phase 9 slice 9H, part B (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_B_PLAN.md) -- Market
+     * Overview, aggregating across the WHOLE watchlist. Reuses `getChannelIntelligenceSummary`
+     * (part A) once per watchlisted channel -- no new per-channel computation, only aggregation/
+     * filtering/sorting. UI-only, no MCP/CLI contract (mirrors part A's own §3 "compose, don't
+     * extend" precedent -- no existing action's output schema changes).
+     */
+    async getMarketOverview(): Promise<{
+      watchlistCount: number;
+      newDiscoveries: MarketDiscoveryCandidate[];
+      breakoutVideos: (BreakoutAssessment & { channelId: string })[];
+      emergingChannels: EmergingChannelAssessment[];
+      trendCandidates: (MarketTrendCandidate & { freshness: "fresh" | "needs_attention" })[];
+      collectionWarnings: {
+        channelId: string;
+        dataQualityFlags: ("stale_observation" | "quota_limited" | "missing_snapshot")[];
+        latestRunStatus: "success" | "skipped_quota_limited" | "failed" | null;
+        neverObserved: boolean;
+      }[];
+    }> {
+      const { channels } = await services.listWatchlist();
+
+      // Narrowed per plan §3a -- hidden_subscriber_count (a channel property, not a collection
+      // problem) and every other value outside these three is deliberately excluded here.
+      const COLLECTION_WARNING_FLAGS = new Set<DataQualityFlag>(["stale_observation", "quota_limited", "missing_snapshot"]);
+
+      const breakoutVideos: (BreakoutAssessment & { channelId: string })[] = [];
+      const emergingChannels: EmergingChannelAssessment[] = [];
+      const collectionWarnings: {
+        channelId: string;
+        dataQualityFlags: ("stale_observation" | "quota_limited" | "missing_snapshot")[];
+        latestRunStatus: "success" | "skipped_quota_limited" | "failed" | null;
+        neverObserved: boolean;
+      }[] = [];
+
+      for (const channel of channels) {
+        let summary: Awaited<ReturnType<typeof services.getChannelIntelligenceSummary>>;
+        try {
+          summary = await services.getChannelIntelligenceSummary({ channelId: channel.channelId });
+        } catch (error) {
+          // A channel can be removed from the watchlist between the listWatchlist() call above and
+          // this per-channel fetch (the Remove button is on this same Research tab) -- skip only
+          // that one channel rather than 500ing the whole Overview over one already-stale row
+          // (plan §4's own "per-channel race" finding). Any OTHER error (a genuine bug, a
+          // different DomainError, a schema-validation failure) is rethrown unchanged -- a narrow,
+          // code-checked catch, never the bare/broad catch pattern RISK-19/21/33 already removed
+          // elsewhere in this codebase.
+          if (isDomainError(error) && error.code === "RESEARCH_CHANNEL_NOT_AVAILABLE") continue;
+          throw error;
+        }
+
+        for (const video of summary.recentBreakoutVideos) {
+          if (video.isBreakout) breakoutVideos.push({ ...video, channelId: channel.channelId });
+        }
+        if (summary.emergingChannel.isEmerging) emergingChannels.push(summary.emergingChannel);
+
+        const narrowedFlags = summary.dataQualityFlags.filter(
+          (flag): flag is "stale_observation" | "quota_limited" | "missing_snapshot" => COLLECTION_WARNING_FLAGS.has(flag)
+        );
+        const latestRun = await deps.getLatestMarketIntelligenceCollectionRunForChannel(channel.channelId);
+        const neverObserved = summary.channelSnapshots.length === 0;
+        if (narrowedFlags.length > 0 || latestRun?.status === "failed" || neverObserved) {
+          collectionWarnings.push({
+            channelId: channel.channelId,
+            dataQualityFlags: narrowedFlags,
+            latestRunStatus: latestRun?.status ?? null,
+            neverObserved,
+          });
+        }
+      }
+
+      // Deterministic order (plan §4) so callers/tests never depend on `listWatchlist`'s own
+      // incidental row order.
+      breakoutVideos.sort((a, b) => {
+        const ratioA = a.ratio ?? -Infinity;
+        const ratioB = b.ratio ?? -Infinity;
+        if (ratioA !== ratioB) return ratioB - ratioA;
+        if (a.channelId !== b.channelId) return a.channelId.localeCompare(b.channelId);
+        return a.videoId.localeCompare(b.videoId);
+      });
+      emergingChannels.sort((a, b) => a.researchChannelId.localeCompare(b.researchChannelId));
+      collectionWarnings.sort((a, b) => a.channelId.localeCompare(b.channelId));
+
+      // Neither depends on the watchlist at all (plan §4/§7 AC-1/AC-2) -- fetched unconditionally.
+      const { candidates: allDiscoveryCandidates } = await services.listDiscoveryCandidates();
+      const newDiscoveries = allDiscoveryCandidates.filter((c) => c.status === "new");
+      const { trendCandidates } = await services.listTrendCandidatesWithFreshness();
+
+      return parseWithSchema(
+        getMarketOverviewOutputSchema,
+        {
+          watchlistCount: channels.length,
+          newDiscoveries,
+          breakoutVideos,
+          emergingChannels,
+          trendCandidates,
+          collectionWarnings,
+        },
+        "get market overview output"
       );
     },
 

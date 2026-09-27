@@ -197,6 +197,7 @@ function createFakeStore() {
   let videoSnapshotInsertCount = 0;
   let failNextMark = false;
   let failInsertMarketDiscoveryCandidateFor: string | null = null;
+  let failNextGetResearchChannelByIdFor: string | null = null;
 
   return {
     channels,
@@ -228,6 +229,14 @@ function createFakeStore() {
     failInsertMarketDiscoveryCandidateForChannel(channelId: string) {
       failInsertMarketDiscoveryCandidateFor = channelId;
     },
+    // AC-9HB-11: simulates a channel removed between listWatchlist()'s own snapshot and a later
+    // per-channel lookup for it (a real concurrent-removal race, not a store bug) -- returns `null`
+    // exactly once for this channelId's NEXT getResearchChannelById call, without touching the
+    // underlying Map (so listResearchChannels' own already-taken snapshot is unaffected, matching
+    // what actually happens in a real request).
+    failNextGetResearchChannelByIdOnce(channelId: string) {
+      failNextGetResearchChannelByIdFor = channelId;
+    },
     idGenerator: () => `evidence-${nextId++}`,
     async insertResearchChannel(input: { id: string; handleOrUrl?: string | null; reason: string; createdVia: string }) {
       channels.set(input.id, {
@@ -244,6 +253,10 @@ function createFakeStore() {
       return [...channels.values()];
     },
     async getResearchChannelById(id: string) {
+      if (failNextGetResearchChannelByIdFor === id) {
+        failNextGetResearchChannelByIdFor = null;
+        return null;
+      }
       return channels.get(id) ?? null;
     },
     async deleteResearchChannel(id: string) {
@@ -1628,6 +1641,274 @@ test("AC-9H-14: getTrendEvidenceSummary's independentChannelCount deduplicates b
   const plain = await services.getTrendEvidence({ trendCandidateId: created.trendCandidateId });
   assert.equal(plain.evidence[0].description, "first", "listTrendEvidence's own ascending order is unchanged");
 });
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9H, part B (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_B_PLAN.md) -- Market Overview.
+// getMarketOverview aggregates across the whole watchlist over 9C/9H-A/9G-a building blocks.
+// ---------------------------------------------------------------------------
+
+test("AC-9HB-01: an empty watchlist gives watchlistCount 0 and empty breakoutVideos/emergingChannels/collectionWarnings, with zero per-channel calls", async () => {
+  const { services } = createFixture();
+  const result = await services.getMarketOverview();
+  assert.equal(result.watchlistCount, 0);
+  assert.deepEqual(result.breakoutVideos, []);
+  assert.deepEqual(result.emergingChannels, []);
+  assert.deepEqual(result.collectionWarnings, []);
+});
+
+test("AC-9HB-02: newDiscoveries does not depend on the watchlist -- a 'new' candidate shows even with an empty watchlist", async () => {
+  const { services, store } = createFixture();
+  store.discoveryCandidates.set(VALID_CHANNEL_ID, {
+    id: VALID_CHANNEL_ID,
+    title: "Independent Channel",
+    status: "new",
+    discoverySource: "youtube.search.list",
+    discoveryQuery: "jazz",
+    reasonDiscovered: null,
+    firstSeenAt: new Date(),
+    lastSeenAt: new Date(),
+    createdVia: "web_ui",
+  });
+
+  const result = await services.getMarketOverview();
+  assert.equal(result.watchlistCount, 0);
+  assert.equal(result.newDiscoveries.length, 1);
+  assert.equal(result.newDiscoveries[0].channelId, VALID_CHANNEL_ID);
+});
+
+test("AC-9HB-03: newDiscoveries contains exactly the 'new'-status candidate, not watching/promoted/ignored/archived ones", async () => {
+  const { services, store } = createFixture();
+  const statuses: DiscoveryCandidateStatus[] = ["new", "watching", "promoted", "ignored", "archived"];
+  for (const [i, status] of statuses.entries()) {
+    const id = i === 0 ? VALID_CHANNEL_ID : `UC${String(i).padStart(2, "0")}000000000000000000`;
+    store.discoveryCandidates.set(id, {
+      id,
+      title: `Channel ${status}`,
+      status,
+      discoverySource: "youtube.search.list",
+      discoveryQuery: "jazz",
+      reasonDiscovered: null,
+      firstSeenAt: new Date(),
+      lastSeenAt: new Date(),
+      createdVia: "web_ui",
+    });
+  }
+
+  const result = await services.getMarketOverview();
+  assert.equal(result.newDiscoveries.length, 1);
+  assert.equal(result.newDiscoveries[0].status, "new");
+});
+
+test("AC-9HB-04: breakoutVideos aggregates across channels, tagging each entry with its own channelId, using the plan's own hand-computed leave-one-out fixture", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.addToWatchlist({ channelId: OTHER_VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+
+  pushDay7VideoSnapshot(store, now, { id: "s-a", videoId: "vA00000000000000000000A", viewCount: 10 });
+  pushDay7VideoSnapshot(store, now, { id: "s-b", videoId: "vB00000000000000000000B", viewCount: 20 });
+  pushDay7VideoSnapshot(store, now, { id: "s-c", videoId: "vC00000000000000000000C", viewCount: 30 });
+  pushDay7VideoSnapshot(store, now, { id: "s-d", videoId: "vD00000000000000000000D", viewCount: 65 });
+  // Second channel: no breakout (only one video, sample size below BREAKOUT_MIN_BASELINE_SAMPLE_SIZE).
+  store.videoSnapshots.push({
+    id: "s-other",
+    researchChannelId: OTHER_VALID_CHANNEL_ID,
+    videoId: "vOther000000000000000A",
+    observedAt: now,
+    viewCount: 999,
+    likeCount: null,
+    commentCount: null,
+    publishedAt: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000),
+    source: "youtube.videos.list",
+    createdVia: "web_ui",
+  });
+
+  const result = await services.getMarketOverview();
+  assert.equal(result.breakoutVideos.length, 1);
+  assert.equal(result.breakoutVideos[0].videoId, "vD00000000000000000000D");
+  assert.equal(result.breakoutVideos[0].channelId, VALID_CHANNEL_ID);
+  assert.equal(result.breakoutVideos[0].ratio, 3.25);
+});
+
+test("AC-9HB-05: emergingChannels -- hand-checked fixture [10,10,10,10,100,100] gives exactly 2 breakouts, meeting EMERGING_MIN_BREAKOUT_VIDEOS; a channel with no qualifying signal does not appear", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.addToWatchlist({ channelId: OTHER_VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+
+  // Channel A: day-7 views [10,10,10,10,100,100] -- each 100 vs. median([10,10,10,10,100]) = 10 ->
+  // ratio 10, breakout; each 10 vs. median of the other five (which include one 100) = 10 -> ratio
+  // 1, not a breakout. Exactly 2 breakouts.
+  const viewsA = [10, 10, 10, 10, 100, 100];
+  viewsA.forEach((viewCount, i) => {
+    pushDay7VideoSnapshot(store, now, { id: `a-${i}`, videoId: `vA${String(i).padStart(21, "0")}`, viewCount });
+  });
+  store.channelSnapshots.push(
+    { id: "a-snap-1", researchChannelId: VALID_CHANNEL_ID, observedAt: new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000), subscriberCount: 100, viewCount: 1000, videoCount: 5, hiddenSubscriberCount: false, source: "youtube.channels.list", createdVia: "web_ui" },
+    { id: "a-snap-2", researchChannelId: VALID_CHANNEL_ID, observedAt: now, subscriberCount: 180, viewCount: 1000, videoCount: 13, hiddenSubscriberCount: false, source: "youtube.channels.list", createdVia: "web_ui" }
+  );
+
+  // Channel B: zero breakout videos and non-positive subscriber velocity -- must not appear.
+  pushVideoSnapshotForChannel(store, OTHER_VALID_CHANNEL_ID, now, { id: "b-0", videoId: "vB000000000000000000000", viewCount: 10 });
+  store.channelSnapshots.push(
+    { id: "b-snap-1", researchChannelId: OTHER_VALID_CHANNEL_ID, observedAt: new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000), subscriberCount: 100, viewCount: 1000, videoCount: 5, hiddenSubscriberCount: false, source: "youtube.channels.list", createdVia: "web_ui" },
+    { id: "b-snap-2", researchChannelId: OTHER_VALID_CHANNEL_ID, observedAt: now, subscriberCount: 90, viewCount: 1000, videoCount: 5, hiddenSubscriberCount: false, source: "youtube.channels.list", createdVia: "web_ui" }
+  );
+
+  const result = await services.getMarketOverview();
+  assert.equal(result.emergingChannels.length, 1);
+  assert.equal(result.emergingChannels[0].researchChannelId, VALID_CHANNEL_ID);
+  assert.equal(result.emergingChannels[0].recentBreakoutVideoCount, 2);
+  assert.equal(result.emergingChannels[0].isEmerging, true);
+});
+
+test("AC-9HB-06: trendCandidates is byte-for-byte identical to a direct listTrendCandidatesWithFreshness() call", async () => {
+  const { services } = createFixture();
+  await services.createTrendCandidate(
+    { title: "Jazz revival", initialEvidence: { evidenceType: "signal", description: "seen it" } },
+    { createdVia: "web_ui" }
+  );
+
+  const result = await services.getMarketOverview();
+  const direct = await services.listTrendCandidatesWithFreshness();
+  assert.deepEqual(result.trendCandidates, direct.trendCandidates);
+});
+
+test("AC-9HB-07: a channel whose latest collection run 'failed' appears in collectionWarnings with latestRunStatus 'failed', even with a fresh channel snapshot (inside the 24h window)", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.channelSnapshots.push({
+    id: "snap-fresh",
+    researchChannelId: VALID_CHANNEL_ID,
+    observedAt: now,
+    subscriberCount: 100,
+    viewCount: 1000,
+    videoCount: 5,
+    hiddenSubscriberCount: false,
+    source: "youtube.channels.list",
+    createdVia: "web_ui",
+  });
+  store.collectionRuns.push({
+    researchChannelId: VALID_CHANNEL_ID,
+    status: "failed",
+    unitsSpent: 1,
+    videosRequested: null,
+    videosReturned: null,
+    errorMessage: "simulated failure",
+    ranAt: now,
+  });
+
+  const result = await services.getMarketOverview();
+  assert.equal(result.collectionWarnings.length, 1);
+  assert.equal(result.collectionWarnings[0].channelId, VALID_CHANNEL_ID);
+  assert.equal(result.collectionWarnings[0].latestRunStatus, "failed");
+  assert.equal(result.collectionWarnings[0].neverObserved, false);
+  assert.deepEqual(result.collectionWarnings[0].dataQualityFlags, []);
+});
+
+test("AC-9HB-08: a channel with a fresh snapshot, a 'success' run, and no other quality flag does not appear in collectionWarnings", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.channelSnapshots.push({
+    id: "snap-fresh",
+    researchChannelId: VALID_CHANNEL_ID,
+    observedAt: now,
+    subscriberCount: 100,
+    viewCount: 1000,
+    videoCount: 5,
+    hiddenSubscriberCount: false,
+    source: "youtube.channels.list",
+    createdVia: "web_ui",
+  });
+  store.collectionRuns.push({
+    researchChannelId: VALID_CHANNEL_ID,
+    status: "success",
+    unitsSpent: 1,
+    videosRequested: 3,
+    videosReturned: 3,
+    errorMessage: null,
+    ranAt: now,
+  });
+
+  const result = await services.getMarketOverview();
+  assert.deepEqual(result.collectionWarnings, []);
+});
+
+test("AC-9HB-09: a channel whose ONLY dataQualityFlags entry is hidden_subscriber_count does not appear in collectionWarnings (plan §3a narrowing)", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.channelSnapshots.push({
+    id: "snap-fresh",
+    researchChannelId: VALID_CHANNEL_ID,
+    observedAt: now,
+    subscriberCount: null,
+    viewCount: 1000,
+    videoCount: 5,
+    hiddenSubscriberCount: true,
+    source: "youtube.channels.list",
+    createdVia: "web_ui",
+  });
+  store.collectionRuns.push({
+    researchChannelId: VALID_CHANNEL_ID,
+    status: "success",
+    unitsSpent: 1,
+    videosRequested: 3,
+    videosReturned: 3,
+    errorMessage: null,
+    ranAt: now,
+  });
+
+  const result = await services.getMarketOverview();
+  assert.deepEqual(result.collectionWarnings, []);
+});
+
+test("AC-9HB-10: a never-collected channel (zero snapshots, zero runs) appears with neverObserved:true, latestRunStatus:null -- never a silent all-clear (plan §3b)", async () => {
+  const { services } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+
+  const result = await services.getMarketOverview();
+  assert.equal(result.collectionWarnings.length, 1);
+  assert.equal(result.collectionWarnings[0].channelId, VALID_CHANNEL_ID);
+  assert.equal(result.collectionWarnings[0].neverObserved, true);
+  assert.equal(result.collectionWarnings[0].latestRunStatus, null);
+});
+
+test("AC-9HB-11: a channel removed mid-request (present in listWatchlist, gone by its own summary fetch) is skipped, not a 500 -- a different, unrelated error still propagates", async () => {
+  const { services, store } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.addToWatchlist({ channelId: OTHER_VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+
+  // Simulate the race: the channel is still in listWatchlist's own result (already captured before
+  // this happens in a real request), but gone by the time getChannelIntelligenceSummary looks it up.
+  store.failNextGetResearchChannelByIdOnce(VALID_CHANNEL_ID);
+
+  const result = await services.getMarketOverview();
+  assert.equal(result.watchlistCount, 2, "listWatchlist's own count is unaffected -- the race is in the per-channel fetch, not here");
+  assert.equal(result.collectionWarnings.some((w) => w.channelId === VALID_CHANNEL_ID), false);
+});
+
+function pushVideoSnapshotForChannel(
+  store: ReturnType<typeof createFakeStore>,
+  channelId: string,
+  now: Date,
+  args: { id: string; videoId: string; viewCount: number }
+) {
+  store.videoSnapshots.push({
+    id: args.id,
+    researchChannelId: channelId,
+    videoId: args.videoId,
+    observedAt: now,
+    viewCount: args.viewCount,
+    likeCount: null,
+    commentCount: null,
+    publishedAt: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000),
+    source: "youtube.videos.list",
+    createdVia: "web_ui",
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Phase 9 slice 9A -- service-layer acceptance criteria from

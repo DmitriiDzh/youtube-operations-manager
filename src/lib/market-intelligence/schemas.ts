@@ -662,6 +662,36 @@ export const rejectMarketResearchRequestInputSchema = z
   .strict();
 export const rejectMarketResearchRequestOutputSchema = marketResearchRequestSchema;
 
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9H, part B (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_B_PLAN.md) -- Market Overview,
+// aggregating across the whole watchlist over already-existing 9C/9H-A/9G-a building blocks. No
+// input (mirrors `listWatchlist`'s own no-input shape); UI-only, no MCP/CLI contract.
+// ---------------------------------------------------------------------------
+
+// Narrower than the full 7-value dataQualityFlagSchema (plan §3a) -- hidden_subscriber_count and
+// every other value outside these three are deliberately excluded from a "collection warning".
+const overviewCollectionWarningFlagSchema = z.enum(["stale_observation", "quota_limited", "missing_snapshot"]);
+
+export const getMarketOverviewOutputSchema = z
+  .object({
+    watchlistCount: z.number().int().nonnegative(),
+    newDiscoveries: z.array(marketDiscoveryCandidateSchema),
+    breakoutVideos: z.array(breakoutAssessmentSchema.extend({ channelId: z.string().min(1) }).strict()),
+    emergingChannels: z.array(emergingChannelAssessmentSchema),
+    trendCandidates: z.array(marketTrendCandidateSchema.extend({ freshness: trendFreshnessSchema }).strict()),
+    collectionWarnings: z.array(
+      z
+        .object({
+          channelId: z.string().min(1),
+          dataQualityFlags: z.array(overviewCollectionWarningFlagSchema),
+          latestRunStatus: z.enum(["success", "skipped_quota_limited", "failed"]).nullable(),
+          neverObserved: z.boolean(),
+        })
+        .strict()
+    ),
+  })
+  .strict();
+
 // Re-exported so services.ts/adapters never need their own separate import of the shared
 // provenance vocabulary's schema (AGENTS.md §M: market-intelligence is a caller of
 // shared-provenance, not a second owner of it).
