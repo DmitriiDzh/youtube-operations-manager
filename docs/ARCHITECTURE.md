@@ -1716,8 +1716,8 @@ hardcoded a second time client-side where they could drift -- shown in the UI ne
 one produced, since an unstated methodology is exactly the "opaque score" owner spec §11 forbids.
 
 `getChannelIntelligenceSummary` deliberately does NOT return `getWatchlistEntryContext`'s own
-`videoSnapshots` array -- an unbounded, append-only series (RISK-70's own class of finding, tracked
-here as RISK-78 since this is the first time anything renders it to a human rather than an agent
+`videoSnapshots` array -- an unbounded, append-only series (tracked as RISK-78, `docs/TECHNICAL_
+DEBT.md`, since this is the first time anything renders it to a human rather than an agent
 making one bounded MCP call) that must not ship over the network in full merely because the DOM
 rendering of it is bounded. `latestSnapshotPerVideo` (one row per distinct video, computed
 server-side) replaces it for the main view; a separate `getChannelVideoSnapshotHistory` action

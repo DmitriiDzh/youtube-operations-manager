@@ -455,6 +455,8 @@ const channelIntelligenceMethodologySchema = z
     channelVelocityWindowDays: z.number().int().positive(),
     recentVideoWindowDays: z.number().int().positive(),
     channelBaselineDayOffset: z.number().int().positive(),
+    breakoutMinBaselineSampleSize: z.number().int().positive(),
+    breakoutBaselineToleranceDays: z.number().positive(),
   })
   .strict();
 

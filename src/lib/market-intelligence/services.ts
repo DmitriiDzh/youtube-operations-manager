@@ -6,10 +6,13 @@ import {
 } from "./data-quality";
 import { computeSnapshotVelocity, type FieldVelocity, type SnapshotWithTime } from "./derived-metrics";
 import {
+  BREAKOUT_MIN_BASELINE_SAMPLE_SIZE,
+  ageNormalizedTolerance,
   assessBreakout,
   assessEmergingChannel,
   computeAgeNormalizedViews,
   computeChannelVideoBaseline,
+  type AgeNormalizedBasis,
   type BreakoutAssessment,
   type EmergingChannelAssessment,
   type VideoSnapshotWithTime,
@@ -1018,6 +1021,8 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         channelVelocityWindowDays: number;
         recentVideoWindowDays: number;
         channelBaselineDayOffset: number;
+        breakoutMinBaselineSampleSize: number;
+        breakoutBaselineToleranceDays: number;
       };
     }> {
       const parsedInput = parseWithSchema(
@@ -1062,8 +1067,12 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
       // Recent-video age-normalized points at CHANNEL_BASELINE_DAY_OFFSET, one per video that has a
       // publishedAt within RECENT_VIDEO_WINDOW_DAYS -- see the plan's own §2/§4 for why 180 days and
-      // why a video with no publishedAt is excluded entirely rather than guessed.
-      const recentVideoPoints: { videoId: string; viewCount: number | null }[] = [];
+      // why a video with no publishedAt is excluded entirely rather than guessed. `basis` is kept
+      // alongside `viewCount` (found necessary by advisor review: collapsing "not yet old enough",
+      // "no snapshot close enough to day 7", and "no baseline data" into assessBreakout's own single
+      // generic "no view count available" reason is exactly the ambiguity 9D's own basis vocabulary
+      // exists to avoid).
+      const recentVideoPoints: { videoId: string; viewCount: number | null; basis: AgeNormalizedBasis }[] = [];
       for (const [videoId, snapshots] of videoSnapshotsByVideoId) {
         const publishedAtRaw = snapshots.find((s) => s.publishedAt !== null)?.publishedAt ?? null;
         if (publishedAtRaw === null) continue;
@@ -1076,18 +1085,38 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           observedAt: new Date(s.observedAt),
         }));
         const [point] = computeAgeNormalizedViews(snapshotsWithTime, publishedAt, [CHANNEL_BASELINE_DAY_OFFSET], now);
-        recentVideoPoints.push({ videoId, viewCount: point.viewCount });
+        recentVideoPoints.push({ videoId, viewCount: point.viewCount, basis: point.basis });
       }
 
       // LEAVE-ONE-OUT baseline, computed separately per video from every OTHER recent video's own
       // point -- never including the video being assessed in its own baseline (plan §4's own
       // hand-computed disagreement fixture explains why this, not "include-self", was chosen).
       // `computeChannelVideoBaseline` already filters out null viewCounts on its own, so a video
-      // with no usable day-offset point (insufficient_history) is automatically excluded from every
-      // OTHER video's baseline sample, with no extra filtering needed here.
-      const recentBreakoutVideos: BreakoutAssessment[] = recentVideoPoints.map(({ videoId, viewCount }) => {
+      // with no usable day-offset point (insufficient_history/not_yet_reached) is automatically
+      // excluded from every OTHER video's baseline sample, with no extra filtering needed here.
+      const recentBreakoutVideos: BreakoutAssessment[] = recentVideoPoints.map(({ videoId, viewCount, basis }) => {
         const others = recentVideoPoints.filter((p) => p.videoId !== videoId).map((p) => ({ viewCount: p.viewCount }));
         const baseline = computeChannelVideoBaseline(others, CHANNEL_BASELINE_DAY_OFFSET);
+        if (basis !== "observed") {
+          // An honest, specific reason instead of assessBreakout's own generic "no view count
+          // available for this video or the channel baseline" -- that single generic reason cannot
+          // distinguish "too young to measure yet" from "old enough, but never observed close enough
+          // to day 7", the exact distinction spec §10's own "no data is inherently ambiguous" finding
+          // (9I's own DataQualityFlag vocabulary) was built to preserve.
+          const reason =
+            basis === "not_yet_reached"
+              ? `this video is not yet ${CHANNEL_BASELINE_DAY_OFFSET} days old`
+              : `no snapshot observed within ${ageNormalizedTolerance(CHANNEL_BASELINE_DAY_OFFSET)} days of this video's own day ${CHANNEL_BASELINE_DAY_OFFSET} mark`;
+          return {
+            videoId,
+            dayOffset: CHANNEL_BASELINE_DAY_OFFSET,
+            videoViewCount: null,
+            channelBaselineMedianViewCount: baseline.medianViewCount,
+            ratio: null,
+            isBreakout: false,
+            reason,
+          };
+        }
         return assessBreakout(videoId, { viewCount, dayOffset: CHANNEL_BASELINE_DAY_OFFSET }, baseline);
       });
 
@@ -1111,6 +1140,8 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
             channelVelocityWindowDays: CHANNEL_VELOCITY_WINDOW_DAYS,
             recentVideoWindowDays: RECENT_VIDEO_WINDOW_DAYS,
             channelBaselineDayOffset: CHANNEL_BASELINE_DAY_OFFSET,
+            breakoutMinBaselineSampleSize: BREAKOUT_MIN_BASELINE_SAMPLE_SIZE,
+            breakoutBaselineToleranceDays: ageNormalizedTolerance(CHANNEL_BASELINE_DAY_OFFSET),
           },
         },
         "get channel intelligence summary output"
@@ -1926,7 +1957,14 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       await deps.deleteMarketTopicAssignment(parsedInput.assignmentId);
     },
 
-    async listAssignmentsForTopic(input: unknown): Promise<{ assignments: MarketTopicAssignment[] }> {
+    // Named `listTopicAssignments`, not `listAssignmentsForTopic`, so a caller of this exported
+    // action never has to spell out the exact same substring as the db.ts symbol it wraps --
+    // PHASE9-INV-02's own plain-substring scan cannot otherwise tell "calls the exported core" apart
+    // from "imports the raw db.ts function directly" (found the hard way: this service action shared
+    // its db.ts counterpart's exact name, which tripped that scanner once the scanner's own list was
+    // widened to actually include it -- the same class of collision `listResearchRequests` was
+    // already renamed to avoid). Mirrors this file's own established convention elsewhere.
+    async listTopicAssignments(input: unknown): Promise<{ assignments: MarketTopicAssignment[] }> {
       const parsedInput = parseWithSchema(listAssignmentsForTopicInputSchema, input, "list assignments for topic input");
       const topic = await deps.getMarketTopicById(parsedInput.topicId);
       if (!topic) {
@@ -2129,7 +2167,14 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       return parseWithSchema(recordTrendEvidenceOutputSchema, toMarketTrendEvidence(row), "record trend evidence output");
     },
 
-    async listTrendEvidence(input: unknown): Promise<{ evidence: MarketTrendEvidence[] }> {
+    // Named `getTrendEvidence`, not `listTrendEvidence`, so a future external caller of this
+    // exported action never has to spell out the exact same substring as the db.ts symbol it wraps
+    // -- the same class of collision `listResearchRequests`/`listTopicAssignments` were already
+    // renamed to avoid (found the hard way: this name tripped PHASE9-INV-02 once its own list was
+    // widened to include it, even though the only current references were this file's own doc
+    // comments describing it, not a real external call -- renamed proactively rather than leaving
+    // the identical landmine for whoever adds the next one).
+    async getTrendEvidence(input: unknown): Promise<{ evidence: MarketTrendEvidence[] }> {
       const parsedInput = parseWithSchema(listTrendEvidenceInputSchema, input, "list trend evidence input");
 
       const candidate = await deps.getMarketTrendCandidateById(parsedInput.trendCandidateId);
@@ -2150,19 +2195,19 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
     },
 
     /**
-     * Phase 9 slice 9H, part A -- a UI-only wrapper around `listTrendEvidence` closing owner spec
-     * §30's "latest evidence"/"independent channels" gaps (plan §6). `listTrendEvidence` itself, and
-     * its own ascending order, are unchanged -- confirmed by grep to have no MCP/CLI caller today, so
-     * this wrapper's own newest-first order is a new, separate contract, not a change to an existing
-     * one. The independent-channel count is real deduplication logic (not a trivial filter), which is
-     * why it lives here rather than in the component -- this repo has no component-level tests
+     * Phase 9 slice 9H, part A -- a UI-only wrapper around the sibling action just above closing
+     * owner spec §30's "latest evidence"/"independent channels" gaps (plan §6). That sibling's own
+     * ascending order is unchanged -- confirmed by grep to have no MCP/CLI caller today, so this
+     * wrapper's own newest-first order is a new, separate contract, not a change to an existing one.
+     * The independent-channel count is real deduplication logic (not a trivial filter), which is why
+     * it lives here rather than in the component -- this repo has no component-level tests
      * (`docs/TECHNICAL_DEBT.md` RISK-05), so logic that needs a test must live in `services.ts`.
      */
     async getTrendEvidenceSummary(input: unknown): Promise<{
       evidence: MarketTrendEvidence[];
       independentChannelCount: number;
     }> {
-      const { evidence } = await services.listTrendEvidence(input);
+      const { evidence } = await services.getTrendEvidence(input);
       const independentChannelCount = new Set(
         evidence
           .filter((e): e is MarketTrendEvidence & { referenceId: string } => e.evidenceType === "supporting_channel" && e.referenceId !== null)

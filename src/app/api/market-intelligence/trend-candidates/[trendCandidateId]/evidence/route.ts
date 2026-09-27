@@ -23,8 +23,9 @@ const defaultDeps: TrendEvidenceRouteDeps = {
 //
 // GET switched to `getTrendEvidenceSummary` in Phase 9 slice 9H, part A
 // (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_A_PLAN.md §6) -- newest-first evidence plus an
-// independent-supporting-channel count; `listTrendEvidence` itself (no MCP/CLI caller, confirmed by
-// grep) keeps its own ascending order unchanged for any future caller that wants it directly.
+// independent-supporting-channel count; the core's own plain evidence-list action (no MCP/CLI
+// caller, confirmed by grep) keeps its own ascending order unchanged for any future caller that
+// wants it directly.
 export function createTrendEvidenceGetHandler(deps: TrendEvidenceRouteDeps = defaultDeps) {
   return async function GET(_request: Request, { params }: { params: Promise<{ trendCandidateId: string }> }) {
     const session = await deps.getSession();

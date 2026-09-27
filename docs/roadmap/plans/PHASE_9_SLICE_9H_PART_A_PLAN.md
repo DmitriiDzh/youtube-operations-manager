@@ -196,9 +196,14 @@ of the more defensible method, not a shortcoming to hide.
 `emergingChannel` reuses the same `recentBreakoutVideos` result: `recentBreakoutVideoCount` is the
 count of `isBreakout: true` entries, fed into `assessEmergingChannel` alongside `subscriberVelocity`.
 
-A video with no `publishedAt` is excluded from `recentBreakoutVideos` entirely (never guessed) and
-surfaces via the already-existing `dataQualityFlags` mechanism instead (a new flag is NOT invented
-here — see §5).
+A video with no `publishedAt` is excluded from `recentBreakoutVideos` entirely (never guessed).
+**Correction (advisor review, post-implementation):** this section originally said such a video
+"surfaces via the already-existing `dataQualityFlags` mechanism instead" -- `dataQualityFlags` is a
+CHANNEL-level array with no per-video member of its 7-value vocabulary for this fact, and the
+implementation never adds anything there for it. The video remains visible instead through
+`latestSnapshotPerVideo` itself, whose own `publishedAt: string | null` field is `null` for exactly
+this case -- an already-per-video, already-honest signal, not a new flag (still true to this
+section's own "a new flag is NOT invented here").
 
 ## 4a. Bounding the drill-down (found necessary by advisor review)
 

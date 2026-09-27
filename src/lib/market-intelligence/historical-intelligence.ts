@@ -37,7 +37,7 @@ export type AgeNormalizedPoint = {
  * at all -- exactly what spec §9 exists to prevent). Outside this tolerance, the offset reports
  * `insufficient_history` instead.
  */
-function ageNormalizedTolerance(dayOffset: number): number {
+export function ageNormalizedTolerance(dayOffset: number): number {
   return Math.max(1, dayOffset * 0.25);
 }
 

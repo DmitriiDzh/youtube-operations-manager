@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { ConfirmDialog } from "./confirm-dialog";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
@@ -48,20 +48,47 @@ type LatestVideoSnapshot = {
   publishedAt: string | null;
 };
 type ChannelIntelligenceSummary = {
-  channelSnapshots: { observedAt: string; subscriberCount: number | null; viewCount: number | null; videoCount: number | null }[];
+  channelSnapshots: {
+    observedAt: string;
+    subscriberCount: number | null;
+    viewCount: number | null;
+    videoCount: number | null;
+    hiddenSubscriberCount: boolean;
+  }[];
   dataQualityFlags: string[];
   subscriberVelocity: FieldVelocity;
   uploadCadence: FieldVelocity;
   recentBreakoutVideos: BreakoutAssessment[];
   emergingChannel: EmergingChannelAssessment;
   latestSnapshotPerVideo: LatestVideoSnapshot[];
-  methodology: { channelVelocityWindowDays: number; recentVideoWindowDays: number; channelBaselineDayOffset: number };
+  methodology: {
+    channelVelocityWindowDays: number;
+    recentVideoWindowDays: number;
+    channelBaselineDayOffset: number;
+    breakoutMinBaselineSampleSize: number;
+    breakoutBaselineToleranceDays: number;
+  };
 };
 
-function formatFieldVelocity(field: FieldVelocity, unit: string): string {
+// A `stale_latest`/`partial_window` rate must never be presented as a genuine N-day window figure
+// (derived-metrics.ts's own contract: `stale_latest` is a best-effort rate over a MUCH longer,
+// unstated span, and `partial_window` only covers whatever span was actually observed) -- found by
+// independent code review: an earlier version of this label always printed "(N-day window)"
+// regardless of basis, contradicting the function it was displaying.
+function formatFieldVelocity(field: FieldVelocity, unit: string, windowDays: number): string {
   if (field.value === null) return `no data (${field.basis})`;
   const perDay = field.value >= 0 ? `+${field.value.toFixed(2)}` : field.value.toFixed(2);
-  return `${perDay} ${unit}/day (${field.basis})`;
+  const rate = `${perDay} ${unit}/day`;
+  switch (field.basis) {
+    case "full_window":
+      return `${rate} over the last ${windowDays} days`;
+    case "partial_window":
+      return `${rate} (partial -- covers only the span actually observed, less than ${windowDays} days)`;
+    case "stale_latest":
+      return `${rate} (NOT a real last-${windowDays}-day rate -- the latest observation is itself older than ${windowDays} days; best-effort over a longer span)`;
+    default:
+      return `${rate} (${field.basis})`;
+  }
 }
 
 // Phase 9 slices 2-3 (docs/roadmap/plans/PHASE_9_PLAN.md) -- global (not channel-scoped) market
@@ -86,9 +113,17 @@ export function MarketResearchPanel() {
 
   const [intelligence, setIntelligence] = useState<ChannelIntelligenceSummary | null>(null);
   const [intelligenceLoading, setIntelligenceLoading] = useState(false);
+  const [intelligenceError, setIntelligenceError] = useState<string | null>(null);
+  // Tracks which channel the most recently STARTED fetch was for, so a slower, now-stale response
+  // never overwrites a newer one that already landed (found by independent code review -- the
+  // identical race already fixed in market-trends-panel.tsx/market-topics-panel.tsx, tracked as
+  // RISK-77 for not yet sharing one hook across all three).
+  const intelligenceRequestChannelIdRef = useRef<string | null>(null);
   const [expandedVideoId, setExpandedVideoId] = useState<string | null>(null);
   const [videoHistory, setVideoHistory] = useState<{ observedAt: string; viewCount: number | null; likeCount: number | null; commentCount: number | null }[]>([]);
   const [videoHistoryLoading, setVideoHistoryLoading] = useState(false);
+  const [videoHistoryError, setVideoHistoryError] = useState<string | null>(null);
+  const videoHistoryRequestIdRef = useRef<string | null>(null);
 
   const [newObservation, setNewObservation] = useState("");
   const [newSource, setNewSource] = useState("");
@@ -153,15 +188,21 @@ export function MarketResearchPanel() {
   }, []);
 
   const fetchIntelligenceSummary = useCallback(async (channelId: string) => {
+    intelligenceRequestChannelIdRef.current = channelId;
     setIntelligenceLoading(true);
     setIntelligence(null);
+    setIntelligenceError(null);
     try {
       const res = await fetch(`/api/market-intelligence/channels/${encodeURIComponent(channelId)}/intelligence-summary`);
+      if (intelligenceRequestChannelIdRef.current !== channelId) return;
       if (res.ok) {
         setIntelligence(await res.json());
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setIntelligenceError(data.message ?? "Failed to load channel intelligence");
       }
     } finally {
-      setIntelligenceLoading(false);
+      if (intelligenceRequestChannelIdRef.current === channelId) setIntelligenceLoading(false);
     }
   }, []);
 
@@ -169,6 +210,7 @@ export function MarketResearchPanel() {
     setSelectedChannelId(channelId);
     setExpandedVideoId(null);
     setVideoHistory([]);
+    setVideoHistoryError(null);
     void fetchEvidence(channelId);
     void fetchIntelligenceSummary(channelId);
   }
@@ -177,21 +219,28 @@ export function MarketResearchPanel() {
     if (expandedVideoId === videoId) {
       setExpandedVideoId(null);
       setVideoHistory([]);
+      setVideoHistoryError(null);
       return;
     }
+    videoHistoryRequestIdRef.current = videoId;
     setExpandedVideoId(videoId);
     setVideoHistoryLoading(true);
     setVideoHistory([]);
+    setVideoHistoryError(null);
     try {
       const res = await fetch(
         `/api/market-intelligence/channels/${encodeURIComponent(channelId)}/videos/${encodeURIComponent(videoId)}/snapshot-history`
       );
+      if (videoHistoryRequestIdRef.current !== videoId) return;
       if (res.ok) {
         const data = await res.json();
         setVideoHistory(data.snapshots ?? []);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setVideoHistoryError(data.message ?? "Failed to load video history");
       }
     } finally {
-      setVideoHistoryLoading(false);
+      if (videoHistoryRequestIdRef.current === videoId) setVideoHistoryLoading(false);
     }
   }
 
@@ -242,8 +291,10 @@ export function MarketResearchPanel() {
         setSelectedChannelId(null);
         setEvidence([]);
         setIntelligence(null);
+        setIntelligenceError(null);
         setExpandedVideoId(null);
         setVideoHistory([]);
+        setVideoHistoryError(null);
       }
       await fetchChannels();
     } finally {
@@ -414,6 +465,7 @@ export function MarketResearchPanel() {
                     </InfoTooltip>
                   </p>
                   {intelligenceLoading && <p className="text-xs text-zinc-500">Loading...</p>}
+                  {!intelligenceLoading && intelligenceError && <p className="text-xs text-red-400">{intelligenceError}</p>}
                   {!intelligenceLoading && intelligence && (
                     <div className="space-y-2 text-xs text-zinc-400">
                       {intelligence.dataQualityFlags.length > 0 && (
@@ -429,11 +481,19 @@ export function MarketResearchPanel() {
                       {intelligence.channelSnapshots.length > 0 ? (
                         (() => {
                           const latest = intelligence.channelSnapshots[intelligence.channelSnapshots.length - 1];
+                          // hiddenSubscriberCount is an explicit boolean (9A), never inferred from
+                          // subscriberCount === null -- a null for some other reason (e.g. no data
+                          // yet) must not be mislabeled "hidden" (AC-9A-09b's own distinction).
+                          const subscriberDisplay =
+                            latest.subscriberCount !== null
+                              ? latest.subscriberCount
+                              : latest.hiddenSubscriberCount
+                                ? "hidden by channel"
+                                : "—";
                           return (
                             <p>
-                              Last observed {formatDisplayDateTime(latest.observedAt)} &middot; subscribers:{" "}
-                              {latest.subscriberCount ?? "hidden"} &middot; views: {latest.viewCount ?? "—"} &middot; videos:{" "}
-                              {latest.videoCount ?? "—"}
+                              Last observed {formatDisplayDateTime(latest.observedAt)} &middot; subscribers: {subscriberDisplay} &middot; views:{" "}
+                              {latest.viewCount ?? "—"} &middot; videos: {latest.videoCount ?? "—"}
                             </p>
                           );
                         })()
@@ -442,12 +502,12 @@ export function MarketResearchPanel() {
                       )}
 
                       <p>
-                        Subscriber velocity ({intelligence.methodology.channelVelocityWindowDays}-day window):{" "}
-                        {formatFieldVelocity(intelligence.subscriberVelocity, "subscribers")}
+                        Subscriber velocity:{" "}
+                        {formatFieldVelocity(intelligence.subscriberVelocity, "subscribers", intelligence.methodology.channelVelocityWindowDays)}
                       </p>
                       <p>
-                        Upload cadence ({intelligence.methodology.channelVelocityWindowDays}-day window):{" "}
-                        {formatFieldVelocity(intelligence.uploadCadence, "videos")}
+                        Upload cadence:{" "}
+                        {formatFieldVelocity(intelligence.uploadCadence, "videos", intelligence.methodology.channelVelocityWindowDays)}
                       </p>
 
                       <div>
@@ -455,6 +515,15 @@ export function MarketResearchPanel() {
                           Recent relative performance (videos published in the last {intelligence.methodology.recentVideoWindowDays} days,
                           compared at day {intelligence.methodology.channelBaselineDayOffset} vs. every OTHER recent video&rsquo;s own median --
                           never including a video in its own baseline):
+                        </p>
+                        <p className="text-[11px] text-zinc-600">
+                          A video needs at least {intelligence.methodology.breakoutMinBaselineSampleSize} OTHER recent videos with their own
+                          usable day-{intelligence.methodology.channelBaselineDayOffset} data before any verdict is possible ({" "}
+                          {intelligence.methodology.breakoutMinBaselineSampleSize + 1} recent videos minimum in total), and each video&rsquo;s
+                          own day-{intelligence.methodology.channelBaselineDayOffset} point only exists if a collection run happened to land
+                          within {intelligence.methodology.breakoutBaselineToleranceDays} days of that mark -- collection only runs when this
+                          dashboard is opened, so a channel checked on rarely will show &ldquo;insufficient history&rdquo; more often, not because
+                          it lacks activity.
                         </p>
                         {intelligence.recentBreakoutVideos.length === 0 && <p>No eligible recent videos yet.</p>}
                         {intelligence.recentBreakoutVideos.map((v) => (
@@ -479,6 +548,7 @@ export function MarketResearchPanel() {
                             {expandedVideoId === v.videoId && (
                               <div className="ml-3 mt-1 space-y-0.5">
                                 {videoHistoryLoading && <p>Loading history...</p>}
+                                {!videoHistoryLoading && videoHistoryError && <p className="text-red-400">{videoHistoryError}</p>}
                                 {!videoHistoryLoading &&
                                   videoHistory.map((snap, i) => (
                                     <p key={i}>

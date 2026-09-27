@@ -91,7 +91,7 @@ export function MarketTrendsPanel() {
     setEvidenceLoading(true);
     try {
       // Returns getTrendEvidenceSummary's own shape (newest-first evidence + independentChannelCount),
-      // not the plain ascending listTrendEvidence shape (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_A_PLAN.md §6).
+      // not the underlying core's own plain ascending-order evidence list (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_A_PLAN.md §6).
       const res = await fetch(`/api/market-intelligence/trend-candidates/${encodeURIComponent(trendCandidateId)}/evidence`);
       if (res.ok) {
         const data = await res.json();

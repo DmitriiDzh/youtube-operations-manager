@@ -22,6 +22,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { BREAKOUT_MIN_BASELINE_SAMPLE_SIZE } from "./historical-intelligence";
 import {
   CHANNEL_BASELINE_DAY_OFFSET,
   CHANNEL_VELOCITY_WINDOW_DAYS,
@@ -1261,6 +1262,8 @@ test("AC-9H-01b: getChannelIntelligenceSummary's own methodology field matches t
     channelVelocityWindowDays: CHANNEL_VELOCITY_WINDOW_DAYS,
     recentVideoWindowDays: RECENT_VIDEO_WINDOW_DAYS,
     channelBaselineDayOffset: CHANNEL_BASELINE_DAY_OFFSET,
+    breakoutMinBaselineSampleSize: BREAKOUT_MIN_BASELINE_SAMPLE_SIZE,
+    breakoutBaselineToleranceDays: 1.75,
   });
 });
 
@@ -1406,12 +1409,41 @@ test("AC-9H-06: a video whose only snapshot lands at day 30 (outside the ±1.75-
   const e = byVideoId.get("vE00000000000000000000E")!;
   assert.equal(e.videoViewCount, null, "E's own day-7 point must be insufficient_history, not its real (wrong-age) view count");
   assert.equal(e.isBreakout, false);
+  assert.match(e.reason, /no snapshot observed within/, "must be the specific insufficient_history reason, not assessBreakout's own generic one");
 
   // If E's null were wrongly counted as a real baseline contributor, A/B/C would each see a
   // sample size of 3 (meeting the minimum) instead of 2 -- asserting ratio: null here is the
   // observable proof E was excluded, not merely that E itself looks right.
   const a = byVideoId.get("vA00000000000000000000A")!;
   assert.equal(a.ratio, null, "A's baseline (B, C, and NOT E) must still be below the minimum sample size");
+});
+
+test("AC-9H-06b: a video published less than 7 days ago reports 'not_yet_reached' with its own distinct reason, not the same generic reason a too-old-and-never-observed video gets", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  pushDay7VideoSnapshot(store, now, { id: "s-a", videoId: "vA00000000000000000000A", viewCount: 10 });
+  pushDay7VideoSnapshot(store, now, { id: "s-b", videoId: "vB00000000000000000000B", viewCount: 20 });
+  pushDay7VideoSnapshot(store, now, { id: "s-c", videoId: "vC00000000000000000000C", viewCount: 30 });
+  // Video F: published only 2 days ago -- physically too young for a day-7 point to exist yet.
+  store.videoSnapshots.push({
+    id: "s-f",
+    researchChannelId: VALID_CHANNEL_ID,
+    videoId: "vF00000000000000000000F",
+    observedAt: now,
+    viewCount: 5,
+    likeCount: null,
+    commentCount: null,
+    publishedAt: new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000),
+    source: "youtube.videos.list",
+    createdVia: "web_ui",
+  });
+
+  const result = await services.getChannelIntelligenceSummary({ channelId: VALID_CHANNEL_ID });
+  const f = result.recentBreakoutVideos.find((v) => v.videoId === "vF00000000000000000000F")!;
+  assert.equal(f.videoViewCount, null);
+  assert.equal(f.isBreakout, false);
+  assert.match(f.reason, /not yet 7 days old/, "must be the specific not_yet_reached reason, distinct from the insufficient_history one");
 });
 
 test("AC-9H-07: zero videos with a publishedAt produces an empty recentBreakoutVideos, no crash", async () => {
@@ -1527,24 +1559,22 @@ test("AC-9H-11: getChannelVideoSnapshotHistory on a channel not on the watchlist
 // listTrendCandidatesWithFreshness/getTrendEvidenceSummary.
 // ---------------------------------------------------------------------------
 
-test("AC-9H-12: listTrendCandidatesWithFreshness reports 'fresh' just inside TREND_EVIDENCE_FRESH_WINDOW_DAYS and 'needs_attention' just outside it", async () => {
-  const now = new Date("2026-09-27T12:00:00.000Z");
-  const { services, setNow } = createFixture({ now: new Date("2026-01-01T00:00:00.000Z") });
+test("AC-9H-12: listTrendCandidatesWithFreshness reports 'fresh' at exactly TREND_EVIDENCE_FRESH_WINDOW_DAYS minus 1ms, and 'needs_attention' at exactly TREND_EVIDENCE_FRESH_WINDOW_DAYS -- a real boundary, not merely two far-apart instants", async () => {
+  const createdAt = new Date("2026-01-01T00:00:00.000Z");
+  const { services, setNow } = createFixture({ now: createdAt });
   const created = await services.createTrendCandidate(
     { title: "Jazz revival", initialEvidence: { evidenceType: "signal", description: "seen it" } },
     { createdVia: "web_ui" }
   );
-  setNow(now);
-  // lastObservedAt is still the creation instant (2026-01-01) -- far more than 30 days before `now`.
-  const staleResult = await services.listTrendCandidatesWithFreshness();
-  assert.equal(staleResult.trendCandidates.find((c) => c.trendCandidateId === created.trendCandidateId)?.freshness, "needs_attention");
+  const windowMs = 30 * 24 * 60 * 60 * 1000; // TREND_EVIDENCE_FRESH_WINDOW_DAYS
 
-  await services.recordTrendEvidence(
-    { trendCandidateId: created.trendCandidateId, evidenceType: "signal", description: "still going" },
-    { createdVia: "web_ui" }
-  );
-  const freshResult = await services.listTrendCandidatesWithFreshness();
-  assert.equal(freshResult.trendCandidates.find((c) => c.trendCandidateId === created.trendCandidateId)?.freshness, "fresh");
+  setNow(new Date(createdAt.getTime() + windowMs - 1));
+  const justInside = await services.listTrendCandidatesWithFreshness();
+  assert.equal(justInside.trendCandidates.find((c) => c.trendCandidateId === created.trendCandidateId)?.freshness, "fresh");
+
+  setNow(new Date(createdAt.getTime() + windowMs));
+  const exactlyAtWindow = await services.listTrendCandidatesWithFreshness();
+  assert.equal(exactlyAtWindow.trendCandidates.find((c) => c.trendCandidateId === created.trendCandidateId)?.freshness, "needs_attention");
 });
 
 test("AC-9H-13: listTrendCandidatesWithFreshness never changes listTrendCandidates's own existing MCP/CLI-facing output", async () => {
@@ -1586,7 +1616,7 @@ test("AC-9H-14: getTrendEvidenceSummary's independentChannelCount deduplicates b
   assert.equal(summary.evidence[0].description, "fourth, a different channel", "newest-first");
   assert.equal(summary.evidence[summary.evidence.length - 1].description, "first");
 
-  const plain = await services.listTrendEvidence({ trendCandidateId: created.trendCandidateId });
+  const plain = await services.getTrendEvidence({ trendCandidateId: created.trendCandidateId });
   assert.equal(plain.evidence[0].description, "first", "listTrendEvidence's own ascending order is unchanged");
 });
 
@@ -2415,14 +2445,14 @@ test("AC-9E-05: listAssignmentsForTopic/listTopicsForSubject return exactly the 
     { createdVia: "web_ui" }
   );
 
-  const forTopic = await services.listAssignmentsForTopic({ topicId: topic.topicId });
+  const forTopic = await services.listTopicAssignments({ topicId: topic.topicId });
   assert.equal(forTopic.assignments.length, 1);
 
   const forSubject = await services.listTopicsForSubject({ subjectType: "channel", subjectId: VALID_CHANNEL_ID });
   assert.equal(forSubject.assignments.length, 1);
 
   await services.removeTopicAssignment({ assignmentId: assignment.assignmentId });
-  assert.deepEqual((await services.listAssignmentsForTopic({ topicId: topic.topicId })).assignments, []);
+  assert.deepEqual((await services.listTopicAssignments({ topicId: topic.topicId })).assignments, []);
 });
 
 test("AC-9E-06: deleteTopic is a silent no-op for an already-absent topic (idempotent, mirrors removeFromWatchlist's own convention)", async () => {
@@ -2433,7 +2463,7 @@ test("AC-9E-06: deleteTopic is a silent no-op for an already-absent topic (idemp
 test("AC-9E-07: listAssignmentsForTopic rejects an unknown topicId with TOPIC_NOT_FOUND", async () => {
   const { services } = createFixture();
   await assert.rejects(
-    () => services.listAssignmentsForTopic({ topicId: "nonexistent-topic" }),
+    () => services.listTopicAssignments({ topicId: "nonexistent-topic" }),
     (error: unknown) => isDomainError(error) && error.code === "TOPIC_NOT_FOUND"
   );
 });
@@ -2679,11 +2709,11 @@ test("AC-9E-16: listTrendCandidates/listTrendEvidence round-trip; listTrendEvide
   assert.equal(list.trendCandidates.length, 1);
   assert.equal(list.trendCandidates[0].trendCandidateId, created.trendCandidateId);
 
-  const evidenceList = await services.listTrendEvidence({ trendCandidateId: created.trendCandidateId });
+  const evidenceList = await services.getTrendEvidence({ trendCandidateId: created.trendCandidateId });
   assert.equal(evidenceList.evidence.length, 2);
 
   await assert.rejects(
-    () => services.listTrendEvidence({ trendCandidateId: "nonexistent-trend" }),
+    () => services.getTrendEvidence({ trendCandidateId: "nonexistent-trend" }),
     (error: unknown) => isDomainError(error) && error.code === "TREND_CANDIDATE_NOT_FOUND"
   );
 });

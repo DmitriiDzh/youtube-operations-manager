@@ -15,7 +15,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ top
 
   try {
     const { topicId } = await params;
-    const result = await core.listAssignmentsForTopic({ topicId });
+    const result = await core.listTopicAssignments({ topicId });
     return NextResponse.json(result);
   } catch (error) {
     if (error instanceof DomainError) {
