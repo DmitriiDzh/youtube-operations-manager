@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { recordTrendEvidenceInputSchema } from "@/lib/market-intelligence/schemas";
 import { DomainError, parseWithSchema } from "@/lib/market-intelligence/contracts";
-import { createTrendEvidencePostHandler } from "./route";
+import { createTrendEvidenceGetHandler, createTrendEvidencePostHandler } from "./route";
 
 function makeRequest(body: unknown) {
   return new Request("http://localhost/api/market-intelligence/trend-candidates/tc-1/evidence", {
@@ -12,7 +12,50 @@ function makeRequest(body: unknown) {
   });
 }
 
+function makeGetRequest() {
+  return new Request("http://localhost/api/market-intelligence/trend-candidates/tc-1/evidence");
+}
+
 const params = Promise.resolve({ trendCandidateId: "tc-1" });
+
+test("evidence route GET: returns getTrendEvidenceSummary's own result, not the plain listTrendEvidence shape", async () => {
+  const handler = createTrendEvidenceGetHandler({
+    getSession: async () => ({ user: { id: "user-1" } }),
+    core: {
+      async getTrendEvidenceSummary() {
+        return { evidence: [{ evidenceId: "eve-1" }], independentChannelCount: 3 } as never;
+      },
+      async recordTrendEvidence() {
+        throw new Error("must not be called");
+      },
+    },
+  });
+
+  const response = await handler(makeGetRequest(), { params });
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.independentChannelCount, 3);
+});
+
+test("evidence route GET: an unauthenticated request is rejected before touching the core", async () => {
+  let called = false;
+  const handler = createTrendEvidenceGetHandler({
+    getSession: async () => null,
+    core: {
+      async getTrendEvidenceSummary() {
+        called = true;
+        throw new Error("must not be called");
+      },
+      async recordTrendEvidence() {
+        throw new Error("must not be called");
+      },
+    },
+  });
+
+  const response = await handler(makeGetRequest(), { params });
+  assert.equal(response.status, 401);
+  assert.equal(called, false);
+});
 
 // A fake `core.recordTrendEvidence` that validates through the REAL
 // `recordTrendEvidenceInputSchema` (not a hand-rolled stand-in) -- this is the exact schema the
@@ -32,8 +75,8 @@ function makeCore() {
         recordedAt: "2026-01-01T00:00:00.000Z",
       };
     },
-    async listTrendEvidence() {
-      return { evidence: [] };
+    async getTrendEvidenceSummary() {
+      return { evidence: [], independentChannelCount: 0 };
     },
   };
 }
@@ -90,8 +133,8 @@ test("evidence route POST: an unauthenticated request is rejected before touchin
         called = true;
         throw new Error("must not be called");
       },
-      async listTrendEvidence() {
-        return { evidence: [] };
+      async getTrendEvidenceSummary() {
+        return { evidence: [], independentChannelCount: 0 };
       },
     },
   });
@@ -108,8 +151,8 @@ test("evidence route POST: a DomainError from the core is mapped to its own erro
       async recordTrendEvidence() {
         throw new DomainError({ code: "TREND_CANDIDATE_NOT_FOUND", message: "No such trend candidate", details: { trendCandidateId: "tc-1" } });
       },
-      async listTrendEvidence() {
-        return { evidence: [] };
+      async getTrendEvidenceSummary() {
+        return { evidence: [], independentChannelCount: 0 };
       },
     },
   });

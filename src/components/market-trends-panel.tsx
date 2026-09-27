@@ -15,6 +15,10 @@ type MarketTrendCandidate = {
   status: TrendCandidateStatus;
   firstObservedAt: string;
   lastObservedAt: string;
+  // Phase 9 slice 9H, part A -- from listTrendCandidatesWithFreshness, never "stale" (that word is
+  // already one of TrendCandidateStatus's own five lifecycle values, so a "growing" trend showing a
+  // "stale" freshness badge would visibly contradict itself).
+  freshness: "fresh" | "needs_attention";
 };
 
 type MarketTrendEvidence = {
@@ -47,6 +51,7 @@ export function MarketTrendsPanel() {
 
   const [expandedTrendId, setExpandedTrendId] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<MarketTrendEvidence[]>([]);
+  const [independentChannelCount, setIndependentChannelCount] = useState(0);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
 
   const [statusChoice, setStatusChoice] = useState<TrendCandidateStatus>("growing");
@@ -85,11 +90,14 @@ export function MarketTrendsPanel() {
     evidenceRequestTrendIdRef.current = trendCandidateId;
     setEvidenceLoading(true);
     try {
+      // Returns getTrendEvidenceSummary's own shape (newest-first evidence + independentChannelCount),
+      // not the plain ascending listTrendEvidence shape (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_A_PLAN.md §6).
       const res = await fetch(`/api/market-intelligence/trend-candidates/${encodeURIComponent(trendCandidateId)}/evidence`);
       if (res.ok) {
         const data = await res.json();
         if (evidenceRequestTrendIdRef.current === trendCandidateId) {
           setEvidence(data.evidence ?? []);
+          setIndependentChannelCount(data.independentChannelCount ?? 0);
         }
       }
     } finally {
@@ -272,22 +280,54 @@ export function MarketTrendsPanel() {
               <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300">{trendCandidate.status}</span>
             </button>
             {trendCandidate.description && <p className="mt-1 text-xs text-zinc-500">{trendCandidate.description}</p>}
-            <p className="mt-1 text-xs text-zinc-600">Last observed {formatDisplayDateTime(trendCandidate.lastObservedAt)}</p>
+            <p className="mt-1 flex items-center gap-1.5 text-xs text-zinc-600">
+              First seen {formatDisplayDateTime(trendCandidate.firstObservedAt)} &middot; last observed{" "}
+              {formatDisplayDateTime(trendCandidate.lastObservedAt)}
+              <span
+                className={
+                  trendCandidate.freshness === "fresh"
+                    ? "rounded-full border border-emerald-800 bg-emerald-950/40 px-1.5 py-0.5 text-emerald-400"
+                    : "rounded-full border border-zinc-700 px-1.5 py-0.5 text-zinc-500"
+                }
+              >
+                {trendCandidate.freshness === "fresh" ? "evidence added recently" : "no recent evidence"}
+              </span>
+            </p>
 
             {expandedTrendId === trendCandidate.trendCandidateId && (
               <div className="mt-3 space-y-3 border-t border-zinc-800 pt-3">
                 <div>
-                  <p className="mb-1 text-xs font-medium text-zinc-400">Evidence</p>
+                  <p className="mb-1 text-xs font-medium text-zinc-400">
+                    Evidence {evidence.length > 0 && `(${independentChannelCount} independent channel${independentChannelCount === 1 ? "" : "s"})`}
+                  </p>
                   {evidenceLoading && <p className="text-xs text-zinc-500">Loading...</p>}
                   {!evidenceLoading && evidence.length === 0 && <p className="text-xs text-zinc-500">No evidence yet.</p>}
-                  <div className="space-y-1">
-                    {evidence.map((row) => (
-                      <div key={row.evidenceId} className="text-xs text-zinc-300">
-                        <span className="text-zinc-500">[{row.evidenceType}]</span> {row.description}
-                        {row.referenceId && <span className="text-zinc-500"> ({row.referenceId})</span>}
-                        <span className="text-zinc-600"> &middot; {formatDisplayDateTime(row.recordedAt)}</span>
+                  {!evidenceLoading && evidence.some((row) => row.evidenceType === "supporting_video") && (
+                    <div className="mb-2">
+                      <p className="text-[11px] uppercase tracking-wide text-zinc-500">Representative videos</p>
+                      <div className="space-y-1">
+                        {evidence
+                          .filter((row) => row.evidenceType === "supporting_video")
+                          .map((row) => (
+                            <div key={row.evidenceId} className="text-xs text-zinc-300">
+                              {row.description}
+                              {row.referenceId && <span className="text-zinc-500"> ({row.referenceId})</span>}
+                              <span className="text-zinc-600"> &middot; {formatDisplayDateTime(row.recordedAt)}</span>
+                            </div>
+                          ))}
                       </div>
-                    ))}
+                    </div>
+                  )}
+                  <div className="space-y-1">
+                    {evidence
+                      .filter((row) => row.evidenceType !== "supporting_video")
+                      .map((row) => (
+                        <div key={row.evidenceId} className="text-xs text-zinc-300">
+                          <span className="text-zinc-500">[{row.evidenceType}]</span> {row.description}
+                          {row.referenceId && <span className="text-zinc-500"> ({row.referenceId})</span>}
+                          <span className="text-zinc-600"> &middot; {formatDisplayDateTime(row.recordedAt)}</span>
+                        </div>
+                      ))}
                   </div>
                 </div>
 

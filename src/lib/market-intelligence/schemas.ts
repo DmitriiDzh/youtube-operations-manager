@@ -396,6 +396,93 @@ export const getWatchlistEntryContextOutputSchema = z
   .strict();
 
 // ---------------------------------------------------------------------------
+// Phase 9 slice 9H, part A (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_A_PLAN.md) -- Channels
+// intelligence view. A UI-only wrapper around `getWatchlistEntryContext`, never a change to that
+// function's own contract (§3 of that plan). Deliberately does NOT include `videoSnapshots` --
+// see the plan's §4/§4a for why (an unbounded, append-only series that must not ship over the
+// network in full) -- `latestSnapshotPerVideo` and the separate `getChannelVideoSnapshotHistory`
+// action below are the bounded replacements.
+// ---------------------------------------------------------------------------
+
+const fieldVelocitySchema = z
+  .object({
+    value: z.number().nullable(),
+    basis: z.enum(["insufficient_history", "stale_latest", "partial_window", "full_window"]),
+  })
+  .strict();
+
+const breakoutAssessmentSchema = z
+  .object({
+    videoId: z.string().min(1),
+    dayOffset: z.number().int(),
+    videoViewCount: z.number().int().nullable(),
+    channelBaselineMedianViewCount: z.number().nullable(),
+    ratio: z.number().nullable(),
+    isBreakout: z.boolean(),
+    reason: z.string(),
+  })
+  .strict();
+
+const emergingChannelAssessmentSchema = z
+  .object({
+    researchChannelId: z.string().min(1),
+    recentBreakoutVideoCount: z.number().int(),
+    subscriberVelocityPerDay: z.number().nullable(),
+    isEmerging: z.boolean(),
+    reasons: z.array(z.string()),
+  })
+  .strict();
+
+const latestVideoSnapshotSchema = z
+  .object({
+    videoId: z.string().min(1),
+    observedAt: z.string(),
+    viewCount: z.number().int().nullable(),
+    likeCount: z.number().int().nullable(),
+    commentCount: z.number().int().nullable(),
+    publishedAt: z.string().nullable(),
+  })
+  .strict();
+
+export const getChannelIntelligenceSummaryInputSchema = z.object({ channelId: z.string().min(1) }).strict();
+
+// Returned alongside the figures they produced, not just used internally -- a caller-chosen
+// methodology that isn't shown to the reader is exactly the "opaque score" owner spec §11 forbids
+// (plan §2). The Web UI reads these instead of hardcoding a client-side copy that could drift from
+// services.ts's own exported constants.
+const channelIntelligenceMethodologySchema = z
+  .object({
+    channelVelocityWindowDays: z.number().int().positive(),
+    recentVideoWindowDays: z.number().int().positive(),
+    channelBaselineDayOffset: z.number().int().positive(),
+  })
+  .strict();
+
+export const getChannelIntelligenceSummaryOutputSchema = z
+  .object({
+    channel: researchChannelSchema,
+    evidence: z.array(researchEvidenceSchema),
+    channelSnapshots: z.array(marketChannelSnapshotSchema),
+    topicAssignments: z.array(marketTopicAssignmentSchema),
+    dataQualityFlags: z.array(dataQualityFlagSchema),
+    subscriberVelocity: fieldVelocitySchema,
+    uploadCadence: fieldVelocitySchema,
+    recentBreakoutVideos: z.array(breakoutAssessmentSchema),
+    emergingChannel: emergingChannelAssessmentSchema,
+    latestSnapshotPerVideo: z.array(latestVideoSnapshotSchema),
+    methodology: channelIntelligenceMethodologySchema,
+  })
+  .strict();
+
+export const getChannelVideoSnapshotHistoryInputSchema = z
+  .object({ channelId: z.string().min(1), videoId: z.string().min(1) })
+  .strict();
+
+export const getChannelVideoSnapshotHistoryOutputSchema = z
+  .object({ snapshots: z.array(marketVideoSnapshotSchema) })
+  .strict();
+
+// ---------------------------------------------------------------------------
 // Phase 9 slice 9E, part B (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- manual/structural trend
 // candidates.
 // ---------------------------------------------------------------------------
@@ -500,6 +587,29 @@ export const recordTrendEvidenceInputSchema = z.discriminatedUnion("evidenceType
 export const recordTrendEvidenceOutputSchema = marketTrendEvidenceSchema;
 export const listTrendEvidenceInputSchema = z.object({ trendCandidateId: z.string().min(1) }).strict();
 export const listTrendEvidenceOutputSchema = z.object({ evidence: z.array(marketTrendEvidenceSchema) }).strict();
+
+// Phase 9 slice 9H, part A -- two UI-only wrappers closing owner spec §30's "Trends" gaps.
+// `listTrendCandidatesWithFreshness` pairs each candidate with a NEW, trend-specific freshness
+// label, kept OUT of `marketTrendCandidateSchema`/`listTrendCandidatesOutputSchema` itself since
+// those are an existing MCP/CLI agent contract (`agent_list_market_records`) this part must not
+// change (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_A_PLAN.md §6).
+const trendFreshnessSchema = z.enum(["fresh", "needs_attention"]);
+
+export const listTrendCandidatesWithFreshnessOutputSchema = z
+  .object({
+    trendCandidates: z.array(marketTrendCandidateSchema.extend({ freshness: trendFreshnessSchema }).strict()),
+  })
+  .strict();
+
+// `getTrendEvidenceSummary` reuses `listTrendEvidenceInputSchema` (same one `trendCandidateId`
+// field) -- newest-first evidence plus the independent-supporting-channel count, both computed
+// server-side so they stay testable (this repo has no component-level tests, RISK-05).
+export const getTrendEvidenceSummaryOutputSchema = z
+  .object({
+    evidence: z.array(marketTrendEvidenceSchema),
+    independentChannelCount: z.number().int().nonnegative(),
+  })
+  .strict();
 
 // ---------------------------------------------------------------------------
 // Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md) -- agent-created

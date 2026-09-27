@@ -4,6 +4,16 @@ import {
   assessSnapshotCompleteness,
   toHiddenSubscriberCountFlag,
 } from "./data-quality";
+import { computeSnapshotVelocity, type FieldVelocity, type SnapshotWithTime } from "./derived-metrics";
+import {
+  assessBreakout,
+  assessEmergingChannel,
+  computeAgeNormalizedViews,
+  computeChannelVideoBaseline,
+  type BreakoutAssessment,
+  type EmergingChannelAssessment,
+  type VideoSnapshotWithTime,
+} from "./historical-intelligence";
 import {
   DomainError,
   MARKET_INTELLIGENCE_STALE_WINDOW_MS,
@@ -47,7 +57,12 @@ import {
   discoverChannelsOutputSchema,
   fetchPublicSnapshotInputSchema,
   fetchPublicSnapshotOutputSchema,
+  getChannelIntelligenceSummaryInputSchema,
+  getChannelIntelligenceSummaryOutputSchema,
+  getChannelVideoSnapshotHistoryInputSchema,
+  getChannelVideoSnapshotHistoryOutputSchema,
   getMarketResearchRequestInputSchema,
+  getTrendEvidenceSummaryOutputSchema,
   getWatchlistEntryContextOutputSchema,
   getWatchlistEntryInputSchema,
   getWatchlistEntryOutputSchema,
@@ -63,6 +78,7 @@ import {
   listTopicsForSubjectOutputSchema,
   listTopicsOutputSchema,
   listTrendCandidatesOutputSchema,
+  listTrendCandidatesWithFreshnessOutputSchema,
   listTrendEvidenceInputSchema,
   listTrendEvidenceOutputSchema,
   listVideoSnapshotsInputSchema,
@@ -582,6 +598,30 @@ type ServiceDependencies = {
   ): Promise<StoredMarketResearchRequestForService | null>;
 };
 
+// Phase 9 slice 9H, part A (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_A_PLAN.md §2) -- named,
+// caller-chosen constants for `getChannelIntelligenceSummary`. 9A's `computeSnapshotVelocity` and
+// 9D's `computeAgeNormalizedViews`/`computeChannelVideoBaseline` deliberately leave these choices to
+// the caller (owner spec §10: "the caller decides what counts as 'recent'") -- exported and shown in
+// the UI next to their own figure, never used only internally, since an unstated methodology is
+// exactly the "opaque score" spec §11 forbids for breakout detection.
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+export const CHANNEL_VELOCITY_WINDOW_DAYS = 7;
+export const CHANNEL_BASELINE_DAY_OFFSET = 7;
+// 180, not a narrower window, specifically so a monthly-or-slower uploader still has a real chance
+// at the 4 qualifying videos leave-one-out needs (see the plan's own §2 for the full reasoning,
+// including the real limit this constant does NOT remove: a video's own day-7 point only exists if
+// a collection run happened to land within ~1.75 days of it, and collection only ever runs from a
+// dashboard page load).
+export const RECENT_VIDEO_WINDOW_DAYS = 180;
+// A trend's own `lastObservedAt` only moves when evidence is added (manually, or by a future
+// structural detector) -- a human timescale, unlike 9I's `MARKET_INTELLIGENCE_STALE_WINDOW_MS` (24h,
+// a collection-cadence concept this deliberately does NOT reuse -- see the plan's own §6 for why
+// reusing it, and the word "stale" itself, was wrong: "stale" already names one of
+// `TrendCandidateStatus`'s five lifecycle values, so a "growing" trend showing a "stale" freshness
+// badge would visibly contradict itself). A named, adjustable starting point, not a claimed-correct
+// number, exactly like `BREAKOUT_RATIO_THRESHOLD`'s own precedent.
+export const TREND_EVIDENCE_FRESH_WINDOW_DAYS = 30;
+
 // Phase 9 slice 9B -- real YouTube Data API v3 quota costs (`channels.list`/`playlistItems.list`/
 // `videos.list` are each a flat 1 unit regardless of requested parts, per the API's own published
 // quota table); a channel is attempted for at most these 3 real calls (enumeration is capped to a
@@ -941,6 +981,171 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           dataQualityFlags,
         },
         "get watchlist entry context output"
+      );
+    },
+
+    /**
+     * Phase 9 slice 9H, part A (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_A_PLAN.md) -- the first
+     * real caller either `derived-metrics.ts` (9A) or `historical-intelligence.ts` (9D) has had
+     * since they shipped. A UI-only wrapper around `getWatchlistEntryContext` (never a change to
+     * that function's own MCP/CLI-facing contract, per this plan's own §3) that layers computed
+     * subscriber velocity / upload cadence / per-video breakout assessment / emerging-channel
+     * assessment on top -- all composition lives here, never in a route or a component (AGENTS.md
+     * §M). Deliberately omits `videoSnapshots` from its own output (§4/§4a of the plan) -- an
+     * unbounded, append-only series that must not ship over the network in full; the bounded
+     * `latestSnapshotPerVideo` below, and the separate `getChannelVideoSnapshotHistory` action,
+     * are its replacements for this action's own callers.
+     */
+    async getChannelIntelligenceSummary(input: unknown): Promise<{
+      channel: ResearchChannel;
+      evidence: ResearchEvidence[];
+      channelSnapshots: MarketChannelSnapshot[];
+      topicAssignments: MarketTopicAssignment[];
+      dataQualityFlags: DataQualityFlag[];
+      subscriberVelocity: FieldVelocity;
+      uploadCadence: FieldVelocity;
+      recentBreakoutVideos: BreakoutAssessment[];
+      emergingChannel: EmergingChannelAssessment;
+      latestSnapshotPerVideo: {
+        videoId: string;
+        observedAt: string;
+        viewCount: number | null;
+        likeCount: number | null;
+        commentCount: number | null;
+        publishedAt: string | null;
+      }[];
+      methodology: {
+        channelVelocityWindowDays: number;
+        recentVideoWindowDays: number;
+        channelBaselineDayOffset: number;
+      };
+    }> {
+      const parsedInput = parseWithSchema(
+        getChannelIntelligenceSummaryInputSchema,
+        input,
+        "get channel intelligence summary input"
+      );
+      const context = await services.getWatchlistEntryContext(parsedInput);
+      const now = deps.clock.now();
+
+      // Converted once, here, from getWatchlistEntryContext's own ISO-string contract to the `Date`
+      // shape derived-metrics.ts/historical-intelligence.ts's pure functions take -- never repeated
+      // ad hoc at each call site below (found necessary by advisor review).
+      const channelSnapshotsWithTime: SnapshotWithTime[] = context.channelSnapshots.map((s) => ({
+        subscriberCount: s.subscriberCount,
+        viewCount: s.viewCount,
+        videoCount: s.videoCount,
+        observedAt: new Date(s.observedAt),
+      }));
+      const velocity = computeSnapshotVelocity(channelSnapshotsWithTime, CHANNEL_VELOCITY_WINDOW_DAYS, now);
+
+      const videoSnapshotsByVideoId = new Map<string, MarketVideoSnapshot[]>();
+      for (const snapshot of context.videoSnapshots) {
+        const existing = videoSnapshotsByVideoId.get(snapshot.videoId);
+        if (existing) existing.push(snapshot);
+        else videoSnapshotsByVideoId.set(snapshot.videoId, [snapshot]);
+      }
+
+      // `listMarketVideoSnapshotsByChannel` (the source of context.videoSnapshots) orders ascending
+      // by observedAt -- the last element of each per-video group is always that video's latest.
+      const latestSnapshotPerVideo = [...videoSnapshotsByVideoId.entries()].map(([videoId, snapshots]) => {
+        const latest = snapshots[snapshots.length - 1];
+        return {
+          videoId,
+          observedAt: latest.observedAt,
+          viewCount: latest.viewCount,
+          likeCount: latest.likeCount,
+          commentCount: latest.commentCount,
+          publishedAt: latest.publishedAt,
+        };
+      });
+
+      // Recent-video age-normalized points at CHANNEL_BASELINE_DAY_OFFSET, one per video that has a
+      // publishedAt within RECENT_VIDEO_WINDOW_DAYS -- see the plan's own §2/§4 for why 180 days and
+      // why a video with no publishedAt is excluded entirely rather than guessed.
+      const recentVideoPoints: { videoId: string; viewCount: number | null }[] = [];
+      for (const [videoId, snapshots] of videoSnapshotsByVideoId) {
+        const publishedAtRaw = snapshots.find((s) => s.publishedAt !== null)?.publishedAt ?? null;
+        if (publishedAtRaw === null) continue;
+        const publishedAt = new Date(publishedAtRaw);
+        const ageDays = (now.getTime() - publishedAt.getTime()) / MS_PER_DAY;
+        if (ageDays > RECENT_VIDEO_WINDOW_DAYS) continue;
+
+        const snapshotsWithTime: VideoSnapshotWithTime[] = snapshots.map((s) => ({
+          viewCount: s.viewCount,
+          observedAt: new Date(s.observedAt),
+        }));
+        const [point] = computeAgeNormalizedViews(snapshotsWithTime, publishedAt, [CHANNEL_BASELINE_DAY_OFFSET], now);
+        recentVideoPoints.push({ videoId, viewCount: point.viewCount });
+      }
+
+      // LEAVE-ONE-OUT baseline, computed separately per video from every OTHER recent video's own
+      // point -- never including the video being assessed in its own baseline (plan §4's own
+      // hand-computed disagreement fixture explains why this, not "include-self", was chosen).
+      // `computeChannelVideoBaseline` already filters out null viewCounts on its own, so a video
+      // with no usable day-offset point (insufficient_history) is automatically excluded from every
+      // OTHER video's baseline sample, with no extra filtering needed here.
+      const recentBreakoutVideos: BreakoutAssessment[] = recentVideoPoints.map(({ videoId, viewCount }) => {
+        const others = recentVideoPoints.filter((p) => p.videoId !== videoId).map((p) => ({ viewCount: p.viewCount }));
+        const baseline = computeChannelVideoBaseline(others, CHANNEL_BASELINE_DAY_OFFSET);
+        return assessBreakout(videoId, { viewCount, dayOffset: CHANNEL_BASELINE_DAY_OFFSET }, baseline);
+      });
+
+      const recentBreakoutVideoCount = recentBreakoutVideos.filter((v) => v.isBreakout).length;
+      const emergingChannel = assessEmergingChannel(context.channel.channelId, recentBreakoutVideoCount, velocity.subscriberCount);
+
+      return parseWithSchema(
+        getChannelIntelligenceSummaryOutputSchema,
+        {
+          channel: context.channel,
+          evidence: context.evidence,
+          channelSnapshots: context.channelSnapshots,
+          topicAssignments: context.topicAssignments,
+          dataQualityFlags: context.dataQualityFlags,
+          subscriberVelocity: velocity.subscriberCount,
+          uploadCadence: velocity.videoCount,
+          recentBreakoutVideos,
+          emergingChannel,
+          latestSnapshotPerVideo,
+          methodology: {
+            channelVelocityWindowDays: CHANNEL_VELOCITY_WINDOW_DAYS,
+            recentVideoWindowDays: RECENT_VIDEO_WINDOW_DAYS,
+            channelBaselineDayOffset: CHANNEL_BASELINE_DAY_OFFSET,
+          },
+        },
+        "get channel intelligence summary output"
+      );
+    },
+
+    /**
+     * Phase 9 slice 9H, part A -- one video's own snapshot series, bounded by filtering
+     * server-side before returning (plan §4a/§4b). The underlying `listMarketVideoSnapshotsByChannel`
+     * read is still unbounded at the query level (RISK-78, `docs/TECHNICAL_DEBT.md`) -- this action
+     * bounds what actually reaches the network, not the database read itself.
+     */
+    async getChannelVideoSnapshotHistory(input: unknown): Promise<{ snapshots: MarketVideoSnapshot[] }> {
+      const parsedInput = parseWithSchema(
+        getChannelVideoSnapshotHistoryInputSchema,
+        input,
+        "get channel video snapshot history input"
+      );
+
+      const channelRow = await deps.getResearchChannelById(parsedInput.channelId);
+      if (!channelRow) {
+        throw new DomainError({
+          code: "RESEARCH_CHANNEL_NOT_AVAILABLE",
+          message: "No watchlist entry for the requested channel",
+          details: { channelId: parsedInput.channelId },
+        });
+      }
+
+      const rows = await deps.listMarketVideoSnapshotsByChannel(parsedInput.channelId);
+      const filtered = rows.filter((row) => row.videoId === parsedInput.videoId);
+
+      return parseWithSchema(
+        getChannelVideoSnapshotHistoryOutputSchema,
+        { snapshots: filtered.map(toMarketVideoSnapshot) },
+        "get channel video snapshot history output"
       );
     },
 
@@ -1819,6 +2024,29 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
     },
 
     /**
+     * Phase 9 slice 9H, part A -- a UI-only wrapper pairing each candidate with a freshness label,
+     * never merged into `listTrendCandidates`/`marketTrendCandidateSchema` themselves (those are an
+     * existing `agent_list_market_records` MCP/CLI contract this part must not change -- plan §6).
+     */
+    async listTrendCandidatesWithFreshness(): Promise<{
+      trendCandidates: (MarketTrendCandidate & { freshness: "fresh" | "needs_attention" })[];
+    }> {
+      const { trendCandidates } = await services.listTrendCandidates();
+      const now = deps.clock.now();
+      const withFreshness = trendCandidates.map((candidate) => {
+        const ageMs = now.getTime() - new Date(candidate.lastObservedAt).getTime();
+        const freshness: "fresh" | "needs_attention" =
+          ageMs >= TREND_EVIDENCE_FRESH_WINDOW_DAYS * MS_PER_DAY ? "needs_attention" : "fresh";
+        return { ...candidate, freshness };
+      });
+      return parseWithSchema(
+        listTrendCandidatesWithFreshnessOutputSchema,
+        { trendCandidates: withFreshness },
+        "list trend candidates with freshness output"
+      );
+    },
+
+    /**
      * Changes a trend candidate's lifecycle status. Requires a `reason` (schema-enforced), which is
      * written as a `signal`-type evidence row in this SAME action (advisor review, before
      * implementation: "every status change should require a reason, written as a signal evidence
@@ -1918,6 +2146,33 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         listTrendEvidenceOutputSchema,
         { evidence: rows.map(toMarketTrendEvidence) },
         "list trend evidence output"
+      );
+    },
+
+    /**
+     * Phase 9 slice 9H, part A -- a UI-only wrapper around `listTrendEvidence` closing owner spec
+     * §30's "latest evidence"/"independent channels" gaps (plan §6). `listTrendEvidence` itself, and
+     * its own ascending order, are unchanged -- confirmed by grep to have no MCP/CLI caller today, so
+     * this wrapper's own newest-first order is a new, separate contract, not a change to an existing
+     * one. The independent-channel count is real deduplication logic (not a trivial filter), which is
+     * why it lives here rather than in the component -- this repo has no component-level tests
+     * (`docs/TECHNICAL_DEBT.md` RISK-05), so logic that needs a test must live in `services.ts`.
+     */
+    async getTrendEvidenceSummary(input: unknown): Promise<{
+      evidence: MarketTrendEvidence[];
+      independentChannelCount: number;
+    }> {
+      const { evidence } = await services.listTrendEvidence(input);
+      const independentChannelCount = new Set(
+        evidence
+          .filter((e): e is MarketTrendEvidence & { referenceId: string } => e.evidenceType === "supporting_channel" && e.referenceId !== null)
+          .map((e) => e.referenceId)
+      ).size;
+
+      return parseWithSchema(
+        getTrendEvidenceSummaryOutputSchema,
+        { evidence: [...evidence].reverse(), independentChannelCount },
+        "get trend evidence summary output"
       );
     },
 

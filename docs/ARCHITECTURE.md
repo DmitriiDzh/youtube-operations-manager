@@ -1419,7 +1419,7 @@ content-proposal/artifact registration, a Codex operations-workspace template, a
 review -- **which of these is actually implemented as of any given moment is tracked exclusively
 in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here**.
 
-## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9E + 9G + 9I
+## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9E + 9G + 9H (part A) + 9I
 
 Owner instruction, Telegram 2026-09-26: an explicit assignment to research, plan, and begin
 implementing Phase 9 (`docs/roadmap/FUTURE_PHASES.md` §5) as its own feature branch, superseding
@@ -1677,3 +1677,69 @@ the request stuck in `execution_failed` and no path back to `pending`. The corre
 budget now leaves the request genuinely untouched (still `pending`), and the real `discoverChannels`
 call afterward re-runs the same check anyway (cheap, intentional defense-in-depth against a race
 between the two).
+
+**Slice 9H, part A (`docs/roadmap/plans/PHASE_9_SLICE_9H_PART_A_PLAN.md`, 2026-09-27) -- Channels
+intelligence view, the first real caller either `derived-metrics.ts` (9A) or `historical-
+intelligence.ts` (9D) has had since they shipped.** Two new UI-only service actions compose EXISTING
+reads/pure functions rather than extending any existing MCP/CLI-facing contract:
+`getChannelIntelligenceSummary` calls `getWatchlistEntryContext` internally and layers computed
+subscriber velocity, upload cadence (the same `computeSnapshotVelocity` call's `videoCount` field),
+per-video breakout assessment, and an emerging-channel verdict on top; `listTrendCandidatesWithFreshness`/
+`getTrendEvidenceSummary` do the same over `listTrendCandidates`/`listTrendEvidence`.
+
+**The one architectural point worth recording is the breakout baseline's own methodology choice,
+found necessary by advisor review before implementation:** each recent video is compared against a
+**leave-one-out** baseline -- the median of every OTHER recent video's own age-normalized view count,
+never including the video itself. Including a video in its own baseline biases the comparison exactly
+when it matters most: with a small recent-video sample, a single genuine breakout can pull the
+baseline itself upward, partially masking the very signal being measured. The concrete disagreement
+this was pinned against (also this slice's test fixture): four videos with day-7 age-normalized views
+`[10, 20, 30, 65]` -- leave-one-out gives the video at 65 a baseline of 20 (median of the other
+three) and a ratio of 3.25 (a breakout, `>= BREAKOUT_RATIO_THRESHOLD`); include-self gives it a
+baseline of 25 (median of all four) and a ratio of 2.6 (not a breakout). The cost of the more
+defensible method is stated plainly, not hidden: leave-one-out needs `BREAKOUT_MIN_BASELINE_SAMPLE_SIZE`
+(3) OTHER recent videos, i.e. 4 total, before ANY video can get a verdict at all.
+
+`RECENT_VIDEO_WINDOW_DAYS` (180, not a narrower window) is itself a considered choice, not an
+arbitrary round number: this application's only collection trigger is a dashboard page load
+(`collect-if-stale`, gated to at most once per 24h per channel, no background scheduler exists) --
+a video's own day-7 age-normalized point only exists at all if a collection run happened to land
+within `ageNormalizedTolerance(7)` (`max(1, 7*0.25)` = 1.75 days) of its 7-day mark. A monthly-or-
+slower-uploading channel needs a wide `RECENT_VIDEO_WINDOW_DAYS` just to have a realistic chance at
+the 4 qualifying videos leave-one-out requires; widening this window costs nothing, since a video
+lacking a usable point simply reports `insufficient_history` (via `computeAgeNormalizedViews`) and is
+excluded from every other video's baseline sample, never fabricated. The four named constants driving
+all of this (`CHANNEL_VELOCITY_WINDOW_DAYS`, `CHANNEL_BASELINE_DAY_OFFSET`, `RECENT_VIDEO_WINDOW_DAYS`,
+plus 9H's own new `TREND_EVIDENCE_FRESH_WINDOW_DAYS` for Trends) are exported from `services.ts` and
+returned to the client inside `getChannelIntelligenceSummary`'s own `methodology` field, rather than
+hardcoded a second time client-side where they could drift -- shown in the UI next to the figure each
+one produced, since an unstated methodology is exactly the "opaque score" owner spec §11 forbids.
+
+`getChannelIntelligenceSummary` deliberately does NOT return `getWatchlistEntryContext`'s own
+`videoSnapshots` array -- an unbounded, append-only series (RISK-70's own class of finding, tracked
+here as RISK-78 since this is the first time anything renders it to a human rather than an agent
+making one bounded MCP call) that must not ship over the network in full merely because the DOM
+rendering of it is bounded. `latestSnapshotPerVideo` (one row per distinct video, computed
+server-side) replaces it for the main view; a separate `getChannelVideoSnapshotHistory` action
+(its own new route) serves one video's own full series on demand, filtering server-side before
+returning so the bounded response, not just the bounded render, is the actual fix.
+
+Trend freshness deliberately does NOT reuse 9I's `MARKET_INTELLIGENCE_STALE_WINDOW_MS`/the word
+"stale" -- that constant means "a channel collection run hasn't happened in a day," a daily-cadence
+concept, while a trend's own `lastObservedAt` only moves on a human timescale (evidence added
+manually, or by a future structural detector); worse, `"stale"` already names one of
+`TrendCandidateStatus`'s own five lifecycle values, so a `"growing"` trend showing a `"stale"`
+freshness badge would visibly contradict itself in the same UI. A new, trend-specific
+`TREND_EVIDENCE_FRESH_WINDOW_DAYS` (30, a named starting point, not a claimed-correct number) and
+non-colliding wording ("evidence added recently" / "no recent evidence") were used instead.
+
+Neither `listTrendCandidates` (the `agent_list_market_records` MCP tool's own underlying call, and its
+CLI counterpart's) nor `getWatchlistEntryContext`'s own output schema were touched -- both wrapper
+actions call the existing action and pair its result with newly-computed fields in a SEPARATE return
+shape, confirmed by a dedicated test that the original action's own output is byte-for-byte unchanged.
+Explicitly out of scope for this part, and why: an "Overview" tab (needs this part's own summary as a
+building block first); a "Videos" tab (`market_video_snapshots` has no `title` column -- though
+`getPublicVideoSnapshots` already fetches it from YouTube at zero extra quota cost and simply
+discards it today, a separately-scoped schema change); an "Opportunities" tab (needs 9F's niche
+candidates, which don't exist yet); wiring `detectDisappearedVideoIds` (9I) into any UI (its own doc
+comment warns against a naive two-snapshot diff, real design work belonging with the Videos tab).

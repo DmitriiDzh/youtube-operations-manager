@@ -7,7 +7,7 @@ import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-stat
 
 type TrendEvidenceRouteDeps = {
   getSession: () => Promise<{ user?: { id?: string | null } } | null>;
-  core: Pick<ReturnType<typeof createMarketIntelligenceCore>, "listTrendEvidence" | "recordTrendEvidence">;
+  core: Pick<ReturnType<typeof createMarketIntelligenceCore>, "getTrendEvidenceSummary" | "recordTrendEvidence">;
 };
 
 const defaultDeps: TrendEvidenceRouteDeps = {
@@ -20,6 +20,11 @@ const defaultDeps: TrendEvidenceRouteDeps = {
 // code review: an earlier fix here was "verified" only against a hand-rolled toy schema, not the
 // actual `recordTrendEvidenceInputSchema`, and this route had no test of its own at all despite
 // being the one place a real regression (the `referenceId: undefined` strict-schema bug) shipped.
+//
+// GET switched to `getTrendEvidenceSummary` in Phase 9 slice 9H, part A
+// (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_A_PLAN.md §6) -- newest-first evidence plus an
+// independent-supporting-channel count; `listTrendEvidence` itself (no MCP/CLI caller, confirmed by
+// grep) keeps its own ascending order unchanged for any future caller that wants it directly.
 export function createTrendEvidenceGetHandler(deps: TrendEvidenceRouteDeps = defaultDeps) {
   return async function GET(_request: Request, { params }: { params: Promise<{ trendCandidateId: string }> }) {
     const session = await deps.getSession();
@@ -29,7 +34,7 @@ export function createTrendEvidenceGetHandler(deps: TrendEvidenceRouteDeps = def
 
     try {
       const { trendCandidateId } = await params;
-      const result = await deps.core.listTrendEvidence({ trendCandidateId });
+      const result = await deps.core.getTrendEvidenceSummary({ trendCandidateId });
       return NextResponse.json(result);
     } catch (error) {
       if (error instanceof DomainError) {
