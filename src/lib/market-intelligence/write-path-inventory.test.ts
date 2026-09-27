@@ -85,6 +85,27 @@ function isInsideDir(file: string, dir: string): boolean {
 // removed. Only this module's own tree needs these symbols (via its own adapter).
 const ALLOWED_IMPORTER_DIRS = [path.join(SRC_ROOT, "lib", "market-intelligence")];
 
+// Narrow, single-file exception (found necessary while fixing RISK-52, 2026-09-27): the device-
+// handoff snapshot mechanism (`src/lib/snapshot/contracts.ts`'s `SNAPSHOT_TRANSFERRED_TABLES`) is
+// cross-cutting infrastructure that must know the raw SQL table name of every table it transfers,
+// across every domain -- it already lists `batches`/`audit_events`/etc. from other domains the same
+// way. This is categorically different from what PHASE9-INV-02 exists to prevent (another domain
+// reaching into market-intelligence's internals to read/write its data live, which would break if
+// market-intelligence were removed) -- if market-intelligence were removed, this list's own market-
+// intelligence entries would need deleting too, a visible, understood coordination point, not a
+// hidden coupling. Scoped to ONLY the raw snake_case table-name strings, never the camelCase
+// TypeScript symbols above -- this file must still fail if it ever imports actual business logic.
+const SNAKE_CASE_TABLE_NAME_EXEMPT_FILES = [path.join(SRC_ROOT, "lib", "snapshot", "contracts.ts")];
+
+function isSnakeCaseTableName(symbol: string): boolean {
+  return /^[a-z]+(?:_[a-z]+)+$/.test(symbol);
+}
+
+function isExemptReference(file: string, symbol: string): boolean {
+  const isExemptFile = SNAKE_CASE_TABLE_NAME_EXEMPT_FILES.some((exempt) => path.resolve(file) === path.resolve(exempt));
+  return isExemptFile && isSnakeCaseTableName(symbol);
+}
+
 // Derived from db.ts's own exports (rather than a hand-maintained literal list) so a future
 // research_*-named export can never be silently forgotten here the way `deleteResearchChannel`
 // was in the first version of this fix (found by independent review, round 2, 2026-09-26: this
@@ -174,6 +195,7 @@ test("PHASE9-INV-02: no file outside market-intelligence's own module references
     if (path.resolve(file) === path.resolve(SRC_ROOT, "lib", "db.ts")) continue;
     const content = await readFile(file, "utf8");
     for (const symbol of forbiddenDbSymbols) {
+      if (isExemptReference(file, symbol)) continue;
       // Word-boundary match -- avoids false positives from an unrelated identifier merely
       // containing one of these names as a substring.
       if (new RegExp(`\\b${symbol}\\b`).test(content)) {
@@ -190,4 +212,17 @@ test("PHASE9-INV-02 helper: isInsideDir rejects a same-prefix sibling directory 
   assert.equal(isInsideDir(path.join(SRC_ROOT, "lib", "market-intelligence", "services.ts"), dir), true);
   assert.equal(isInsideDir(path.join(SRC_ROOT, "lib", "market-intelligence-v2", "x.ts"), dir), false);
   assert.equal(isInsideDir(path.join(SRC_ROOT, "lib", "market-intelligenceother.ts"), dir), false);
+});
+
+test("PHASE9-INV-02 helper: isExemptReference (RISK-52's snapshot-contracts exception) stays narrow -- only the exact exempt file, and only for snake_case table names, never a camelCase TS symbol", () => {
+  const snapshotContracts = path.join(SRC_ROOT, "lib", "snapshot", "contracts.ts");
+  assert.equal(isExemptReference(snapshotContracts, "research_channels"), true);
+  assert.equal(isExemptReference(snapshotContracts, "market_research_requests"), true);
+  // A camelCase TS symbol must still be caught even in the one exempt file -- this exemption is
+  // only for the raw SQL table-name strings the snapshot mechanism genuinely needs, never for an
+  // actual business-logic import, which would be a real violation of this module's isolation.
+  assert.equal(isExemptReference(snapshotContracts, "deleteResearchChannel"), false);
+  // A different file referencing the same snake_case table name is NOT exempt -- this is a
+  // single-file exception, not a blanket rule for every snake_case-looking string.
+  assert.equal(isExemptReference(path.join(SRC_ROOT, "lib", "some-other-module", "index.ts"), "research_channels"), false);
 });

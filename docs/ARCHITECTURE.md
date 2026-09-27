@@ -486,8 +486,15 @@ Import never replaces the live database file. It ATTACHes a migrated, verified, 
 copy of the snapshot's `data.db` to the live connection and, in one transaction, fully replaces
 every table on `SNAPSHOT_REPLACE_ON_IMPORT_TABLES` — as of M6 (2026-09-23,
 `docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md`), the four Category D
-write-pipeline tables (`batches`, `batch_ledger_rows`, `batch_attempts`, `audit_events`) only.
-`SNAPSHOT_TRANSFERRED_TABLES` (the snapshot *file's* own contents, §13.3) additionally includes
+write-pipeline tables (`batches`, `batch_ledger_rows`, `batch_attempts`, `audit_events`), **plus, as
+of Phase 9 slice 9H part A (2026-09-27), all 12 Phase 9 market-intelligence tables** (`research_
+channels`, `research_evidence`, `market_channel_snapshots`, `market_video_snapshots`, `market_
+intelligence_collection_runs`, `market_discovery_candidates`, `market_discovery_runs`, `market_
+topics`, `market_topic_assignments`, `market_trend_candidates`, `market_trend_evidence`, `market_
+research_requests`) — closing RISK-52's market-intelligence portion per the owner's own 2026-09-26
+decision (`docs/roadmap/plans/PHASE_9_PLAN.md` §12 point 5), which had been recorded as resolved
+but never actually implemented until this fix. `SNAPSHOT_TRANSFERRED_TABLES` (the snapshot *file's*
+own contents, §13.3) additionally includes
 `schema_meta` — never touched by this replace loop, only read by `migrateStagedCopy` to migrate
 the *staged* copy before merging. Everything this mechanism used to also carry, beyond today's
 four, has since moved away by one of three routes: `channels`/`videos` to an independent

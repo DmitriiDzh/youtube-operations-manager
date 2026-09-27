@@ -51,6 +51,20 @@ async function seedUser(client: Client, userId: string, accessToken: string) {
   });
 }
 
+async function seedResearchChannel(client: Client, channelId: string) {
+  await client.execute({
+    sql: "INSERT INTO research_channels (id, reason, created_via) VALUES (?, ?, ?)",
+    args: [channelId, "Competitor in the same niche", "web_ui"],
+  });
+}
+
+async function seedMarketChannelSnapshot(client: Client, id: string, researchChannelId: string, subscriberCount: number) {
+  await client.execute({
+    sql: "INSERT INTO market_channel_snapshots (id, research_channel_id, subscriber_count, hidden_subscriber_count, source, created_via) VALUES (?, ?, ?, 0, 'manual observation', 'web_ui')",
+    args: [id, researchChannelId, subscriberCount],
+  });
+}
+
 // AC-CONN-02 (INV-CP.1/CP.2): secrets never survive export.
 test("exportSnapshot: the published data.db contains zero users rows and zero token bytes", () =>
   withTempDir("snapshot-test-", async (dir) => {
@@ -363,6 +377,54 @@ test("applySnapshotToDatabase: replaces application-state tables while never tou
     });
     assert.equal(cred.rows.length, 1);
     assert.equal(cred.rows[0].ciphertext, "local-ciphertext");
+
+    source.close();
+    receiving.close();
+  }));
+
+// RISK-52 (docs/TECHNICAL_DEBT.md), owner decision docs/roadmap/plans/PHASE_9_PLAN.md §12 point 5
+// ("Да, я бы объединял") -- Phase 9 market-intelligence tables must travel with device handoff,
+// never silently stay device-local. Every Phase 9 slice from 9A onward added a new table without
+// adding it to SNAPSHOT_TRANSFERRED_TABLES until this fix (found during 9H part A planning); this
+// test proves the fix against the REAL applySnapshotToDatabase mechanism, not merely that the
+// constant contains the right strings.
+test("applySnapshotToDatabase: Phase 9 market-intelligence tables (research_channels and a child snapshot table) travel with the snapshot, replacing the receiving device's own", () =>
+  withTempDir("snapshot-test-", async (dir) => {
+    const source = await makeClient(dir, "source.db");
+    await seedResearchChannel(source, "UCsource0000000000000001");
+    await seedMarketChannelSnapshot(source, "snap-source-1", "UCsource0000000000000001", 1000);
+
+    const manifest = await exportSnapshot({
+      client: source,
+      snapshotsDir: path.join(dir, "snapshots"),
+      deviceId: "device-a",
+      schemaVersion: 3,
+    });
+    const snapshotDir = path.join(dir, "snapshots", manifest.snapshotId);
+
+    // Receiving device already has its own, different watchlist entry -- this must NOT survive
+    // the import (the same "replace wholesale" semantics already established for `batches`).
+    const receiving = await makeClient(dir, "receiving.db");
+    await seedResearchChannel(receiving, "UCreceiving000000000001");
+
+    const workingCopyPath = path.join(dir, "working-copy.db");
+    await copyDatabaseConsistently(
+      createClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
+      workingCopyPath
+    );
+    await migrateStagedCopy(workingCopyPath);
+
+    await applySnapshotToDatabase(receiving, workingCopyPath);
+
+    const channels = await receiving.execute("SELECT id FROM research_channels");
+    assert.deepEqual(
+      channels.rows.map((r) => r.id),
+      ["UCsource0000000000000001"],
+      "the source device's own watchlist entry must arrive, and the receiving device's own prior entry must not survive"
+    );
+
+    const snapshots = await receiving.execute("SELECT id, research_channel_id, subscriber_count FROM market_channel_snapshots");
+    assert.deepEqual(snapshots.rows, [{ id: "snap-source-1", research_channel_id: "UCsource0000000000000001", subscriber_count: 1000 }]);
 
     source.close();
     receiving.close();
