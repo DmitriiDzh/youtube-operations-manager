@@ -16,15 +16,19 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ ch
   }
 
   try {
-    let body: Record<string, unknown>;
+    let body: unknown;
     try {
-      body = (await request.json()) as Record<string, unknown>;
+      body = await request.json();
     } catch {
       return NextResponse.json({ error: "validation_failed", message: "Request body must be valid JSON" }, { status: 400 });
     }
+    // A well-formed-but-non-object body (e.g. a literal `null`) parses fine as JSON, so it must be
+    // handled here rather than destructured directly (same fix applied to the topics/trend-
+    // candidates routes -- found by independent code review).
+    const bodyRecord = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
 
     const { channelId } = await params;
-    const candidate = await core.updateDiscoveryCandidateStatus({ channelId, status: body.status });
+    const candidate = await core.updateDiscoveryCandidateStatus({ channelId, status: bodyRecord.status });
     return NextResponse.json({ candidate });
   } catch (error) {
     if (error instanceof DomainError) {

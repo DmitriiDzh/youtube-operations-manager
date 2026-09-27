@@ -454,20 +454,34 @@ type ServiceDependencies = {
   }): Promise<void>;
   deleteMarketTopicAssignment(assignmentId: string): Promise<void>;
   // Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- trend candidates, part B.
+  // `insertMarketTrendCandidateWithInitialEvidence`/`updateMarketTrendCandidateStatusWithEvidence` are the
+  // atomic (single-transaction) forms -- see their own doc comments in db.ts for why a
+  // two-separate-writes shape was found unsafe by independent review (closes RISK-70 and its
+  // status-change sibling).
   listMarketTrendCandidates(): Promise<StoredMarketTrendCandidateForService[]>;
   getMarketTrendCandidateById(trendCandidateId: string): Promise<StoredMarketTrendCandidateForService | null>;
-  insertMarketTrendCandidate(input: {
-    id: string;
-    title: string;
-    description?: string | null;
-    topicId?: string | null;
-    createdVia: string;
-    at?: Date;
-  }): Promise<void>;
-  updateMarketTrendCandidateStatusAndObservedAt(
+  insertMarketTrendCandidateWithInitialEvidence(
+    candidate: {
+      id: string;
+      title: string;
+      description?: string | null;
+      topicId?: string | null;
+      createdVia: string;
+      at?: Date;
+    },
+    initialEvidence: {
+      id: string;
+      evidenceType: TrendEvidenceType;
+      referenceId?: string | null;
+      description: string;
+      createdVia: string;
+    }
+  ): Promise<void>;
+  updateMarketTrendCandidateStatusWithEvidence(
     trendCandidateId: string,
     status: TrendCandidateStatus,
-    at: Date
+    at: Date,
+    evidence: { id: string; description: string; createdVia: string }
   ): Promise<void>;
   touchMarketTrendCandidateLastObservedAt(trendCandidateId: string, at: Date): Promise<void>;
   listTrendEvidence(trendCandidateId: string): Promise<StoredMarketTrendEvidenceForService[]>;
@@ -1592,9 +1606,10 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * Creates a new manually-declared trend candidate (Phase 9 slice 9E, part B; spec §14: "do not
      * allow lifecycle labels to exist without supporting observable rules or evidence"). Requires
      * at least one evidence item up front (enforced by `createTrendCandidateInputSchema`'s own
-     * shape, not re-checked here) -- there is no code path that creates a trend candidate with zero
-     * evidence rows. Always starts at status "emerging" (`insertMarketTrendCandidate`'s own db.ts
-     * contract, not overridable from this input).
+     * shape, not re-checked here) -- `insertMarketTrendCandidateWithInitialEvidence`'s own single
+     * transaction (db.ts) guarantees there is no code path that creates a trend candidate with zero
+     * evidence rows, even on a partial failure. Always starts at status "emerging" (that same
+     * function's own db.ts contract, not overridable from this input).
      */
     async createTrendCandidate(
       input: unknown,
@@ -1620,24 +1635,28 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       // wall-clock vs. the injected `deps.clock` -- which a test freezing the clock far from real
       // time would expose as two mismatched timestamps for what should be the same instant).
       const now = deps.clock.now();
-      await deps.insertMarketTrendCandidate({
-        id,
-        title: parsedInput.title,
-        description: parsedInput.description ?? null,
-        topicId: parsedInput.topicId ?? null,
-        createdVia: callOrigin.createdVia,
-        at: now,
-      });
-
       const initialEvidence = parsedInput.initialEvidence;
-      await deps.insertMarketTrendEvidence({
-        id: deps.idGenerator(),
-        trendCandidateId: id,
-        evidenceType: initialEvidence.evidenceType,
-        referenceId: initialEvidence.evidenceType === "signal" ? null : initialEvidence.referenceId,
-        description: initialEvidence.description,
-        createdVia: callOrigin.createdVia,
-      });
+      // Single transaction (`insertMarketTrendCandidateWithInitialEvidence`) -- a two-separate-writes
+      // version was found by independent review to let a throw between them leave a trend
+      // candidate with zero evidence rows, the exact invariant spec §14 exists to prevent
+      // (RISK-70).
+      await deps.insertMarketTrendCandidateWithInitialEvidence(
+        {
+          id,
+          title: parsedInput.title,
+          description: parsedInput.description ?? null,
+          topicId: parsedInput.topicId ?? null,
+          createdVia: callOrigin.createdVia,
+          at: now,
+        },
+        {
+          id: deps.idGenerator(),
+          evidenceType: initialEvidence.evidenceType,
+          referenceId: initialEvidence.evidenceType === "signal" ? null : initialEvidence.referenceId,
+          description: initialEvidence.description,
+          createdVia: callOrigin.createdVia,
+        }
+      );
 
       const row = (await deps.getMarketTrendCandidateById(id))!;
       return parseWithSchema(createTrendCandidateOutputSchema, toMarketTrendCandidate(row), "create trend candidate output");
@@ -1678,25 +1697,22 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         });
       }
 
-      // Status change written FIRST, evidence SECOND (found by independent code review: the
-      // reverse order let a throw from the status update itself, after the evidence insert had
-      // already committed, leave a permanent evidence row falsely claiming "status changed to X"
-      // when it never actually did -- a lying audit trail, worse than this order's own residual
-      // risk of a real status change whose explanatory evidence write then fails, which at least
-      // leaves the candidate's own status field telling the truth and is recoverable via a
-      // follow-up recordTrendEvidence call).
-      await deps.updateMarketTrendCandidateStatusAndObservedAt(
+      // Single transaction (`updateMarketTrendCandidateStatusWithEvidence`) -- neither write-order of two
+      // separate writes is safe: evidence-then-status can leave a false "status changed" narrative
+      // if the status write then fails, and status-then-evidence can leave a real status change
+      // with no evidence trail if the evidence write then fails, contradicting this table's own "a
+      // status can never move without a corresponding evidence trail" invariant (found by
+      // independent review). A transaction makes both failure modes moot.
+      await deps.updateMarketTrendCandidateStatusWithEvidence(
         parsedInput.trendCandidateId,
         parsedInput.status,
-        deps.clock.now()
+        deps.clock.now(),
+        {
+          id: deps.idGenerator(),
+          description: `Status changed to "${parsedInput.status}": ${parsedInput.reason}`,
+          createdVia: callOrigin.createdVia,
+        }
       );
-      await deps.insertMarketTrendEvidence({
-        id: deps.idGenerator(),
-        trendCandidateId: parsedInput.trendCandidateId,
-        evidenceType: "signal",
-        description: `Status changed to "${parsedInput.status}": ${parsedInput.reason}`,
-        createdVia: callOrigin.createdVia,
-      });
 
       const row = (await deps.getMarketTrendCandidateById(parsedInput.trendCandidateId))!;
       return parseWithSchema(marketTrendCandidateSchema, toMarketTrendCandidate(row), "update trend candidate status output");

@@ -85,7 +85,8 @@ import {
   listMarketTrendCandidates,
   getMarketTrendCandidateById,
   insertMarketTrendCandidate,
-  updateMarketTrendCandidateStatusAndObservedAt,
+  insertMarketTrendCandidateWithInitialEvidence,
+  updateMarketTrendCandidateStatusWithEvidence,
   touchMarketTrendCandidateLastObservedAt,
   listTrendEvidence,
   insertMarketTrendEvidence,
@@ -1735,31 +1736,41 @@ test("listMarketTopics orders by name; the real UNIQUE(name) index rejects an ex
     await assert.rejects(() => insertMarketTopic({ id: "topic-c", name: "Alpha", createdVia: "web_ui" }, isolatedDb));
   }));
 
-// Phase 9 slice 9E -- trend candidates/evidence round-trip.
+// Phase 9 slice 9E -- trend candidates/evidence round-trip, through the real production entry
+// points (`insertMarketTrendCandidateWithInitialEvidence`/`updateMarketTrendCandidateStatusWithEvidence`), not
+// the lower-level single-table functions those wrap -- this proves the same schema/column
+// round-trip AND that the real call path services.ts uses actually works end-to-end.
 test("market_trend_candidates/market_trend_evidence round-trip through the real Drizzle schema; new candidates start as 'emerging'", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
 
-    await insertMarketTrendCandidate({ id: "trend-1", title: "Retro Cocktail Lounge", description: "desc", createdVia: "web_ui" }, isolatedDb);
+    await insertMarketTrendCandidateWithInitialEvidence(
+      { id: "trend-1", title: "Retro Cocktail Lounge", description: "desc", createdVia: "web_ui" },
+      { id: "evidence-1", evidenceType: "supporting_channel", referenceId: "UC_SOME_CHANNEL0000000", description: "This channel shows the pattern", createdVia: "web_ui" },
+      isolatedDb
+    );
     const candidate = await getMarketTrendCandidateById("trend-1", isolatedDb);
     assert.equal(candidate?.status, "emerging", "every new trend candidate must start as 'emerging'");
     assert.equal(candidate?.topicId, null);
 
-    await insertMarketTrendEvidence(
-      { id: "evidence-1", trendCandidateId: "trend-1", evidenceType: "supporting_channel", referenceId: "UC_SOME_CHANNEL0000000", description: "This channel shows the pattern", createdVia: "web_ui" },
-      isolatedDb
-    );
     const evidence = await listTrendEvidence("trend-1", isolatedDb);
     assert.equal(evidence.length, 1);
     assert.equal(evidence[0].evidenceType, "supporting_channel");
     assert.equal(evidence[0].referenceId, "UC_SOME_CHANNEL0000000");
 
     const now = new Date("2026-09-27T12:00:00.000Z");
-    await updateMarketTrendCandidateStatusAndObservedAt("trend-1", "growing", now, isolatedDb);
+    await updateMarketTrendCandidateStatusWithEvidence(
+      "trend-1",
+      "growing",
+      now,
+      { id: "evidence-2", description: "Three more channels covering it this week", createdVia: "web_ui" },
+      isolatedDb
+    );
     const updated = await getMarketTrendCandidateById("trend-1", isolatedDb);
     assert.equal(updated?.status, "growing");
     assert.equal(updated?.lastObservedAt.getTime(), now.getTime());
+    assert.equal((await listTrendEvidence("trend-1", isolatedDb)).length, 2, "the status change must also record its own evidence row");
 
     const laterAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
     await touchMarketTrendCandidateLastObservedAt("trend-1", laterAt, isolatedDb);
@@ -1769,6 +1780,68 @@ test("market_trend_candidates/market_trend_evidence round-trip through the real 
 
     const list = await listMarketTrendCandidates(isolatedDb);
     assert.equal(list.length, 1);
+  }));
+
+// Found by independent review: two separate top-level writes (candidate insert, then evidence
+// insert) let a throw between them leave a trend candidate with zero evidence rows -- the exact
+// invariant spec §14 exists to prevent (docs/TECHNICAL_DEBT.md RISK-70). Proves the real fix
+// (`database.transaction(...)`) actually rolls back against the real libsql driver, not just
+// against a fake in-memory store that has no partial-write failure mode of its own.
+test("insertMarketTrendCandidateWithInitialEvidence: a failure on the evidence write rolls back the candidate insert too (real transaction, not two independent writes)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    // Pre-seed an evidence row under a specific id, so the wrapper's own evidence insert collides
+    // on a duplicate PRIMARY KEY -- forcing its SECOND statement to fail after its FIRST statement
+    // (the candidate insert) already ran.
+    await insertMarketTrendCandidate({ id: "trend-seed", title: "Seed", createdVia: "web_ui" }, isolatedDb);
+    await insertMarketTrendEvidence(
+      { id: "evidence-collision", trendCandidateId: "trend-seed", evidenceType: "signal", description: "seed", createdVia: "web_ui" },
+      isolatedDb
+    );
+
+    await assert.rejects(() =>
+      insertMarketTrendCandidateWithInitialEvidence(
+        { id: "trend-2", title: "Should not persist", createdVia: "web_ui" },
+        { id: "evidence-collision", evidenceType: "signal", description: "colliding id", createdVia: "web_ui" },
+        isolatedDb
+      )
+    );
+
+    const candidate = await getMarketTrendCandidateById("trend-2", isolatedDb);
+    assert.equal(candidate, null, "the candidate insert must be rolled back when its own transaction's evidence write fails");
+    const evidenceForFailedCandidate = await listTrendEvidence("trend-2", isolatedDb);
+    assert.deepEqual(evidenceForFailedCandidate, []);
+  }));
+
+test("updateMarketTrendCandidateStatusWithEvidence: a failure on the evidence write rolls back the status change too (real transaction)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await insertMarketTrendCandidate({ id: "trend-3", title: "Original", createdVia: "web_ui" }, isolatedDb);
+    await insertMarketTrendEvidence(
+      { id: "evidence-collision-2", trendCandidateId: "trend-3", evidenceType: "signal", description: "seed", createdVia: "web_ui" },
+      isolatedDb
+    );
+    const before = await getMarketTrendCandidateById("trend-3", isolatedDb);
+    assert.equal(before?.status, "emerging");
+
+    await assert.rejects(() =>
+      updateMarketTrendCandidateStatusWithEvidence(
+        "trend-3",
+        "growing",
+        new Date("2026-09-27T12:00:00.000Z"),
+        { id: "evidence-collision-2", description: "colliding id", createdVia: "web_ui" },
+        isolatedDb
+      )
+    );
+
+    const after = await getMarketTrendCandidateById("trend-3", isolatedDb);
+    assert.equal(after?.status, "emerging", "the status update must be rolled back when its own transaction's evidence write fails");
+    const evidence = await listTrendEvidence("trend-3", isolatedDb);
+    assert.equal(evidence.length, 1, "only the original seed evidence row must remain, never a duplicate or a partial write");
   }));
 
 // AC-SCHEMA-04

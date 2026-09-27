@@ -50,15 +50,30 @@ export type DataQualityFlag =
 **Seven entries, not the spec's literal eight — a documented discrepancy, not a silent drop
 (`AGENTS.md` §A: "identify and report the discrepancy... do not silently rewrite requirements to
 match an incomplete implementation").** The spec's own `deleted_video`/`private_video` are collapsed
-into one `video_no_longer_public` flag, because **the real YouTube Data API v3 genuinely cannot
-distinguish them for a non-owned channel's video**, confirmed against the API's own documented
-behavior (not assumed): a multi-id `videos.list` call simply omits an id from `items` when it can no
-longer be returned, with no per-id error or status field explaining why (a private video is never
-visible to an unauthenticated/public caller in the first place, so `status.privacyStatus` never
-reaches this codebase for someone else's video; a deleted video is indistinguishable from that same
-omission). `PHASE_9_PLAN.md` §10 already found this exact ambiguity one level up ("a public
-`channels.list`/`videos.list` response omitting a video means either 'never observed' or 'now
-deleted/private' — genuinely indistinguishable without a separate record of the attempt itself").
+into one `video_no_longer_public` flag.
+
+**Correction (2026-09-27, later the same day -- the original version of this section overstated its
+own evidence).** The claim below was first written as "confirmed against the API's own documented
+behavior." Re-checked directly against the official docs (fetched both pages, not assumed): the
+`videos.list` reference page does not describe per-id behavior for a multi-id request at all, and
+`playlistItems.list` (the other real call 9B's own collector makes) has a `status.privacyStatus`
+field whose behavior for a since-deleted video is likewise undocumented there. **What is actually
+true, and narrower than the original claim:** this codebase's own `listUploadsPlaylistFirstPageVideoIds`
+(`src/lib/youtube-read-gateway/data-api.ts`) requests only `part: ["contentDetails"]` from
+`playlistItems.list` -- it never requests `snippet`/`status`, so no `privacyStatus` signal reaches
+this codebase today regardless of whatever that field might contain for a deleted video. Whether
+requesting that part would even resolve deleted-vs-private is itself unconfirmed (undocumented, and
+a decisive answer needs a real API call against a known-deleted and a known-private video id, which
+spends real quota and was not authorized for this purpose here). The collapse to
+`video_no_longer_public` remains this module's own honest design choice either way -- exposing the
+one thing this codebase's actual calls can observe ("this previously-known video id no longer comes
+back") without fabricating a split it does not have evidence for -- but the discrepancy note itself
+must say "undocumented, unverified, and not currently requested," not "confirmed." `PHASE_9_PLAN.md`
+§10's own related finding ("a public `channels.list`/`videos.list` response omitting a video means
+either 'never observed' or 'now deleted/private' — genuinely indistinguishable without a separate
+record of the attempt itself") predates this session and was not independently re-verified here
+either -- it should be read with the same caveat until someone does.
+
 **If the project owner later wants the two split**, the only honest path is a manual, operator-set
 distinction recorded the same way `research_evidence` already records manual observations — never an
 auto-detected split this codebase cannot actually make. This is recorded here as the discrepancy

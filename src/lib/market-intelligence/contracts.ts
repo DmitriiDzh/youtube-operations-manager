@@ -194,9 +194,12 @@ export type MarketTrendEvidence = {
 /**
  * Seven entries, not the spec's literal eight -- `deleted_video`/`private_video` are deliberately
  * collapsed into `video_no_longer_public`. See `PHASE_9_SLICE_9I_PLAN.md` §2 for the full
- * discrepancy report (AGENTS.md §A): the real YouTube Data API v3 cannot distinguish the two for a
- * non-owned channel's video, so auto-detecting a split this codebase's own research found the API
- * does not support would be dishonest, not a "more complete" implementation of the spec's list.
+ * discrepancy report (AGENTS.md §A) -- corrected 2026-09-27: whether the real YouTube Data API v3
+ * can distinguish the two is actually UNDOCUMENTED and unverified (an earlier version of this
+ * comment overstated it as "confirmed"), and this codebase's own real call
+ * (`listUploadsPlaylistFirstPageVideoIds`) doesn't even request the API part that might carry a
+ * distinguishing signal. Auto-detecting a split with no confirmed evidence it exists would be
+ * dishonest, not a "more complete" implementation of the spec's list.
  */
 export type DataQualityFlag =
   | "insufficient_history"

@@ -70,10 +70,12 @@ export function toAgeNormalizedBasisFlag(
 /**
  * A pure set-difference: which of `previousVideoIds` are no longer present in `currentVideoIds`.
  * Labeled `"video_no_longer_public"` by the (not-yet-existing) caller -- never split into
- * deleted/private, since the real YouTube Data API v3 cannot make that distinction for a
- * non-owned channel's video (see `PHASE_9_SLICE_9I_PLAN.md` §2). No real caller in this slice --
- * needs the same before/after video-id enumeration a real 9B collection run produces, which is a
- * service-layer wiring decision belonging to 9H.
+ * deleted/private, since whether the real YouTube Data API v3 even CAN make that distinction is
+ * itself undocumented and unverified (corrected 2026-09-27; see `PHASE_9_SLICE_9I_PLAN.md` §2's own
+ * correction note), and this codebase's own real call doesn't currently request the API part that
+ * might carry a signal either way. No real caller in this slice -- needs the same before/after
+ * video-id enumeration a real 9B collection run produces, which is a service-layer wiring decision
+ * belonging to 9H.
  */
 export function detectDisappearedVideoIds(
   previousVideoIds: readonly string[],

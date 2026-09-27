@@ -5305,6 +5305,58 @@ export async function getMarketTrendCandidateById(
   return row ?? null;
 }
 
+/**
+ * Atomic wrapper -- inserts a trend candidate AND its required initial evidence row in a single
+ * `database.transaction()`, mirroring `deleteResearchChannel`'s own established cascade-transaction
+ * pattern (found by independent review: an earlier version called `insertMarketTrendCandidate`/
+ * `insertMarketTrendEvidence` as two separate top-level writes, which let a throw between them
+ * leave a trend candidate with zero evidence rows -- the exact invariant spec §14 and this
+ * table's own schema-level `initialEvidence` requirement exist to prevent). Closes
+ * `docs/TECHNICAL_DEBT.md` RISK-70.
+ */
+export async function insertMarketTrendCandidateWithInitialEvidence(
+  candidate: {
+    id: string;
+    title: string;
+    description?: string | null;
+    topicId?: string | null;
+    createdVia: string;
+    at?: Date;
+  },
+  initialEvidence: {
+    id: string;
+    evidenceType: TrendEvidenceType;
+    referenceId?: string | null;
+    description: string;
+    createdVia: string;
+  },
+  database: AppDb = db
+): Promise<void> {
+  // Builds queries directly against `tx` (matching `deleteResearchChannel`'s own established
+  // convention) rather than delegating to `insertMarketTrendCandidate`/`insertMarketTrendEvidence`
+  // -- drizzle's transaction callback type lacks `AppDb`'s top-level `.batch()` method, so it is not
+  // assignable to those functions' `database: AppDb` parameter.
+  await database.transaction(async (tx) => {
+    await tx.insert(marketTrendCandidates).values({
+      id: candidate.id,
+      title: candidate.title,
+      description: candidate.description ?? null,
+      topicId: candidate.topicId ?? null,
+      status: "emerging",
+      createdVia: candidate.createdVia,
+      ...(candidate.at ? { firstObservedAt: candidate.at, lastObservedAt: candidate.at } : {}),
+    });
+    await tx.insert(marketTrendEvidence).values({
+      id: initialEvidence.id,
+      trendCandidateId: candidate.id,
+      evidenceType: initialEvidence.evidenceType,
+      referenceId: initialEvidence.referenceId ?? null,
+      description: initialEvidence.description,
+      createdVia: initialEvidence.createdVia,
+    });
+  });
+}
+
 export async function insertMarketTrendCandidate(
   input: {
     id: string;
@@ -5336,28 +5388,43 @@ export async function insertMarketTrendCandidate(
   });
 }
 
-/** Status and `lastObservedAt` are set together here ONLY because the service layer always writes
- * a `market_trend_evidence` row (the real "observation") in the same action that calls this --
- * never called on its own from a bare status change with no accompanying evidence (owner spec §14:
- * "do not allow lifecycle labels to exist without supporting observable rules or evidence"). */
-export async function updateMarketTrendCandidateStatusAndObservedAt(
-  trendCandidateId: string,
-  status: TrendCandidateStatus,
-  at: Date,
-  database: AppDb = db
-): Promise<void> {
-  await database
-    .update(marketTrendCandidates)
-    .set({ status, lastObservedAt: at })
-    .where(eq(marketTrendCandidates.id, trendCandidateId));
-}
-
 export async function touchMarketTrendCandidateLastObservedAt(
   trendCandidateId: string,
   at: Date,
   database: AppDb = db
 ): Promise<void> {
   await database.update(marketTrendCandidates).set({ lastObservedAt: at }).where(eq(marketTrendCandidates.id, trendCandidateId));
+}
+
+/**
+ * Atomic wrapper -- changes status AND records its own `signal` evidence row in a single
+ * `database.transaction()` (found by independent review: two separate top-level writes let either
+ * ordering fail honestly in only one direction -- evidence-then-status left a false "status
+ * changed" narrative if the status write then failed; status-then-evidence left a real status
+ * change with no evidence trail if the evidence write then failed, contradicting this table's own
+ * "a status can never move without a corresponding evidence trail" invariant documented throughout
+ * this module). A transaction makes both problems moot -- either both writes land or neither does.
+ */
+export async function updateMarketTrendCandidateStatusWithEvidence(
+  trendCandidateId: string,
+  status: TrendCandidateStatus,
+  at: Date,
+  evidence: { id: string; description: string; createdVia: string },
+  database: AppDb = db
+): Promise<void> {
+  // Builds queries directly against `tx` -- see `insertMarketTrendCandidateWithInitialEvidence`'s own
+  // doc comment for why this doesn't delegate to the single-write functions above.
+  await database.transaction(async (tx) => {
+    await tx.update(marketTrendCandidates).set({ status, lastObservedAt: at }).where(eq(marketTrendCandidates.id, trendCandidateId));
+    await tx.insert(marketTrendEvidence).values({
+      id: evidence.id,
+      trendCandidateId,
+      evidenceType: "signal",
+      referenceId: null,
+      description: evidence.description,
+      createdVia: evidence.createdVia,
+    });
+  });
 }
 
 export type StoredMarketTrendEvidence = {

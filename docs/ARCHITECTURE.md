@@ -1604,10 +1604,20 @@ at that same stage). The one architectural point worth recording here: a new `Da
 9C's partial-progress-before-failure counts) into one name other code can pattern-match on, rather
 than each module keeping its own ad-hoc vocabulary indefinitely. **A documented spec/API-capability
 discrepancy, not a silent drop (`AGENTS.md` §A):** the union has seven entries, not the spec's
-literal eight -- `deleted_video`/`private_video` are collapsed into one `video_no_longer_public`,
-because the real YouTube Data API v3 genuinely cannot distinguish the two for a non-owned channel's
-video (verified against the API's own documented behavior: a multi-id `videos.list` call simply
-omits an id from `items` with no per-id error explaining why, and a private video is never visible to
-an unauthenticated/public caller in the first place). `MARKET_INTELLIGENCE_STALE_WINDOW_MS` moved
-from a private `services.ts` constant to `contracts.ts` so this module's own staleness threshold and
-9B's real collection-staleness check share the exact same value, never two copies that could drift.
+literal eight -- `deleted_video`/`private_video` are collapsed into one `video_no_longer_public`.
+**Correction (2026-09-27, later the same day; the original claim below was overstated):** this
+slice's own plan doc and an earlier version of this section both said the two were "verified" as
+indistinguishable against the API's documented behavior. Re-checked directly: the official
+`videos.list` docs do not describe per-id behavior for a multi-id request at all (confirmed by
+fetching that page, not assumed), and `playlistItems.list` (the other call 9B's own collector makes)
+has a `status.privacyStatus` field whose behavior for a since-deleted video is likewise undocumented
+there. The premise that a private video is never visible to an unauthenticated/public caller is
+solid (YouTube's own access model), but the stronger claim -- that this codebase's specific call
+pattern genuinely cannot tell "deleted" from "private" -- is **not documented and not live-verified**
+(would need a real API call against a known deleted vs. known private video id, which spends real
+quota and was not authorized for this purpose). The seven-entry union and the `video_no_longer_public`
+collapse stand as this module's own design choice either way (still the more honest option
+absent a confirmed distinguishing signal), but the discrepancy note should say "undocumented,
+unverified," not "verified." `MARKET_INTELLIGENCE_STALE_WINDOW_MS` moved from a private `services.ts`
+constant to `contracts.ts` so this module's own staleness threshold and 9B's real
+collection-staleness check share the exact same value, never two copies that could drift.

@@ -495,32 +495,55 @@ function createFakeStore() {
     async getMarketTrendCandidateById(trendCandidateId: string) {
       return trendCandidates.get(trendCandidateId) ?? null;
     },
-    async insertMarketTrendCandidate(input: {
-      id: string;
-      title: string;
-      description?: string | null;
-      topicId?: string | null;
-      createdVia: string;
-      at?: Date;
-    }) {
-      const now = input.at ?? new Date();
-      trendCandidates.set(input.id, {
-        id: input.id,
-        title: input.title,
-        description: input.description ?? null,
-        topicId: input.topicId ?? null,
+    // Atomic (single-transaction, in the real db.ts) forms -- the fake store has no partial-write
+    // failure mode of its own to simulate, but implements the same combined effect so
+    // services.test.ts's own tests exercise the exact call shape `services.ts` now uses. Real
+    // atomicity against libsql is proven in `db.test.ts`, not here.
+    async insertMarketTrendCandidateWithInitialEvidence(
+      candidate: { id: string; title: string; description?: string | null; topicId?: string | null; createdVia: string; at?: Date },
+      initialEvidence: { id: string; evidenceType: TrendEvidenceType; referenceId?: string | null; description: string; createdVia: string }
+    ) {
+      const now = candidate.at ?? new Date();
+      trendCandidates.set(candidate.id, {
+        id: candidate.id,
+        title: candidate.title,
+        description: candidate.description ?? null,
+        topicId: candidate.topicId ?? null,
         status: "emerging",
         firstObservedAt: now,
         lastObservedAt: now,
-        createdVia: input.createdVia,
+        createdVia: candidate.createdVia,
+      });
+      trendEvidence.push({
+        id: initialEvidence.id,
+        trendCandidateId: candidate.id,
+        evidenceType: initialEvidence.evidenceType,
+        referenceId: initialEvidence.referenceId ?? null,
+        description: initialEvidence.description,
+        createdVia: initialEvidence.createdVia,
+        recordedAt: now,
       });
     },
-    async updateMarketTrendCandidateStatusAndObservedAt(trendCandidateId: string, status: TrendCandidateStatus, at: Date) {
+    async updateMarketTrendCandidateStatusWithEvidence(
+      trendCandidateId: string,
+      status: TrendCandidateStatus,
+      at: Date,
+      evidence: { id: string; description: string; createdVia: string }
+    ) {
       const row = trendCandidates.get(trendCandidateId);
       if (row) {
         row.status = status;
         row.lastObservedAt = at;
       }
+      trendEvidence.push({
+        id: evidence.id,
+        trendCandidateId,
+        evidenceType: "signal",
+        referenceId: null,
+        description: evidence.description,
+        createdVia: evidence.createdVia,
+        recordedAt: at,
+      });
     },
     async touchMarketTrendCandidateLastObservedAt(trendCandidateId: string, at: Date) {
       const row = trendCandidates.get(trendCandidateId);

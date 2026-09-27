@@ -16,11 +16,11 @@ import {
   insertMarketIntelligenceCollectionRun,
   insertMarketTopic,
   insertMarketTopicAssignment,
-  insertMarketTrendCandidate,
   insertMarketTrendEvidence,
   insertMarketVideoSnapshot,
   insertResearchChannel,
   insertResearchEvidence,
+  insertMarketTrendCandidateWithInitialEvidence,
   listAssignmentsForTopic,
   listMarketChannelSnapshotsByChannel,
   listMarketDiscoveryCandidates,
@@ -38,7 +38,7 @@ import {
   setMarketIntelligenceDailyQuotaBudgetUnits,
   touchMarketDiscoveryCandidateLastSeen,
   touchMarketTrendCandidateLastObservedAt,
-  updateMarketTrendCandidateStatusAndObservedAt,
+  updateMarketTrendCandidateStatusWithEvidence,
 } from "@/lib/db";
 import { createIdGenerator } from "../contracts";
 
@@ -85,10 +85,13 @@ export function createMarketIntelligenceStoreAdapter() {
     insertMarketTopicAssignment,
     deleteMarketTopicAssignment,
     // Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- trend candidates, part B.
+    // `insertMarketTrendCandidateWithInitialEvidence`/`updateMarketTrendCandidateStatusWithEvidence` are the
+    // atomic (single-transaction) forms found necessary by independent review -- see their own
+    // doc comments in db.ts (closes `docs/TECHNICAL_DEBT.md` RISK-70 and its status-change sibling).
     listMarketTrendCandidates,
     getMarketTrendCandidateById,
-    insertMarketTrendCandidate,
-    updateMarketTrendCandidateStatusAndObservedAt,
+    insertMarketTrendCandidateWithInitialEvidence,
+    updateMarketTrendCandidateStatusWithEvidence,
     touchMarketTrendCandidateLastObservedAt,
     listTrendEvidence,
     insertMarketTrendEvidence,

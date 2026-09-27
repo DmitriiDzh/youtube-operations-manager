@@ -56,8 +56,8 @@ export function createMarketIntelligenceCore() {
     // Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- trend candidates, part B.
     listMarketTrendCandidates: store.listMarketTrendCandidates,
     getMarketTrendCandidateById: store.getMarketTrendCandidateById,
-    insertMarketTrendCandidate: store.insertMarketTrendCandidate,
-    updateMarketTrendCandidateStatusAndObservedAt: store.updateMarketTrendCandidateStatusAndObservedAt,
+    insertMarketTrendCandidateWithInitialEvidence: store.insertMarketTrendCandidateWithInitialEvidence,
+    updateMarketTrendCandidateStatusWithEvidence: store.updateMarketTrendCandidateStatusWithEvidence,
     touchMarketTrendCandidateLastObservedAt: store.touchMarketTrendCandidateLastObservedAt,
     listTrendEvidence: store.listTrendEvidence,
     insertMarketTrendEvidence: store.insertMarketTrendEvidence,
