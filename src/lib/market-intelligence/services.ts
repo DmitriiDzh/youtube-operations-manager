@@ -578,7 +578,7 @@ type ServiceDependencies = {
     outcome:
       | { status: "executed"; candidatesFound: number; candidatesNew: number }
       | { status: "execution_failed"; executionError: string }
-  ): Promise<void>;
+  ): Promise<StoredMarketResearchRequestForService | null>;
 };
 
 // Phase 9 slice 9B -- real YouTube Data API v3 quota costs (`channels.list`/`playlistItems.list`/
@@ -2016,6 +2016,13 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
       const now = deps.clock.now();
       await assertDiscoveryPreconditions(deps, now);
+      // Resolved BEFORE the atomic transition too, not only inside `discoverChannels` below --
+      // found by independent review: credential resolution spends no quota, so an expired refresh
+      // token or a missing scope is exactly the same class of "precondition, not an execution
+      // failure" as the budget/reads checks above. Without this, that failure would only surface
+      // AFTER the transition, permanently landing the request in `execution_failed` instead of
+      // leaving it `pending` for a retry once the credential issue is fixed.
+      await deps.authResolver.resolve({ credentialRef: parsedInput.credentialRef, requiredScopes: [YOUTUBE_READ_SCOPE] });
 
       const approved = await deps.approveMarketResearchRequestIfPending(parsedInput.requestId, now);
       if (!approved) {
@@ -2028,18 +2035,25 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
       try {
         // Reuses `discoverChannels`'s entire existing pipeline verbatim (its own upfront
-        // precondition check runs again here -- intentional, cheap defense-in-depth against a race
-        // between this action's own step-2 pre-check above and this exact call, per this slice's
-        // own plan doc) -- never a second, parallel search/dedup/insert implementation.
+        // precondition/credential checks run again here -- intentional, cheap defense-in-depth
+        // against a race between this action's own pre-checks above and this exact call, per this
+        // slice's own plan doc) -- never a second, parallel search/dedup/insert implementation.
         const result = await services.discoverChannels(
           { query: approved.query, credentialRef: parsedInput.credentialRef },
           callOrigin
         );
-        await deps.recordMarketResearchRequestExecutionOutcome(parsedInput.requestId, {
+        const executed = await deps.recordMarketResearchRequestExecutionOutcome(parsedInput.requestId, {
           status: "executed",
           candidatesFound: result.candidatesFound,
           candidatesNew: result.candidatesNew,
         });
+        if (!executed) {
+          throw new DomainError({
+            code: "RESEARCH_REQUEST_NOT_PENDING",
+            message: "This research request was no longer 'approved' when its execution outcome was recorded",
+            details: { requestId: parsedInput.requestId },
+          });
+        }
       } catch (error) {
         await deps.recordMarketResearchRequestExecutionOutcome(parsedInput.requestId, {
           status: "execution_failed",

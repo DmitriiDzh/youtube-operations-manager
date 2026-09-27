@@ -1949,6 +1949,30 @@ test("recordMarketResearchRequestExecutionOutcome writes executed/execution_fail
     assert.equal(failed?.executionError, "quota exceeded");
   }));
 
+// Found by independent review: an earlier version of this function matched on `id` alone, which
+// meant it could move a request straight from "pending" to "executed"/"execution_failed",
+// completely bypassing the approval gate this slice exists to enforce.
+test("recordMarketResearchRequestExecutionOutcome: a still-pending row (never approved) returns null and is left untouched", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertMarketResearchRequest(
+      { id: "req-5", query: "night jazz", rationale: "worth watching", createdVia: "mcp" },
+      isolatedDb
+    );
+
+    const result = await recordMarketResearchRequestExecutionOutcome(
+      "req-5",
+      { status: "executed", candidatesFound: 5, candidatesNew: 2 },
+      isolatedDb
+    );
+    assert.equal(result, null);
+
+    const row = await getMarketResearchRequestById("req-5", isolatedDb);
+    assert.equal(row?.status, "pending", "a request that was never approved must never be moved to 'executed' by this function alone");
+    assert.equal(row?.candidatesFound, null);
+  }));
+
 // AC-SCHEMA-04
 test("initializeDatabaseSchema: rejects a database reporting a version newer than SCHEMA_CURRENT_VERSION, before any mutation", () =>
   withTempClient(async (client) => {

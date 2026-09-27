@@ -645,6 +645,9 @@ function createFakeStore() {
       row.resolvedReason = reason;
       return row;
     },
+    // Mirrors the real db.ts function's own `WHERE status='approved'` guard -- found by
+    // independent review: without it, this function could move a request straight from "pending"
+    // to "executed"/"execution_failed", completely bypassing the approval gate.
     async recordMarketResearchRequestExecutionOutcome(
       id: string,
       outcome:
@@ -652,7 +655,7 @@ function createFakeStore() {
         | { status: "execution_failed"; executionError: string }
     ) {
       const row = marketResearchRequests.get(id);
-      if (!row) return;
+      if (!row || row.status !== "approved") return null;
       if (outcome.status === "executed") {
         row.status = "executed";
         row.candidatesFound = outcome.candidatesFound;
@@ -661,6 +664,7 @@ function createFakeStore() {
         row.status = "execution_failed";
         row.executionError = outcome.executionError;
       }
+      return row;
     },
   };
 }
@@ -2442,6 +2446,41 @@ test("AC-9G-B-05b: a missing/exhausted budget, or disabled Data API reads, leave
         { createdVia: "web_ui" }
       ),
     (error: unknown) => isDomainError(error) && error.code === "MARKET_INTELLIGENCE_QUOTA_EXCEEDED"
+  );
+  assert.equal(store.marketResearchRequests.get(created.requestId)?.status, "pending");
+
+  // Budget sufficient, but Data API reads disabled -- a separate fixture, since this override is
+  // fixed at fixture creation (AGENTS.md §L: the test must actually exercise the third case its own
+  // title claims, not just assert on the first two).
+  const readsDisabledFixture = createFixture({ dataApiReadsDisabled: true });
+  readsDisabledFixture.store.setQuotaBudget(1000);
+  const secondRequest = await readsDisabledFixture.services.createMarketResearchRequest(
+    { query: "night jazz", rationale: "worth watching" },
+    { createdVia: "mcp" }
+  );
+  await assert.rejects(
+    () =>
+      readsDisabledFixture.services.approveMarketResearchRequest(
+        { requestId: secondRequest.requestId, credentialRef: { userId: "u1" } },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "data_api_reads_disabled"
+  );
+  assert.equal(readsDisabledFixture.store.marketResearchRequests.get(secondRequest.requestId)?.status, "pending");
+});
+
+test("AC-9G-B-05c: a credential resolution failure (e.g. expired token) leaves the request 'pending', never execution_failed", async () => {
+  const { store, services } = createFixture({ resolveError: new Error("insufficient scope") });
+  store.setQuotaBudget(1000);
+  const created = await services.createMarketResearchRequest({ query: "night jazz", rationale: "worth watching" }, { createdVia: "mcp" });
+
+  await assert.rejects(
+    () =>
+      services.approveMarketResearchRequest(
+        { requestId: created.requestId, credentialRef: { userId: "u1" } },
+        { createdVia: "web_ui" }
+      ),
+    /insufficient scope/
   );
   assert.equal(store.marketResearchRequests.get(created.requestId)?.status, "pending");
 });

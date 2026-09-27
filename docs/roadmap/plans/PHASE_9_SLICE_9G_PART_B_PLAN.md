@@ -162,9 +162,13 @@ not permission-checked, simply absent from this module's own action set. The abs
   (`src/lib/agent-connections/contracts.ts`), passed as `registerTool`'s 4th argument, mirroring
   `agent_create_content_proposal`'s own zoning exactly. **No `agent_approve_...`/`agent_reject_...`
   MCP tool exists, ever** -- this is the core of this slice.
-- **CLI: `agent create-research-request`** -- parity with the MCP tool, same server-stamping
-  discipline (`createdVia: "cli"` + `agentApiVersion`), same `READ_ONLY_CLI_COMMANDS` exclusion (it
-  mutates, so it must NOT be added there). **Zoning enforced the same way every other zoned CLI
+- **CLI: `agent create-research-request`** -- parity with the MCP tool. **Server-stamping: `createdVia:
+  "cli"` + `agentApiVersion: null`**, corrected from this plan's first draft, which assumed the CLI
+  also stamps a real `agentApiVersion` -- direct inspection of `agent create-content-proposal`'s own
+  CLI dispatch branch found the established convention is `agentApiVersion: null` for CLI, since MCP
+  is the one transport this interface's own version actually mediates (owner spec §22); `interfaces.md`
+  already documents this correctly, only this plan's own text was stale. Same `READ_ONLY_CLI_COMMANDS`
+  exclusion (it mutates, so it must NOT be added there). **Zoning enforced the same way every other zoned CLI
   command already does it** (found by direct inspection of `agent create-content-proposal`'s own
   dispatch branch, corrected into this plan -- the first draft omitted CLI-side zoning entirely): an
   inline `await agentConnectionsCore.assertAgentAllowedForCapability({ capabilityId:
@@ -211,12 +215,20 @@ not permission-checked, simply absent from this module's own action set. The abs
 
 ## 7. Mechanical enforcement of approval integrity (the actual point of this slice)
 
-A new test, `market-research-request-approval-inventory.test.ts`, styled after `PHASE9-INV-02`/the
-write/read-gateway inventory tests (`AGENTS.md` §G's own "enforce mechanically, not by convention"
-discipline): asserts by direct inspection that **no file under `src/mcp/**`, `src/cli/**`, or
-`src/lib/agent-operations/**` references `approveMarketResearchRequest`/
-`rejectMarketResearchRequest`**, and that `market_research_requests.status` is never set to
-`"approved"`/`"rejected"` from within any of those same directories.
+Two mechanical tests, together, close this: a new `PHASE9-INV-03`
+(`market-research-request-approval-inventory.test.ts`, styled after `PHASE9-INV-02`/the
+write/read-gateway inventory tests, `AGENTS.md` §G's own "enforce mechanically, not by convention"
+discipline) asserts by direct inspection that **no file under `src/mcp/**`, `src/cli/**`, or
+`src/lib/agent-operations/**` references the `approveMarketResearchRequest`/
+`rejectMarketResearchRequest` service actions by name**. That alone does not stop a raw SQL
+`UPDATE market_research_requests SET status='approved' ...` bypassing those named actions entirely
+-- **the existing `PHASE9-INV-02` (widened to add `market_research_requests` to its own literal
+raw-table-name list) is what actually closes that gap**, since it already fails the suite if any
+file outside this module references any of its raw table names or db.ts symbols from anywhere in
+the codebase, not just the three directories INV-03 itself scans. The two tests are complementary,
+not redundant: INV-03 names the specific service-layer actions an agent-facing surface must never
+call; INV-02 backstops it against a lower-level bypass of those actions altogether. (Corrected from
+this plan's first draft, which incorrectly attributed the raw-table-name guard to INV-03 itself.)
 
 **Widened from this plan's first draft (advisor review, before implementation): scans directories,
 not two hardcoded filenames.** Grepping only `src/mcp/server.ts`/`src/cli/video-metadata.ts` by

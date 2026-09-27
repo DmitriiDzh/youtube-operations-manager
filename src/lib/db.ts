@@ -5654,22 +5654,36 @@ export async function rejectMarketResearchRequestIfPending(
  * after `approveMarketResearchRequestIfPending` already succeeded (so this is a plain `id` match,
  * not a further conditional transition; the row is already known to be `"approved"` at this point).
  */
+/**
+ * Guarded by `WHERE status='approved'` -- found by independent review: an earlier version matched
+ * on `id` alone, which meant this function itself could move a request straight from `pending` to
+ * `executed`/`execution_failed`, completely bypassing the approval gate this slice exists to
+ * enforce. That gap was only closed by convention (only `approveMarketResearchRequest` happens to
+ * call this today) -- exactly the "true because nobody happened to call it" state
+ * `PHASE9-INV-03` was built to eliminate for the approve/reject actions themselves; this function
+ * needed the identical structural guard, not just those two. Returns the updated row, or `null` if
+ * the row was not `"approved"` (already recorded, or never actually approved) -- the caller must
+ * treat `null` as an error, never as "nothing to do."
+ */
 export async function recordMarketResearchRequestExecutionOutcome(
   id: string,
   outcome:
     | { status: "executed"; candidatesFound: number; candidatesNew: number }
     | { status: "execution_failed"; executionError: string },
   database: AppDb = db
-): Promise<void> {
+): Promise<StoredMarketResearchRequest | null> {
   if (outcome.status === "executed") {
-    await database
+    const rows = await database
       .update(marketResearchRequests)
       .set({ status: "executed", candidatesFound: outcome.candidatesFound, candidatesNew: outcome.candidatesNew })
-      .where(eq(marketResearchRequests.id, id));
-  } else {
-    await database
-      .update(marketResearchRequests)
-      .set({ status: "execution_failed", executionError: outcome.executionError })
-      .where(eq(marketResearchRequests.id, id));
+      .where(and(eq(marketResearchRequests.id, id), eq(marketResearchRequests.status, "approved")))
+      .returning();
+    return rows[0] ?? null;
   }
+  const rows = await database
+    .update(marketResearchRequests)
+    .set({ status: "execution_failed", executionError: outcome.executionError })
+    .where(and(eq(marketResearchRequests.id, id), eq(marketResearchRequests.status, "approved")))
+    .returning();
+  return rows[0] ?? null;
 }
