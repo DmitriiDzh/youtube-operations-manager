@@ -90,6 +90,12 @@ import {
   touchMarketTrendCandidateLastObservedAt,
   listTrendEvidence,
   insertMarketTrendEvidence,
+  insertMarketResearchRequest,
+  getMarketResearchRequestById,
+  listMarketResearchRequests,
+  approveMarketResearchRequestIfPending,
+  rejectMarketResearchRequestIfPending,
+  recordMarketResearchRequestExecutionOutcome,
 } from "./db";
 import { readSchemaVersion } from "@/lib/schema-versioning";
 import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
@@ -1842,6 +1848,105 @@ test("updateMarketTrendCandidateStatusWithEvidence: a failure on the evidence wr
     assert.equal(after?.status, "emerging", "the status update must be rolled back when its own transaction's evidence write fails");
     const evidence = await listTrendEvidence("trend-3", isolatedDb);
     assert.equal(evidence.length, 1, "only the original seed evidence row must remain, never a duplicate or a partial write");
+  }));
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md) -- agent-created
+// research requests, approval integrity.
+// ---------------------------------------------------------------------------
+
+test("market_research_requests round-trip through the real Drizzle schema; new requests start as 'pending'", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await insertMarketResearchRequest(
+      { id: "req-1", query: "night jazz bar", rationale: "worth watching", monitorDurationDays: 30, createdVia: "mcp", agentApiVersion: "0.13.0" },
+      isolatedDb
+    );
+    const created = await getMarketResearchRequestById("req-1", isolatedDb);
+    assert.equal(created?.status, "pending");
+    assert.equal(created?.monitorDurationDays, 30);
+    assert.equal(created?.agentApiVersion, "0.13.0");
+    assert.equal(created?.resolvedAt, null);
+
+    const list = await listMarketResearchRequests(isolatedDb);
+    assert.equal(list.length, 1);
+  }));
+
+// AC-9G-B-06's own real proof -- RISK-70 already showed a fake in-memory store proves nothing
+// about real atomicity. Forces two literally-concurrent calls (Promise.all, not two sequential
+// awaits) against the real libsql driver, asserting exactly one lands.
+test("approveMarketResearchRequestIfPending: two literally-concurrent calls for the same pending row -- exactly one succeeds, the other returns null", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertMarketResearchRequest(
+      { id: "req-race", query: "night jazz", rationale: "worth watching", createdVia: "mcp" },
+      isolatedDb
+    );
+
+    const at = new Date("2026-09-27T12:00:00.000Z");
+    const [first, second] = await Promise.all([
+      approveMarketResearchRequestIfPending("req-race", at, isolatedDb),
+      approveMarketResearchRequestIfPending("req-race", at, isolatedDb),
+    ]);
+
+    const succeeded = [first, second].filter((row) => row !== null);
+    const failed = [first, second].filter((row) => row === null);
+    assert.equal(succeeded.length, 1, "exactly one of the two concurrent calls must succeed");
+    assert.equal(failed.length, 1, "the other must observe the row already approved and return null");
+
+    const finalRow = await getMarketResearchRequestById("req-race", isolatedDb);
+    assert.equal(finalRow?.status, "approved");
+  }));
+
+test("rejectMarketResearchRequestIfPending: a second call after the row is already resolved returns null and changes nothing", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertMarketResearchRequest(
+      { id: "req-2", query: "night jazz", rationale: "worth watching", createdVia: "mcp" },
+      isolatedDb
+    );
+
+    const at = new Date("2026-09-27T12:00:00.000Z");
+    const firstReject = await rejectMarketResearchRequestIfPending("req-2", "not aligned", at, isolatedDb);
+    assert.ok(firstReject);
+    assert.equal(firstReject?.status, "rejected");
+
+    const secondReject = await rejectMarketResearchRequestIfPending("req-2", "different reason", at, isolatedDb);
+    assert.equal(secondReject, null);
+
+    const finalRow = await getMarketResearchRequestById("req-2", isolatedDb);
+    assert.equal(finalRow?.resolvedReason, "not aligned", "the first reject's reason must survive, never overwritten by the rejected second call");
+  }));
+
+test("recordMarketResearchRequestExecutionOutcome writes executed/execution_failed outcomes onto the row", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertMarketResearchRequest(
+      { id: "req-3", query: "night jazz", rationale: "worth watching", createdVia: "mcp" },
+      isolatedDb
+    );
+    await approveMarketResearchRequestIfPending("req-3", new Date(), isolatedDb);
+
+    await recordMarketResearchRequestExecutionOutcome("req-3", { status: "executed", candidatesFound: 5, candidatesNew: 2 }, isolatedDb);
+    const executed = await getMarketResearchRequestById("req-3", isolatedDb);
+    assert.equal(executed?.status, "executed");
+    assert.equal(executed?.candidatesFound, 5);
+    assert.equal(executed?.candidatesNew, 2);
+
+    await insertMarketResearchRequest(
+      { id: "req-4", query: "night jazz", rationale: "worth watching", createdVia: "mcp" },
+      isolatedDb
+    );
+    await approveMarketResearchRequestIfPending("req-4", new Date(), isolatedDb);
+    await recordMarketResearchRequestExecutionOutcome("req-4", { status: "execution_failed", executionError: "quota exceeded" }, isolatedDb);
+    const failed = await getMarketResearchRequestById("req-4", isolatedDb);
+    assert.equal(failed?.status, "execution_failed");
+    assert.equal(failed?.executionError, "quota exceeded");
   }));
 
 // AC-SCHEMA-04

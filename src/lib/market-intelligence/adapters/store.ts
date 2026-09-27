@@ -1,4 +1,5 @@
 import {
+  approveMarketResearchRequestIfPending,
   claimStaleResearchChannelsForCollection,
   deleteMarketTopic,
   deleteMarketTopicAssignment,
@@ -7,6 +8,7 @@ import {
   getMarketDiscoveryCandidateById,
   getMarketIntelligenceDailyQuotaBudgetUnits,
   getMarketIntelligenceUnitsSpentSince,
+  getMarketResearchRequestById,
   getMarketTopicById,
   getMarketTrendCandidateById,
   getResearchChannelById,
@@ -15,6 +17,7 @@ import {
   insertMarketDiscoveryCandidate,
   insertMarketDiscoveryRun,
   insertMarketIntelligenceCollectionRun,
+  insertMarketResearchRequest,
   insertMarketTopic,
   insertMarketTopicAssignment,
   insertMarketTrendEvidence,
@@ -25,6 +28,7 @@ import {
   listAssignmentsForTopic,
   listMarketChannelSnapshotsByChannel,
   listMarketDiscoveryCandidates,
+  listMarketResearchRequests,
   listMarketTopics,
   listMarketTrendCandidates,
   listMarketVideoSnapshotsByChannel,
@@ -34,6 +38,8 @@ import {
   listTopicsForSubject,
   listTrendEvidence,
   markResearchChannelAutoCollected,
+  recordMarketResearchRequestExecutionOutcome,
+  rejectMarketResearchRequestIfPending,
   releaseResearchChannelCollectionClaim,
   setMarketDiscoveryCandidateStatus,
   setMarketIntelligenceDailyQuotaBudgetUnits,
@@ -98,6 +104,15 @@ export function createMarketIntelligenceStoreAdapter() {
     insertMarketTrendEvidence,
     // Phase 9 slice 9G, part A (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md) -- agent read surface.
     getLatestMarketIntelligenceCollectionRunForChannel,
+    // Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md) -- agent-created
+    // research requests. The two conditional-transition functions are the atomic approval-integrity
+    // guard this slice's own design depends on -- see their own doc comments in db.ts.
+    insertMarketResearchRequest,
+    getMarketResearchRequestById,
+    listMarketResearchRequests,
+    approveMarketResearchRequestIfPending,
+    rejectMarketResearchRequestIfPending,
+    recordMarketResearchRequestExecutionOutcome,
   };
 }
 

@@ -233,3 +233,26 @@ test("proxy gates the market-intelligence trend-candidate evidence route like an
     await releaseOperationLock(rawSqlClient);
   }
 });
+
+// AC-9G-B-12 (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md §8) -- the Web-UI-only
+// approve/reject routes are real mutations (the approve route also triggers a real search.list
+// call), gated the same way, never exempted.
+test("proxy gates the market-intelligence research-request approve route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/research-requests/req-1/approve"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("proxy gates the market-intelligence research-request reject route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/research-requests/req-1/reject"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});

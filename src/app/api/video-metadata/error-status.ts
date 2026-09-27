@@ -80,6 +80,8 @@ const DOMAIN_ERROR_STATUS = {
   TOPIC_ALREADY_EXISTS: 409,
   TOPIC_ASSIGNMENT_ALREADY_EXISTS: 409,
   TREND_CANDIDATE_NOT_FOUND: 404,
+  RESEARCH_REQUEST_NOT_FOUND: 404,
+  RESEARCH_REQUEST_NOT_PENDING: 409,
 } as const satisfies Partial<Record<DomainErrorCode, number>>;
 
 export function getVideoMetadataErrorStatus(code: DomainErrorCode) {

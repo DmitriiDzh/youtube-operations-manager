@@ -20,6 +20,7 @@ import { MarketResearchPanel } from "@/components/market-research-panel";
 import { MarketDiscoveryPanel } from "@/components/market-discovery-panel";
 import { MarketTopicsPanel } from "@/components/market-topics-panel";
 import { MarketTrendsPanel } from "@/components/market-trends-panel";
+import { MarketResearchRequestsPanel } from "@/components/market-research-requests-panel";
 import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
 import { ChannelConnectionsSettings } from "@/components/channel-connections-settings";
@@ -330,6 +331,7 @@ export default function Dashboard() {
             <MarketDiscoveryPanel />
             <MarketTopicsPanel />
             <MarketTrendsPanel />
+            <MarketResearchRequestsPanel />
           </div>
         </FeatureErrorBoundary>
       )}

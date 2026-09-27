@@ -217,3 +217,28 @@ export type DataQualityFlag =
  * one guardrail/threshold, not two that could silently drift apart).
  */
 export const MARKET_INTELLIGENCE_STALE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md) -- agent-created
+// research requests with a human-only approval gate (owner spec §29). See that plan's §2 for the
+// approval-integrity precedent this follows (`changesets`' own `approvalStatus` model) and the one
+// this deliberately does NOT follow (`content-proposals`' write-once, no-approval shape).
+// ---------------------------------------------------------------------------
+
+export type MarketResearchRequestStatus = "pending" | "approved" | "rejected" | "executed" | "execution_failed";
+
+export type MarketResearchRequest = {
+  requestId: string;
+  query: string;
+  rationale: string;
+  monitorDurationDays: number | null;
+  status: MarketResearchRequestStatus;
+  createdVia: string;
+  agentApiVersion: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  resolvedReason: string | null;
+  candidatesFound: number | null;
+  candidatesNew: number | null;
+  executionError: string | null;
+};

@@ -63,6 +63,13 @@ export function createMarketIntelligenceCore() {
     insertMarketTrendEvidence: store.insertMarketTrendEvidence,
     // Phase 9 slice 9G, part A (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md).
     getLatestMarketIntelligenceCollectionRunForChannel: store.getLatestMarketIntelligenceCollectionRunForChannel,
+    // Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md).
+    insertMarketResearchRequest: store.insertMarketResearchRequest,
+    getMarketResearchRequestById: store.getMarketResearchRequestById,
+    listMarketResearchRequests: store.listMarketResearchRequests,
+    approveMarketResearchRequestIfPending: store.approveMarketResearchRequestIfPending,
+    rejectMarketResearchRequestIfPending: store.rejectMarketResearchRequestIfPending,
+    recordMarketResearchRequestExecutionOutcome: store.recordMarketResearchRequestExecutionOutcome,
   });
 }
 
@@ -77,5 +84,6 @@ export type {
   MarketTopicAssignment,
   MarketTrendCandidate,
   MarketTrendEvidence,
+  MarketResearchRequest,
 } from "./contracts";
 export { DomainError, isDomainError } from "./contracts";

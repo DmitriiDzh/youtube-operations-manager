@@ -286,6 +286,19 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "One list read covering topics, trend candidates, or discovery candidates, selected by a `kind` input (\"topics\" | \"trend_candidates\" | \"discovery_candidates\"). Implemented as the `agent_list_market_records` MCP tool/`agent market-records --kind <kind>` CLI command (`src/lib/market-intelligence/`), a thin fan-out over the module's own already-existing `listTopics`/`listTrendCandidates`/`listDiscoveryCandidates`, not new service logic. Local read only, never a live YouTube call. Global, not scoped to any owned channel -- same caveat as market_intelligence.query_competitors above.",
   },
+  // Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md, owner spec §29)
+  // -- this domain's first DRAFT-class capability. An agent may only CREATE a request; approving or
+  // rejecting one is reachable ONLY through the Web UI, never through any MCP tool or CLI command
+  // (verified mechanically by this module's own approval inventory test) -- the same
+  // `changesets`-style approvalStatus precedent this codebase already established, applied here for
+  // the first time to an agent-facing capability.
+  {
+    id: "market_intelligence.agent_create_market_research_request",
+    domain: "market_intelligence",
+    permission: "DRAFT",
+    description:
+      "Creates a structured research/discovery draft (query, rationale, optional monitorDurationDays -- stored as descriptive metadata only, never consulted by any scheduler, since none exists in this application). Always starts status:\"pending\". Makes zero YouTube calls and spends zero quota -- a human must separately approve it through the Web UI before the one real search.list run it can ever trigger actually happens (owner spec §29: \"this must not automatically create unlimited collection jobs\"). createdVia/agentApiVersion (owner spec §22) are SERVER-STAMPED, never caller-supplied. Implemented as the `agent_create_market_research_request` MCP tool/`agent create-research-request` CLI command (`src/lib/market-intelligence/`). Mutates local application state, so this tool is gated by the same device-availability/recovery-mode check as agent_create_content_proposal.",
+  },
 ];
 
 

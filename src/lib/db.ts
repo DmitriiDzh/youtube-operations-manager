@@ -1190,6 +1190,40 @@ export const marketTrendEvidence = sqliteTable(
   (table) => [index("market_trend_evidence_trend_candidate_id_idx").on(table.trendCandidateId)]
 );
 
+/**
+ * Phase 9 slice 9G, part B (`docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md`) -- an
+ * agent-created research draft with a human-only approval gate (owner spec §29). No FK to anything
+ * -- a request is not about one specific already-watchlisted channel (its `query` may discover
+ * several, or none), mirroring `marketDiscoveryRuns`'s own FK-less shape for the identical reason.
+ * `monitorDurationDays` is stored and returned as metadata only -- no code path in this application
+ * ever reads it to decide whether/when to run anything (there is no scheduler here at all), which
+ * is the concrete, structural answer to owner spec §29's "must not automatically create unlimited
+ * collection jobs."
+ */
+export const marketResearchRequests = sqliteTable(
+  "market_research_requests",
+  {
+    id: text("id").primaryKey(),
+    query: text("query").notNull(),
+    rationale: text("rationale").notNull(),
+    monitorDurationDays: integer("monitor_duration_days"),
+    status: text("status", { enum: ["pending", "approved", "rejected", "executed", "execution_failed"] })
+      .notNull()
+      .default("pending"),
+    createdVia: text("created_via").notNull(),
+    agentApiVersion: text("agent_api_version"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    resolvedAt: integer("resolved_at", { mode: "timestamp" }),
+    resolvedReason: text("resolved_reason"),
+    candidatesFound: integer("candidates_found"),
+    candidatesNew: integer("candidates_new"),
+    executionError: text("execution_error"),
+  },
+  (table) => [index("market_research_requests_status_idx").on(table.status)]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -1756,6 +1790,32 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
       await client.execute(
         "CREATE INDEX IF NOT EXISTS market_trend_evidence_trend_candidate_id_idx ON market_trend_evidence(trend_candidate_id)"
+      );
+    },
+  },
+  {
+    version: 27,
+    description:
+      "market_research_requests -- Phase 9 slice 9G, part B, agent-created research drafts with a human-only approval gate (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_research_requests (" +
+          "id TEXT PRIMARY KEY, " +
+          "query TEXT NOT NULL, " +
+          "rationale TEXT NOT NULL, " +
+          "monitor_duration_days INTEGER, " +
+          "status TEXT NOT NULL DEFAULT 'pending', " +
+          "created_via TEXT NOT NULL, " +
+          "agent_api_version TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "resolved_at INTEGER, " +
+          "resolved_reason TEXT, " +
+          "candidates_found INTEGER, " +
+          "candidates_new INTEGER, " +
+          "execution_error TEXT)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_research_requests_status_idx ON market_research_requests(status)"
       );
     },
   },
@@ -5494,4 +5554,122 @@ export async function insertMarketTrendEvidence(
     description: input.description,
     createdVia: input.createdVia,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md) --
+// agent-created research requests. Read/written only by `src/lib/market-intelligence/
+// adapters/store.ts`.
+// ---------------------------------------------------------------------------
+
+export type MarketResearchRequestStatus = "pending" | "approved" | "rejected" | "executed" | "execution_failed";
+
+export type StoredMarketResearchRequest = {
+  id: string;
+  query: string;
+  rationale: string;
+  monitorDurationDays: number | null;
+  status: MarketResearchRequestStatus;
+  createdVia: string;
+  agentApiVersion: string | null;
+  createdAt: Date;
+  resolvedAt: Date | null;
+  resolvedReason: string | null;
+  candidatesFound: number | null;
+  candidatesNew: number | null;
+  executionError: string | null;
+};
+
+export async function insertMarketResearchRequest(
+  input: {
+    id: string;
+    query: string;
+    rationale: string;
+    monitorDurationDays?: number | null;
+    createdVia: string;
+    agentApiVersion?: string | null;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketResearchRequests).values({
+    id: input.id,
+    query: input.query,
+    rationale: input.rationale,
+    monitorDurationDays: input.monitorDurationDays ?? null,
+    status: "pending",
+    createdVia: input.createdVia,
+    agentApiVersion: input.agentApiVersion ?? null,
+  });
+}
+
+export async function getMarketResearchRequestById(
+  id: string,
+  database: AppDb = db
+): Promise<StoredMarketResearchRequest | null> {
+  const [row] = await database.select().from(marketResearchRequests).where(eq(marketResearchRequests.id, id));
+  return row ?? null;
+}
+
+export async function listMarketResearchRequests(database: AppDb = db): Promise<StoredMarketResearchRequest[]> {
+  return database.select().from(marketResearchRequests).orderBy(desc(marketResearchRequests.createdAt));
+}
+
+/**
+ * The one atomic conditional transition this slice's own approval integrity depends on --
+ * `WHERE status='pending'` means a double-click or two-tab race can never both succeed (mirrors
+ * `claimStaleResearchChannelsForCollection`'s own established shape). `null` covers both "already
+ * resolved by a concurrent call" and "already resolved earlier" -- the caller distinguishes a
+ * genuinely unknown id via its own upfront existence read, not from this function's return value.
+ */
+export async function approveMarketResearchRequestIfPending(
+  id: string,
+  at: Date,
+  database: AppDb = db
+): Promise<StoredMarketResearchRequest | null> {
+  const rows = await database
+    .update(marketResearchRequests)
+    .set({ status: "approved", resolvedAt: at })
+    .where(and(eq(marketResearchRequests.id, id), eq(marketResearchRequests.status, "pending")))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** Same atomic shape as the function above, transitioning `pending -> rejected` instead. */
+export async function rejectMarketResearchRequestIfPending(
+  id: string,
+  reason: string,
+  at: Date,
+  database: AppDb = db
+): Promise<StoredMarketResearchRequest | null> {
+  const rows = await database
+    .update(marketResearchRequests)
+    .set({ status: "rejected", resolvedAt: at, resolvedReason: reason })
+    .where(and(eq(marketResearchRequests.id, id), eq(marketResearchRequests.status, "pending")))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/**
+ * Records the real outcome of the one `discoverChannels` run an approval triggers -- called only
+ * after `approveMarketResearchRequestIfPending` already succeeded (so this is a plain `id` match,
+ * not a further conditional transition; the row is already known to be `"approved"` at this point).
+ */
+export async function recordMarketResearchRequestExecutionOutcome(
+  id: string,
+  outcome:
+    | { status: "executed"; candidatesFound: number; candidatesNew: number }
+    | { status: "execution_failed"; executionError: string },
+  database: AppDb = db
+): Promise<void> {
+  if (outcome.status === "executed") {
+    await database
+      .update(marketResearchRequests)
+      .set({ status: "executed", candidatesFound: outcome.candidatesFound, candidatesNew: outcome.candidatesNew })
+      .where(eq(marketResearchRequests.id, id));
+  } else {
+    await database
+      .update(marketResearchRequests)
+      .set({ status: "execution_failed", executionError: outcome.executionError })
+      .where(eq(marketResearchRequests.id, id));
+  }
 }

@@ -108,7 +108,11 @@ export type DomainErrorCode =
   | "TOPIC_NOT_FOUND"
   | "TOPIC_ALREADY_EXISTS"
   | "TOPIC_ASSIGNMENT_ALREADY_EXISTS"
-  | "TREND_CANDIDATE_NOT_FOUND";
+  | "TREND_CANDIDATE_NOT_FOUND"
+  // Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md) -- agent-created
+  // research requests.
+  | "RESEARCH_REQUEST_NOT_FOUND"
+  | "RESEARCH_REQUEST_NOT_PENDING";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

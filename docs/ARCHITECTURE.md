@@ -1419,7 +1419,7 @@ content-proposal/artifact registration, a Codex operations-workspace template, a
 review -- **which of these is actually implemented as of any given moment is tracked exclusively
 in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here**.
 
-## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9E + 9G-a + 9I
+## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9E + 9G + 9I
 
 Owner instruction, Telegram 2026-09-26: an explicit assignment to research, plan, and begin
 implementing Phase 9 (`docs/roadmap/FUTURE_PHASES.md` §5) as its own feature branch, superseding
@@ -1640,6 +1640,40 @@ channel-scoping for every MCP tool by default). One new, narrow `db.ts` read,
 never had (only the aggregate `getMarketIntelligenceUnitsSpentSince` sum existed) -- used to derive
 `missing_snapshot`/`quota_limited` for that channel's own most recent collection attempt.
 `AGENT_API_VERSION` bumped to `0.12.0` for the new capability; no `ZONED_CAPABILITIES` entry, since
-READ-class tools in this codebase are never zoned. **Part B (DRAFT "create research request," spec
-§29) is separately planned, not started here** -- it is approval-integrity work requiring the full
-`AGENTS.md` §A seven-document reading pass and its own acceptance criteria before any code.
+READ-class tools in this codebase are never zoned.
+
+**Slice 9G, part B (`docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md`, 2026-09-27) -- agent-
+created research requests, this codebase's first agent-facing DRAFT-class capability with a real
+approval gate (owner spec §29).** Two templates existed to choose from, and the choice matters: this
+module's own `content-proposals` is deliberately write-once with no approval workflow at all (its
+own contracts.ts doc comment says so explicitly), while `changesets` already has a full
+`approvalStatus` model whose `approveChange`/`rejectChange` actions are, by direct inspection,
+registered as neither an MCP tool nor a CLI command anywhere -- approval is reachable only through
+the Web UI's own API routes. This slice copies that second shape, not the first: an agent may only
+create a `market_research_requests` row (`status: "pending"`); moving it to `"approved"`/
+`"rejected"` exists ONLY as a Web UI action, enforced not just by omission but mechanically -- a new
+inventory test (`market-research-request-approval-inventory.test.ts`, styled after
+`write-path-inventory.test.ts`) scans every source file under `src/mcp/**`, `src/cli/**`, and
+`src/lib/agent-operations/**` and fails if any of them references the approve/reject actions by
+name, with `src/app/api/**` (where the real routes live) the one deliberate exemption.
+
+Approval is one atomic conditional transition (`UPDATE ... WHERE status='pending' ... RETURNING`,
+the same shape `claimStaleResearchChannelsForCollection` already established in this module) --
+proven against the real libsql driver with a literally-concurrent `Promise.all` pair, not only
+against a fake store (RISK-70's own resolution already showed a fake store proves nothing about
+real atomicity). `monitorDurationDays` (spec §29's own "Monitor for 30 days" example) is stored and
+returned but never read by any code path that decides whether/when to run anything -- the concrete,
+structural reason this cannot become the "unlimited collection jobs" the spec explicitly forbids:
+there is no scheduler anywhere in this application for such a field to feed.
+
+**The one design correction worth recording (advisor review, before implementation):** the first
+draft of this slice ran its `discoverChannels`-equivalent quota/reads preconditions AFTER the
+`pending -> approved` transition. Since the operator-set daily quota budget defaults to `null`
+(never a hardcoded value, an explicit owner decision from Part II's own gating decisions), that
+would have made the FIRST approval on any fresh install fail unconditionally and permanently, with
+the request stuck in `execution_failed` and no path back to `pending`. The corrected design extracts
+`discoverChannels`'s own upfront precondition check into a shared helper
+(`assertDiscoveryPreconditions`) and calls it BEFORE the atomic transition -- a missing/exhausted
+budget now leaves the request genuinely untouched (still `pending`), and the real `discoverChannels`
+call afterward re-runs the same check anyway (cheap, intentional defense-in-depth against a race
+between the two).

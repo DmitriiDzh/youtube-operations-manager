@@ -2803,7 +2803,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
 
   assert.equal(result.isError, undefined);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
-  assert.equal(payload.agentApiVersion, "0.12.0");
+  assert.equal(payload.agentApiVersion, "0.13.0");
   assert.deepEqual(payload.grantedPermissions, ["READ", "DRAFT"]);
   assert.ok(payload.capabilities.some((c: { id: string }) => c.id === "system.get_capabilities"));
 });
@@ -4643,6 +4643,7 @@ const EXPECTED_ZONE_CAPABILITY_IDS: Record<string, string> = {
   ai_localization_create_change_set: "ai_localization_create_change_set",
   agent_create_content_proposal: "content_proposal.create_content_proposal",
   agent_register_external_artifact: "content_proposal.register_external_artifact",
+  agent_create_market_research_request: "market_intelligence.agent_create_market_research_request",
 };
 
 const ZONED_MCP_TOOL_NAMES = Object.keys(EXPECTED_ZONE_CAPABILITY_IDS) as (keyof typeof EXPECTED_ZONE_CAPABILITY_IDS)[];
@@ -4729,7 +4730,12 @@ test("MCP channel_sync passes through to the real handler when zoning allows the
 // separately, a duplicated two-call join that had already started to drift cosmetically).
 function makeMarketIntelligenceCoreStub(): Pick<
   MarketIntelligenceCore,
-  "listWatchlist" | "getWatchlistEntryContext" | "listTopics" | "listTrendCandidates" | "listDiscoveryCandidates"
+  | "listWatchlist"
+  | "getWatchlistEntryContext"
+  | "listTopics"
+  | "listTrendCandidates"
+  | "listDiscoveryCandidates"
+  | "createMarketResearchRequest"
 > {
   return {
     listWatchlist: async () => ({ channels: [] }),
@@ -4739,6 +4745,9 @@ function makeMarketIntelligenceCoreStub(): Pick<
     listTopics: async () => ({ topics: [] }),
     listTrendCandidates: async () => ({ trendCandidates: [] }),
     listDiscoveryCandidates: async () => ({ candidates: [] }),
+    createMarketResearchRequest: async () => {
+      throw new Error("not used");
+    },
   };
 }
 
@@ -5097,6 +5106,79 @@ test("AC-9G-08: agent_list_market_records is never blocked by the operation lock
     );
     const result = await handlers.agentListMarketRecords({ kind: "topics" });
     assert.equal(result.isError, undefined);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9G, part B -- agent_create_market_research_request
+// (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md §8). Zoning wiring itself is covered by the
+// shared data-driven ZONED_MCP_TOOL_NAMES loop above.
+// ---------------------------------------------------------------------------
+
+test("MCP agent_create_market_research_request server-stamps createdVia:\"mcp\"/agentApiVersion and forwards the parsed input unchanged", async () => {
+  let capturedInput: unknown;
+  let capturedCallOrigin: unknown;
+  const marketIntelligenceCore = makeMarketIntelligenceCoreStub();
+  marketIntelligenceCore.createMarketResearchRequest = async (input, callOrigin) => {
+    capturedInput = input;
+    capturedCallOrigin = callOrigin;
+    return {
+      requestId: "req-1",
+      query: (input as { query: string }).query,
+      rationale: (input as { rationale: string }).rationale,
+      monitorDurationDays: null,
+      status: "pending",
+      createdVia: "mcp",
+      agentApiVersion: AGENT_API_VERSION,
+      createdAt: "2026-09-27T00:00:00.000Z",
+      resolvedAt: null,
+      resolvedReason: null,
+      candidatesFound: null,
+      candidatesNew: null,
+      executionError: null,
+    };
+  };
+
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    marketIntelligenceCore
+  );
+  const result = await handlers.agentCreateMarketResearchRequest({ query: "night jazz bar", rationale: "worth watching" });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.status, "pending");
+  assert.deepEqual(capturedInput, { query: "night jazz bar", rationale: "worth watching" });
+  assert.deepEqual(capturedCallOrigin, { createdVia: "mcp", agentApiVersion: AGENT_API_VERSION });
+});
+
+test("AC-9G-B-11: agent_create_market_research_request is rejected while the operation lock is held", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const handlers = createMcpToolHandlers(
+      makeCoreStub(),
+      makeAuthStub(),
+      makeOperationsCoreStub(),
+      undefined,
+      makeChannelAccessCoreStub(),
+      undefined,
+      undefined,
+      undefined,
+      makeMarketIntelligenceCoreStub()
+    );
+    const result = await handlers.agentCreateMarketResearchRequest({ query: "night jazz", rationale: "worth watching" });
+    assert.equal(result.isError, true);
+    const payload = JSON.parse(result.content[0]?.text ?? "{}");
+    assert.equal(payload.error.code, "operation_lock_held");
   } finally {
     await releaseOperationLock(rawSqlClient);
   }

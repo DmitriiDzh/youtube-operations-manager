@@ -129,6 +129,22 @@ type TrendEvidenceRow = {
   recordedAt: Date;
 };
 
+type MarketResearchRequestRow = {
+  id: string;
+  query: string;
+  rationale: string;
+  monitorDurationDays: number | null;
+  status: "pending" | "approved" | "rejected" | "executed" | "execution_failed";
+  createdVia: string;
+  agentApiVersion: string | null;
+  createdAt: Date;
+  resolvedAt: Date | null;
+  resolvedReason: string | null;
+  candidatesFound: number | null;
+  candidatesNew: number | null;
+  executionError: string | null;
+};
+
 type ChannelSnapshotRow = {
   id: string;
   researchChannelId: string;
@@ -166,6 +182,7 @@ function createFakeStore() {
   const topicAssignments: TopicAssignmentRow[] = [];
   const trendCandidates = new Map<string, TrendCandidateRow>();
   const trendEvidence: TrendEvidenceRow[] = [];
+  const marketResearchRequests = new Map<string, MarketResearchRequestRow>();
   let quotaBudget: number | null = null;
   let nextId = 1;
   let failNextSuccessRunInsert = false;
@@ -185,6 +202,7 @@ function createFakeStore() {
     topicAssignments,
     trendCandidates,
     trendEvidence,
+    marketResearchRequests,
     discoveryRuns,
     setQuotaBudget(units: number | null) {
       quotaBudget = units;
@@ -576,6 +594,73 @@ function createFakeStore() {
         createdVia: input.createdVia,
         recordedAt: new Date(),
       });
+    },
+    // Phase 9 slice 9G, part B.
+    async insertMarketResearchRequest(input: {
+      id: string;
+      query: string;
+      rationale: string;
+      monitorDurationDays?: number | null;
+      createdVia: string;
+      agentApiVersion?: string | null;
+    }) {
+      marketResearchRequests.set(input.id, {
+        id: input.id,
+        query: input.query,
+        rationale: input.rationale,
+        monitorDurationDays: input.monitorDurationDays ?? null,
+        status: "pending",
+        createdVia: input.createdVia,
+        agentApiVersion: input.agentApiVersion ?? null,
+        createdAt: new Date(),
+        resolvedAt: null,
+        resolvedReason: null,
+        candidatesFound: null,
+        candidatesNew: null,
+        executionError: null,
+      });
+    },
+    async getMarketResearchRequestById(id: string) {
+      return marketResearchRequests.get(id) ?? null;
+    },
+    async listMarketResearchRequests() {
+      return [...marketResearchRequests.values()].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    },
+    // Mirrors the real db.ts function's atomic `WHERE status='pending'` guard -- this fake store
+    // has no real concurrency of its own, but must still refuse a second transition once a row is
+    // no longer pending, so tests exercising the race's OUTCOME (not its true atomicity, which is
+    // proven separately against real libsql in db.test.ts) behave correctly.
+    async approveMarketResearchRequestIfPending(id: string, at: Date) {
+      const row = marketResearchRequests.get(id);
+      if (!row || row.status !== "pending") return null;
+      row.status = "approved";
+      row.resolvedAt = at;
+      return row;
+    },
+    async rejectMarketResearchRequestIfPending(id: string, reason: string, at: Date) {
+      const row = marketResearchRequests.get(id);
+      if (!row || row.status !== "pending") return null;
+      row.status = "rejected";
+      row.resolvedAt = at;
+      row.resolvedReason = reason;
+      return row;
+    },
+    async recordMarketResearchRequestExecutionOutcome(
+      id: string,
+      outcome:
+        | { status: "executed"; candidatesFound: number; candidatesNew: number }
+        | { status: "execution_failed"; executionError: string }
+    ) {
+      const row = marketResearchRequests.get(id);
+      if (!row) return;
+      if (outcome.status === "executed") {
+        row.status = "executed";
+        row.candidatesFound = outcome.candidatesFound;
+        row.candidatesNew = outcome.candidatesNew;
+      } else {
+        row.status = "execution_failed";
+        row.executionError = outcome.executionError;
+      }
     },
   };
 }
@@ -2238,5 +2323,218 @@ test("AC-9E-16: listTrendCandidates/listTrendEvidence round-trip; listTrendEvide
   await assert.rejects(
     () => services.listTrendEvidence({ trendCandidateId: "nonexistent-trend" }),
     (error: unknown) => isDomainError(error) && error.code === "TREND_CANDIDATE_NOT_FOUND"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9G, part B -- agent-created research requests, approval integrity
+// (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md §8). Acceptance criteria drafted before
+// implementation, per AGENTS.md §L.
+// ---------------------------------------------------------------------------
+
+test("AC-9G-B-01: createMarketResearchRequest rejects an empty query/rationale before storage", async () => {
+  const { store, services } = createFixture();
+
+  await assert.rejects(
+    () => services.createMarketResearchRequest({ query: "", rationale: "worth watching" }, { createdVia: "mcp" }),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+  await assert.rejects(
+    () => services.createMarketResearchRequest({ query: "night jazz", rationale: "" }, { createdVia: "mcp" }),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+  assert.equal(store.marketResearchRequests.size, 0);
+});
+
+test("AC-9G-B-02: createdVia cannot be smuggled in through the public input -- server-stamped only", async () => {
+  const { services } = createFixture();
+
+  await assert.rejects(
+    () =>
+      services.createMarketResearchRequest(
+        { query: "night jazz", rationale: "worth watching", createdVia: "mcp" } as unknown,
+        { createdVia: "cli" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+
+  const created = await services.createMarketResearchRequest(
+    { query: "night jazz", rationale: "worth watching" },
+    { createdVia: "cli", agentApiVersion: "1.2.3" }
+  );
+  assert.equal(created.createdVia, "cli");
+  assert.equal(created.agentApiVersion, "1.2.3");
+});
+
+test("AC-9G-B-03: createMarketResearchRequest makes zero YouTube calls and writes zero quota-ledger rows", async () => {
+  const { store, services, resolveCalls, searchCalls } = createFixture();
+
+  await services.createMarketResearchRequest({ query: "night jazz", rationale: "worth watching" }, { createdVia: "mcp" });
+
+  assert.equal(resolveCalls.length, 0);
+  assert.equal(searchCalls.length, 0);
+  assert.equal(store.discoveryRuns.length, 0);
+  assert.equal(store.collectionRuns.length, 0);
+});
+
+test("AC-9G-B-04: a new request always starts status 'pending'", async () => {
+  const { services } = createFixture();
+  const created = await services.createMarketResearchRequest(
+    { query: "night jazz", rationale: "worth watching", monitorDurationDays: 30 },
+    { createdVia: "mcp" }
+  );
+  assert.equal(created.status, "pending");
+  assert.equal(created.monitorDurationDays, 30);
+  assert.equal(created.resolvedAt, null);
+});
+
+test("AC-9G-B-05: approve/reject on an unknown id throws RESEARCH_REQUEST_NOT_FOUND; on an already-resolved id throws RESEARCH_REQUEST_NOT_PENDING", async () => {
+  const { store, services } = createFixture();
+  store.setQuotaBudget(1000);
+
+  await assert.rejects(
+    () => services.approveMarketResearchRequest({ requestId: "nonexistent", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_REQUEST_NOT_FOUND"
+  );
+  await assert.rejects(
+    () => services.rejectMarketResearchRequest({ requestId: "nonexistent", reason: "not relevant" }),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_REQUEST_NOT_FOUND"
+  );
+
+  const created = await services.createMarketResearchRequest({ query: "night jazz", rationale: "worth watching" }, { createdVia: "mcp" });
+  await services.rejectMarketResearchRequest({ requestId: created.requestId, reason: "not relevant" });
+
+  await assert.rejects(
+    () =>
+      services.approveMarketResearchRequest(
+        { requestId: created.requestId, credentialRef: { userId: "u1" } },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_REQUEST_NOT_PENDING"
+  );
+  await assert.rejects(
+    () => services.rejectMarketResearchRequest({ requestId: created.requestId, reason: "again" }),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_REQUEST_NOT_PENDING"
+  );
+});
+
+test("AC-9G-B-05b: a missing/exhausted budget, or disabled Data API reads, leaves the request 'pending' -- never permanently burned into execution_failed", async () => {
+  const { store, services } = createFixture();
+  const created = await services.createMarketResearchRequest({ query: "night jazz", rationale: "worth watching" }, { createdVia: "mcp" });
+
+  // No budget set at all (default null).
+  await assert.rejects(
+    () =>
+      services.approveMarketResearchRequest(
+        { requestId: created.requestId, credentialRef: { userId: "u1" } },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "MARKET_INTELLIGENCE_QUOTA_DISABLED"
+  );
+  assert.equal(store.marketResearchRequests.get(created.requestId)?.status, "pending");
+
+  // Budget set but exhausted.
+  store.setQuotaBudget(50);
+  await assert.rejects(
+    () =>
+      services.approveMarketResearchRequest(
+        { requestId: created.requestId, credentialRef: { userId: "u1" } },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "MARKET_INTELLIGENCE_QUOTA_EXCEEDED"
+  );
+  assert.equal(store.marketResearchRequests.get(created.requestId)?.status, "pending");
+});
+
+test("AC-9G-B-06: two approvals for the same request -- the second observes it already resolved and never triggers a second discoverChannels call", async () => {
+  const { store, services, searchCalls } = createFixture({ searchResults: [] });
+  store.setQuotaBudget(1000);
+  const created = await services.createMarketResearchRequest({ query: "night jazz", rationale: "worth watching" }, { createdVia: "mcp" });
+
+  await services.approveMarketResearchRequest({ requestId: created.requestId, credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.equal(searchCalls.length, 1);
+
+  await assert.rejects(
+    () =>
+      services.approveMarketResearchRequest(
+        { requestId: created.requestId, credentialRef: { userId: "u1" } },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_REQUEST_NOT_PENDING"
+  );
+  assert.equal(searchCalls.length, 1, "the second approval must never trigger a second real search.list call");
+});
+
+test("AC-9G-B-07: a successful approval calls discoverChannels with the request's own query, sets status 'executed' with candidatesFound/candidatesNew", async () => {
+  const { store, services, searchCalls } = createFixture({
+    searchResults: [
+      { channelId: "UC_DISCOVERED00000000000", title: "Discovered Channel", description: null },
+    ],
+  });
+  store.setQuotaBudget(1000);
+  const created = await services.createMarketResearchRequest({ query: "night jazz bar", rationale: "worth watching" }, { createdVia: "mcp" });
+
+  const approved = await services.approveMarketResearchRequest(
+    { requestId: created.requestId, credentialRef: { userId: "u1" } },
+    { createdVia: "web_ui" }
+  );
+
+  assert.equal(approved.status, "executed");
+  assert.equal(approved.candidatesFound, 1);
+  assert.equal(approved.candidatesNew, 1);
+  assert.deepEqual(
+    searchCalls.map((c) => (c as { query: string }).query),
+    ["night jazz bar"]
+  );
+  assert.equal(store.discoveryRuns.length, 1, "must reuse discoverChannels's own existing quota ledger, never a second parallel one");
+});
+
+test("AC-9G-B-08: a discoverChannels failure after the atomic transition sets status 'execution_failed' with executionError, never reverting the approval", async () => {
+  const { store, services } = createFixture({
+    searchImpl: async () => {
+      throw new Error("simulated search.list failure");
+    },
+  });
+  store.setQuotaBudget(1000);
+  const created = await services.createMarketResearchRequest({ query: "night jazz", rationale: "worth watching" }, { createdVia: "mcp" });
+
+  const result = await services.approveMarketResearchRequest(
+    { requestId: created.requestId, credentialRef: { userId: "u1" } },
+    { createdVia: "web_ui" }
+  );
+
+  assert.equal(result.status, "execution_failed");
+  assert.match(result.executionError ?? "", /simulated search\.list failure/);
+  assert.notEqual(store.marketResearchRequests.get(created.requestId)?.resolvedAt, null, "the approval itself must not be undone by a downstream execution failure");
+});
+
+test("AC-9G-B-09: rejectMarketResearchRequest requires a non-empty reason and transitions pending -> rejected", async () => {
+  const { services } = createFixture();
+  const created = await services.createMarketResearchRequest({ query: "night jazz", rationale: "worth watching" }, { createdVia: "mcp" });
+
+  await assert.rejects(
+    () => services.rejectMarketResearchRequest({ requestId: created.requestId, reason: "" }),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+
+  const rejected = await services.rejectMarketResearchRequest({ requestId: created.requestId, reason: "not aligned with current strategy" });
+  assert.equal(rejected.status, "rejected");
+  assert.equal(rejected.resolvedReason, "not aligned with current strategy");
+});
+
+test("listMarketResearchRequests/getMarketResearchRequest round-trip; getMarketResearchRequest rejects an unknown id with RESEARCH_REQUEST_NOT_FOUND", async () => {
+  const { services } = createFixture();
+  const created = await services.createMarketResearchRequest({ query: "night jazz", rationale: "worth watching" }, { createdVia: "mcp" });
+
+  const list = await services.listResearchRequests();
+  assert.equal(list.requests.length, 1);
+  assert.equal(list.requests[0].requestId, created.requestId);
+
+  const fetched = await services.getMarketResearchRequest({ requestId: created.requestId });
+  assert.deepEqual(fetched, created);
+
+  await assert.rejects(
+    () => services.getMarketResearchRequest({ requestId: "nonexistent" }),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_REQUEST_NOT_FOUND"
   );
 });

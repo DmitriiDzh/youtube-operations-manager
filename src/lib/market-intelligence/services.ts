@@ -11,6 +11,7 @@ import {
   type DiscoveryCandidateStatus,
   type MarketChannelSnapshot,
   type MarketDiscoveryCandidate,
+  type MarketResearchRequest,
   type MarketTopic,
   type MarketTopicAssignment,
   type MarketTrendCandidate,
@@ -29,10 +30,14 @@ import {
 import {
   addToWatchlistInputSchema,
   addToWatchlistOutputSchema,
+  approveMarketResearchRequestInputSchema,
+  approveMarketResearchRequestOutputSchema,
   assignTopicInputSchema,
   assignTopicOutputSchema,
   captureChannelSnapshotInputSchema,
   captureChannelSnapshotOutputSchema,
+  createMarketResearchRequestInputSchema,
+  createMarketResearchRequestOutputSchema,
   createTopicInputSchema,
   createTopicOutputSchema,
   createTrendCandidateInputSchema,
@@ -42,6 +47,7 @@ import {
   discoverChannelsOutputSchema,
   fetchPublicSnapshotInputSchema,
   fetchPublicSnapshotOutputSchema,
+  getMarketResearchRequestInputSchema,
   getWatchlistEntryContextOutputSchema,
   getWatchlistEntryInputSchema,
   getWatchlistEntryOutputSchema,
@@ -52,6 +58,7 @@ import {
   listDiscoveryCandidatesOutputSchema,
   listEvidenceInputSchema,
   listEvidenceOutputSchema,
+  listMarketResearchRequestsOutputSchema,
   listTopicsForSubjectInputSchema,
   listTopicsForSubjectOutputSchema,
   listTopicsOutputSchema,
@@ -62,6 +69,7 @@ import {
   listVideoSnapshotsOutputSchema,
   listWatchlistOutputSchema,
   marketDiscoveryCandidateSchema,
+  marketResearchRequestSchema,
   marketTrendCandidateSchema,
   parseWithSchema,
   promoteDiscoveryCandidateInputSchema,
@@ -74,6 +82,8 @@ import {
   recordTrendEvidenceOutputSchema,
   recordVideoSnapshotInputSchema,
   recordVideoSnapshotOutputSchema,
+  rejectMarketResearchRequestInputSchema,
+  rejectMarketResearchRequestOutputSchema,
   removeFromWatchlistInputSchema,
   removeTopicAssignmentInputSchema,
   runCollectionIfStaleInputSchema,
@@ -325,6 +335,41 @@ function toMarketTrendEvidence(row: StoredMarketTrendEvidenceForService): Market
   };
 }
 
+// Phase 9 slice 9G, part B.
+type StoredMarketResearchRequestForService = {
+  id: string;
+  query: string;
+  rationale: string;
+  monitorDurationDays: number | null;
+  status: "pending" | "approved" | "rejected" | "executed" | "execution_failed";
+  createdVia: string;
+  agentApiVersion: string | null;
+  createdAt: Date;
+  resolvedAt: Date | null;
+  resolvedReason: string | null;
+  candidatesFound: number | null;
+  candidatesNew: number | null;
+  executionError: string | null;
+};
+
+function toMarketResearchRequest(row: StoredMarketResearchRequestForService): MarketResearchRequest {
+  return {
+    requestId: row.id,
+    query: row.query,
+    rationale: row.rationale,
+    monitorDurationDays: row.monitorDurationDays,
+    status: row.status,
+    createdVia: row.createdVia,
+    agentApiVersion: row.agentApiVersion,
+    createdAt: row.createdAt.toISOString(),
+    resolvedAt: row.resolvedAt ? row.resolvedAt.toISOString() : null,
+    resolvedReason: row.resolvedReason,
+    candidatesFound: row.candidatesFound,
+    candidatesNew: row.candidatesNew,
+    executionError: row.executionError,
+  };
+}
+
 type ServiceDependencies = {
   idGenerator(): string;
   insertResearchChannel(input: {
@@ -511,6 +556,29 @@ type ServiceDependencies = {
     description: string;
     createdVia: string;
   }): Promise<void>;
+  // Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md).
+  insertMarketResearchRequest(input: {
+    id: string;
+    query: string;
+    rationale: string;
+    monitorDurationDays?: number | null;
+    createdVia: string;
+    agentApiVersion?: string | null;
+  }): Promise<void>;
+  getMarketResearchRequestById(id: string): Promise<StoredMarketResearchRequestForService | null>;
+  listMarketResearchRequests(): Promise<StoredMarketResearchRequestForService[]>;
+  approveMarketResearchRequestIfPending(id: string, at: Date): Promise<StoredMarketResearchRequestForService | null>;
+  rejectMarketResearchRequestIfPending(
+    id: string,
+    reason: string,
+    at: Date
+  ): Promise<StoredMarketResearchRequestForService | null>;
+  recordMarketResearchRequestExecutionOutcome(
+    id: string,
+    outcome:
+      | { status: "executed"; candidatesFound: number; candidatesNew: number }
+      | { status: "execution_failed"; executionError: string }
+  ): Promise<void>;
 };
 
 // Phase 9 slice 9B -- real YouTube Data API v3 quota costs (`channels.list`/`playlistItems.list`/
@@ -555,8 +623,48 @@ function startOfUtcDay(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
 }
 
+/**
+ * The upfront, zero-cost preconditions a real `search.list` call needs -- extracted so
+ * `approveMarketResearchRequest` (Phase 9 slice 9G, part B) can run the SAME checks BEFORE its own
+ * atomic `pending -> approved` transition, never duplicated inline. Found necessary by advisor
+ * review, before implementation: without this, the first approval on any install where the owner
+ * has never set a daily quota budget (the operator-set-only default, no hardcoded value) would
+ * unconditionally fail AFTER the transition already happened, permanently landing the request in
+ * `execution_failed` with no path back to `pending`. Throwing here, before any state changes,
+ * leaves the caller's own state untouched on a precondition failure.
+ */
+async function assertDiscoveryPreconditions(deps: ServiceDependencies, now: Date): Promise<void> {
+  const budget = await deps.getMarketIntelligenceDailyQuotaBudgetUnits();
+  if (budget === null) {
+    throw new DomainError({
+      code: "MARKET_INTELLIGENCE_QUOTA_DISABLED",
+      message: "Set a daily YouTube API unit budget in Settings before running discovery",
+      details: {},
+    });
+  }
+
+  const spentToday = await deps.getMarketIntelligenceUnitsSpentSince(startOfUtcDay(now));
+  const remaining = budget - spentToday;
+  if (remaining < SEARCH_LIST_UNIT_COST) {
+    throw new DomainError({
+      code: "MARKET_INTELLIGENCE_QUOTA_EXCEEDED",
+      message: `This search costs ${SEARCH_LIST_UNIT_COST} units; only ${Math.max(remaining, 0)} remain today`,
+      details: { remaining: Math.max(remaining, 0), required: SEARCH_LIST_UNIT_COST },
+    });
+  }
+
+  // A disabled "Data API reads" toggle is a purely local, no-network condition -- checked
+  // upfront, before spending any budget, so it can never be mischarged as a real, failed call.
+  await deps.youtubeApi.assertReadsAvailable();
+}
+
 export function createMarketIntelligenceServices(deps: ServiceDependencies) {
-  return {
+  // Captured in a local `const` (rather than returned directly) so `approveMarketResearchRequest`
+  // (Phase 9 slice 9G, part B) can call `services.discoverChannels(...)` directly, reusing its
+  // entire existing pipeline (precondition check, credential resolution, search/dedup/insert,
+  // audit-row/partial-failure handling) rather than duplicating any of it -- valid because no
+  // method here actually RUNS until after this function has already returned `services` in full.
+  const services = {
     /**
      * Adds a channel the operator does not (necessarily) own to the research watchlist
      * (`docs/roadmap/plans/PHASE_9_PLAN.md` §5/§7). `callOrigin` is SERVER-STAMPED at the
@@ -1347,29 +1455,8 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
     ): Promise<{ candidatesFound: number; candidatesNew: number }> {
       const parsedInput = parseWithSchema(discoverChannelsInputSchema, input, "discover channels input");
 
-      const budget = await deps.getMarketIntelligenceDailyQuotaBudgetUnits();
-      if (budget === null) {
-        throw new DomainError({
-          code: "MARKET_INTELLIGENCE_QUOTA_DISABLED",
-          message: "Set a daily YouTube API unit budget in Settings before running discovery",
-          details: {},
-        });
-      }
-
       const now = deps.clock.now();
-      const spentToday = await deps.getMarketIntelligenceUnitsSpentSince(startOfUtcDay(now));
-      const remaining = budget - spentToday;
-      if (remaining < SEARCH_LIST_UNIT_COST) {
-        throw new DomainError({
-          code: "MARKET_INTELLIGENCE_QUOTA_EXCEEDED",
-          message: `This search costs ${SEARCH_LIST_UNIT_COST} units; only ${Math.max(remaining, 0)} remain today`,
-          details: { remaining: Math.max(remaining, 0), required: SEARCH_LIST_UNIT_COST },
-        });
-      }
-
-      // A disabled "Data API reads" toggle is a purely local, no-network condition -- checked
-      // upfront, before spending any budget, so it can never be mischarged as a real, failed call.
-      await deps.youtubeApi.assertReadsAvailable();
+      await assertDiscoveryPreconditions(deps, now);
 
       const credentials = await deps.authResolver.resolve({
         credentialRef: parsedInput.credentialRef,
@@ -1832,7 +1919,175 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         "list trend evidence output"
       );
     },
+
+    /**
+     * Phase 9 slice 9G, part B (owner spec §29) -- an agent-created DRAFT, never self-approving.
+     * `createdVia`/`agentApiVersion` are SERVER-STAMPED (owner spec §22), mirrors
+     * `content-proposals`' `createContentProposal` exactly. Always inserts `status: "pending"`.
+     * Makes zero YouTube calls and writes zero quota-ledger rows -- this is pure local bookkeeping;
+     * no quota is spent until a human approves via the Web UI. This action never calls, and has no
+     * way to call, `approveMarketResearchRequest`/`rejectMarketResearchRequest` below -- no MCP tool
+     * or CLI command anywhere in this codebase does either (verified mechanically, see this
+     * module's own approval inventory test).
+     */
+    async createMarketResearchRequest(
+      input: unknown,
+      callOrigin: { createdVia: CreatedVia; agentApiVersion?: string | null }
+    ): Promise<MarketResearchRequest> {
+      const parsedInput = parseWithSchema(createMarketResearchRequestInputSchema, input, "create market research request input");
+
+      const id = deps.idGenerator();
+      await deps.insertMarketResearchRequest({
+        id,
+        query: parsedInput.query,
+        rationale: parsedInput.rationale,
+        monitorDurationDays: parsedInput.monitorDurationDays ?? null,
+        createdVia: callOrigin.createdVia,
+        agentApiVersion: callOrigin.agentApiVersion ?? null,
+      });
+
+      const row = (await deps.getMarketResearchRequestById(id))!;
+      return parseWithSchema(
+        createMarketResearchRequestOutputSchema,
+        toMarketResearchRequest(row),
+        "create market research request output"
+      );
+    },
+
+    // Named `listResearchRequests`, not `listMarketResearchRequests`, so a caller of this exported
+    // action never has to spell out the exact same substring as the db.ts symbol it wraps --
+    // PHASE9-INV-02's own plain-substring scan cannot otherwise tell "calls the exported core" apart
+    // from "imports the raw db.ts function directly" (found the hard way: an earlier version of
+    // this action shared its db.ts counterpart's exact name, which tripped that scanner from this
+    // module's own Web UI route). Mirrors this file's own established convention elsewhere (e.g.
+    // `listDiscoveryCandidates` here vs. `listMarketDiscoveryCandidates` in db.ts).
+    async listResearchRequests(): Promise<{ requests: MarketResearchRequest[] }> {
+      const rows = await deps.listMarketResearchRequests();
+      return parseWithSchema(
+        listMarketResearchRequestsOutputSchema,
+        { requests: rows.map(toMarketResearchRequest) },
+        "list market research requests output"
+      );
+    },
+
+    async getMarketResearchRequest(input: unknown): Promise<MarketResearchRequest> {
+      const parsedInput = parseWithSchema(getMarketResearchRequestInputSchema, input, "get market research request input");
+      const row = await deps.getMarketResearchRequestById(parsedInput.requestId);
+      if (!row) {
+        throw new DomainError({
+          code: "RESEARCH_REQUEST_NOT_FOUND",
+          message: "No research request with this id",
+          details: { requestId: parsedInput.requestId },
+        });
+      }
+      return parseWithSchema(marketResearchRequestSchema, toMarketResearchRequest(row), "get market research request output");
+    },
+
+    /**
+     * Web UI ONLY -- there is no MCP tool or CLI command anywhere that calls this action (verified
+     * mechanically by this module's own approval inventory test). Sequence, corrected before
+     * implementation (advisor review -- see this slice's own plan doc §4 for why the original
+     * "transition first, run discovery second" order was wrong): (1) existence check via a plain
+     * read: an unknown id fails fast, before any quota check runs; (2) the SAME upfront quota/reads
+     * preconditions `discoverChannels` itself runs, so a missing/exhausted budget leaves this
+     * request untouched (still `pending`), never permanently burned into a failure state by a
+     * precondition that was never really about this one request; (3) one atomic conditional
+     * transition (`pending -> approved`) -- a double-click or two-tab race can never approve (and
+     * therefore never spend quota) twice; (4) only once that transition actually lands, the real
+     * `discoverChannels` call, through its own existing budget/ledger/reads gate a second time
+     * (cheap, intentional defense-in-depth against a race between step 2 and step 3); (5) the
+     * outcome recorded back onto the row -- a downstream execution failure never un-approves the
+     * request, since the approval itself already, genuinely happened.
+     */
+    async approveMarketResearchRequest(
+      input: unknown,
+      callOrigin: { createdVia: CreatedVia }
+    ): Promise<MarketResearchRequest> {
+      const parsedInput = parseWithSchema(approveMarketResearchRequestInputSchema, input, "approve market research request input");
+
+      const existing = await deps.getMarketResearchRequestById(parsedInput.requestId);
+      if (!existing) {
+        throw new DomainError({
+          code: "RESEARCH_REQUEST_NOT_FOUND",
+          message: "No research request with this id",
+          details: { requestId: parsedInput.requestId },
+        });
+      }
+
+      const now = deps.clock.now();
+      await assertDiscoveryPreconditions(deps, now);
+
+      const approved = await deps.approveMarketResearchRequestIfPending(parsedInput.requestId, now);
+      if (!approved) {
+        throw new DomainError({
+          code: "RESEARCH_REQUEST_NOT_PENDING",
+          message: "This research request is no longer pending",
+          details: { requestId: parsedInput.requestId },
+        });
+      }
+
+      try {
+        // Reuses `discoverChannels`'s entire existing pipeline verbatim (its own upfront
+        // precondition check runs again here -- intentional, cheap defense-in-depth against a race
+        // between this action's own step-2 pre-check above and this exact call, per this slice's
+        // own plan doc) -- never a second, parallel search/dedup/insert implementation.
+        const result = await services.discoverChannels(
+          { query: approved.query, credentialRef: parsedInput.credentialRef },
+          callOrigin
+        );
+        await deps.recordMarketResearchRequestExecutionOutcome(parsedInput.requestId, {
+          status: "executed",
+          candidatesFound: result.candidatesFound,
+          candidatesNew: result.candidatesNew,
+        });
+      } catch (error) {
+        await deps.recordMarketResearchRequestExecutionOutcome(parsedInput.requestId, {
+          status: "execution_failed",
+          executionError: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      const row = (await deps.getMarketResearchRequestById(parsedInput.requestId))!;
+      return parseWithSchema(
+        approveMarketResearchRequestOutputSchema,
+        toMarketResearchRequest(row),
+        "approve market research request output"
+      );
+    },
+
+    async rejectMarketResearchRequest(input: unknown): Promise<MarketResearchRequest> {
+      const parsedInput = parseWithSchema(rejectMarketResearchRequestInputSchema, input, "reject market research request input");
+
+      const existing = await deps.getMarketResearchRequestById(parsedInput.requestId);
+      if (!existing) {
+        throw new DomainError({
+          code: "RESEARCH_REQUEST_NOT_FOUND",
+          message: "No research request with this id",
+          details: { requestId: parsedInput.requestId },
+        });
+      }
+
+      const rejected = await deps.rejectMarketResearchRequestIfPending(
+        parsedInput.requestId,
+        parsedInput.reason,
+        deps.clock.now()
+      );
+      if (!rejected) {
+        throw new DomainError({
+          code: "RESEARCH_REQUEST_NOT_PENDING",
+          message: "This research request is no longer pending",
+          details: { requestId: parsedInput.requestId },
+        });
+      }
+
+      return parseWithSchema(
+        rejectMarketResearchRequestOutputSchema,
+        toMarketResearchRequest(rejected),
+        "reject market research request output"
+      );
+    },
   };
+  return services;
 }
 
 export type MarketIntelligenceServices = ReturnType<typeof createMarketIntelligenceServices>;

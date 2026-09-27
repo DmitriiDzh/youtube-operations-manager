@@ -643,11 +643,32 @@ Key MCP tools:
     / `{ kind, candidates }` respectively. One tool with a `kind` discriminator rather than three
     separate ones (owner spec §28), a thin fan-out over the module's own already-existing
     `listTopics`/`listTrendCandidates`/`listDiscoveryCandidates` — no new service logic.
-  - All three registered directly against `createMarketIntelligenceCore()` in `src/mcp/server.ts`/
+  - `agent_create_market_research_request` (Phase 9 slice 9G, part B, owner spec §29) — `{ query,
+    rationale, monitorDurationDays? }` → the created request, `status: "pending"`. This domain's
+    first DRAFT-class capability and its first zoned MCP tool
+    (`market_intelligence.agent_create_market_research_request`) — gated by the same
+    device-availability check as `agent_create_content_proposal`. `createdVia`/`agentApiVersion`
+    (owner spec §22) are SERVER-STAMPED — `"mcp"` + the real `AGENT_API_VERSION` for this transport,
+    `"cli"` + `null` for the CLI command (mirrors `agent_create_content_proposal`'s own convention:
+    MCP is the one transport this interface's version actually mediates).
+    `monitorDurationDays` is stored and returned as descriptive metadata only — no code path in this
+    application ever reads it to decide whether/when to run anything (there is no scheduler here at
+    all), which is the structural answer to "this must not automatically create unlimited collection
+    jobs." **There is no MCP tool or CLI command to approve or reject a request, and none is ever
+    planned without a fresh, explicit owner instruction overriding this slice's own core design** —
+    approval is reachable ONLY through the Web UI (`POST
+    /api/market-intelligence/research-requests/[requestId]/approve` — no body, uses the approving
+    human's own session credentials for the one real `search.list` call this triggers via the
+    existing `discoverChannels`/`agent_discover` pipeline; `POST .../reject` — `{ reason }`; `GET
+    /api/market-intelligence/research-requests` lists all requests for the review queue), verified
+    mechanically by `market-research-request-approval-inventory.test.ts` (scans `src/mcp/**`/
+    `src/cli/**`/`src/lib/agent-operations/**`, `src/app/api/**` exempted).
+  - All four registered directly against `createMarketIntelligenceCore()` in `src/mcp/server.ts`/
     `src/cli/video-metadata.ts`, not through `agent-operations`'s own service layer —
     `docs/ARCHITECTURE.md` §18 records why (module-independence, `PHASE_9_PLAN.md` §5).
     CLI parity: `agent competitors` / `agent market-intelligence --channelId <UC...>` / `agent
-    market-records --kind <kind>`.
+    market-records --kind <kind>` / `agent create-research-request --query <q> --rationale <r>
+    [--monitorDurationDays <n>]`.
 
 Most tools accept optional `credentialRef`; if omitted, server falls back to active local auth context.
 
@@ -761,7 +782,7 @@ All routes are App Router handlers and require authenticated session user.
   `agent_get_capabilities` above (see `docs/AGENT_OPERATIONS_INTERFACE.md`). Read-only, gated by
   the same NextAuth session check as every other route in this app; not channel-scoped.
 
-### Market Intelligence API (Phase 9 slices 1-4/9A-9E — previously undocumented here, per `AGENTS.md` §H)
+### Market Intelligence API (Phase 9 slices 1-4/9A-9E/9G — previously undocumented here, per `AGENTS.md` §H)
 
 All routes are global (not scoped to one owned channel) -- the research watchlist tracks channels
 the operator does not necessarily own (`docs/ARCHITECTURE.md` §18).
@@ -782,6 +803,9 @@ the operator does not necessarily own (`docs/ARCHITECTURE.md` §18).
 - `GET /api/market-intelligence/trend-candidates` (Phase 9 slice 9E, part B) — list trend candidates; `POST` — create one (`{ title, description?, topicId?, initialEvidence: { evidenceType, referenceId?, description } }`; always starts at status `"emerging"`; creation is rejected without `initialEvidence`, spec §14; a discriminated union on `evidenceType` requires `referenceId` to be a real YouTube channel id for `supporting_channel` / a real video id for `supporting_video`, absent for `signal` — never a free-typed title, `AGENTS.md` §F)
 - `PATCH /api/market-intelligence/trend-candidates/[trendCandidateId]` — `{ status, reason }`; changes lifecycle status, writing `reason` as a `"signal"` evidence row in the same action (a status can never move without a corresponding evidence trail)
 - `GET /api/market-intelligence/trend-candidates/[trendCandidateId]/evidence` — every evidence row for the trend candidate; `POST` — record one (`{ evidenceType, referenceId?, description }`, same per-type `referenceId` shape as above) without changing status
+- `GET /api/market-intelligence/research-requests` (Phase 9 slice 9G, part B) — list all agent-created research requests, for the Web UI's own review queue
+- `POST /api/market-intelligence/research-requests/[requestId]/approve` — no request body; the ONLY way a request moves `pending -> approved` (verified mechanically, see `docs/ARCHITECTURE.md` §18) — uses the approving human's own session credentials for the one real `search.list` call this triggers; records `status: "executed"` + `candidatesFound`/`candidatesNew` on success, `status: "execution_failed"` + `executionError` on failure (never reverts the approval itself)
+- `POST /api/market-intelligence/research-requests/[requestId]/reject` — `{ reason }`; the ONLY way a request moves `pending -> rejected`
 
 ### Analytics API (Phase 8 + Studio-Parity S6b, BL-055..059/BL-072 — previously undocumented here)
 

@@ -3436,7 +3436,12 @@ test("CLI agent channel-analytics/video-analytics are never blocked by the opera
 // separately).
 function makeMarketIntelligenceCliCoreStub(): Pick<
   MarketIntelligenceCore,
-  "listWatchlist" | "getWatchlistEntryContext" | "listTopics" | "listTrendCandidates" | "listDiscoveryCandidates"
+  | "listWatchlist"
+  | "getWatchlistEntryContext"
+  | "listTopics"
+  | "listTrendCandidates"
+  | "listDiscoveryCandidates"
+  | "createMarketResearchRequest"
 > {
   return {
     listWatchlist: async () => ({ channels: [] }),
@@ -3446,6 +3451,9 @@ function makeMarketIntelligenceCliCoreStub(): Pick<
     listTopics: async () => ({ topics: [] }),
     listTrendCandidates: async () => ({ trendCandidates: [] }),
     listDiscoveryCandidates: async () => ({ candidates: [] }),
+    createMarketResearchRequest: async () => {
+      throw new Error("not used");
+    },
   };
 }
 
@@ -3555,6 +3563,164 @@ test("CLI agent market-records rejects an unknown --kind value as validation_fai
   assert.equal(exitCode, 1);
   const envelope = JSON.parse(stderr[0] ?? "{}");
   assert.equal(envelope.error.code, "validation_failed");
+});
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9G, part B -- agent create-research-request
+// (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md §8/AC-9G-B-11b).
+// ---------------------------------------------------------------------------
+
+test("CLI agent create-research-request server-stamps createdVia:\"cli\"/agentApiVersion:null and forwards the parsed flags", async () => {
+  let capturedInput: unknown;
+  let capturedCallOrigin: unknown;
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  marketIntelligenceCore.createMarketResearchRequest = async (input, callOrigin) => {
+    capturedInput = input;
+    capturedCallOrigin = callOrigin;
+    return {
+      requestId: "req-1",
+      query: "night jazz bar",
+      rationale: "worth watching",
+      monitorDurationDays: 30,
+      status: "pending",
+      createdVia: "cli",
+      agentApiVersion: null,
+      createdAt: "2026-09-27T00:00:00.000Z",
+      resolvedAt: null,
+      resolvedReason: null,
+      candidatesFound: null,
+      candidatesNew: null,
+      executionError: null,
+    };
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "agent",
+      "create-research-request",
+      "--query",
+      "night jazz bar",
+      "--rationale",
+      "worth watching",
+      "--monitorDurationDays",
+      "30",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.status, "pending");
+  assert.deepEqual(capturedInput, { query: "night jazz bar", rationale: "worth watching", monitorDurationDays: 30 });
+  assert.deepEqual(capturedCallOrigin, { createdVia: "cli", agentApiVersion: null });
+});
+
+test("CLI agent create-research-request rejects a missing --query as validation_failed", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "create-research-request", "--rationale", "worth watching"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore: makeMarketIntelligenceCliCoreStub(),
+    writeStdout: () => {},
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI agent create-research-request is actually wired through agent-zone enforcement (rejected when the stub always denies)", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "create-research-request", "--query", "night jazz", "--rationale", "worth watching"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore: makeMarketIntelligenceCliCoreStub(),
+    agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
+    writeStdout: () => {},
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "AGENT_ZONE_VIOLATION");
+});
+
+test("CLI agent create-research-request passes exactly capabilityId \"market_intelligence.agent_create_market_research_request\" and --agentConnectionId to assertAgentAllowedForCapability", async () => {
+  const capturing = makeCapturingAgentConnectionsCoreStub();
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  marketIntelligenceCore.createMarketResearchRequest = async () => ({
+    requestId: "req-1",
+    query: "night jazz",
+    rationale: "worth watching",
+    monitorDurationDays: null,
+    status: "pending",
+    createdVia: "cli",
+    agentApiVersion: null,
+    createdAt: "2026-09-27T00:00:00.000Z",
+    resolvedAt: null,
+    resolvedReason: null,
+    candidatesFound: null,
+    candidatesNew: null,
+    executionError: null,
+  });
+
+  const exitCode = await runCliCommand({
+    argv: [
+      "agent",
+      "create-research-request",
+      "--query",
+      "night jazz",
+      "--rationale",
+      "worth watching",
+      "--agentConnectionId",
+      "test-caller",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    agentConnectionsCore: capturing,
+    writeStdout: () => {},
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(capturing.calls.length, 1);
+  assert.deepEqual(capturing.calls[0], {
+    capabilityId: "market_intelligence.agent_create_market_research_request",
+    callerConnectionId: "test-caller",
+  });
+});
+
+test("CLI agent create-research-request is rejected while the operation lock is held", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+    marketIntelligenceCore.createMarketResearchRequest = async () => {
+      throw new Error("must not be called");
+    };
+
+    const stderr: string[] = [];
+    const exitCode = await runCliCommand({
+      argv: ["agent", "create-research-request", "--query", "night jazz", "--rationale", "worth watching"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      marketIntelligenceCore,
+      writeStdout: () => {},
+      writeStderr: (line) => stderr.push(line),
+    });
+
+    assert.equal(exitCode, 1);
+    const envelope = JSON.parse(stderr[0] ?? "{}");
+    assert.equal(envelope.error.code, "operation_lock_held");
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
 });
 
 test("CLI agent competitors/market-intelligence/market-records are never blocked by the operation lock (read-only)", async () => {

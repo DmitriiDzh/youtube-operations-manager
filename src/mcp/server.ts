@@ -47,6 +47,7 @@ import {
   CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET,
   CAPABILITY_CONTENT_PROPOSAL_CREATE,
   CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT,
+  CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE,
   resolveAgentConnectionIdFromEnv,
 } from "@/lib/agent-connections";
 import {
@@ -79,7 +80,7 @@ import {
   listWeeklyReportsInputSchema,
 } from "@/lib/analytics/schemas";
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
-import { getWatchlistEntryInputSchema } from "@/lib/market-intelligence/schemas";
+import { createMarketResearchRequestInputSchema, getWatchlistEntryInputSchema } from "@/lib/market-intelligence/schemas";
 
 loadEnvConfig(process.cwd());
 
@@ -144,10 +145,18 @@ type AnalyticsCoreSubset = Pick<
 // (`docs/roadmap/plans/PHASE_9_PLAN.md` §5's module-independence rule). Global data, never
 // channel-scoped -- no `assertMcpDeviceAvailable` or active-channel check applies to either.
 // Phase 9 slice 9G, part A widened this to add the three list actions `agent_list_market_records`
-// fans out to -- same rationale as above, no new hard dependency on agent-operations.
+// fans out to -- same rationale as above, no new hard dependency on agent-operations. Part B added
+// `createMarketResearchRequest` only -- deliberately never the two actions that move a research
+// request out of "pending" (no MCP tool anywhere calls either, verified mechanically by this
+// module's own approval inventory test).
 type MarketIntelligenceCoreSubset = Pick<
   MarketIntelligenceCore,
-  "listWatchlist" | "getWatchlistEntryContext" | "listTopics" | "listTrendCandidates" | "listDiscoveryCandidates"
+  | "listWatchlist"
+  | "getWatchlistEntryContext"
+  | "listTopics"
+  | "listTrendCandidates"
+  | "listDiscoveryCandidates"
+  | "createMarketResearchRequest"
 >;
 
 // BL-075/BL-078 (docs/roadmap/BACKLOG.md): the same "generate proposals" -> "create Change Set"
@@ -240,6 +249,7 @@ type McpToolHandlers = {
   queryCompetitors: (input: unknown) => Promise<ToolResponse>;
   queryMarketIntelligence: (input: unknown) => Promise<ToolResponse>;
   agentListMarketRecords: (input: unknown) => Promise<ToolResponse>;
+  agentCreateMarketResearchRequest: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -1535,6 +1545,33 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    /**
+     * Phase 9 slice 9G, part B (owner spec §29) -- an agent-created DRAFT, never self-approving.
+     * `createdVia: "mcp"`/`agentApiVersion` are SERVER-STAMPED (owner spec §22), mirrors
+     * `agentCreateContentProposal` above exactly. A real local-state mutation (writes a pending row
+     * to local SQLite) even though it never touches YouTube, so this tool is gated by
+     * `assertMcpDeviceAvailable` (via `wrapMcpHandlersWithMutationGate` below) and by agent-zone
+     * enforcement (`registerTool`'s zoning argument, at the bottom of this file), same as
+     * `agentCreateContentProposal`. Global, no `assertActiveChannel` check -- this data is not
+     * scoped to any owned channel, same as `queryCompetitors`/`queryMarketIntelligence` above.
+     */
+    async agentCreateMarketResearchRequest(input: unknown): Promise<ToolResponse> {
+      const parsedInput = createMarketResearchRequestInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const result = await marketIntelligenceCore.createMarketResearchRequest(parsedInput.data, {
+          createdVia: "mcp",
+          agentApiVersion: AGENT_API_VERSION,
+        });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -1672,6 +1709,10 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     queryMarketIntelligence: handlers.queryMarketIntelligence,
     // Phase 9 slice 9G, part A -- pure fan-out over already-existing reads, same classification.
     agentListMarketRecords: handlers.agentListMarketRecords,
+    // Phase 9 slice 9G, part B -- a real local-state mutation (a new pending request row) -- gated,
+    // like `agentCreateContentProposal` above.
+    agentCreateMarketResearchRequest: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.agentCreateMarketResearchRequest(input),
   };
 }
 
@@ -2305,6 +2346,17 @@ export function createMcpServer(
       inputSchema: agentListMarketRecordsInputSchema,
     },
     (args) => handlers.agentListMarketRecords(args)
+  );
+
+  registerTool(
+    "agent_create_market_research_request",
+    {
+      description:
+        "Creates a structured research/discovery draft (query, rationale, optional monitorDurationDays -- stored as descriptive metadata only, never consulted by any scheduler, since none exists in this application). Always starts status:\"pending\". Makes zero YouTube calls and spends zero quota -- a human must separately approve it through the Web UI before the one real search.list run it can ever trigger actually happens (owner spec §29: \"this must not automatically create unlimited collection jobs\"). There is no MCP tool to approve or reject a request -- that is reachable ONLY through the Web UI (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md).",
+      inputSchema: createMarketResearchRequestInputSchema,
+    },
+    (args) => handlers.agentCreateMarketResearchRequest(args),
+    CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE
   );
 
   return server;

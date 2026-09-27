@@ -501,6 +501,55 @@ export const recordTrendEvidenceOutputSchema = marketTrendEvidenceSchema;
 export const listTrendEvidenceInputSchema = z.object({ trendCandidateId: z.string().min(1) }).strict();
 export const listTrendEvidenceOutputSchema = z.object({ evidence: z.array(marketTrendEvidenceSchema) }).strict();
 
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md) -- agent-created
+// research requests with a human-only approval gate.
+// ---------------------------------------------------------------------------
+
+const marketResearchRequestStatusSchema = z.enum(["pending", "approved", "rejected", "executed", "execution_failed"]);
+
+export const marketResearchRequestSchema = z
+  .object({
+    requestId: z.string().min(1),
+    query: z.string(),
+    rationale: z.string(),
+    monitorDurationDays: z.number().nullable(),
+    status: marketResearchRequestStatusSchema,
+    createdVia: z.string(),
+    agentApiVersion: z.string().nullable(),
+    createdAt: z.string(),
+    resolvedAt: z.string().nullable(),
+    resolvedReason: z.string().nullable(),
+    candidatesFound: z.number().nullable(),
+    candidatesNew: z.number().nullable(),
+    executionError: z.string().nullable(),
+  })
+  .strict();
+
+// `monitorDurationDays` is metadata only (spec §29's own "Monitor for 30 days" example) -- stored
+// and returned, never consulted by any code path that decides whether/when to run anything.
+export const createMarketResearchRequestInputSchema = z
+  .object({
+    query: z.string().min(1, "query is required").max(500),
+    rationale: z.string().min(1, "rationale is required").max(2000),
+    monitorDurationDays: z.number().int().positive().max(3650).optional(),
+  })
+  .strict();
+
+export const createMarketResearchRequestOutputSchema = marketResearchRequestSchema;
+export const listMarketResearchRequestsOutputSchema = z.object({ requests: z.array(marketResearchRequestSchema) }).strict();
+export const getMarketResearchRequestInputSchema = z.object({ requestId: z.string().min(1) }).strict();
+
+export const approveMarketResearchRequestInputSchema = z
+  .object({ requestId: z.string().min(1), credentialRef: credentialRefSchema })
+  .strict();
+export const approveMarketResearchRequestOutputSchema = marketResearchRequestSchema;
+
+export const rejectMarketResearchRequestInputSchema = z
+  .object({ requestId: z.string().min(1), reason: z.string().min(1, "reason is required").max(2000) })
+  .strict();
+export const rejectMarketResearchRequestOutputSchema = marketResearchRequestSchema;
+
 // Re-exported so services.ts/adapters never need their own separate import of the shared
 // provenance vocabulary's schema (AGENTS.md §M: market-intelligence is a caller of
 // shared-provenance, not a second owner of it).
@@ -526,3 +575,6 @@ export type ListTopicsForSubjectInput = z.infer<typeof listTopicsForSubjectInput
 export type CreateTrendCandidateInput = z.infer<typeof createTrendCandidateInputSchema>;
 export type UpdateTrendCandidateStatusInput = z.infer<typeof updateTrendCandidateStatusInputSchema>;
 export type RecordTrendEvidenceInput = z.infer<typeof recordTrendEvidenceInputSchema>;
+export type CreateMarketResearchRequestInput = z.infer<typeof createMarketResearchRequestInputSchema>;
+export type ApproveMarketResearchRequestInput = z.infer<typeof approveMarketResearchRequestInputSchema>;
+export type RejectMarketResearchRequestInput = z.infer<typeof rejectMarketResearchRequestInputSchema>;
