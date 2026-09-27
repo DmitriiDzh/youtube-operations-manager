@@ -206,6 +206,13 @@ the autonomous loop, treat any next-phase work the same way §9 already does.
 
 ## 4. The independent-review cycle
 
+**Run this cycle ONCE per phase, right before requesting merge to `dev` — never after each
+individual slice.** (Owner correction, Telegram, 2026-09-27, after this loop ran `/code-review high`
+separately after two different slices of the same in-progress phase: "у нас есть правило, что
+прогон независимого ревью должен быть только на последней стадии, перед самым мерджем в дев".)
+While a phase's slices are still being built, validate each one with the normal
+`npm test`/`lint`/`build`/`tsc` cycle (`AGENTS.md` §E) only — no separate review subagent per slice.
+
 Exact procedure the project owner specified (2026-09-21, Telegram, verbatim): *"Сделай серию
 независимых ревью до нуля ошибок с исправлениями. По окончании вывести статистику, сколько серий
 было и сколько ошибок в каждой серии найдено."*
