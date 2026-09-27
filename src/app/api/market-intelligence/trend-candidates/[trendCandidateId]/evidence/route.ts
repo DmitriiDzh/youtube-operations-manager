@@ -51,8 +51,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ tre
     const bodyRecord = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
 
     const { trendCandidateId } = await params;
+    // referenceId must be omitted entirely (not merely `undefined`) when the body doesn't send it --
+    // the "signal" branch of recordTrendEvidenceInputSchema is `.strict()` with no referenceId key at
+    // all, and zod's `.strict()` treats an own key whose value is `undefined` as an unrecognized key,
+    // rejecting every "signal" submission outright (found by independent code review).
     const evidence = await core.recordTrendEvidence(
-      { trendCandidateId, evidenceType: bodyRecord.evidenceType, referenceId: bodyRecord.referenceId, description: bodyRecord.description },
+      {
+        trendCandidateId,
+        evidenceType: bodyRecord.evidenceType,
+        description: bodyRecord.description,
+        ...(bodyRecord.referenceId !== undefined ? { referenceId: bodyRecord.referenceId } : {}),
+      },
       { createdVia: "web_ui" }
     );
     return NextResponse.json({ evidence }, { status: 201 });

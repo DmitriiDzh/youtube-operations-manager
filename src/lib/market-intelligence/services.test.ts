@@ -603,6 +603,7 @@ function createFakeStore() {
       monitorDurationDays?: number | null;
       createdVia: string;
       agentApiVersion?: string | null;
+      at?: Date;
     }) {
       marketResearchRequests.set(input.id, {
         id: input.id,
@@ -612,7 +613,7 @@ function createFakeStore() {
         status: "pending",
         createdVia: input.createdVia,
         agentApiVersion: input.agentApiVersion ?? null,
-        createdAt: new Date(),
+        createdAt: input.at ?? new Date(),
         resolvedAt: null,
         resolvedReason: null,
         candidatesFound: null,
@@ -2368,6 +2369,18 @@ test("AC-9G-B-02: createdVia cannot be smuggled in through the public input -- s
   );
   assert.equal(created.createdVia, "cli");
   assert.equal(created.agentApiVersion, "1.2.3");
+});
+
+test("AC-9G-B-02b: createMarketResearchRequest stamps createdAt from the injected clock, not real wall-clock time (found by independent code review -- a mocked clock could otherwise leave resolvedAt earlier than createdAt)", async () => {
+  const frozenNow = new Date("2026-01-01T00:00:00.000Z");
+  const { services } = createFixture({ now: frozenNow });
+
+  const created = await services.createMarketResearchRequest(
+    { query: "night jazz", rationale: "worth watching" },
+    { createdVia: "mcp" }
+  );
+
+  assert.equal(created.createdAt, frozenNow.toISOString());
 });
 
 test("AC-9G-B-03: createMarketResearchRequest makes zero YouTube calls and writes zero quota-ledger rows", async () => {

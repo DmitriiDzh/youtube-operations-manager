@@ -120,7 +120,7 @@ export function MarketTrendsPanel() {
           description: newDescription.trim().length > 0 ? newDescription : undefined,
           initialEvidence: {
             evidenceType: newEvidenceType,
-            referenceId: newEvidenceRef.trim().length > 0 ? newEvidenceRef : undefined,
+            referenceId: newEvidenceRef.trim().length > 0 ? newEvidenceRef.trim() : undefined,
             description: newEvidenceDescription,
           },
         }),
@@ -171,7 +171,7 @@ export function MarketTrendsPanel() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           evidenceType: addEvidenceType,
-          referenceId: addEvidenceRef.trim().length > 0 ? addEvidenceRef : undefined,
+          referenceId: addEvidenceRef.trim().length > 0 ? addEvidenceRef.trim() : undefined,
           description: addEvidenceDescription,
         }),
       });
@@ -218,7 +218,14 @@ export function MarketTrendsPanel() {
         <div className="flex flex-wrap items-center gap-2">
           <select
             value={newEvidenceType}
-            onChange={(e) => setNewEvidenceType(e.target.value as TrendEvidenceType)}
+            onChange={(e) => {
+              // Clearing the stale ref on every type change (not just hiding its input) --
+              // otherwise switching from supporting_channel/video back to "signal" leaves a
+              // non-empty referenceId in state, which the "signal" branch's own strict schema has
+              // no key for at all and rejects outright (found by independent code review).
+              setNewEvidenceType(e.target.value as TrendEvidenceType);
+              setNewEvidenceRef("");
+            }}
             className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
           >
             {EVIDENCE_TYPE_OPTIONS.map((option) => (
@@ -287,7 +294,10 @@ export function MarketTrendsPanel() {
                 <div className="flex flex-wrap items-center gap-2">
                   <select
                     value={addEvidenceType}
-                    onChange={(e) => setAddEvidenceType(e.target.value as TrendEvidenceType)}
+                    onChange={(e) => {
+                      setAddEvidenceType(e.target.value as TrendEvidenceType);
+                      setAddEvidenceRef("");
+                    }}
                     className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
                   >
                     {EVIDENCE_TYPE_OPTIONS.map((option) => (

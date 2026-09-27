@@ -1874,6 +1874,21 @@ test("market_research_requests round-trip through the real Drizzle schema; new r
     assert.equal(list.length, 1);
   }));
 
+test("insertMarketResearchRequest: an explicit `at` stamps createdAt instead of the column's real-wall-clock default (found by independent code review -- unlike insertMarketTrendCandidate, this had no injected-clock parameter at all)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const at = new Date("2020-01-01T00:00:00.000Z");
+
+    await insertMarketResearchRequest(
+      { id: "req-clock", query: "night jazz", rationale: "worth watching", createdVia: "mcp", at },
+      isolatedDb
+    );
+
+    const row = await getMarketResearchRequestById("req-clock", isolatedDb);
+    assert.equal(row?.createdAt.toISOString(), at.toISOString());
+  }));
+
 // AC-9G-B-06's own real proof -- RISK-70 already showed a fake in-memory store proves nothing
 // about real atomicity. Forces two literally-concurrent calls (Promise.all, not two sequential
 // awaits) against the real libsql driver, asserting exactly one lands.

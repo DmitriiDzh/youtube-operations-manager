@@ -564,6 +564,7 @@ type ServiceDependencies = {
     monitorDurationDays?: number | null;
     createdVia: string;
     agentApiVersion?: string | null;
+    at?: Date;
   }): Promise<void>;
   getMarketResearchRequestById(id: string): Promise<StoredMarketResearchRequestForService | null>;
   listMarketResearchRequests(): Promise<StoredMarketResearchRequestForService[]>;
@@ -1944,6 +1945,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         monitorDurationDays: parsedInput.monitorDurationDays ?? null,
         createdVia: callOrigin.createdVia,
         agentApiVersion: callOrigin.agentApiVersion ?? null,
+        at: deps.clock.now(),
       });
 
       const row = (await deps.getMarketResearchRequestById(id))!;
@@ -2033,38 +2035,50 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         });
       }
 
+      // Only the discovery call itself is inside this try/catch -- the "was the row still
+      // 'approved' when we went to record its outcome" guard below must NOT be, since a `throw`
+      // there would otherwise be immediately swallowed by this same catch (found by independent
+      // code review: the guard fired but its result was discarded, and the function fell through
+      // returning HTTP success as if approval had gone through normally).
+      let discoveryResult: Awaited<ReturnType<typeof services.discoverChannels>>;
       try {
         // Reuses `discoverChannels`'s entire existing pipeline verbatim (its own upfront
         // precondition/credential checks run again here -- intentional, cheap defense-in-depth
         // against a race between this action's own pre-checks above and this exact call, per this
         // slice's own plan doc) -- never a second, parallel search/dedup/insert implementation.
-        const result = await services.discoverChannels(
+        discoveryResult = await services.discoverChannels(
           { query: approved.query, credentialRef: parsedInput.credentialRef },
           callOrigin
         );
-        const executed = await deps.recordMarketResearchRequestExecutionOutcome(parsedInput.requestId, {
-          status: "executed",
-          candidatesFound: result.candidatesFound,
-          candidatesNew: result.candidatesNew,
-        });
-        if (!executed) {
-          throw new DomainError({
-            code: "RESEARCH_REQUEST_NOT_PENDING",
-            message: "This research request was no longer 'approved' when its execution outcome was recorded",
-            details: { requestId: parsedInput.requestId },
-          });
-        }
       } catch (error) {
-        await deps.recordMarketResearchRequestExecutionOutcome(parsedInput.requestId, {
+        const failed = await deps.recordMarketResearchRequestExecutionOutcome(parsedInput.requestId, {
           status: "execution_failed",
           executionError: error instanceof Error ? error.message : String(error),
         });
+        const row = failed ?? (await deps.getMarketResearchRequestById(parsedInput.requestId))!;
+        return parseWithSchema(
+          approveMarketResearchRequestOutputSchema,
+          toMarketResearchRequest(row),
+          "approve market research request output"
+        );
       }
 
-      const row = (await deps.getMarketResearchRequestById(parsedInput.requestId))!;
+      const executed = await deps.recordMarketResearchRequestExecutionOutcome(parsedInput.requestId, {
+        status: "executed",
+        candidatesFound: discoveryResult.candidatesFound,
+        candidatesNew: discoveryResult.candidatesNew,
+      });
+      if (!executed) {
+        throw new DomainError({
+          code: "RESEARCH_REQUEST_NOT_PENDING",
+          message: "This research request was no longer 'approved' when its execution outcome was recorded",
+          details: { requestId: parsedInput.requestId },
+        });
+      }
+
       return parseWithSchema(
         approveMarketResearchRequestOutputSchema,
-        toMarketResearchRequest(row),
+        toMarketResearchRequest(executed),
         "approve market research request output"
       );
     },

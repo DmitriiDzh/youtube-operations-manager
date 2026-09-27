@@ -1730,6 +1730,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     },
   },
   {
+    // This migration's body was edited in place (the named-index fix below, commit 2c3662f) after
+    // it was first introduced (commit e1b43bf) rather than shipped as a new version -- normally
+    // forbidden by this file's own additive-only schema-versioning discipline (docs/decisions/0002),
+    // since the migration runner only re-applies a version once, via `version > stampedBeforeMigrations`.
+    // Accepted as a single, deliberate, already-closed exception here specifically because this
+    // branch has never merged into dev/main: no shared/released database was ever stamped at 26
+    // with the old inline `UNIQUE(...)` constraint, so nothing needs to migrate away from it. The
+    // only databases at risk are a local dev/test database created from this same still-open branch
+    // between those two commits -- such a database keeps the old SQLite-auto-named index and must be
+    // deleted/recreated, since this fix will never re-run against it. This is not a repeatable
+    // pattern: every later correction on this branch (e.g. `market_research_requests` below) got its
+    // own new version number, exactly as this file's discipline requires.
     version: 26,
     description:
       "market_topics + market_topic_assignments + market_trend_candidates + market_trend_evidence -- Phase 9 slice 9E topic model and manual/structural trend candidates (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md)",
@@ -5588,6 +5600,14 @@ export async function insertMarketResearchRequest(
     monitorDurationDays?: number | null;
     createdVia: string;
     agentApiVersion?: string | null;
+    /** Explicit creation instant for `createdAt` -- accepted for the same reason
+     * `insertMarketTrendCandidate` accepts one (found by independent code review): a later
+     * approve/reject transition stamps `resolvedAt` from the service layer's injected
+     * `deps.clock.now()`, so leaving this row's own `createdAt` to the column's real-wall-clock
+     * `$defaultFn` default risks a `resolvedAt` earlier than `createdAt` under a mocked/frozen
+     * clock. Falls back to the column default only when a caller genuinely has no clock to inject.
+     */
+    at?: Date;
   },
   database: AppDb = db
 ): Promise<void> {
@@ -5599,6 +5619,7 @@ export async function insertMarketResearchRequest(
     status: "pending",
     createdVia: input.createdVia,
     agentApiVersion: input.agentApiVersion ?? null,
+    ...(input.at ? { createdAt: input.at } : {}),
   });
 }
 
@@ -5651,10 +5672,8 @@ export async function rejectMarketResearchRequestIfPending(
 
 /**
  * Records the real outcome of the one `discoverChannels` run an approval triggers -- called only
- * after `approveMarketResearchRequestIfPending` already succeeded (so this is a plain `id` match,
- * not a further conditional transition; the row is already known to be `"approved"` at this point).
- */
-/**
+ * after `approveMarketResearchRequestIfPending` already succeeded.
+ *
  * Guarded by `WHERE status='approved'` -- found by independent review: an earlier version matched
  * on `id` alone, which meant this function itself could move a request straight from `pending` to
  * `executed`/`execution_failed`, completely bypassing the approval gate this slice exists to
