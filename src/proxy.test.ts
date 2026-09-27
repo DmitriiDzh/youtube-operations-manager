@@ -179,3 +179,25 @@ test("proxy gates the market-intelligence discovery-candidates promote route lik
     await releaseOperationLock(rawSqlClient);
   }
 });
+
+// Phase 9 slice 9E, part A: topic/assignment routes are real mutations (write topic/assignment
+// rows) -- gated the same way, never exempted.
+test("proxy gates the market-intelligence topics route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/topics"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("proxy gates the market-intelligence topic-assignments route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/topics/topic-1/assignments"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});

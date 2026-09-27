@@ -315,6 +315,68 @@ export const promoteDiscoveryCandidateOutputSchema = z
   })
   .strict();
 
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- topic model, part A.
+// ---------------------------------------------------------------------------
+
+// A well-formed YouTube video id (11 chars) -- mirrors youtubeChannelIdSchema's own precedent of a
+// locally-duplicated regex rather than a shared dependency for one pattern (AGENTS.md §D).
+const youtubeVideoIdSchema = z.string().regex(/^[a-zA-Z0-9_-]{11}$/, "subjectId must be a valid YouTube video id");
+
+// Trims and collapses internal whitespace runs (owner spec §13: "normalized keywords") -- the
+// service layer separately does a case-insensitive comparison against existing topic names before
+// insert (this schema only normalizes whitespace, never casing, since casing is a display
+// preference this module preserves as typed).
+const topicNameSchema = z
+  .string()
+  .min(1, "name is required")
+  .max(200)
+  .transform((value) => value.trim().replace(/\s+/g, " "))
+  .refine((value) => value.length > 0, { message: "name is required" });
+
+export const createTopicInputSchema = z.object({ name: topicNameSchema }).strict();
+
+export const marketTopicSchema = z
+  .object({
+    topicId: z.string().min(1),
+    name: z.string(),
+    addedAt: z.string(),
+  })
+  .strict();
+
+export const createTopicOutputSchema = marketTopicSchema;
+export const listTopicsOutputSchema = z.object({ topics: z.array(marketTopicSchema) }).strict();
+export const deleteTopicInputSchema = z.object({ topicId: z.string().min(1) }).strict();
+
+export const marketTopicAssignmentSchema = z
+  .object({
+    assignmentId: z.string().min(1),
+    topicId: z.string().min(1),
+    subjectType: z.enum(["channel", "video"]),
+    subjectId: z.string().min(1),
+    source: z.enum(["manual", "ai_assisted"]),
+    assignedAt: z.string(),
+  })
+  .strict();
+
+// A discriminated union so `subjectId`'s own format is validated according to `subjectType` --
+// a channel subject must be a canonical `UC...` id, a video subject an 11-char YouTube video id.
+export const assignTopicInputSchema = z.discriminatedUnion("subjectType", [
+  z.object({ topicId: z.string().min(1), subjectType: z.literal("channel"), subjectId: youtubeChannelIdSchema }).strict(),
+  z.object({ topicId: z.string().min(1), subjectType: z.literal("video"), subjectId: youtubeVideoIdSchema }).strict(),
+]);
+
+export const assignTopicOutputSchema = marketTopicAssignmentSchema;
+export const removeTopicAssignmentInputSchema = z.object({ assignmentId: z.string().min(1) }).strict();
+export const listAssignmentsForTopicInputSchema = z.object({ topicId: z.string().min(1) }).strict();
+export const listAssignmentsForTopicOutputSchema = z.object({ assignments: z.array(marketTopicAssignmentSchema) }).strict();
+
+export const listTopicsForSubjectInputSchema = z.discriminatedUnion("subjectType", [
+  z.object({ subjectType: z.literal("channel"), subjectId: youtubeChannelIdSchema }).strict(),
+  z.object({ subjectType: z.literal("video"), subjectId: youtubeVideoIdSchema }).strict(),
+]);
+export const listTopicsForSubjectOutputSchema = z.object({ assignments: z.array(marketTopicAssignmentSchema) }).strict();
+
 // Re-exported so services.ts/adapters never need their own separate import of the shared
 // provenance vocabulary's schema (AGENTS.md §M: market-intelligence is a caller of
 // shared-provenance, not a second owner of it).
@@ -334,3 +396,6 @@ export type RunCollectionIfStaleOutput = z.infer<typeof runCollectionIfStaleOutp
 export type DiscoverChannelsInput = z.infer<typeof discoverChannelsInputSchema>;
 export type UpdateDiscoveryCandidateStatusInput = z.infer<typeof updateDiscoveryCandidateStatusInputSchema>;
 export type PromoteDiscoveryCandidateInput = z.infer<typeof promoteDiscoveryCandidateInputSchema>;
+export type CreateTopicInput = z.infer<typeof createTopicInputSchema>;
+export type AssignTopicInput = z.infer<typeof assignTopicInputSchema>;
+export type ListTopicsForSubjectInput = z.infer<typeof listTopicsForSubjectInputSchema>;

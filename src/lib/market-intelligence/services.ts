@@ -4,6 +4,8 @@ import {
   type DiscoveryCandidateStatus,
   type MarketChannelSnapshot,
   type MarketDiscoveryCandidate,
+  type MarketTopic,
+  type MarketTopicAssignment,
   type MarketVideoSnapshot,
   type PublicChannelSearchResult,
   type PublicChannelSnapshot,
@@ -11,12 +13,18 @@ import {
   type ResearchChannel,
   type ResearchEvidence,
   type ResolvedCredentials,
+  type TopicAssignmentSubjectType,
 } from "./contracts";
 import {
   addToWatchlistInputSchema,
   addToWatchlistOutputSchema,
+  assignTopicInputSchema,
+  assignTopicOutputSchema,
   captureChannelSnapshotInputSchema,
   captureChannelSnapshotOutputSchema,
+  createTopicInputSchema,
+  createTopicOutputSchema,
+  deleteTopicInputSchema,
   discoverChannelsInputSchema,
   discoverChannelsOutputSchema,
   fetchPublicSnapshotInputSchema,
@@ -24,11 +32,16 @@ import {
   getWatchlistEntryContextOutputSchema,
   getWatchlistEntryInputSchema,
   getWatchlistEntryOutputSchema,
+  listAssignmentsForTopicInputSchema,
+  listAssignmentsForTopicOutputSchema,
   listChannelSnapshotsInputSchema,
   listChannelSnapshotsOutputSchema,
   listDiscoveryCandidatesOutputSchema,
   listEvidenceInputSchema,
   listEvidenceOutputSchema,
+  listTopicsForSubjectInputSchema,
+  listTopicsForSubjectOutputSchema,
+  listTopicsOutputSchema,
   listVideoSnapshotsInputSchema,
   listVideoSnapshotsOutputSchema,
   listWatchlistOutputSchema,
@@ -43,6 +56,7 @@ import {
   recordVideoSnapshotInputSchema,
   recordVideoSnapshotOutputSchema,
   removeFromWatchlistInputSchema,
+  removeTopicAssignmentInputSchema,
   runCollectionIfStaleInputSchema,
   runCollectionIfStaleOutputSchema,
   updateDiscoveryCandidateStatusInputSchema,
@@ -199,6 +213,46 @@ function toMarketDiscoveryCandidate(row: StoredMarketDiscoveryCandidateForServic
   };
 }
 
+type StoredMarketTopicForService = {
+  id: string;
+  name: string;
+  createdVia: string;
+  createdAt: Date;
+};
+
+function toMarketTopic(row: StoredMarketTopicForService): MarketTopic {
+  return { topicId: row.id, name: row.name, addedAt: row.createdAt.toISOString() };
+}
+
+type StoredMarketTopicAssignmentForService = {
+  id: string;
+  topicId: string;
+  subjectType: TopicAssignmentSubjectType;
+  subjectId: string;
+  source: "manual" | "ai_assisted";
+  createdVia: string;
+  assignedAt: Date;
+};
+
+function toMarketTopicAssignment(row: StoredMarketTopicAssignmentForService): MarketTopicAssignment {
+  return {
+    assignmentId: row.id,
+    topicId: row.topicId,
+    subjectType: row.subjectType,
+    subjectId: row.subjectId,
+    source: row.source,
+    assignedAt: row.assignedAt.toISOString(),
+  };
+}
+
+// Owner spec §13: "normalized keywords" -- trims, collapses internal whitespace, and lowercases
+// for COMPARISON only (the schema layer already trims/collapses the value that gets stored; this
+// additionally lowercases so "Night Jazz Bar" and "night jazz bar" are treated as the same topic,
+// without forcing the STORED name itself to lose the operator's own preferred casing).
+function normalizeTopicNameForComparison(name: string): string {
+  return name.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
 type ServiceDependencies = {
   idGenerator(): string;
   insertResearchChannel(input: {
@@ -317,6 +371,30 @@ type ServiceDependencies = {
     errorMessage?: string | null;
     ranAt?: Date;
   }): Promise<void>;
+  // Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- topic model, part A.
+  listMarketTopics(): Promise<StoredMarketTopicForService[]>;
+  getMarketTopicById(topicId: string): Promise<StoredMarketTopicForService | null>;
+  insertMarketTopic(input: { id: string; name: string; createdVia: string }): Promise<void>;
+  deleteMarketTopic(topicId: string): Promise<void>;
+  listAssignmentsForTopic(topicId: string): Promise<StoredMarketTopicAssignmentForService[]>;
+  listTopicsForSubject(
+    subjectType: TopicAssignmentSubjectType,
+    subjectId: string
+  ): Promise<StoredMarketTopicAssignmentForService[]>;
+  getTopicAssignment(
+    topicId: string,
+    subjectType: TopicAssignmentSubjectType,
+    subjectId: string
+  ): Promise<StoredMarketTopicAssignmentForService | null>;
+  insertMarketTopicAssignment(input: {
+    id: string;
+    topicId: string;
+    subjectType: TopicAssignmentSubjectType;
+    subjectId: string;
+    source: "manual" | "ai_assisted";
+    createdVia: string;
+  }): Promise<void>;
+  deleteMarketTopicAssignment(assignmentId: string): Promise<void>;
 };
 
 // Phase 9 slice 9B -- real YouTube Data API v3 quota costs (`channels.list`/`playlistItems.list`/
@@ -1288,6 +1366,140 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         promoteDiscoveryCandidateOutputSchema,
         { channel: toResearchChannel(channelRow), candidate: toMarketDiscoveryCandidate(candidateRow) },
         "promote discovery candidate output"
+      );
+    },
+
+    /**
+     * Owner spec §13 (topic model), part A -- manual/keyword-based tagging, explicitly exempt from
+     * decision 3's AI-connection gating. Rejects a duplicate name using a NORMALIZED (trimmed,
+     * whitespace-collapsed, lowercased) comparison against every existing topic -- never silently
+     * creating a second row for "Night Jazz Bar" vs "night jazz bar" vs "Night  Jazz  Bar".
+     */
+    async createTopic(input: unknown, callOrigin: { createdVia: CreatedVia }): Promise<MarketTopic> {
+      const parsedInput = parseWithSchema(createTopicInputSchema, input, "create topic input");
+
+      const existingTopics = await deps.listMarketTopics();
+      const normalizedNew = normalizeTopicNameForComparison(parsedInput.name);
+      const duplicate = existingTopics.find((topic) => normalizeTopicNameForComparison(topic.name) === normalizedNew);
+      if (duplicate) {
+        throw new DomainError({
+          code: "TOPIC_ALREADY_EXISTS",
+          message: "A topic with this name already exists",
+          details: { name: parsedInput.name, existingTopicId: duplicate.id },
+        });
+      }
+
+      const id = deps.idGenerator();
+      await deps.insertMarketTopic({ id, name: parsedInput.name, createdVia: callOrigin.createdVia });
+      const row = (await deps.getMarketTopicById(id))!;
+      return parseWithSchema(createTopicOutputSchema, toMarketTopic(row), "create topic output");
+    },
+
+    async listTopics(): Promise<{ topics: MarketTopic[] }> {
+      const rows = await deps.listMarketTopics();
+      return parseWithSchema(listTopicsOutputSchema, { topics: rows.map(toMarketTopic) }, "list topics output");
+    },
+
+    /**
+     * Cascades its own assignments and detaches (never deletes) any trend candidate tagged with it
+     * -- `deps.deleteMarketTopic`'s own doc comment in db.ts explains why. Idempotent-safe, matching
+     * `removeFromWatchlist`'s own established convention in this module: removing an
+     * already-absent topic is a silent no-op, not an error.
+     */
+    async deleteTopic(input: unknown): Promise<void> {
+      const parsedInput = parseWithSchema(deleteTopicInputSchema, input, "delete topic input");
+      await deps.deleteMarketTopic(parsedInput.topicId);
+    },
+
+    /**
+     * A channel subject must already be on the watchlist (`RESEARCH_CHANNEL_NOT_AVAILABLE` if not)
+     * -- a video subject's format is already validated by the schema's own discriminated union, and
+     * has no existence check here (`market_video_snapshots` is an append-only series with no
+     * canonical single row per video to check against, same reasoning as this table's own missing
+     * FK). Rejects an exact-duplicate (topic, subject) pair before insert -- the real
+     * `UNIQUE(topic_id, subject_type, subject_id)` index is a defense-in-depth backstop, not the
+     * primary mechanism (advisor review: a raw constraint violation should never reach the caller
+     * as an opaque error when a clean pre-check is this cheap).
+     */
+    async assignTopic(input: unknown, callOrigin: { createdVia: CreatedVia }): Promise<MarketTopicAssignment> {
+      const parsedInput = parseWithSchema(assignTopicInputSchema, input, "assign topic input");
+
+      const topic = await deps.getMarketTopicById(parsedInput.topicId);
+      if (!topic) {
+        throw new DomainError({
+          code: "TOPIC_NOT_FOUND",
+          message: "No topic with this id",
+          details: { topicId: parsedInput.topicId },
+        });
+      }
+
+      if (parsedInput.subjectType === "channel") {
+        const channel = await deps.getResearchChannelById(parsedInput.subjectId);
+        if (!channel) {
+          throw new DomainError({
+            code: "RESEARCH_CHANNEL_NOT_AVAILABLE",
+            message: "Cannot assign a topic to a channel that is not on the watchlist",
+            details: { channelId: parsedInput.subjectId },
+          });
+        }
+      }
+
+      const existingAssignment = await deps.getTopicAssignment(
+        parsedInput.topicId,
+        parsedInput.subjectType,
+        parsedInput.subjectId
+      );
+      if (existingAssignment) {
+        throw new DomainError({
+          code: "TOPIC_ASSIGNMENT_ALREADY_EXISTS",
+          message: "This subject is already assigned to this topic",
+          details: { topicId: parsedInput.topicId, subjectType: parsedInput.subjectType, subjectId: parsedInput.subjectId },
+        });
+      }
+
+      const id = deps.idGenerator();
+      await deps.insertMarketTopicAssignment({
+        id,
+        topicId: parsedInput.topicId,
+        subjectType: parsedInput.subjectType,
+        subjectId: parsedInput.subjectId,
+        source: "manual",
+        createdVia: callOrigin.createdVia,
+      });
+      const row = (await deps.getTopicAssignment(parsedInput.topicId, parsedInput.subjectType, parsedInput.subjectId))!;
+      return parseWithSchema(assignTopicOutputSchema, toMarketTopicAssignment(row), "assign topic output");
+    },
+
+    async removeTopicAssignment(input: unknown): Promise<void> {
+      const parsedInput = parseWithSchema(removeTopicAssignmentInputSchema, input, "remove topic assignment input");
+      await deps.deleteMarketTopicAssignment(parsedInput.assignmentId);
+    },
+
+    async listAssignmentsForTopic(input: unknown): Promise<{ assignments: MarketTopicAssignment[] }> {
+      const parsedInput = parseWithSchema(listAssignmentsForTopicInputSchema, input, "list assignments for topic input");
+      const topic = await deps.getMarketTopicById(parsedInput.topicId);
+      if (!topic) {
+        throw new DomainError({
+          code: "TOPIC_NOT_FOUND",
+          message: "No topic with this id",
+          details: { topicId: parsedInput.topicId },
+        });
+      }
+      const rows = await deps.listAssignmentsForTopic(parsedInput.topicId);
+      return parseWithSchema(
+        listAssignmentsForTopicOutputSchema,
+        { assignments: rows.map(toMarketTopicAssignment) },
+        "list assignments for topic output"
+      );
+    },
+
+    async listTopicsForSubject(input: unknown): Promise<{ assignments: MarketTopicAssignment[] }> {
+      const parsedInput = parseWithSchema(listTopicsForSubjectInputSchema, input, "list topics for subject input");
+      const rows = await deps.listTopicsForSubject(parsedInput.subjectType, parsedInput.subjectId);
+      return parseWithSchema(
+        listTopicsForSubjectOutputSchema,
+        { assignments: rows.map(toMarketTopicAssignment) },
+        "list topics for subject output"
       );
     },
   };

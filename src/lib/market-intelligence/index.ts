@@ -43,9 +43,27 @@ export function createMarketIntelligenceCore() {
     touchMarketDiscoveryCandidateLastSeen: store.touchMarketDiscoveryCandidateLastSeen,
     setMarketDiscoveryCandidateStatus: store.setMarketDiscoveryCandidateStatus,
     insertMarketDiscoveryRun: store.insertMarketDiscoveryRun,
+    // Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- topic model, part A.
+    listMarketTopics: store.listMarketTopics,
+    getMarketTopicById: store.getMarketTopicById,
+    insertMarketTopic: store.insertMarketTopic,
+    deleteMarketTopic: store.deleteMarketTopic,
+    listAssignmentsForTopic: store.listAssignmentsForTopic,
+    listTopicsForSubject: store.listTopicsForSubject,
+    getTopicAssignment: store.getTopicAssignment,
+    insertMarketTopicAssignment: store.insertMarketTopicAssignment,
+    deleteMarketTopicAssignment: store.deleteMarketTopicAssignment,
   });
 }
 
 export type MarketIntelligenceCore = ReturnType<typeof createMarketIntelligenceCore>;
-export type { ResearchChannel, ResearchEvidence, MarketChannelSnapshot, MarketVideoSnapshot, MarketDiscoveryCandidate } from "./contracts";
+export type {
+  ResearchChannel,
+  ResearchEvidence,
+  MarketChannelSnapshot,
+  MarketVideoSnapshot,
+  MarketDiscoveryCandidate,
+  MarketTopic,
+  MarketTopicAssignment,
+} from "./contracts";
 export { DomainError, isDomainError } from "./contracts";

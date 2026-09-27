@@ -31,6 +31,7 @@ import {
   type PublicChannelSnapshot,
   type PublicVideoSnapshot,
   type ResolvedCredentials,
+  type TopicAssignmentSubjectType,
 } from "./contracts";
 
 const VALID_CHANNEL_ID = "UC1234567890123456789012"; // "UC" + 22 chars, matches the schema regex
@@ -78,6 +79,23 @@ type DiscoveryRunRow = {
   ranAt: Date;
 };
 
+type TopicRow = {
+  id: string;
+  name: string;
+  createdVia: string;
+  createdAt: Date;
+};
+
+type TopicAssignmentRow = {
+  id: string;
+  topicId: string;
+  subjectType: TopicAssignmentSubjectType;
+  subjectId: string;
+  source: "manual" | "ai_assisted";
+  createdVia: string;
+  assignedAt: Date;
+};
+
 type EvidenceRow = {
   id: string;
   researchChannelId: string;
@@ -121,6 +139,8 @@ function createFakeStore() {
   const collectionRuns: CollectionRunRow[] = [];
   const discoveryCandidates = new Map<string, DiscoveryCandidateRow>();
   const discoveryRuns: DiscoveryRunRow[] = [];
+  const topics = new Map<string, TopicRow>();
+  const topicAssignments: TopicAssignmentRow[] = [];
   let quotaBudget: number | null = null;
   let nextId = 1;
   let failNextSuccessRunInsert = false;
@@ -136,6 +156,8 @@ function createFakeStore() {
     videoSnapshots,
     collectionRuns,
     discoveryCandidates,
+    topics,
+    topicAssignments,
     discoveryRuns,
     setQuotaBudget(units: number | null) {
       quotaBudget = units;
@@ -389,6 +411,55 @@ function createFakeStore() {
         errorMessage: input.errorMessage ?? null,
         ranAt: input.ranAt ?? new Date(),
       });
+    },
+    // Phase 9 slice 9E -- topic model, part A.
+    async listMarketTopics() {
+      return [...topics.values()].sort((a, b) => a.name.localeCompare(b.name));
+    },
+    async getMarketTopicById(topicId: string) {
+      return topics.get(topicId) ?? null;
+    },
+    async insertMarketTopic(input: { id: string; name: string; createdVia: string }) {
+      topics.set(input.id, { id: input.id, name: input.name, createdVia: input.createdVia, createdAt: new Date() });
+    },
+    async deleteMarketTopic(topicId: string) {
+      topics.delete(topicId);
+      for (let i = topicAssignments.length - 1; i >= 0; i--) {
+        if (topicAssignments[i].topicId === topicId) topicAssignments.splice(i, 1);
+      }
+    },
+    async listAssignmentsForTopic(topicId: string) {
+      return topicAssignments.filter((row) => row.topicId === topicId);
+    },
+    async listTopicsForSubject(subjectType: TopicAssignmentSubjectType, subjectId: string) {
+      return topicAssignments.filter((row) => row.subjectType === subjectType && row.subjectId === subjectId);
+    },
+    async getTopicAssignment(topicId: string, subjectType: TopicAssignmentSubjectType, subjectId: string) {
+      return (
+        topicAssignments.find((row) => row.topicId === topicId && row.subjectType === subjectType && row.subjectId === subjectId) ?? null
+      );
+    },
+    async insertMarketTopicAssignment(input: {
+      id: string;
+      topicId: string;
+      subjectType: TopicAssignmentSubjectType;
+      subjectId: string;
+      source: "manual" | "ai_assisted";
+      createdVia: string;
+    }) {
+      topicAssignments.push({
+        id: input.id,
+        topicId: input.topicId,
+        subjectType: input.subjectType,
+        subjectId: input.subjectId,
+        source: input.source,
+        createdVia: input.createdVia,
+        assignedAt: new Date(),
+      });
+    },
+    async deleteMarketTopicAssignment(assignmentId: string) {
+      const index = topicAssignments.findIndex((row) => row.id === assignmentId);
+      if (index >= 0) topicAssignments.splice(index, 1);
     },
   };
 }
@@ -1581,4 +1652,117 @@ test("AC-9B-17: runCollectionIfStale checks Data API reads availability BEFORE c
   assert.equal(snapshotCalls.length, 0);
   assert.equal(store.collectionRuns.length, 0);
   assert.equal(store.channels.get(VALID_CHANNEL_ID)?.collectionClaimedAt, null, "no channel was ever claimed");
+});
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9E, part A (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md §5) -- acceptance criteria
+// for createTopic/listTopics/deleteTopic/assignTopic/removeTopicAssignment/listAssignmentsForTopic/
+// listTopicsForSubject, drafted from the plan's own §5 before this file's own implementation was
+// read line-by-line (AGENTS.md §L).
+// ---------------------------------------------------------------------------
+
+test("AC-9E-01: createTopic rejects a duplicate name using a normalized (trimmed/whitespace-collapsed/case-insensitive) comparison", async () => {
+  const { store, services } = createFixture();
+  await services.createTopic({ name: "Night Jazz Bar" }, { createdVia: "web_ui" });
+
+  await assert.rejects(
+    () => services.createTopic({ name: "  night   jazz bar  " }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "TOPIC_ALREADY_EXISTS"
+  );
+  assert.equal(store.topics.size, 1, "must never create a second row for a normalized-duplicate name");
+});
+
+test("AC-9E-01b: createTopic normalizes whitespace in the stored name, but preserves the operator's own casing", async () => {
+  const { services } = createFixture();
+  const topic = await services.createTopic({ name: "  Retro   Cocktail  Lounge  " }, { createdVia: "web_ui" });
+  assert.equal(topic.name, "Retro Cocktail Lounge");
+});
+
+test("AC-9E-02: assignTopic rejects an unknown topicId before storage", async () => {
+  const { store, services } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+
+  await assert.rejects(
+    () => services.assignTopic({ topicId: "nonexistent-topic", subjectType: "channel", subjectId: VALID_CHANNEL_ID }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "TOPIC_NOT_FOUND"
+  );
+  assert.equal(store.topicAssignments.length, 0);
+});
+
+test("AC-9E-02b: assignTopic rejects a channel subject not on the watchlist, and rejects a malformed video subject id at the schema layer", async () => {
+  const { store, services } = createFixture();
+  const topic = await services.createTopic({ name: "Some Topic" }, { createdVia: "web_ui" });
+
+  await assert.rejects(
+    () => services.assignTopic({ topicId: topic.topicId, subjectType: "channel", subjectId: VALID_CHANNEL_ID }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_CHANNEL_NOT_AVAILABLE"
+  );
+
+  await assert.rejects(
+    () => services.assignTopic({ topicId: topic.topicId, subjectType: "video", subjectId: "not-11-chars" }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+  assert.equal(store.topicAssignments.length, 0);
+});
+
+test("AC-9E-03: assignTopic rejects an exact-duplicate (topic, subject) pair before insert, and accepts the same subject under a different topic", async () => {
+  const { store, services } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  const topicA = await services.createTopic({ name: "Topic A" }, { createdVia: "web_ui" });
+  const topicB = await services.createTopic({ name: "Topic B" }, { createdVia: "web_ui" });
+
+  await services.assignTopic({ topicId: topicA.topicId, subjectType: "channel", subjectId: VALID_CHANNEL_ID }, { createdVia: "web_ui" });
+
+  await assert.rejects(
+    () => services.assignTopic({ topicId: topicA.topicId, subjectType: "channel", subjectId: VALID_CHANNEL_ID }, { createdVia: "web_ui" }),
+    (error: unknown) => isDomainError(error) && error.code === "TOPIC_ASSIGNMENT_ALREADY_EXISTS"
+  );
+
+  // The same channel under a DIFFERENT topic is a genuinely new, distinct assignment.
+  await services.assignTopic({ topicId: topicB.topicId, subjectType: "channel", subjectId: VALID_CHANNEL_ID }, { createdVia: "web_ui" });
+  assert.equal(store.topicAssignments.length, 2);
+});
+
+test("AC-9E-04: a valid video-format subject id is accepted without an existence check (market_video_snapshots has no canonical single row per video)", async () => {
+  const { services } = createFixture();
+  const topic = await services.createTopic({ name: "Some Topic" }, { createdVia: "web_ui" });
+  const assignment = await services.assignTopic(
+    { topicId: topic.topicId, subjectType: "video", subjectId: "dQw4w9WgXcQ" },
+    { createdVia: "web_ui" }
+  );
+  assert.equal(assignment.subjectType, "video");
+  assert.equal(assignment.subjectId, "dQw4w9WgXcQ");
+  assert.equal(assignment.source, "manual");
+});
+
+test("AC-9E-05: listAssignmentsForTopic/listTopicsForSubject return exactly the matching rows; removeTopicAssignment removes exactly one", async () => {
+  const { services } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  const topic = await services.createTopic({ name: "Some Topic" }, { createdVia: "web_ui" });
+  const assignment = await services.assignTopic(
+    { topicId: topic.topicId, subjectType: "channel", subjectId: VALID_CHANNEL_ID },
+    { createdVia: "web_ui" }
+  );
+
+  const forTopic = await services.listAssignmentsForTopic({ topicId: topic.topicId });
+  assert.equal(forTopic.assignments.length, 1);
+
+  const forSubject = await services.listTopicsForSubject({ subjectType: "channel", subjectId: VALID_CHANNEL_ID });
+  assert.equal(forSubject.assignments.length, 1);
+
+  await services.removeTopicAssignment({ assignmentId: assignment.assignmentId });
+  assert.deepEqual((await services.listAssignmentsForTopic({ topicId: topic.topicId })).assignments, []);
+});
+
+test("AC-9E-06: deleteTopic is a silent no-op for an already-absent topic (idempotent, mirrors removeFromWatchlist's own convention)", async () => {
+  const { services } = createFixture();
+  await services.deleteTopic({ topicId: "nonexistent-topic" });
+});
+
+test("AC-9E-07: listAssignmentsForTopic rejects an unknown topicId with TOPIC_NOT_FOUND", async () => {
+  const { services } = createFixture();
+  await assert.rejects(
+    () => services.listAssignmentsForTopic({ topicId: "nonexistent-topic" }),
+    (error: unknown) => isDomainError(error) && error.code === "TOPIC_NOT_FOUND"
+  );
 });

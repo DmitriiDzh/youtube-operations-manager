@@ -18,6 +18,7 @@ import { AgentConnectionsManager } from "@/components/agent-connections-manager"
 import { OperationsWorkspaceSettings } from "@/components/operations-workspace-settings";
 import { MarketResearchPanel } from "@/components/market-research-panel";
 import { MarketDiscoveryPanel } from "@/components/market-discovery-panel";
+import { MarketTopicsPanel } from "@/components/market-topics-panel";
 import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
 import { ChannelConnectionsSettings } from "@/components/channel-connections-settings";
@@ -326,6 +327,7 @@ export default function Dashboard() {
             </p>
             <MarketResearchPanel />
             <MarketDiscoveryPanel />
+            <MarketTopicsPanel />
           </div>
         </FeatureErrorBoundary>
       )}

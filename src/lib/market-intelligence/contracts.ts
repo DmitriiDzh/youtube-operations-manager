@@ -131,3 +131,53 @@ export type PublicChannelSearchResult = {
   title: string;
   description: string | null;
 };
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- topic model and manual/
+// structural trend candidates.
+// ---------------------------------------------------------------------------
+
+export type TopicAssignmentSubjectType = "channel" | "video";
+
+export type MarketTopic = {
+  topicId: string;
+  name: string;
+  addedAt: string;
+};
+
+export type MarketTopicAssignment = {
+  assignmentId: string;
+  topicId: string;
+  subjectType: TopicAssignmentSubjectType;
+  subjectId: string;
+  source: "manual" | "ai_assisted";
+  assignedAt: string;
+};
+
+export type TrendCandidateStatus = "emerging" | "growing" | "established" | "declining" | "stale";
+
+export type MarketTrendCandidate = {
+  trendCandidateId: string;
+  title: string;
+  description: string | null;
+  topicId: string | null;
+  status: TrendCandidateStatus;
+  firstObservedAt: string;
+  lastObservedAt: string;
+};
+
+export type TrendEvidenceType = "supporting_channel" | "supporting_video" | "signal";
+
+/**
+ * Purpose-built for trend candidates, NOT a reuse of `shared-provenance`'s `EvidenceReference` --
+ * that shape is for citing an EXTERNAL url-based source, a mismatch for "this trend is supported by
+ * these N of our own already-tracked channels/videos."
+ */
+export type MarketTrendEvidence = {
+  evidenceId: string;
+  trendCandidateId: string;
+  evidenceType: TrendEvidenceType;
+  referenceId: string | null;
+  description: string;
+  recordedAt: string;
+};
