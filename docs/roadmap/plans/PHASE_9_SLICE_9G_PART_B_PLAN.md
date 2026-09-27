@@ -58,13 +58,24 @@ CREATE TABLE IF NOT EXISTS market_research_requests (
   monitor_duration_days INTEGER,          -- metadata only, spec §29's own example -- NEVER read by any scheduler
   status TEXT NOT NULL DEFAULT 'pending', -- pending | approved | rejected | executed | execution_failed
   created_via TEXT NOT NULL,
+  agent_api_version TEXT,                 -- owner spec §22 provenance pair with created_via; NULL for a Web-UI-created row
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   resolved_at INTEGER,                    -- when it left 'pending'
   resolved_reason TEXT,                   -- human's own stated reason for approve/reject (required on reject)
+  candidates_found INTEGER,               -- filled from discoverChannels's own return value on a successful execution
+  candidates_new INTEGER,                 -- filled from discoverChannels's own return value on a successful execution
   execution_error TEXT                    -- set only on execution_failed
 );
 CREATE INDEX IF NOT EXISTS market_research_requests_status_idx ON market_research_requests(status);
 ```
+
+**Widened from the first draft of this plan (advisor review, before implementation): added
+`agent_api_version` (mirrors `content-proposals`' own `{createdVia, agentApiVersion}` provenance
+pair, owner spec §22 -- the original draft only had `created_via`) and `candidates_found`/
+`candidates_new` (so a successful execution's own outcome is recorded on the request row itself,
+not only inferable by cross-referencing `market_discovery_runs` separately). Adding these now, before
+any code exists, avoids a second migration purely to catch up on an audit-trail gap the very next
+slice to touch this table would otherwise have to open.**
 
 `monitor_duration_days` is deliberately **write-only-as-metadata** -- stored, returned in reads,
 never consulted by any code path that decides whether/when to run anything (there is nothing in
@@ -85,23 +96,53 @@ the identical reason.
   until a human approves.
 - **`listMarketResearchRequests()`** -- all requests, for the Web UI's own review queue.
 - **`getMarketResearchRequest(id)`** -- one request, `RESEARCH_REQUEST_NOT_FOUND` if absent.
-- **`approveMarketResearchRequest(input, callOrigin)`** -- `{id}`. **One atomic conditional update**
-  (`UPDATE market_research_requests SET status='approved', resolved_at=?, ... WHERE id=? AND
-  status='pending' RETURNING *`, the exact shape `claimStaleResearchChannelsForCollection` already
-  uses in this codebase) -- a double-click or two-tab race can never approve (and therefore never
-  spend quota) twice, mirroring the lesson RISK-68/69 already taught this module. Zero rows
-  returned -> `RESEARCH_REQUEST_NOT_PENDING` (covers both "already resolved" and "never existed,"
-  same non-distinguishing-error-shape discipline `updateDiscoveryCandidateStatus` already uses for
-  its own analogous case). **On successful approval, triggers exactly one `discoverChannels` call**
-  with the request's own `query`, using the approving human's own resolved credentials
-  (`credentialRef` resolved from the Web UI session the same way `discover/route.ts` already does:
-  `{ userId: session.user.id }`) -- going through `discoverChannels`'s own existing budget
-  check/quota ledger/`assertReadsAvailable` gate unchanged, never a second, parallel quota path.
-  Records the outcome back onto the request row: `status: "executed"` on success, `status:
-  "execution_failed"` + `execution_error` on failure (a failure here does NOT revert `status` back
-  to `pending` or `approved` -- the approval itself already happened and is not undone by a
-  downstream execution failure; the row's own `execution_error` makes the failure visible for a
-  human to act on, e.g. by manually running Discover again from the existing UI).
+- **`approveMarketResearchRequest(input, callOrigin)`** -- `{id, credentialRef}`. Sequence, corrected
+  from this plan's first draft (advisor review found the original design left every approval ending
+  in `execution_failed` on a fresh install -- see the callout below):
+  1. **Existence check first, via a plain read** (`getMarketResearchRequestById`) -- a genuinely
+     unknown id throws `RESEARCH_REQUEST_NOT_FOUND` immediately, before any quota check runs.
+  2. **Quota/reads preconditions, BEFORE touching `status` at all** -- the exact same checks
+     `discoverChannels` already runs first (budget unset -> `MARKET_INTELLIGENCE_QUOTA_DISABLED`;
+     budget exhausted -> `MARKET_INTELLIGENCE_QUOTA_EXCEEDED`; Data API reads disabled -> its own
+     error), extracted into one shared internal helper (`assertDiscoveryPreconditions(deps, now)`)
+     both `discoverChannels` and this action call, never duplicated inline. **If either check fails,
+     the request is left exactly as it was (still `pending`)** -- so the owner can set/raise the
+     budget in Settings and approve again, rather than the request being permanently burned into
+     `execution_failed` by a precondition that was never really about THIS request.
+  3. **One atomic conditional update** (`UPDATE market_research_requests SET status='approved',
+     resolved_at=?, ... WHERE id=? AND status='pending' RETURNING *`, the exact shape
+     `claimStaleResearchChannelsForCollection` already uses in this codebase) -- a double-click or
+     two-tab race can never approve (and therefore never spend quota) twice, mirroring the lesson
+     RISK-68/69 already taught this module. Zero rows returned here (the id existed in step 1 but
+     is no longer `pending` -- resolved by a concurrent call, or already resolved earlier) ->
+     `RESEARCH_REQUEST_NOT_PENDING`.
+  4. **Only after that transition succeeds**, call `discoverChannels` with the request's own `query`
+     and the approving human's own resolved credentials (`credentialRef` resolved from the Web UI
+     session the same way `discover/route.ts` already does: `{ userId: session.user.id }`) --
+     going through `discoverChannels`'s own existing budget check/quota ledger/
+     `assertReadsAvailable` gate a second time (intentional, cheap, defense-in-depth against a race
+     between step 2's pre-check and step 3's transition -- mirrors 9B's own "recompute remaining
+     after the claim" discipline), never a second, parallel quota-accounting path.
+  5. Records the outcome back onto the now-`approved` row: `status: "executed"` +
+     `candidates_found`/`candidates_new` (from `discoverChannels`'s own return value) on success;
+     `status: "execution_failed"` + `execution_error` on failure. A failure here does NOT revert
+     `status` back to `pending` or `approved` -- the approval itself already happened (step 3) and
+     is not undone by a downstream execution failure; the row's own `execution_error` makes the
+     failure visible for a human to act on (e.g. by manually running Discover again from the
+     existing UI). **Known, accepted, recorded gap (not fixed here):** a crash between step 3 and
+     step 5 leaves a request stuck in `approved` forever, the same class of problem RISK-72 already
+     tracks for `discoverChannels`'s own audit-row write -- tracked as its own new
+     `docs/TECHNICAL_DEBT.md` entry once implemented, not solved in this slice.
+
+  **Why the original draft was wrong (advisor review, before implementation):** the owner has never
+  set `marketIntelligenceDailyQuotaBudgetUnits` (owner decision: no hardcoded default, `null` until
+  explicitly configured). Under the original design (transition first, call `discoverChannels`
+  second, with no pre-check), the FIRST approval this application ever processes -- on this machine,
+  today -- would unconditionally hit `discoverChannels`'s own `MARKET_INTELLIGENCE_QUOTA_DISABLED`
+  throw and permanently land the request in `execution_failed`, with no path back to `pending`. The
+  corrected sequence above makes a missing/exhausted budget a **precondition failure that never
+  touches the request's own status at all**, exactly like `discoverChannels` itself already treats
+  it as a precondition failure that spends nothing and changes nothing.
 - **`rejectMarketResearchRequest(input, callOrigin)`** -- `{id, reason}`. Same atomic
   conditional-update shape, transitioning `pending -> rejected`. `reason` required (mirrors every
   other reason-requiring action in this module, e.g. `promoteDiscoveryCandidate`).
@@ -122,7 +163,18 @@ not permission-checked, simply absent from this module's own action set. The abs
   `agent_create_content_proposal`'s own zoning exactly. **No `agent_approve_...`/`agent_reject_...`
   MCP tool exists, ever** -- this is the core of this slice.
 - **CLI: `agent create-research-request`** -- parity with the MCP tool, same server-stamping
-  discipline, same `READ_ONLY_CLI_COMMANDS` exclusion (it mutates, so it must NOT be added there).
+  discipline (`createdVia: "cli"` + `agentApiVersion`), same `READ_ONLY_CLI_COMMANDS` exclusion (it
+  mutates, so it must NOT be added there). **Zoning enforced the same way every other zoned CLI
+  command already does it** (found by direct inspection of `agent create-content-proposal`'s own
+  dispatch branch, corrected into this plan -- the first draft omitted CLI-side zoning entirely): an
+  inline `await agentConnectionsCore.assertAgentAllowedForCapability({ capabilityId:
+  CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE, callerConnectionId })` call at the top of this
+  command's own dispatch branch (`callerConnectionId` resolved the same way every other zoned
+  command already does: `--agentConnectionId` flag, falling back to
+  `resolveAgentConnectionIdFromEnv`). Unlike every existing zoned CLI command, this one needs no
+  `channelId` at all (global data) -- its dispatch branch is placed alongside `competitors`/
+  `market-intelligence`/`market-records` (before the generic channelId-requiring section), with the
+  zoning check added at the top of its own branch, since none of those three siblings are zoned.
   **No CLI approve/reject command exists, ever.**
 - **Web UI only: approval surface.** New API routes, plain session-checked (no `channelAccess`
   check -- global data, same as every other market-intelligence route):
@@ -138,24 +190,49 @@ not permission-checked, simply absent from this module's own action set. The abs
 
 - `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts`): one new entry,
   `market_intelligence.agent_create_market_research_request`, `permission: "DRAFT"` (not `READ` --
-  this is the domain's first DRAFT-class capability).
+  this is the domain's first DRAFT-class capability). **The existing exact-list `market_intelligence`
+  capability test (`src/lib/agent-operations/services.test.ts`) currently asserts every capability
+  in this domain is `"READ"` -- that assertion must change to a per-id permission check (the two
+  existing entries stay `"READ"`, the new one is `"DRAFT"`), per `AGENTS.md` §L's own "changing a
+  previously-approved acceptance test requires... which requirement changed" (the requirement did:
+  this domain now has a DRAFT-class capability, which it never had before).**
 - `AGENT_API_VERSION`: `0.12.0` -> `0.13.0`.
-- `ZONED_CAPABILITIES`: one new entry (§5 above). The existing data-driven
+- `ZONED_CAPABILITIES`: one new entry (§5 above), `CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE`.
+  **Authority for adding this entry:** `docs/roadmap/plans/PHASE_9_PLAN.md` §14's own 9G definition
+  states plainly: "Any DRAFT-class 'create research request' capability... follows the Change Set
+  approvalStatus pattern... A new `ZONED_CAPABILITIES` entry is added at that point" -- this is the
+  "that point," already anticipated and authorized when Phase 9 Part II was assigned, not a fresh
+  zoning decision requiring separate owner sign-off. The existing data-driven
   `EXPECTED_ZONE_CAPABILITY_IDS`/`ZONED_MCP_TOOL_NAMES` loop in `src/mcp/server.test.ts` (§6.7's own
   established pattern) picks up both the "actually wired through agent-zone enforcement" and
-  "passes exactly its own capabilityId" tests automatically from one new map entry -- no new test
-  boilerplate needed beyond that one line.
+  "passes exactly its own capabilityId" tests automatically from one new map entry for the MCP side;
+  the CLI side needs its own hand-written pair (§5, mirroring `agent create-content-proposal`'s own
+  two CLI zoning tests -- the CLI's zoning tests are not data-driven the way MCP's are).
 
 ## 7. Mechanical enforcement of approval integrity (the actual point of this slice)
 
 A new test, `market-research-request-approval-inventory.test.ts`, styled after `PHASE9-INV-02`/the
 write/read-gateway inventory tests (`AGENTS.md` §G's own "enforce mechanically, not by convention"
-discipline): asserts by direct inspection that **no MCP tool name and no CLI command name calls
-`approveMarketResearchRequest`/`rejectMarketResearchRequest`** anywhere in `src/mcp/server.ts` or
-`src/cli/video-metadata.ts` (a plain source-text grep for the two function names, mirroring
-`write-path-inventory.test.ts`'s own regex-over-file-contents technique). This is the difference
-between "we didn't happen to add an approve tool" (true today, but silently reversible by a future
-edit) and "no approve tool can exist without this test itself changing" (a structural guarantee).
+discipline): asserts by direct inspection that **no file under `src/mcp/**`, `src/cli/**`, or
+`src/lib/agent-operations/**` references `approveMarketResearchRequest`/
+`rejectMarketResearchRequest`**, and that `market_research_requests.status` is never set to
+`"approved"`/`"rejected"` from within any of those same directories.
+
+**Widened from this plan's first draft (advisor review, before implementation): scans directories,
+not two hardcoded filenames.** Grepping only `src/mcp/server.ts`/`src/cli/video-metadata.ts` by
+literal path would let the guarantee silently disappear the day a future refactor adds e.g.
+`src/mcp/tools/research-requests.ts` -- this test would keep passing while the actual invariant it
+exists to prove had already been broken. `src/app/api/**` (where the real Web-UI-only approve/reject
+routes live) is explicitly excluded from the scan -- that is the one place these functions are
+SUPPOSED to be called from.
+
+**Also corrected: this plan document itself must never write the literal function names
+`approveMarketResearchRequest`/`rejectMarketResearchRequest` inside a comment placed under any of
+the scanned directories once implementation starts** -- `PHASE9-INV-02` was hit by exactly this
+false-positive earlier in this same phase (a doc comment in `discovery-candidates/[channelId]/
+promote/route.ts` naming a forbidden symbol in prose tripped its own plain-substring scanner).
+Implementation must describe the invariant in scanned-directory comments without spelling out the
+two function names verbatim (e.g. "the approve/reject actions" instead).
 
 ## 8. Acceptance criteria (drafted before implementation, `AGENTS.md` §L)
 
@@ -167,29 +244,52 @@ edit) and "no approve tool can exist without this test itself changing" (a struc
   and writes zero rows to `market_intelligence_collection_runs`/`market_discovery_runs` -- proven by
   a fake store/API surface that throws if either is ever touched during `createMarketResearchRequest`.
 - **AC-9G-B-04:** a new request always starts `status: "pending"`, regardless of input.
-- **AC-9G-B-05:** `approveMarketResearchRequest` on an unknown id, or an id already `approved`/
-  `rejected`/`executed`/`execution_failed`, is rejected with `RESEARCH_REQUEST_NOT_PENDING` (or
-  `RESEARCH_REQUEST_NOT_FOUND` for a genuinely unknown id -- both never advance any state).
-- **AC-9G-B-06:** two concurrent `approveMarketResearchRequest` calls for the same `pending` request
-  (simulated via a fake store whose conditional update can only ever match once) result in exactly
-  one `discoverChannels` call, never two -- the second call observes the row already `approved`/
-  `executed` and is rejected.
+- **AC-9G-B-05:** `approveMarketResearchRequest`/`rejectMarketResearchRequest` on a genuinely unknown
+  id throws `RESEARCH_REQUEST_NOT_FOUND` (from the upfront existence read, step 1), distinctly from
+  an id that exists but is already `approved`/`rejected`/`executed`/`execution_failed`, which throws
+  `RESEARCH_REQUEST_NOT_PENDING` (from the atomic conditional update's zero-row result, step 3) --
+  both never advance any state. (Corrected from this plan's first draft, which conflated the two
+  into one error code -- advisor review found this contradicted §4's own two-step design.)
+- **AC-9G-B-05b:** a missing/unset `marketIntelligenceDailyQuotaBudgetUnits`, or a budget already
+  exhausted for today, or Data API reads disabled, each throw their own existing error
+  (`MARKET_INTELLIGENCE_QUOTA_DISABLED`/`_EXCEEDED`/reads-disabled) from `approveMarketResearchRequest`
+  BEFORE touching `status` at all -- the request is verified to still read `status: "pending"`
+  afterward, in every one of these three cases. This is the specific defect advisor review found in
+  the first draft (every approval on a fresh install, where no budget is ever set by default, would
+  otherwise permanently land in `execution_failed`).
+- **AC-9G-B-06 (real concurrency, not just a fake store):** in `db.test.ts`, against the real libsql
+  driver, two literally-concurrent calls (`Promise.all`) to the atomic conditional-update function
+  for the same `pending` row: exactly one resolves with the updated row, the other resolves `null`.
+  (Corrected from this plan's first draft, which only proposed a fake-store-level test -- RISK-70's
+  own resolution already demonstrated a fake store proves nothing about real atomicity.) A second,
+  service-level test (fake store is acceptable here, since the atomicity claim itself is proven at
+  the `db.test.ts` layer above) confirms this translates into exactly one `discoverChannels` call
+  when two `approveMarketResearchRequest` calls race.
 - **AC-9G-B-07:** a successful approval calls `discoverChannels` with exactly the request's own
-  `query`, sets `status: "executed"`, and never writes a second, independent quota-ledger entry
-  outside `discoverChannels`'s own existing one.
-- **AC-9G-B-08:** a `discoverChannels` failure during approval (e.g. budget exceeded) sets `status:
-  "execution_failed"` + `execution_error` -- never silently reverts to `"pending"`, never silently
-  swallows the error.
+  `query`, sets `status: "executed"` plus `candidates_found`/`candidates_new` from its return value,
+  and never writes a second, independent quota-ledger entry outside `discoverChannels`'s own
+  existing one.
+- **AC-9G-B-08:** a `discoverChannels` failure occurring AFTER the atomic transition (step 4, e.g. a
+  race where the pre-check in step 2 passed but the budget was exhausted by a concurrent call before
+  step 4 ran) sets `status: "execution_failed"` + `execution_error` -- never silently reverts to
+  `"pending"` or `"approved"`, never silently swallows the error.
 - **AC-9G-B-09:** `rejectMarketResearchRequest` requires a non-empty `reason`, transitions
-  `pending -> rejected`, and is rejected the same way as approval for a non-pending/unknown id.
-- **AC-9G-B-10 (the core one):** the mechanical inventory test (§7) fails if any file outside this
-  module's own service layer references `approveMarketResearchRequest`/
-  `rejectMarketResearchRequest` from `src/mcp/server.ts` or `src/cli/video-metadata.ts` -- proven by
-  a temporary probe addition during implementation (mirrors this session's own established
-  verification discipline for every other mechanical inventory test), removed before commit.
-- **AC-9G-B-11:** `agent_create_market_research_request` is rejected while the operation lock is
-  held (device-availability gate), and while agent-zone enforcement denies it (mirrors
-  `agent_create_content_proposal`'s own two tests, generated by the shared data-driven loop).
+  `pending -> rejected`, and is rejected the same way as approval (AC-05) for a non-pending/unknown
+  id.
+- **AC-9G-B-10 (the core one):** the mechanical inventory test (§7) fails if any file under
+  `src/mcp/**`, `src/cli/**`, or `src/lib/agent-operations/**` references
+  `approveMarketResearchRequest`/`rejectMarketResearchRequest` -- proven by a temporary probe
+  addition during implementation under each of those three directory roots (mirrors this session's
+  own established verification discipline for every other mechanical inventory test), removed before
+  commit. `src/app/api/**` is explicitly exempt (the real Web-UI-only routes live there).
+- **AC-9G-B-11:** `agent_create_market_research_request` (MCP) is rejected while the operation lock
+  is held (device-availability gate), and while agent-zone enforcement denies it (generated
+  automatically by the existing data-driven `ZONED_MCP_TOOL_NAMES` loop in `src/mcp/server.test.ts`
+  once `agent_create_market_research_request` is added to `EXPECTED_ZONE_CAPABILITY_IDS`).
+- **AC-9G-B-11b:** `agent create-research-request` (CLI) is rejected while agent-zone enforcement
+  denies it, and passes exactly `CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE`/`--agentConnectionId` to
+  `assertAgentAllowedForCapability` -- hand-written pair mirroring `agent create-content-proposal`'s
+  own two CLI zoning tests (not data-driven on the CLI side, unlike MCP).
 - **AC-9G-B-12:** the Web UI approve/reject routes are gated by `src/proxy.ts` like any other real
   mutation (mirrors every other market-intelligence route's own proxy-gate test).
 
@@ -202,3 +302,19 @@ edit) and "no approve tool can exist without this test itself changing" (a struc
 - Editing an already-created request's `query`/`rationale` (create, approve, reject only -- no
   update action, mirrors `content-proposals`' own write-once discipline for the fields it does
   allow mutation of at all).
+- **Recorded for a future slice, not built here (advisor review):** letting an agent see whether its
+  own request was later approved/rejected/executed -- e.g. adding `"research_requests"` as a fourth
+  `kind` to `agent_list_market_records` (9G part A) would be a cheap, composable extension, but is
+  not needed for THIS slice's own core requirement (an agent creating a draft) and would widen scope
+  beyond what §29 actually asks for.
+- **Recorded as a new `docs/TECHNICAL_DEBT.md` entry once implemented, not fixed here:** a crash
+  between the atomic approve transition (step 3) and recording the execution outcome (step 5) leaves
+  a request stuck in `approved` forever -- the same class of gap RISK-72 already tracks for
+  `discoverChannels`'s own audit-row write.
+- **Web UI review panel, when built, must:** show `query`/`rationale`/provenance
+  (`createdVia`/`agentApiVersion`) and make the real cost of approving visible (approving spends
+  ~100 real quota units via `discoverChannels`) before the human commits; put the approve action
+  behind `ConfirmDialog` (never `window.confirm`, per this project's own standing UI convention);
+  and the panel itself is Web UI, so it is **browser-unverified** (`docs/TECHNICAL_DEBT.md` RISK-05)
+  the same way every other panel this session has shipped already is, honestly stated at merge time,
+  not silently implied as tested.
