@@ -61,6 +61,8 @@ export function createMarketIntelligenceCore() {
     touchMarketTrendCandidateLastObservedAt: store.touchMarketTrendCandidateLastObservedAt,
     listTrendEvidence: store.listTrendEvidence,
     insertMarketTrendEvidence: store.insertMarketTrendEvidence,
+    // Phase 9 slice 9G, part A (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md).
+    getLatestMarketIntelligenceCollectionRunForChannel: store.getLatestMarketIntelligenceCollectionRunForChannel,
   });
 }
 

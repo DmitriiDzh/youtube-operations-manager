@@ -98,15 +98,17 @@ export const listEvidenceOutputSchema = z
   })
   .strict();
 
-// Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md) -- the combined "channel + its
-// full evidence history" shape MCP's query_market_intelligence and CLI's `agent
-// market-intelligence` both return, via getWatchlistEntryContext's single implementation.
-export const getWatchlistEntryContextOutputSchema = z
-  .object({
-    channel: researchChannelSchema,
-    evidence: z.array(researchEvidenceSchema),
-  })
-  .strict();
+// Phase 9 slice 9G, part A (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md) -- the shared
+// DataQualityFlag vocabulary (9I), as a schema for validating this action's own derived output.
+const dataQualityFlagSchema = z.enum([
+  "insufficient_history",
+  "missing_snapshot",
+  "stale_observation",
+  "video_no_longer_public",
+  "hidden_subscriber_count",
+  "partial_discovery",
+  "quota_limited",
+]);
 
 // Phase 9 slice 3 -- the one action in this module that makes a real outbound YouTube API call.
 export const fetchPublicSnapshotInputSchema = z
@@ -376,6 +378,22 @@ export const listTopicsForSubjectInputSchema = z.discriminatedUnion("subjectType
   z.object({ subjectType: z.literal("video"), subjectId: youtubeVideoIdSchema }).strict(),
 ]);
 export const listTopicsForSubjectOutputSchema = z.object({ assignments: z.array(marketTopicAssignmentSchema) }).strict();
+
+// Phase 9 slice 4's original shape was just `{ channel, evidence }`; extended in 9G, part A
+// (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md §2) with 9A/9E-part-A read surfaces and 9I's derived
+// `dataQualityFlags` -- additive only, so any caller reading just the original two fields is
+// unaffected. MCP's query_market_intelligence and CLI's `agent market-intelligence` both return
+// this via getWatchlistEntryContext's single implementation.
+export const getWatchlistEntryContextOutputSchema = z
+  .object({
+    channel: researchChannelSchema,
+    evidence: z.array(researchEvidenceSchema),
+    channelSnapshots: z.array(marketChannelSnapshotSchema),
+    videoSnapshots: z.array(marketVideoSnapshotSchema),
+    topicAssignments: z.array(marketTopicAssignmentSchema),
+    dataQualityFlags: z.array(dataQualityFlagSchema),
+  })
+  .strict();
 
 // ---------------------------------------------------------------------------
 // Phase 9 slice 9E, part B (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- manual/structural trend

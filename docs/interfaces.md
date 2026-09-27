@@ -625,19 +625,29 @@ Key MCP tools:
     just the roster. Local read only, a direct passthrough of the existing `listWatchlist` service
     call.
   - `query_market_intelligence` — `{ channelId }` → `{ channel: ResearchChannel, evidence:
-    ResearchEvidence[] }`, one watchlisted channel's own record plus its full evidence history, via
-    the single `getWatchlistEntryContext` service call (one existence check feeding both the
-    channel and evidence lookups — an earlier version called `getWatchlistEntry`/`listEvidence`
-    separately, found by independent review to double the existence check and risk a
-    non-deterministic error shape). Fails with `RESEARCH_CHANNEL_NOT_AVAILABLE` (`details:
-    { channelId }`) if `channelId` is not on the watchlist. Local read only. `confidence` on an
-    evidence row is uncalibrated free text, not a statistical measure — a `fetchPublicSnapshot`-
-    sourced row can read `"high"` even when every underlying count was hidden/absent
-    (`docs/roadmap/plans/PHASE_9_PLAN.md` §8, still an open vocabulary decision).
-  - Both registered directly against `createMarketIntelligenceCore()` in `src/mcp/server.ts`/
+    ResearchEvidence[], channelSnapshots: MarketChannelSnapshot[], videoSnapshots:
+    MarketVideoSnapshot[], topicAssignments: MarketTopicAssignment[], dataQualityFlags:
+    DataQualityFlag[] }` (the last four fields added in Phase 9 slice 9G, part A — additive, the
+    original `{channel, evidence}` shape is unchanged), one watchlisted channel's own record plus
+    its full evidence history, via the single `getWatchlistEntryContext` service call (one
+    existence check feeding both the channel and evidence lookups — an earlier version called
+    `getWatchlistEntry`/`listEvidence` separately, found by independent review to double the
+    existence check and risk a non-deterministic error shape). Fails with
+    `RESEARCH_CHANNEL_NOT_AVAILABLE` (`details: { channelId }`) if `channelId` is not on the
+    watchlist. Local read only. `confidence` on an evidence row is uncalibrated free text, not a
+    statistical measure — a `fetchPublicSnapshot`-sourced row can read `"high"` even when every
+    underlying count was hidden/absent (`docs/roadmap/plans/PHASE_9_PLAN.md` §8, still an open
+    vocabulary decision).
+  - `agent_list_market_records` (Phase 9 slice 9G, part A) — `{ kind: "topics" |
+    "trend_candidates" | "discovery_candidates" }` → `{ kind, topics }` / `{ kind, trendCandidates }`
+    / `{ kind, candidates }` respectively. One tool with a `kind` discriminator rather than three
+    separate ones (owner spec §28), a thin fan-out over the module's own already-existing
+    `listTopics`/`listTrendCandidates`/`listDiscoveryCandidates` — no new service logic.
+  - All three registered directly against `createMarketIntelligenceCore()` in `src/mcp/server.ts`/
     `src/cli/video-metadata.ts`, not through `agent-operations`'s own service layer —
     `docs/ARCHITECTURE.md` §18 records why (module-independence, `PHASE_9_PLAN.md` §5).
-    CLI parity: `agent competitors` / `agent market-intelligence --channelId <UC...>`.
+    CLI parity: `agent competitors` / `agent market-intelligence --channelId <UC...>` / `agent
+    market-records --kind <kind>`.
 
 Most tools accept optional `credentialRef`; if omitted, server falls back to active local auth context.
 

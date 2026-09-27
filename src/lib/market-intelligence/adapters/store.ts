@@ -3,6 +3,7 @@ import {
   deleteMarketTopic,
   deleteMarketTopicAssignment,
   deleteResearchChannel,
+  getLatestMarketIntelligenceCollectionRunForChannel,
   getMarketDiscoveryCandidateById,
   getMarketIntelligenceDailyQuotaBudgetUnits,
   getMarketIntelligenceUnitsSpentSince,
@@ -95,6 +96,8 @@ export function createMarketIntelligenceStoreAdapter() {
     touchMarketTrendCandidateLastObservedAt,
     listTrendEvidence,
     insertMarketTrendEvidence,
+    // Phase 9 slice 9G, part A (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md) -- agent read surface.
+    getLatestMarketIntelligenceCollectionRunForChannel,
   };
 }
 

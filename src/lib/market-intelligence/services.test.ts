@@ -381,6 +381,13 @@ function createFakeStore() {
         ranAt: input.ranAt ?? new Date(),
       });
     },
+    // Phase 9 slice 9G, part A -- the most recent run for one channel, by ranAt desc.
+    async getLatestMarketIntelligenceCollectionRunForChannel(researchChannelId: string) {
+      const runsForChannel = collectionRuns
+        .filter((row) => row.researchChannelId === researchChannelId)
+        .sort((a, b) => b.ranAt.getTime() - a.ranAt.getTime());
+      return runsForChannel[0] ?? null;
+    },
     // Phase 9 slice 9C.
     async getMarketDiscoveryCandidateById(channelId: string) {
       return discoveryCandidates.get(channelId) ?? null;
@@ -1026,6 +1033,114 @@ test("AC-MI-18: getWatchlistEntryContext returns every recorded evidence row for
     result.evidence.map((e) => e.observation),
     ["First observation", "Second observation"]
   );
+});
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9G, part A -- getWatchlistEntryContext's extension with channel/video snapshots,
+// topic assignments, and derived dataQualityFlags (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md §6).
+// ---------------------------------------------------------------------------
+
+test("AC-9G-01: a fresh channel snapshot with hiddenSubscriberCount:true and no collection run produces exactly ['hidden_subscriber_count']", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.channelSnapshots.push({
+    id: "snap-1",
+    researchChannelId: VALID_CHANNEL_ID,
+    observedAt: now,
+    subscriberCount: null,
+    viewCount: 100,
+    videoCount: 3,
+    hiddenSubscriberCount: true,
+    source: "youtube.channels.list",
+    createdVia: "web_ui",
+  });
+
+  const result = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  assert.deepEqual(result.dataQualityFlags, ["hidden_subscriber_count"]);
+});
+
+test("AC-9G-02: a channel snapshot older than the staleness window produces 'stale_observation'; a fresh one does not", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const staleWindowMs = 24 * 60 * 60 * 1000;
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+
+  store.channelSnapshots.push({
+    id: "snap-stale",
+    researchChannelId: VALID_CHANNEL_ID,
+    observedAt: new Date(now.getTime() - staleWindowMs - 1000),
+    subscriberCount: 10,
+    viewCount: 100,
+    videoCount: 3,
+    hiddenSubscriberCount: false,
+    source: "youtube.channels.list",
+    createdVia: "web_ui",
+  });
+  const staleResult = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  assert.ok(staleResult.dataQualityFlags.includes("stale_observation"));
+
+  store.channelSnapshots.length = 0;
+  store.channelSnapshots.push({
+    id: "snap-fresh",
+    researchChannelId: VALID_CHANNEL_ID,
+    observedAt: new Date(now.getTime() - 1000),
+    subscriberCount: 10,
+    viewCount: 100,
+    videoCount: 3,
+    hiddenSubscriberCount: false,
+    source: "youtube.channels.list",
+    createdVia: "web_ui",
+  });
+  const freshResult = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  assert.ok(!freshResult.dataQualityFlags.includes("stale_observation"));
+});
+
+test("AC-9G-03: a channel with zero snapshots and zero collection runs returns an empty dataQualityFlags, never a fabricated 'no data' flag", async () => {
+  const { services } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+
+  const result = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  assert.deepEqual(result.dataQualityFlags, []);
+});
+
+test("AC-9G-04: the channel's most recent collection run drives missing_snapshot/quota_limited, both able to appear together", async () => {
+  const { services, store } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  store.collectionRuns.push({
+    researchChannelId: VALID_CHANNEL_ID,
+    status: "skipped_quota_limited",
+    unitsSpent: 1,
+    videosRequested: 5,
+    videosReturned: 3,
+    errorMessage: null,
+    ranAt: new Date(),
+  });
+
+  const result = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  assert.ok(result.dataQualityFlags.includes("missing_snapshot"));
+  assert.ok(result.dataQualityFlags.includes("quota_limited"));
+});
+
+test("AC-9G-05: channelSnapshots/videoSnapshots/topicAssignments in the context round-trip exactly what the independent list actions return", async () => {
+  const { services } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.recordChannelSnapshot({ researchChannelId: VALID_CHANNEL_ID, subscriberCount: 100, source: "manual observation" }, { createdVia: "web_ui" });
+  await services.recordVideoSnapshot(
+    { researchChannelId: VALID_CHANNEL_ID, videoId: "dQw4w9WgXcQ", viewCount: 10, source: "manual observation" },
+    { createdVia: "web_ui" }
+  );
+  const topic = await services.createTopic({ name: "Some Topic" }, { createdVia: "web_ui" });
+  await services.assignTopic({ topicId: topic.topicId, subjectType: "channel", subjectId: VALID_CHANNEL_ID }, { createdVia: "web_ui" });
+
+  const result = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  const independentChannelSnapshots = await services.listChannelSnapshots({ researchChannelId: VALID_CHANNEL_ID });
+  const independentVideoSnapshots = await services.listVideoSnapshots({ researchChannelId: VALID_CHANNEL_ID });
+  const independentTopicAssignments = await services.listTopicsForSubject({ subjectType: "channel", subjectId: VALID_CHANNEL_ID });
+
+  assert.deepEqual(result.channelSnapshots, independentChannelSnapshots.snapshots);
+  assert.deepEqual(result.videoSnapshots, independentVideoSnapshots.snapshots);
+  assert.deepEqual(result.topicAssignments, independentTopicAssignments.assignments);
 });
 
 // ---------------------------------------------------------------------------

@@ -5014,6 +5014,36 @@ export async function insertMarketIntelligenceCollectionRun(
   });
 }
 
+export type StoredMarketIntelligenceCollectionRun = {
+  id: number;
+  researchChannelId: string;
+  ranAt: Date;
+  status: "success" | "skipped_quota_limited" | "failed";
+  unitsSpent: number;
+  videosRequested: number | null;
+  videosReturned: number | null;
+  errorMessage: string | null;
+};
+
+/**
+ * Phase 9 slice 9G, part A -- the one row-per-channel lookup this table never had before (only the
+ * aggregate `getMarketIntelligenceUnitsSpentSince` sum existed). Used to derive this channel's own
+ * `dataQualityFlags` (`missing_snapshot`/`quota_limited`) in `getWatchlistEntryContext`. `null` when
+ * this channel has never been collected at all -- a plain, unremarkable fact, not itself a flag.
+ */
+export async function getLatestMarketIntelligenceCollectionRunForChannel(
+  researchChannelId: string,
+  database: AppDb = db
+): Promise<StoredMarketIntelligenceCollectionRun | null> {
+  const [row] = await database
+    .select()
+    .from(marketIntelligenceCollectionRuns)
+    .where(eq(marketIntelligenceCollectionRuns.researchChannelId, researchChannelId))
+    .orderBy(desc(marketIntelligenceCollectionRuns.ranAt))
+    .limit(1);
+  return row ?? null;
+}
+
 /**
  * The quota ledger's own read side: total real YouTube API units spent by market-intelligence
  * -- collection (`market_intelligence_collection_runs`) AND, as of Phase 9 slice 9C, discovery

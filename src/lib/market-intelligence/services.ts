@@ -1,7 +1,13 @@
 import { YOUTUBE_READ_SCOPE } from "@/lib/auth";
 import {
+  assessObservationFreshness,
+  assessSnapshotCompleteness,
+  toHiddenSubscriberCountFlag,
+} from "./data-quality";
+import {
   DomainError,
   MARKET_INTELLIGENCE_STALE_WINDOW_MS,
+  type DataQualityFlag,
   type DiscoveryCandidateStatus,
   type MarketChannelSnapshot,
   type MarketDiscoveryCandidate,
@@ -153,6 +159,14 @@ type StoredMarketVideoSnapshotForService = {
   publishedAt: Date | null;
   source: string;
   createdVia: string;
+};
+
+// Phase 9 slice 9G, part A -- deliberately narrower than db.ts's own StoredMarketIntelligenceCollectionRun:
+// only the fields assessSnapshotCompleteness/the quota_limited check actually need.
+type StoredMarketIntelligenceCollectionRunForService = {
+  status: "success" | "skipped_quota_limited" | "failed";
+  videosRequested: number | null;
+  videosReturned: number | null;
 };
 
 function toResearchChannel(row: StoredResearchChannelForService): ResearchChannel {
@@ -389,6 +403,10 @@ type ServiceDependencies = {
   getMarketIntelligenceDailyQuotaBudgetUnits(): Promise<number | null>;
   setMarketIntelligenceDailyQuotaBudgetUnits(units: number | null): Promise<void>;
   getMarketIntelligenceUnitsSpentSince(since: Date): Promise<number>;
+  // Phase 9 slice 9G, part A (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md).
+  getLatestMarketIntelligenceCollectionRunForChannel(
+    researchChannelId: string
+  ): Promise<StoredMarketIntelligenceCollectionRunForService | null>;
   claimStaleResearchChannelsForCollection(args: {
     now: Date;
     staleCutoff: Date;
@@ -754,8 +772,20 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * A single existence check below, feeding both branches, closes both gaps -- the two reads
      * below are sequential only because `listResearchEvidenceByChannel` has no reason to run at all
      * once the channel is already known not to exist, not because concurrency is unsafe per se.
+     *
+     * Extended in Phase 9 slice 9G, part A (`docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md` §2) with
+     * `channelSnapshots`/`videoSnapshots`/`topicAssignments` (9A/9E's own read surfaces) and a
+     * derived `dataQualityFlags` (9I's first real caller) -- additive to the original `{channel,
+     * evidence}` shape, never removing or renaming either original field.
      */
-    async getWatchlistEntryContext(input: unknown): Promise<{ channel: ResearchChannel; evidence: ResearchEvidence[] }> {
+    async getWatchlistEntryContext(input: unknown): Promise<{
+      channel: ResearchChannel;
+      evidence: ResearchEvidence[];
+      channelSnapshots: MarketChannelSnapshot[];
+      videoSnapshots: MarketVideoSnapshot[];
+      topicAssignments: MarketTopicAssignment[];
+      dataQualityFlags: DataQualityFlag[];
+    }> {
       const parsedInput = parseWithSchema(getWatchlistEntryInputSchema, input, "get watchlist entry context input");
 
       const channelRow = await deps.getResearchChannelById(parsedInput.channelId);
@@ -768,10 +798,39 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       }
 
       const evidenceRows = await deps.listResearchEvidenceByChannel(parsedInput.channelId);
+      const channelSnapshotRows = await deps.listMarketChannelSnapshotsByChannel(parsedInput.channelId);
+      const videoSnapshotRows = await deps.listMarketVideoSnapshotsByChannel(parsedInput.channelId);
+      const topicAssignmentRows = await deps.listTopicsForSubject("channel", parsedInput.channelId);
+      const latestRun = await deps.getLatestMarketIntelligenceCollectionRunForChannel(parsedInput.channelId);
+
+      // `listMarketChannelSnapshotsByChannel` orders ascending by observedAt (db.ts's own
+      // contract) -- the last element is always the most recent.
+      const latestChannelSnapshot = channelSnapshotRows[channelSnapshotRows.length - 1] as
+        | StoredMarketChannelSnapshotForService
+        | undefined;
+      const dataQualityFlags: DataQualityFlag[] = [];
+      const freshnessFlag = assessObservationFreshness(latestChannelSnapshot?.observedAt ?? null, deps.clock.now());
+      if (freshnessFlag) dataQualityFlags.push(freshnessFlag);
+      if (latestChannelSnapshot) {
+        const hiddenFlag = toHiddenSubscriberCountFlag(latestChannelSnapshot.hiddenSubscriberCount);
+        if (hiddenFlag) dataQualityFlags.push(hiddenFlag);
+      }
+      if (latestRun) {
+        const completenessFlag = assessSnapshotCompleteness(latestRun.videosRequested, latestRun.videosReturned);
+        if (completenessFlag) dataQualityFlags.push(completenessFlag);
+        if (latestRun.status === "skipped_quota_limited") dataQualityFlags.push("quota_limited");
+      }
 
       return parseWithSchema(
         getWatchlistEntryContextOutputSchema,
-        { channel: toResearchChannel(channelRow), evidence: evidenceRows.map(toResearchEvidence) },
+        {
+          channel: toResearchChannel(channelRow),
+          evidence: evidenceRows.map(toResearchEvidence),
+          channelSnapshots: channelSnapshotRows.map(toMarketChannelSnapshot),
+          videoSnapshots: videoSnapshotRows.map(toMarketVideoSnapshot),
+          topicAssignments: topicAssignmentRows.map(toMarketTopicAssignment),
+          dataQualityFlags,
+        },
         "get watchlist entry context output"
       );
     },

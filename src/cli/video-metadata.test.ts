@@ -3434,12 +3434,18 @@ test("CLI agent channel-analytics/video-analytics are never blocked by the opera
 // call the market-intelligence module's own single getWatchlistEntryContext (independent review,
 // 2026-09-26: MCP and CLI previously each re-orchestrated getWatchlistEntry+listEvidence
 // separately).
-function makeMarketIntelligenceCliCoreStub(): Pick<MarketIntelligenceCore, "listWatchlist" | "getWatchlistEntryContext"> {
+function makeMarketIntelligenceCliCoreStub(): Pick<
+  MarketIntelligenceCore,
+  "listWatchlist" | "getWatchlistEntryContext" | "listTopics" | "listTrendCandidates" | "listDiscoveryCandidates"
+> {
   return {
     listWatchlist: async () => ({ channels: [] }),
     getWatchlistEntryContext: async () => {
       throw new DomainError({ code: "RESEARCH_CHANNEL_NOT_AVAILABLE", message: "No watchlist entry for the requested channel" });
     },
+    listTopics: async () => ({ topics: [] }),
+    listTrendCandidates: async () => ({ trendCandidates: [] }),
+    listDiscoveryCandidates: async () => ({ candidates: [] }),
   };
 }
 
@@ -3470,7 +3476,14 @@ test("CLI agent market-intelligence requires --channelId and returns the channel
   marketIntelligenceCore.getWatchlistEntryContext = async (input: unknown) => {
     capturedInput = input;
     const { channelId } = input as { channelId: string };
-    return { channel: { channelId, handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z" }, evidence: [] };
+    return {
+      channel: { channelId, handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z" },
+      evidence: [],
+      channelSnapshots: [],
+      videoSnapshots: [],
+      topicAssignments: [],
+      dataQualityFlags: [],
+    };
   };
 
   const stdout: string[] = [];
@@ -3505,13 +3518,56 @@ test("CLI agent market-intelligence rejects a missing --channelId as validation_
   assert.equal(envelope.error.code, "validation_failed");
 });
 
-test("CLI agent competitors/market-intelligence are never blocked by the operation lock (read-only)", async () => {
+// AC-9G-09 (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md §6) -- CLI parity for agent_list_market_records.
+test("CLI agent market-records --kind topics returns the same JSON envelope shape the MCP tool returns", async () => {
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  marketIntelligenceCore.listTopics = async () => ({
+    topics: [{ topicId: "topic-1", name: "Night Jazz Bar", addedAt: "2026-09-27T00:00:00.000Z" }],
+  });
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "market-records", "--kind", "topics"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  const envelope = JSON.parse(stdout[0] ?? "{}");
+  assert.equal(envelope.data.kind, "topics");
+  assert.equal(envelope.data.topics.length, 1);
+  assert.equal(envelope.data.topics[0].topicId, "topic-1");
+});
+
+test("CLI agent market-records rejects an unknown --kind value as validation_failed", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "market-records", "--kind", "not_a_real_kind"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore: makeMarketIntelligenceCliCoreStub(),
+    writeStdout: () => {},
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI agent competitors/market-intelligence/market-records are never blocked by the operation lock (read-only)", async () => {
   await acquireOperationLock(rawSqlClient, "import");
   try {
     const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
     marketIntelligenceCore.getWatchlistEntryContext = async () => ({
       channel: { channelId: "UC_1", handleOrUrl: null, reason: "worth watching", addedAt: "2026-09-26T00:00:00.000Z" },
       evidence: [],
+      channelSnapshots: [],
+      videoSnapshots: [],
+      topicAssignments: [],
+      dataQualityFlags: [],
     });
 
     const competitorsExit = await runCliCommand({
@@ -3531,6 +3587,15 @@ test("CLI agent competitors/market-intelligence are never blocked by the operati
       writeStdout: () => {},
     });
     assert.equal(marketIntelligenceExit, 0);
+
+    const marketRecordsExit = await runCliCommand({
+      argv: ["agent", "market-records", "--kind", "topics"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      marketIntelligenceCore,
+      writeStdout: () => {},
+    });
+    assert.equal(marketRecordsExit, 0);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }

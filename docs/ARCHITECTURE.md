@@ -1419,7 +1419,7 @@ content-proposal/artifact registration, a Codex operations-workspace template, a
 review -- **which of these is actually implemented as of any given moment is tracked exclusively
 in `docs/AGENT_OPERATIONS_INTERFACE.md` §7's status table, never restated here**.
 
-## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9E + 9I
+## 18. Market Intelligence (`src/lib/market-intelligence/`) — Phase 9, slices 1-4 + 9A-9E + 9G-a + 9I
 
 Owner instruction, Telegram 2026-09-26: an explicit assignment to research, plan, and begin
 implementing Phase 9 (`docs/roadmap/FUTURE_PHASES.md` §5) as its own feature branch, superseding
@@ -1621,3 +1621,25 @@ absent a confirmed distinguishing signal), but the discrepancy note should say "
 unverified," not "verified." `MARKET_INTELLIGENCE_STALE_WINDOW_MS` moved from a private `services.ts`
 constant to `contracts.ts` so this module's own staleness threshold and 9B's real
 collection-staleness check share the exact same value, never two copies that could drift.
+
+**Slice 9G, part A (`docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md`, 2026-09-27) -- agent read
+surface, taken as a plain READ-class extension before the approval-integrity part B (advisor
+review's explicit split).** `getWatchlistEntryContext` -- the single implementation both MCP's
+`query_market_intelligence` and CLI's `agent market-intelligence` already shared -- gained
+`channelSnapshots`/`videoSnapshots`/`topicAssignments` and a derived `dataQualityFlags`, additive to
+its original `{channel, evidence}` shape. This is 9I's own first real caller, exactly as that
+slice's plan anticipated. A new `agent_list_market_records` MCP tool/`agent market-records --kind
+<kind>` CLI command covers topics/trend candidates/discovery candidates through one tool with a
+`kind` discriminator rather than three separate ones (owner spec §28's own "prefer a small number
+of powerful composable MCP tools"), as a thin fan-out over the module's own already-existing
+`listTopics`/`listTrendCandidates`/`listDiscoveryCandidates` -- no new service logic. Both stay
+global and unzoned, explicitly citing slice 4's own precedent rather than leaving the exemption
+implicit (`docs/DEVELOPMENT_PLAYBOOK.md` §6.7 point 6 otherwise requires `assertActiveChannel`
+channel-scoping for every MCP tool by default). One new, narrow `db.ts` read,
+`getLatestMarketIntelligenceCollectionRunForChannel`, fills the one per-channel gap that table
+never had (only the aggregate `getMarketIntelligenceUnitsSpentSince` sum existed) -- used to derive
+`missing_snapshot`/`quota_limited` for that channel's own most recent collection attempt.
+`AGENT_API_VERSION` bumped to `0.12.0` for the new capability; no `ZONED_CAPABILITIES` entry, since
+READ-class tools in this codebase are never zoned. **Part B (DRAFT "create research request," spec
+§29) is separately planned, not started here** -- it is approval-integrity work requiring the full
+`AGENTS.md` §A seven-document reading pass and its own acceptance criteria before any code.

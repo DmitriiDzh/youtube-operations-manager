@@ -274,7 +274,17 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "market_intelligence",
     permission: "READ",
     description:
-      "Single-channel deep dive into the research watchlist: one watchlisted channel's own record plus its full evidence history, by channelId. Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. Implemented as the pre-existing `query_market_intelligence` MCP tool/`agent market-intelligence` CLI command (`src/lib/market-intelligence/`), not a new function. Local read only, never a live YouTube call. Global, not scoped to any owned channel -- see market_intelligence.query_competitors above for the same caveat. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (`docs/roadmap/plans/PHASE_9_PLAN.md` §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (a known, still-open vocabulary question, `docs/roadmap/plans/PHASE_9_PLAN.md` §8).",
+      "Single-channel deep dive into the research watchlist: one watchlisted channel's own record plus its full evidence history, channel/video snapshots, topic assignments, and a derived dataQualityFlags array, by channelId. Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. Implemented as the pre-existing `query_market_intelligence` MCP tool/`agent market-intelligence` CLI command (`src/lib/market-intelligence/`), not a new function. Local read only, never a live YouTube call. Global, not scoped to any owned channel -- see market_intelligence.query_competitors above for the same caveat. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (`docs/roadmap/plans/PHASE_9_PLAN.md` §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (a known, still-open vocabulary question, `docs/roadmap/plans/PHASE_9_PLAN.md` §8).",
+  },
+  // Phase 9 slice 9G, part A (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md) -- one list tool with a
+  // `kind` discriminator (owner spec §28: "prefer a small number of powerful composable MCP tools"),
+  // rather than three separate tools for topics/trend candidates/discovery candidates.
+  {
+    id: "market_intelligence.agent_list_market_records",
+    domain: "market_intelligence",
+    permission: "READ",
+    description:
+      "One list read covering topics, trend candidates, or discovery candidates, selected by a `kind` input (\"topics\" | \"trend_candidates\" | \"discovery_candidates\"). Implemented as the `agent_list_market_records` MCP tool/`agent market-records --kind <kind>` CLI command (`src/lib/market-intelligence/`), a thin fan-out over the module's own already-existing `listTopics`/`listTrendCandidates`/`listDiscoveryCandidates`, not new service logic. Local read only, never a live YouTube call. Global, not scoped to any owned channel -- same caveat as market_intelligence.query_competitors above.",
   },
 ];
 
