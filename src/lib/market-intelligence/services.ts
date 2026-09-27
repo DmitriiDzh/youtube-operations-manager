@@ -461,6 +461,7 @@ type ServiceDependencies = {
     description?: string | null;
     topicId?: string | null;
     createdVia: string;
+    at?: Date;
   }): Promise<void>;
   updateMarketTrendCandidateStatusAndObservedAt(
     trendCandidateId: string,
@@ -1611,12 +1612,19 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       }
 
       const id = deps.idGenerator();
+      // `at` stamps BOTH firstObservedAt/lastObservedAt from this one injected clock read (found
+      // by independent code review: without it, this insert's own column default and the
+      // touch-style calls elsewhere in this module read from two different clock sources -- real
+      // wall-clock vs. the injected `deps.clock` -- which a test freezing the clock far from real
+      // time would expose as two mismatched timestamps for what should be the same instant).
+      const now = deps.clock.now();
       await deps.insertMarketTrendCandidate({
         id,
         title: parsedInput.title,
         description: parsedInput.description ?? null,
         topicId: parsedInput.topicId ?? null,
         createdVia: callOrigin.createdVia,
+        at: now,
       });
 
       const initialEvidence = parsedInput.initialEvidence;
@@ -1628,9 +1636,6 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         description: initialEvidence.description,
         createdVia: callOrigin.createdVia,
       });
-      // The evidence write above is this candidate's first observation -- moves lastObservedAt off
-      // its insert-time default so it reflects the evidence, not just row creation.
-      await deps.touchMarketTrendCandidateLastObservedAt(id, deps.clock.now());
 
       const row = (await deps.getMarketTrendCandidateById(id))!;
       return parseWithSchema(createTrendCandidateOutputSchema, toMarketTrendCandidate(row), "create trend candidate output");
@@ -1671,6 +1676,18 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         });
       }
 
+      // Status change written FIRST, evidence SECOND (found by independent code review: the
+      // reverse order let a throw from the status update itself, after the evidence insert had
+      // already committed, leave a permanent evidence row falsely claiming "status changed to X"
+      // when it never actually did -- a lying audit trail, worse than this order's own residual
+      // risk of a real status change whose explanatory evidence write then fails, which at least
+      // leaves the candidate's own status field telling the truth and is recoverable via a
+      // follow-up recordTrendEvidence call).
+      await deps.updateMarketTrendCandidateStatusAndObservedAt(
+        parsedInput.trendCandidateId,
+        parsedInput.status,
+        deps.clock.now()
+      );
       await deps.insertMarketTrendEvidence({
         id: deps.idGenerator(),
         trendCandidateId: parsedInput.trendCandidateId,
@@ -1678,15 +1695,6 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         description: `Status changed to "${parsedInput.status}": ${parsedInput.reason}`,
         createdVia: callOrigin.createdVia,
       });
-      // Single combined write for the status move and its observation timestamp (rather than a
-      // separate touch call) -- advisor review, before implementation: "move lastObservedAt on
-      // evidence writes, not on a bare status change alone," and a status change here is never
-      // "bare" since the evidence row above always accompanies it.
-      await deps.updateMarketTrendCandidateStatusAndObservedAt(
-        parsedInput.trendCandidateId,
-        parsedInput.status,
-        deps.clock.now()
-      );
 
       const row = (await deps.getMarketTrendCandidateById(parsedInput.trendCandidateId))!;
       return parseWithSchema(marketTrendCandidateSchema, toMarketTrendCandidate(row), "update trend candidate status output");

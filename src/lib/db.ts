@@ -1715,14 +1715,23 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           "subject_id TEXT NOT NULL, " +
           "source TEXT NOT NULL, " +
           "created_via TEXT NOT NULL, " +
-          "assigned_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
-          "UNIQUE(topic_id, subject_type, subject_id))"
+          "assigned_at INTEGER NOT NULL DEFAULT (unixepoch()))"
       );
       await client.execute(
         "CREATE INDEX IF NOT EXISTS market_topic_assignments_topic_id_idx ON market_topic_assignments(topic_id)"
       );
       await client.execute(
         "CREATE INDEX IF NOT EXISTS market_topic_assignments_subject_idx ON market_topic_assignments(subject_type, subject_id)"
+      );
+      // A separate, explicitly-named CREATE UNIQUE INDEX -- not an inline table-level UNIQUE(...)
+      // constraint -- so the index name matches the Drizzle schema's own `uniqueIndex(...)`
+      // declaration exactly (found by independent code review: an inline constraint lets SQLite
+      // auto-name the index, e.g. `sqlite_autoindex_market_topic_assignments_1`, silently diverging
+      // from `market_topic_assignments_unique_idx` and breaking any future maintenance code that
+      // assumes the declared name exists). Mirrors this file's own established precedent (e.g.
+      // `analytics_weekly_reports_channel_week_idx`).
+      await client.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS market_topic_assignments_unique_idx ON market_topic_assignments(topic_id, subject_type, subject_id)"
       );
       await client.execute(
         "CREATE TABLE IF NOT EXISTS market_trend_candidates (" +
@@ -5297,7 +5306,23 @@ export async function getMarketTrendCandidateById(
 }
 
 export async function insertMarketTrendCandidate(
-  input: { id: string; title: string; description?: string | null; topicId?: string | null; createdVia: string },
+  input: {
+    id: string;
+    title: string;
+    description?: string | null;
+    topicId?: string | null;
+    createdVia: string;
+    /** Explicit creation instant for both `firstObservedAt`/`lastObservedAt` -- accepted so the
+     * service layer's injected clock is the single source of truth for this row's timestamps,
+     * never this column's own `$defaultFn` real-wall-clock default (found by independent code
+     * review: the service layer's very next call, `touchMarketTrendCandidateLastObservedAt`,
+     * already used `deps.clock.now()`, so omitting this parameter let `firstObservedAt` and
+     * `lastObservedAt` end up stamped from two different clock sources for the same creation
+     * moment). Falls back to the column default only when a caller genuinely has no clock to
+     * inject.
+     */
+    at?: Date;
+  },
   database: AppDb = db
 ): Promise<void> {
   await database.insert(marketTrendCandidates).values({
@@ -5307,6 +5332,7 @@ export async function insertMarketTrendCandidate(
     topicId: input.topicId ?? null,
     status: "emerging",
     createdVia: input.createdVia,
+    ...(input.at ? { firstObservedAt: input.at, lastObservedAt: input.at } : {}),
   });
 }
 

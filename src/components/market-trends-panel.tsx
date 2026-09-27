@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 
@@ -59,6 +59,10 @@ export function MarketTrendsPanel() {
   const [addEvidenceDescription, setAddEvidenceDescription] = useState("");
   const [addingEvidence, setAddingEvidence] = useState(false);
   const [addEvidenceError, setAddEvidenceError] = useState<string | null>(null);
+  // Tracks which trend candidate the most recently STARTED fetchEvidence call was for, so a
+  // slower, now-stale response never overwrites a newer one that already landed (found by
+  // independent code review -- the identical race already fixed in market-topics-panel.tsx).
+  const evidenceRequestTrendIdRef = useRef<string | null>(null);
 
   const fetchTrendCandidates = useCallback(async () => {
     setLoading(true);
@@ -78,15 +82,18 @@ export function MarketTrendsPanel() {
   }, [fetchTrendCandidates]);
 
   const fetchEvidence = useCallback(async (trendCandidateId: string) => {
+    evidenceRequestTrendIdRef.current = trendCandidateId;
     setEvidenceLoading(true);
     try {
       const res = await fetch(`/api/market-intelligence/trend-candidates/${encodeURIComponent(trendCandidateId)}/evidence`);
       if (res.ok) {
         const data = await res.json();
-        setEvidence(data.evidence ?? []);
+        if (evidenceRequestTrendIdRef.current === trendCandidateId) {
+          setEvidence(data.evidence ?? []);
+        }
       }
     } finally {
-      setEvidenceLoading(false);
+      if (evidenceRequestTrendIdRef.current === trendCandidateId) setEvidenceLoading(false);
     }
   }, []);
 

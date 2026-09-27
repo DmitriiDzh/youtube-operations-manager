@@ -17,16 +17,19 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ tr
   }
 
   try {
-    let body: Record<string, unknown>;
+    let body: unknown;
     try {
-      body = (await request.json()) as Record<string, unknown>;
+      body = await request.json();
     } catch {
       return NextResponse.json({ error: "validation_failed", message: "Request body must be valid JSON" }, { status: 400 });
     }
+    // A well-formed-but-non-object body (e.g. a literal `null`) parses fine as JSON, so it must be
+    // handled here rather than destructured directly (found by independent code review).
+    const bodyRecord = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
 
     const { trendCandidateId } = await params;
     const trendCandidate = await core.updateTrendCandidateStatus(
-      { trendCandidateId, status: body.status, reason: body.reason },
+      { trendCandidateId, status: bodyRecord.status, reason: bodyRecord.reason },
       { createdVia: "web_ui" }
     );
     return NextResponse.json({ trendCandidate });

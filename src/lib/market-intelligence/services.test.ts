@@ -501,8 +501,9 @@ function createFakeStore() {
       description?: string | null;
       topicId?: string | null;
       createdVia: string;
+      at?: Date;
     }) {
-      const now = new Date();
+      const now = input.at ?? new Date();
       trendCandidates.set(input.id, {
         id: input.id,
         title: input.title,

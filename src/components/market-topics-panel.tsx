@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { ConfirmDialog } from "./confirm-dialog";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
@@ -40,6 +40,10 @@ export function MarketTopicsPanel() {
   const [newSubjectId, setNewSubjectId] = useState("");
   const [assigning, setAssigning] = useState(false);
   const [assignError, setAssignError] = useState<string | null>(null);
+  // Tracks which topic the most recently STARTED fetchAssignments call was for, so a slower,
+  // now-stale response (e.g. from a topic the user already collapsed and moved on from) never
+  // overwrites a newer one that already landed (found by independent code review).
+  const assignmentsRequestTopicIdRef = useRef<string | null>(null);
 
   const fetchTopics = useCallback(async () => {
     setLoading(true);
@@ -59,15 +63,18 @@ export function MarketTopicsPanel() {
   }, [fetchTopics]);
 
   const fetchAssignments = useCallback(async (topicId: string) => {
+    assignmentsRequestTopicIdRef.current = topicId;
     setAssignmentsLoading(true);
     try {
       const res = await fetch(`/api/market-intelligence/topics/${encodeURIComponent(topicId)}/assignments`);
       if (res.ok) {
         const data = await res.json();
-        setAssignments(data.assignments ?? []);
+        if (assignmentsRequestTopicIdRef.current === topicId) {
+          setAssignments(data.assignments ?? []);
+        }
       }
     } finally {
-      setAssignmentsLoading(false);
+      if (assignmentsRequestTopicIdRef.current === topicId) setAssignmentsLoading(false);
     }
   }, []);
 
@@ -105,8 +112,17 @@ export function MarketTopicsPanel() {
   async function handleConfirmDelete() {
     if (!deleteTarget) return;
     setDeleting(true);
+    setError(null);
     try {
-      await fetch(`/api/market-intelligence/topics/${encodeURIComponent(deleteTarget.topicId)}`, { method: "DELETE" });
+      const res = await fetch(`/api/market-intelligence/topics/${encodeURIComponent(deleteTarget.topicId)}`, { method: "DELETE" });
+      // Found by independent code review: an earlier version treated this as successful
+      // unconditionally, closing the dialog even on a rejected (e.g. expired-session) delete with
+      // no indication anything went wrong.
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.message ?? "Failed to delete topic");
+        return;
+      }
       if (expandedTopicId === deleteTarget.topicId) setExpandedTopicId(null);
       setDeleteTarget(null);
       await fetchTopics();
@@ -137,7 +153,13 @@ export function MarketTopicsPanel() {
   }
 
   async function handleRemoveAssignment(topicId: string, assignmentId: string) {
-    await fetch(`/api/market-intelligence/topic-assignments/${encodeURIComponent(assignmentId)}`, { method: "DELETE" });
+    setAssignError(null);
+    const res = await fetch(`/api/market-intelligence/topic-assignments/${encodeURIComponent(assignmentId)}`, { method: "DELETE" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setAssignError(data.message ?? "Failed to remove assignment");
+      return;
+    }
     await fetchAssignments(topicId);
   }
 

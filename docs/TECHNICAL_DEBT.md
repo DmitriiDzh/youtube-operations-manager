@@ -927,6 +927,9 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-68 | `discoverChannels` has no atomic claim/lock guarding its own budget check (unlike `runCollectionIfStale`'s `claimStaleResearchChannelsForCollection`) -- two concurrent Discover clicks can each pass the same `remaining >= 100` check and together overspend the shared budget | none blocking, narrow (requires two near-simultaneous manual UI actions, not an automatic/background path) | OPEN |
 | RISK-69 | `promoteDiscoveryCandidate`'s not-yet-promoted check and its `research_channels` insert are not wrapped in a transaction -- a double-click/double-tab race surfaces a raw constraint error as a generic 500 instead of the intended `DISCOVERY_CANDIDATE_ALREADY_PROMOTED` | none blocking, cosmetic (no incorrect end state; the first request's promotion still succeeds) | OPEN |
 | RISK-70 | `createTrendCandidate`'s candidate insert and its required initial-evidence write are not wrapped in a transaction -- a crash between them could briefly leave a trend candidate with zero evidence, the exact invariant this slice's schema exists to prevent | none blocking, narrow (requires a mid-request crash) and self-correcting (visible via `listTrendCandidates`, not silently permanent) | OPEN |
+| RISK-71 | `createTopic`'s normalized-duplicate check has a TOCTOU race under real concurrency -- two near-simultaneous requests for near-identical names (e.g. "Jazz"/"jazz") can both pass the check and both insert | none blocking, narrow (requires two genuinely concurrent requests for near-identical names) | OPEN |
+| RISK-72 | `discoverChannels` can mislabel a partially-successful run as `"failed"` if its own success-path audit-row insert throws after real candidates were already persisted | none blocking, audit-trail accuracy only (no data loss) | OPEN |
+| RISK-73 | The topics/trend-candidates UI panels refetch the whole list after every mutation instead of reusing the response already returned | none blocking, efficiency only | OPEN |
 
 ## RISK-53 — `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` — RESOLVED, 2026-09-24
 
@@ -1117,9 +1120,42 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2), if scheduled.
 - **Status:** OPEN, tracked.
 
+## RISK-71 — `createTopic`'s normalized-duplicate check has a TOCTOU race under real concurrency — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `createTopic` (Phase 9 slice 9E, part A) -- the normalized (trim/collapse-whitespace/lowercase) duplicate check reads the full topic list, then inserts; the only DB-level backstop is a raw `UNIQUE(name)` constraint on the un-normalized string.
+- **Found during:** independent `/code-review high` of Phase 9 slices 9D-9E (`5c4b479..HEAD`).
+- **Actual risk:** two concurrent `createTopic` calls for `"Jazz"` and `"jazz"` can both read the topic list before either insert lands, neither sees a normalized duplicate, and both inserts succeed under the raw `UNIQUE(name)` constraint (the strings differ) -- producing two topics the normalization logic exists specifically to prevent. Requires two genuinely concurrent requests for near-identical names within the same short window; the same class of narrow, low-probability race already accepted for RISK-68/69.
+- **Why not fixed immediately:** a real fix needs either a normalized (trimmed/collapsed/lowercased) computed-column `UNIQUE` index -- SQLite supports this via a generated column or an expression index, a genuine schema change (new migration) -- or wrapping the check+insert in a transaction with `SERIALIZABLE`-equivalent isolation, neither proportionate to add speculatively without a concrete report of it happening in practice.
+- **Required remediation (not yet scheduled):** a case/whitespace-normalized expression `UNIQUE INDEX` on `market_topics(name)` in a future migration (v27+, never editing v26 in place per RISK-63's own rule), or a claim/lock mechanism if that proves impractical in SQLite.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2), if scheduled.
+- **Status:** OPEN, tracked.
+
+## RISK-72 — `discoverChannels` can mislabel a partially-successful run as `"failed"` — OPEN, 2026-09-27
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `discoverChannels` (Phase 9 slice 9C, `756f1c4`'s own fix) -- the success-path `insertMarketDiscoveryRun` call sits inside the same `try` block as the search/dedup/insert work it is meant to record the outcome of.
+- **Found during:** independent `/code-review high` of Phase 9 slices 9D-9E (`5c4b479..HEAD`), which covered this pre-existing 9C code as part of the reviewed diff range.
+- **Actual risk:** if `insertMarketDiscoveryRun` itself throws on the success path -- after real candidate rows were already correctly inserted into `market_discovery_candidates` -- the `catch` block re-records the run as `"failed"` (with the throw's own error message) and re-throws. An operator reviewing `market_discovery_runs` then sees a `"failed"` run for a discovery that actually succeeded and left new candidate rows behind -- an audit-trail inaccuracy, not a data-loss issue (the candidates themselves are correct and visible via `listDiscoveryCandidates`).
+- **Why not fixed immediately:** a real fix needs the `try`/`catch` restructured to distinguish "the real work failed" from "the real work succeeded but its own audit-row write then failed" (the same fundamental non-transactional-writes shape already deferred for RISK-67/70), not a one-line reorder -- moving the insert outside the `try` naively would resurrect the exact bug `756f1c4` fixed (a throw losing the entire audit record).
+- **Required remediation (not yet scheduled):** a nested try/catch that, on a success-path audit-write failure, records `"success"` with a note that the run's own audit write needed a retry, or the same `db.transaction()` refactor already deferred elsewhere in this module.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2), if scheduled.
+- **Status:** OPEN, tracked.
+
+## RISK-73 — the topics/trend-candidates UI panels refetch the whole list after every mutation instead of reusing the response — OPEN, 2026-09-27
+
+- **Affected components:** `src/components/market-topics-panel.tsx` (`handleCreateTopic`/`handleAssign`) and `src/components/market-trends-panel.tsx` (`handleCreate`/`handleUpdateStatus`/`handleAddEvidence`) -- each POST/PATCH response already contains the exact row just created/updated, but every handler discards it and issues a full `GET` refetch of the entire collection instead.
+- **Found during:** independent `/code-review high` of Phase 9 slices 9D-9E (`5c4b479..HEAD`) -- corroborated by 3 separate finder angles (reuse, efficiency, simplification) as the same pattern repeated across both panels.
+- **Actual risk:** none to correctness -- purely an extra round trip per write, on an already-low-traffic operator-facing tab. No user-visible symptom beyond a marginally slower UI refresh.
+- **Why not fixed immediately:** a real fix touches state-update logic in both panels for a pure efficiency gain with no correctness benefit; not proportionate to do as a drive-by alongside this slice's own scope (`AGENTS.md`: "don't add... refactor... beyond what the task requires").
+- **Required remediation (not yet scheduled):** merge each mutation's own response into local state (`setTopics`/`setTrendCandidates` etc.) instead of refetching, in both panels, the next time either is touched for an unrelated reason.
+- **Gate(s):** none.
+- **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2), if scheduled.
+- **Status:** OPEN, tracked.
+
 ## RISK-70 — `createTrendCandidate`'s candidate insert and its required initial-evidence write are not transactional — OPEN, 2026-09-27
 
-- **Affected components:** `src/lib/market-intelligence/services.ts`'s `createTrendCandidate` (Phase 9 slice 9E, part B) -- `insertMarketTrendCandidate`, `insertMarketTrendEvidence`, and `touchMarketTrendCandidateLastObservedAt` are 3 separate, non-transactional `db.ts` writes.
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `createTrendCandidate` (Phase 9 slice 9E, part B) -- `insertMarketTrendCandidate` and `insertMarketTrendEvidence` are 2 separate, non-transactional `db.ts` writes (narrowed from an original 3 -- the clock-consistency fix below removed the third, a now-redundant `touchMarketTrendCandidateLastObservedAt` call, without touching this risk's substance).
 - **Found during:** own implementation review of Phase 9 slice 9E, part B (same non-transactional-writes pattern already tracked for 9B/9C as RISK-67/68/69).
 - **Actual risk:** if the candidate row insert succeeds but the following evidence insert then throws (e.g. a transient local DB error), the trend candidate briefly exists with zero evidence rows -- the exact invariant this slice's own schema-level `initialEvidence` requirement exists to prevent (spec §14, "do not allow lifecycle labels to exist without supporting observable rules or evidence"). Narrower than it sounds: `listTrendCandidates()` would still surface this orphaned row (nothing hides it), so it is visible/correctable rather than silently permanent, and requires a mid-request crash between two adjacent local writes to occur at all.
 - **Why not fixed immediately:** a full fix needs the same `db.transaction()`-wrapping refactor already deferred for RISK-67, applied consistently across the module rather than one-off for this single action.
