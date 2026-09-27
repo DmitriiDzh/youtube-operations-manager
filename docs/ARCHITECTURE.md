@@ -1692,7 +1692,9 @@ reads/pure functions rather than extending any existing MCP/CLI-facing contract:
 `getChannelIntelligenceSummary` calls `getWatchlistEntryContext` internally and layers computed
 subscriber velocity, upload cadence (the same `computeSnapshotVelocity` call's `videoCount` field),
 per-video breakout assessment, and an emerging-channel verdict on top; `listTrendCandidatesWithFreshness`/
-`getTrendEvidenceSummary` do the same over `listTrendCandidates`/`listTrendEvidence`.
+`getTrendEvidenceSummary` do the same over `listTrendCandidates`/`getTrendEvidence` (the latter
+renamed from `listTrendEvidence` once this same slice's own PHASE9-INV-02 widening flagged it as
+sharing its db.ts counterpart's exact name -- see the module's own `write-path-inventory.test.ts`).
 
 **The one architectural point worth recording is the breakout baseline's own methodology choice,
 found necessary by advisor review before implementation:** each recent video is compared against a

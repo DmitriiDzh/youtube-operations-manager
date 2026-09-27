@@ -1233,7 +1233,7 @@ test("AC-9G-05: channelSnapshots/videoSnapshots/topicAssignments in the context 
   const result = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
   const independentChannelSnapshots = await services.listChannelSnapshots({ researchChannelId: VALID_CHANNEL_ID });
   const independentVideoSnapshots = await services.listVideoSnapshots({ researchChannelId: VALID_CHANNEL_ID });
-  const independentTopicAssignments = await services.listTopicsForSubject({ subjectType: "channel", subjectId: VALID_CHANNEL_ID });
+  const independentTopicAssignments = await services.listAssignmentsForSubject({ subjectType: "channel", subjectId: VALID_CHANNEL_ID });
 
   assert.deepEqual(result.channelSnapshots, independentChannelSnapshots.snapshots);
   assert.deepEqual(result.videoSnapshots, independentVideoSnapshots.snapshots);
@@ -2448,7 +2448,7 @@ test("AC-9E-05: listAssignmentsForTopic/listTopicsForSubject return exactly the 
   const forTopic = await services.listTopicAssignments({ topicId: topic.topicId });
   assert.equal(forTopic.assignments.length, 1);
 
-  const forSubject = await services.listTopicsForSubject({ subjectType: "channel", subjectId: VALID_CHANNEL_ID });
+  const forSubject = await services.listAssignmentsForSubject({ subjectType: "channel", subjectId: VALID_CHANNEL_ID });
   assert.equal(forSubject.assignments.length, 1);
 
   await services.removeTopicAssignment({ assignmentId: assignment.assignmentId });

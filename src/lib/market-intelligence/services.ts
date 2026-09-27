@@ -1982,7 +1982,13 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       );
     },
 
-    async listTopicsForSubject(input: unknown): Promise<{ assignments: MarketTopicAssignment[] }> {
+    // Named `listAssignmentsForSubject`, not `listTopicsForSubject`, for the same reason
+    // `listTopicAssignments`/`getTrendEvidence` were renamed just above -- this service action
+    // otherwise shares its db.ts counterpart's exact name, which PHASE9-INV-02 must be able to flag
+    // the moment any future external caller reaches it (found proactively, not from an actual
+    // external caller today -- none exists yet, confirmed by grep -- but leaving the identical
+    // landmine in place for whoever adds the next one is the same mistake already made twice).
+    async listAssignmentsForSubject(input: unknown): Promise<{ assignments: MarketTopicAssignment[] }> {
       const parsedInput = parseWithSchema(listTopicsForSubjectInputSchema, input, "list topics for subject input");
       const rows = await deps.listTopicsForSubject(parsedInput.subjectType, parsedInput.subjectId);
       return parseWithSchema(
