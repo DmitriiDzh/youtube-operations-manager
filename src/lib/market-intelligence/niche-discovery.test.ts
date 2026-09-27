@@ -66,6 +66,20 @@ test("AC-9F-05: describeNicheEvidence reports the specific 'no trend evidence' u
   assert.match(evidence.unknowns[0], /no trend evidence beyond initial discovery/);
 });
 
+test("AC-9F-05b: describeNicheEvidence reports the 'none has evidence' unknown when trend candidates exist but all lack evidence", () => {
+  const evidence = describeNicheEvidence({
+    topicId: "topic-jazz",
+    discoveryCandidates: [{ channelId: "UCa", title: "Channel A" }],
+    trendCandidates: [{ trendCandidateId: "tc-1", title: "x", hasEvidence: false }],
+  });
+  assert.deepEqual(evidence.unknowns, ["trend candidates share this topic, but none has any recorded evidence yet"]);
+});
+
+test("AC-9F-05c: describeNicheEvidence on an empty group (neither kind of member) reports one honest unknown, never two contradictory claims", () => {
+  const evidence = describeNicheEvidence({ topicId: "t", discoveryCandidates: [], trendCandidates: [] });
+  assert.equal(evidence.unknowns.length, 1);
+});
+
 test("AC-9F-06: describeNicheEvidence reports zero unknowns when both discovery and evidenced trend candidates are present", () => {
   const evidence = describeNicheEvidence({
     topicId: "topic-jazz",
