@@ -266,7 +266,23 @@ export function MarketResearchPanel() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? "Failed to add channel to the watchlist");
+        // The route's own `validation_failed` DomainError carries a generic top-level `message`
+        // ("Invalid add to watchlist input") -- the actual per-field reason (e.g. "channelId must
+        // be a valid YouTube channel id") only lives in `details` (parseWithSchema's formatted
+        // Zod issues), which this panel previously discarded, leaving the operator with no way to
+        // tell what was actually wrong (found via live testing, owner report 2026-09-29).
+        const fieldMessages = Array.isArray(data.details)
+          ? data.details
+              .map((issue: { message?: unknown }) =>
+                typeof issue.message === "string" ? issue.message : null
+              )
+              .filter((message: string | null): message is string => message !== null)
+          : [];
+        setError(
+          fieldMessages.length > 0
+            ? fieldMessages.join("; ")
+            : (data.message ?? "Failed to add channel to the watchlist")
+        );
         return;
       }
       setNewChannelId("");

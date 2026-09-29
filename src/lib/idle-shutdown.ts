@@ -8,7 +8,12 @@
 // has no effect on either. Only ever armed in a production (`npm run start`) process -- see
 // `src/instrumentation.ts` -- never during `next dev`, so an active development session's server
 // never disappears just because no browser tab happened to poll it for a while.
-export const DEFAULT_IDLE_SHUTDOWN_TIMEOUT_MS = 5 * 60 * 1000;
+//
+// Widened from 5 to 60 minutes, owner instruction 2026-09-29 (Telegram), found by direct
+// experience: the original 5-minute window shut the server down mid-session (e.g. while filling
+// in a form with no `/api/*` traffic in between), surfacing as a plain fetch failure to whoever
+// was using the app at the time, not a clear "the server went idle" message.
+export const DEFAULT_IDLE_SHUTDOWN_TIMEOUT_MS = 60 * 60 * 1000;
 const DEFAULT_CHECK_INTERVAL_MS = 15_000;
 
 let lastActivityAt = Date.now();

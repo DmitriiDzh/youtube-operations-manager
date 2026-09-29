@@ -50,8 +50,8 @@ test("recordActivity: defaults to the real current time when called with no argu
   assert.ok(getLastActivityAt() >= before && getLastActivityAt() <= after);
 });
 
-test("DEFAULT_IDLE_SHUTDOWN_TIMEOUT_MS is exactly 5 minutes (owner instruction, 2026-09-25)", () => {
-  assert.equal(DEFAULT_IDLE_SHUTDOWN_TIMEOUT_MS, 5 * 60 * 1000);
+test("DEFAULT_IDLE_SHUTDOWN_TIMEOUT_MS is exactly 60 minutes (widened from 5, owner instruction, 2026-09-29)", () => {
+  assert.equal(DEFAULT_IDLE_SHUTDOWN_TIMEOUT_MS, 60 * 60 * 1000);
 });
 
 test("startIdleShutdownWatcher: calls onIdle once the recorded activity is stale enough, and stops checking once cancelled", async () => {
