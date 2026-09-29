@@ -4902,6 +4902,7 @@ test("MCP query_market_intelligence returns the channel's own record with an emp
       videoSnapshots: [],
       topicAssignments: [],
       dataQualityFlags: [],
+      neverObserved: false,
     };
   };
 
@@ -4953,6 +4954,7 @@ test("MCP query_market_intelligence returns the channel's own record plus its fu
       videoSnapshots: [],
       topicAssignments: [],
       dataQualityFlags: [],
+      neverObserved: false,
     };
   };
 

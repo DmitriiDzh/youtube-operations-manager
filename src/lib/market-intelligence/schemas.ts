@@ -386,7 +386,12 @@ export const listTopicsForSubjectOutputSchema = z.object({ assignments: z.array(
 // (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md §2) with 9A/9E-part-A read surfaces and 9I's derived
 // `dataQualityFlags` -- additive only, so any caller reading just the original two fields is
 // unaffected. MCP's query_market_intelligence and CLI's `agent market-intelligence` both return
-// this via getWatchlistEntryContext's single implementation.
+// this via getWatchlistEntryContext's single implementation. `neverObserved` added by independent
+// review (2026-09-29): a never-collected channel left `dataQualityFlags` empty, indistinguishable
+// from a perfectly fresh one -- `getMarketOverview` had already reinvented this exact check as its
+// own workaround (see its own `neverObserved` field) rather than reading it from here, the shared
+// source. Ignorable-additive-field, not a new capability -- no AGENT_API_VERSION bump, same
+// reasoning as 9H part C's `title` addition.
 export const getWatchlistEntryContextOutputSchema = z
   .object({
     channel: researchChannelSchema,
@@ -395,6 +400,7 @@ export const getWatchlistEntryContextOutputSchema = z
     videoSnapshots: z.array(marketVideoSnapshotSchema),
     topicAssignments: z.array(marketTopicAssignmentSchema),
     dataQualityFlags: z.array(dataQualityFlagSchema),
+    neverObserved: z.boolean(),
   })
   .strict();
 
@@ -470,6 +476,10 @@ export const getChannelIntelligenceSummaryOutputSchema = z
     channelSnapshots: z.array(marketChannelSnapshotSchema),
     topicAssignments: z.array(marketTopicAssignmentSchema),
     dataQualityFlags: z.array(dataQualityFlagSchema),
+    // Forwarded from getWatchlistEntryContext's own field of the same name (found by independent
+    // review, 2026-09-29) -- getMarketOverview below used to re-derive this itself from
+    // `channelSnapshots.length === 0` instead of reading it from the shared source.
+    neverObserved: z.boolean(),
     subscriberVelocity: fieldVelocitySchema,
     uploadCadence: fieldVelocitySchema,
     recentBreakoutVideos: z.array(breakoutAssessmentSchema),

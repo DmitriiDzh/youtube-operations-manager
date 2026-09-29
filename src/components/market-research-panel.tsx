@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { ConfirmDialog } from "./confirm-dialog";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import { formatFieldVelocity } from "./market-velocity-format";
 
 type ResearchChannel = {
   channelId: string;
@@ -70,29 +71,6 @@ type ChannelIntelligenceSummary = {
   };
 };
 
-// A `stale_latest`/`partial_window` rate must never be presented as a genuine N-day window figure
-// (derived-metrics.ts's own contract: `stale_latest` is a best-effort rate over a MUCH longer,
-// unstated span, and `partial_window` only covers whatever span was actually observed) -- found by
-// independent code review: an earlier version of this label always printed "(N-day window)"
-// regardless of basis, contradicting the function it was displaying.
-function formatFieldVelocity(field: FieldVelocity, unit: string, windowDays: number): string {
-  if (field.value === null) return `no data (${field.basis})`;
-  const perDay = field.value >= 0 ? `+${field.value.toFixed(2)}` : field.value.toFixed(2);
-  const rate = `${perDay} ${unit}/day`;
-  switch (field.basis) {
-    case "full_window":
-      // NOT "over the last N days" -- computeSnapshotVelocity's own full_window basis only
-      // guarantees a snapshot exists AT OR BEFORE the window's start, not AT it; the real span used
-      // can be arbitrarily longer than windowDays (found by independent code review).
-      return `${rate} (at least the last ${windowDays} days, possibly longer -- an earlier snapshot exists)`;
-    case "partial_window":
-      return `${rate} (partial -- covers only the span actually observed, less than ${windowDays} days)`;
-    case "stale_latest":
-      return `${rate} (NOT a real last-${windowDays}-day rate -- the latest observation is itself older than ${windowDays} days; best-effort over a longer span)`;
-    default:
-      return `${rate} (${field.basis})`;
-  }
-}
 
 // Phase 9 slices 2-3 (docs/roadmap/plans/PHASE_9_PLAN.md) -- global (not channel-scoped) market
 // research watchlist. Manually-seeded: adding a channel and recording evidence are both

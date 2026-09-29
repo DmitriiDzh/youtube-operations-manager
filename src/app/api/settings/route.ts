@@ -142,26 +142,27 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: Record<string, unknown>;
+  let rawBody: unknown;
   try {
-    body = (await request.json()) as Record<string, unknown>;
+    rawBody = await request.json();
   } catch {
     return NextResponse.json({ error: "validation_failed", message: "Request body must be valid JSON" }, { status: 400 });
   }
+  // A well-formed-but-non-object body (e.g. a literal `null`) parses fine as JSON, so it must be
+  // handled here rather than destructured directly (same fix already applied to the market-
+  // intelligence routes -- found by independent code review, this route was not brought in line
+  // when it gained the marketIntelligenceDailyQuotaBudgetUnits field below).
+  const body: Record<string, unknown> = typeof rawBody === "object" && rawBody !== null ? (rawBody as Record<string, unknown>) : {};
 
-  if (typeof body.liveWritesEnabled === "boolean") {
-    await setLiveWritesEnabled(body.liveWritesEnabled);
-  }
-  if (typeof body.mcpConnectionEnabled === "boolean") {
-    await setMcpConnectionEnabled(body.mcpConnectionEnabled);
-  }
-  if (typeof body.dataApiReadsEnabled === "boolean") {
-    await setDataApiReadsEnabled(body.dataApiReadsEnabled);
-  }
-  if (typeof body.analyticsReadsEnabled === "boolean") {
-    await setAnalyticsReadsEnabled(body.analyticsReadsEnabled);
-  }
-
+  // Found by independent review (2026-09-29): this route used to validate-and-apply each field in
+  // one pass, so a later field failing validation still left every EARLIER field's write already
+  // persisted -- a client sending liveWritesEnabled plus an invalid marketIntelligenceDailyQuota-
+  // BudgetUnits in the same request saw a 400 while liveWritesEnabled had already taken effect.
+  // Restructured into two passes: validate every field first (collecting what to write, never
+  // writing anything), then apply every write only once all of them have passed. No field's
+  // validation or write depends on another field's write already having landed, so this reordering
+  // changes nothing about what a fully-valid request ends up persisting.
+  let analyticsSyncLocalTimeToSet: string | undefined;
   if (body.analyticsSyncLocalTime !== undefined) {
     if (typeof body.analyticsSyncLocalTime !== "string" || !isValidLocalTimeOfDay(body.analyticsSyncLocalTime)) {
       return NextResponse.json(
@@ -169,9 +170,10 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
-    await setAnalyticsSyncSettings({ localTime: body.analyticsSyncLocalTime });
+    analyticsSyncLocalTimeToSet = body.analyticsSyncLocalTime;
   }
 
+  let analyticsSyncTimezoneToSet: string | undefined;
   if (body.analyticsSyncTimezone !== undefined) {
     if (typeof body.analyticsSyncTimezone !== "string" || !isValidIanaTimezone(body.analyticsSyncTimezone)) {
       return NextResponse.json(
@@ -179,12 +181,13 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
-    await setAnalyticsSyncSettings({ timezone: body.analyticsSyncTimezone });
+    analyticsSyncTimezoneToSet = body.analyticsSyncTimezone;
   }
 
+  let marketIntelligenceQuotaToSet: { present: true; value: number | null } | { present: false } = { present: false };
   if (body.marketIntelligenceDailyQuotaBudgetUnits !== undefined) {
     if (body.marketIntelligenceDailyQuotaBudgetUnits === null) {
-      await marketIntelligenceCore.setDailyQuotaBudgetUnits(null);
+      marketIntelligenceQuotaToSet = { present: true, value: null };
     } else if (
       typeof body.marketIntelligenceDailyQuotaBudgetUnits !== "number" ||
       !Number.isFinite(body.marketIntelligenceDailyQuotaBudgetUnits) ||
@@ -200,15 +203,17 @@ export async function POST(request: Request) {
       // (found by independent review: an earlier comment claimed this was passed through as-is,
       // which the code below never actually did) so a caller reading the setting back afterward
       // sees null either way, never a stored literal 0 sometimes and null other times.
-      await marketIntelligenceCore.setDailyQuotaBudgetUnits(
-        body.marketIntelligenceDailyQuotaBudgetUnits === 0 ? null : body.marketIntelligenceDailyQuotaBudgetUnits
-      );
+      marketIntelligenceQuotaToSet = {
+        present: true,
+        value: body.marketIntelligenceDailyQuotaBudgetUnits === 0 ? null : body.marketIntelligenceDailyQuotaBudgetUnits,
+      };
     }
   }
 
+  let operationsWorkspacePathToSet: { present: true; value: string | null } | { present: false } = { present: false };
   if (body.operationsWorkspacePath !== undefined) {
     if (body.operationsWorkspacePath === null || body.operationsWorkspacePath === "") {
-      await setOperationsWorkspacePath(null);
+      operationsWorkspacePathToSet = { present: true, value: null };
     } else if (typeof body.operationsWorkspacePath !== "string") {
       return NextResponse.json(
         { error: "validation_failed", message: "operationsWorkspacePath must be a string or null" },
@@ -219,8 +224,35 @@ export async function POST(request: Request) {
       if (!validation.ok) {
         return NextResponse.json({ error: "validation_failed", message: validation.reason }, { status: 400 });
       }
-      await setOperationsWorkspacePath(body.operationsWorkspacePath);
+      operationsWorkspacePathToSet = { present: true, value: body.operationsWorkspacePath };
     }
+  }
+
+  // Every field above has now validated successfully (or this line is unreached) -- only now does
+  // any write actually happen.
+  if (typeof body.liveWritesEnabled === "boolean") {
+    await setLiveWritesEnabled(body.liveWritesEnabled);
+  }
+  if (typeof body.mcpConnectionEnabled === "boolean") {
+    await setMcpConnectionEnabled(body.mcpConnectionEnabled);
+  }
+  if (typeof body.dataApiReadsEnabled === "boolean") {
+    await setDataApiReadsEnabled(body.dataApiReadsEnabled);
+  }
+  if (typeof body.analyticsReadsEnabled === "boolean") {
+    await setAnalyticsReadsEnabled(body.analyticsReadsEnabled);
+  }
+  if (analyticsSyncLocalTimeToSet !== undefined) {
+    await setAnalyticsSyncSettings({ localTime: analyticsSyncLocalTimeToSet });
+  }
+  if (analyticsSyncTimezoneToSet !== undefined) {
+    await setAnalyticsSyncSettings({ timezone: analyticsSyncTimezoneToSet });
+  }
+  if (marketIntelligenceQuotaToSet.present) {
+    await marketIntelligenceCore.setDailyQuotaBudgetUnits(marketIntelligenceQuotaToSet.value);
+  }
+  if (operationsWorkspacePathToSet.present) {
+    await setOperationsWorkspacePath(operationsWorkspacePathToSet.value);
   }
 
   return NextResponse.json(await getSettingsSnapshot());

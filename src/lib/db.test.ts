@@ -1735,6 +1735,36 @@ test("deleteResearchChannel cascade-deletes channel-type market_topic_assignment
     assert.ok(topicStillExists, "the topic itself must survive -- only the assignment is scoped to the deleted channel");
   }));
 
+// Found by independent review (2026-09-29): a promoted discovery candidate's row was never
+// cascade-deleted when its channel left the watchlist, leaving it permanently stuck at
+// status:"promoted" with no path back (promoteDiscoveryCandidate refuses re-promotion,
+// updateDiscoveryCandidateStatus refuses to touch an already-promoted row).
+test("deleteResearchChannel cascade-deletes a promoted market_discovery_candidates row sharing the same id, but never a non-promoted one", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_PROMOTED_CASCADE0000", reason: "r", createdVia: "web_ui" });
+    await insertMarketDiscoveryCandidate(
+      { id: "UC_PROMOTED_CASCADE0000", title: "Promoted Channel", discoverySource: "search", discoveryQuery: "q", createdVia: "web_ui" },
+      isolatedDb
+    );
+    await setMarketDiscoveryCandidateStatus("UC_PROMOTED_CASCADE0000", "promoted", isolatedDb);
+    // An unrelated candidate, never promoted, must survive an unrelated channel's deletion.
+    await insertMarketDiscoveryCandidate(
+      { id: "UC_UNRELATED_CANDIDATE0", title: "Still A Candidate", discoverySource: "search", discoveryQuery: "q", createdVia: "web_ui" },
+      isolatedDb
+    );
+
+    await deleteResearchChannel("UC_PROMOTED_CASCADE0000", isolatedDb);
+
+    const remaining = await isolatedDb.select().from(marketDiscoveryCandidates);
+    assert.deepEqual(
+      remaining.map((r) => r.id),
+      ["UC_UNRELATED_CANDIDATE0"],
+      "the promoted candidate sharing the deleted channel's id must be gone; an unrelated, non-promoted candidate must survive"
+    );
+  }));
+
 test("deleteMarketTopic cascades its own assignments and detaches (never deletes) trend candidates tagged with it", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
@@ -1830,6 +1860,46 @@ test("market_trend_candidates/market_trend_evidence round-trip through the real 
 
     const list = await listMarketTrendCandidates(isolatedDb);
     assert.equal(list.length, 1);
+  }));
+
+// Found by independent review (2026-09-29): both functions accept an explicit `at` used to stamp
+// the trend-candidate row's own timestamps, but the paired evidence-row insert in the same
+// transaction previously left `recordedAt` to the column's real-wall-clock `$defaultFn` instead of
+// also using `at` -- the same "two clock sources for one moment" bug class already fixed once for
+// firstObservedAt/lastObservedAt (see this file's own comment on insertMarketTrendCandidate).
+test("insertMarketTrendCandidateWithInitialEvidence/updateMarketTrendCandidateStatusWithEvidence: the evidence row's recordedAt uses the same injected `at`, never real wall-clock time", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const createdAt = new Date("2020-01-01T00:00:00.000Z"); // far from real "now" -- proves it's not $defaultFn
+
+    await insertMarketTrendCandidateWithInitialEvidence(
+      { id: "trend-clock", title: "Clock Test", createdVia: "web_ui", at: createdAt },
+      { id: "evidence-clock-1", evidenceType: "supporting_channel", description: "d", createdVia: "web_ui" },
+      isolatedDb
+    );
+    const [initialEvidence] = await listTrendEvidence("trend-clock", isolatedDb);
+    assert.equal(
+      initialEvidence.recordedAt.getTime(),
+      createdAt.getTime(),
+      "the initial evidence row's recordedAt must match the candidate's own injected `at`, not real wall-clock time"
+    );
+
+    const statusChangeAt = new Date("2021-06-15T00:00:00.000Z");
+    await updateMarketTrendCandidateStatusWithEvidence(
+      "trend-clock",
+      "growing",
+      statusChangeAt,
+      { id: "evidence-clock-2", description: "d2", createdVia: "web_ui" },
+      isolatedDb
+    );
+    const evidenceRows = await listTrendEvidence("trend-clock", isolatedDb);
+    const statusChangeEvidence = evidenceRows.find((e) => e.id === "evidence-clock-2");
+    assert.equal(
+      statusChangeEvidence?.recordedAt.getTime(),
+      statusChangeAt.getTime(),
+      "the status-change evidence row's recordedAt must match the status change's own `at`, not real wall-clock time"
+    );
   }));
 
 // Found by independent review: two separate top-level writes (candidate insert, then evidence

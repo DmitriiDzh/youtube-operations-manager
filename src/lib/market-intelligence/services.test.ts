@@ -45,6 +45,7 @@ import {
 
 const VALID_CHANNEL_ID = "UC1234567890123456789012"; // "UC" + 22 chars, matches the schema regex
 const OTHER_VALID_CHANNEL_ID = "UCabcdefghijklmnopqrstuv";
+const THIRD_VALID_CHANNEL_ID = "UCzyxwvutsrqponmlkjihgfe";
 
 type Row = {
   id: string;
@@ -1143,6 +1144,22 @@ test("AC-MI-17: getWatchlistEntryContext returns the channel's own record with a
 
   assert.equal(result.channel.channelId, VALID_CHANNEL_ID);
   assert.deepEqual(result.evidence, []);
+  assert.equal(result.neverObserved, true, "a channel with zero channel snapshots must report neverObserved:true");
+  assert.deepEqual(result.dataQualityFlags, [], "never-observed is its own signal, not folded into dataQualityFlags");
+});
+
+// Found by independent review (2026-09-29): assessObservationFreshness/assessSnapshotCompleteness
+// both deliberately leave "never observed at all" to their caller (see their own doc comments) --
+// this is the direct test of that caller-side check, not just an indirect one via getMarketOverview
+// (which had reinvented this same check independently before this fix removed the duplication).
+test("AC-MI-17b: getWatchlistEntryContext reports neverObserved:false once a channel snapshot exists", async () => {
+  const { services } = createFixture({ publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Worth watching" }, { createdVia: "web_ui" });
+  await services.captureChannelSnapshot({ researchChannelId: VALID_CHANNEL_ID, credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+
+  const result = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+
+  assert.equal(result.neverObserved, false);
 });
 
 test("AC-MI-18: getWatchlistEntryContext returns every recorded evidence row for 2+ rows, in insertion order", async () => {
@@ -2472,6 +2489,36 @@ test("AC-9B-03: given a budget covering exactly one channel's 3-call cost and tw
   assert.equal(store.channels.get(skippedChannelId)?.collectionClaimedAt, null, "the skipped channel's claim must be released, never left stuck");
 });
 
+// Found by independent review (2026-09-29): only the ONE channel that tripped the budget check
+// got a skipped_quota_limited row -- every channel claimed AFTER it in the same run was silently
+// released with no row and no counter, so quotaLimited/attempted under-reported how many channels
+// the cycle actually touched.
+test("AC-9B-03b: a budget covering only the first of three stale channels records skipped_quota_limited for BOTH remaining channels, not just the one that tripped the check", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { store, services } = createFixture({
+    now,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    uploadsPlaylistVideoIds: ["v1"],
+    publicVideoSnapshots: [{ videoId: "v1", title: "V1", publishedAt: null, viewCount: 10, likeCount: null, commentCount: null }],
+  });
+  store.setQuotaBudget(3);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.addToWatchlist({ channelId: OTHER_VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.addToWatchlist({ channelId: THIRD_VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+
+  const result = await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+  assert.deepEqual(result, { attempted: 3, succeeded: 1, failed: 0, quotaLimited: 2, unitsSpent: 3 });
+
+  const skippedRuns = store.collectionRuns.filter((r) => r.status === "skipped_quota_limited");
+  assert.equal(skippedRuns.length, 2, "both channels claimed after the budget ran out must each get their own row, not just the first");
+  assert.ok(skippedRuns.every((r) => r.unitsSpent === 0));
+  const skippedChannelIds = new Set(skippedRuns.map((r) => r.researchChannelId));
+  assert.equal(skippedChannelIds.size, 2, "the two skipped rows must be for two distinct channels");
+  for (const channelId of skippedChannelIds) {
+    assert.equal(store.channels.get(channelId)?.collectionClaimedAt, null, "every skipped channel's claim must be released, never left stuck");
+  }
+});
+
 test("AC-9B-04: a video id present in the enumeration but absent from videos.list is reflected as videosReturned < videosRequested, never assumed deleted", async () => {
   const now = new Date("2026-09-27T12:00:00.000Z");
   const { store, services } = createFixture({
@@ -3498,6 +3545,30 @@ test("AC-9G-B-05b: a missing/exhausted budget, or disabled Data API reads, leave
     (error: unknown) => isDomainError(error) && error.code === "data_api_reads_disabled"
   );
   assert.equal(readsDisabledFixture.store.marketResearchRequests.get(secondRequest.requestId)?.status, "pending");
+});
+
+// Found by independent review (2026-09-29): approveMarketResearchRequest used to run the budget/
+// credential precondition checks BEFORE checking whether the request was even still pending, so an
+// already-resolved request with no quota budget set failed with MARKET_INTELLIGENCE_QUOTA_DISABLED
+// instead of the true reason, RESEARCH_REQUEST_NOT_PENDING -- misdescribing an already-resolved
+// request as blocked by quota to whatever MCP/API/UI consumer branches on the error code.
+test("AC-9G-B-05d: approving an already-resolved request reports RESEARCH_REQUEST_NOT_PENDING even with no quota budget set, never MARKET_INTELLIGENCE_QUOTA_DISABLED", async () => {
+  const { store, services } = createFixture();
+  store.setQuotaBudget(1000);
+  const created = await services.createMarketResearchRequest({ query: "night jazz", rationale: "worth watching" }, { createdVia: "mcp" });
+  await services.rejectMarketResearchRequest({ requestId: created.requestId, reason: "not relevant" });
+
+  // Budget removed AFTER resolving the request -- if the NOT_PENDING check ran after the budget
+  // check (the bug), this would surface MARKET_INTELLIGENCE_QUOTA_DISABLED instead.
+  store.setQuotaBudget(null);
+  await assert.rejects(
+    () =>
+      services.approveMarketResearchRequest(
+        { requestId: created.requestId, credentialRef: { userId: "u1" } },
+        { createdVia: "web_ui" }
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_REQUEST_NOT_PENDING"
+  );
 });
 
 test("AC-9G-B-05c: a credential resolution failure (e.g. expired token) leaves the request 'pending', never execution_failed", async () => {

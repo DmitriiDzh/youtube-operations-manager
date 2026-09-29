@@ -4870,6 +4870,18 @@ export async function deleteResearchChannel(id: string, database: AppDb = db): P
     await tx
       .delete(marketTopicAssignments)
       .where(and(eq(marketTopicAssignments.subjectType, "channel"), eq(marketTopicAssignments.subjectId, id)));
+    // Found by independent review (2026-09-29): a discovery candidate's own `id` IS the real
+    // channel id (no FK), and `promoteDiscoveryCandidate` leaves its row at `status: "promoted"`
+    // after creating the matching `researchChannels` row -- without this, removing that channel
+    // from the watchlist left the candidate permanently stuck at "promoted" with no way back
+    // (`promoteDiscoveryCandidate` refuses re-promotion, `updateDiscoveryCandidateStatus` refuses
+    // to touch an already-"promoted" row). Scoped to `status: "promoted"` only -- a non-promoted
+    // candidate that merely happens to share this id from an unrelated, later discovery search is
+    // a separate, still-actionable candidate and must not be deleted just because this channel was
+    // also (separately) removed from the watchlist.
+    await tx
+      .delete(marketDiscoveryCandidates)
+      .where(and(eq(marketDiscoveryCandidates.id, id), eq(marketDiscoveryCandidates.status, "promoted")));
     await tx.delete(researchChannels).where(eq(researchChannels.id, id));
   });
 }
@@ -5499,6 +5511,11 @@ export async function insertMarketTrendCandidateWithInitialEvidence(
       referenceId: initialEvidence.referenceId ?? null,
       description: initialEvidence.description,
       createdVia: initialEvidence.createdVia,
+      // Same clock-source fix as firstObservedAt/lastObservedAt above (found by independent
+      // review): without this, the evidence row's own recordedAt fell back to real wall-clock
+      // time even under an injected/frozen clock, so it could sort as "recorded before" the
+      // candidate it documents ever existed.
+      ...(candidate.at ? { recordedAt: candidate.at } : {}),
     });
   });
 }
@@ -5569,6 +5586,10 @@ export async function updateMarketTrendCandidateStatusWithEvidence(
       referenceId: null,
       description: evidence.description,
       createdVia: evidence.createdVia,
+      // Same clock-source fix as insertMarketTrendCandidateWithInitialEvidence above (found by
+      // independent review): this evidence row documents the status change happening at `at`, so
+      // it must be stamped from the same clock, not real wall-clock time.
+      recordedAt: at,
     });
   });
 }

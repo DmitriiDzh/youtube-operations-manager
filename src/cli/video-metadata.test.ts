@@ -3491,6 +3491,7 @@ test("CLI agent market-intelligence requires --channelId and returns the channel
       videoSnapshots: [],
       topicAssignments: [],
       dataQualityFlags: [],
+      neverObserved: false,
     };
   };
 
@@ -3734,6 +3735,7 @@ test("CLI agent competitors/market-intelligence/market-records are never blocked
       videoSnapshots: [],
       topicAssignments: [],
       dataQualityFlags: [],
+      neverObserved: false,
     });
 
     const competitorsExit = await runCliCommand({

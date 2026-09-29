@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import { formatFieldVelocity } from "./market-velocity-format";
 
 // Phase 9 slice 9H, part C (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_C_PLAN.md) -- Videos tab.
 // Mirrors getMarketVideosOverviewOutputSchema. A read-only, per-video aggregation across the whole
@@ -32,24 +33,6 @@ type VideoOverviewRow = {
   topics: { topicId: string; name: string }[];
 };
 
-// Reused verbatim from market-research-panel.tsx's own formatFieldVelocity (RISK-77 already
-// tracks this project-wide duplication as accepted, non-blocking debt) -- a stale_latest/
-// partial_window rate must never be presented as a genuine N-day figure.
-function formatVelocity(field: FieldVelocity, windowDays: number): string {
-  if (field.value === null) return `no data (${field.basis})`;
-  const perDay = field.value >= 0 ? `+${field.value.toFixed(2)}` : field.value.toFixed(2);
-  const rate = `${perDay} views/day`;
-  switch (field.basis) {
-    case "full_window":
-      return `${rate} (at least the last ${windowDays} days, possibly longer)`;
-    case "partial_window":
-      return `${rate} (partial -- covers only the span actually observed, less than ${windowDays} days)`;
-    case "stale_latest":
-      return `${rate} (NOT a real last-${windowDays}-day rate -- the latest observation is itself older than ${windowDays} days)`;
-    default:
-      return `${rate} (${field.basis})`;
-  }
-}
 
 // breakout: null has exactly two real causes (plan §7) -- never one generic sentence covering
 // both, and never a fabricated "not a breakout" verdict for a video this app never actually
@@ -136,7 +119,7 @@ export function MarketVideosPanel() {
                   <td className="py-1 pr-3 text-zinc-400">
                     {v.viewCount ?? "—"} <span className="text-zinc-600">(as of {formatDisplayDateTime(v.observedAt)})</span>
                   </td>
-                  <td className="py-1 pr-3 text-zinc-400">{formatVelocity(v.velocity, methodology.velocityWindowDays)}</td>
+                  <td className="py-1 pr-3 text-zinc-400">{formatFieldVelocity(v.velocity, "views", methodology.velocityWindowDays)}</td>
                   <td className={`py-1 pr-3 ${v.breakout?.isBreakout ? "text-emerald-400" : "text-zinc-400"}`}>
                     {formatBreakout(v.breakout, v.publishedAt, methodology.recentVideoWindowDays)}
                   </td>

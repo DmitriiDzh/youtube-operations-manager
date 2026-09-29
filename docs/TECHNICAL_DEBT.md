@@ -938,6 +938,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-78 | `listMarketChannelSnapshotsByChannel`/`listMarketVideoSnapshotsByChannel` have no pagination/limit -- an append-only series returned in full, about to get its first UI (non-agent) caller in 9H | none yet, revisit if payload size becomes a practical problem | OPEN |
 | RISK-79 | 9H part A code review: no tiebreaker for same-second "latest snapshot", no structural guard against a future RISK-52 repeat, O(n^2) leave-one-out recompute | none, narrow/hardening/efficiency only | OPEN |
 | RISK-80 | `detectDisappearedVideoIds` (9I) still has no caller anywhere in this codebase after 9H part C, its named natural home (`docs/ARCHITECTURE.md` §18) -- its own doc comment warns a naive two-snapshot diff would false-positive against 9B's ≤50-item first-page cap | none blocking, explicitly deferred | OPEN |
+| RISK-81 | `assignTopic` checks watchlist membership for a `"channel"` subject but has no existence check at all for a `"video"` subject -- any syntactically-valid videoId is accepted, intentional per the function's own doc comment (`market_video_snapshots` has no canonical single row per video to check against), flagged by independent review for the owner's own re-confirmation, not as an accidental gap | none blocking, by design -- revisit only if the owner wants this tightened | OPEN |
 
 ## RISK-53 — `agent-operations/schemas.ts` hardcodes its own copies of `PERMISSION_CLASSES`/`PLANNED_FUTURE_CAPABILITIES` instead of importing them from `contracts.ts` — RESOLVED, 2026-09-24
 
@@ -1262,6 +1263,17 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Required remediation (not yet scheduled), two safe designs, either avoids the false-positive:** (a) a real, additional per-id `videos.list` re-check for any id present in a previous enumeration but absent from the current one -- correct, but spends real, non-refundable quota and needs its own owner authorization before implementation; or (b) restrict the "disappeared" comparison to ids that are still at-or-newer than the current first page's own oldest id (a video old enough to have already legitimately rolled off the page is simply excluded from the comparison, not flagged) -- no extra quota, but real design/test work of its own (getting the "oldest id on the current page" boundary right, and deciding what a channel with fewer than the enumerated videos should report).
 - **Gate(s):** none.
 - **Approval required from:** project owner, on which of the two designs to pursue (and, for design (a), on spending the extra quota) once this is actually assigned.
+- **Status:** OPEN, tracked.
+
+## RISK-81 — `assignTopic` has no existence check for a `"video"` subject, unlike `"channel"` — OPEN, 2026-09-29
+
+- **Affected components:** `src/lib/market-intelligence/services.ts`'s `assignTopic`.
+- **Found during:** independent code review of the whole Phase 9 Part II branch, right before its merge request.
+- **Actual risk:** a `"channel"` subject is verified against the watchlist (`RESEARCH_CHANNEL_NOT_AVAILABLE` if not present) before an assignment is accepted; a `"video"` subject is accepted for any syntactically-valid video id with no check that a snapshot for it was ever actually captured. A caller assigning a topic to a fabricated/never-collected video id would have that assignment stored and later counted by `niche-discovery.ts`'s `groupCandidatesByTopic` toward a niche's minimum group size, degrading grouping accuracy. **This is intentional, not an oversight** -- the function's own doc comment states the reason: `market_video_snapshots` is an append-only series with no canonical single row per video to check existence against, the same reasoning already accepted for this table's own missing FK on `subjectId`. Flagged here only for the project owner's own re-confirmation that this asymmetry is acceptable, not as a bug to silently fix.
+- **Why not "fixed":** adding a video-existence check would be a real behavior change to a documented, deliberate design choice made during this same phase, not something to alter as a side effect of an unrelated review pass.
+- **Required remediation (not yet scheduled, owner's call):** either accept this permanently (document it more prominently, e.g. in `docs/ARCHITECTURE.md`'s own topics section), or design a real check (what "exists" even means for an append-only, no-canonical-row table is itself a design question, not a one-line fix).
+- **Gate(s):** none.
+- **Approval required from:** project owner, whether to accept this asymmetry as-is or ask for a follow-up design.
 - **Status:** OPEN, tracked.
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

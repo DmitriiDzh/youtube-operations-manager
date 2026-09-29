@@ -1019,6 +1019,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       videoSnapshots: MarketVideoSnapshot[];
       topicAssignments: MarketTopicAssignment[];
       dataQualityFlags: DataQualityFlag[];
+      neverObserved: boolean;
     }> {
       const parsedInput = parseWithSchema(getWatchlistEntryInputSchema, input, "get watchlist entry context input");
 
@@ -1064,6 +1065,11 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           videoSnapshots: videoSnapshotRows.map(toMarketVideoSnapshot),
           topicAssignments: topicAssignmentRows.map(toMarketTopicAssignment),
           dataQualityFlags,
+          // Found by independent review (2026-09-29): `assessObservationFreshness`/
+          // `assessSnapshotCompleteness` both deliberately leave "never observed at all" to their
+          // caller (see their own doc comments) -- this is that check, matching the one
+          // `getMarketOverview` below already reinvented independently rather than reading from here.
+          neverObserved: channelSnapshotRows.length === 0,
         },
         "get watchlist entry context output"
       );
@@ -1087,6 +1093,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       channelSnapshots: MarketChannelSnapshot[];
       topicAssignments: MarketTopicAssignment[];
       dataQualityFlags: DataQualityFlag[];
+      neverObserved: boolean;
       subscriberVelocity: FieldVelocity;
       uploadCadence: FieldVelocity;
       recentBreakoutVideos: BreakoutAssessment[];
@@ -1165,6 +1172,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           channelSnapshots: context.channelSnapshots,
           topicAssignments: context.topicAssignments,
           dataQualityFlags: context.dataQualityFlags,
+          neverObserved: context.neverObserved,
           subscriberVelocity: velocity.subscriberCount,
           uploadCadence: velocity.videoCount,
           recentBreakoutVideos,
@@ -1274,13 +1282,15 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           (flag): flag is "stale_observation" | "quota_limited" | "missing_snapshot" => COLLECTION_WARNING_FLAGS.has(flag)
         );
         const latestRun = await deps.getLatestMarketIntelligenceCollectionRunForChannel(channel.channelId);
-        const neverObserved = summary.channelSnapshots.length === 0;
-        if (narrowedFlags.length > 0 || latestRun?.status === "failed" || neverObserved) {
+        // Read from the shared source (getWatchlistEntryContext, via getChannelIntelligenceSummary)
+        // instead of re-deriving it here -- found by independent review, 2026-09-29: this line used
+        // to independently recompute `channelSnapshots.length === 0` itself.
+        if (narrowedFlags.length > 0 || latestRun?.status === "failed" || summary.neverObserved) {
           collectionWarnings.push({
             channelId: channel.channelId,
             dataQualityFlags: narrowedFlags,
             latestRunStatus: latestRun?.status ?? null,
-            neverObserved,
+            neverObserved: summary.neverObserved,
           });
         }
       }
@@ -1775,16 +1785,20 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         // either fully processed or not started at all this run, never cut short partway (see
         // PER_CHANNEL_WORST_CASE_UNIT_COST's own doc comment).
         if (remaining < PER_CHANNEL_WORST_CASE_UNIT_COST) {
-          attempted += 1;
-          quotaLimited += 1;
-          await deps.insertMarketIntelligenceCollectionRun({
-            researchChannelId,
-            status: "skipped_quota_limited",
-            unitsSpent: 0,
-            ranAt: now,
-          });
-          await deps.releaseResearchChannelCollectionClaim(researchChannelId);
-          for (let j = i + 1; j < claimedIds.length; j++) {
+          // Every remaining claimed channel (not just this one) is recorded and released here, not
+          // silently dropped -- found by independent review: releasing j>i's claims with no row and
+          // no counter meant getWatchlistEntryContext's data-quality flag and getMarketOverview's
+          // collectionWarnings both under-reported how many channels this cycle actually affected
+          // (e.g. 1 warning shown instead of 7 for a 10-channel claim that ran out of budget at #4).
+          for (let j = i; j < claimedIds.length; j++) {
+            attempted += 1;
+            quotaLimited += 1;
+            await deps.insertMarketIntelligenceCollectionRun({
+              researchChannelId: claimedIds[j],
+              status: "skipped_quota_limited",
+              unitsSpent: 0,
+              ranAt: now,
+            });
             await deps.releaseResearchChannelCollectionClaim(claimedIds[j]);
           }
           break;
@@ -2588,6 +2602,20 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         throw new DomainError({
           code: "RESEARCH_REQUEST_NOT_FOUND",
           message: "No research request with this id",
+          details: { requestId: parsedInput.requestId },
+        });
+      }
+      // Cheap, early, read-only diagnostic -- found by independent review: without this, an
+      // already-resolved request with a missing/exhausted budget or a stale credential failed on
+      // THAT precondition first, misreporting it as the reason approval couldn't proceed instead
+      // of the real one. The atomic `approveMarketResearchRequestIfPending` call below remains the
+      // actual source of truth for the real transition (this check has an inherent TOCTOU gap
+      // against a concurrent change, same as any other pre-check in this function) -- this only
+      // makes the common, non-racing case fail with the right error immediately.
+      if (existing.status !== "pending") {
+        throw new DomainError({
+          code: "RESEARCH_REQUEST_NOT_PENDING",
+          message: "This research request is no longer pending",
           details: { requestId: parsedInput.requestId },
         });
       }
