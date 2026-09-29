@@ -96,6 +96,15 @@ export const SNAPSHOT_TRANSFERRED_TABLES = [
   "market_trend_candidates",
   "market_trend_evidence",
   "market_research_requests",
+  // Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md §5a) -- Decision & Experiment
+  // Engine record-keeping. Added from this module's own first commit, not as a later fix pass --
+  // RISK-52/RISK-79 already showed every Phase 9 slice from 9A onward repeated this same gap
+  // (a new table shipped without being added here) until a dedicated pass caught up. Decision/
+  // experiment history is exactly the kind of "cannot be reconstructed later" record that gap's
+  // own reasoning applies to. FK order: hypotheses -> experiments -> experiment_outcomes.
+  "hypotheses",
+  "experiments",
+  "experiment_outcomes",
 ] as const;
 
 /**

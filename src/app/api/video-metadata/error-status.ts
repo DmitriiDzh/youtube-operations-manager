@@ -82,6 +82,10 @@ const DOMAIN_ERROR_STATUS = {
   TREND_CANDIDATE_NOT_FOUND: 404,
   RESEARCH_REQUEST_NOT_FOUND: 404,
   RESEARCH_REQUEST_NOT_PENDING: 409,
+  HYPOTHESIS_NOT_FOUND: 404,
+  EXPERIMENT_NOT_FOUND: 404,
+  EXPERIMENT_INVALID_TRANSITION: 409,
+  EXPERIMENT_NOT_OBSERVABLE: 409,
 } as const satisfies Partial<Record<DomainErrorCode, number>>;
 
 export function getVideoMetadataErrorStatus(code: DomainErrorCode) {

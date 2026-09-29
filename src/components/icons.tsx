@@ -99,3 +99,14 @@ export function ResearchIcon(props: SVGProps<SVGSVGElement>) {
     </IconBase>
   );
 }
+
+// Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md) -- a flask, for the
+// Decisions (hypotheses/experiments) tab.
+export function DecisionsIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <IconBase {...props}>
+      <path d="M9 3h6M10 3v6l-5.5 9.5A1.5 1.5 0 0 0 5.8 21h12.4a1.5 1.5 0 0 0 1.3-2.5L14 9V3" />
+      <path d="M7.5 15h9" />
+    </IconBase>
+  );
+}

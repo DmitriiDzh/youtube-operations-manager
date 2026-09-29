@@ -430,6 +430,91 @@ test("applySnapshotToDatabase: Phase 9 market-intelligence tables (research_chan
     receiving.close();
   }));
 
+// Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md §5a) -- added to
+// SNAPSHOT_TRANSFERRED_TABLES from this module's own first commit, not a later fix pass. Proves
+// the fix against the REAL applySnapshotToDatabase mechanism, including the FK chain
+// hypotheses -> experiments -> experiment_outcomes surviving a real, receiving-device import.
+test("applySnapshotToDatabase: Phase 10 decision-engine tables (hypotheses -> experiments -> experiment_outcomes) travel with the snapshot, replacing the receiving device's own -- including a channel-scoped hypothesis and a receiving device that already holds its own full chain (advisor review: `PRAGMA foreign_keys=OFF` for this whole transaction, RISK-33, makes `channel_id REFERENCES channels(id)` safe here even though the referenced channel only exists on the source device)", () =>
+  withTempDir("snapshot-test-", async (dir) => {
+    const source = await makeClient(dir, "source.db");
+    await seedChannel(source, "UCsourceonly000000000001");
+    await source.execute({
+      sql: "INSERT INTO hypotheses (id, channel_id, statement, evidence_notes, created_by, created_via) VALUES (?, ?, ?, ?, ?, ?)",
+      args: ["hyp-source-1", "UCsourceonly000000000001", "Shorter titles improve CTR", "gut feeling", "owner", "web_ui"],
+    });
+    await source.execute({
+      sql: "INSERT INTO experiments (id, hypothesis_id, treatment, control_baseline, success_criteria, stopping_criteria, responsible, status, created_via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      args: ["exp-source-1", "hyp-source-1", "shorter titles", "current titles", "CTR +10%", "14 days", "owner", "running", "web_ui"],
+    });
+    await source.execute({
+      sql: "INSERT INTO experiment_outcomes (id, experiment_id, recorded_by, outcome_data, criteria_met, created_via) VALUES (?, ?, ?, ?, ?, ?)",
+      args: ["out-source-1", "exp-source-1", "owner", "CTR rose 12%", "met", "web_ui"],
+    });
+
+    const manifest = await exportSnapshot({
+      client: source,
+      snapshotsDir: path.join(dir, "snapshots"),
+      deviceId: "device-a",
+      schemaVersion: 3,
+    });
+    const snapshotDir = path.join(dir, "snapshots", manifest.snapshotId);
+
+    // Receiving device already holds its OWN full chain (hypothesis -> experiment -> outcome),
+    // not just a lone hypothesis -- covers the RISK-33 delete-ordering case for a table this
+    // module itself introduces (a receiving device with existing child rows referencing an
+    // existing parent row it's about to delete), not only the already-covered Phase 9 case.
+    const receiving = await makeClient(dir, "receiving.db");
+    await receiving.execute({
+      sql: "INSERT INTO hypotheses (id, statement, evidence_notes, created_by, created_via) VALUES (?, ?, ?, ?, ?)",
+      args: ["hyp-receiving-1", "receiving device's own hypothesis", "n/a", "owner", "web_ui"],
+    });
+    await receiving.execute({
+      sql: "INSERT INTO experiments (id, hypothesis_id, treatment, control_baseline, success_criteria, stopping_criteria, responsible, status, created_via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      args: ["exp-receiving-1", "hyp-receiving-1", "t", "c", "s", "s", "owner", "proposed", "web_ui"],
+    });
+    await receiving.execute({
+      sql: "INSERT INTO experiment_outcomes (id, experiment_id, recorded_by, outcome_data, criteria_met, created_via) VALUES (?, ?, ?, ?, ?, ?)",
+      args: ["out-receiving-1", "exp-receiving-1", "owner", "receiving device's own outcome", "met", "web_ui"],
+    });
+
+    const workingCopyPath = path.join(dir, "working-copy.db");
+    await copyDatabaseConsistently(
+      createClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
+      workingCopyPath
+    );
+    await migrateStagedCopy(workingCopyPath);
+
+    await applySnapshotToDatabase(receiving, workingCopyPath);
+
+    const hypotheses = await receiving.execute("SELECT id, channel_id FROM hypotheses");
+    assert.deepEqual(
+      hypotheses.rows,
+      [{ id: "hyp-source-1", channel_id: "UCsourceonly000000000001" }],
+      "the source device's own channel-scoped hypothesis must arrive (channel_id intact, even though that channel only exists on the source device), and the receiving device's own prior chain must not survive"
+    );
+
+    const experiments = await receiving.execute("SELECT id, hypothesis_id, status FROM experiments");
+    assert.deepEqual(experiments.rows, [{ id: "exp-source-1", hypothesis_id: "hyp-source-1", status: "running" }]);
+
+    const outcomes = await receiving.execute("SELECT id, experiment_id, criteria_met FROM experiment_outcomes");
+    assert.deepEqual(outcomes.rows, [{ id: "out-source-1", experiment_id: "exp-source-1", criteria_met: "met" }]);
+
+    // `channels` itself is NOT in SNAPSHOT_TRANSFERRED_TABLES (only local-only records like
+    // batches/audit/research data travel -- owned channels are expected to be re-derived via each
+    // device's own channel_sync against the real YouTube account, not carried by snapshot). So the
+    // receiving device's own `channels` table is untouched by this import -- confirmed empty here,
+    // proving `PRAGMA foreign_keys=OFF` (RISK-33) is what let the hypothesis row above arrive with
+    // a `channel_id` pointing at a channel this device doesn't locally have, without the import
+    // itself failing. This is the same pre-existing tradeoff `batches.channel_id`/`change_sets.
+    // channel_id` already have (both also FK-reference channels.id and already travel without
+    // `channels` itself traveling) -- not a new gap this module introduces.
+    const channels = await receiving.execute("SELECT id FROM channels");
+    assert.deepEqual(channels.rows, []);
+
+    source.close();
+    receiving.close();
+  }));
+
 // RISK-33 (docs/TECHNICAL_DEBT.md): reproduces the real-world crash reported by a user importing
 // into a device that had already synced its own data. `@libsql/client` defaults
 // `PRAGMA foreign_keys=ON` for every connection (unlike stock better-sqlite3, which the rest of

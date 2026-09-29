@@ -1230,6 +1230,79 @@ export const marketResearchRequests = sqliteTable(
   (table) => [index("market_research_requests_status_idx").on(table.status)]
 );
 
+// Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md) -- Decision & Experiment Engine,
+// manual-entry record-keeping foundation. `channelId` nullable: a "new channel concept" hypothesis
+// has no existing channel yet (FUTURE_PHASES.md §6).
+export const hypotheses = sqliteTable("hypotheses", {
+  id: text("id").primaryKey(),
+  channelId: text("channel_id").references(() => channels.id),
+  statement: text("statement").notNull(),
+  evidenceNotes: text("evidence_notes").notNull(),
+  createdBy: text("created_by").notNull(),
+  createdVia: text("created_via").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+// `approvedBy`/`approvedAt` are set ONLY by transitionExperimentStatus's own atomic
+// `WHERE status IN (...)` update (never at row creation, never by a generic "update experiment"
+// call -- there isn't one) -- the structural approval gate FUTURE_PHASES.md §6 requires.
+export const experiments = sqliteTable(
+  "experiments",
+  {
+    id: text("id").primaryKey(),
+    hypothesisId: text("hypothesis_id")
+      .notNull()
+      .references(() => hypotheses.id),
+    treatment: text("treatment").notNull(),
+    controlBaseline: text("control_baseline").notNull(),
+    successCriteria: text("success_criteria").notNull(),
+    stoppingCriteria: text("stopping_criteria").notNull(),
+    startConditions: text("start_conditions"),
+    plannedDuration: text("planned_duration"),
+    sampleCoverageConstraints: text("sample_coverage_constraints"),
+    budgetEstimate: text("budget_estimate"),
+    responsible: text("responsible").notNull(),
+    status: text("status", { enum: ["proposed", "approved", "running", "concluded", "abandoned"] })
+      .notNull()
+      .default("proposed"),
+    approvedBy: text("approved_by"),
+    approvedAt: integer("approved_at", { mode: "timestamp" }),
+    createdVia: text("created_via").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [index("experiments_hypothesis_id_idx").on(table.hypothesisId)]
+);
+
+// Append-only, mirroring market_channel_snapshots/market_video_snapshots (Phase 9) -- no
+// update/delete function is ever written for this table. A correction is a new row, never an
+// edit, which is what FUTURE_PHASES.md §6's "an AI agent may never silently rewrite a past
+// outcome" requires structurally, not just by convention. `lessonsLearned` folds the
+// "Retrospective" entity in as a field (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md §2) rather
+// than a fifth table, for this first slice.
+export const experimentOutcomes = sqliteTable(
+  "experiment_outcomes",
+  {
+    id: text("id").primaryKey(),
+    experimentId: text("experiment_id")
+      .notNull()
+      .references(() => experiments.id),
+    recordedBy: text("recorded_by").notNull(),
+    recordedAt: integer("recorded_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    outcomeData: text("outcome_data").notNull(),
+    dataQualityLimitations: text("data_quality_limitations"),
+    criteriaMet: text("criteria_met", { enum: ["met", "not_met", "inconclusive"] }).notNull(),
+    lessonsLearned: text("lessons_learned"),
+    createdVia: text("created_via").notNull(),
+  },
+  (table) => [index("experiment_outcomes_experiment_id_idx").on(table.experimentId)]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -1855,6 +1928,58 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
+    },
+  },
+  {
+    version: 29,
+    description:
+      "hypotheses/experiments/experiment_outcomes -- Phase 10 slice 1, Decision & Experiment Engine manual-entry foundation (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS hypotheses (" +
+          "id TEXT PRIMARY KEY, " +
+          "channel_id TEXT REFERENCES channels(id), " +
+          "statement TEXT NOT NULL, " +
+          "evidence_notes TEXT NOT NULL, " +
+          "created_by TEXT NOT NULL, " +
+          "created_via TEXT NOT NULL, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS experiments (" +
+          "id TEXT PRIMARY KEY, " +
+          "hypothesis_id TEXT NOT NULL REFERENCES hypotheses(id), " +
+          "treatment TEXT NOT NULL, " +
+          "control_baseline TEXT NOT NULL, " +
+          "success_criteria TEXT NOT NULL, " +
+          "stopping_criteria TEXT NOT NULL, " +
+          "start_conditions TEXT, " +
+          "planned_duration TEXT, " +
+          "sample_coverage_constraints TEXT, " +
+          "budget_estimate TEXT, " +
+          "responsible TEXT NOT NULL, " +
+          "status TEXT NOT NULL DEFAULT 'proposed', " +
+          "approved_by TEXT, " +
+          "approved_at INTEGER, " +
+          "created_via TEXT NOT NULL, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS experiments_hypothesis_id_idx ON experiments(hypothesis_id)");
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS experiment_outcomes (" +
+          "id TEXT PRIMARY KEY, " +
+          "experiment_id TEXT NOT NULL REFERENCES experiments(id), " +
+          "recorded_by TEXT NOT NULL, " +
+          "recorded_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "outcome_data TEXT NOT NULL, " +
+          "data_quality_limitations TEXT, " +
+          "criteria_met TEXT NOT NULL, " +
+          "lessons_learned TEXT, " +
+          "created_via TEXT NOT NULL)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS experiment_outcomes_experiment_id_idx ON experiment_outcomes(experiment_id)"
+      );
     },
   },
 ];
@@ -5770,4 +5895,207 @@ export async function recordMarketResearchRequestExecutionOutcome(
     .where(and(eq(marketResearchRequests.id, id), eq(marketResearchRequests.status, "approved")))
     .returning();
   return rows[0] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md) -- Decision & Experiment Engine,
+// manual-entry record-keeping foundation. Read/written only by `src/lib/decision-engine/
+// adapters/store.ts`.
+// ---------------------------------------------------------------------------
+
+export type ExperimentStatus = "proposed" | "approved" | "running" | "concluded" | "abandoned";
+export type ExperimentOutcomeCriteriaMet = "met" | "not_met" | "inconclusive";
+
+export type StoredHypothesis = {
+  id: string;
+  channelId: string | null;
+  statement: string;
+  evidenceNotes: string;
+  createdBy: string;
+  createdVia: string;
+  createdAt: Date;
+};
+
+export type StoredExperiment = {
+  id: string;
+  hypothesisId: string;
+  treatment: string;
+  controlBaseline: string;
+  successCriteria: string;
+  stoppingCriteria: string;
+  startConditions: string | null;
+  plannedDuration: string | null;
+  sampleCoverageConstraints: string | null;
+  budgetEstimate: string | null;
+  responsible: string;
+  status: ExperimentStatus;
+  approvedBy: string | null;
+  approvedAt: Date | null;
+  createdVia: string;
+  createdAt: Date;
+};
+
+export type StoredExperimentOutcome = {
+  id: string;
+  experimentId: string;
+  recordedBy: string;
+  recordedAt: Date;
+  outcomeData: string;
+  dataQualityLimitations: string | null;
+  criteriaMet: ExperimentOutcomeCriteriaMet;
+  lessonsLearned: string | null;
+  createdVia: string;
+};
+
+export async function insertHypothesis(
+  input: {
+    id: string;
+    channelId?: string | null;
+    statement: string;
+    evidenceNotes: string;
+    createdBy: string;
+    createdVia: string;
+    at?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(hypotheses).values({
+    id: input.id,
+    channelId: input.channelId ?? null,
+    statement: input.statement,
+    evidenceNotes: input.evidenceNotes,
+    createdBy: input.createdBy,
+    createdVia: input.createdVia,
+    ...(input.at ? { createdAt: input.at } : {}),
+  });
+}
+
+export async function getHypothesisById(id: string, database: AppDb = db): Promise<StoredHypothesis | null> {
+  const [row] = await database.select().from(hypotheses).where(eq(hypotheses.id, id));
+  return row ?? null;
+}
+
+export async function listHypotheses(database: AppDb = db): Promise<StoredHypothesis[]> {
+  return database.select().from(hypotheses).orderBy(desc(hypotheses.createdAt));
+}
+
+export async function insertExperiment(
+  input: {
+    id: string;
+    hypothesisId: string;
+    treatment: string;
+    controlBaseline: string;
+    successCriteria: string;
+    stoppingCriteria: string;
+    startConditions?: string | null;
+    plannedDuration?: string | null;
+    sampleCoverageConstraints?: string | null;
+    budgetEstimate?: string | null;
+    responsible: string;
+    createdVia: string;
+    at?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(experiments).values({
+    id: input.id,
+    hypothesisId: input.hypothesisId,
+    treatment: input.treatment,
+    controlBaseline: input.controlBaseline,
+    successCriteria: input.successCriteria,
+    stoppingCriteria: input.stoppingCriteria,
+    startConditions: input.startConditions ?? null,
+    plannedDuration: input.plannedDuration ?? null,
+    sampleCoverageConstraints: input.sampleCoverageConstraints ?? null,
+    budgetEstimate: input.budgetEstimate ?? null,
+    responsible: input.responsible,
+    status: "proposed",
+    createdVia: input.createdVia,
+    ...(input.at ? { createdAt: input.at } : {}),
+  });
+}
+
+export async function getExperimentById(id: string, database: AppDb = db): Promise<StoredExperiment | null> {
+  const [row] = await database.select().from(experiments).where(eq(experiments.id, id));
+  return row ?? null;
+}
+
+export async function listExperimentsByHypothesis(
+  hypothesisId: string,
+  database: AppDb = db
+): Promise<StoredExperiment[]> {
+  return database
+    .select()
+    .from(experiments)
+    .where(eq(experiments.hypothesisId, hypothesisId))
+    .orderBy(desc(experiments.createdAt));
+}
+
+/**
+ * The one atomic conditional transition this slice's own approval integrity depends on -- same
+ * shape as `approveMarketResearchRequestIfPending` (Phase 9). `fromStatuses` is the caller's own
+ * precomputed set of valid predecessor statuses for `toStatus` (`assertValidStatusTransition`'s
+ * own transition table, `src/lib/decision-engine/services.ts`) -- this function itself has no
+ * opinion on which transitions are valid, it only guarantees the check and the write happen
+ * atomically against whatever the row's real current status is at write time, not at read time.
+ * `approvedBy`/`approvedAt` are only set when `toStatus === "approved"`. Returns `null` if the
+ * row's real current status was not in `fromStatuses` (either a genuinely unknown id, or a
+ * same-row race the caller lost) -- the caller distinguishes those via its own upfront read, not
+ * from this return value.
+ */
+export async function transitionExperimentStatusIfValid(
+  id: string,
+  fromStatuses: ExperimentStatus[],
+  toStatus: ExperimentStatus,
+  approvedBy: string | null,
+  at: Date,
+  database: AppDb = db
+): Promise<StoredExperiment | null> {
+  const rows = await database
+    .update(experiments)
+    .set({
+      status: toStatus,
+      ...(toStatus === "approved" ? { approvedBy, approvedAt: at } : {}),
+    })
+    .where(and(eq(experiments.id, id), inArray(experiments.status, fromStatuses)))
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function insertExperimentOutcome(
+  input: {
+    id: string;
+    experimentId: string;
+    recordedBy: string;
+    outcomeData: string;
+    dataQualityLimitations?: string | null;
+    criteriaMet: ExperimentOutcomeCriteriaMet;
+    lessonsLearned?: string | null;
+    createdVia: string;
+    at?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(experimentOutcomes).values({
+    id: input.id,
+    experimentId: input.experimentId,
+    recordedBy: input.recordedBy,
+    outcomeData: input.outcomeData,
+    dataQualityLimitations: input.dataQualityLimitations ?? null,
+    criteriaMet: input.criteriaMet,
+    lessonsLearned: input.lessonsLearned ?? null,
+    createdVia: input.createdVia,
+    ...(input.at ? { recordedAt: input.at } : {}),
+  });
+}
+
+export async function listExperimentOutcomesByExperiment(
+  experimentId: string,
+  database: AppDb = db
+): Promise<StoredExperimentOutcome[]> {
+  return database
+    .select()
+    .from(experimentOutcomes)
+    .where(eq(experimentOutcomes.experimentId, experimentId))
+    .orderBy(desc(experimentOutcomes.recordedAt));
 }

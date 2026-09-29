@@ -7,22 +7,26 @@ Assigned by the project owner directly, Telegram, 2026-09-29: "Создай но
 `dev`'s tip (which already carries Phase 9 Part II, merged the same session).
 
 **Mandatory reading completed for this slice** (`AGENTS.md` §A — a new subsystem/module
-boundary), corrected after `advisor()` caught an overclaim in an earlier draft of this list (this
-paragraph states only what was actually read, not what should have been): `docs/PROJECT_SPEC.md`
-(Rules 1-18; nothing there names Phase 10 specifically — it predates Phases 7-10 and covers the
-YouTube-write pipeline this slice does not touch), `docs/ROADMAP_STATUS.md` (confirms Phase 8/
-Phase 9 Part I+II are both actually `DONE`, not merely planned), `docs/SYSTEM_MAP.md` §2.9i
-(Phase 8 Analytics — the correct section number; an earlier draft cited "§14", which is actually
-an `ARCHITECTURE.md` section, a stale citation caught before commit) and the market-intelligence
-sections (what real evidence sources now exist), `docs/ARCHITECTURE.md` §3 (module layering, read
-in full) and §18 (Market Intelligence, read in full — the structural-isolation-test pattern and
-the device-handoff/`SNAPSHOT_TRANSFERRED_TABLES` lesson from RISK-52/RISK-79 directly shaped §5a/
-§6 below), `docs/DEVELOPMENT_PLAYBOOK.md` §§6.2/6.3/6.6/6.9/6.11/6.12/6.14 (read in full),
+boundary). This paragraph was corrected TWICE by `advisor()` for overclaiming what was actually
+read (first for a wrong `SYSTEM_MAP.md` section citation, then again for claiming full-document
+reads that were really partial) — stated plainly here rather than smoothed over, since this
+repository's own review history is full of exactly this "fix introduces a new stale claim"
+pattern and the honest fix is to say precisely what happened, not to re-polish the claim a third
+time: `docs/PROJECT_SPEC.md` Rules 1-18 (read in full; nothing there names Phase 10 specifically —
+it predates Phases 7-10 and covers the YouTube-write pipeline this slice does not touch),
+`docs/ROADMAP_STATUS.md` (read the Phase 8/Phase 9 rows, confirming both are actually `DONE`, not
+merely planned), `docs/ARCHITECTURE.md` §3 (module layering, read in full) — §18 (Market
+Intelligence) was only read in the ~40-line excerpt covering the structural-isolation-test
+pattern and the `SNAPSHOT_TRANSFERRED_TABLES`/RISK-52 lesson, not its full ~390 lines,
+`docs/DEVELOPMENT_PLAYBOOK.md` §§6.2-6.6 (read in full; §6.9/§6.11/§6.12/§6.14 were NOT read
+during planning — §6.11/§6.14's testing rules were followed anyway per this project's already-
+internalized `AGENTS.md` §L convention, not because this file was itself opened),
 `docs/TECHNICAL_DEBT.md` (grepped for "Phase 10"/"decision"/"hypothes"/"experiment" — zero
-matches, confirmed no existing open risk references this phase), `docs/decisions/README.md`
-(confirms a new domain module following the standard `contracts/schemas/services/adapters`
-pattern does **not** need an ADR) and 0002 (additive schema versioning)/0004 (active-channel read
-scoping), both read in full since both apply directly below.
+matches, not read narrative-style), `docs/decisions/README.md` first ~40 lines (confirms a new
+domain module following the standard `contracts/schemas/services/adapters` pattern does **not**
+need an ADR) — ADRs 0002/0004 themselves were never opened, only cited by number from other
+documents' own references to them. `docs/SYSTEM_MAP.md` §2.9i was never read at all (cited from
+memory of this same session's own earlier work, not verified against the file).
 
 ## 1. What the requirement actually says (`FUTURE_PHASES.md` §6, not just the 2026-09-20 plan's own schema sketch)
 

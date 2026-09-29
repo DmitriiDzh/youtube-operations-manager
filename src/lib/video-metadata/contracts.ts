@@ -112,7 +112,13 @@ export type DomainErrorCode =
   // Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md) -- agent-created
   // research requests.
   | "RESEARCH_REQUEST_NOT_FOUND"
-  | "RESEARCH_REQUEST_NOT_PENDING";
+  | "RESEARCH_REQUEST_NOT_PENDING"
+  // Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md) -- Decision & Experiment
+  // Engine, manual-entry record-keeping foundation.
+  | "HYPOTHESIS_NOT_FOUND"
+  | "EXPERIMENT_NOT_FOUND"
+  | "EXPERIMENT_INVALID_TRANSITION"
+  | "EXPERIMENT_NOT_OBSERVABLE";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

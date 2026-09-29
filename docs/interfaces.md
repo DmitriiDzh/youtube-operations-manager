@@ -815,6 +815,23 @@ the operator does not necessarily own (`docs/ARCHITECTURE.md` §18).
 - `POST /api/market-intelligence/research-requests/[requestId]/approve` — no request body; the ONLY way a request moves `pending -> approved` (verified mechanically, see `docs/ARCHITECTURE.md` §18) — uses the approving human's own session credentials for the one real `search.list` call this triggers; records `status: "executed"` + `candidatesFound`/`candidatesNew` on success, `status: "execution_failed"` + `executionError` on failure (never reverts the approval itself)
 - `POST /api/market-intelligence/research-requests/[requestId]/reject` — `{ reason }`; the ONLY way a request moves `pending -> rejected`
 
+### Decision & Experiment Engine API (Phase 10 slice 1, `docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md`)
+
+All routes are global (not nested under `/api/channels/[channelId]/...`) — a hypothesis is only
+*sometimes* channel-scoped (`channelId` nullable; a "new channel concept" hypothesis has none),
+mirroring Market Intelligence's own global routing shape (`docs/ARCHITECTURE.md` §19). Every
+route checks the caller's active channel (`channelAccess.assertActiveChannel`) whenever the
+resource it resolves to has a non-null `channelId` — including reads, not only creation.
+
+- `GET /api/decision-engine/hypotheses` — list hypotheses, narrowed to the session's active channel for channel-scoped rows, always including channel-less ones; `POST` — create one (`{ channelId?, statement, evidenceNotes }`)
+- `GET /api/decision-engine/hypotheses/[hypothesisId]` — one hypothesis
+- `GET /api/decision-engine/hypotheses/[hypothesisId]/experiments` — experiments for a hypothesis; `POST` — create one (`{ treatment, controlBaseline, successCriteria, stoppingCriteria, startConditions?, plannedDuration?, sampleCoverageConstraints?, budgetEstimate?, responsible }`; always starts at status `"proposed"`)
+- `GET /api/decision-engine/experiments/[experimentId]` — one experiment
+- `POST /api/decision-engine/experiments/[experimentId]/transition` — `{ targetStatus }`; the ONLY way `status`/`approvedBy`/`approvedAt` change, via one atomic `UPDATE ... WHERE status IN (<valid predecessors>) ... RETURNING` (`EXPERIMENT_INVALID_TRANSITION` if the row's real current status no longer allows it — including a losing concurrent race); `approvedBy` is server-stamped from the session, never accepted in the request body
+- `GET /api/decision-engine/experiments/[experimentId]/outcomes` — outcomes for an experiment, newest-first (append-only, no update/delete route exists); `POST` — record one (`{ outcomeData, dataQualityLimitations?, criteriaMet: "met" | "not_met" | "inconclusive", lessonsLearned? }`; rejected with `EXPERIMENT_NOT_OBSERVABLE` unless the experiment's status is `running`/`concluded`/`abandoned`)
+
+No MCP/CLI contract yet — an explicit next slice, not an oversight (`docs/ARCHITECTURE.md` §19).
+
 ### Analytics API (Phase 8 + Studio-Parity S6b, BL-055..059/BL-072 — previously undocumented here)
 
 - `GET /api/channels/[channelId]/analytics` — every locally-collected `video_metrics_daily` row for the channel (read-only, no YouTube call)

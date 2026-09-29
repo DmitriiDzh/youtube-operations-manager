@@ -1819,3 +1819,48 @@ embeds `videoSnapshots: z.array(marketVideoSnapshotSchema)`) -- a real agent-con
 that constant explicitly excludes exactly this shape of change ("a new optional input/output field
 an existing caller can simply ignore... not every field-level widening"), reserving MINOR bumps for
 capability-discovery-relevant changes only. `getMarketVideosOverview` itself has no MCP/CLI surface.
+
+## 19. Decision & Experiment Engine (`src/lib/decision-engine/`) — Phase 10, slice 1
+
+Owner instruction, Telegram 2026-09-29: an explicit assignment to plan and implement Phase 10
+(`docs/roadmap/FUTURE_PHASES.md` §6). **Detailed design, transition rules, and acceptance
+criteria live in `docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md` and `docs/SYSTEM_MAP.md` §2.9w --
+this section states only the architectural decisions worth recording permanently here.**
+
+**Approval lives on the experiment, not a separate entity.** The first-pass plan document
+(2026-09-20, planning only) sketched a `decisions` table conflating approval
+(`approvedBy`/`approvedAt`) with outcome recording into one row. Re-reading `FUTURE_PHASES.md`
+§6's own "Core entities" list before implementing found this doesn't match the actual
+requirement: `Experiment` itself carries "approval status" as one of its own fields, and
+`Outcome`/`Retrospective` are named as entities distinct from approval, not folded into it. This
+slice follows §6 over the older sketch, `experiments.status` (`proposed → approved → running →
+concluded|abandoned`) being the one place approval lives, transitioned only through one atomic
+`UPDATE ... WHERE status IN (<valid predecessors>) ... RETURNING` function
+(`transitionExperimentStatusIfValid`) -- the same shape Phase 9's
+`approveMarketResearchRequestIfPending` already established for exactly this "two tabs race to
+approve the same row" class of bug.
+
+**Outcome is its own append-only table, gated by status.** `experiment_outcomes` never gets an
+update/delete function (mirrors `market_channel_snapshots`'s append-only shape) -- a correction is
+a new row, never an edit, which is what §6's "an AI agent may never silently rewrite a past
+outcome" requires structurally. Recording one is only accepted for `running`/`concluded`/
+`abandoned` experiments; a `proposed`/`approved` one has not actually run yet, so an "outcome" for
+it would be fabricated, not observed.
+
+**Structural isolation test deliberately differs from Phase 9's own `PHASE9-INV-02` pattern.**
+That test scans whole-file text for forbidden substrings, which relies on Phase 9's table names
+(`research_channels`, `market_channel_snapshots`) being unlikely to appear anywhere else by
+coincidence. This module's table names (`hypotheses`, `experiments`) are plain English words that
+really do collide -- with unrelated prose comments elsewhere in the repo, and with this module's
+own public service-layer method names and JSON response keys (`{ hypotheses }`). `decision-engine-
+inventory.test.ts` instead parses actual `import { X } from "@/lib/db"` specifiers and checks only
+those against the forbidden list, immune to all three collision classes while still catching the
+one real violation this test exists to prevent.
+
+**Not yet built, named explicitly rather than silently deferred:** an MCP/CLI agent surface
+(`FUTURE_PHASES.md` §6 explicitly calls for Codex-class agents to propose hypotheses and attach
+evidence -- a deliberate next slice, following the same "web UI first, agent surface as its own
+slice" sequencing Phase 9 used for `query_market_intelligence`/`query_competitors`); evidence
+auto-linking from real Phase 8/9 data (both now exist, unlike when the first-pass plan was
+written, but the smallest-safe-slice discipline still applies -- `evidenceNotes` stays free text
+for this slice); AI-generated hypotheses; automatic execution of an approved experiment.

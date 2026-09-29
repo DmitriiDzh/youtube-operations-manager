@@ -96,6 +96,15 @@ import {
   approveMarketResearchRequestIfPending,
   rejectMarketResearchRequestIfPending,
   recordMarketResearchRequestExecutionOutcome,
+  insertHypothesis,
+  getHypothesisById,
+  listHypotheses,
+  insertExperiment,
+  getExperimentById,
+  listExperimentsByHypothesis,
+  transitionExperimentStatusIfValid,
+  insertExperimentOutcome,
+  listExperimentOutcomesByExperiment,
 } from "./db";
 import { readSchemaVersion } from "@/lib/schema-versioning";
 import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
@@ -2353,4 +2362,186 @@ test("clearStoredCloudConnection removes the row -- a later getStoredCloudConnec
 
     await clearStoredCloudConnection(isolatedDb);
     assert.equal(await getStoredCloudConnection(isolatedDb), null);
+  }));
+
+// ---------------------------------------------------------------------------
+// Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md) -- hypotheses/experiments/
+// experiment_outcomes persistence.
+// ---------------------------------------------------------------------------
+
+test("insertHypothesis/getHypothesisById/listHypotheses: round trip, including a channel-less (new-channel-concept) hypothesis", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await insertHypothesis(
+      { id: "hyp-1", channelId: null, statement: "Shorter titles improve CTR", evidenceNotes: "gut feeling for now", createdBy: "owner", createdVia: "web_ui" },
+      isolatedDb
+    );
+    await insertHypothesis(
+      { id: "hyp-2", channelId: null, statement: "New channel concept: lo-fi cooking", evidenceNotes: "n/a", createdBy: "owner", createdVia: "web_ui" },
+      isolatedDb
+    );
+
+    const fetched = await getHypothesisById("hyp-1", isolatedDb);
+    assert.equal(fetched?.statement, "Shorter titles improve CTR");
+    assert.equal(fetched?.channelId, null);
+
+    const all = await listHypotheses(isolatedDb);
+    assert.equal(all.length, 2);
+  }));
+
+test("insertExperiment/getExperimentById/listExperimentsByHypothesis: round trip, defaults status to proposed", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertHypothesis({ id: "hyp-1", statement: "s", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui" }, isolatedDb);
+
+    await insertExperiment(
+      {
+        id: "exp-1",
+        hypothesisId: "hyp-1",
+        treatment: "shorter titles",
+        controlBaseline: "current titles",
+        successCriteria: "CTR +10%",
+        stoppingCriteria: "14 days or -20% CTR",
+        responsible: "owner",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+
+    const fetched = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(fetched?.status, "proposed");
+    assert.equal(fetched?.approvedBy, null);
+    assert.equal(fetched?.approvedAt, null);
+
+    const byHypothesis = await listExperimentsByHypothesis("hyp-1", isolatedDb);
+    assert.equal(byHypothesis.length, 1);
+  }));
+
+test("insertHypothesis/insertExperiment: an explicit `at` stamps createdAt, not real wall-clock time (two clock sources bug class, already fixed once for Phase 9 trend evidence -- not repeating it here)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const at = new Date("2020-01-01T00:00:00.000Z");
+
+    await insertHypothesis({ id: "hyp-1", statement: "s", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui", at }, isolatedDb);
+    await insertExperiment(
+      {
+        id: "exp-1",
+        hypothesisId: "hyp-1",
+        treatment: "t",
+        controlBaseline: "c",
+        successCriteria: "s",
+        stoppingCriteria: "s",
+        responsible: "owner",
+        createdVia: "web_ui",
+        at,
+      },
+      isolatedDb
+    );
+
+    const hypothesis = await getHypothesisById("hyp-1", isolatedDb);
+    const experiment = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(hypothesis?.createdAt.toISOString(), at.toISOString());
+    assert.equal(experiment?.createdAt.toISOString(), at.toISOString());
+  }));
+
+test("insertExperimentOutcome/listExperimentOutcomesByExperiment: append-only -- multiple outcome rows for one experiment all survive", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertHypothesis({ id: "hyp-1", statement: "s", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui" }, isolatedDb);
+    await insertExperiment(
+      {
+        id: "exp-1",
+        hypothesisId: "hyp-1",
+        treatment: "t",
+        controlBaseline: "c",
+        successCriteria: "s",
+        stoppingCriteria: "s",
+        responsible: "owner",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+
+    await insertExperimentOutcome(
+      { id: "out-1", experimentId: "exp-1", recordedBy: "owner", createdVia: "web_ui", outcomeData: "interim: +3%", criteriaMet: "inconclusive" },
+      isolatedDb
+    );
+    await insertExperimentOutcome(
+      { id: "out-2", experimentId: "exp-1", recordedBy: "owner", createdVia: "web_ui", outcomeData: "final: +9%", criteriaMet: "met", lessonsLearned: "worked" },
+      isolatedDb
+    );
+
+    const outcomes = await listExperimentOutcomesByExperiment("exp-1", isolatedDb);
+    assert.equal(outcomes.length, 2);
+  }));
+
+// RISK-70's own lesson (a fake in-memory store proves nothing about real atomicity) -- forces two
+// literally-concurrent calls against the real libsql driver, exactly like
+// approveMarketResearchRequestIfPending's own race test.
+test("transitionExperimentStatusIfValid: two literally-concurrent approve attempts for the same proposed row -- exactly one succeeds", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertHypothesis({ id: "hyp-1", statement: "s", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui" }, isolatedDb);
+    await insertExperiment(
+      {
+        id: "exp-race",
+        hypothesisId: "hyp-1",
+        treatment: "t",
+        controlBaseline: "c",
+        successCriteria: "s",
+        stoppingCriteria: "s",
+        responsible: "owner",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    const [first, second] = await Promise.all([
+      transitionExperimentStatusIfValid("exp-race", ["proposed"], "approved", "actor-a", at, isolatedDb),
+      transitionExperimentStatusIfValid("exp-race", ["proposed"], "approved", "actor-b", at, isolatedDb),
+    ]);
+
+    const succeeded = [first, second].filter((row) => row !== null);
+    const failed = [first, second].filter((row) => row === null);
+    assert.equal(succeeded.length, 1, "exactly one of the two concurrent calls must succeed");
+    assert.equal(failed.length, 1, "the other must observe the row already approved and return null");
+
+    const finalRow = await getExperimentById("exp-race", isolatedDb);
+    assert.equal(finalRow?.status, "approved");
+    assert.equal(finalRow?.approvedBy, succeeded[0]?.approvedBy, "the final row's approvedBy must match only the winning call's actor");
+  }));
+
+test("transitionExperimentStatusIfValid: a call whose fromStatuses no longer matches the row's real status returns null and changes nothing", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertHypothesis({ id: "hyp-1", statement: "s", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui" }, isolatedDb);
+    await insertExperiment(
+      {
+        id: "exp-1",
+        hypothesisId: "hyp-1",
+        treatment: "t",
+        controlBaseline: "c",
+        successCriteria: "s",
+        stoppingCriteria: "s",
+        responsible: "owner",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, isolatedDb);
+
+    const result = await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-b", at, isolatedDb);
+    assert.equal(result, null);
+
+    const row = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(row?.approvedBy, "actor-a");
   }));
