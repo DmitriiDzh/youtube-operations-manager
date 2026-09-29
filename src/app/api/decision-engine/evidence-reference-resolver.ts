@@ -62,6 +62,50 @@ export function createRealEvidenceReferenceResolver(deps: {
         }
       }
     },
+
+    // Phase 10 slice 4 -- caller must have already called `resolve` and gotten `true`; this does
+    // its own fetch (mirroring `resolve`'s own per-reference-type shape) rather than threading a
+    // fetched row through, keeping both methods independently simple and testable.
+    async describe(reference: EvidenceReference, ctx: { userId: string | null | undefined }): Promise<string> {
+      switch (reference.sourceType) {
+        case "phase8_metric": {
+          if (!ctx.userId) return `Video ${reference.videoId}: ${reference.metricName} on ${reference.metricDate} (unavailable)`;
+          const result = await deps.analyticsCore.listMetrics({
+            credentialRef: { userId: ctx.userId },
+            channelId: reference.channelId,
+            videoId: reference.videoId,
+            metricNames: [reference.metricName],
+            startDate: reference.metricDate,
+            endDate: reference.metricDate,
+          });
+          const row = result.rows.find((r) => r.metricDate === reference.metricDate && r.metricName === reference.metricName);
+          return row
+            ? `Video ${reference.videoId}: ${reference.metricName} = ${row.metricValue} on ${reference.metricDate}`
+            : `Video ${reference.videoId}: ${reference.metricName} on ${reference.metricDate} (no longer available)`;
+        }
+        case "phase9_channel_snapshot": {
+          const result = await deps.marketIntelligenceCore.listChannelSnapshots({ researchChannelId: reference.researchChannelId });
+          const snapshot = result.snapshots.find((s) => s.snapshotId === reference.snapshotId);
+          return snapshot
+            ? `Channel ${reference.researchChannelId} snapshot (${snapshot.observedAt}): ${snapshot.subscriberCount ?? "?"} subscribers, ${snapshot.viewCount ?? "?"} views, ${snapshot.videoCount ?? "?"} videos`
+            : `Channel ${reference.researchChannelId} snapshot (no longer available)`;
+        }
+        case "phase9_video_snapshot": {
+          const result = await deps.marketIntelligenceCore.listVideoSnapshots({ researchChannelId: reference.researchChannelId });
+          const snapshot = result.snapshots.find((s) => s.snapshotId === reference.snapshotId);
+          return snapshot
+            ? `Video "${snapshot.title ?? snapshot.videoId}" snapshot (${snapshot.observedAt}): ${snapshot.viewCount ?? "?"} views, ${snapshot.likeCount ?? "?"} likes`
+            : `Video snapshot (no longer available)`;
+        }
+        case "phase9_trend_candidate": {
+          const result = await deps.marketIntelligenceCore.listTrendCandidates();
+          const candidate = result.trendCandidates.find((c) => c.trendCandidateId === reference.trendCandidateId);
+          return candidate
+            ? `Trend candidate "${candidate.title}" (status: ${candidate.status}, first observed ${candidate.firstObservedAt})`
+            : `Trend candidate (no longer available)`;
+        }
+      }
+    },
   };
 }
 

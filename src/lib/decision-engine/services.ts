@@ -9,6 +9,7 @@ import {
   type ExperimentOutcome,
   type ExperimentStatus,
   type Hypothesis,
+  type HypothesisDraftProvider,
   type HypothesisEvidence,
 } from "./contracts";
 import {
@@ -16,6 +17,8 @@ import {
   createExperimentInputSchema,
   createExperimentOutcomeInputSchema,
   createHypothesisInputSchema,
+  generateHypothesisDraftInputSchema,
+  saveGeneratedHypothesisInputSchema,
   transitionExperimentInputSchema,
 } from "./schemas";
 import type {
@@ -24,6 +27,7 @@ import type {
   StoredExperimentOutcome,
   StoredHypothesis,
   StoredHypothesisEvidence,
+  StoredHypothesisGenerationProvenance,
 } from "@/lib/db";
 
 type ChannelAccess = {
@@ -92,6 +96,29 @@ export type DecisionEngineServiceDependencies = {
     at?: Date;
   }) => Promise<void>;
   listHypothesisEvidenceByHypothesis: (hypothesisId: string) => Promise<StoredHypothesisEvidence[]>;
+  /** Phase 10 slice 4. Optional so every existing test fixture that never exercises generation
+   * keeps working unchanged (`AGENTS.md` §D, exact same optionality precedent as
+   * `ai-localization/services.ts`'s own `resolveConnectionProvider`). `undefined` connectionId
+   * means "use the mock provider" -- resolved by the caller (index.ts), never guessed here. */
+  resolveHypothesisDraftProvider?: (connectionId: string | undefined) => Promise<HypothesisDraftProvider>;
+  /** RISK-30's own precedent (ai-localization/services.ts) -- a real-connection generation call is
+   * a genuine outbound call to an external AI provider, gated the same way. Optional so mock-only
+   * fixtures are unaffected; called only when `connectionId` is set. */
+  assertDeviceAvailable?(): Promise<void>;
+  insertHypothesisGenerationProvenance: (input: {
+    id: string;
+    hypothesisId: string;
+    connectionId?: string | null;
+    providerName: string;
+    modelId?: string | null;
+    generatedStatement: string;
+    finalStatement: string;
+    rationale?: string | null;
+    evidenceRefCount: number;
+    editedBeforeSave: boolean;
+    at?: Date;
+  }) => Promise<void>;
+  getHypothesisGenerationProvenanceByHypothesis: (hypothesisId: string) => Promise<StoredHypothesisGenerationProvenance | null>;
 };
 
 function toHypothesis(row: StoredHypothesis): Hypothesis {
@@ -153,6 +180,50 @@ function toHypothesisEvidence(row: StoredHypothesisEvidence): HypothesisEvidence
     createdVia: row.createdVia,
     createdAt: row.createdAt.toISOString(),
   };
+}
+
+function toGenerationProvenance(row: StoredHypothesisGenerationProvenance) {
+  return {
+    hypothesisId: row.hypothesisId,
+    connectionId: row.connectionId,
+    providerName: row.providerName,
+    modelId: row.modelId,
+    generatedStatement: row.generatedStatement,
+    finalStatement: row.finalStatement,
+    rationale: row.rationale,
+    evidenceRefCount: row.evidenceRefCount,
+    editedBeforeSave: row.editedBeforeSave,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+/**
+ * Shared by `addHypothesisEvidence` and `saveGeneratedHypothesis` -- both must apply the identical
+ * channelId-match + real-existence check before an evidence reference is ever persisted (Phase 10
+ * slice 4 factored this out of `addHypothesisEvidence`'s own inline body, zero behavior change,
+ * proven by that function's own pre-existing tests passing unmodified).
+ */
+async function assertEvidenceReferenceValid(
+  hypothesisRow: { channelId: string | null },
+  reference: EvidenceReference,
+  ctx: { userId: string | null | undefined },
+  resolver: EvidenceReferenceResolver
+): Promise<void> {
+  if (reference.sourceType === "phase8_metric" && hypothesisRow.channelId !== null && reference.channelId !== hypothesisRow.channelId) {
+    throw new DomainError({
+      code: "validation_failed",
+      message: "A phase8_metric reference's channelId must match the hypothesis's own channelId",
+      details: { hypothesisChannelId: hypothesisRow.channelId, referenceChannelId: reference.channelId },
+    });
+  }
+  const resolved = await resolver.resolve(reference, ctx);
+  if (!resolved) {
+    throw new DomainError({
+      code: "validation_failed",
+      message: "The referenced Phase 8/9 row does not exist",
+      details: { reference },
+    });
+  }
 }
 
 /** Pure -- exported for direct, exhaustive (5x5) testing independent of any DB/service call. */
@@ -398,26 +469,7 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
       const hypothesisRow = await assertHypothesisAccessible(hypothesisId, ctx);
       const parsed = parseWithSchema(addHypothesisEvidenceInputSchema, input, "add hypothesis evidence input");
 
-      if (
-        parsed.reference.sourceType === "phase8_metric" &&
-        hypothesisRow.channelId !== null &&
-        parsed.reference.channelId !== hypothesisRow.channelId
-      ) {
-        throw new DomainError({
-          code: "validation_failed",
-          message: "A phase8_metric reference's channelId must match the hypothesis's own channelId",
-          details: { hypothesisChannelId: hypothesisRow.channelId, referenceChannelId: parsed.reference.channelId },
-        });
-      }
-
-      const resolved = await resolver.resolve(parsed.reference, ctx);
-      if (!resolved) {
-        throw new DomainError({
-          code: "validation_failed",
-          message: "The referenced Phase 8/9 row does not exist",
-          details: { reference: parsed.reference },
-        });
-      }
+      await assertEvidenceReferenceValid(hypothesisRow, parsed.reference, ctx, resolver);
 
       const id = deps.idGenerator();
       const at = deps.clock.now();
@@ -440,6 +492,139 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
         });
       }
       return toHypothesisEvidence(row);
+    },
+
+    /**
+     * Phase 10 slice 4 -- generates a DRAFT only, persists nothing (mirrors `ai-localization`'s
+     * `generateProposals`' own "preview only" contract). `evidenceReferences` are references the
+     * OPERATOR already selected (e.g. from browsing a channel's Phase 8/9 data elsewhere in the
+     * UI) -- validated exactly like a manual attach BEFORE their summaries are sent to the model,
+     * so the model only ever sees text describing real, already-verified evidence, never a raw row
+     * and never something it could fabricate a reference for.
+     */
+    async generateHypothesisDraft(
+      input: unknown,
+      ctx: { userId: string | null | undefined },
+      resolver: EvidenceReferenceResolver
+    ): Promise<{
+      statement: string;
+      rationale: string;
+      providerName: string;
+      connectionId: string | null;
+      evidenceReferences: EvidenceReference[];
+    }> {
+      const parsed = parseWithSchema(generateHypothesisDraftInputSchema, input, "generate hypothesis draft input");
+      if (parsed.channelId) {
+        await deps.channelAccess.assertActiveChannel({ userId: ctx.userId, channelId: parsed.channelId });
+      }
+
+      const evidenceSummaries: string[] = [];
+      for (const reference of parsed.evidenceReferences) {
+        await assertEvidenceReferenceValid({ channelId: parsed.channelId ?? null }, reference, ctx, resolver);
+        evidenceSummaries.push(await resolver.describe(reference, ctx));
+      }
+
+      if (!deps.resolveHypothesisDraftProvider) {
+        throw new DomainError({ code: "provider_not_configured", message: "AI generation is not wired into this service instance" });
+      }
+      // RISK-30's own precedent: a real-connection call is a genuine outbound call to an external
+      // AI provider, gated the same way generateProposals already gates its own real-connection path.
+      if (parsed.connectionId && deps.assertDeviceAvailable) await deps.assertDeviceAvailable();
+      const provider = await deps.resolveHypothesisDraftProvider(parsed.connectionId);
+
+      const outcome = await provider.generateHypothesis({
+        channelId: parsed.channelId ?? null,
+        notes: parsed.notes,
+        evidenceSummaries,
+      });
+
+      if (outcome.status === "error") {
+        throw new DomainError({ code: "generation_failed", message: outcome.message, details: { provider: provider.name } });
+      }
+
+      return {
+        statement: outcome.statement,
+        rationale: outcome.rationale,
+        providerName: provider.name,
+        connectionId: parsed.connectionId ?? null,
+        evidenceReferences: parsed.evidenceReferences,
+      };
+    },
+
+    /**
+     * Persists a (possibly human-edited) AI-generated draft -- mirrors `createChangeSetFromProposals`'s
+     * own "the caller re-submits the reviewed values, this action re-validates and persists them"
+     * shape (`AGENTS.md` §D), never a server-held draft the client references by id. Three writes,
+     * in order: the hypothesis itself (via the same `insertHypothesis` `createHypothesis` uses),
+     * each evidence reference (re-validated here, never trusted from generation time -- state may
+     * have changed since), and one provenance row recording AI authorship.
+     */
+    async saveGeneratedHypothesis(
+      input: unknown,
+      ctx: { userId: string | null | undefined; createdBy: string; createdVia: string },
+      resolver: EvidenceReferenceResolver
+    ): Promise<Hypothesis> {
+      const parsed = parseWithSchema(saveGeneratedHypothesisInputSchema, input, "save generated hypothesis input");
+      if (parsed.channelId) {
+        await deps.channelAccess.assertActiveChannel({ userId: ctx.userId, channelId: parsed.channelId });
+      }
+
+      for (const reference of parsed.evidenceReferences) {
+        await assertEvidenceReferenceValid({ channelId: parsed.channelId ?? null }, reference, ctx, resolver);
+      }
+
+      const hypothesisId = deps.idGenerator();
+      const at = deps.clock.now();
+      await deps.insertHypothesis({
+        id: hypothesisId,
+        channelId: parsed.channelId ?? null,
+        statement: parsed.finalStatement,
+        evidenceNotes: parsed.evidenceNotes,
+        createdBy: ctx.createdBy,
+        createdVia: ctx.createdVia,
+        at,
+      });
+
+      for (const reference of parsed.evidenceReferences) {
+        await deps.insertHypothesisEvidence({
+          id: deps.idGenerator(),
+          hypothesisId,
+          sourceType: reference.sourceType,
+          referenceJson: JSON.stringify(reference),
+          createdVia: ctx.createdVia,
+          at,
+        });
+      }
+
+      await deps.insertHypothesisGenerationProvenance({
+        id: deps.idGenerator(),
+        hypothesisId,
+        connectionId: parsed.connectionId ?? null,
+        providerName: parsed.providerName,
+        modelId: parsed.modelId ?? null,
+        generatedStatement: parsed.generatedStatement,
+        finalStatement: parsed.finalStatement,
+        rationale: parsed.rationale ?? null,
+        evidenceRefCount: parsed.evidenceReferences.length,
+        editedBeforeSave: parsed.finalStatement !== parsed.generatedStatement,
+        at,
+      });
+
+      const row = await deps.getHypothesisById(hypothesisId);
+      if (!row) {
+        throw new DomainError({
+          code: "HYPOTHESIS_NOT_FOUND",
+          message: "Hypothesis not found immediately after creation",
+          details: { id: hypothesisId },
+        });
+      }
+      return toHypothesis(row);
+    },
+
+    async getHypothesisGenerationProvenance(hypothesisId: string, ctx: { userId: string | null | undefined }) {
+      await assertHypothesisAccessible(hypothesisId, ctx);
+      const row = await deps.getHypothesisGenerationProvenanceByHypothesis(hypothesisId);
+      return row ? toGenerationProvenance(row) : null;
     },
 
     async listHypothesisEvidence(

@@ -1,4 +1,10 @@
-import { DomainError, type AiConnection, type ConnectionProtocolAdapter, type LocalizationGenerationRequest } from "../contracts";
+import {
+  DomainError,
+  type AiConnection,
+  type ConnectionProtocolAdapter,
+  type LocalizationGenerationRequest,
+  type HypothesisGenerationRequest,
+} from "../contracts";
 import { validateEndpointUrl, type DnsLookupFn } from "../endpoint-security";
 
 // ---------------------------------------------------------------------------
@@ -47,17 +53,24 @@ function buildInstructionPrompt(request: LocalizationGenerationRequest): string 
   return lines.filter(Boolean).join("\n");
 }
 
-function buildResponseFormat(capability: AiConnection["capabilities"]["structuredOutput"]) {
+/** Generalized so both `generate` (title/description) and `generateHypothesis`
+ * (statement/rationale) share the exact same JSON-schema/json-object request-shaping logic --
+ * only the schema name and field list differ per caller. */
+function buildResponseFormat(
+  capability: AiConnection["capabilities"]["structuredOutput"],
+  schemaName: string,
+  fields: string[]
+) {
   if (capability === "json_schema") {
     return {
       type: "json_schema",
       json_schema: {
-        name: "localization_proposal",
+        name: schemaName,
         strict: true,
         schema: {
           type: "object",
-          properties: { title: { type: "string" }, description: { type: "string" } },
-          required: ["title", "description"],
+          properties: Object.fromEntries(fields.map((f) => [f, { type: "string" }])),
+          required: fields,
           additionalProperties: false,
         },
       },
@@ -67,6 +80,19 @@ function buildResponseFormat(capability: AiConnection["capabilities"]["structure
     return { type: "json_object" };
   }
   return null;
+}
+
+function buildHypothesisPrompt(request: HypothesisGenerationRequest): string {
+  const lines = [
+    "Draft ONE hypothesis about YouTube channel strategy, grounded ONLY in the evidence provided below -- never invent a data point not listed here.",
+    request.channelId ? `This concerns channel ${request.channelId}.` : "This concerns a new channel concept (no existing channel).",
+    "Respond with a JSON object with exactly two string fields: \"statement\" (the hypothesis itself, one or two sentences) and \"rationale\" (why the evidence below supports it). Do not include any other text.",
+    request.evidenceSummaries.length > 0
+      ? `Evidence:\n${request.evidenceSummaries.map((s) => `- ${s}`).join("\n")}`
+      : "No structured evidence was provided -- ground the hypothesis in the operator's notes only, and say so plainly in the rationale.",
+    request.notes ? `Operator's notes: ${request.notes}` : "",
+  ];
+  return lines.filter(Boolean).join("\n");
 }
 
 function isTransientHttpStatus(status: number): boolean {
@@ -116,11 +142,74 @@ export function createOpenAiCompatibleAdapter(deps: {
     }
   }
 
+  /**
+   * Phase 10 slice 4 extraction: everything about calling a chat-completions endpoint and getting
+   * back a parsed JSON object is identical between `generate` (title/description) and
+   * `generateHypothesis` (statement/rationale) -- retry-on-transient-status, timeout/network-error
+   * mapping, response JSON parsing, message-content extraction, model-output JSON parsing, usage
+   * extraction. Only the request body's messages and the final field-shape check differ, and both
+   * of those stay in each caller. Zero behavior change to `generate` -- proven by every existing
+   * ai-connections/ai-localization test passing unmodified after this extraction.
+   */
+  async function performChatCompletion(
+    connection: AiConnection,
+    credential: string | null,
+    requestBody: unknown
+  ): Promise<
+    | { status: "ok"; parsed: unknown; usage: { inputTokens: number; outputTokens: number } | null }
+    | { status: "error"; message: string }
+  > {
+    let response;
+    let attempt = 0;
+    for (;;) {
+      try {
+        response = await callOnce(connection, credential, requestBody);
+      } catch (error) {
+        if (error instanceof DomainError) throw error;
+        if (error instanceof Error && error.name === "AbortError") {
+          return { status: "error", message: "timeout" };
+        }
+        return { status: "error", message: error instanceof Error ? error.message : "network error" };
+      }
+
+      if (response.ok || !isTransientHttpStatus(response.status) || attempt >= MAX_RETRIES) {
+        break;
+      }
+      await sleep(RETRY_BACKOFF_MS[attempt] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]);
+      attempt += 1;
+    }
+
+    if (!response.ok) {
+      return { status: "error", message: `HTTP ${response.status}` };
+    }
+
+    let parsedBody: unknown;
+    try {
+      parsedBody = await response.json();
+    } catch {
+      return { status: "error", message: "Response was not valid JSON" };
+    }
+
+    const content = extractMessageContent(parsedBody);
+    if (content === null) {
+      return { status: "error", message: "Response did not contain an expected chat completion message" };
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      return { status: "error", message: "Model output was not valid JSON" };
+    }
+
+    return { status: "ok", parsed, usage: extractUsage(parsedBody) };
+  }
+
   return {
     adapterType: "openai_compatible",
 
     async generate({ connection, credential, request }) {
-      const responseFormat = buildResponseFormat(connection.capabilities.structuredOutput);
+      const responseFormat = buildResponseFormat(connection.capabilities.structuredOutput, "localization_proposal", ["title", "description"]);
       if (!responseFormat) {
         throw new DomainError({
           code: "capability_not_supported",
@@ -137,49 +226,12 @@ export function createOpenAiCompatibleAdapter(deps: {
         response_format: responseFormat,
       };
 
-      let response;
-      let attempt = 0;
-      for (;;) {
-        try {
-          response = await callOnce(connection, credential, requestBody);
-        } catch (error) {
-          if (error instanceof DomainError) throw error;
-          if (error instanceof Error && error.name === "AbortError") {
-            return { outcome: { status: "error", message: "timeout" }, usage: null };
-          }
-          return { outcome: { status: "error", message: error instanceof Error ? error.message : "network error" }, usage: null };
-        }
-
-        if (response.ok || !isTransientHttpStatus(response.status) || attempt >= MAX_RETRIES) {
-          break;
-        }
-        await sleep(RETRY_BACKOFF_MS[attempt] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]);
-        attempt += 1;
+      const result = await performChatCompletion(connection, credential, requestBody);
+      if (result.status === "error") {
+        return { outcome: { status: "error", message: result.message }, usage: null };
       }
 
-      if (!response.ok) {
-        return { outcome: { status: "error", message: `HTTP ${response.status}` }, usage: null };
-      }
-
-      let parsedBody: unknown;
-      try {
-        parsedBody = await response.json();
-      } catch {
-        return { outcome: { status: "error", message: "Response was not valid JSON" }, usage: null };
-      }
-
-      const content = extractMessageContent(parsedBody);
-      if (content === null) {
-        return { outcome: { status: "error", message: "Response did not contain an expected chat completion message" }, usage: null };
-      }
-
-      let proposal: unknown;
-      try {
-        proposal = JSON.parse(content);
-      } catch {
-        return { outcome: { status: "error", message: "Model output was not valid JSON" }, usage: null };
-      }
-
+      const proposal = result.parsed;
       if (
         typeof proposal !== "object" ||
         proposal === null ||
@@ -189,11 +241,48 @@ export function createOpenAiCompatibleAdapter(deps: {
         return { outcome: { status: "error", message: "Model output was missing the required title/description fields" }, usage: null };
       }
 
-      const usage = extractUsage(parsedBody);
-
       return {
         outcome: { status: "ok", title: (proposal as { title: string }).title, description: (proposal as { description: string }).description },
-        usage,
+        usage: result.usage,
+      };
+    },
+
+    async generateHypothesis({ connection, credential, request }) {
+      const responseFormat = buildResponseFormat(connection.capabilities.structuredOutput, "hypothesis_draft", ["statement", "rationale"]);
+      if (!responseFormat) {
+        throw new DomainError({
+          code: "capability_not_supported",
+          message: `Connection "${connection.displayName}" does not declare a supported structured-output capability (got "${connection.capabilities.structuredOutput}")`,
+        });
+      }
+
+      const requestBody = {
+        model: connection.modelId,
+        messages: [
+          { role: "system", content: buildHypothesisPrompt(request) },
+          { role: "user", content: request.notes || "(no additional notes)" },
+        ],
+        response_format: responseFormat,
+      };
+
+      const result = await performChatCompletion(connection, credential, requestBody);
+      if (result.status === "error") {
+        return { outcome: { status: "error", message: result.message }, usage: null };
+      }
+
+      const draft = result.parsed;
+      if (
+        typeof draft !== "object" ||
+        draft === null ||
+        typeof (draft as Record<string, unknown>).statement !== "string" ||
+        typeof (draft as Record<string, unknown>).rationale !== "string"
+      ) {
+        return { outcome: { status: "error", message: "Model output was missing the required statement/rationale fields" }, usage: null };
+      }
+
+      return {
+        outcome: { status: "ok", statement: (draft as { statement: string }).statement, rationale: (draft as { rationale: string }).rationale },
+        usage: result.usage,
       };
     },
 

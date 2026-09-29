@@ -7,8 +7,16 @@ import {
   type DomainErrorShape,
 } from "@/lib/video-metadata/contracts";
 import type { LocalizationGenerationOutcome, LocalizationGenerationRequest, LocalizationProvider } from "@/lib/ai-localization/contracts";
+import type {
+  HypothesisGenerationOutcome,
+  HypothesisGenerationRequest,
+  HypothesisDraftProvider,
+} from "@/lib/decision-engine/contracts";
 
 export type { DomainErrorCode, DomainErrorShape, LocalizationGenerationOutcome, LocalizationGenerationRequest, LocalizationProvider };
+// Phase 10 slice 4 -- same relationship as the LocalizationProvider trio above: decision-engine
+// OWNS these types, ai-connections adapts a real/mock provider INTO this shape.
+export type { HypothesisGenerationOutcome, HypothesisGenerationRequest, HypothesisDraftProvider };
 export { DomainError, isDomainError, mapUnknownError, createIdGenerator };
 
 // ---------------------------------------------------------------------------
@@ -83,6 +91,15 @@ export type ConnectionProtocolAdapter = {
     credential: string | null;
     request: LocalizationGenerationRequest;
   }): Promise<{ outcome: LocalizationGenerationOutcome; usage: TokenUsage | null }>;
+  /** Phase 10 slice 4 -- additive sibling to `generate` above, same connection/credential shape,
+   * a different domain request/outcome pair. Both real adapters (`mock`, `openai_compatible`)
+   * implement this; `openai_compatible`'s implementation shares its transport helper with
+   * `generate` (see that adapter file), never a second copy of the SSRF/timeout/retry logic. */
+  generateHypothesis(args: {
+    connection: AiConnection;
+    credential: string | null;
+    request: HypothesisGenerationRequest;
+  }): Promise<{ outcome: HypothesisGenerationOutcome; usage: TokenUsage | null }>;
   /** Explicit, user-triggered only (INV-AIC-2) -- never called automatically. */
   testConnection(args: {
     connection: AiConnection;

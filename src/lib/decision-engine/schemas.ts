@@ -106,3 +106,34 @@ export const addHypothesisEvidenceInputSchema = z
     note: z.string().min(1).optional(),
   })
   .strict();
+
+// ---------------------------------------------------------------------------
+// Phase 10 slice 4 (docs/roadmap/plans/PHASE_10_SLICE_4_PLAN.md) -- AI-generated hypothesis
+// drafts. `evidenceReferences` reuses the exact same `evidenceReferenceSchema` as
+// `addHypothesisEvidenceInputSchema` above -- these are references the OPERATOR already selected
+// and this module will re-validate exactly like a manual attach, never something the model
+// supplies (the model never sees or produces an `EvidenceReference`, only text summaries of them).
+// ---------------------------------------------------------------------------
+
+export const generateHypothesisDraftInputSchema = z
+  .object({
+    channelId: z.string().min(1).nullable().optional(),
+    notes: z.string().min(1, "notes is required"),
+    evidenceReferences: z.array(evidenceReferenceSchema).max(20).default([]),
+    connectionId: z.string().min(1).optional(),
+  })
+  .strict();
+
+export const saveGeneratedHypothesisInputSchema = z
+  .object({
+    channelId: z.string().min(1).nullable().optional(),
+    finalStatement: z.string().min(1, "finalStatement is required"),
+    evidenceNotes: z.string().min(1, "evidenceNotes is required"),
+    evidenceReferences: z.array(evidenceReferenceSchema).max(20).default([]),
+    generatedStatement: z.string().min(1, "generatedStatement is required"),
+    rationale: z.string().min(1).optional(),
+    providerName: z.string().min(1, "providerName is required"),
+    connectionId: z.string().min(1).optional(),
+    modelId: z.string().min(1).optional(),
+  })
+  .strict();

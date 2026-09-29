@@ -1820,7 +1820,7 @@ that constant explicitly excludes exactly this shape of change ("a new optional 
 an existing caller can simply ignore... not every field-level widening"), reserving MINOR bumps for
 capability-discovery-relevant changes only. `getMarketVideosOverview` itself has no MCP/CLI surface.
 
-## 19. Decision & Experiment Engine (`src/lib/decision-engine/`) — Phase 10, slices 1-3
+## 19. Decision & Experiment Engine (`src/lib/decision-engine/`) — Phase 10, slices 1-4
 
 Owner instruction, Telegram 2026-09-29: an explicit assignment to plan and implement Phase 10
 (`docs/roadmap/FUTURE_PHASES.md` §6). **Detailed design, transition rules, and acceptance
@@ -1891,7 +1891,43 @@ covered by the resolver's own dedicated test file (`evidence-reference-resolver.
 separate from `services.test.ts` (which only proves delegation to a fake resolver, not that the
 real one decides correctly).
 
+**AI-generated hypothesis drafts (slice 4, 2026-09-29) reuse `ai-connections`'s transport, never
+duplicate it.** `openai-compatible.ts`'s SSRF-validated, timeout/retry-bounded HTTP call
+(`callOnce`) was already security-critical, protocol-transport code with zero content specific to
+localization; it is now wrapped by a shared `performChatCompletion` helper that both the
+pre-existing `generate` (title/description) and the new `generateHypothesis` (statement/rationale)
+build on, an additive widening of `ConnectionProtocolAdapter` rather than a refactor of its public
+shape or a second copy of the transport -- proven zero-behavior-change by every pre-existing
+ai-connections/ai-localization test passing unmodified. `HypothesisGenerationRequest`/
+`HypothesisGenerationOutcome`/`HypothesisDraftProvider` are owned by `decision-engine/contracts.ts`
+(the domain shape) and imported by `ai-connections/contracts.ts`, the identical relationship
+`LocalizationProvider` already has -- `decision-engine/index.ts` imports `createAiConnectionCore()`
+directly, exactly like `ai-localization/index.ts` does, since `ai-connections` is shared
+infrastructure, not a feature-module peer `AGENTS.md` §M would forbid a hard dependency on
+(`PHASE10-INV-03` only forbids `@/lib/analytics`/`@/lib/market-intelligence`, never
+`ai-connections`). **The model never sees or produces an `EvidenceReference`.** It only receives
+plain-text summaries of references the operator already selected and this module already
+validated (`EvidenceReferenceResolver.describe`, a new method on slice 3's own port, implemented
+alongside `resolve` in the same route-layer file) -- avoiding both a fabricated-citation risk and
+a second evidence-fetch path. `saveGeneratedHypothesis` mirrors `createChangeSetFromProposals`'s
+own "the caller resubmits the reviewed values, the server re-validates and persists them" shape
+(`AGENTS.md` §D) rather than a server-held draft referenced by id -- every evidence reference is
+re-validated at save time, never trusted from generation time, since real state (a channel's
+snapshot history, a candidate's lifecycle status) can change in between. AI authorship is recorded
+in a new, separate `hypothesis_generation_provenance` table (SCHEMA_MIGRATIONS v31, append-only) --
+`createdVia` (mcp/cli/web_ui) is transport, and cannot represent "the AI wrote this text, a human
+may have edited it before saving," the same reason `aiLocalizationGenerationProvenance` exists as
+its own table rather than overloading an existing column. `editedBeforeSave`/`evidenceRefCount`
+are computed server-side from the request, never trusted as caller-asserted fields. The draft route
+(`/hypotheses/generate`) persists nothing and is `proxy.ts`-exempt exactly like
+`/ai-localization/generate`; the save route (`/hypotheses/generate/save`) persists a real
+hypothesis and stays behind the ordinary mutation gate. No real, non-mock AI provider call was made
+in this session -- validated only against the mock adapter and an injected `fetchImpl` fake,
+per `AGENTS.md` §K.2's separate gate on a real paid AI API call.
+
 **Still not built, named explicitly rather than silently deferred:** agent-created hypotheses from
 scratch (`create_hypothesis`, the reserved extension point left after slice 2); recording an
-outcome/retrospective through MCP/CLI; AI-generated hypotheses; automatic execution of an approved
-experiment.
+outcome/retrospective through MCP/CLI; automatic execution of an approved experiment; evidence
+selection during AI generation is not yet exposed in the Web UI (fully built and tested at the
+API/service layer -- the "Generate with AI" panel is notes-only for this first UI pass, evidence
+still attaches to a saved hypothesis through the existing, separate evidence form).

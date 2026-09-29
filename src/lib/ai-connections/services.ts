@@ -6,6 +6,7 @@ import {
   type AiConnection,
   type ConnectionProtocolAdapter,
   type CreateConnectionInput,
+  type HypothesisDraftProvider,
   type LocalizationProvider,
   type PricingMetadata,
   type UpdateConnectionInput,
@@ -267,6 +268,35 @@ export function createAiConnectionServices(deps: ServiceDependencies) {
         name: connection.displayName,
         async generate(request) {
           const { outcome, usage } = await adapter.generate({ connection, credential, request });
+          if (outcome.status === "ok" && usage) {
+            return { ...outcome, usage };
+          }
+          return outcome;
+        },
+      };
+    },
+
+    /**
+     * Phase 10 slice 4 -- sibling to `resolveConnectionProvider` above, bridging a chosen, enabled
+     * connection into the `HypothesisDraftProvider` shape `decision-engine` depends on. Shares the
+     * exact same require/enabled-check/decrypt-once sequence (not copy-pasted logic, the identical
+     * free-standing `requireConnection`/`resolveAdapter` helpers this file already defines), only
+     * the returned provider's own method differs.
+     */
+    async resolveHypothesisGenerationProvider(connectionId: string): Promise<HypothesisDraftProvider> {
+      const stored = await requireConnection(deps, connectionId);
+      if (!stored.enabled) {
+        throw new DomainError({ code: "connection_disabled", message: "This connection is disabled", details: { connectionId } });
+      }
+      const connection = toPublicConnection(stored, false);
+      const adapter = resolveAdapter(deps, connection.adapterType);
+      const credentialRecord = await deps.credentialStore.getCredential(stored.id);
+      const credential = credentialRecord ? decryptSecret(credentialRecord, requireEncryptionKey(deps.resolveEncryptionKey)) : null;
+
+      return {
+        name: connection.displayName,
+        async generateHypothesis(request) {
+          const { outcome, usage } = await adapter.generateHypothesis({ connection, credential, request });
           if (outcome.status === "ok" && usage) {
             return { ...outcome, usage };
           }

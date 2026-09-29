@@ -1,10 +1,12 @@
 import {
   getExperimentById,
   getHypothesisById,
+  getHypothesisGenerationProvenanceByHypothesis,
   insertExperiment,
   insertExperimentOutcome,
   insertHypothesis,
   insertHypothesisEvidence,
+  insertHypothesisGenerationProvenance,
   listExperimentOutcomesByExperiment,
   listExperimentsByHypothesis,
   listHypotheses,
@@ -27,5 +29,7 @@ export function createDecisionEngineStoreAdapter() {
     listExperimentOutcomesByExperiment,
     insertHypothesisEvidence,
     listHypothesisEvidenceByHypothesis,
+    insertHypothesisGenerationProvenance,
+    getHypothesisGenerationProvenanceByHypothesis,
   };
 }

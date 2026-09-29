@@ -1330,6 +1330,33 @@ export const hypothesisEvidence = sqliteTable(
   (table) => [index("hypothesis_evidence_hypothesis_id_idx").on(table.hypothesisId)]
 );
 
+// Phase 10 slice 4 (docs/roadmap/plans/PHASE_10_SLICE_4_PLAN.md §4) -- append-only, one row per
+// AI generation call that was actually saved as a hypothesis. Distinct from `createdVia` (mcp/
+// cli/web_ui -- transport), which cannot represent "AI authored this text, a human may have then
+// edited it" -- mirrors `aiLocalizationGenerationProvenance`'s own reason for existing as a
+// separate table rather than overloading an existing column.
+export const hypothesisGenerationProvenance = sqliteTable(
+  "hypothesis_generation_provenance",
+  {
+    id: text("id").primaryKey(),
+    hypothesisId: text("hypothesis_id")
+      .notNull()
+      .references(() => hypotheses.id),
+    connectionId: text("connection_id"),
+    providerName: text("provider_name").notNull(),
+    modelId: text("model_id"),
+    generatedStatement: text("generated_statement").notNull(),
+    finalStatement: text("final_statement").notNull(),
+    rationale: text("rationale"),
+    evidenceRefCount: integer("evidence_ref_count").notNull(),
+    editedBeforeSave: integer("edited_before_save", { mode: "boolean" }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [index("hypothesis_generation_provenance_hypothesis_id_idx").on(table.hypothesisId)]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -2026,6 +2053,30 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
       await client.execute(
         "CREATE INDEX IF NOT EXISTS hypothesis_evidence_hypothesis_id_idx ON hypothesis_evidence(hypothesis_id)"
+      );
+    },
+  },
+  {
+    version: 31,
+    description:
+      "hypothesis_generation_provenance -- Phase 10 slice 4, one row per AI hypothesis-generation call that was saved, recording AI authorship separately from createdVia's transport meaning (docs/roadmap/plans/PHASE_10_SLICE_4_PLAN.md)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS hypothesis_generation_provenance (" +
+          "id TEXT PRIMARY KEY, " +
+          "hypothesis_id TEXT NOT NULL REFERENCES hypotheses(id), " +
+          "connection_id TEXT, " +
+          "provider_name TEXT NOT NULL, " +
+          "model_id TEXT, " +
+          "generated_statement TEXT NOT NULL, " +
+          "final_statement TEXT NOT NULL, " +
+          "rationale TEXT, " +
+          "evidence_ref_count INTEGER NOT NULL, " +
+          "edited_before_save INTEGER NOT NULL, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS hypothesis_generation_provenance_hypothesis_id_idx ON hypothesis_generation_provenance(hypothesis_id)"
       );
     },
   },
@@ -6195,4 +6246,61 @@ export async function listHypothesisEvidenceByHypothesis(
     .from(hypothesisEvidence)
     .where(eq(hypothesisEvidence.hypothesisId, hypothesisId))
     .orderBy(desc(hypothesisEvidence.createdAt));
+}
+
+export type StoredHypothesisGenerationProvenance = {
+  id: string;
+  hypothesisId: string;
+  connectionId: string | null;
+  providerName: string;
+  modelId: string | null;
+  generatedStatement: string;
+  finalStatement: string;
+  rationale: string | null;
+  evidenceRefCount: number;
+  editedBeforeSave: boolean;
+  createdAt: Date;
+};
+
+export async function insertHypothesisGenerationProvenance(
+  input: {
+    id: string;
+    hypothesisId: string;
+    connectionId?: string | null;
+    providerName: string;
+    modelId?: string | null;
+    generatedStatement: string;
+    finalStatement: string;
+    rationale?: string | null;
+    evidenceRefCount: number;
+    editedBeforeSave: boolean;
+    at?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(hypothesisGenerationProvenance).values({
+    id: input.id,
+    hypothesisId: input.hypothesisId,
+    connectionId: input.connectionId ?? null,
+    providerName: input.providerName,
+    modelId: input.modelId ?? null,
+    generatedStatement: input.generatedStatement,
+    finalStatement: input.finalStatement,
+    rationale: input.rationale ?? null,
+    evidenceRefCount: input.evidenceRefCount,
+    editedBeforeSave: input.editedBeforeSave,
+    ...(input.at ? { createdAt: input.at } : {}),
+  });
+}
+
+export async function getHypothesisGenerationProvenanceByHypothesis(
+  hypothesisId: string,
+  database: AppDb = db
+): Promise<StoredHypothesisGenerationProvenance | null> {
+  const rows = await database
+    .select()
+    .from(hypothesisGenerationProvenance)
+    .where(eq(hypothesisGenerationProvenance.hypothesisId, hypothesisId))
+    .limit(1);
+  return rows[0] ?? null;
 }

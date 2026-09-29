@@ -73,6 +73,8 @@ test("proxy never gates genuinely read-only POST preview/generate routes, even w
       "/api/channels/chan-1/localizations/import/preview",
       "/api/channels/chan-1/ai-localization/generate",
       "/api/channels/chan-1/videos/v1/details/preview",
+      // Phase 10 slice 4 -- generates a draft only, persists nothing.
+      "/api/decision-engine/hypotheses/generate",
     ];
     for (const p of readOnlyPaths) {
       const response = await proxy(mutatingRequest(p));
@@ -305,6 +307,18 @@ test("proxy gates the decision-engine add-hypothesis-evidence route like any oth
   await acquireOperationLock(rawSqlClient, "export");
   try {
     const response = await proxy(mutatingRequest("/api/decision-engine/hypotheses/hyp-1/evidence"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// Phase 10 slice 4 -- unlike its own sibling `.../hypotheses/generate` (exempt, draft-only), this
+// route DOES persist a real hypothesis/evidence/provenance and must stay behind the normal gate.
+test("proxy gates the decision-engine generate/save route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/decision-engine/hypotheses/generate/save"));
     assert.equal(response.status, 409);
   } finally {
     await releaseOperationLock(rawSqlClient);

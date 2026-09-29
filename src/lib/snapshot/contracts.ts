@@ -109,6 +109,9 @@ export const SNAPSHOT_TRANSFERRED_TABLES = [
   // references, added from this table's own first commit for the same RISK-52-avoidance reason.
   // FK order: after hypotheses (its own parent), which is already above.
   "hypothesis_evidence",
+  // Phase 10 slice 4 (docs/roadmap/plans/PHASE_10_SLICE_4_PLAN.md §4) -- AI-generation provenance,
+  // same RISK-52-avoidance reason, same FK order rule (after its own parent, hypotheses).
+  "hypothesis_generation_provenance",
 ] as const;
 
 /**

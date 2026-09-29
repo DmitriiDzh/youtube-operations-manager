@@ -83,6 +83,22 @@ function createFakeStore() {
   const experimentsById = new Map<string, ExperimentRow>();
   const outcomesById = new Map<string, OutcomeRow>();
   const evidenceById = new Map<string, EvidenceRow>();
+  const provenanceByHypothesisId = new Map<
+    string,
+    {
+      id: string;
+      hypothesisId: string;
+      connectionId: string | null;
+      providerName: string;
+      modelId: string | null;
+      generatedStatement: string;
+      finalStatement: string;
+      rationale: string | null;
+      evidenceRefCount: number;
+      editedBeforeSave: boolean;
+      createdAt: Date;
+    }
+  >();
   let nextId = 0;
 
   return {
@@ -220,6 +236,36 @@ function createFakeStore() {
     async listHypothesisEvidenceByHypothesis(hypothesisId: string) {
       return [...evidenceById.values()].filter((r) => r.hypothesisId === hypothesisId);
     },
+    async insertHypothesisGenerationProvenance(input: {
+      id: string;
+      hypothesisId: string;
+      connectionId?: string | null;
+      providerName: string;
+      modelId?: string | null;
+      generatedStatement: string;
+      finalStatement: string;
+      rationale?: string | null;
+      evidenceRefCount: number;
+      editedBeforeSave: boolean;
+      at?: Date;
+    }) {
+      provenanceByHypothesisId.set(input.hypothesisId, {
+        id: input.id,
+        hypothesisId: input.hypothesisId,
+        connectionId: input.connectionId ?? null,
+        providerName: input.providerName,
+        modelId: input.modelId ?? null,
+        generatedStatement: input.generatedStatement,
+        finalStatement: input.finalStatement,
+        rationale: input.rationale ?? null,
+        evidenceRefCount: input.evidenceRefCount,
+        editedBeforeSave: input.editedBeforeSave,
+        createdAt: input.at ?? new Date(),
+      });
+    },
+    async getHypothesisGenerationProvenanceByHypothesis(hypothesisId: string) {
+      return provenanceByHypothesisId.get(hypothesisId) ?? null;
+    },
   };
 }
 
@@ -259,6 +305,8 @@ function createServices(activeChannelId: string | null, calls: string[] = []) {
     listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
     insertHypothesisEvidence: store.insertHypothesisEvidence,
     listHypothesisEvidenceByHypothesis: store.listHypothesisEvidenceByHypothesis,
+    insertHypothesisGenerationProvenance: store.insertHypothesisGenerationProvenance,
+    getHypothesisGenerationProvenanceByHypothesis: store.getHypothesisGenerationProvenanceByHypothesis,
   });
   return { services, store };
 }
@@ -491,6 +539,8 @@ test("AC-10-05e: every experiment/outcome route shape rejects a session active o
     listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
     insertHypothesisEvidence: store.insertHypothesisEvidence,
     listHypothesisEvidenceByHypothesis: store.listHypothesisEvidenceByHypothesis,
+    insertHypothesisGenerationProvenance: store.insertHypothesisGenerationProvenance,
+    getHypothesisGenerationProvenanceByHypothesis: store.getHypothesisGenerationProvenanceByHypothesis,
   });
   const servicesOnB = createDecisionEngineServices({
     idGenerator: store.idGenerator,
@@ -507,6 +557,8 @@ test("AC-10-05e: every experiment/outcome route shape rejects a session active o
     listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
     insertHypothesisEvidence: store.insertHypothesisEvidence,
     listHypothesisEvidenceByHypothesis: store.listHypothesisEvidenceByHypothesis,
+    insertHypothesisGenerationProvenance: store.insertHypothesisGenerationProvenance,
+    getHypothesisGenerationProvenanceByHypothesis: store.getHypothesisGenerationProvenanceByHypothesis,
   });
 
   const hypothesis = await servicesOnA.createHypothesis(
@@ -660,6 +712,9 @@ function createFakeResolver(resolvesTo: boolean, calls: unknown[] = []) {
       calls.push({ reference, ctx });
       return resolvesTo;
     },
+    async describe(reference: unknown) {
+      return `fake description of ${JSON.stringify(reference)}`;
+    },
   };
 }
 
@@ -802,6 +857,8 @@ test("AC-10-15: addHypothesisEvidence/listHypothesisEvidence reject a session ac
     listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
     insertHypothesisEvidence: store.insertHypothesisEvidence,
     listHypothesisEvidenceByHypothesis: store.listHypothesisEvidenceByHypothesis,
+    insertHypothesisGenerationProvenance: store.insertHypothesisGenerationProvenance,
+    getHypothesisGenerationProvenanceByHypothesis: store.getHypothesisGenerationProvenanceByHypothesis,
   });
   const servicesOnB = createDecisionEngineServices({
     idGenerator: store.idGenerator,
@@ -818,6 +875,8 @@ test("AC-10-15: addHypothesisEvidence/listHypothesisEvidence reject a session ac
     listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
     insertHypothesisEvidence: store.insertHypothesisEvidence,
     listHypothesisEvidenceByHypothesis: store.listHypothesisEvidenceByHypothesis,
+    insertHypothesisGenerationProvenance: store.insertHypothesisGenerationProvenance,
+    getHypothesisGenerationProvenanceByHypothesis: store.getHypothesisGenerationProvenanceByHypothesis,
   });
 
   const hypothesis = await servicesOnA.createHypothesis(
@@ -839,5 +898,243 @@ test("AC-10-15: addHypothesisEvidence/listHypothesisEvidence reject a session ac
   await assert.rejects(
     () => servicesOnB.listHypothesisEvidence(hypothesis.hypothesisId, { userId: "u2" }),
     (error: unknown) => isDomainError(error) && error.code === "CHANNEL_NOT_ACTIVE"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Phase 10 slice 4 (docs/roadmap/plans/PHASE_10_SLICE_4_PLAN.md §6) -- AI-generated hypothesis
+// drafts. `createFakeProvider` is a fake `HypothesisDraftProvider`, exactly the shape
+// `resolveHypothesisDraftProvider` supplies in production (services.ts never constructs one
+// itself, mirroring the `resolver` port's own precedent above).
+// ---------------------------------------------------------------------------
+
+function createFakeProvider(overrides?: {
+  generateHypothesis?: (request: unknown) => Promise<{ status: "ok"; statement: string; rationale: string } | { status: "error"; message: string }>;
+}) {
+  return {
+    name: "fake-provider",
+    async generateHypothesis(request: unknown) {
+      if (overrides?.generateHypothesis) return overrides.generateHypothesis(request);
+      return { status: "ok" as const, statement: "Generated statement", rationale: "Generated rationale" };
+    },
+  };
+}
+
+function createServicesWithProvider(
+  activeChannelId: string | null,
+  provider: ReturnType<typeof createFakeProvider> | null,
+  calls: string[] = []
+) {
+  const store = createFakeStore();
+  const services = createDecisionEngineServices({
+    idGenerator: store.idGenerator,
+    clock: { now: () => new Date("2026-09-29T12:00:00Z") },
+    channelAccess: createFakeChannelAccess(activeChannelId, calls),
+    insertHypothesis: store.insertHypothesis,
+    getHypothesisById: store.getHypothesisById,
+    listHypotheses: store.listHypotheses,
+    insertExperiment: store.insertExperiment,
+    getExperimentById: store.getExperimentById,
+    listExperimentsByHypothesis: store.listExperimentsByHypothesis,
+    transitionExperimentStatusIfValid: store.transitionExperimentStatusIfValid,
+    insertExperimentOutcome: store.insertExperimentOutcome,
+    listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
+    insertHypothesisEvidence: store.insertHypothesisEvidence,
+    listHypothesisEvidenceByHypothesis: store.listHypothesisEvidenceByHypothesis,
+    insertHypothesisGenerationProvenance: store.insertHypothesisGenerationProvenance,
+    getHypothesisGenerationProvenanceByHypothesis: store.getHypothesisGenerationProvenanceByHypothesis,
+    resolveHypothesisDraftProvider: provider ? async () => provider : undefined,
+  });
+  return { services, store };
+}
+
+// AC-10H-01
+test("AC-10H-01: generating with zero evidence and saving creates exactly one hypothesis and one provenance row, zero evidence rows", async () => {
+  const { services } = createServicesWithProvider(null, createFakeProvider());
+  const resolver = createFakeResolver(true);
+
+  const draft = await services.generateHypothesisDraft(
+    { notes: "operator notes", evidenceReferences: [] },
+    { userId: "u1" },
+    resolver
+  );
+  assert.equal(draft.statement, "Generated statement");
+  assert.equal(draft.providerName, "fake-provider");
+
+  const hypothesis = await services.saveGeneratedHypothesis(
+    {
+      finalStatement: draft.statement,
+      evidenceNotes: "operator notes",
+      evidenceReferences: [],
+      generatedStatement: draft.statement,
+      rationale: "Generated rationale",
+      providerName: draft.providerName,
+    },
+    { userId: "u1", createdBy: "u1", createdVia: "web_ui" },
+    resolver
+  );
+
+  const allHypotheses = await services.listHypotheses({ userId: "u1" });
+  assert.equal(allHypotheses.length, 1);
+  assert.equal(allHypotheses[0]?.hypothesisId, hypothesis.hypothesisId);
+
+  const evidence = await services.listHypothesisEvidence(hypothesis.hypothesisId, { userId: "u1" });
+  assert.equal(evidence.length, 0);
+});
+
+// AC-10H-02
+test("AC-10H-02: saving an edited statement with 2 evidence references records editedBeforeSave and both evidence rows, each independently re-validated", async () => {
+  const { services } = createServicesWithProvider(null, createFakeProvider());
+  const resolveCalls: unknown[] = [];
+  const resolver = createFakeResolver(true, resolveCalls);
+
+  const refs = [
+    { sourceType: "phase9_trend_candidate" as const, trendCandidateId: "trend-1" },
+    { sourceType: "phase9_trend_candidate" as const, trendCandidateId: "trend-2" },
+  ];
+
+  const draft = await services.generateHypothesisDraft({ notes: "n", evidenceReferences: refs }, { userId: "u1" }, resolver);
+  const resolveCallsAfterGenerate = resolveCalls.length;
+  assert.equal(resolveCallsAfterGenerate, 2, "generation must validate each selected reference before describing it");
+
+  const editedStatement = draft.statement + " (edited by operator)";
+  const hypothesis = await services.saveGeneratedHypothesis(
+    {
+      finalStatement: editedStatement,
+      evidenceNotes: "n",
+      evidenceReferences: refs,
+      generatedStatement: draft.statement,
+      rationale: "r",
+      providerName: draft.providerName,
+    },
+    { userId: "u1", createdBy: "u1", createdVia: "web_ui" },
+    resolver
+  );
+
+  assert.equal(resolveCalls.length, resolveCallsAfterGenerate + 2, "save must independently re-validate every reference, never trust generation-time resolution");
+
+  const evidence = await services.listHypothesisEvidence(hypothesis.hypothesisId, { userId: "u1" });
+  assert.equal(evidence.length, 2);
+
+  const provenance = await services.getHypothesisGenerationProvenance(hypothesis.hypothesisId, { userId: "u1" });
+  assert.ok(provenance);
+  assert.equal(provenance.evidenceRefCount, 2);
+  assert.equal(provenance.editedBeforeSave, true);
+  assert.equal(provenance.generatedStatement, draft.statement);
+  assert.equal(provenance.finalStatement, editedStatement);
+});
+
+// AC-10H-03
+test("AC-10H-03: saving without editing the statement records editedBeforeSave: false", async () => {
+  const { services } = createServicesWithProvider(null, createFakeProvider());
+  const resolver = createFakeResolver(true);
+  const draft = await services.generateHypothesisDraft({ notes: "n", evidenceReferences: [] }, { userId: "u1" }, resolver);
+
+  const hypothesis = await services.saveGeneratedHypothesis(
+    {
+      finalStatement: draft.statement,
+      evidenceNotes: "n",
+      evidenceReferences: [],
+      generatedStatement: draft.statement,
+      rationale: "r",
+      providerName: draft.providerName,
+    },
+    { userId: "u1", createdBy: "u1", createdVia: "web_ui" },
+    resolver
+  );
+  const provenance = await services.getHypothesisGenerationProvenance(hypothesis.hypothesisId, { userId: "u1" });
+  assert.equal(provenance?.editedBeforeSave, false);
+});
+
+// AC-10H-04
+test("AC-10H-04: a reference that fails validation at save time is rejected, even if it was valid at generation time", async () => {
+  const { services } = createServicesWithProvider(null, createFakeProvider());
+  const generateResolver = createFakeResolver(true);
+  const ref = { sourceType: "phase9_trend_candidate" as const, trendCandidateId: "trend-1" };
+  const draft = await services.generateHypothesisDraft({ notes: "n", evidenceReferences: [ref] }, { userId: "u1" }, generateResolver);
+
+  const saveResolver = createFakeResolver(false); // state changed since generation -- no longer resolves
+  await assert.rejects(
+    () =>
+      services.saveGeneratedHypothesis(
+        {
+          finalStatement: draft.statement,
+          evidenceNotes: "n",
+          evidenceReferences: [ref],
+          generatedStatement: draft.statement,
+          rationale: "r",
+          providerName: draft.providerName,
+        },
+        { userId: "u1", createdBy: "u1", createdVia: "web_ui" },
+        saveResolver
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+});
+
+// AC-10H-05
+test("AC-10H-05: a provider that returns a status:error outcome throws generation_failed and persists nothing", async () => {
+  const provider = createFakeProvider({
+    generateHypothesis: async () => ({ status: "error", message: "upstream refused" }),
+  });
+  const { services } = createServicesWithProvider(null, provider);
+  const resolver = createFakeResolver(true);
+
+  await assert.rejects(
+    () => services.generateHypothesisDraft({ notes: "n", evidenceReferences: [] }, { userId: "u1" }, resolver),
+    (error: unknown) => isDomainError(error) && error.code === "generation_failed"
+  );
+  const allHypotheses = await services.listHypotheses({ userId: "u1" });
+  assert.equal(allHypotheses.length, 0);
+});
+
+// AC-10H-06
+test("AC-10H-06: a provider that throws synchronously does not crash the call -- it propagates as a real error, never silently swallowed", async () => {
+  const provider = createFakeProvider({
+    generateHypothesis: async () => {
+      throw new Error("network exploded");
+    },
+  });
+  const { services } = createServicesWithProvider(null, provider);
+  const resolver = createFakeResolver(true);
+
+  await assert.rejects(
+    () => services.generateHypothesisDraft({ notes: "n", evidenceReferences: [] }, { userId: "u1" }, resolver),
+    (error: unknown) => error instanceof Error && error.message === "network exploded"
+  );
+});
+
+// AC-10H-07
+test("AC-10H-07: generateHypothesisDraft with a channelId the session isn't authorized for is rejected before any provider call is made", async () => {
+  let providerCalled = false;
+  const provider = createFakeProvider({
+    generateHypothesis: async () => {
+      providerCalled = true;
+      return { status: "ok", statement: "s", rationale: "r" };
+    },
+  });
+  const { services } = createServicesWithProvider("UCactive0000000000000001", provider);
+  const resolver = createFakeResolver(true);
+
+  await assert.rejects(
+    () =>
+      services.generateHypothesisDraft(
+        { channelId: "UCother00000000000000001", notes: "n", evidenceReferences: [] },
+        { userId: "u1" },
+        resolver
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "CHANNEL_NOT_ACTIVE"
+  );
+  assert.equal(providerCalled, false, "the provider must never be called once channel access is rejected");
+});
+
+// AC-10H-08
+test("AC-10H-08: generateHypothesisDraft throws provider_not_configured when no provider resolver is wired", async () => {
+  const { services } = createServicesWithProvider(null, null);
+  const resolver = createFakeResolver(true);
+
+  await assert.rejects(
+    () => services.generateHypothesisDraft({ notes: "n", evidenceReferences: [] }, { userId: "u1" }, resolver),
+    (error: unknown) => isDomainError(error) && error.code === "provider_not_configured"
   );
 });

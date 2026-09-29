@@ -6,6 +6,7 @@ import { decryptSecret } from "./crypto";
 import { createAiConnectionServices } from "./services";
 import { DomainError, type AdapterType, type ConnectionProtocolAdapter } from "./contracts";
 import { createOpenAiCompatibleAdapter } from "./adapters/openai-compatible";
+import { createMockConnectionAdapter } from "./adapters/mock-adapter";
 
 function makeFixture() {
   const connections = new Map<string, StoredAiConnection>();
@@ -204,6 +205,27 @@ test("AC-CONN-10: an unsupported capability produces an explicit error before an
   assert.equal(fetchCalls, 0);
 });
 
+// Phase 10 slice 4 -- sibling to `resolveConnectionProvider`, same require/enabled-check pattern.
+test("resolveHypothesisGenerationProvider: a disabled connection throws connection_disabled, an enabled one resolves and generates", async () => {
+  const { build } = makeFixture();
+  const services = build({ mock: createMockConnectionAdapter() });
+
+  const enabledConn = await services.createConnection({ ...BASE_INPUT, adapterType: "mock", baseUrl: null, apiKey: undefined });
+  const disabledConn = await services.updateConnection({ connectionId: enabledConn.id, enabled: false });
+  assert.equal(disabledConn.enabled, false);
+
+  await assert.rejects(
+    () => services.resolveHypothesisGenerationProvider(enabledConn.id),
+    (err: unknown) => err instanceof DomainError && err.code === "connection_disabled"
+  );
+
+  const reEnabled = await services.updateConnection({ connectionId: enabledConn.id, enabled: true });
+  assert.equal(reEnabled.enabled, true);
+  const provider = await services.resolveHypothesisGenerationProvider(enabledConn.id);
+  const outcome = await provider.generateHypothesis({ channelId: null, notes: "n", evidenceSummaries: [] });
+  assert.equal(outcome.status, "ok");
+});
+
 // AC-CONN-15
 test("AC-CONN-15: testConnection reports mayIncurCost per adapter type", async () => {
   const { build } = makeFixture();
@@ -211,6 +233,9 @@ test("AC-CONN-15: testConnection reports mayIncurCost per adapter type", async (
     adapterType: "mock",
     async generate() {
       return { outcome: { status: "ok", title: "x", description: "y" }, usage: null };
+    },
+    async generateHypothesis() {
+      return { outcome: { status: "ok", statement: "s", rationale: "r" }, usage: null };
     },
     async testConnection() {
       return { ok: true, message: "mock ok", mayIncurCost: false };
@@ -220,6 +245,9 @@ test("AC-CONN-15: testConnection reports mayIncurCost per adapter type", async (
     adapterType: "openai_compatible",
     async generate() {
       return { outcome: { status: "ok", title: "x", description: "y" }, usage: null };
+    },
+    async generateHypothesis() {
+      return { outcome: { status: "ok", statement: "s", rationale: "r" }, usage: null };
     },
     async testConnection() {
       return { ok: true, message: "real ok", mayIncurCost: true };
@@ -244,6 +272,9 @@ test("testConnection is never called automatically by createConnection/updateCon
     adapterType: "openai_compatible",
     async generate() {
       return { outcome: { status: "ok", title: "x", description: "y" }, usage: null };
+    },
+    async generateHypothesis() {
+      return { outcome: { status: "ok", statement: "s", rationale: "r" }, usage: null };
     },
     async testConnection() {
       testCalls += 1;

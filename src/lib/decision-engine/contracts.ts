@@ -111,6 +111,11 @@ export type EvidenceReference =
  * real implementation gets this for free by reusing that function rather than re-checking). */
 export type EvidenceReferenceResolver = {
   resolve(reference: EvidenceReference, ctx: { userId: string | null | undefined }): Promise<boolean>;
+  /** Phase 10 slice 4 -- a short, human/model-readable summary of one already-resolved reference
+   * (e.g. "Video abc123: views = 12,400 on 2026-09-20"), fed into AI hypothesis generation as
+   * plain text so the model never sees a raw DB row. Callers must call `resolve` first and only
+   * describe a reference that resolved `true` -- this method does not re-validate existence. */
+  describe(reference: EvidenceReference, ctx: { userId: string | null | undefined }): Promise<string>;
 };
 
 export type HypothesisEvidence = {
@@ -120,4 +125,35 @@ export type HypothesisEvidence = {
   note: string | null;
   createdVia: string;
   createdAt: string;
+};
+
+// ---------------------------------------------------------------------------
+// Phase 10 slice 4 -- AI-generated hypothesis drafts (docs/roadmap/plans/PHASE_10_SLICE_4_PLAN.md).
+// Mirrors `ai-localization/contracts.ts`'s `LocalizationProvider` shape exactly (`AGENTS.md` §D) --
+// this module OWNS the request/outcome/provider types (the domain shape), `ai-connections`
+// imports them (the transport side adapts INTO this shape), same direction as the existing
+// LocalizationProvider/ai-connections relationship.
+// ---------------------------------------------------------------------------
+
+export type HypothesisGenerationTokenUsage = { inputTokens: number; outputTokens: number };
+
+/** What the provider is given -- never a raw DB row, only the operator's own notes plus
+ * already-resolved, human-readable summaries of evidence the operator selected before generation
+ * (see `EvidenceReferenceResolver.describe` below). The model never sees, and never produces, an
+ * `EvidenceReference` itself -- it cannot invent one, per the plan's own §3. */
+export type HypothesisGenerationRequest = {
+  channelId: string | null;
+  notes: string;
+  evidenceSummaries: string[];
+};
+
+export type HypothesisGenerationOutcome =
+  | { status: "ok"; statement: string; rationale: string; usage?: HypothesisGenerationTokenUsage }
+  | { status: "error"; message: string };
+
+/** The replaceable extension point this slice adds, alongside `LocalizationProvider` -- a second
+ * real caller of the same shared `ai-connections` transport infrastructure (`AGENTS.md` §M). */
+export type HypothesisDraftProvider = {
+  readonly name: string;
+  generateHypothesis(request: HypothesisGenerationRequest): Promise<HypothesisGenerationOutcome>;
 };
