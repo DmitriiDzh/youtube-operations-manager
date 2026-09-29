@@ -116,8 +116,9 @@ double-clickable delegate for `stop.sh`/`update.sh` below.
 **To stop safely:** run `./scripts/macos/stop.sh` (or Ctrl+C the running `start.sh`), or
 double-click `stop.command`. You also don't strictly need to remember this: a production server
 (`start.sh`/`start.command`, i.e. `npm run start`) started via these scripts shuts itself down
-automatically after 5 minutes with no web request at all (owner instruction, 2026-09-25 --
-`src/lib/idle-shutdown.ts`) -- scoped to this one server process only; an MCP or CLI session stays
+automatically after 60 minutes with no web request at all (owner instruction, 2026-09-25, widened
+from an original 5 minutes on 2026-09-29 -- `src/lib/idle-shutdown.ts`) -- scoped to this one
+server process only; an MCP or CLI session stays
 unaffected either way, since neither depends on this server being up (each reads the local
 database directly). This auto-shutdown never arms during `next dev`, only in a real production
 process.
