@@ -105,6 +105,8 @@ import {
   transitionExperimentStatusIfValid,
   insertExperimentOutcome,
   listExperimentOutcomesByExperiment,
+  insertHypothesisEvidence,
+  listHypothesisEvidenceByHypothesis,
 } from "./db";
 import { readSchemaVersion } from "@/lib/schema-versioning";
 import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
@@ -2478,6 +2480,70 @@ test("insertExperimentOutcome/listExperimentOutcomesByExperiment: append-only --
 
     const outcomes = await listExperimentOutcomesByExperiment("exp-1", isolatedDb);
     assert.equal(outcomes.length, 2);
+  }));
+
+test("insertHypothesisEvidence/listHypothesisEvidenceByHypothesis: round trip, append-only across source types", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertHypothesis({ id: "hyp-1", statement: "s", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui" }, isolatedDb);
+
+    await insertHypothesisEvidence(
+      {
+        id: "ev-1",
+        hypothesisId: "hyp-1",
+        sourceType: "phase9_trend_candidate",
+        referenceJson: JSON.stringify({ sourceType: "phase9_trend_candidate", trendCandidateId: "trend-1" }),
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+    await insertHypothesisEvidence(
+      {
+        id: "ev-2",
+        hypothesisId: "hyp-1",
+        sourceType: "phase8_metric",
+        referenceJson: JSON.stringify({
+          sourceType: "phase8_metric",
+          channelId: "UC1",
+          videoId: "v1",
+          metricDate: "2026-09-01",
+          metricName: "views",
+        }),
+        note: "supports the hypothesis directly",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+
+    const rows = await listHypothesisEvidenceByHypothesis("hyp-1", isolatedDb);
+    assert.equal(rows.length, 2);
+    assert.ok(rows.some((r) => r.id === "ev-1" && r.sourceType === "phase9_trend_candidate"));
+    const withNote = rows.find((r) => r.id === "ev-2");
+    assert.equal(withNote?.note, "supports the hypothesis directly");
+  }));
+
+test("insertHypothesisEvidence: an explicit `at` stamps createdAt, not real wall-clock time (two clock sources bug class)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertHypothesis({ id: "hyp-1", statement: "s", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui" }, isolatedDb);
+    const at = new Date("2026-01-01T00:00:00.000Z");
+
+    await insertHypothesisEvidence(
+      {
+        id: "ev-1",
+        hypothesisId: "hyp-1",
+        sourceType: "phase9_trend_candidate",
+        referenceJson: JSON.stringify({ sourceType: "phase9_trend_candidate", trendCandidateId: "trend-1" }),
+        createdVia: "web_ui",
+        at,
+      },
+      isolatedDb
+    );
+
+    const rows = await listHypothesisEvidenceByHypothesis("hyp-1", isolatedDb);
+    assert.equal(rows[0]?.createdAt.toISOString(), at.toISOString());
   }));
 
 // RISK-70's own lesson (a fake in-memory store proves nothing about real atomicity) -- forces two

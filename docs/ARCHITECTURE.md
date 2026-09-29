@@ -1820,7 +1820,7 @@ that constant explicitly excludes exactly this shape of change ("a new optional 
 an existing caller can simply ignore... not every field-level widening"), reserving MINOR bumps for
 capability-discovery-relevant changes only. `getMarketVideosOverview` itself has no MCP/CLI surface.
 
-## 19. Decision & Experiment Engine (`src/lib/decision-engine/`) — Phase 10, slice 1
+## 19. Decision & Experiment Engine (`src/lib/decision-engine/`) — Phase 10, slices 1-3
 
 Owner instruction, Telegram 2026-09-29: an explicit assignment to plan and implement Phase 10
 (`docs/roadmap/FUTURE_PHASES.md` §6). **Detailed design, transition rules, and acceptance
@@ -1864,10 +1864,34 @@ capability name, always `status: "proposed"`, gated like `agent_create_market_re
 Creating a hypothesis from scratch, transitioning an experiment's status, and recording an outcome
 remain Web-UI-only, mechanically verified (`decision-engine-agent-approval-inventory.test.ts`).
 
+**Evidence auto-linking (slice 3, 2026-09-29) references Phase 8/9 data without ever importing
+either module from `decision-engine/**` itself.** `hypothesis_evidence` (SCHEMA_MIGRATIONS v30,
+append-only) stores a structured, discriminated-union reference (`phase8_metric`/
+`phase9_channel_snapshot`/`phase9_video_snapshot`/`phase9_trend_candidate`) alongside the existing
+free-text `evidenceNotes`, validated -- does the referenced row actually exist -- at creation
+time only, never re-checked at read time. The validation logic itself is an
+`EvidenceReferenceResolver` **port** (`decision-engine/contracts.ts`, a plain interface with no
+implementation): `decision-engine/services.ts`'s `addHypothesisEvidence` takes an
+already-constructed resolver as a parameter, and the one real implementation
+(`createRealEvidenceReferenceResolver`, `src/app/api/decision-engine/evidence-reference-
+resolver.ts`) is built entirely OUTSIDE `decision-engine/`'s own directory, taking
+`analyticsCore`/`marketIntelligenceCore` as constructor arguments (never module-level singletons,
+which is what makes it independently testable against fakes). This is the identical shape
+`PHASE_9_PLAN.md` §5 already established for market-intelligence itself ("no existing route/
+service/component may take a hard dependency on market-intelligence's tables or services") --
+applied here in the reverse direction (decision-engine depending on analytics/market-intelligence,
+not the other way around) via the standard port/adapter split rather than a direct import.
+Mechanically enforced by a new `PHASE10-INV-03` test (`decision-engine-inventory.test.ts`),
+scanning for any `@/lib/analytics`/`@/lib/market-intelligence` import inside
+`decision-engine/**`. A `RESEARCH_CHANNEL_NOT_AVAILABLE` from market-intelligence (a
+`researchChannelId` not on the watchlist) is caught inside the resolver and folded into the same
+`false` ("this reference doesn't exist") outcome, rather than leaking a market-intelligence-
+specific error code out of a decision-engine route -- a real gap found by `advisor()` review and
+covered by the resolver's own dedicated test file (`evidence-reference-resolver.test.ts`), kept
+separate from `services.test.ts` (which only proves delegation to a fake resolver, not that the
+real one decides correctly).
+
 **Still not built, named explicitly rather than silently deferred:** agent-created hypotheses from
-scratch (`create_hypothesis`, the new reserved extension point left after slice 2); evidence
-auto-linking from real Phase 8/9 data (both now exist, unlike when the first-pass plan was
-written, but the smallest-safe-slice discipline still applies -- `evidenceNotes` stays free text
-for now, and linking it needs its own design pass for how `decision-engine` references
-`analytics`/`market-intelligence` data without breaking `AGENTS.md` §M module independence);
-AI-generated hypotheses; automatic execution of an approved experiment.
+scratch (`create_hypothesis`, the reserved extension point left after slice 2); recording an
+outcome/retrospective through MCP/CLI; AI-generated hypotheses; automatic execution of an approved
+experiment.

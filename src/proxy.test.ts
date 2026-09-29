@@ -298,3 +298,15 @@ test("proxy gates the decision-engine create-outcome route like any other real m
     await releaseOperationLock(rawSqlClient);
   }
 });
+
+// Phase 10 slice 3 (docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md) -- adding a structured evidence
+// reference is a real local-DB write (a new hypothesis_evidence row), gated the same way.
+test("proxy gates the decision-engine add-hypothesis-evidence route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/decision-engine/hypotheses/hyp-1/evidence"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});

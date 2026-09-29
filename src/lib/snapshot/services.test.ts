@@ -433,8 +433,9 @@ test("applySnapshotToDatabase: Phase 9 market-intelligence tables (research_chan
 // Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md §5a) -- added to
 // SNAPSHOT_TRANSFERRED_TABLES from this module's own first commit, not a later fix pass. Proves
 // the fix against the REAL applySnapshotToDatabase mechanism, including the FK chain
-// hypotheses -> experiments -> experiment_outcomes surviving a real, receiving-device import.
-test("applySnapshotToDatabase: Phase 10 decision-engine tables (hypotheses -> experiments -> experiment_outcomes) travel with the snapshot, replacing the receiving device's own -- including a channel-scoped hypothesis and a receiving device that already holds its own full chain (advisor review: `PRAGMA foreign_keys=OFF` for this whole transaction, RISK-33, makes `channel_id REFERENCES channels(id)` safe here even though the referenced channel only exists on the source device)", () =>
+// hypotheses -> experiments -> experiment_outcomes (+ hypothesis_evidence, slice 3) surviving a
+// real, receiving-device import.
+test("applySnapshotToDatabase: Phase 10 decision-engine tables (hypotheses -> experiments -> experiment_outcomes, hypothesis_evidence) travel with the snapshot, replacing the receiving device's own -- including a channel-scoped hypothesis and a receiving device that already holds its own full chain (advisor review: `PRAGMA foreign_keys=OFF` for this whole transaction, RISK-33, makes `channel_id REFERENCES channels(id)` safe here even though the referenced channel only exists on the source device)", () =>
   withTempDir("snapshot-test-", async (dir) => {
     const source = await makeClient(dir, "source.db");
     await seedChannel(source, "UCsourceonly000000000001");
@@ -449,6 +450,18 @@ test("applySnapshotToDatabase: Phase 10 decision-engine tables (hypotheses -> ex
     await source.execute({
       sql: "INSERT INTO experiment_outcomes (id, experiment_id, recorded_by, outcome_data, criteria_met, created_via) VALUES (?, ?, ?, ?, ?, ?)",
       args: ["out-source-1", "exp-source-1", "owner", "CTR rose 12%", "met", "web_ui"],
+    });
+    // Phase 10 slice 3 -- hypothesis_evidence added to the same source-device chain, proving this
+    // newer table travels too (RISK-52-avoidance, added from its own first commit).
+    await source.execute({
+      sql: "INSERT INTO hypothesis_evidence (id, hypothesis_id, source_type, reference_json, created_via) VALUES (?, ?, ?, ?, ?)",
+      args: [
+        "ev-source-1",
+        "hyp-source-1",
+        "phase9_trend_candidate",
+        JSON.stringify({ sourceType: "phase9_trend_candidate", trendCandidateId: "trend-1" }),
+        "web_ui",
+      ],
     });
 
     const manifest = await exportSnapshot({
@@ -476,6 +489,16 @@ test("applySnapshotToDatabase: Phase 10 decision-engine tables (hypotheses -> ex
       sql: "INSERT INTO experiment_outcomes (id, experiment_id, recorded_by, outcome_data, criteria_met, created_via) VALUES (?, ?, ?, ?, ?, ?)",
       args: ["out-receiving-1", "exp-receiving-1", "owner", "receiving device's own outcome", "met", "web_ui"],
     });
+    await receiving.execute({
+      sql: "INSERT INTO hypothesis_evidence (id, hypothesis_id, source_type, reference_json, created_via) VALUES (?, ?, ?, ?, ?)",
+      args: [
+        "ev-receiving-1",
+        "hyp-receiving-1",
+        "phase9_trend_candidate",
+        JSON.stringify({ sourceType: "phase9_trend_candidate", trendCandidateId: "receiving-own-trend" }),
+        "web_ui",
+      ],
+    });
 
     const workingCopyPath = path.join(dir, "working-copy.db");
     await copyDatabaseConsistently(
@@ -498,6 +521,13 @@ test("applySnapshotToDatabase: Phase 10 decision-engine tables (hypotheses -> ex
 
     const outcomes = await receiving.execute("SELECT id, experiment_id, criteria_met FROM experiment_outcomes");
     assert.deepEqual(outcomes.rows, [{ id: "out-source-1", experiment_id: "exp-source-1", criteria_met: "met" }]);
+
+    const evidence = await receiving.execute("SELECT id, hypothesis_id, source_type FROM hypothesis_evidence");
+    assert.deepEqual(
+      evidence.rows,
+      [{ id: "ev-source-1", hypothesis_id: "hyp-source-1", source_type: "phase9_trend_candidate" }],
+      "the source device's own structured evidence must arrive, and the receiving device's own prior evidence row must not survive"
+    );
 
     // `channels` itself is NOT in SNAPSHOT_TRANSFERRED_TABLES (only local-only records like
     // batches/audit/research data travel -- owned channels are expected to be re-derived via each

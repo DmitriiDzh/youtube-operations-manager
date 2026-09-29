@@ -49,6 +49,24 @@ type ExperimentOutcome = {
   createdVia: string;
 };
 
+type EvidenceSourceType = "phase8_metric" | "phase9_channel_snapshot" | "phase9_video_snapshot" | "phase9_trend_candidate";
+
+type HypothesisEvidence = {
+  evidenceId: string;
+  hypothesisId: string;
+  reference: { sourceType: EvidenceSourceType } & Record<string, string>;
+  note: string | null;
+  createdVia: string;
+  createdAt: string;
+};
+
+const EVIDENCE_SOURCE_TYPE_LABELS: Record<EvidenceSourceType, string> = {
+  phase8_metric: "Phase 8 metric (our own channel)",
+  phase9_channel_snapshot: "Phase 9 channel snapshot",
+  phase9_video_snapshot: "Phase 9 video snapshot",
+  phase9_trend_candidate: "Phase 9 trend candidate",
+};
+
 // Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md) -- manual-entry record-keeping
 // for hypotheses -> experiments -> outcomes. No AI-generated hypotheses, no automatic execution
 // (FUTURE_PHASES.md §6's own non-goals for this slice).
@@ -89,6 +107,24 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
 
   const [abandonTarget, setAbandonTarget] = useState<Experiment | null>(null);
   const [transitioning, setTransitioning] = useState(false);
+
+  // Phase 10 slice 3 (docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md §8) -- structured evidence,
+  // additive alongside the free-text evidenceNotes shown above. No picker UI (a real channel/
+  // video/snapshot browser is out of scope for this slice) -- the operator types the real
+  // identifying id/date themselves; the server validates it actually exists before storing it.
+  const [evidence, setEvidence] = useState<HypothesisEvidence[]>([]);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
+  const [evidenceSourceType, setEvidenceSourceType] = useState<EvidenceSourceType>("phase9_trend_candidate");
+  const [evidenceChannelId, setEvidenceChannelId] = useState("");
+  const [evidenceVideoId, setEvidenceVideoId] = useState("");
+  const [evidenceMetricDate, setEvidenceMetricDate] = useState("");
+  const [evidenceMetricName, setEvidenceMetricName] = useState("");
+  const [evidenceResearchChannelId, setEvidenceResearchChannelId] = useState("");
+  const [evidenceSnapshotId, setEvidenceSnapshotId] = useState("");
+  const [evidenceTrendCandidateId, setEvidenceTrendCandidateId] = useState("");
+  const [evidenceNote, setEvidenceNote] = useState("");
+  const [addingEvidence, setAddingEvidence] = useState(false);
 
   const fetchHypotheses = useCallback(async () => {
     setLoading(true);
@@ -133,11 +169,25 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
     }
   }, []);
 
+  const fetchEvidence = useCallback(async (hypothesisId: string) => {
+    setEvidenceLoading(true);
+    try {
+      const res = await fetch(`/api/decision-engine/hypotheses/${encodeURIComponent(hypothesisId)}/evidence`);
+      if (res.ok) {
+        const data = await res.json();
+        setEvidence(data.evidence ?? []);
+      }
+    } finally {
+      setEvidenceLoading(false);
+    }
+  }, []);
+
   function handleSelectHypothesis(hypothesisId: string) {
     setSelectedHypothesisId(hypothesisId);
     setSelectedExperimentId(null);
     setOutcomes([]);
     void fetchExperiments(hypothesisId);
+    void fetchEvidence(hypothesisId);
   }
 
   function handleSelectExperiment(experimentId: string) {
@@ -209,6 +259,61 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       await fetchExperiments(selectedHypothesisId);
     } finally {
       setCreatingExperiment(false);
+    }
+  }
+
+  function buildEvidenceReference(): Record<string, string> | null {
+    switch (evidenceSourceType) {
+      case "phase8_metric":
+        if (!evidenceChannelId || !evidenceVideoId || !evidenceMetricDate || !evidenceMetricName) return null;
+        return {
+          sourceType: "phase8_metric",
+          channelId: evidenceChannelId,
+          videoId: evidenceVideoId,
+          metricDate: evidenceMetricDate,
+          metricName: evidenceMetricName,
+        };
+      case "phase9_channel_snapshot":
+      case "phase9_video_snapshot":
+        if (!evidenceResearchChannelId || !evidenceSnapshotId) return null;
+        return { sourceType: evidenceSourceType, researchChannelId: evidenceResearchChannelId, snapshotId: evidenceSnapshotId };
+      case "phase9_trend_candidate":
+        if (!evidenceTrendCandidateId) return null;
+        return { sourceType: "phase9_trend_candidate", trendCandidateId: evidenceTrendCandidateId };
+    }
+  }
+
+  async function handleAddEvidence() {
+    if (!selectedHypothesisId) return;
+    const reference = buildEvidenceReference();
+    if (!reference) {
+      setEvidenceError("All identifying fields for the selected source type are required");
+      return;
+    }
+    setAddingEvidence(true);
+    setEvidenceError(null);
+    try {
+      const res = await fetch(`/api/decision-engine/hypotheses/${encodeURIComponent(selectedHypothesisId)}/evidence`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reference, ...(evidenceNote ? { note: evidenceNote } : {}) }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setEvidenceError(data.message ?? "Failed to add evidence");
+        return;
+      }
+      setEvidenceChannelId("");
+      setEvidenceVideoId("");
+      setEvidenceMetricDate("");
+      setEvidenceMetricName("");
+      setEvidenceResearchChannelId("");
+      setEvidenceSnapshotId("");
+      setEvidenceTrendCandidateId("");
+      setEvidenceNote("");
+      await fetchEvidence(selectedHypothesisId);
+    } finally {
+      setAddingEvidence(false);
     }
   }
 
@@ -418,6 +523,117 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
                       )
                     )}
                   </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {selectedHypothesisId && (
+        <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-4">
+          <h3 className="mb-1 font-medium">Structured evidence</h3>
+          <p className="mb-3 text-xs text-zinc-400">
+            A validated reference into real Phase 8/9 data, in addition to the free-text evidence above -- the server
+            confirms the referenced row actually exists before it is stored.
+          </p>
+          <div className="mb-4 space-y-2">
+            <select
+              className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
+              value={evidenceSourceType}
+              onChange={(e) => setEvidenceSourceType(e.target.value as EvidenceSourceType)}
+            >
+              {Object.entries(EVIDENCE_SOURCE_TYPE_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            {evidenceSourceType === "phase8_metric" && (
+              <>
+                <input
+                  className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
+                  placeholder="Channel id (our own owned channel)"
+                  value={evidenceChannelId}
+                  onChange={(e) => setEvidenceChannelId(e.target.value)}
+                />
+                <input
+                  className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
+                  placeholder="Video id"
+                  value={evidenceVideoId}
+                  onChange={(e) => setEvidenceVideoId(e.target.value)}
+                />
+                <input
+                  className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
+                  placeholder="Metric date (YYYY-MM-DD)"
+                  value={evidenceMetricDate}
+                  onChange={(e) => setEvidenceMetricDate(e.target.value)}
+                />
+                <input
+                  className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
+                  placeholder="Metric name"
+                  value={evidenceMetricName}
+                  onChange={(e) => setEvidenceMetricName(e.target.value)}
+                />
+              </>
+            )}
+            {(evidenceSourceType === "phase9_channel_snapshot" || evidenceSourceType === "phase9_video_snapshot") && (
+              <>
+                <input
+                  className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
+                  placeholder="Research channel id (UC...)"
+                  value={evidenceResearchChannelId}
+                  onChange={(e) => setEvidenceResearchChannelId(e.target.value)}
+                />
+                <input
+                  className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
+                  placeholder="Snapshot id"
+                  value={evidenceSnapshotId}
+                  onChange={(e) => setEvidenceSnapshotId(e.target.value)}
+                />
+              </>
+            )}
+            {evidenceSourceType === "phase9_trend_candidate" && (
+              <input
+                className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
+                placeholder="Trend candidate id"
+                value={evidenceTrendCandidateId}
+                onChange={(e) => setEvidenceTrendCandidateId(e.target.value)}
+              />
+            )}
+            <input
+              className="w-full rounded border border-zinc-700 bg-zinc-800 p-2 text-sm"
+              placeholder="Note (optional)"
+              value={evidenceNote}
+              onChange={(e) => setEvidenceNote(e.target.value)}
+            />
+            {evidenceError && <p className="text-sm text-red-400">{evidenceError}</p>}
+            <button
+              className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium disabled:opacity-50"
+              disabled={addingEvidence}
+              onClick={() => void handleAddEvidence()}
+            >
+              {addingEvidence ? "Adding..." : "Add evidence"}
+            </button>
+          </div>
+
+          {evidenceLoading ? (
+            <p className="text-sm text-zinc-400">Loading...</p>
+          ) : evidence.length === 0 ? (
+            <p className="text-sm text-zinc-400">No structured evidence yet.</p>
+          ) : (
+            <ul className="space-y-2">
+              {evidence.map((item) => (
+                <li key={item.evidenceId} className="rounded border border-zinc-700 p-2 text-sm">
+                  <div className="font-medium">{EVIDENCE_SOURCE_TYPE_LABELS[item.reference.sourceType]}</div>
+                  <div className="text-xs text-zinc-400">
+                    {Object.entries(item.reference)
+                      .filter(([key]) => key !== "sourceType")
+                      .map(([key, value]) => `${key}: ${value}`)
+                      .join(" · ")}
+                  </div>
+                  {item.note && <div className="mt-1 text-xs text-zinc-300">{item.note}</div>}
+                  <div className="mt-1 text-xs text-zinc-500">{formatDisplayDateTime(item.createdAt)}</div>
                 </li>
               ))}
             </ul>

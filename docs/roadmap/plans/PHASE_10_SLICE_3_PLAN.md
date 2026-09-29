@@ -68,8 +68,11 @@ half-valid, never silently dropped.
 
 ## 4. Module independence (`AGENTS.md` §M)
 
-`decision-engine` gains a **read-only, one-directional, opt-in** dependency on
-`analytics`/`market-intelligence` for this one validation step only. This does not violate §M:
+This feature has a **read-only, one-directional, opt-in** dependency on
+`analytics`/`market-intelligence` for this one validation step only — but, per §7's own
+corrected design below, `decision-engine`'s own module code never imports either: the dependency
+is realized entirely in the interface layer (the route file), which supplies an already-resolved
+port to `decision-engine`'s own `addHypothesisEvidence`. This does not violate §M:
 - Hypothesis creation and every other decision-engine action (experiments, transitions, outcomes)
   never calls into either module — only creating a *structured evidence reference* does, and that
   is itself optional (a hypothesis with zero structured refs, only free text, never touches either
@@ -85,14 +88,19 @@ half-valid, never silently dropped.
 
 `phase8_metric`'s `channelId` must equal the parent hypothesis's own `channelId` when the
 hypothesis has one set (citing a different owned channel's metrics as if they were about this
-hypothesis's channel would be actively misleading) — when the hypothesis's `channelId` is `null`
-("new channel concept"), any of the caller's own accessible channels may be cited, subject to the
-existing `assertActiveChannel` check analytics' own `listMetrics` already performs internally (no
-new channel-access code needed — analytics already gates this correctly; decision-engine does not
-need to duplicate that check, only to compare `channelId` equality when its own hypothesis is
-channel-scoped). `phase9_*` references need no channel check at all — Phase 9 watchlist data is
-never owned-channel data by construction (`AGENTS.md` §F's boundary doesn't apply to it, same as
-every other Phase 9 read).
+hypothesis's channel would be actively misleading) — decision-engine's own service-layer check
+(never the resolver) compares this equality before the resolver is even called. When the
+hypothesis's `channelId` is `null` ("new channel concept"), decision-engine imposes no restriction
+of its own on which channel the reference names — but this does **not** mean "any of the caller's
+own accessible channels" (an earlier draft of this section overclaimed that; corrected after
+`advisor()` review). `analyticsCore.listMetrics` itself only allows the caller's own **active**
+channel (`assertActiveChannel`, ADR 0004 — ` docs/decisions/0004-active-channel-read-scoping.md`),
+already enforced internally, so a channel-less hypothesis can only ever successfully cite the
+active channel's own metrics in practice, not an arbitrary owned channel the operator happens to
+have. No new channel-access code needed either way — `listMetrics` already gates this correctly;
+decision-engine's own contribution is only the `channelId`-equality comparison above. `phase9_*`
+references need no channel check at all — Phase 9 watchlist data is never owned-channel data by
+construction (`AGENTS.md` §F's boundary doesn't apply to it, same as every other Phase 9 read).
 
 ## 6. Schema (additive migration, v29 → v30)
 
@@ -121,14 +129,36 @@ discipline (added in the *first* commit, not a follow-up).
 
 New route: `POST /api/decision-engine/hypotheses/[hypothesisId]/evidence` (create one structured
 reference), `GET /api/decision-engine/hypotheses/[hypothesisId]/evidence` (list them) — both reuse
-`assertHypothesisAccessible` (slice 1) for the channel check, never a new one. No MCP/CLI surface
-for this in this slice (slice 2's agent surface already shipped `agent_get_hypothesis_trail`,
-which is extended to also return `evidence` rows — no new MCP/CLI tool needed, just a wider
-existing read).
+`assertHypothesisAccessible` (slice 1) for the channel check, never a new one.
 
-`src/lib/decision-engine/services.ts` gains two new optional dependencies
-(`analyticsCore`/`marketIntelligenceCore`, both real by default via `index.ts`, injectable for
-tests) and `addHypothesisEvidence`/`listHypothesisEvidence`.
+**Corrected after `advisor()` review (an earlier draft of this section was wrong about where the
+resolver lives):** `src/lib/decision-engine/services.ts` gains **no** new dependency on
+analytics/market-intelligence at all — `addHypothesisEvidence` instead takes an
+`EvidenceReferenceResolver` (a plain port defined in `decision-engine/contracts.ts`) as an
+explicit extra parameter, supplied by the caller. The real implementation
+(`createRealEvidenceReferenceResolver`) lives in
+`src/app/api/decision-engine/evidence-reference-resolver.ts` — a sibling file OUTSIDE
+`decision-engine/`'s own directory, so it can import `@/lib/analytics`/`@/lib/market-intelligence`
+without ever making `decision-engine/**` itself do so (`AGENTS.md` §M; the same
+`PHASE_9_PLAN.md` §5 precedent cited above). It takes its two cores as constructor arguments
+(never a module-level singleton), which is what makes it independently testable against fake
+cores — its own `evidence-reference-resolver.test.ts` is what actually proves §9's existence-check
+criteria below; `services.test.ts`'s fake-resolver tests only prove `addHypothesisEvidence`
+correctly delegates to whatever a resolver decides, not that the real resolver decides correctly.
+The route file (`.../evidence/route.ts`) constructs the real resolver once, exactly like every
+other route's `createAnalyticsCore()`/`createMarketIntelligenceCore()` call. This resolver is
+also the file that records this app's new consumer of `@/lib/market-intelligence`
+(`docs/SYSTEM_MAP.md` §2.9v's own "who imports this module" list, per `PHASE_9_PLAN.md` §5's own
+requirement to name every such importer explicitly, never let it become a silent addition).
+
+No MCP/CLI surface for structured evidence in this slice (mechanically verified,
+`decision-engine-agent-approval-inventory.test.ts`'s `FORBIDDEN_AGENT_SYMBOLS` list now also
+includes `addHypothesisEvidence`). Slice 2's `agent_get_hypothesis_trail` response widens
+additively to also return `evidence` — per `AGENT_API_VERSION`'s own doc comment
+(`src/lib/agent-operations/contracts.ts`, verified by reading it directly, not assumed): "Do NOT
+bump for a purely additive, backward-compatible widening of an EXISTING capability's own contract
+(e.g. a new optional input/output field an existing caller can simply ignore)" — exactly this
+case, so `AGENT_API_VERSION` stays unchanged.
 
 ## 8. UI
 
@@ -139,23 +169,44 @@ note) and a list of already-attached structured evidence, alongside the existing
 
 ## 9. Acceptance criteria (drafted before implementation, `AGENTS.md` §L)
 
-- A `phase8_metric` reference to a real, existing `(channelId, videoId, metricDate, metricName)`
-  row succeeds.
-- A `phase8_metric` reference to a non-existent combination (wrong date/metric name/videoId) is
-  rejected `validation_failed`, and no row is inserted.
+**Service layer (`services.test.ts`, against a fake resolver — proves delegation, not real
+existence-checking):**
+- A reference the resolver confirms exists is accepted and stored; one it reports as not existing
+  is rejected `validation_failed`, and no row is inserted.
 - A `phase8_metric` reference whose `channelId` differs from a channel-scoped hypothesis's own
-  `channelId` is rejected, even if that metric row genuinely exists (for a *different* channel).
-- A `phase8_metric` reference is accepted for a hypothesis with `channelId: null` regardless of
-  which of the caller's own channels the metric belongs to.
+  `channelId` is rejected BEFORE the resolver is even called, even though the resolver would
+  confirm it exists.
+- A `phase8_metric` reference is accepted for a hypothesis with `channelId: null`, regardless of
+  which channel it names — decision-engine itself imposes no restriction here (§5's own correction
+  applies: the REAL resolver still only allows the active channel, this criterion is scoped to
+  decision-engine's own logic, not the resolver's).
+- `getHypothesisTrail` includes structured evidence alongside experiments/outcomes.
+- `addHypothesisEvidence`/`listHypothesisEvidence` reject a session active on a different channel
+  than a channel-scoped hypothesis.
+
+**Real resolver (`evidence-reference-resolver.test.ts`, against fake `analyticsCore`/
+`marketIntelligenceCore` — proves the actual existence-checking logic, found necessary by
+`advisor()` review after the first draft only had fake-resolver coverage):**
+- A `phase8_metric` reference to a real, existing `(videoId, metricDate, metricName)` row
+  resolves `true`; the same video with a different `metricDate` or `metricName` resolves `false`.
 - A `phase9_channel_snapshot`/`phase9_video_snapshot`/`phase9_trend_candidate` reference to a real
-  existing id succeeds; to a fabricated id is rejected `validation_failed`.
+  existing id resolves `true`; to a fabricated id resolves `false`.
+- A real channel-access failure from `listMetrics` (`CHANNEL_NOT_ACTIVE`) propagates as a real
+  error, never silently swallowed into `false`.
+- A `researchChannelId` not on the watchlist (`RESEARCH_CHANNEL_NOT_AVAILABLE`) resolves `false`
+  (folded into the same "doesn't exist" outcome), rather than leaking a market-intelligence-
+  specific error code out of a decision-engine route — a real gap `advisor()` found and this test
+  now proves is fixed. Any OTHER error still propagates (never swallowed indiscriminately).
+- Missing `ctx.userId` resolves `false` immediately, without calling either core.
+
+**Cross-cutting:**
 - `hypothesis_evidence` rows travel with a device-handoff snapshot (mirrors slice 1's own test for
   `hypotheses`/`experiments`/`experiment_outcomes`).
-- The decision-engine structural-isolation test (`decision-engine-inventory.test.ts`) still passes
-  unmodified in its own no-db.ts-leak guarantee — importing `analyticsCore`/`marketIntelligenceCore`
-  via their own public `index.ts` is not a violation of that test's rule (only a direct `db.ts`
-  symbol reference from outside a module is), confirmed by reading what that test actually asserts
-  before assuming this addition is safe.
+- `PHASE10-INV-03` (new, `decision-engine-inventory.test.ts`) proves `decision-engine/**` itself
+  never imports `@/lib/analytics`/`@/lib/market-intelligence` — the structural-isolation test was
+  **extended**, not left "unmodified" as an earlier draft of this section claimed (corrected after
+  `advisor()` review). `PHASE10-INV-02` (`decision-engine-agent-approval-inventory.test.ts`,
+  slice 2) is also widened, adding `addHypothesisEvidence` to its forbidden-agent-symbols list.
 
 ## 10. Explicitly out of scope
 

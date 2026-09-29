@@ -51,9 +51,13 @@ async function listTsFilesRecursively(dir: string): Promise<string[]> {
 
 // Named descriptively in this file's own prose above rather than spelling these out again, so
 // this comment block can never trip its own scan (PHASE9-INV-02's own discovered false positive).
-const FORBIDDEN_AGENT_SYMBOLS = ["createHypothesis", "transitionExperiment", "createExperimentOutcome"];
+// `addHypothesisEvidence` (Phase 10 slice 3) added to this list for the same reason as the other
+// three -- this slice deliberately ships no MCP/CLI surface for structured evidence at all (see
+// docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md §7), so proving it stays unreachable belongs here
+// alongside the actions slice 2 already covers, not as a separate new inventory test.
+const FORBIDDEN_AGENT_SYMBOLS = ["createHypothesis", "transitionExperiment", "createExperimentOutcome", "addHypothesisEvidence"];
 
-test("PHASE10-INV-02: no file under src/mcp, src/cli, or src/lib/agent-operations references createHypothesis/transitionExperiment/createExperimentOutcome", async () => {
+test("PHASE10-INV-02: no file under src/mcp, src/cli, or src/lib/agent-operations references createHypothesis/transitionExperiment/createExperimentOutcome/addHypothesisEvidence", async () => {
   const offenders: string[] = [];
 
   for (const root of SCANNED_ROOTS) {

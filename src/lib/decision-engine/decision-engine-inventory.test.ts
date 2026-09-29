@@ -124,3 +124,33 @@ test("PHASE10-INV-01 helper: extractDbImportSpecifiers finds @/lib/db and relati
   assert.deepEqual(extractDbImportSpecifiers("const x = await core.listHypotheses(ctx);"), []);
   assert.deepEqual(extractDbImportSpecifiers('import { createDecisionEngineCore } from "@/lib/decision-engine";'), []);
 });
+
+// Phase 10 slice 3 (docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md §4) -- the reverse direction of
+// PHASE10-INV-01 above: this module must never import analytics/market-intelligence itself
+// (AGENTS.md §M). The real dependency lives only in the interface layer
+// (src/app/api/decision-engine/hypotheses/[hypothesisId]/evidence/route.ts's own
+// `createRealEvidenceReferenceResolver`), which is explicitly OUTSIDE this module's own
+// `MODULE_ROOT` and therefore untouched by this scan. Named PHASE10-INV-03, not -02 -- that
+// number is already `decision-engine-agent-approval-inventory.test.ts`'s own (slice 2), a
+// different invariant in a different file.
+test("PHASE10-INV-03: decision-engine's own module never imports @/lib/analytics or @/lib/market-intelligence", async () => {
+  const files = await listTsFilesRecursively(MODULE_ROOT);
+  assert.ok(files.length > 0, "must actually scan some files -- an empty list would make this test vacuously pass");
+  const offenders: string[] = [];
+  const forbiddenModuleSpecifiers = [/["']@\/lib\/analytics(?:\/|["'])/, /["']@\/lib\/market-intelligence(?:\/|["'])/];
+
+  for (const file of files) {
+    const content = await readFile(file, "utf8");
+    for (const pattern of forbiddenModuleSpecifiers) {
+      if (pattern.test(content)) {
+        offenders.push(`${file}: imports a forbidden module (matches ${pattern})`);
+      }
+    }
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    `decision-engine/** must never import analytics/market-intelligence directly:\n${offenders.join("\n")}`
+  );
+});

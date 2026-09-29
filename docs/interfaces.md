@@ -679,11 +679,13 @@ Key MCP tools:
     service layer (channel-scoped rows narrowed to the caller's active channel, channel-less rows
     always included).
   - `agent_get_hypothesis_trail` — `{ hypothesisId }` → `{ hypothesis, experiments: (Experiment &
-    { outcomes: ExperimentOutcome[] })[] }`. One combined "trail" read (owner spec §25's "few
-    composable tools" rule) rather than five separate list/get tools; composed in the MCP/CLI
-    handler from `decision-engine`'s own already-existing `getHypothesis`/
-    `listExperimentsByHypothesis`/`listExperimentOutcomes` — no new service-layer function.
-    `HYPOTHESIS_NOT_FOUND` for an unknown id.
+    { outcomes: ExperimentOutcome[] })[], evidence: HypothesisEvidence[] }`. One combined "trail"
+    read (owner spec §25's "few composable tools" rule) rather than five separate list/get tools;
+    composed from `decision-engine`'s own `getHypothesisTrail` service function.
+    `HYPOTHESIS_NOT_FOUND` for an unknown id. `evidence` added additively in Phase 10 slice 3
+    (`docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md`) — no `AGENT_API_VERSION` bump, per that
+    constant's own doc comment (a purely additive, backward-compatible widening of an existing
+    tool's output is not a capability-discovery-relevant change).
   - `create_experiment_proposal` — `{ hypothesisId, treatment, controlBaseline, successCriteria,
     stoppingCriteria, responsible, startConditions?, plannedDuration?, sampleCoverageConstraints?,
     budgetEstimate? }` → the created experiment, always `status: "proposed"` (schema is `.strict()`,
@@ -865,6 +867,7 @@ resource it resolves to has a non-null `channelId` — including reads, not only
 - `GET /api/decision-engine/experiments/[experimentId]` — one experiment
 - `POST /api/decision-engine/experiments/[experimentId]/transition` — `{ targetStatus }`; the ONLY way `status`/`approvedBy`/`approvedAt` change, via one atomic `UPDATE ... WHERE status IN (<valid predecessors>) ... RETURNING` (`EXPERIMENT_INVALID_TRANSITION` if the row's real current status no longer allows it — including a losing concurrent race); `approvedBy` is server-stamped from the session, never accepted in the request body
 - `GET /api/decision-engine/experiments/[experimentId]/outcomes` — outcomes for an experiment, newest-first (append-only, no update/delete route exists); `POST` — record one (`{ outcomeData, dataQualityLimitations?, criteriaMet: "met" | "not_met" | "inconclusive", lessonsLearned? }`; rejected with `EXPERIMENT_NOT_OBSERVABLE` unless the experiment's status is `running`/`concluded`/`abandoned`)
+- `GET /api/decision-engine/hypotheses/[hypothesisId]/evidence` — structured evidence references for a hypothesis, newest-first (append-only, no update/delete route exists); `POST` — add one (`{ reference: EvidenceReference, note? }`, Phase 10 slice 3, `docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md`) — `reference` is a discriminated union (`phase8_metric`/`phase9_channel_snapshot`/`phase9_video_snapshot`/`phase9_trend_candidate`), validated against the real Phase 8/9 row before insert (`validation_failed` if it doesn't exist); the route file (not `decision-engine`'s own module) is the only place that constructs the real resolver against `analyticsCore`/`marketIntelligenceCore` (`src/app/api/decision-engine/evidence-reference-resolver.ts`)
 
 No MCP/CLI contract yet — an explicit next slice, not an oversight (`docs/ARCHITECTURE.md` §19).
 
