@@ -202,26 +202,42 @@ export type PublicChannelSnapshot = {
    * latter case would otherwise return a fabricated "0" (YouTube reports a real subscriber count
    * of exactly zero identically to a hidden one at the raw API level), which this codebase's
    * "never fabricate a stat" discipline (see `parseStatCount`'s own callers) forbids treating as
-   * a genuine observation (Phase 9 slice 3, `docs/roadmap/plans/PHASE_9_PLAN.md` §7). */
+   * a genuine observation (Phase 9 slice 3, `docs/roadmap/plans/PHASE_9_PLAN.md` §7). Use the
+   * `hiddenSubscriberCount` field below to tell "hidden, a known fact" apart from "absent/
+   * unparseable, an unknown gap" -- both collapse to `null` here, but only the former is `true`. */
   subscriberCount: number | null;
+  /** YouTube's own real flag (`statistics.hiddenSubscriberCount`), exposed alongside the
+   * (necessarily ambiguous) `null` above -- added for Phase 9 slice 9A
+   * (`docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md`) after independent review found a caller
+   * re-guessing this from `subscriberCount === null` would also misclassify a genuinely
+   * absent/unparseable count as "hidden." */
+  hiddenSubscriberCount: boolean;
   viewCount: number | null;
   videoCount: number | null;
+  /** The channel's own uploads playlist id, for enumerating its videos (`listUploadsPlaylistVideoIds`)
+   * -- `null` when the channel genuinely has none (rare) or the field is absent. Added for Phase 9
+   * slice 9B (`docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md`): requesting it in this SAME
+   * `channels.list` call (an additive `contentDetails` part, still 1 unit) avoids a second
+   * per-channel call for information `getChannelForSync` already knows how to read. */
+  uploadsPlaylistId: string | null;
 };
 
 /**
  * Phase 9 slice 3 -- a public, explicit-id snapshot of an ARBITRARY channel (not necessarily
  * owned by the operator), for the market-research watchlist's "fetch public snapshot" action.
  * Deliberately a separate function from `getChannelForSync` (which is named/scoped for "my own
- * channel, or a channel about to be treated as mine" and never requests `statistics`) -- this one
- * requests exactly the public fields a competitor snapshot needs and nothing content-details-
- * shaped (no `uploadsPlaylistId`, since this slice never enumerates a non-owned channel's videos).
+ * channel, or a channel about to be treated as mine") -- this one requests exactly the public
+ * fields a competitor snapshot needs. Widened in Phase 9 slice 9B to also request/return
+ * `uploadsPlaylistId` -- this module's own earlier doc comment claimed "never enumerates a
+ * non-owned channel's videos," which slice 9B is exactly the exception to (see
+ * `docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md` §5 for why this is one call, not a new one).
  */
 export async function getPublicChannelSnapshot(
   youtube: youtube_v3.Youtube,
   channelId: string
 ): Promise<PublicChannelSnapshot | null> {
   const res = await youtube.channels.list({
-    part: ["snippet", "statistics"],
+    part: ["snippet", "statistics", "contentDetails"],
     id: [channelId],
   });
 
@@ -234,15 +250,14 @@ export async function getPublicChannelSnapshot(
     channelId: channel.id,
     title: channel.snippet?.title ?? "",
     subscriberCount: hiddenSubscriberCount ? null : parseStatCount(channel.statistics?.subscriberCount),
+    hiddenSubscriberCount,
     viewCount: parseStatCount(channel.statistics?.viewCount),
     videoCount: parseStatCount(channel.statistics?.videoCount),
+    uploadsPlaylistId: channel.contentDetails?.relatedPlaylists?.uploads ?? null,
   };
 }
 
-export async function listUploadsPlaylistVideoIds(
-  youtube: youtube_v3.Youtube,
-  uploadsPlaylistId: string
-): Promise<string[]> {
+export async function listUploadsPlaylistVideoIds(youtube: youtube_v3.Youtube, uploadsPlaylistId: string): Promise<string[]> {
   const seen = new Set<string>();
   const videoIds: string[] = [];
   let pageToken: string | undefined;
@@ -266,6 +281,121 @@ export async function listUploadsPlaylistVideoIds(
   } while (pageToken);
 
   return videoIds;
+}
+
+/**
+ * Phase 9 slice 9B -- exactly ONE `playlistItems.list` call (never paginates), for a
+ * budget-conscious, repeatable competitor-video refresh capped to the newest ≤50 uploads (the
+ * playlist is newest-first). Deliberately a separate function from `listUploadsPlaylistVideoIds`
+ * above rather than an options-based variant of it (advisor review, before implementation): a
+ * "collect up to N ids, possibly crossing a page boundary" option would leave its real YouTube
+ * quota cost (1 or 2 `playlistItems.list` units, depending on how many of the first page's items
+ * are valid) unobservable to the caller, silently under-counting real spend against the operator's
+ * budget. Capping by PAGE instead makes the cost exactly and always 1 unit, deterministically.
+ */
+export async function listUploadsPlaylistFirstPageVideoIds(
+  youtube: youtube_v3.Youtube,
+  uploadsPlaylistId: string
+): Promise<string[]> {
+  const res = await youtube.playlistItems.list({
+    part: ["contentDetails"],
+    playlistId: uploadsPlaylistId,
+    maxResults: 50,
+  });
+
+  const seen = new Set<string>();
+  const videoIds: string[] = [];
+  for (const item of res.data.items ?? []) {
+    const videoId = item.contentDetails?.videoId;
+    if (!videoId || seen.has(videoId)) continue;
+    seen.add(videoId);
+    videoIds.push(videoId);
+  }
+  return videoIds;
+}
+
+export type PublicVideoSnapshot = {
+  videoId: string;
+  title: string;
+  /** `null` when the API omits it -- never fabricated. */
+  publishedAt: string | null;
+  viewCount: number | null;
+  likeCount: number | null;
+  commentCount: number | null;
+};
+
+/**
+ * Phase 9 slice 9B -- a lean, public-only batch video-stats fetch, mirroring
+ * `getPublicChannelSnapshot`'s own "public, explicit-id, nothing extra" precedent rather than
+ * reusing the sync-oriented `getVideosMetadataContextBatch` (which also fetches
+ * `localizations`/`contentDetails`/`status` this feature never uses, and is named/scoped for the
+ * operator's own already-synced videos). Includes `snippet` (not just `statistics`) so
+ * `publishedAt` is populated -- needed by a future slice's age-normalized comparison.
+ *
+ * A requested id absent from the response (YouTube silently omits a deleted/private video from
+ * `videos.list`, with no distinguishing signal) is simply absent from the returned array -- never
+ * fabricated, never assumed to specifically mean "deleted." The caller diffs requested-vs-returned
+ * counts itself if it needs to record that gap.
+ */
+export async function getPublicVideoSnapshots(youtube: youtube_v3.Youtube, videoIds: string[]): Promise<PublicVideoSnapshot[]> {
+  if (videoIds.length === 0) return [];
+
+  const results: PublicVideoSnapshot[] = [];
+  for (const batch of chunk(videoIds, YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
+    const res = await youtube.videos.list({ part: ["snippet", "statistics"], id: batch });
+    for (const item of res.data.items ?? []) {
+      if (!item.id) continue;
+      results.push({
+        videoId: item.id,
+        title: item.snippet?.title ?? "",
+        publishedAt: item.snippet?.publishedAt ?? null,
+        viewCount: parseStatCount(item.statistics?.viewCount),
+        likeCount: parseStatCount(item.statistics?.likeCount),
+        commentCount: parseStatCount(item.statistics?.commentCount),
+      });
+    }
+  }
+  return results;
+}
+
+export type PublicChannelSearchResult = {
+  channelId: string;
+  title: string;
+  /** `null` when the API omits it -- never fabricated. */
+  description: string | null;
+};
+
+/**
+ * Phase 9 slice 9C -- `search.list` (channel-type only), exactly ONE call, never paginates
+ * (mirrors `listUploadsPlaylistFirstPageVideoIds`'s own precedent: capping by page keeps the real
+ * unit cost -- 100 units, YouTube's own published rate for this method, two orders of magnitude
+ * above any `.list` read -- exactly and always 1 call, deterministically, never silently doubling
+ * to 200 units for a query whose first page alone doesn't satisfy the caller). A result missing
+ * its own channel id (a malformed/unexpected API response) is simply omitted, never fabricated.
+ */
+export async function searchPublicChannels(
+  youtube: youtube_v3.Youtube,
+  query: string,
+  maxResults = 25
+): Promise<PublicChannelSearchResult[]> {
+  const res = await youtube.search.list({
+    part: ["snippet"],
+    q: query,
+    type: ["channel"],
+    maxResults,
+  });
+
+  const results: PublicChannelSearchResult[] = [];
+  for (const item of res.data.items ?? []) {
+    const channelId = item.id?.channelId;
+    if (!channelId) continue;
+    results.push({
+      channelId,
+      title: item.snippet?.title ?? "",
+      description: item.snippet?.description ?? null,
+    });
+  }
+  return results;
 }
 
 const YOUTUBE_VIDEOS_LIST_BATCH_SIZE = 50;

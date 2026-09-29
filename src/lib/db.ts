@@ -5,7 +5,7 @@ import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import path from "path";
-import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
 import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
@@ -890,8 +890,9 @@ export const agentCapabilityZones = sqliteTable("agent_capability_zones", {
  * one operator per local install, and a competitor is often relevant research context for more
  * than one of the operator's own channels at once.
  *
- * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** -- same accepted device-local limitation
- * `creative_assets`/`content_proposals` already have (`docs/TECHNICAL_DEBT.md` RISK-52).
+ * **Correction, 2026-09-27 (RISK-52, closed by slice 9H part A):** now IS in
+ * `SNAPSHOT_TRANSFERRED_TABLES` (`src/lib/snapshot/contracts.ts`) -- travels with device handoff,
+ * per the owner's 2026-09-26 decision. This comment previously said the opposite.
  */
 export const researchChannels = sqliteTable("research_channels", {
   id: text("id").primaryKey(),
@@ -901,6 +902,24 @@ export const researchChannels = sqliteTable("research_channels", {
   addedAt: integer("added_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),
+  /** Phase 9 slice 9B (`docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md`) -- mirrors
+   * `channels.analyticsLastAutoCollectedAt`'s own shape/purpose exactly, scoped to a research
+   * channel instead. `NULL` means never auto-collected (always stale). Set ONLY on a genuinely
+   * successful refresh of THIS channel -- a run that skips this channel (budget exhausted) must
+   * never touch it, so the channel stays stale for the next trigger. */
+  lastAutoCollectedAt: integer("last_auto_collected_at", { mode: "timestamp" }),
+  /** Phase 9 slice 9B -- the mark-then-run concurrency claim (advisor review before
+   * implementation: analytics' own `runAutoCollectionIfStale` is actually mark-AFTER and
+   * deliberately accepts a rare double-collection race, since Analytics quota is ample; this
+   * feature's operator-set budget makes a double-spend a real correctness problem, so it earns its
+   * own, stricter claim column rather than reusing `lastAutoCollectedAt` for both roles). Set
+   * atomically (a single `UPDATE ... WHERE ... RETURNING` -- never read-then-write) immediately
+   * before a channel's real work starts, and cleared once that channel's attempt reaches any
+   * terminal outcome (success, failure, or quota-limited skip). A claim older than
+   * `MARKET_INTELLIGENCE_CLAIM_EXPIRY_MS` is treated as abandoned (a crashed process) and may be
+   * reclaimed -- never requires a manual operator unlock, unlike `operation-lock`'s deliberately
+   * stricter export/import/migration guard. */
+  collectionClaimedAt: integer("collection_claimed_at", { mode: "timestamp" }),
 });
 
 /**
@@ -910,7 +929,8 @@ export const researchChannels = sqliteTable("research_channels", {
  * "worth copying") -- a raw, sourced observation only. `confidence` is free text for this slice
  * (an enum is deferred until a real consumer needs to filter/sort by it).
  *
- * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** -- same reasoning as `research_channels` above.
+ * **Correction, 2026-09-27 (RISK-52, closed by slice 9H part A):** now IS in
+ * `SNAPSHOT_TRANSFERRED_TABLES`, same as `research_channels` above.
  */
 export const researchEvidence = sqliteTable(
   "research_evidence",
@@ -928,6 +948,286 @@ export const researchEvidence = sqliteTable(
       .$defaultFn(() => new Date()),
   },
   (table) => [index("research_evidence_research_channel_id_idx").on(table.researchChannelId)]
+);
+
+/**
+ * Phase 9 slice 9A (`docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md`) -- a structured, append-only
+ * public observation of a watchlisted channel's own numeric stats. Never upserted by any natural
+ * key -- every real fetch is its own newly-inserted row, since `channels.list` has no "historical
+ * day" concept (unlike `video_metrics_daily`'s per-day upsert for owned-channel analytics; see the
+ * slice plan §2 for why that pattern does not transfer here). `hiddenSubscriberCount` is an
+ * explicit boolean, not inferred from `subscriberCount IS NULL` -- disambiguates "YouTube hides
+ * this, a known fact" from "we don't know" (spec §27's data-quality vocabulary, the one item
+ * actually knowable from a `channels.list` response today).
+ *
+ * **Correction, 2026-09-27 (RISK-52, closed by slice 9H part A):** now IS in
+ * `SNAPSHOT_TRANSFERRED_TABLES`, same as `research_channels`/`research_evidence` -- the owner's
+ * 2026-09-26 decision to transfer this data was implemented, not left as a separate engineering
+ * choice, once the omission was found during 9H part A planning.
+ */
+export const marketChannelSnapshots = sqliteTable(
+  "market_channel_snapshots",
+  {
+    id: text("id").primaryKey(),
+    researchChannelId: text("research_channel_id")
+      .notNull()
+      .references(() => researchChannels.id),
+    observedAt: integer("observed_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    subscriberCount: integer("subscriber_count"),
+    viewCount: integer("view_count"),
+    videoCount: integer("video_count"),
+    hiddenSubscriberCount: integer("hidden_subscriber_count", { mode: "boolean" }).notNull().default(false),
+    source: text("source").notNull(),
+    createdVia: text("created_via").notNull(),
+  },
+  (table) => [index("market_channel_snapshots_research_channel_id_idx").on(table.researchChannelId)]
+);
+
+/**
+ * Phase 9 slice 9A -- same append-only shape as `marketChannelSnapshots`, for a video belonging to
+ * a watchlisted channel. No FK on `videoId` -- there is no local "videos we don't own" watchlist
+ * table yet (that is 9C's own future table, per `docs/roadmap/plans/PHASE_9_PLAN.md` §13's entity
+ * mapping), so `videoId` is a plain YouTube id, exactly like `research_evidence.observation` never
+ * references anything structured today. `publishedAt` is nullable -- not always known at snapshot
+ * time depending on which future collection path populates a row, and needed later (9D) for
+ * age-normalized comparison. **No automatic writer exists for this table in slice 9A** -- only a
+ * manual `recordVideoSnapshot` entry point; real video-enumeration collection is 9B's own scope.
+ */
+export const marketVideoSnapshots = sqliteTable(
+  "market_video_snapshots",
+  {
+    id: text("id").primaryKey(),
+    researchChannelId: text("research_channel_id")
+      .notNull()
+      .references(() => researchChannels.id),
+    videoId: text("video_id").notNull(),
+    observedAt: integer("observed_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    viewCount: integer("view_count"),
+    likeCount: integer("like_count"),
+    commentCount: integer("comment_count"),
+    publishedAt: integer("published_at", { mode: "timestamp" }),
+    // Phase 9 slice 9H part C (v28) -- nullable: `NULL` honestly means "not captured" for any
+    // snapshot taken before this column existed; never backfilled or guessed from a later
+    // snapshot's own (possibly since-changed) title.
+    title: text("title"),
+    source: text("source").notNull(),
+    createdVia: text("created_via").notNull(),
+  },
+  (table) => [
+    index("market_video_snapshots_research_channel_id_idx").on(table.researchChannelId),
+    index("market_video_snapshots_video_id_idx").on(table.videoId),
+  ]
+);
+
+/**
+ * Phase 9 slice 9B (`docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md`) -- append-only, one row per real
+ * attempt at refreshing one watchlisted channel. Serves TWO roles at once, deliberately not split
+ * into two tables: (1) the audit trail owner spec §25 requires ("failures must be visible and
+ * auditable") -- mirrors `analyticsCollectionRuns`' own precedent and role; (2) the quota ledger's
+ * own source of truth (`SUM(units_spent)` for today's UTC calendar day) -- `gatewayCallEvents`
+ * cannot serve this role, since it counts YouTube-client CONSTRUCTIONS, not real per-request unit
+ * spend (confirmed by direct inspection before this slice was designed). `videos_requested` vs.
+ * `videos_returned` disambiguates "some ids came back missing" from either extreme, honestly --
+ * `videos.list` silently omits deleted/private videos from its response with no distinguishing
+ * signal, so a gap here is reported as exactly that (a gap), never assumed to mean `deleted_video`
+ * specifically (no evidence for that stronger claim exists from this call alone).
+ */
+export const marketIntelligenceCollectionRuns = sqliteTable(
+  "market_intelligence_collection_runs",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    researchChannelId: text("research_channel_id")
+      .notNull()
+      .references(() => researchChannels.id),
+    ranAt: integer("ran_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    status: text("status", { enum: ["success", "skipped_quota_limited", "failed"] }).notNull(),
+    unitsSpent: integer("units_spent").notNull(),
+    videosRequested: integer("videos_requested"),
+    videosReturned: integer("videos_returned"),
+    errorMessage: text("error_message"),
+  },
+  (table) => [
+    index("market_intelligence_collection_runs_research_channel_id_idx").on(table.researchChannelId),
+    index("market_intelligence_collection_runs_ran_at_idx").on(table.ranAt),
+  ]
+);
+
+/**
+ * Phase 9 slice 9C (`docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md`) -- a LIFECYCLE table, not an
+ * append-only observation series like `marketChannelSnapshots`/`marketVideoSnapshots` above: one
+ * row per discovered channel, touched (never duplicated) on rediscovery. No FK to
+ * `researchChannels` -- a candidate is explicitly a PRE-watchlist entity; promotion inserts a
+ * separate `research_channels` row and keeps this one (`status: "promoted"`) as a permanent
+ * historical record.
+ */
+export const marketDiscoveryCandidates = sqliteTable("market_discovery_candidates", {
+  id: text("id").primaryKey(), // the real YouTube channel id
+  title: text("title").notNull(),
+  status: text("status", { enum: ["new", "watching", "ignored", "archived", "promoted"] }).notNull(),
+  discoverySource: text("discovery_source").notNull(),
+  discoveryQuery: text("discovery_query").notNull(),
+  reasonDiscovered: text("reason_discovered"),
+  firstSeenAt: integer("first_seen_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  lastSeenAt: integer("last_seen_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  createdVia: text("created_via").notNull(),
+});
+
+/**
+ * Phase 9 slice 9C -- this slice's own `market_intelligence_collection_runs` counterpart: append-
+ * only audit trail AND (jointly with that table, via `getMarketIntelligenceUnitsSpentSince`) the
+ * shared quota ledger's source of truth. Not scoped to any one `researchChannelId` -- a discovery
+ * run is a search, not a per-channel refresh -- so it cannot reuse that other table's own
+ * NOT-NULL-FK'd shape.
+ */
+export const marketDiscoveryRuns = sqliteTable(
+  "market_discovery_runs",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    query: text("query").notNull(),
+    ranAt: integer("ran_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    status: text("status", { enum: ["success", "failed"] }).notNull(),
+    unitsSpent: integer("units_spent").notNull(),
+    candidatesFound: integer("candidates_found"),
+    candidatesNew: integer("candidates_new"),
+    errorMessage: text("error_message"),
+  },
+  (table) => [index("market_discovery_runs_ran_at_idx").on(table.ranAt)]
+);
+
+/**
+ * Phase 9 slice 9E (`docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md`) -- a flat, operator-defined list
+ * of topic labels (owner spec §13). `name` is stored as the operator typed it (display-preserving),
+ * with a SERVICE-LEVEL normalized-uniqueness check (trim/collapse whitespace/lowercase) run before
+ * insert -- the raw SQL `UNIQUE` below is a defense-in-depth backstop for an exact-string race, not
+ * the primary duplicate-prevention mechanism (which needs case-insensitive/whitespace-normalized
+ * comparison this column's own collation cannot express).
+ */
+export const marketTopics = sqliteTable("market_topics", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  createdVia: text("created_via").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+/**
+ * Links a topic to a watchlisted channel or a video (owner spec §13's "manual associations").
+ * `subjectId` is NOT a foreign key -- a single column can't conditionally reference two different
+ * tables depending on `subjectType`, and a video has no canonical one-row-per-video table to
+ * reference anyway (9A's `market_video_snapshots` is an append-only series). A channel-type
+ * assignment is instead cascade-deleted explicitly inside `deleteResearchChannel` below, the same
+ * way every other channel-scoped table already is.
+ */
+export const marketTopicAssignments = sqliteTable(
+  "market_topic_assignments",
+  {
+    id: text("id").primaryKey(),
+    topicId: text("topic_id")
+      .notNull()
+      .references(() => marketTopics.id),
+    subjectType: text("subject_type", { enum: ["channel", "video"] }).notNull(),
+    subjectId: text("subject_id").notNull(),
+    source: text("source", { enum: ["manual", "ai_assisted"] }).notNull(),
+    createdVia: text("created_via").notNull(),
+    assignedAt: integer("assigned_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [
+    index("market_topic_assignments_topic_id_idx").on(table.topicId),
+    index("market_topic_assignments_subject_idx").on(table.subjectType, table.subjectId),
+    uniqueIndex("market_topic_assignments_unique_idx").on(table.topicId, table.subjectType, table.subjectId),
+  ]
+);
+
+/**
+ * Owner spec §14-16 -- entirely operator-created and evidenced by hand this slice (no automatic
+ * cross-referencing of 9D's own breakout/emerging signals yet, `docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md`
+ * §1). `topicId` is nullable -- a trend need not be topic-tagged yet.
+ */
+export const marketTrendCandidates = sqliteTable("market_trend_candidates", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(),
+  description: text("description"),
+  topicId: text("topic_id").references(() => marketTopics.id),
+  status: text("status", { enum: ["emerging", "growing", "established", "declining", "stale"] }).notNull(),
+  firstObservedAt: integer("first_observed_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  lastObservedAt: integer("last_observed_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  createdVia: text("created_via").notNull(),
+});
+
+/**
+ * Purpose-built for this slice, NOT a reuse of `shared-provenance`'s `EvidenceReference` -- that
+ * shape is for citing an EXTERNAL url-based source (an agent's own outside research), a mismatch
+ * for "this trend is supported by these N of our own already-tracked channels/videos."
+ */
+export const marketTrendEvidence = sqliteTable(
+  "market_trend_evidence",
+  {
+    id: text("id").primaryKey(),
+    trendCandidateId: text("trend_candidate_id")
+      .notNull()
+      .references(() => marketTrendCandidates.id),
+    evidenceType: text("evidence_type", { enum: ["supporting_channel", "supporting_video", "signal"] }).notNull(),
+    referenceId: text("reference_id"),
+    description: text("description").notNull(),
+    createdVia: text("created_via").notNull(),
+    recordedAt: integer("recorded_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [index("market_trend_evidence_trend_candidate_id_idx").on(table.trendCandidateId)]
+);
+
+/**
+ * Phase 9 slice 9G, part B (`docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md`) -- an
+ * agent-created research draft with a human-only approval gate (owner spec §29). No FK to anything
+ * -- a request is not about one specific already-watchlisted channel (its `query` may discover
+ * several, or none), mirroring `marketDiscoveryRuns`'s own FK-less shape for the identical reason.
+ * `monitorDurationDays` is stored and returned as metadata only -- no code path in this application
+ * ever reads it to decide whether/when to run anything (there is no scheduler here at all), which
+ * is the concrete, structural answer to owner spec §29's "must not automatically create unlimited
+ * collection jobs."
+ */
+export const marketResearchRequests = sqliteTable(
+  "market_research_requests",
+  {
+    id: text("id").primaryKey(),
+    query: text("query").notNull(),
+    rationale: text("rationale").notNull(),
+    monitorDurationDays: integer("monitor_duration_days"),
+    status: text("status", { enum: ["pending", "approved", "rejected", "executed", "execution_failed"] })
+      .notNull()
+      .default("pending"),
+    createdVia: text("created_via").notNull(),
+    agentApiVersion: text("agent_api_version"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    resolvedAt: integer("resolved_at", { mode: "timestamp" }),
+    resolvedReason: text("resolved_reason"),
+    candidatesFound: integer("candidates_found"),
+    candidatesNew: integer("candidates_new"),
+    executionError: text("execution_error"),
+  },
+  (table) => [index("market_research_requests_status_idx").on(table.status)]
 );
 
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
@@ -1325,6 +1625,236 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute(
         "CREATE INDEX IF NOT EXISTS research_evidence_research_channel_id_idx ON research_evidence(research_channel_id)"
       );
+    },
+  },
+  {
+    version: 23,
+    description:
+      "market_channel_snapshots, market_video_snapshots -- Phase 9 slice 9A structured, append-only public observations (docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md), referencing research_channels; never upserted by any natural key",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_channel_snapshots (" +
+          "id TEXT PRIMARY KEY, " +
+          "research_channel_id TEXT NOT NULL REFERENCES research_channels(id), " +
+          "observed_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "subscriber_count INTEGER, " +
+          "view_count INTEGER, " +
+          "video_count INTEGER, " +
+          "hidden_subscriber_count INTEGER NOT NULL DEFAULT 0, " +
+          "source TEXT NOT NULL, " +
+          "created_via TEXT NOT NULL)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_channel_snapshots_research_channel_id_idx ON market_channel_snapshots(research_channel_id)"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_video_snapshots (" +
+          "id TEXT PRIMARY KEY, " +
+          "research_channel_id TEXT NOT NULL REFERENCES research_channels(id), " +
+          "video_id TEXT NOT NULL, " +
+          "observed_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "view_count INTEGER, " +
+          "like_count INTEGER, " +
+          "comment_count INTEGER, " +
+          "published_at INTEGER, " +
+          "source TEXT NOT NULL, " +
+          "created_via TEXT NOT NULL)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_video_snapshots_research_channel_id_idx ON market_video_snapshots(research_channel_id)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_video_snapshots_video_id_idx ON market_video_snapshots(video_id)"
+      );
+    },
+  },
+  {
+    version: 24,
+    description:
+      "research_channels.last_auto_collected_at/collection_claimed_at + market_intelligence_collection_runs -- Phase 9 slice 9B repeatable refresh staleness tracking, mark-then-run concurrency claim, and append-only collection-run audit/quota log (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md)",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE research_channels ADD COLUMN last_auto_collected_at INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+      try {
+        await client.execute("ALTER TABLE research_channels ADD COLUMN collection_claimed_at INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_intelligence_collection_runs (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "research_channel_id TEXT NOT NULL REFERENCES research_channels(id), " +
+          "ran_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "status TEXT NOT NULL, " +
+          "units_spent INTEGER NOT NULL, " +
+          "videos_requested INTEGER, " +
+          "videos_returned INTEGER, " +
+          "error_message TEXT)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_intelligence_collection_runs_research_channel_id_idx ON market_intelligence_collection_runs(research_channel_id)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_intelligence_collection_runs_ran_at_idx ON market_intelligence_collection_runs(ran_at)"
+      );
+    },
+  },
+  {
+    version: 25,
+    description:
+      "market_discovery_candidates + market_discovery_runs -- Phase 9 slice 9C search.list-based discovery, candidate lifecycle, and its own append-only quota-ledger counterpart to market_intelligence_collection_runs (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_discovery_candidates (" +
+          "id TEXT PRIMARY KEY, " +
+          "title TEXT NOT NULL, " +
+          "status TEXT NOT NULL, " +
+          "discovery_source TEXT NOT NULL, " +
+          "discovery_query TEXT NOT NULL, " +
+          "reason_discovered TEXT, " +
+          "first_seen_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "last_seen_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "created_via TEXT NOT NULL)"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_discovery_runs (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "query TEXT NOT NULL, " +
+          "ran_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "status TEXT NOT NULL, " +
+          "units_spent INTEGER NOT NULL, " +
+          "candidates_found INTEGER, " +
+          "candidates_new INTEGER, " +
+          "error_message TEXT)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_discovery_runs_ran_at_idx ON market_discovery_runs(ran_at)"
+      );
+    },
+  },
+  {
+    // This migration's body was edited in place (the named-index fix below, commit 2c3662f) after
+    // it was first introduced (commit e1b43bf) rather than shipped as a new version -- normally
+    // forbidden by this file's own additive-only schema-versioning discipline (docs/decisions/0002),
+    // since the migration runner only re-applies a version once, via `version > stampedBeforeMigrations`.
+    // This was NOT actually safe in practice: this development machine's own real, production
+    // database (never a disposable copy -- see RISK-63, docs/TECHNICAL_DEBT.md) had already run this
+    // migration's ORIGINAL body (inline `UNIQUE(...)` constraint) before this edit landed, via a
+    // `next build` invocation missing its `NODE_TEST_CONTEXT=1` guard (RISK-63's own root cause).
+    // That real database is confirmed (`sqlite3 -readonly ... "PRAGMA index_list/index_info"`,
+    // 2026-09-27) to still carry the old SQLite-auto-named index for the 3-column UNIQUE constraint
+    // (`sqlite_autoindex_market_topic_assignments_2`, origin `u` -- `_1` is the primary key's own
+    // autoindex on `id`, origin `pk`, a different index entirely), permanently diverging
+    // from every fresh v26 database created after this fix, which gets the intended
+    // `market_topic_assignments_unique_idx` name instead -- a naming-only divergence (both enforce
+    // the identical constraint), tracked as part of RISK-63, not silently accepted here. See RISK-63
+    // for the full history and the owner's remediation options. This is not a repeatable pattern:
+    // every later correction on this branch (e.g. `market_research_requests` below) got its own new
+    // version number, exactly as this file's discipline requires.
+    version: 26,
+    description:
+      "market_topics + market_topic_assignments + market_trend_candidates + market_trend_evidence -- Phase 9 slice 9E topic model and manual/structural trend candidates (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_topics (" +
+          "id TEXT PRIMARY KEY, " +
+          "name TEXT NOT NULL UNIQUE, " +
+          "created_via TEXT NOT NULL, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_topic_assignments (" +
+          "id TEXT PRIMARY KEY, " +
+          "topic_id TEXT NOT NULL REFERENCES market_topics(id), " +
+          "subject_type TEXT NOT NULL, " +
+          "subject_id TEXT NOT NULL, " +
+          "source TEXT NOT NULL, " +
+          "created_via TEXT NOT NULL, " +
+          "assigned_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_topic_assignments_topic_id_idx ON market_topic_assignments(topic_id)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_topic_assignments_subject_idx ON market_topic_assignments(subject_type, subject_id)"
+      );
+      // A separate, explicitly-named CREATE UNIQUE INDEX -- not an inline table-level UNIQUE(...)
+      // constraint -- so the index name matches the Drizzle schema's own `uniqueIndex(...)`
+      // declaration exactly (found by independent code review: an inline constraint lets SQLite
+      // auto-name the index (e.g. `sqlite_autoindex_market_topic_assignments_2`, confirmed the
+      // actual real name this table's real inline constraint got -- `_1` here would have been the
+      // primary key's own autoindex, a different index), silently diverging
+      // from `market_topic_assignments_unique_idx` and breaking any future maintenance code that
+      // assumes the declared name exists). Mirrors this file's own established precedent (e.g.
+      // `analytics_weekly_reports_channel_week_idx`).
+      await client.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS market_topic_assignments_unique_idx ON market_topic_assignments(topic_id, subject_type, subject_id)"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_trend_candidates (" +
+          "id TEXT PRIMARY KEY, " +
+          "title TEXT NOT NULL, " +
+          "description TEXT, " +
+          "topic_id TEXT REFERENCES market_topics(id), " +
+          "status TEXT NOT NULL, " +
+          "first_observed_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "last_observed_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "created_via TEXT NOT NULL)"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_trend_evidence (" +
+          "id TEXT PRIMARY KEY, " +
+          "trend_candidate_id TEXT NOT NULL REFERENCES market_trend_candidates(id), " +
+          "evidence_type TEXT NOT NULL, " +
+          "reference_id TEXT, " +
+          "description TEXT NOT NULL, " +
+          "created_via TEXT NOT NULL, " +
+          "recorded_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_trend_evidence_trend_candidate_id_idx ON market_trend_evidence(trend_candidate_id)"
+      );
+    },
+  },
+  {
+    version: 27,
+    description:
+      "market_research_requests -- Phase 9 slice 9G, part B, agent-created research drafts with a human-only approval gate (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_research_requests (" +
+          "id TEXT PRIMARY KEY, " +
+          "query TEXT NOT NULL, " +
+          "rationale TEXT NOT NULL, " +
+          "monitor_duration_days INTEGER, " +
+          "status TEXT NOT NULL DEFAULT 'pending', " +
+          "created_via TEXT NOT NULL, " +
+          "agent_api_version TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "resolved_at INTEGER, " +
+          "resolved_reason TEXT, " +
+          "candidates_found INTEGER, " +
+          "candidates_new INTEGER, " +
+          "execution_error TEXT)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_research_requests_status_idx ON market_research_requests(status)"
+      );
+    },
+  },
+  {
+    version: 28,
+    description:
+      "market_video_snapshots.title -- Phase 9 slice 9H part C, capturing a field getPublicVideoSnapshots already fetches at zero extra quota cost but 9B's own collector previously discarded (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_C_PLAN.md)",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE market_video_snapshots ADD COLUMN title TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
     },
   },
 ];
@@ -4244,6 +4774,8 @@ export type StoredResearchChannel = {
   reason: string;
   createdVia: string;
   addedAt: Date;
+  lastAutoCollectedAt: Date | null;
+  collectionClaimedAt: Date | null;
 };
 
 export async function insertResearchChannel(
@@ -4319,11 +4851,923 @@ export async function listResearchEvidenceByChannel(
  * FK-ordering discipline this codebase already learned the hard way in
  * `sync-gateway/change-drafts/services.ts`'s `discardLocalAndAdoptPeer` (RISK-46): deleting the
  * parent first, under `foreign_keys=ON`, would either fail the constraint or (if constraints were
- * ever relaxed) silently orphan evidence rows.
+ * ever relaxed) silently orphan evidence rows. Widened for slice 9A to also cascade-delete both new
+ * snapshot tables, for the identical reason -- they carry the same FK onto `researchChannels.id`.
  */
 export async function deleteResearchChannel(id: string, database: AppDb = db): Promise<void> {
   await database.transaction(async (tx) => {
     await tx.delete(researchEvidence).where(eq(researchEvidence.researchChannelId, id));
+    await tx.delete(marketChannelSnapshots).where(eq(marketChannelSnapshots.researchChannelId, id));
+    await tx.delete(marketVideoSnapshots).where(eq(marketVideoSnapshots.researchChannelId, id));
+    // Phase 9 slice 9B -- widened for the same FK-ordering reason as the two tables above.
+    await tx.delete(marketIntelligenceCollectionRuns).where(eq(marketIntelligenceCollectionRuns.researchChannelId, id));
+    // Phase 9 slice 9E -- market_topic_assignments carries no FK for subjectId (see its own doc
+    // comment), so this delete would not fail without this line -- cascaded anyway for data
+    // hygiene, the same discipline every other channel-scoped table here already follows (found
+    // necessary by advisor review: an orphaned assignment row pointing at a deleted channel id is
+    // exactly the kind of stale reference this codebase's own cascade-delete convention exists to
+    // prevent).
+    await tx
+      .delete(marketTopicAssignments)
+      .where(and(eq(marketTopicAssignments.subjectType, "channel"), eq(marketTopicAssignments.subjectId, id)));
+    // Found by independent review (2026-09-29): a discovery candidate's own `id` IS the real
+    // channel id (no FK), and `promoteDiscoveryCandidate` leaves its row at `status: "promoted"`
+    // after creating the matching `researchChannels` row -- without this, removing that channel
+    // from the watchlist left the candidate permanently stuck at "promoted" with no way back
+    // (`promoteDiscoveryCandidate` refuses re-promotion, `updateDiscoveryCandidateStatus` refuses
+    // to touch an already-"promoted" row). Scoped to `status: "promoted"` only -- a non-promoted
+    // candidate that merely happens to share this id from an unrelated, later discovery search is
+    // a separate, still-actionable candidate and must not be deleted just because this channel was
+    // also (separately) removed from the watchlist.
+    await tx
+      .delete(marketDiscoveryCandidates)
+      .where(and(eq(marketDiscoveryCandidates.id, id), eq(marketDiscoveryCandidates.status, "promoted")));
     await tx.delete(researchChannels).where(eq(researchChannels.id, id));
   });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9A (`docs/roadmap/plans/PHASE_9_SLICE_9A_PLAN.md`) -- structured, append-only
+// market snapshots. Read/written only by `src/lib/market-intelligence/adapters/store.ts`.
+// ---------------------------------------------------------------------------
+
+export type StoredMarketChannelSnapshot = {
+  id: string;
+  researchChannelId: string;
+  observedAt: Date;
+  subscriberCount: number | null;
+  viewCount: number | null;
+  videoCount: number | null;
+  hiddenSubscriberCount: boolean;
+  source: string;
+  createdVia: string;
+};
+
+export async function insertMarketChannelSnapshot(
+  input: {
+    id: string;
+    researchChannelId: string;
+    subscriberCount?: number | null;
+    viewCount?: number | null;
+    videoCount?: number | null;
+    hiddenSubscriberCount?: boolean;
+    source: string;
+    createdVia: string;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketChannelSnapshots).values({
+    id: input.id,
+    researchChannelId: input.researchChannelId,
+    subscriberCount: input.subscriberCount ?? null,
+    viewCount: input.viewCount ?? null,
+    videoCount: input.videoCount ?? null,
+    hiddenSubscriberCount: input.hiddenSubscriberCount ?? false,
+    source: input.source,
+    createdVia: input.createdVia,
+  });
+}
+
+// Oldest first -- deliberately the opposite order from `listResearchEvidenceByChannel`'s
+// newest-first convention: this is the natural order `derived-metrics.ts`'s delta/velocity
+// functions expect once a future slice wires them up to a real read path (not yet done as of
+// slice 9A -- corrected 2026-09-26, independent review round 2, after an earlier version of this
+// comment claimed derived-metrics.ts already consumes this list, which no production code does).
+export async function listMarketChannelSnapshotsByChannel(
+  researchChannelId: string,
+  database: AppDb = db
+): Promise<StoredMarketChannelSnapshot[]> {
+  return database
+    .select()
+    .from(marketChannelSnapshots)
+    .where(eq(marketChannelSnapshots.researchChannelId, researchChannelId))
+    .orderBy(asc(marketChannelSnapshots.observedAt));
+}
+
+export type StoredMarketVideoSnapshot = {
+  id: string;
+  researchChannelId: string;
+  videoId: string;
+  observedAt: Date;
+  viewCount: number | null;
+  likeCount: number | null;
+  commentCount: number | null;
+  publishedAt: Date | null;
+  title: string | null;
+  source: string;
+  createdVia: string;
+};
+
+export async function insertMarketVideoSnapshot(
+  input: {
+    id: string;
+    researchChannelId: string;
+    videoId: string;
+    viewCount?: number | null;
+    likeCount?: number | null;
+    commentCount?: number | null;
+    publishedAt?: Date | null;
+    title?: string | null;
+    source: string;
+    createdVia: string;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketVideoSnapshots).values({
+    id: input.id,
+    researchChannelId: input.researchChannelId,
+    videoId: input.videoId,
+    viewCount: input.viewCount ?? null,
+    likeCount: input.likeCount ?? null,
+    commentCount: input.commentCount ?? null,
+    publishedAt: input.publishedAt ?? null,
+    title: input.title ?? null,
+    source: input.source,
+    createdVia: input.createdVia,
+  });
+}
+
+// Oldest first -- same rationale as listMarketChannelSnapshotsByChannel above.
+export async function listMarketVideoSnapshotsByChannel(
+  researchChannelId: string,
+  database: AppDb = db
+): Promise<StoredMarketVideoSnapshot[]> {
+  return database
+    .select()
+    .from(marketVideoSnapshots)
+    .where(eq(marketVideoSnapshots.researchChannelId, researchChannelId))
+    .orderBy(asc(marketVideoSnapshots.observedAt));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9B (`docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md`) -- repeatable-refresh staleness
+// tracking and the append-only collection-run audit/quota log. Read/written only by
+// `src/lib/market-intelligence/adapters/store.ts`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirrors `markAnalyticsAutoCollected`'s own shape exactly, scoped to `research_channels`. Called
+ * ONLY after a genuine successful refresh of this specific channel -- never as a side effect of
+ * the overall collection run, so a channel skipped for budget reasons stays stale for next time.
+ */
+export async function markResearchChannelAutoCollected(
+  researchChannelId: string,
+  at: Date,
+  database: AppDb = db
+): Promise<void> {
+  await database
+    .update(researchChannels)
+    .set({ lastAutoCollectedAt: at })
+    .where(eq(researchChannels.id, researchChannelId));
+}
+
+/**
+ * The atomic mark-then-run concurrency claim (see `researchChannels.collectionClaimedAt`'s own
+ * doc comment for why this is a separate column from `lastAutoCollectedAt`, rather than reusing
+ * `markResearchChannelAutoCollected` above for both roles). A single `UPDATE ... WHERE ...
+ * RETURNING` -- never a separate read followed by a write -- so two callers racing this exact
+ * statement can never both see themselves as the winner for the same channel id: SQLite serializes
+ * the two statements, and only the first to actually run matches the `WHERE` clause's own
+ * "not already claimed" condition, so the second's `RETURNING` set excludes it (verified directly
+ * against this project's own libsql driver, not assumed from SQLite's general reputation, before
+ * this function was written).
+ *
+ * `excludeResearchChannelIds` is the caller's own "recently failed" backoff list
+ * (`listRecentlyFailedResearchChannelIds` below) -- computed as a separate, plain read rather than
+ * folded into this one atomic statement, since it is a soft prioritization heuristic, not a
+ * correctness-critical lock (a channel that slips through this exclusion by a race is merely
+ * retried a little sooner than ideal, never double-charged).
+ */
+export async function claimStaleResearchChannelsForCollection(
+  args: { now: Date; staleCutoff: Date; claimExpiryCutoff: Date; excludeResearchChannelIds: string[] },
+  database: AppDb = db
+): Promise<string[]> {
+  const conditions = [
+    or(isNull(researchChannels.lastAutoCollectedAt), lt(researchChannels.lastAutoCollectedAt, args.staleCutoff)),
+    or(isNull(researchChannels.collectionClaimedAt), lt(researchChannels.collectionClaimedAt, args.claimExpiryCutoff)),
+  ];
+  if (args.excludeResearchChannelIds.length > 0) {
+    conditions.push(notInArray(researchChannels.id, args.excludeResearchChannelIds));
+  }
+
+  const rows = await database
+    .update(researchChannels)
+    .set({ collectionClaimedAt: args.now })
+    .where(and(...conditions))
+    .returning({ id: researchChannels.id });
+
+  return rows.map((row) => row.id);
+}
+
+/**
+ * Releases one channel's claim once its attempt reaches ANY terminal outcome (success, failure, or
+ * a quota-limited skip) -- called unconditionally in the orchestration's own `finally`, so a claim
+ * never outlives the single collection pass that took it, regardless of that pass's own duration
+ * (`claimExpiryCutoff` above exists only as a crash-safety fallback, not as the normal release
+ * path).
+ */
+export async function releaseResearchChannelCollectionClaim(
+  researchChannelId: string,
+  database: AppDb = db
+): Promise<void> {
+  await database
+    .update(researchChannels)
+    .set({ collectionClaimedAt: null })
+    .where(eq(researchChannels.id, researchChannelId));
+}
+
+/**
+ * The failure-retry backoff (advisor review before implementation: without this, a permanently
+ * broken channel -- e.g. deleted or made private -- would be re-attempted, spending at least one
+ * real YouTube API unit, on every single dashboard mount, all day, forever). A channel with ANY
+ * `status: "failed"` row within `since` is excluded from the next claim -- not specifically its
+ * MOST RECENT row (found by independent review: the two are equivalent today, since a failure
+ * itself blocks re-claiming that same channel again within this same window, so no later row can
+ * exist yet -- but this function's own behavior, not that current-callsite equivalence, is what's
+ * documented here, so a future second writer to this table doesn't inherit a stale assumption).
+ * Reuses the same window as the staleness check itself (this module owns no separate
+ * backoff-duration concept, `AGENTS.md` §M: no new shared constant introduced for one caller).
+ */
+export async function listRecentlyFailedResearchChannelIds(since: Date, database: AppDb = db): Promise<string[]> {
+  const rows = await database
+    .select({ researchChannelId: marketIntelligenceCollectionRuns.researchChannelId })
+    .from(marketIntelligenceCollectionRuns)
+    .where(and(eq(marketIntelligenceCollectionRuns.status, "failed"), gte(marketIntelligenceCollectionRuns.ranAt, since)));
+  return [...new Set(rows.map((row) => row.researchChannelId))];
+}
+
+/**
+ * Appends one audit/quota-ledger row (`marketIntelligenceCollectionRuns`'s own doc comment
+ * explains the dual role). Never updated once written -- a genuinely new attempt is always a new
+ * row, matching every other append-only table this module owns.
+ */
+export async function insertMarketIntelligenceCollectionRun(
+  input: {
+    researchChannelId: string;
+    status: "success" | "skipped_quota_limited" | "failed";
+    unitsSpent: number;
+    videosRequested?: number | null;
+    videosReturned?: number | null;
+    errorMessage?: string | null;
+    // Injectable so the orchestration's own staleness/backoff-window tests can control exactly
+    // what this row's ranAt reads as -- omitted (real callers outside a test) defaults to the
+    // table's own `$defaultFn(() => new Date())`, unchanged from before this parameter existed.
+    ranAt?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketIntelligenceCollectionRuns).values({
+    researchChannelId: input.researchChannelId,
+    status: input.status,
+    unitsSpent: input.unitsSpent,
+    videosRequested: input.videosRequested ?? null,
+    videosReturned: input.videosReturned ?? null,
+    errorMessage: input.errorMessage ?? null,
+    ...(input.ranAt ? { ranAt: input.ranAt } : {}),
+  });
+}
+
+export type StoredMarketIntelligenceCollectionRun = {
+  id: number;
+  researchChannelId: string;
+  ranAt: Date;
+  status: "success" | "skipped_quota_limited" | "failed";
+  unitsSpent: number;
+  videosRequested: number | null;
+  videosReturned: number | null;
+  errorMessage: string | null;
+};
+
+/**
+ * Phase 9 slice 9G, part A -- the one row-per-channel lookup this table never had before (only the
+ * aggregate `getMarketIntelligenceUnitsSpentSince` sum existed). Used to derive this channel's own
+ * `dataQualityFlags` (`missing_snapshot`/`quota_limited`) in `getWatchlistEntryContext`. `null` when
+ * this channel has never been collected at all -- a plain, unremarkable fact, not itself a flag.
+ */
+export async function getLatestMarketIntelligenceCollectionRunForChannel(
+  researchChannelId: string,
+  database: AppDb = db
+): Promise<StoredMarketIntelligenceCollectionRun | null> {
+  const [row] = await database
+    .select()
+    .from(marketIntelligenceCollectionRuns)
+    .where(eq(marketIntelligenceCollectionRuns.researchChannelId, researchChannelId))
+    .orderBy(desc(marketIntelligenceCollectionRuns.ranAt))
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * The quota ledger's own read side: total real YouTube API units spent by market-intelligence
+ * -- collection (`market_intelligence_collection_runs`) AND, as of Phase 9 slice 9C, discovery
+ * (`market_discovery_runs`) -- since `since` (the caller passes the start of "today," a plain UTC
+ * calendar day boundary -- deliberately NOT Pacific-Time-aligned like `cloud-quotas`' own display,
+ * per this slice's own `AGENTS.md` §M module-independence constraint; the Settings UI labels this
+ * window explicitly so it is never confused with that other, differently-windowed number). Sums
+ * every row regardless of `status` -- a `skipped_quota_limited`/`failed` collection row, or a
+ * `failed` discovery row, still has a real, already-spent `unitsSpent` that must count against the
+ * budget. Both tables are summed here (not one call site adding them itself) because both slices
+ * share ONE operator-set daily budget (owner decision 2) -- there is no per-feature sub-budget.
+ */
+export async function getMarketIntelligenceUnitsSpentSince(since: Date, database: AppDb = db): Promise<number> {
+  const [collectionRow] = await database
+    .select({ total: sql<number | null>`SUM(${marketIntelligenceCollectionRuns.unitsSpent})` })
+    .from(marketIntelligenceCollectionRuns)
+    .where(gte(marketIntelligenceCollectionRuns.ranAt, since));
+  const [discoveryRow] = await database
+    .select({ total: sql<number | null>`SUM(${marketDiscoveryRuns.unitsSpent})` })
+    .from(marketDiscoveryRuns)
+    .where(gte(marketDiscoveryRuns.ranAt, since));
+  return (collectionRow?.total ?? 0) + (discoveryRow?.total ?? 0);
+}
+
+const MARKET_INTELLIGENCE_DAILY_QUOTA_BUDGET_SETTING_KEY = "market_intelligence_daily_quota_budget_units";
+
+/**
+ * `null` (never set, or explicitly cleared) means auto-collection is OFF -- "the operator sets the
+ * number, no hardcoded default" (owner decision, `PHASE_9_PLAN.md` §12 item 2). Stored as a plain
+ * string in `app_settings` like every other setting; parsed defensively (a corrupted/non-numeric
+ * stored value is treated as unset rather than throwing on every dashboard load).
+ */
+export async function getMarketIntelligenceDailyQuotaBudgetUnits(database: AppDb = db): Promise<number | null> {
+  const raw = await getAppSetting(MARKET_INTELLIGENCE_DAILY_QUOTA_BUDGET_SETTING_KEY, database);
+  // `""` (an explicitly-cleared setting, see the setter below) must be treated the same as a
+  // never-set row (`null`) -- `Number("")` is `0`, not `NaN`, so this check cannot be folded into
+  // the `Number.isFinite`/`> 0` guard below without relying on that coincidence.
+  if (raw === null || raw === "") return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : null;
+}
+
+/** `null` clears the setting (equivalent to "off"); validation of the range is the caller's job
+ * (the API route boundary), same convention `setAnalyticsSyncSettings` already uses. */
+export async function setMarketIntelligenceDailyQuotaBudgetUnits(units: number | null, database: AppDb = db): Promise<void> {
+  await setAppSetting(MARKET_INTELLIGENCE_DAILY_QUOTA_BUDGET_SETTING_KEY, units === null ? "" : String(units), database);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9C (`docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md`) -- search.list-based discovery
+// and the candidate lifecycle. Read/written only by `src/lib/market-intelligence/adapters/store.ts`.
+// ---------------------------------------------------------------------------
+
+export type DiscoveryCandidateStatus = "new" | "watching" | "ignored" | "archived" | "promoted";
+
+export type StoredMarketDiscoveryCandidate = {
+  id: string;
+  title: string;
+  status: DiscoveryCandidateStatus;
+  discoverySource: string;
+  discoveryQuery: string;
+  reasonDiscovered: string | null;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+  createdVia: string;
+};
+
+export async function getMarketDiscoveryCandidateById(
+  channelId: string,
+  database: AppDb = db
+): Promise<StoredMarketDiscoveryCandidate | null> {
+  const [row] = await database.select().from(marketDiscoveryCandidates).where(eq(marketDiscoveryCandidates.id, channelId));
+  return row ?? null;
+}
+
+// Newest lastSeenAt first -- a rediscovered (still-relevant) candidate surfaces above one nobody
+// has seen again in a long time, unlike the append-only snapshot tables' oldest-first convention
+// (which exists there to replay a time series in order; this is a lifecycle list, not a series).
+export async function listMarketDiscoveryCandidates(database: AppDb = db): Promise<StoredMarketDiscoveryCandidate[]> {
+  return database.select().from(marketDiscoveryCandidates).orderBy(desc(marketDiscoveryCandidates.lastSeenAt));
+}
+
+export async function insertMarketDiscoveryCandidate(
+  input: {
+    id: string;
+    title: string;
+    discoverySource: string;
+    discoveryQuery: string;
+    reasonDiscovered?: string | null;
+    createdVia: string;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketDiscoveryCandidates).values({
+    id: input.id,
+    title: input.title,
+    status: "new",
+    discoverySource: input.discoverySource,
+    discoveryQuery: input.discoveryQuery,
+    reasonDiscovered: input.reasonDiscovered ?? null,
+    createdVia: input.createdVia,
+  });
+}
+
+/** Rediscovery never duplicates the row or touches `status` -- only `lastSeenAt` moves. */
+export async function touchMarketDiscoveryCandidateLastSeen(
+  channelId: string,
+  at: Date,
+  database: AppDb = db
+): Promise<void> {
+  await database.update(marketDiscoveryCandidates).set({ lastSeenAt: at }).where(eq(marketDiscoveryCandidates.id, channelId));
+}
+
+export async function setMarketDiscoveryCandidateStatus(
+  channelId: string,
+  status: DiscoveryCandidateStatus,
+  database: AppDb = db
+): Promise<void> {
+  await database.update(marketDiscoveryCandidates).set({ status }).where(eq(marketDiscoveryCandidates.id, channelId));
+}
+
+/**
+ * Appends one audit/quota-ledger row -- this slice's own `insertMarketIntelligenceCollectionRun`
+ * counterpart. Never updated once written.
+ */
+export async function insertMarketDiscoveryRun(
+  input: {
+    query: string;
+    status: "success" | "failed";
+    unitsSpent: number;
+    candidatesFound?: number | null;
+    candidatesNew?: number | null;
+    errorMessage?: string | null;
+    ranAt?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketDiscoveryRuns).values({
+    query: input.query,
+    status: input.status,
+    unitsSpent: input.unitsSpent,
+    candidatesFound: input.candidatesFound ?? null,
+    candidatesNew: input.candidatesNew ?? null,
+    errorMessage: input.errorMessage ?? null,
+    ...(input.ranAt ? { ranAt: input.ranAt } : {}),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9E (`docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md`) -- topic model and manual/
+// structural trend candidates. Read/written only by `src/lib/market-intelligence/adapters/store.ts`.
+// ---------------------------------------------------------------------------
+
+export type TopicAssignmentSubjectType = "channel" | "video";
+export type TopicAssignmentSource = "manual" | "ai_assisted";
+export type TrendCandidateStatus = "emerging" | "growing" | "established" | "declining" | "stale";
+export type TrendEvidenceType = "supporting_channel" | "supporting_video" | "signal";
+
+export type StoredMarketTopic = {
+  id: string;
+  name: string;
+  createdVia: string;
+  createdAt: Date;
+};
+
+export async function listMarketTopics(database: AppDb = db): Promise<StoredMarketTopic[]> {
+  return database.select().from(marketTopics).orderBy(asc(marketTopics.name));
+}
+
+export async function getMarketTopicById(topicId: string, database: AppDb = db): Promise<StoredMarketTopic | null> {
+  const [row] = await database.select().from(marketTopics).where(eq(marketTopics.id, topicId));
+  return row ?? null;
+}
+
+export async function insertMarketTopic(
+  input: { id: string; name: string; createdVia: string },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketTopics).values({ id: input.id, name: input.name, createdVia: input.createdVia });
+}
+
+/**
+ * Cascades its own assignments first, same FK-ordering discipline as `deleteResearchChannel`.
+ * `market_trend_candidates.topic_id` is a NULLABLE FK -- a trend candidate tagged with this topic
+ * is detached (its own `topic_id` set `NULL`), never deleted, since removing a topic label is not a
+ * reason to lose an otherwise-independent trend candidate's own evidence history.
+ */
+export async function deleteMarketTopic(topicId: string, database: AppDb = db): Promise<void> {
+  await database.transaction(async (tx) => {
+    await tx.delete(marketTopicAssignments).where(eq(marketTopicAssignments.topicId, topicId));
+    await tx.update(marketTrendCandidates).set({ topicId: null }).where(eq(marketTrendCandidates.topicId, topicId));
+    await tx.delete(marketTopics).where(eq(marketTopics.id, topicId));
+  });
+}
+
+export type StoredMarketTopicAssignment = {
+  id: string;
+  topicId: string;
+  subjectType: TopicAssignmentSubjectType;
+  subjectId: string;
+  source: TopicAssignmentSource;
+  createdVia: string;
+  assignedAt: Date;
+};
+
+export async function listAssignmentsForTopic(topicId: string, database: AppDb = db): Promise<StoredMarketTopicAssignment[]> {
+  return database
+    .select()
+    .from(marketTopicAssignments)
+    .where(eq(marketTopicAssignments.topicId, topicId))
+    .orderBy(desc(marketTopicAssignments.assignedAt));
+}
+
+export async function listTopicsForSubject(
+  subjectType: TopicAssignmentSubjectType,
+  subjectId: string,
+  database: AppDb = db
+): Promise<StoredMarketTopicAssignment[]> {
+  return database
+    .select()
+    .from(marketTopicAssignments)
+    .where(and(eq(marketTopicAssignments.subjectType, subjectType), eq(marketTopicAssignments.subjectId, subjectId)));
+}
+
+/**
+ * Phase 9 slice 9H part C -- every assignment for one `subjectType` regardless of `subjectId`,
+ * covered by the existing `market_topic_assignments_subject_idx(subject_type, subject_id)`
+ * composite index. `listTopicsForSubject` above takes one `subjectId` at a time; a caller needing
+ * every video-subject assignment across a whole watchlist (this slice's own `getMarketVideosOverview`)
+ * would otherwise have to call it once per video (a real N+1) -- this is the single bulk read
+ * instead.
+ */
+export async function listMarketTopicAssignmentsBySubjectType(
+  subjectType: TopicAssignmentSubjectType,
+  database: AppDb = db
+): Promise<StoredMarketTopicAssignment[]> {
+  return database.select().from(marketTopicAssignments).where(eq(marketTopicAssignments.subjectType, subjectType));
+}
+
+export async function getTopicAssignment(
+  topicId: string,
+  subjectType: TopicAssignmentSubjectType,
+  subjectId: string,
+  database: AppDb = db
+): Promise<StoredMarketTopicAssignment | null> {
+  const [row] = await database
+    .select()
+    .from(marketTopicAssignments)
+    .where(
+      and(
+        eq(marketTopicAssignments.topicId, topicId),
+        eq(marketTopicAssignments.subjectType, subjectType),
+        eq(marketTopicAssignments.subjectId, subjectId)
+      )
+    );
+  return row ?? null;
+}
+
+export async function insertMarketTopicAssignment(
+  input: {
+    id: string;
+    topicId: string;
+    subjectType: TopicAssignmentSubjectType;
+    subjectId: string;
+    source: TopicAssignmentSource;
+    createdVia: string;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketTopicAssignments).values({
+    id: input.id,
+    topicId: input.topicId,
+    subjectType: input.subjectType,
+    subjectId: input.subjectId,
+    source: input.source,
+    createdVia: input.createdVia,
+  });
+}
+
+export async function deleteMarketTopicAssignment(assignmentId: string, database: AppDb = db): Promise<void> {
+  await database.delete(marketTopicAssignments).where(eq(marketTopicAssignments.id, assignmentId));
+}
+
+export type StoredMarketTrendCandidate = {
+  id: string;
+  title: string;
+  description: string | null;
+  topicId: string | null;
+  status: TrendCandidateStatus;
+  firstObservedAt: Date;
+  lastObservedAt: Date;
+  createdVia: string;
+};
+
+export async function listMarketTrendCandidates(database: AppDb = db): Promise<StoredMarketTrendCandidate[]> {
+  return database.select().from(marketTrendCandidates).orderBy(desc(marketTrendCandidates.lastObservedAt));
+}
+
+export async function getMarketTrendCandidateById(
+  trendCandidateId: string,
+  database: AppDb = db
+): Promise<StoredMarketTrendCandidate | null> {
+  const [row] = await database.select().from(marketTrendCandidates).where(eq(marketTrendCandidates.id, trendCandidateId));
+  return row ?? null;
+}
+
+/**
+ * Atomic wrapper -- inserts a trend candidate AND its required initial evidence row in a single
+ * `database.transaction()`, mirroring `deleteResearchChannel`'s own established cascade-transaction
+ * pattern (found by independent review: an earlier version called `insertMarketTrendCandidate`/
+ * `insertMarketTrendEvidence` as two separate top-level writes, which let a throw between them
+ * leave a trend candidate with zero evidence rows -- the exact invariant spec §14 and this
+ * table's own schema-level `initialEvidence` requirement exist to prevent). Closes
+ * `docs/TECHNICAL_DEBT.md` RISK-70.
+ */
+export async function insertMarketTrendCandidateWithInitialEvidence(
+  candidate: {
+    id: string;
+    title: string;
+    description?: string | null;
+    topicId?: string | null;
+    createdVia: string;
+    at?: Date;
+  },
+  initialEvidence: {
+    id: string;
+    evidenceType: TrendEvidenceType;
+    referenceId?: string | null;
+    description: string;
+    createdVia: string;
+  },
+  database: AppDb = db
+): Promise<void> {
+  // Builds queries directly against `tx` (matching `deleteResearchChannel`'s own established
+  // convention) rather than delegating to `insertMarketTrendCandidate`/`insertMarketTrendEvidence`
+  // -- drizzle's transaction callback type lacks `AppDb`'s top-level `.batch()` method, so it is not
+  // assignable to those functions' `database: AppDb` parameter.
+  await database.transaction(async (tx) => {
+    await tx.insert(marketTrendCandidates).values({
+      id: candidate.id,
+      title: candidate.title,
+      description: candidate.description ?? null,
+      topicId: candidate.topicId ?? null,
+      status: "emerging",
+      createdVia: candidate.createdVia,
+      ...(candidate.at ? { firstObservedAt: candidate.at, lastObservedAt: candidate.at } : {}),
+    });
+    await tx.insert(marketTrendEvidence).values({
+      id: initialEvidence.id,
+      trendCandidateId: candidate.id,
+      evidenceType: initialEvidence.evidenceType,
+      referenceId: initialEvidence.referenceId ?? null,
+      description: initialEvidence.description,
+      createdVia: initialEvidence.createdVia,
+      // Same clock-source fix as firstObservedAt/lastObservedAt above (found by independent
+      // review): without this, the evidence row's own recordedAt fell back to real wall-clock
+      // time even under an injected/frozen clock, so it could sort as "recorded before" the
+      // candidate it documents ever existed.
+      ...(candidate.at ? { recordedAt: candidate.at } : {}),
+    });
+  });
+}
+
+export async function insertMarketTrendCandidate(
+  input: {
+    id: string;
+    title: string;
+    description?: string | null;
+    topicId?: string | null;
+    createdVia: string;
+    /** Explicit creation instant for both `firstObservedAt`/`lastObservedAt` -- accepted so the
+     * service layer's injected clock is the single source of truth for this row's timestamps,
+     * never this column's own `$defaultFn` real-wall-clock default (found by independent code
+     * review: the service layer's very next call, `touchMarketTrendCandidateLastObservedAt`,
+     * already used `deps.clock.now()`, so omitting this parameter let `firstObservedAt` and
+     * `lastObservedAt` end up stamped from two different clock sources for the same creation
+     * moment). Falls back to the column default only when a caller genuinely has no clock to
+     * inject.
+     */
+    at?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketTrendCandidates).values({
+    id: input.id,
+    title: input.title,
+    description: input.description ?? null,
+    topicId: input.topicId ?? null,
+    status: "emerging",
+    createdVia: input.createdVia,
+    ...(input.at ? { firstObservedAt: input.at, lastObservedAt: input.at } : {}),
+  });
+}
+
+export async function touchMarketTrendCandidateLastObservedAt(
+  trendCandidateId: string,
+  at: Date,
+  database: AppDb = db
+): Promise<void> {
+  await database.update(marketTrendCandidates).set({ lastObservedAt: at }).where(eq(marketTrendCandidates.id, trendCandidateId));
+}
+
+/**
+ * Atomic wrapper -- changes status AND records its own `signal` evidence row in a single
+ * `database.transaction()` (found by independent review: two separate top-level writes let either
+ * ordering fail honestly in only one direction -- evidence-then-status left a false "status
+ * changed" narrative if the status write then failed; status-then-evidence left a real status
+ * change with no evidence trail if the evidence write then failed, contradicting this table's own
+ * "a status can never move without a corresponding evidence trail" invariant documented throughout
+ * this module). A transaction makes both problems moot -- either both writes land or neither does.
+ */
+export async function updateMarketTrendCandidateStatusWithEvidence(
+  trendCandidateId: string,
+  status: TrendCandidateStatus,
+  at: Date,
+  evidence: { id: string; description: string; createdVia: string },
+  database: AppDb = db
+): Promise<void> {
+  // Builds queries directly against `tx` -- see `insertMarketTrendCandidateWithInitialEvidence`'s own
+  // doc comment for why this doesn't delegate to the single-write functions above.
+  await database.transaction(async (tx) => {
+    await tx.update(marketTrendCandidates).set({ status, lastObservedAt: at }).where(eq(marketTrendCandidates.id, trendCandidateId));
+    await tx.insert(marketTrendEvidence).values({
+      id: evidence.id,
+      trendCandidateId,
+      evidenceType: "signal",
+      referenceId: null,
+      description: evidence.description,
+      createdVia: evidence.createdVia,
+      // Same clock-source fix as insertMarketTrendCandidateWithInitialEvidence above (found by
+      // independent review): this evidence row documents the status change happening at `at`, so
+      // it must be stamped from the same clock, not real wall-clock time.
+      recordedAt: at,
+    });
+  });
+}
+
+export type StoredMarketTrendEvidence = {
+  id: string;
+  trendCandidateId: string;
+  evidenceType: TrendEvidenceType;
+  referenceId: string | null;
+  description: string;
+  createdVia: string;
+  recordedAt: Date;
+};
+
+export async function listTrendEvidence(trendCandidateId: string, database: AppDb = db): Promise<StoredMarketTrendEvidence[]> {
+  return database
+    .select()
+    .from(marketTrendEvidence)
+    .where(eq(marketTrendEvidence.trendCandidateId, trendCandidateId))
+    .orderBy(asc(marketTrendEvidence.recordedAt));
+}
+
+export async function insertMarketTrendEvidence(
+  input: {
+    id: string;
+    trendCandidateId: string;
+    evidenceType: TrendEvidenceType;
+    referenceId?: string | null;
+    description: string;
+    createdVia: string;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketTrendEvidence).values({
+    id: input.id,
+    trendCandidateId: input.trendCandidateId,
+    evidenceType: input.evidenceType,
+    referenceId: input.referenceId ?? null,
+    description: input.description,
+    createdVia: input.createdVia,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md) --
+// agent-created research requests. Read/written only by `src/lib/market-intelligence/
+// adapters/store.ts`.
+// ---------------------------------------------------------------------------
+
+export type MarketResearchRequestStatus = "pending" | "approved" | "rejected" | "executed" | "execution_failed";
+
+export type StoredMarketResearchRequest = {
+  id: string;
+  query: string;
+  rationale: string;
+  monitorDurationDays: number | null;
+  status: MarketResearchRequestStatus;
+  createdVia: string;
+  agentApiVersion: string | null;
+  createdAt: Date;
+  resolvedAt: Date | null;
+  resolvedReason: string | null;
+  candidatesFound: number | null;
+  candidatesNew: number | null;
+  executionError: string | null;
+};
+
+export async function insertMarketResearchRequest(
+  input: {
+    id: string;
+    query: string;
+    rationale: string;
+    monitorDurationDays?: number | null;
+    createdVia: string;
+    agentApiVersion?: string | null;
+    /** Explicit creation instant for `createdAt` -- accepted for the same reason
+     * `insertMarketTrendCandidate` accepts one (found by independent code review): a later
+     * approve/reject transition stamps `resolvedAt` from the service layer's injected
+     * `deps.clock.now()`, so leaving this row's own `createdAt` to the column's real-wall-clock
+     * `$defaultFn` default risks a `resolvedAt` earlier than `createdAt` under a mocked/frozen
+     * clock. Falls back to the column default only when a caller genuinely has no clock to inject.
+     */
+    at?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketResearchRequests).values({
+    id: input.id,
+    query: input.query,
+    rationale: input.rationale,
+    monitorDurationDays: input.monitorDurationDays ?? null,
+    status: "pending",
+    createdVia: input.createdVia,
+    agentApiVersion: input.agentApiVersion ?? null,
+    ...(input.at ? { createdAt: input.at } : {}),
+  });
+}
+
+export async function getMarketResearchRequestById(
+  id: string,
+  database: AppDb = db
+): Promise<StoredMarketResearchRequest | null> {
+  const [row] = await database.select().from(marketResearchRequests).where(eq(marketResearchRequests.id, id));
+  return row ?? null;
+}
+
+export async function listMarketResearchRequests(database: AppDb = db): Promise<StoredMarketResearchRequest[]> {
+  return database.select().from(marketResearchRequests).orderBy(desc(marketResearchRequests.createdAt));
+}
+
+/**
+ * The one atomic conditional transition this slice's own approval integrity depends on --
+ * `WHERE status='pending'` means a double-click or two-tab race can never both succeed (mirrors
+ * `claimStaleResearchChannelsForCollection`'s own established shape). `null` covers both "already
+ * resolved by a concurrent call" and "already resolved earlier" -- the caller distinguishes a
+ * genuinely unknown id via its own upfront existence read, not from this function's return value.
+ */
+export async function approveMarketResearchRequestIfPending(
+  id: string,
+  at: Date,
+  database: AppDb = db
+): Promise<StoredMarketResearchRequest | null> {
+  const rows = await database
+    .update(marketResearchRequests)
+    .set({ status: "approved", resolvedAt: at })
+    .where(and(eq(marketResearchRequests.id, id), eq(marketResearchRequests.status, "pending")))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** Same atomic shape as the function above, transitioning `pending -> rejected` instead. */
+export async function rejectMarketResearchRequestIfPending(
+  id: string,
+  reason: string,
+  at: Date,
+  database: AppDb = db
+): Promise<StoredMarketResearchRequest | null> {
+  const rows = await database
+    .update(marketResearchRequests)
+    .set({ status: "rejected", resolvedAt: at, resolvedReason: reason })
+    .where(and(eq(marketResearchRequests.id, id), eq(marketResearchRequests.status, "pending")))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/**
+ * Records the real outcome of the one `discoverChannels` run an approval triggers -- called only
+ * after `approveMarketResearchRequestIfPending` already succeeded.
+ *
+ * Guarded by `WHERE status='approved'` -- found by independent review: an earlier version matched
+ * on `id` alone, which meant this function itself could move a request straight from `pending` to
+ * `executed`/`execution_failed`, completely bypassing the approval gate this slice exists to
+ * enforce. That gap was only closed by convention (only `approveMarketResearchRequest` happens to
+ * call this today) -- exactly the "true because nobody happened to call it" state
+ * `PHASE9-INV-03` was built to eliminate for the approve/reject actions themselves; this function
+ * needed the identical structural guard, not just those two. Returns the updated row, or `null` if
+ * the row was not `"approved"` (already recorded, or never actually approved) -- the caller must
+ * treat `null` as an error, never as "nothing to do."
+ */
+export async function recordMarketResearchRequestExecutionOutcome(
+  id: string,
+  outcome:
+    | { status: "executed"; candidatesFound: number; candidatesNew: number }
+    | { status: "execution_failed"; executionError: string },
+  database: AppDb = db
+): Promise<StoredMarketResearchRequest | null> {
+  if (outcome.status === "executed") {
+    const rows = await database
+      .update(marketResearchRequests)
+      .set({ status: "executed", candidatesFound: outcome.candidatesFound, candidatesNew: outcome.candidatesNew })
+      .where(and(eq(marketResearchRequests.id, id), eq(marketResearchRequests.status, "approved")))
+      .returning();
+    return rows[0] ?? null;
+  }
+  const rows = await database
+    .update(marketResearchRequests)
+    .set({ status: "execution_failed", executionError: outcome.executionError })
+    .where(and(eq(marketResearchRequests.id, id), eq(marketResearchRequests.status, "approved")))
+    .returning();
+  return rows[0] ?? null;
 }

@@ -1,5 +1,12 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
-import { createYoutubeClient, getPublicChannelSnapshot } from "@/lib/youtube-read-gateway";
+import {
+  assertDataApiReadsAuthorized,
+  createYoutubeClient,
+  getPublicChannelSnapshot,
+  getPublicVideoSnapshots,
+  listUploadsPlaylistFirstPageVideoIds,
+  searchPublicChannels,
+} from "@/lib/youtube-read-gateway";
 import type { ResolvedCredentials } from "../contracts";
 
 function createAuthorizedClient(credentials: ResolvedCredentials) {
@@ -19,6 +26,28 @@ export function createMarketIntelligenceYoutubeApiAdapter() {
     async getPublicChannelSnapshot(args: { credentials: ResolvedCredentials; channelId: string }) {
       const youtube = await createAuthorizedClient(args.credentials);
       return getPublicChannelSnapshot(youtube, args.channelId);
+    },
+    // Phase 9 slice 9B (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md).
+    async listUploadsPlaylistFirstPageVideoIds(args: { credentials: ResolvedCredentials; uploadsPlaylistId: string }) {
+      const youtube = await createAuthorizedClient(args.credentials);
+      return listUploadsPlaylistFirstPageVideoIds(youtube, args.uploadsPlaylistId);
+    },
+    async getPublicVideoSnapshots(args: { credentials: ResolvedCredentials; videoIds: string[] }) {
+      const youtube = await createAuthorizedClient(args.credentials);
+      return getPublicVideoSnapshots(youtube, args.videoIds);
+    },
+    // Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md).
+    async searchPublicChannels(args: { credentials: ResolvedCredentials; query: string }) {
+      const youtube = await createAuthorizedClient(args.credentials);
+      return searchPublicChannels(youtube, args.query);
+    },
+    // Phase 9 slices 9B/9C (found by independent review): an upfront, cheap check the orchestrator
+    // calls BEFORE claiming any channel or charging any quota unit -- without it, a client
+    // construction failing on this exact toggle (a purely local check, never reaching YouTube's
+    // network) still fell into the generic per-call catch block, which charged the full call cost
+    // for spend that never actually happened.
+    async assertReadsAvailable() {
+      await assertDataApiReadsAuthorized();
     },
   };
 }

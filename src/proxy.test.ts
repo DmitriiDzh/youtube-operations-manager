@@ -9,6 +9,10 @@ function mutatingRequest(pathname: string) {
   return new NextRequest(new Request(`http://localhost${pathname}`, { method: "POST" }));
 }
 
+function patchRequest(pathname: string) {
+  return new NextRequest(new Request(`http://localhost${pathname}`, { method: "PATCH" }));
+}
+
 function readRequest(pathname: string) {
   return new NextRequest(new Request(`http://localhost${pathname}`, { method: "GET" }));
 }
@@ -125,6 +129,128 @@ test("proxy gates the analytics weekly-reports generate-if-due route like any ot
   await acquireOperationLock(rawSqlClient, "export");
   try {
     const response = await proxy(mutatingRequest("/api/channels/chan-1/analytics/weekly-reports/generate-if-due"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// Phase 9 slice 9B: the market-intelligence auto-refresh trigger is a POST that MAY perform a real
+// mutation (a new market_channel_snapshots/market_video_snapshots/collection-run row) -- gated the
+// same way, never exempted, even though it often no-ops (same reasoning as auto-collect above).
+test("proxy gates the market-intelligence collect-if-stale route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/collect-if-stale"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// Phase 9 slice 9C: discovery/candidate-lifecycle routes are real mutations (write candidate rows,
+// a run-log row, or a new watchlist entry) -- gated the same way, never exempted.
+test("proxy gates the market-intelligence discover route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/discover"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("proxy gates the market-intelligence discovery-candidates status-update route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(patchRequest("/api/market-intelligence/discovery-candidates/UC_TEST0000000000000"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("proxy gates the market-intelligence discovery-candidates promote route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/discovery-candidates/UC_TEST0000000000000/promote"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// Phase 9 slice 9E, part A: topic/assignment routes are real mutations (write topic/assignment
+// rows) -- gated the same way, never exempted.
+test("proxy gates the market-intelligence topics route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/topics"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("proxy gates the market-intelligence topic-assignments route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/topics/topic-1/assignments"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// Phase 9 slice 9E, part B: trend-candidate/evidence routes are real mutations (write trend
+// candidate/evidence rows) -- gated the same way, never exempted.
+test("proxy gates the market-intelligence trend-candidates route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/trend-candidates"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("proxy gates the market-intelligence trend-candidate status-update route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(patchRequest("/api/market-intelligence/trend-candidates/trend-1"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("proxy gates the market-intelligence trend-candidate evidence route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/trend-candidates/trend-1/evidence"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// AC-9G-B-12 (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md §8) -- the Web-UI-only
+// approve/reject routes are real mutations (the approve route also triggers a real search.list
+// call), gated the same way, never exempted.
+test("proxy gates the market-intelligence research-request approve route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/research-requests/req-1/approve"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("proxy gates the market-intelligence research-request reject route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/market-intelligence/research-requests/req-1/reject"));
     assert.equal(response.status, 409);
   } finally {
     await releaseOperationLock(rawSqlClient);

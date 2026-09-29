@@ -62,6 +62,11 @@ export const CAPABILITY_AI_LOCALIZATION_GENERATE = "ai_localization_generate";
 export const CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET = "ai_localization_create_change_set";
 export const CAPABILITY_CONTENT_PROPOSAL_CREATE = "content_proposal.create_content_proposal";
 export const CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT = "content_proposal.register_external_artifact";
+// Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md) -- authority for
+// this entry is `docs/roadmap/plans/PHASE_9_PLAN.md` §14's own 9G definition ("a new
+// ZONED_CAPABILITIES entry is added at that point"), already anticipated when Phase 9 Part II was
+// assigned.
+export const CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE = "market_intelligence.agent_create_market_research_request";
 
 /**
  * Shared by both MCP (`startMcpServer`, reads `process.env.AGENT_CONNECTION_ID` once at startup)
@@ -80,4 +85,5 @@ export const ZONED_CAPABILITIES: ReadonlyArray<{ capabilityId: string; label: st
   { capabilityId: CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET, label: "Create Change Set from AI generation", domain: "Localization" },
   { capabilityId: CAPABILITY_CONTENT_PROPOSAL_CREATE, label: "Create Content Proposal", domain: "Content proposals" },
   { capabilityId: CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT, label: "Register external artifact", domain: "Content proposals" },
+  { capabilityId: CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE, label: "Create market research request", domain: "Market intelligence" },
 ];

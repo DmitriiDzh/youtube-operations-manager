@@ -53,6 +53,49 @@ import {
   researchChannels,
   researchEvidence,
   deleteResearchChannel,
+  marketChannelSnapshots,
+  marketVideoSnapshots,
+  marketIntelligenceCollectionRuns,
+  insertMarketChannelSnapshot,
+  listMarketChannelSnapshotsByChannel,
+  insertMarketVideoSnapshot,
+  claimStaleResearchChannelsForCollection,
+  releaseResearchChannelCollectionClaim,
+  listRecentlyFailedResearchChannelIds,
+  markResearchChannelAutoCollected,
+  insertMarketIntelligenceCollectionRun,
+  getMarketIntelligenceUnitsSpentSince,
+  marketDiscoveryCandidates,
+  marketDiscoveryRuns,
+  getMarketDiscoveryCandidateById,
+  listMarketDiscoveryCandidates,
+  insertMarketDiscoveryCandidate,
+  touchMarketDiscoveryCandidateLastSeen,
+  setMarketDiscoveryCandidateStatus,
+  insertMarketDiscoveryRun,
+  marketTopicAssignments,
+  listMarketTopics,
+  getMarketTopicById,
+  insertMarketTopic,
+  deleteMarketTopic,
+  listAssignmentsForTopic,
+  listTopicsForSubject,
+  insertMarketTopicAssignment,
+  deleteMarketTopicAssignment,
+  listMarketTrendCandidates,
+  getMarketTrendCandidateById,
+  insertMarketTrendCandidate,
+  insertMarketTrendCandidateWithInitialEvidence,
+  updateMarketTrendCandidateStatusWithEvidence,
+  touchMarketTrendCandidateLastObservedAt,
+  listTrendEvidence,
+  insertMarketTrendEvidence,
+  insertMarketResearchRequest,
+  getMarketResearchRequestById,
+  listMarketResearchRequests,
+  approveMarketResearchRequestIfPending,
+  rejectMarketResearchRequestIfPending,
+  recordMarketResearchRequestExecutionOutcome,
 } from "./db";
 import { readSchemaVersion } from "@/lib/schema-versioning";
 import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
@@ -126,6 +169,15 @@ test("initializeDatabaseSchema: a fresh database ends stamped at SCHEMA_CURRENT_
     assert.equal(await tableExists(client, "creative_assets"), true);
     assert.equal(await tableExists(client, "content_proposals"), true);
     assert.equal(await tableExists(client, "content_proposal_artifacts"), true);
+    assert.equal(await tableExists(client, "market_channel_snapshots"), true);
+    assert.equal(await tableExists(client, "market_video_snapshots"), true);
+    assert.equal(await tableExists(client, "market_intelligence_collection_runs"), true);
+    assert.equal(await tableExists(client, "market_discovery_candidates"), true);
+    assert.equal(await tableExists(client, "market_discovery_runs"), true);
+    assert.equal(await tableExists(client, "market_topics"), true);
+    assert.equal(await tableExists(client, "market_topic_assignments"), true);
+    assert.equal(await tableExists(client, "market_trend_candidates"), true);
+    assert.equal(await tableExists(client, "market_trend_evidence"), true);
   }));
 
 // Phase 7 slice D (docs/AGENT_OPERATIONS_INTERFACE.md §4c).
@@ -1023,6 +1075,100 @@ test("initializeDatabaseSchema: an existing pre-versioning database (baseline ta
       true,
       "a later migration (v22) must still apply correctly on the pre-versioning re-apply path"
     );
+    // Phase 9 slice 9A -- a later CREATE-TABLE migration (v23) must also survive the
+    // pre-versioning re-apply path, same as v22's own assertions above.
+    assert.equal(
+      await tableExists(client, "market_channel_snapshots"),
+      true,
+      "a later migration (v23) must still apply correctly on the pre-versioning re-apply path"
+    );
+    assert.equal(
+      await tableExists(client, "market_video_snapshots"),
+      true,
+      "a later migration (v23) must still apply correctly on the pre-versioning re-apply path"
+    );
+    // Phase 9 slice 9B -- a later ALTER-TABLE + CREATE-TABLE migration (v24) must also survive the
+    // pre-versioning re-apply path, same as v22/v23's own assertions above.
+    assert.equal(
+      await tableExists(client, "market_intelligence_collection_runs"),
+      true,
+      "a later migration (v24) must still apply correctly on the pre-versioning re-apply path"
+    );
+    const researchChannelColumns = await client.execute("PRAGMA table_info(research_channels)");
+    const researchChannelColumnNames = researchChannelColumns.rows.map((row) => row.name);
+    assert.ok(
+      researchChannelColumnNames.includes("last_auto_collected_at"),
+      "a later ALTER TABLE migration (v24) must still apply correctly on the pre-versioning re-apply path"
+    );
+    assert.ok(
+      researchChannelColumnNames.includes("collection_claimed_at"),
+      "a later ALTER TABLE migration (v24) must still apply correctly on the pre-versioning re-apply path"
+    );
+    // Phase 9 slice 9C -- a later CREATE-TABLE migration (v25) must also survive the
+    // pre-versioning re-apply path, same as v22/v23/v24's own assertions above.
+    assert.equal(
+      await tableExists(client, "market_discovery_candidates"),
+      true,
+      "a later migration (v25) must still apply correctly on the pre-versioning re-apply path"
+    );
+    assert.equal(
+      await tableExists(client, "market_discovery_runs"),
+      true,
+      "a later migration (v25) must still apply correctly on the pre-versioning re-apply path"
+    );
+    // Phase 9 slice 9E -- a later CREATE-TABLE migration (v26) must also survive the
+    // pre-versioning re-apply path, same as v22/v23/v24/v25's own assertions above.
+    for (const table of ["market_topics", "market_topic_assignments", "market_trend_candidates", "market_trend_evidence"]) {
+      assert.equal(
+        await tableExists(client, table),
+        true,
+        `a later migration (v26) must still apply correctly on the pre-versioning re-apply path (${table})`
+      );
+    }
+    // Phase 9 slice 9H part C -- a later ADD-COLUMN migration (v28) must also survive the
+    // pre-versioning re-apply path, same discipline as v19/v21/v24's own ADD-COLUMN assertions.
+    const marketVideoSnapshotColumns = await client.execute("PRAGMA table_info(market_video_snapshots)");
+    const marketVideoSnapshotColumnNames = marketVideoSnapshotColumns.rows.map((row) => row.name);
+    assert.ok(
+      marketVideoSnapshotColumnNames.includes("title"),
+      "a later ADD-COLUMN migration (v28) must still apply correctly on the pre-versioning re-apply path"
+    );
+  }));
+
+// Phase 9 slice 9H part C -- proves market_video_snapshots.title round-trips through the real
+// Drizzle schema, and stays null when never provided (a pre-migration/omitted title, never
+// fabricated as an empty string or guessed from another row).
+test("market_video_snapshots.title round-trips through the real Drizzle schema, and stays null when never provided", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({
+      id: "UC_RESEARCH_A",
+      handleOrUrl: null,
+      reason: "test",
+      createdVia: "web_ui",
+    });
+
+    await isolatedDb.insert(marketVideoSnapshots).values({
+      id: "snap-with-title",
+      researchChannelId: "UC_RESEARCH_A",
+      videoId: "v_with_title",
+      title: "Real Title",
+      source: "youtube.videos.list",
+      createdVia: "web_ui",
+    });
+    await isolatedDb.insert(marketVideoSnapshots).values({
+      id: "snap-without-title",
+      researchChannelId: "UC_RESEARCH_A",
+      videoId: "v_without_title",
+      source: "youtube.videos.list",
+      createdVia: "web_ui",
+    });
+
+    const rows = await isolatedDb.select().from(marketVideoSnapshots).where(eq(marketVideoSnapshots.researchChannelId, "UC_RESEARCH_A"));
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    assert.equal(byId.get("snap-with-title")?.title, "Real Title");
+    assert.equal(byId.get("snap-without-title")?.title, null);
   }));
 
 // Phase 7 slice K (owner spec §10 -- AC-DUR-01). `upsertVideos`/`listStoredVideosByChannel`
@@ -1205,6 +1351,755 @@ test("deleteResearchChannel removes the channel and every evidence row recorded 
     assert.equal(channelRows.length, 0);
     const evidenceRows = await isolatedDb.select().from(researchEvidence);
     assert.equal(evidenceRows.length, 0, "evidence must be deleted along with its channel, never left orphaned");
+  }));
+
+// Phase 9 slice 9A -- proves market_channel_snapshots/market_video_snapshots round-trip through
+// the real Drizzle schema, are append-only (each insert is its own row, never upserted), and never
+// fabricate a missing numeric field as 0. Structural isolation (no other module's code can
+// reference these tables) is proven by write-path-inventory.test.ts's PHASE9-INV-02, same as
+// research_channels/research_evidence above.
+test("market_channel_snapshots/market_video_snapshots round-trip through the real Drizzle schema, append-only, never fabricating a missing numeric field", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await isolatedDb.insert(researchChannels).values({
+      id: "UC_SNAPSHOT_TARGET_0000",
+      reason: "Tracking growth",
+      createdVia: "web_ui",
+    });
+
+    await insertMarketChannelSnapshot(
+      {
+        id: "snap-1",
+        researchChannelId: "UC_SNAPSHOT_TARGET_0000",
+        subscriberCount: 1000,
+        viewCount: 50000,
+        videoCount: 20,
+        source: "youtube.channels.list",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+    // A second real observation of the SAME channel is its own new row, never an upsert -- proves
+    // the append-only shape (PHASE_9_SLICE_9A_PLAN.md §2).
+    await insertMarketChannelSnapshot(
+      {
+        id: "snap-2",
+        researchChannelId: "UC_SNAPSHOT_TARGET_0000",
+        subscriberCount: null,
+        hiddenSubscriberCount: true,
+        viewCount: 52000,
+        videoCount: 21,
+        source: "youtube.channels.list",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+
+    const channelSnapshots = await listMarketChannelSnapshotsByChannel("UC_SNAPSHOT_TARGET_0000", isolatedDb);
+    assert.equal(channelSnapshots.length, 2, "each observation must be its own row, never upserted");
+    assert.equal(channelSnapshots[0].id, "snap-1", "list must be oldest first");
+    assert.equal(channelSnapshots[1].subscriberCount, null, "a hidden subscriber count must stay null, never a fabricated 0");
+    assert.equal(channelSnapshots[1].hiddenSubscriberCount, true);
+    assert.equal(channelSnapshots[0].hiddenSubscriberCount, false, "default must be false, not left undefined/null");
+
+    await insertMarketVideoSnapshot(
+      {
+        id: "video-snap-1",
+        researchChannelId: "UC_SNAPSHOT_TARGET_0000",
+        videoId: "v_competitor_1",
+        viewCount: 5000,
+        source: "manual observation",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+    const videoSnapshotRows = await isolatedDb
+      .select()
+      .from(marketVideoSnapshots)
+      .where(eq(marketVideoSnapshots.researchChannelId, "UC_SNAPSHOT_TARGET_0000"));
+    assert.equal(videoSnapshotRows.length, 1);
+    assert.equal(videoSnapshotRows[0].likeCount, null, "an omitted field must stay null, never a fabricated 0");
+    assert.equal(videoSnapshotRows[0].publishedAt, null);
+  }));
+
+// Phase 9 slice 9A -- widens the existing deleteResearchChannel cascade-delete test above to cover
+// the two new snapshot tables, which carry the identical FK onto researchChannels.id.
+test("deleteResearchChannel also cascade-deletes market_channel_snapshots/market_video_snapshots for the same channel", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await isolatedDb.insert(researchChannels).values({
+      id: "UC_TO_DELETE_SNAPSHOTS0",
+      reason: "Temporary",
+      createdVia: "web_ui",
+    });
+    await insertMarketChannelSnapshot(
+      { id: "snap-to-delete", researchChannelId: "UC_TO_DELETE_SNAPSHOTS0", source: "manual observation", createdVia: "web_ui" },
+      isolatedDb
+    );
+    await insertMarketVideoSnapshot(
+      {
+        id: "video-snap-to-delete",
+        researchChannelId: "UC_TO_DELETE_SNAPSHOTS0",
+        videoId: "v_x",
+        source: "manual observation",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+
+    await deleteResearchChannel("UC_TO_DELETE_SNAPSHOTS0", isolatedDb);
+
+    const channelSnapshotRows = await isolatedDb.select().from(marketChannelSnapshots);
+    assert.equal(channelSnapshotRows.length, 0, "channel snapshots must be deleted along with their channel, never left orphaned");
+    const videoSnapshotRows = await isolatedDb.select().from(marketVideoSnapshots);
+    assert.equal(videoSnapshotRows.length, 0, "video snapshots must be deleted along with their channel, never left orphaned");
+  }));
+
+// Phase 9 slice 9B (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md §9) -- proves the mark-then-run
+// claim's own atomicity against the REAL SQLite driver, not a service-level fake (AGENTS.md §L: a
+// fake in-memory store can only prove the fake is self-consistent, never that the underlying
+// `UPDATE ... WHERE ... RETURNING` statement is genuinely a compare-and-swap).
+test("claimStaleResearchChannelsForCollection: a second concurrent claim attempt gets nothing for a channel the first already claimed", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values([
+      { id: "UC_STALE_NEVER_COLLECTED0", reason: "r", createdVia: "web_ui" },
+      { id: "UC_STALE_ALREADY_CLAIMED0", reason: "r", createdVia: "web_ui" },
+    ]);
+
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    const staleCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const claimExpiryCutoff = new Date(now.getTime() - 15 * 60 * 1000);
+
+    const firstClaim = await claimStaleResearchChannelsForCollection(
+      { now, staleCutoff, claimExpiryCutoff, excludeResearchChannelIds: [] },
+      isolatedDb
+    );
+    assert.deepEqual(
+      [...firstClaim].sort(),
+      ["UC_STALE_ALREADY_CLAIMED0", "UC_STALE_NEVER_COLLECTED0"],
+      "both never-collected channels must be claimed by the first caller"
+    );
+
+    const secondClaim = await claimStaleResearchChannelsForCollection(
+      { now, staleCutoff, claimExpiryCutoff, excludeResearchChannelIds: [] },
+      isolatedDb
+    );
+    assert.deepEqual(secondClaim, [], "a second concurrent claim attempt must see both channels already claimed, and get nothing");
+
+    await releaseResearchChannelCollectionClaim("UC_STALE_ALREADY_CLAIMED0", isolatedDb);
+    const thirdClaim = await claimStaleResearchChannelsForCollection(
+      { now, staleCutoff, claimExpiryCutoff, excludeResearchChannelIds: [] },
+      isolatedDb
+    );
+    assert.deepEqual(
+      thirdClaim,
+      ["UC_STALE_ALREADY_CLAIMED0"],
+      "releasing a claim must make that channel (and only that channel) claimable again"
+    );
+  }));
+
+test("claimStaleResearchChannelsForCollection: a claim older than claimExpiryCutoff is treated as abandoned and can be reclaimed", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_ABANDONED_CLAIM00000", reason: "r", createdVia: "web_ui" });
+
+    const firstAttemptTime = new Date("2026-09-27T00:00:00.000Z");
+    await claimStaleResearchChannelsForCollection(
+      {
+        now: firstAttemptTime,
+        staleCutoff: new Date(firstAttemptTime.getTime() - 24 * 60 * 60 * 1000),
+        claimExpiryCutoff: new Date(firstAttemptTime.getTime() - 15 * 60 * 1000),
+        excludeResearchChannelIds: [],
+      },
+      isolatedDb
+    );
+    // Simulates a crashed process that claimed the channel and never released it -- the claim is
+    // now 20 minutes old.
+    const laterTime = new Date(firstAttemptTime.getTime() + 20 * 60 * 1000);
+    const reclaim = await claimStaleResearchChannelsForCollection(
+      {
+        now: laterTime,
+        staleCutoff: new Date(laterTime.getTime() - 24 * 60 * 60 * 1000),
+        claimExpiryCutoff: new Date(laterTime.getTime() - 15 * 60 * 1000),
+        excludeResearchChannelIds: [],
+      },
+      isolatedDb
+    );
+    assert.deepEqual(reclaim, ["UC_ABANDONED_CLAIM00000"], "a claim older than the expiry cutoff must be reclaimable, never stuck forever");
+  }));
+
+test("claimStaleResearchChannelsForCollection: excludeResearchChannelIds keeps a recently-failed channel out of the claimed set", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values([
+      { id: "UC_RECENTLY_FAILED00000", reason: "r", createdVia: "web_ui" },
+      { id: "UC_NEVER_FAILED0000000", reason: "r", createdVia: "web_ui" },
+    ]);
+
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    const claimed = await claimStaleResearchChannelsForCollection(
+      {
+        now,
+        staleCutoff: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+        claimExpiryCutoff: new Date(now.getTime() - 15 * 60 * 1000),
+        excludeResearchChannelIds: ["UC_RECENTLY_FAILED00000"],
+      },
+      isolatedDb
+    );
+    assert.deepEqual(claimed, ["UC_NEVER_FAILED0000000"]);
+  }));
+
+test("listRecentlyFailedResearchChannelIds: returns only channels whose most recent run is a failure within the window, deduped", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values([
+      { id: "UC_FAILED_TWICE0000000", reason: "r", createdVia: "web_ui" },
+      { id: "UC_SUCCEEDED000000000", reason: "r", createdVia: "web_ui" },
+      { id: "UC_FAILED_LONG_AGO0000", reason: "r", createdVia: "web_ui" },
+    ]);
+
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    await insertMarketIntelligenceCollectionRun(
+      { researchChannelId: "UC_FAILED_TWICE0000000", status: "failed", unitsSpent: 1, errorMessage: "boom" },
+      isolatedDb
+    );
+    await isolatedDb
+      .update(marketIntelligenceCollectionRuns)
+      .set({ ranAt: now })
+      .where(eq(marketIntelligenceCollectionRuns.researchChannelId, "UC_FAILED_TWICE0000000"));
+    await insertMarketIntelligenceCollectionRun(
+      { researchChannelId: "UC_FAILED_TWICE0000000", status: "failed", unitsSpent: 1, errorMessage: "boom again" },
+      isolatedDb
+    );
+    await insertMarketIntelligenceCollectionRun(
+      { researchChannelId: "UC_SUCCEEDED000000000", status: "success", unitsSpent: 3 },
+      isolatedDb
+    );
+    await insertMarketIntelligenceCollectionRun(
+      { researchChannelId: "UC_FAILED_LONG_AGO0000", status: "failed", unitsSpent: 1, errorMessage: "old failure" },
+      isolatedDb
+    );
+    await isolatedDb
+      .update(marketIntelligenceCollectionRuns)
+      .set({ ranAt: new Date(since.getTime() - 60 * 60 * 1000) })
+      .where(eq(marketIntelligenceCollectionRuns.researchChannelId, "UC_FAILED_LONG_AGO0000"));
+
+    const recentlyFailed = await listRecentlyFailedResearchChannelIds(since, isolatedDb);
+    assert.deepEqual(recentlyFailed, ["UC_FAILED_TWICE0000000"], "deduped to one entry, excludes success and excludes a failure outside the window");
+  }));
+
+test("markResearchChannelAutoCollected + getMarketIntelligenceUnitsSpentSince round-trip through the real Drizzle schema", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_UNITS_SPENT00000000", reason: "r", createdVia: "web_ui" });
+
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    await markResearchChannelAutoCollected("UC_UNITS_SPENT00000000", now, isolatedDb);
+    const [channelRow] = await isolatedDb.select().from(researchChannels).where(eq(researchChannels.id, "UC_UNITS_SPENT00000000"));
+    assert.equal(channelRow.lastAutoCollectedAt?.getTime(), now.getTime());
+
+    await insertMarketIntelligenceCollectionRun(
+      { researchChannelId: "UC_UNITS_SPENT00000000", status: "success", unitsSpent: 3, videosRequested: 10, videosReturned: 9 },
+      isolatedDb
+    );
+    await insertMarketIntelligenceCollectionRun(
+      { researchChannelId: "UC_UNITS_SPENT00000000", status: "skipped_quota_limited", unitsSpent: 1 },
+      isolatedDb
+    );
+
+    const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const totalSpent = await getMarketIntelligenceUnitsSpentSince(since, isolatedDb);
+    assert.equal(totalSpent, 4, "sums units_spent across every status, including a partially-spent skipped_quota_limited row");
+
+    const [runRow] = await isolatedDb
+      .select()
+      .from(marketIntelligenceCollectionRuns)
+      .where(eq(marketIntelligenceCollectionRuns.status, "success"));
+    assert.equal(runRow.videosRequested, 10, "videosRequested must round-trip, never fabricated");
+    assert.equal(runRow.videosReturned, 9, "a gap between requested and returned must be preserved honestly, never silently corrected");
+  }));
+
+// Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md §9) -- market_discovery_candidates
+// is a LIFECYCLE table (rediscovery touches lastSeenAt only, never duplicates or resets status),
+// unlike the append-only snapshot tables above.
+test("market_discovery_candidates round-trips through the real Drizzle schema; rediscovery touches lastSeenAt only, never duplicates or resets status", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await insertMarketDiscoveryCandidate(
+      { id: "UC_CANDIDATE00000000000", title: "Discovered Channel", discoverySource: "youtube.search.list", discoveryQuery: "cooking", createdVia: "web_ui" },
+      isolatedDb
+    );
+    const inserted = await getMarketDiscoveryCandidateById("UC_CANDIDATE00000000000", isolatedDb);
+    assert.equal(inserted?.status, "new");
+    assert.equal(inserted?.reasonDiscovered, null, "an omitted field must be null, never a fabricated empty string");
+
+    await setMarketDiscoveryCandidateStatus("UC_CANDIDATE00000000000", "ignored", isolatedDb);
+    // A fixed, whole-second timestamp -- integer-mode columns truncate sub-second precision, so a
+    // Date.now()-derived value would flakily mismatch on round-trip depending on the current millisecond.
+    const laterSeenAt = new Date("2026-09-28T00:00:00.000Z");
+    await touchMarketDiscoveryCandidateLastSeen("UC_CANDIDATE00000000000", laterSeenAt, isolatedDb);
+
+    const afterRediscovery = await getMarketDiscoveryCandidateById("UC_CANDIDATE00000000000", isolatedDb);
+    assert.equal(afterRediscovery?.status, "ignored", "rediscovery must never reset an operator-set status back to new");
+    assert.equal(afterRediscovery?.lastSeenAt.getTime(), laterSeenAt.getTime());
+
+    const allRows = await isolatedDb.select().from(marketDiscoveryCandidates);
+    assert.equal(allRows.length, 1, "rediscovery must never insert a duplicate row for the same channel");
+
+    const listed = await listMarketDiscoveryCandidates(isolatedDb);
+    assert.equal(listed.length, 1);
+  }));
+
+test("getMarketIntelligenceUnitsSpentSince sums market_intelligence_collection_runs AND market_discovery_runs -- one shared budget, not two independent ones", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_SHARED_BUDGET000000", reason: "r", createdVia: "web_ui" });
+
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    await insertMarketIntelligenceCollectionRun({ researchChannelId: "UC_SHARED_BUDGET000000", status: "success", unitsSpent: 3, ranAt: now }, isolatedDb);
+    await insertMarketDiscoveryRun({ query: "cooking", status: "success", unitsSpent: 100, candidatesFound: 5, candidatesNew: 2, ranAt: now }, isolatedDb);
+    await insertMarketDiscoveryRun({ query: "gaming", status: "failed", unitsSpent: 100, errorMessage: "boom", ranAt: now }, isolatedDb);
+
+    const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const totalSpent = await getMarketIntelligenceUnitsSpentSince(since, isolatedDb);
+    assert.equal(totalSpent, 203, "must sum both tables (3 + 100 + 100), including a failed discovery run's own real spend");
+
+    const [discoveryRunRow] = await isolatedDb.select().from(marketDiscoveryRuns).where(eq(marketDiscoveryRuns.status, "success"));
+    assert.equal(discoveryRunRow.candidatesFound, 5, "candidatesFound must round-trip, never fabricated");
+    assert.equal(discoveryRunRow.candidatesNew, 2);
+  }));
+
+// Phase 9 slice 9E (docs/roadmap/plans/PHASE_9_SLICE_9E_PLAN.md) -- topics/assignments round-trip.
+test("market_topics/market_topic_assignments round-trip through the real Drizzle schema; the unique index rejects a duplicate (topic, subject) pair", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_TOPIC_SUBJECT00000", reason: "r", createdVia: "web_ui" });
+
+    await insertMarketTopic({ id: "topic-1", name: "Night Jazz Bar", createdVia: "web_ui" }, isolatedDb);
+    const topic = await getMarketTopicById("topic-1", isolatedDb);
+    assert.equal(topic?.name, "Night Jazz Bar");
+
+    await insertMarketTopicAssignment(
+      { id: "assign-1", topicId: "topic-1", subjectType: "channel", subjectId: "UC_TOPIC_SUBJECT00000", source: "manual", createdVia: "web_ui" },
+      isolatedDb
+    );
+    const assignments = await listAssignmentsForTopic("topic-1", isolatedDb);
+    assert.equal(assignments.length, 1);
+    assert.equal(assignments[0].subjectType, "channel");
+
+    const forSubject = await listTopicsForSubject("channel", "UC_TOPIC_SUBJECT00000", isolatedDb);
+    assert.equal(forSubject.length, 1);
+
+    await assert.rejects(
+      () =>
+        insertMarketTopicAssignment(
+          { id: "assign-2", topicId: "topic-1", subjectType: "channel", subjectId: "UC_TOPIC_SUBJECT00000", source: "manual", createdVia: "web_ui" },
+          isolatedDb
+        ),
+      "the real UNIQUE(topic_id, subject_type, subject_id) index must reject an exact-duplicate pair"
+    );
+  }));
+
+test("deleteResearchChannel cascade-deletes channel-type market_topic_assignments for the same channel", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_TOPIC_CASCADE00000", reason: "r", createdVia: "web_ui" });
+    await insertMarketTopic({ id: "topic-1", name: "Some Topic", createdVia: "web_ui" }, isolatedDb);
+    await insertMarketTopicAssignment(
+      { id: "assign-1", topicId: "topic-1", subjectType: "channel", subjectId: "UC_TOPIC_CASCADE00000", source: "manual", createdVia: "web_ui" },
+      isolatedDb
+    );
+
+    await deleteResearchChannel("UC_TOPIC_CASCADE00000", isolatedDb);
+
+    const remaining = await isolatedDb.select().from(marketTopicAssignments);
+    assert.equal(remaining.length, 0, "the channel-type assignment must be cascade-deleted, never orphaned");
+    const topicStillExists = await getMarketTopicById("topic-1", isolatedDb);
+    assert.ok(topicStillExists, "the topic itself must survive -- only the assignment is scoped to the deleted channel");
+  }));
+
+// Found by independent review (2026-09-29): a promoted discovery candidate's row was never
+// cascade-deleted when its channel left the watchlist, leaving it permanently stuck at
+// status:"promoted" with no path back (promoteDiscoveryCandidate refuses re-promotion,
+// updateDiscoveryCandidateStatus refuses to touch an already-promoted row).
+test("deleteResearchChannel cascade-deletes a promoted market_discovery_candidates row sharing the same id, but never a non-promoted one", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_PROMOTED_CASCADE0000", reason: "r", createdVia: "web_ui" });
+    await insertMarketDiscoveryCandidate(
+      { id: "UC_PROMOTED_CASCADE0000", title: "Promoted Channel", discoverySource: "search", discoveryQuery: "q", createdVia: "web_ui" },
+      isolatedDb
+    );
+    await setMarketDiscoveryCandidateStatus("UC_PROMOTED_CASCADE0000", "promoted", isolatedDb);
+    // An unrelated candidate, never promoted, must survive an unrelated channel's deletion.
+    await insertMarketDiscoveryCandidate(
+      { id: "UC_UNRELATED_CANDIDATE0", title: "Still A Candidate", discoverySource: "search", discoveryQuery: "q", createdVia: "web_ui" },
+      isolatedDb
+    );
+
+    await deleteResearchChannel("UC_PROMOTED_CASCADE0000", isolatedDb);
+
+    const remaining = await isolatedDb.select().from(marketDiscoveryCandidates);
+    assert.deepEqual(
+      remaining.map((r) => r.id),
+      ["UC_UNRELATED_CANDIDATE0"],
+      "the promoted candidate sharing the deleted channel's id must be gone; an unrelated, non-promoted candidate must survive"
+    );
+  }));
+
+test("deleteMarketTopic cascades its own assignments and detaches (never deletes) trend candidates tagged with it", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_TOPIC_DELETE000000", reason: "r", createdVia: "web_ui" });
+    await insertMarketTopic({ id: "topic-1", name: "Some Topic", createdVia: "web_ui" }, isolatedDb);
+    await insertMarketTopicAssignment(
+      { id: "assign-1", topicId: "topic-1", subjectType: "channel", subjectId: "UC_TOPIC_DELETE000000", source: "manual", createdVia: "web_ui" },
+      isolatedDb
+    );
+    await insertMarketTrendCandidate({ id: "trend-1", title: "A Trend", topicId: "topic-1", createdVia: "web_ui" }, isolatedDb);
+
+    await deleteMarketTopic("topic-1", isolatedDb);
+
+    const remainingAssignments = await isolatedDb.select().from(marketTopicAssignments);
+    assert.equal(remainingAssignments.length, 0);
+    const trend = await getMarketTrendCandidateById("trend-1", isolatedDb);
+    assert.ok(trend, "the trend candidate itself must survive topic deletion");
+    assert.equal(trend?.topicId, null, "its topicId must be detached (set null), never left dangling");
+  }));
+
+test("deleteMarketTopicAssignment removes exactly one assignment", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await isolatedDb.insert(researchChannels).values({ id: "UC_TOPIC_REMOVE000000", reason: "r", createdVia: "web_ui" });
+    await insertMarketTopic({ id: "topic-1", name: "Some Topic", createdVia: "web_ui" }, isolatedDb);
+    await insertMarketTopicAssignment(
+      { id: "assign-1", topicId: "topic-1", subjectType: "channel", subjectId: "UC_TOPIC_REMOVE000000", source: "manual", createdVia: "web_ui" },
+      isolatedDb
+    );
+
+    await deleteMarketTopicAssignment("assign-1", isolatedDb);
+    assert.equal((await listAssignmentsForTopic("topic-1", isolatedDb)).length, 0);
+    const topicStillExists = await getMarketTopicById("topic-1", isolatedDb);
+    assert.ok(topicStillExists);
+  }));
+
+test("listMarketTopics orders by name; the real UNIQUE(name) index rejects an exact-duplicate topic name", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertMarketTopic({ id: "topic-b", name: "Beta", createdVia: "web_ui" }, isolatedDb);
+    await insertMarketTopic({ id: "topic-a", name: "Alpha", createdVia: "web_ui" }, isolatedDb);
+
+    const topics = await listMarketTopics(isolatedDb);
+    assert.deepEqual(topics.map((t) => t.name), ["Alpha", "Beta"]);
+
+    await assert.rejects(() => insertMarketTopic({ id: "topic-c", name: "Alpha", createdVia: "web_ui" }, isolatedDb));
+  }));
+
+// Phase 9 slice 9E -- trend candidates/evidence round-trip, through the real production entry
+// points (`insertMarketTrendCandidateWithInitialEvidence`/`updateMarketTrendCandidateStatusWithEvidence`), not
+// the lower-level single-table functions those wrap -- this proves the same schema/column
+// round-trip AND that the real call path services.ts uses actually works end-to-end.
+test("market_trend_candidates/market_trend_evidence round-trip through the real Drizzle schema; new candidates start as 'emerging'", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await insertMarketTrendCandidateWithInitialEvidence(
+      { id: "trend-1", title: "Retro Cocktail Lounge", description: "desc", createdVia: "web_ui" },
+      { id: "evidence-1", evidenceType: "supporting_channel", referenceId: "UC_SOME_CHANNEL0000000", description: "This channel shows the pattern", createdVia: "web_ui" },
+      isolatedDb
+    );
+    const candidate = await getMarketTrendCandidateById("trend-1", isolatedDb);
+    assert.equal(candidate?.status, "emerging", "every new trend candidate must start as 'emerging'");
+    assert.equal(candidate?.topicId, null);
+
+    const evidence = await listTrendEvidence("trend-1", isolatedDb);
+    assert.equal(evidence.length, 1);
+    assert.equal(evidence[0].evidenceType, "supporting_channel");
+    assert.equal(evidence[0].referenceId, "UC_SOME_CHANNEL0000000");
+
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    await updateMarketTrendCandidateStatusWithEvidence(
+      "trend-1",
+      "growing",
+      now,
+      { id: "evidence-2", description: "Three more channels covering it this week", createdVia: "web_ui" },
+      isolatedDb
+    );
+    const updated = await getMarketTrendCandidateById("trend-1", isolatedDb);
+    assert.equal(updated?.status, "growing");
+    assert.equal(updated?.lastObservedAt.getTime(), now.getTime());
+    assert.equal((await listTrendEvidence("trend-1", isolatedDb)).length, 2, "the status change must also record its own evidence row");
+
+    const laterAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    await touchMarketTrendCandidateLastObservedAt("trend-1", laterAt, isolatedDb);
+    const touched = await getMarketTrendCandidateById("trend-1", isolatedDb);
+    assert.equal(touched?.status, "growing", "touching lastObservedAt alone must never change status");
+    assert.equal(touched?.lastObservedAt.getTime(), laterAt.getTime());
+
+    const list = await listMarketTrendCandidates(isolatedDb);
+    assert.equal(list.length, 1);
+  }));
+
+// Found by independent review (2026-09-29): both functions accept an explicit `at` used to stamp
+// the trend-candidate row's own timestamps, but the paired evidence-row insert in the same
+// transaction previously left `recordedAt` to the column's real-wall-clock `$defaultFn` instead of
+// also using `at` -- the same "two clock sources for one moment" bug class already fixed once for
+// firstObservedAt/lastObservedAt (see this file's own comment on insertMarketTrendCandidate).
+test("insertMarketTrendCandidateWithInitialEvidence/updateMarketTrendCandidateStatusWithEvidence: the evidence row's recordedAt uses the same injected `at`, never real wall-clock time", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const createdAt = new Date("2020-01-01T00:00:00.000Z"); // far from real "now" -- proves it's not $defaultFn
+
+    await insertMarketTrendCandidateWithInitialEvidence(
+      { id: "trend-clock", title: "Clock Test", createdVia: "web_ui", at: createdAt },
+      { id: "evidence-clock-1", evidenceType: "supporting_channel", description: "d", createdVia: "web_ui" },
+      isolatedDb
+    );
+    const [initialEvidence] = await listTrendEvidence("trend-clock", isolatedDb);
+    assert.equal(
+      initialEvidence.recordedAt.getTime(),
+      createdAt.getTime(),
+      "the initial evidence row's recordedAt must match the candidate's own injected `at`, not real wall-clock time"
+    );
+
+    const statusChangeAt = new Date("2021-06-15T00:00:00.000Z");
+    await updateMarketTrendCandidateStatusWithEvidence(
+      "trend-clock",
+      "growing",
+      statusChangeAt,
+      { id: "evidence-clock-2", description: "d2", createdVia: "web_ui" },
+      isolatedDb
+    );
+    const evidenceRows = await listTrendEvidence("trend-clock", isolatedDb);
+    const statusChangeEvidence = evidenceRows.find((e) => e.id === "evidence-clock-2");
+    assert.equal(
+      statusChangeEvidence?.recordedAt.getTime(),
+      statusChangeAt.getTime(),
+      "the status-change evidence row's recordedAt must match the status change's own `at`, not real wall-clock time"
+    );
+  }));
+
+// Found by independent review: two separate top-level writes (candidate insert, then evidence
+// insert) let a throw between them leave a trend candidate with zero evidence rows -- the exact
+// invariant spec §14 exists to prevent (docs/TECHNICAL_DEBT.md RISK-70). Proves the real fix
+// (`database.transaction(...)`) actually rolls back against the real libsql driver, not just
+// against a fake in-memory store that has no partial-write failure mode of its own.
+test("insertMarketTrendCandidateWithInitialEvidence: a failure on the evidence write rolls back the candidate insert too (real transaction, not two independent writes)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    // Pre-seed an evidence row under a specific id, so the wrapper's own evidence insert collides
+    // on a duplicate PRIMARY KEY -- forcing its SECOND statement to fail after its FIRST statement
+    // (the candidate insert) already ran.
+    await insertMarketTrendCandidate({ id: "trend-seed", title: "Seed", createdVia: "web_ui" }, isolatedDb);
+    await insertMarketTrendEvidence(
+      { id: "evidence-collision", trendCandidateId: "trend-seed", evidenceType: "signal", description: "seed", createdVia: "web_ui" },
+      isolatedDb
+    );
+
+    await assert.rejects(() =>
+      insertMarketTrendCandidateWithInitialEvidence(
+        { id: "trend-2", title: "Should not persist", createdVia: "web_ui" },
+        { id: "evidence-collision", evidenceType: "signal", description: "colliding id", createdVia: "web_ui" },
+        isolatedDb
+      )
+    );
+
+    const candidate = await getMarketTrendCandidateById("trend-2", isolatedDb);
+    assert.equal(candidate, null, "the candidate insert must be rolled back when its own transaction's evidence write fails");
+    const evidenceForFailedCandidate = await listTrendEvidence("trend-2", isolatedDb);
+    assert.deepEqual(evidenceForFailedCandidate, []);
+  }));
+
+test("updateMarketTrendCandidateStatusWithEvidence: a failure on the evidence write rolls back the status change too (real transaction)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await insertMarketTrendCandidate({ id: "trend-3", title: "Original", createdVia: "web_ui" }, isolatedDb);
+    await insertMarketTrendEvidence(
+      { id: "evidence-collision-2", trendCandidateId: "trend-3", evidenceType: "signal", description: "seed", createdVia: "web_ui" },
+      isolatedDb
+    );
+    const before = await getMarketTrendCandidateById("trend-3", isolatedDb);
+    assert.equal(before?.status, "emerging");
+
+    await assert.rejects(() =>
+      updateMarketTrendCandidateStatusWithEvidence(
+        "trend-3",
+        "growing",
+        new Date("2026-09-27T12:00:00.000Z"),
+        { id: "evidence-collision-2", description: "colliding id", createdVia: "web_ui" },
+        isolatedDb
+      )
+    );
+
+    const after = await getMarketTrendCandidateById("trend-3", isolatedDb);
+    assert.equal(after?.status, "emerging", "the status update must be rolled back when its own transaction's evidence write fails");
+    const evidence = await listTrendEvidence("trend-3", isolatedDb);
+    assert.equal(evidence.length, 1, "only the original seed evidence row must remain, never a duplicate or a partial write");
+  }));
+
+// ---------------------------------------------------------------------------
+// Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md) -- agent-created
+// research requests, approval integrity.
+// ---------------------------------------------------------------------------
+
+test("market_research_requests round-trip through the real Drizzle schema; new requests start as 'pending'", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await insertMarketResearchRequest(
+      { id: "req-1", query: "night jazz bar", rationale: "worth watching", monitorDurationDays: 30, createdVia: "mcp", agentApiVersion: "0.13.0" },
+      isolatedDb
+    );
+    const created = await getMarketResearchRequestById("req-1", isolatedDb);
+    assert.equal(created?.status, "pending");
+    assert.equal(created?.monitorDurationDays, 30);
+    assert.equal(created?.agentApiVersion, "0.13.0");
+    assert.equal(created?.resolvedAt, null);
+
+    const list = await listMarketResearchRequests(isolatedDb);
+    assert.equal(list.length, 1);
+  }));
+
+test("insertMarketResearchRequest: an explicit `at` stamps createdAt instead of the column's real-wall-clock default (found by independent code review -- unlike insertMarketTrendCandidate, this had no injected-clock parameter at all)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const at = new Date("2020-01-01T00:00:00.000Z");
+
+    await insertMarketResearchRequest(
+      { id: "req-clock", query: "night jazz", rationale: "worth watching", createdVia: "mcp", at },
+      isolatedDb
+    );
+
+    const row = await getMarketResearchRequestById("req-clock", isolatedDb);
+    assert.equal(row?.createdAt.toISOString(), at.toISOString());
+  }));
+
+// AC-9G-B-06's own real proof -- RISK-70 already showed a fake in-memory store proves nothing
+// about real atomicity. Forces two literally-concurrent calls (Promise.all, not two sequential
+// awaits) against the real libsql driver, asserting exactly one lands.
+test("approveMarketResearchRequestIfPending: two literally-concurrent calls for the same pending row -- exactly one succeeds, the other returns null", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertMarketResearchRequest(
+      { id: "req-race", query: "night jazz", rationale: "worth watching", createdVia: "mcp" },
+      isolatedDb
+    );
+
+    const at = new Date("2026-09-27T12:00:00.000Z");
+    const [first, second] = await Promise.all([
+      approveMarketResearchRequestIfPending("req-race", at, isolatedDb),
+      approveMarketResearchRequestIfPending("req-race", at, isolatedDb),
+    ]);
+
+    const succeeded = [first, second].filter((row) => row !== null);
+    const failed = [first, second].filter((row) => row === null);
+    assert.equal(succeeded.length, 1, "exactly one of the two concurrent calls must succeed");
+    assert.equal(failed.length, 1, "the other must observe the row already approved and return null");
+
+    const finalRow = await getMarketResearchRequestById("req-race", isolatedDb);
+    assert.equal(finalRow?.status, "approved");
+  }));
+
+test("rejectMarketResearchRequestIfPending: a second call after the row is already resolved returns null and changes nothing", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertMarketResearchRequest(
+      { id: "req-2", query: "night jazz", rationale: "worth watching", createdVia: "mcp" },
+      isolatedDb
+    );
+
+    const at = new Date("2026-09-27T12:00:00.000Z");
+    const firstReject = await rejectMarketResearchRequestIfPending("req-2", "not aligned", at, isolatedDb);
+    assert.ok(firstReject);
+    assert.equal(firstReject?.status, "rejected");
+
+    const secondReject = await rejectMarketResearchRequestIfPending("req-2", "different reason", at, isolatedDb);
+    assert.equal(secondReject, null);
+
+    const finalRow = await getMarketResearchRequestById("req-2", isolatedDb);
+    assert.equal(finalRow?.resolvedReason, "not aligned", "the first reject's reason must survive, never overwritten by the rejected second call");
+  }));
+
+test("recordMarketResearchRequestExecutionOutcome writes executed/execution_failed outcomes onto the row", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertMarketResearchRequest(
+      { id: "req-3", query: "night jazz", rationale: "worth watching", createdVia: "mcp" },
+      isolatedDb
+    );
+    await approveMarketResearchRequestIfPending("req-3", new Date(), isolatedDb);
+
+    await recordMarketResearchRequestExecutionOutcome("req-3", { status: "executed", candidatesFound: 5, candidatesNew: 2 }, isolatedDb);
+    const executed = await getMarketResearchRequestById("req-3", isolatedDb);
+    assert.equal(executed?.status, "executed");
+    assert.equal(executed?.candidatesFound, 5);
+    assert.equal(executed?.candidatesNew, 2);
+
+    await insertMarketResearchRequest(
+      { id: "req-4", query: "night jazz", rationale: "worth watching", createdVia: "mcp" },
+      isolatedDb
+    );
+    await approveMarketResearchRequestIfPending("req-4", new Date(), isolatedDb);
+    await recordMarketResearchRequestExecutionOutcome("req-4", { status: "execution_failed", executionError: "quota exceeded" }, isolatedDb);
+    const failed = await getMarketResearchRequestById("req-4", isolatedDb);
+    assert.equal(failed?.status, "execution_failed");
+    assert.equal(failed?.executionError, "quota exceeded");
+  }));
+
+// Found by independent review: an earlier version of this function matched on `id` alone, which
+// meant it could move a request straight from "pending" to "executed"/"execution_failed",
+// completely bypassing the approval gate this slice exists to enforce.
+test("recordMarketResearchRequestExecutionOutcome: a still-pending row (never approved) returns null and is left untouched", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertMarketResearchRequest(
+      { id: "req-5", query: "night jazz", rationale: "worth watching", createdVia: "mcp" },
+      isolatedDb
+    );
+
+    const result = await recordMarketResearchRequestExecutionOutcome(
+      "req-5",
+      { status: "executed", candidatesFound: 5, candidatesNew: 2 },
+      isolatedDb
+    );
+    assert.equal(result, null);
+
+    const row = await getMarketResearchRequestById("req-5", isolatedDb);
+    assert.equal(row?.status, "pending", "a request that was never approved must never be moved to 'executed' by this function alone");
+    assert.equal(row?.candidatesFound, null);
   }));
 
 // AC-SCHEMA-04

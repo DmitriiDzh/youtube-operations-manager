@@ -74,6 +74,28 @@ export const SNAPSHOT_TRANSFERRED_TABLES = [
   "batch_ledger_rows",
   "batch_attempts",
   "audit_events",
+  // Phase 9 (Market Intelligence) tables -- owner decision, Telegram 2026-09-26, verbatim "Да, я
+  // бы объединял" ("yes, I would merge/combine them"), recorded in
+  // docs/roadmap/plans/PHASE_9_PLAN.md §12 point 5 as RESOLVED the same day, closing this specific
+  // instance of RISK-52 (docs/TECHNICAL_DEBT.md): this data must travel with device handoff, not
+  // stay device-local, since owner spec §38's "historical public data that is not collected today
+  // often cannot be reconstructed later" makes losing it on a device switch a real data-preservation
+  // gap, not a cosmetic one. Never implemented until now -- every Phase 9 slice from 9A onward added
+  // its own new table without adding it here, silently inheriting the old omit-by-default behavior
+  // this list's own fail-safe-by-construction design was meant to prevent (found by advisor review,
+  // 2026-09-27, while planning slice 9H part A).
+  "research_channels",
+  "research_evidence",
+  "market_channel_snapshots",
+  "market_video_snapshots",
+  "market_intelligence_collection_runs",
+  "market_discovery_candidates",
+  "market_discovery_runs",
+  "market_topics",
+  "market_topic_assignments",
+  "market_trend_candidates",
+  "market_trend_evidence",
+  "market_research_requests",
 ] as const;
 
 /**

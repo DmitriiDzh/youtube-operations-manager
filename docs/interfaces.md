@@ -625,19 +625,54 @@ Key MCP tools:
     just the roster. Local read only, a direct passthrough of the existing `listWatchlist` service
     call.
   - `query_market_intelligence` — `{ channelId }` → `{ channel: ResearchChannel, evidence:
-    ResearchEvidence[] }`, one watchlisted channel's own record plus its full evidence history, via
-    the single `getWatchlistEntryContext` service call (one existence check feeding both the
-    channel and evidence lookups — an earlier version called `getWatchlistEntry`/`listEvidence`
-    separately, found by independent review to double the existence check and risk a
-    non-deterministic error shape). Fails with `RESEARCH_CHANNEL_NOT_AVAILABLE` (`details:
-    { channelId }`) if `channelId` is not on the watchlist. Local read only. `confidence` on an
-    evidence row is uncalibrated free text, not a statistical measure — a `fetchPublicSnapshot`-
-    sourced row can read `"high"` even when every underlying count was hidden/absent
-    (`docs/roadmap/plans/PHASE_9_PLAN.md` §8, still an open vocabulary decision).
-  - Both registered directly against `createMarketIntelligenceCore()` in `src/mcp/server.ts`/
+    ResearchEvidence[], channelSnapshots: MarketChannelSnapshot[], videoSnapshots:
+    MarketVideoSnapshot[], topicAssignments: MarketTopicAssignment[], dataQualityFlags:
+    DataQualityFlag[] }` (the last four fields added in Phase 9 slice 9G, part A — additive, the
+    original `{channel, evidence}` shape is unchanged; `MarketVideoSnapshot` itself additively
+    gained a `title: string | null` field in Phase 9 slice 9H part C — `null` for any snapshot
+    taken before that field existed, never backfilled or guessed — no `AGENT_API_VERSION` bump,
+    per that constant's own doc comment: a new, ignorable field on an existing capability's
+    contract is not a new capability), one watchlisted channel's own record plus
+    its full evidence history, via the single `getWatchlistEntryContext` service call (one
+    existence check feeding both the channel and evidence lookups — an earlier version called
+    `getWatchlistEntry`/`listEvidence` separately, found by independent review to double the
+    existence check and risk a non-deterministic error shape). Fails with
+    `RESEARCH_CHANNEL_NOT_AVAILABLE` (`details: { channelId }`) if `channelId` is not on the
+    watchlist. Local read only. `confidence` on an evidence row is uncalibrated free text, not a
+    statistical measure — a `fetchPublicSnapshot`-sourced row can read `"high"` even when every
+    underlying count was hidden/absent (`docs/roadmap/plans/PHASE_9_PLAN.md` §8, still an open
+    vocabulary decision).
+  - `agent_list_market_records` (Phase 9 slice 9G, part A) — `{ kind: "topics" |
+    "trend_candidates" | "discovery_candidates" }` → `{ kind, topics }` / `{ kind, trendCandidates }`
+    / `{ kind, candidates }` respectively. One tool with a `kind` discriminator rather than three
+    separate ones (owner spec §28), a thin fan-out over the module's own already-existing
+    `listTopics`/`listTrendCandidates`/`listDiscoveryCandidates` — no new service logic.
+  - `agent_create_market_research_request` (Phase 9 slice 9G, part B, owner spec §29) — `{ query,
+    rationale, monitorDurationDays? }` → the created request, `status: "pending"`. This domain's
+    first DRAFT-class capability and its first zoned MCP tool
+    (`market_intelligence.agent_create_market_research_request`) — gated by the same
+    device-availability check as `agent_create_content_proposal`. `createdVia`/`agentApiVersion`
+    (owner spec §22) are SERVER-STAMPED — `"mcp"` + the real `AGENT_API_VERSION` for this transport,
+    `"cli"` + `null` for the CLI command (mirrors `agent_create_content_proposal`'s own convention:
+    MCP is the one transport this interface's version actually mediates).
+    `monitorDurationDays` is stored and returned as descriptive metadata only — no code path in this
+    application ever reads it to decide whether/when to run anything (there is no scheduler here at
+    all), which is the structural answer to "this must not automatically create unlimited collection
+    jobs." **There is no MCP tool or CLI command to approve or reject a request, and none is ever
+    planned without a fresh, explicit owner instruction overriding this slice's own core design** —
+    approval is reachable ONLY through the Web UI (`POST
+    /api/market-intelligence/research-requests/[requestId]/approve` — no body, uses the approving
+    human's own session credentials for the one real `search.list` call this triggers via the
+    existing `discoverChannels`/`agent_discover` pipeline; `POST .../reject` — `{ reason }`; `GET
+    /api/market-intelligence/research-requests` lists all requests for the review queue), verified
+    mechanically by `market-research-request-approval-inventory.test.ts` (scans `src/mcp/**`/
+    `src/cli/**`/`src/lib/agent-operations/**`, `src/app/api/**` exempted).
+  - All four registered directly against `createMarketIntelligenceCore()` in `src/mcp/server.ts`/
     `src/cli/video-metadata.ts`, not through `agent-operations`'s own service layer —
     `docs/ARCHITECTURE.md` §18 records why (module-independence, `PHASE_9_PLAN.md` §5).
-    CLI parity: `agent competitors` / `agent market-intelligence --channelId <UC...>`.
+    CLI parity: `agent competitors` / `agent market-intelligence --channelId <UC...>` / `agent
+    market-records --kind <kind>` / `agent create-research-request --query <q> --rationale <r>
+    [--monitorDurationDays <n>]`.
 
 Most tools accept optional `credentialRef`; if omitted, server falls back to active local auth context.
 
@@ -750,6 +785,35 @@ All routes are App Router handlers and require authenticated session user.
 - `GET /api/agent-operations/capabilities` — same shape/underlying function as the MCP tool
   `agent_get_capabilities` above (see `docs/AGENT_OPERATIONS_INTERFACE.md`). Read-only, gated by
   the same NextAuth session check as every other route in this app; not channel-scoped.
+
+### Market Intelligence API (Phase 9 slices 1-4/9A-9E/9G — previously undocumented here, per `AGENTS.md` §H)
+
+All routes are global (not scoped to one owned channel) -- the research watchlist tracks channels
+the operator does not necessarily own (`docs/ARCHITECTURE.md` §18).
+
+- `GET /api/market-intelligence/channels` — list the watchlist; `POST` — add a channel (`{ channelId, handleOrUrl?, reason }`)
+- `GET /api/market-intelligence/channels/[channelId]` — one watchlist entry + its full evidence history; `DELETE` — remove it (cascade-deletes its evidence/snapshots)
+- `GET /api/market-intelligence/channels/[channelId]/evidence` — every recorded observation for the channel; `POST` — record one manually (`{ observation, source, confidence? }`)
+- `POST /api/market-intelligence/channels/[channelId]/fetch-public-snapshot` — the one slice-3 action making a real `channels.list` call; records a free-text evidence row
+- `POST /api/market-intelligence/collect-if-stale` (Phase 9 slice 9B) — repeatable, budget-aware auto-refresh: every watchlisted channel stale by >24h gets a channel snapshot + up to 50 newest video snapshots, gated by the operator-set daily unit budget (`marketIntelligenceDailyQuotaBudgetUnits`, Settings tab); triggered once per dashboard mount (chained after the two Phase 8 analytics calls), real mutation, gated by `src/proxy.ts` like `analytics/auto-collect`; no request body
+- `POST /api/market-intelligence/discover` (Phase 9 slice 9C) — `{ query }`; one `search.list` call (100 units, shares the same daily budget as auto-refresh above), only ever called from an explicit Research-tab UI click, never automatic; upserts discovery candidates (dedup against the watchlist and existing candidates)
+- `GET /api/market-intelligence/discovery-candidates` — list all discovery candidates, newest `lastSeenAt` first
+- `PATCH /api/market-intelligence/discovery-candidates/[channelId]` — `{ status: "watching" | "ignored" | "archived" }` (never `"promoted"`, which has its own route below)
+- `POST /api/market-intelligence/discovery-candidates/[channelId]/promote` — `{ reason }`; adds the candidate to the watchlist and marks it `"promoted"`
+- `GET /api/market-intelligence/topics` (Phase 9 slice 9E, part A) — list topics; `POST` — create one (`{ name }`, rejects a normalized-comparison duplicate)
+- `DELETE /api/market-intelligence/topics/[topicId]` — removes a topic, cascades its own assignments, detaches (never deletes) any trend candidate tagged with it
+- `GET /api/market-intelligence/topics/[topicId]/assignments` — assignments for a topic; `POST` — assign a subject (`{ subjectType: "channel" | "video", subjectId }`; a channel subject must already be on the watchlist, a video subject id is only format-checked)
+- `DELETE /api/market-intelligence/topic-assignments/[assignmentId]` — removes one assignment
+- `GET /api/market-intelligence/trend-candidates` (Phase 9 slice 9E, part B; `GET` switched to `listTrendCandidatesWithFreshness` in slice 9H part A) — list trend candidates, each paired with a `freshness: "fresh" | "needs_attention"` label (`TREND_EVIDENCE_FRESH_WINDOW_DAYS` = 30, a UI-only addition — the underlying `marketTrendCandidateSchema`/`agent_list_market_records` MCP contract is unchanged); `POST` — create one (`{ title, description?, topicId?, initialEvidence: { evidenceType, referenceId?, description } }`; always starts at status `"emerging"`; creation is rejected without `initialEvidence`, spec §14; a discriminated union on `evidenceType` requires `referenceId` to be a real YouTube channel id for `supporting_channel` / a real video id for `supporting_video`, absent for `signal` — never a free-typed title, `AGENTS.md` §F)
+- `PATCH /api/market-intelligence/trend-candidates/[trendCandidateId]` — `{ status, reason }`; changes lifecycle status, writing `reason` as a `"signal"` evidence row in the same action (a status can never move without a corresponding evidence trail)
+- `GET /api/market-intelligence/trend-candidates/[trendCandidateId]/evidence` (`GET` switched to `getTrendEvidenceSummary` in slice 9H part A) — evidence for the trend candidate, newest-first, plus `independentChannelCount` (distinct `referenceId`s among `supporting_channel` rows) — the core's own `getTrendEvidence` action (renamed from `listTrendEvidence`, no MCP/CLI caller) keeps its own ascending order unchanged; `POST` — record one (`{ evidenceType, referenceId?, description }`, same per-type `referenceId` shape as above) without changing status
+- `GET /api/market-intelligence/channels/[channelId]/intelligence-summary` (Phase 9 slice 9H, part A) — `getChannelIntelligenceSummary`: `getWatchlistEntryContext`'s own fields (minus `videoSnapshots`, see below) plus computed `subscriberVelocity`/`uploadCadence` (`FieldVelocity`, 7-day window), `recentBreakoutVideos` (leave-one-out baseline per video published within the last 180 days, `docs/ARCHITECTURE.md` §18), `emergingChannel`, `latestSnapshotPerVideo` (one row per video, not the full append-only series), and a `methodology` object with the named constants driving all of the above (so the UI never hardcodes a copy that could drift)
+- `GET /api/market-intelligence/channels/[channelId]/videos/[videoId]/snapshot-history` (Phase 9 slice 9H, part A) — one video's own full snapshot series, filtered server-side before returning — the bounded drill-down `intelligence-summary` deliberately omits (RISK-78, `docs/TECHNICAL_DEBT.md`)
+- `GET /api/market-intelligence/overview` (Phase 9 slice 9H, part B) — `getMarketOverview`: aggregates across the whole watchlist — `newDiscoveries` (`status: "new"` discovery candidates), `breakoutVideos`/`emergingChannels` (one `getChannelIntelligenceSummary` call per watchlisted channel, results tagged `channelId` and filtered to `isBreakout`/`isEmerging`), `trendCandidates` (direct passthrough of `listTrendCandidatesWithFreshness`), `collectionWarnings` (a channel appears only for `stale_observation`/`quota_limited`/`missing_snapshot` — never the full `DataQualityFlag` set, `hidden_subscriber_count` is deliberately excluded — or a `"failed"` latest collection run, or `neverObserved: true` for a channel with zero snapshots). Web UI only, no MCP/CLI contract
+- `GET /api/market-intelligence/videos-overview` (Phase 9 slice 9H, part C) — `getMarketVideosOverview`: per-video aggregation across the whole watchlist — `title`/`publishedAt`/`viewCount`/`observedAt` (the video's latest known snapshot; `title` is `null` for a pre-migration snapshot), `velocity` (`FieldVelocity`, view-count-per-day, `computeSnapshotVelocity` reused per video), `breakout` (the same leave-one-out assessment `getChannelIntelligenceSummary` uses, via a shared `computeRecentVideoBreakouts` helper — `null` only for a video with no `publishedAt` on record or older than `RECENT_VIDEO_WINDOW_DAYS`), `topics` (`{topicId, name}[]`, resolved via one `listTopics()` call plus one new bulk `db.ts` read, `listMarketTopicAssignmentsBySubjectType("video")` — never one call per video). Web UI only, no MCP/CLI contract of its own
+- `GET /api/market-intelligence/research-requests` (Phase 9 slice 9G, part B) — list all agent-created research requests, for the Web UI's own review queue
+- `POST /api/market-intelligence/research-requests/[requestId]/approve` — no request body; the ONLY way a request moves `pending -> approved` (verified mechanically, see `docs/ARCHITECTURE.md` §18) — uses the approving human's own session credentials for the one real `search.list` call this triggers; records `status: "executed"` + `candidatesFound`/`candidatesNew` on success, `status: "execution_failed"` + `executionError` on failure (never reverts the approval itself)
+- `POST /api/market-intelligence/research-requests/[requestId]/reject` — `{ reason }`; the ONLY way a request moves `pending -> rejected`
 
 ### Analytics API (Phase 8 + Studio-Parity S6b, BL-055..059/BL-072 — previously undocumented here)
 

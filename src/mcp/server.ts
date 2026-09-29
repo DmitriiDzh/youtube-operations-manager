@@ -47,6 +47,7 @@ import {
   CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET,
   CAPABILITY_CONTENT_PROPOSAL_CREATE,
   CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT,
+  CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE,
   resolveAgentConnectionIdFromEnv,
 } from "@/lib/agent-connections";
 import {
@@ -79,7 +80,7 @@ import {
   listWeeklyReportsInputSchema,
 } from "@/lib/analytics/schemas";
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
-import { getWatchlistEntryInputSchema } from "@/lib/market-intelligence/schemas";
+import { createMarketResearchRequestInputSchema, getWatchlistEntryInputSchema } from "@/lib/market-intelligence/schemas";
 
 loadEnvConfig(process.cwd());
 
@@ -143,7 +144,20 @@ type AnalyticsCoreSubset = Pick<
 // `market-intelligence` as a hard dependency of `agent-operations`'s own service layer
 // (`docs/roadmap/plans/PHASE_9_PLAN.md` §5's module-independence rule). Global data, never
 // channel-scoped -- no `assertMcpDeviceAvailable` or active-channel check applies to either.
-type MarketIntelligenceCoreSubset = Pick<MarketIntelligenceCore, "listWatchlist" | "getWatchlistEntryContext">;
+// Phase 9 slice 9G, part A widened this to add the three list actions `agent_list_market_records`
+// fans out to -- same rationale as above, no new hard dependency on agent-operations. Part B added
+// `createMarketResearchRequest` only -- deliberately never the two actions that move a research
+// request out of "pending" (no MCP tool anywhere calls either, verified mechanically by this
+// module's own approval inventory test).
+type MarketIntelligenceCoreSubset = Pick<
+  MarketIntelligenceCore,
+  | "listWatchlist"
+  | "getWatchlistEntryContext"
+  | "listTopics"
+  | "listTrendCandidates"
+  | "listDiscoveryCandidates"
+  | "createMarketResearchRequest"
+>;
 
 // BL-075/BL-078 (docs/roadmap/BACKLOG.md): the same "generate proposals" -> "create Change Set"
 // two-step workflow the Web UI's own ai-localization routes already expose, now reachable by an
@@ -234,6 +248,8 @@ type McpToolHandlers = {
   agentListAssetPerformance: (input: unknown) => Promise<ToolResponse>;
   queryCompetitors: (input: unknown) => Promise<ToolResponse>;
   queryMarketIntelligence: (input: unknown) => Promise<ToolResponse>;
+  agentListMarketRecords: (input: unknown) => Promise<ToolResponse>;
+  agentCreateMarketResearchRequest: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -433,6 +449,12 @@ const playlistUpdateToolInputSchema = z
 // Phase 9 slice 4 -- `query_competitors` takes no parameters (a plain roster read); `.strict()` so
 // an unexpected field is rejected loudly, matching every other input schema in this codebase.
 const queryCompetitorsInputSchema = z.object({}).strict();
+
+// Phase 9 slice 9G, part A -- one list tool with a `kind` discriminator, rather than three
+// separate thin tools (owner spec §28: "prefer a small number of powerful composable MCP tools").
+const agentListMarketRecordsInputSchema = z
+  .object({ kind: z.enum(["topics", "trend_candidates", "discovery_candidates"]) })
+  .strict();
 
 export function createMcpToolHandlers(
   core: VideoMetadataCoreSubset & PlaylistManagementCoreSubset,
@@ -1493,6 +1515,63 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    /**
+     * Phase 9 slice 9G, part A -- one list tool with a `kind` discriminator (owner spec §28:
+     * "prefer a small number of powerful composable MCP tools over many thin wrappers") covering
+     * topics/trend candidates/discovery candidates, rather than three separate tools. Pure fan-out
+     * to the market-intelligence core's own already-existing `listTopics`/`listTrendCandidates`/
+     * `listDiscoveryCandidates` -- no new service logic. Global data, never channel-scoped, same as
+     * `queryCompetitors`/`queryMarketIntelligence` above.
+     */
+    async agentListMarketRecords(input: unknown): Promise<ToolResponse> {
+      const parsedInput = agentListMarketRecordsInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        if (parsedInput.data.kind === "topics") {
+          const result = await marketIntelligenceCore.listTopics();
+          return toolSuccessResult({ kind: "topics", ...result });
+        }
+        if (parsedInput.data.kind === "trend_candidates") {
+          const result = await marketIntelligenceCore.listTrendCandidates();
+          return toolSuccessResult({ kind: "trend_candidates", ...result });
+        }
+        const result = await marketIntelligenceCore.listDiscoveryCandidates();
+        return toolSuccessResult({ kind: "discovery_candidates", ...result });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * Phase 9 slice 9G, part B (owner spec §29) -- an agent-created DRAFT, never self-approving.
+     * `createdVia: "mcp"`/`agentApiVersion` are SERVER-STAMPED (owner spec §22), mirrors
+     * `agentCreateContentProposal` above exactly. A real local-state mutation (writes a pending row
+     * to local SQLite) even though it never touches YouTube, so this tool is gated by
+     * `assertMcpDeviceAvailable` (via `wrapMcpHandlersWithMutationGate` below) and by agent-zone
+     * enforcement (`registerTool`'s zoning argument, at the bottom of this file), same as
+     * `agentCreateContentProposal`. Global, no `assertActiveChannel` check -- this data is not
+     * scoped to any owned channel, same as `queryCompetitors`/`queryMarketIntelligence` above.
+     */
+    async agentCreateMarketResearchRequest(input: unknown): Promise<ToolResponse> {
+      const parsedInput = createMarketResearchRequestInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const result = await marketIntelligenceCore.createMarketResearchRequest(parsedInput.data, {
+          createdVia: "mcp",
+          agentApiVersion: AGENT_API_VERSION,
+        });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -1628,6 +1707,12 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // classification as agentListAssets above.
     queryCompetitors: handlers.queryCompetitors,
     queryMarketIntelligence: handlers.queryMarketIntelligence,
+    // Phase 9 slice 9G, part A -- pure fan-out over already-existing reads, same classification.
+    agentListMarketRecords: handlers.agentListMarketRecords,
+    // Phase 9 slice 9G, part B -- a real local-state mutation (a new pending request row) -- gated,
+    // like `agentCreateContentProposal` above.
+    agentCreateMarketResearchRequest: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.agentCreateMarketResearchRequest(input),
   };
 }
 
@@ -2247,10 +2332,31 @@ export function createMcpServer(
     "query_market_intelligence",
     {
       description:
-        "Single-channel deep dive into the research watchlist: one watchlisted channel's own record (channelId, handleOrUrl, reason, addedAt) plus its full evidence history (each row's observation, source, confidence, collectedAt), by channelId. Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. A local read only, never a live YouTube call. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (docs/roadmap/plans/PHASE_9_PLAN.md §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (this vocabulary is a known, still-open design question, docs/roadmap/plans/PHASE_9_PLAN.md §8).",
+        "Single-channel deep dive into the research watchlist: one watchlisted channel's own record (channelId, handleOrUrl, reason, addedAt), its full evidence history (each row's observation, source, confidence, collectedAt), channel/video snapshots (9A), topic assignments (9E), and a derived dataQualityFlags array (9I -- e.g. stale_observation, missing_snapshot, quota_limited, hidden_subscriber_count; never a fabricated flag when there's simply no data yet). Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. A local read only, never a live YouTube call. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (docs/roadmap/plans/PHASE_9_PLAN.md §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (this vocabulary is a known, still-open design question, docs/roadmap/plans/PHASE_9_PLAN.md §8).",
       inputSchema: getWatchlistEntryInputSchema,
     },
     (args) => handlers.queryMarketIntelligence(args)
+  );
+
+  registerTool(
+    "agent_list_market_records",
+    {
+      description:
+        "One list tool covering topics/trend candidates/discovery candidates by a `kind` discriminator, rather than three separate tools (owner spec §28). `kind: \"topics\"` -> { kind, topics }; `kind: \"trend_candidates\"` -> { kind, trendCandidates }; `kind: \"discovery_candidates\"` -> { kind, candidates }. A local read only, never a live YouTube call. Global data, not scoped to any owned channel, same as query_competitors/query_market_intelligence (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md).",
+      inputSchema: agentListMarketRecordsInputSchema,
+    },
+    (args) => handlers.agentListMarketRecords(args)
+  );
+
+  registerTool(
+    "agent_create_market_research_request",
+    {
+      description:
+        "Creates a structured research/discovery draft (query, rationale, optional monitorDurationDays -- stored as descriptive metadata only, never consulted by any scheduler, since none exists in this application). Always starts status:\"pending\". Makes zero YouTube calls and spends zero quota -- a human must separately approve it through the Web UI before the one real search.list run it can ever trigger actually happens (owner spec §29: \"this must not automatically create unlimited collection jobs\"). There is no MCP tool to approve or reject a request -- that is reachable ONLY through the Web UI (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md).",
+      inputSchema: createMarketResearchRequestInputSchema,
+    },
+    (args) => handlers.agentCreateMarketResearchRequest(args),
+    CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE
   );
 
   return server;

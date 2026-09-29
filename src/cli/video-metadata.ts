@@ -32,6 +32,7 @@ import {
   CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET,
   CAPABILITY_CONTENT_PROPOSAL_CREATE,
   CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT,
+  CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE,
   resolveAgentConnectionIdFromEnv,
 } from "@/lib/agent-connections";
 
@@ -85,7 +86,17 @@ type AssetCatalogCliCoreSubset = Pick<AssetCatalogCore, "registerAsset">;
 // query_market_intelligence/query_competitors tools. Wired directly here, not through
 // AgentOperationsCliCoreSubset above -- see MarketIntelligenceCoreSubset's own doc comment in
 // src/mcp/server.ts for why.
-type MarketIntelligenceCliCoreSubset = Pick<MarketIntelligenceCore, "listWatchlist" | "getWatchlistEntryContext">;
+// Widened in Phase 9 slice 9G, part A for `agent market-records`'s CLI parity with
+// `agent_list_market_records`.
+type MarketIntelligenceCliCoreSubset = Pick<
+  MarketIntelligenceCore,
+  | "listWatchlist"
+  | "getWatchlistEntryContext"
+  | "listTopics"
+  | "listTrendCandidates"
+  | "listDiscoveryCandidates"
+  | "createMarketResearchRequest"
+>;
 
 loadEnvConfig(process.cwd());
 
@@ -152,7 +163,9 @@ export type ParsedArgs = {
     | "find-comparable-videos"
     | "list-asset-performance"
     | "competitors"
-    | "market-intelligence";
+    | "market-intelligence"
+    | "market-records"
+    | "create-research-request";
   flags: Record<string, string | boolean>;
 };
 
@@ -198,6 +211,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
       "list-asset-performance",
       "competitors",
       "market-intelligence",
+      "market-records",
+      "create-research-request",
     ],
     asset: ["register"],
   };
@@ -443,6 +458,10 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   // module's own watchlist/evidence storage, never a live YouTube call, never mutates anything.
   "competitors",
   "market-intelligence",
+  // agent market-records (Phase 9 slice 9G, part A,
+  // docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md): same classification as the two above -- a pure
+  // fan-out over already-existing local reads.
+  "market-records",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -876,6 +895,57 @@ export async function runCliCommand(args: {
       if (parsedArgs.command === "market-intelligence") {
         const requestedChannelId = requiredStringFlag(parsedArgs.flags, "channelId");
         const result = await marketIntelligenceCore.getWatchlistEntryContext({ channelId: requestedChannelId });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Phase 9 slice 9G, part A -- one command with a --kind flag, mirroring the MCP
+      // agent_list_market_records tool's own "kind discriminator, not three tools" shape.
+      if (parsedArgs.command === "market-records") {
+        const kind = requiredStringFlag(parsedArgs.flags, "kind");
+        if (kind === "topics") {
+          const result = await marketIntelligenceCore.listTopics();
+          writeStdout(serializeSuccess({ kind, ...result }));
+          return 0;
+        }
+        if (kind === "trend_candidates") {
+          const result = await marketIntelligenceCore.listTrendCandidates();
+          writeStdout(serializeSuccess({ kind, ...result }));
+          return 0;
+        }
+        if (kind === "discovery_candidates") {
+          const result = await marketIntelligenceCore.listDiscoveryCandidates();
+          writeStdout(serializeSuccess({ kind, ...result }));
+          return 0;
+        }
+        throw new DomainError({
+          code: "validation_failed",
+          message: "--kind must be one of: topics, trend_candidates, discovery_candidates",
+        });
+      }
+
+      // Phase 9 slice 9G, part B (owner spec §29) -- an agent-created DRAFT, never self-approving.
+      // Zoned the same way every other zoned CLI command already is (mirrors
+      // "create-content-proposal"'s own inline check below) -- global data, so no channelId/
+      // assertActiveChannel is needed, unlike every other zoned command in this file.
+      if (parsedArgs.command === "create-research-request") {
+        await agentConnectionsCore.assertAgentAllowedForCapability({
+          capabilityId: CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE,
+          callerConnectionId,
+        });
+        const monitorDurationDaysFlag = optionalStringFlag(parsedArgs.flags, "monitorDurationDays");
+        const result = await marketIntelligenceCore.createMarketResearchRequest(
+          {
+            query: requiredStringFlag(parsedArgs.flags, "query"),
+            rationale: requiredStringFlag(parsedArgs.flags, "rationale"),
+            monitorDurationDays: monitorDurationDaysFlag ? Number(monitorDurationDaysFlag) : undefined,
+          },
+          // `agentApiVersion: null` for the CLI transport, mirroring `create-content-proposal`'s
+          // own established convention below -- MCP is the one transport this interface's own
+          // version actually mediates (owner spec §22), so it is the only one that stamps a real
+          // value.
+          { createdVia: "cli", agentApiVersion: null }
+        );
         writeStdout(serializeSuccess(result));
         return 0;
       }

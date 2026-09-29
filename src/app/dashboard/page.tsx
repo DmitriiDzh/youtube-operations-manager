@@ -11,11 +11,18 @@ import { LanguagesManager } from "@/components/languages-manager";
 import { BatchManager } from "@/components/batch-manager";
 import { AiConnectionsManager } from "@/components/ai-connections-manager";
 import { AnalyticsCollectionSettings } from "@/components/analytics-collection-settings";
+import { MarketIntelligenceCollectionSettings } from "@/components/market-intelligence-collection-settings";
 import { LiveWritesSettings } from "@/components/live-writes-settings";
 import { McpConnectionSettings } from "@/components/mcp-connection-settings";
 import { AgentConnectionsManager } from "@/components/agent-connections-manager";
 import { OperationsWorkspaceSettings } from "@/components/operations-workspace-settings";
+import { MarketOverviewPanel } from "@/components/market-overview-panel";
 import { MarketResearchPanel } from "@/components/market-research-panel";
+import { MarketVideosPanel } from "@/components/market-videos-panel";
+import { MarketDiscoveryPanel } from "@/components/market-discovery-panel";
+import { MarketTopicsPanel } from "@/components/market-topics-panel";
+import { MarketTrendsPanel } from "@/components/market-trends-panel";
+import { MarketResearchRequestsPanel } from "@/components/market-research-requests-panel";
 import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
 import { ChannelConnectionsSettings } from "@/components/channel-connections-settings";
@@ -147,9 +154,20 @@ export default function Dashboard() {
       .finally(() => {
         fetch(`/api/channels/${encodeURIComponent(channelId)}/analytics/weekly-reports/generate-if-due`, {
           method: "POST",
-        }).catch(() => {
-          // Non-fatal -- the due-week check means the next dashboard load simply tries again.
-        });
+        })
+          .catch(() => {
+            // Non-fatal -- the due-week check means the next dashboard load simply tries again.
+          })
+          .finally(() => {
+            // Phase 9 slice 9B (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md §7) -- third
+            // fire-and-forget call, chained after the two Phase-8 ones above (never in parallel,
+            // same rationale). Channel-agnostic (market intelligence's own watchlist is global,
+            // not scoped to `channel.id`) -- the server's own budget/staleness checks decide
+            // whether anything actually runs.
+            fetch("/api/market-intelligence/collect-if-stale", { method: "POST" }).catch(() => {
+              // Non-fatal -- the staleness/budget check means the next dashboard load simply tries again.
+            });
+          });
       });
   }, [channel]);
 
@@ -305,13 +323,19 @@ export default function Dashboard() {
 
       {tab === "research" && (
         <FeatureErrorBoundary label="Research">
-          <div>
-            <p className="mb-4 text-sm text-zinc-400">
-              A manually-seeded watchlist of channels for competitive/market context &mdash; never
-              automatically discovered, and never a source of private analytics for a channel you
-              don&rsquo;t own.
+          <div className="space-y-6">
+            <p className="text-sm text-zinc-400">
+              A watchlist of channels for competitive/market context &mdash; discovery only ever
+              runs on your own explicit request below, never automatically, and this is never a
+              source of private analytics for a channel you don&rsquo;t own.
             </p>
+            <MarketOverviewPanel />
             <MarketResearchPanel />
+            <MarketVideosPanel />
+            <MarketDiscoveryPanel />
+            <MarketTopicsPanel />
+            <MarketTrendsPanel />
+            <MarketResearchRequestsPanel />
           </div>
         </FeatureErrorBoundary>
       )}
@@ -355,6 +379,7 @@ export default function Dashboard() {
             <ReadGatewaySettings />
             <CloudConnectionSettings />
             <AnalyticsCollectionSettings />
+            <MarketIntelligenceCollectionSettings />
           </FeatureErrorBoundary>
         </div>
 

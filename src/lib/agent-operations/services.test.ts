@@ -229,7 +229,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   const result = await services.getSystemCapabilities({});
 
   assert.equal(result.productVersion, "9.9.9");
-  assert.equal(result.agentApiVersion, "0.11.0");
+  assert.equal(result.agentApiVersion, "0.13.0");
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -308,17 +308,30 @@ test("plannedFutureCapabilities is exactly the one remaining extension point fro
 // implemented entries under the market_intelligence domain, not merely removed from the planned
 // list (removing one without the other landing would leave the interface internally
 // inconsistent).
-test("capabilities includes market_intelligence.query_market_intelligence and .query_competitors, both READ", async () => {
+// Updated 2026-09-27 (Phase 9 slice 9G, part A, docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md): a
+// third real capability, agent_list_market_records, joined the same domain -- the requirement
+// itself changed (a new capability shipped), not that this test was wrong.
+// Updated again 2026-09-27 (Phase 9 slice 9G, part B, docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md,
+// AGENTS.md §L): a fourth capability joined, this domain's first DRAFT-class one -- the exact-list
+// assertion changed to a per-id permission check (only this fourth entry is DRAFT, per §L's own
+// "state which requirement changed" discipline for a previously-approved test).
+test("capabilities includes market_intelligence's four real capabilities, with agent_create_market_research_request DRAFT and the rest READ", async () => {
   const { services } = createFixture();
   const result = await services.getSystemCapabilities({});
 
   const marketIntelligenceCapabilities = result.capabilities.filter((c) => c.domain === "market_intelligence");
   assert.deepEqual(
     marketIntelligenceCapabilities.map((c) => c.id).sort(),
-    ["market_intelligence.query_competitors", "market_intelligence.query_market_intelligence"]
+    [
+      "market_intelligence.agent_create_market_research_request",
+      "market_intelligence.agent_list_market_records",
+      "market_intelligence.query_competitors",
+      "market_intelligence.query_market_intelligence",
+    ]
   );
   for (const capability of marketIntelligenceCapabilities) {
-    assert.equal(capability.permission, "READ");
+    const expectedPermission = capability.id === "market_intelligence.agent_create_market_research_request" ? "DRAFT" : "READ";
+    assert.equal(capability.permission, expectedPermission, `${capability.id} has an unexpected permission`);
   }
 });
 
