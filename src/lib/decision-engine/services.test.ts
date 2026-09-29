@@ -554,3 +554,57 @@ test("AC-10-05f: listHypotheses returns channel-less rows plus the active channe
   const statements = results.map((h) => h.statement).sort();
   assert.deepEqual(statements, ["channel-less", "scoped to active"]);
 });
+
+// AC-10-09: getHypothesisTrail (Phase 10 slice 2, docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md) --
+// one hypothesis plus every one of its experiments, each carrying its own outcomes; fails
+// HYPOTHESIS_NOT_FOUND for an unknown id before touching experiments at all; enforces channel
+// access exactly once (assertHypothesisAccessible), not once per experiment.
+test("AC-10-09: getHypothesisTrail surfaces HYPOTHESIS_NOT_FOUND for an unknown id, before listing any experiments", async () => {
+  const calls: string[] = [];
+  const { services } = createServices(null, calls);
+  await assert.rejects(
+    () => services.getHypothesisTrail("hyp-unknown", { userId: "u1" }),
+    (error: unknown) => isDomainError(error) && error.code === "HYPOTHESIS_NOT_FOUND"
+  );
+  assert.deepEqual(calls, []);
+});
+
+test("AC-10-09: getHypothesisTrail composes one hypothesis with its experiments, each carrying its own outcomes", async () => {
+  const { services } = createServices(null);
+  const hypothesis = await services.createHypothesis({ statement: "s", evidenceNotes: "e" }, { userId: "u1", createdBy: "u1", createdVia: "web_ui" });
+  const experiment = await services.createExperiment(hypothesis.hypothesisId, VALID_EXPERIMENT_INPUT, {
+    userId: "u1",
+    createdBy: "u1",
+    createdVia: "web_ui",
+  });
+  await services.transitionExperiment(experiment.experimentId, { targetStatus: "approved" }, { userId: "u1", actor: "approver-1" });
+  await services.transitionExperiment(experiment.experimentId, { targetStatus: "running" }, { userId: "u1", actor: "approver-1" });
+  const outcome = await services.createExperimentOutcome(
+    experiment.experimentId,
+    { outcomeData: "CTR +6%", criteriaMet: "met" },
+    { userId: "u1", recordedBy: "u1", createdVia: "web_ui" }
+  );
+
+  const trail = await services.getHypothesisTrail(hypothesis.hypothesisId, { userId: "u1" });
+
+  assert.deepEqual(trail.hypothesis, hypothesis);
+  assert.equal(trail.experiments.length, 1);
+  assert.equal(trail.experiments[0].experimentId, experiment.experimentId);
+  assert.deepEqual(trail.experiments[0].outcomes, [outcome]);
+});
+
+test("AC-10-09: getHypothesisTrail enforces channel access exactly once, not once per experiment", async () => {
+  const calls: string[] = [];
+  const { services } = createServices("UCactive0000000000000001", calls);
+  const hypothesis = await services.createHypothesis(
+    { channelId: "UCactive0000000000000001", statement: "scoped", evidenceNotes: "e" },
+    { userId: "u1", createdBy: "u1", createdVia: "web_ui" }
+  );
+  calls.length = 0;
+  await services.createExperiment(hypothesis.hypothesisId, VALID_EXPERIMENT_INPUT, { userId: "u1", createdBy: "u1", createdVia: "web_ui" });
+  calls.length = 0;
+
+  await services.getHypothesisTrail(hypothesis.hypothesisId, { userId: "u1" });
+
+  assert.deepEqual(calls, ["UCactive0000000000000001"]);
+});

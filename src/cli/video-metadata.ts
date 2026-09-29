@@ -104,10 +104,7 @@ type MarketIntelligenceCliCoreSubset = Pick<
 // create_experiment_proposal MCP tools. Same "registered directly here" reasoning as
 // MarketIntelligenceCliCoreSubset above -- decision-engine's own service layer already does its
 // own channel-access assertion internally.
-type DecisionEngineCliCoreSubset = Pick<
-  DecisionEngineCore,
-  "listHypotheses" | "getHypothesis" | "listExperimentsByHypothesis" | "listExperimentOutcomes" | "createExperiment"
->;
+type DecisionEngineCliCoreSubset = Pick<DecisionEngineCore, "listHypotheses" | "getHypothesisTrail" | "createExperiment">;
 
 loadEnvConfig(process.cwd());
 
@@ -479,6 +476,12 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   // docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md): same classification as the two above -- a pure
   // fan-out over already-existing local reads.
   "market-records",
+  // agent list-hypotheses/get-hypothesis-trail (Phase 10 slice 2,
+  // docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md): same classification as the two above -- pure
+  // local reads over decision-engine's own hypothesis/experiment/outcome storage, never mutates
+  // anything. "create-experiment-proposal" is deliberately NOT here -- it persists a new row.
+  "list-hypotheses",
+  "get-hypothesis-trail",
 ]);
 
 // OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
@@ -989,16 +992,12 @@ export async function runCliCommand(args: {
         const agentCredentialRef = await auth.resolveEffectiveCredentialRef({
           explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
         });
-        const ctx = { userId: "userId" in agentCredentialRef ? agentCredentialRef.userId : null };
-        const hypothesis = await decisionEngineCore.getHypothesis(hypothesisId, ctx);
-        const experiments = await decisionEngineCore.listExperimentsByHypothesis(hypothesisId, ctx);
-        const experimentsWithOutcomes = await Promise.all(
-          experiments.map(async (experiment) => ({
-            ...experiment,
-            outcomes: await decisionEngineCore.listExperimentOutcomes(experiment.experimentId, ctx),
-          }))
-        );
-        writeStdout(serializeSuccess({ hypothesis, experiments: experimentsWithOutcomes }));
+        // getHypothesisTrail (services.ts) does the one access check and the composition itself,
+        // shared with the MCP tool's own identical handler -- not composed separately here.
+        const result = await decisionEngineCore.getHypothesisTrail(hypothesisId, {
+          userId: "userId" in agentCredentialRef ? agentCredentialRef.userId : null,
+        });
+        writeStdout(serializeSuccess(result));
         return 0;
       }
 

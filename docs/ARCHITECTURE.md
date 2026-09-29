@@ -1857,10 +1857,17 @@ inventory.test.ts` instead parses actual `import { X } from "@/lib/db"` specifie
 those against the forbidden list, immune to all three collision classes while still catching the
 one real violation this test exists to prevent.
 
-**Not yet built, named explicitly rather than silently deferred:** an MCP/CLI agent surface
-(`FUTURE_PHASES.md` §6 explicitly calls for Codex-class agents to propose hypotheses and attach
-evidence -- a deliberate next slice, following the same "web UI first, agent surface as its own
-slice" sequencing Phase 9 used for `query_market_intelligence`/`query_competitors`); evidence
+**Built as its own follow-up slice (2026-09-29):** an MCP/CLI agent surface --
+`docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md` -- `agent_list_hypotheses`/
+`agent_get_hypothesis_trail` (READ) and `create_experiment_proposal` (DRAFT, the reserved
+capability name, always `status: "proposed"`, gated like `agent_create_market_research_request`).
+Creating a hypothesis from scratch, transitioning an experiment's status, and recording an outcome
+remain Web-UI-only, mechanically verified (`decision-engine-agent-approval-inventory.test.ts`).
+
+**Still not built, named explicitly rather than silently deferred:** agent-created hypotheses from
+scratch (`create_hypothesis`, the new reserved extension point left after slice 2); evidence
 auto-linking from real Phase 8/9 data (both now exist, unlike when the first-pass plan was
 written, but the smallest-safe-slice discipline still applies -- `evidenceNotes` stays free text
-for this slice); AI-generated hypotheses; automatic execution of an approved experiment.
+for now, and linking it needs its own design pass for how `decision-engine` references
+`analytics`/`market-intelligence` data without breaking `AGENTS.md` §M module independence);
+AI-generated hypotheses; automatic execution of an approved experiment.

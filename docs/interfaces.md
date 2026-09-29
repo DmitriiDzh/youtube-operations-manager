@@ -690,8 +690,12 @@ Key MCP tools:
     no `status` field accepted at all). The one reserved capability name
     (`PLANNED_FUTURE_CAPABILITIES` since Phase 7), zoned
     (`decision_engine.create_experiment_proposal`) and gated the same way as
-    `agent_create_market_research_request`. `createdBy: "agent"` (never a real user id, since MCP/
-    CLI callers have no session), `createdVia`: `"mcp"`/`"cli"`.
+    `agent_create_market_research_request`. `createdVia`: `"mcp"`/`"cli"` (persisted, matches
+    `Experiment.createdVia`). The MCP/CLI handler also passes `createdBy: "agent"` in the
+    service-layer call's `ctx` (never a real user id, since MCP/CLI callers have no session), but
+    `createExperiment`/`insertExperiment` never actually persist `createdBy` anywhere -- the
+    `Experiment` type has no such field, only `responsible` (a caller-supplied input value, not an
+    identity stamp).
   - **There is no MCP tool or CLI command to create a hypothesis from scratch, transition an
     experiment's status, or record an outcome** — all Web-UI-only, verified mechanically by
     `decision-engine-agent-approval-inventory.test.ts` (`PHASE10-INV-02`, same scan technique as

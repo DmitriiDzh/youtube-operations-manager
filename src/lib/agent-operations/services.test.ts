@@ -300,7 +300,7 @@ test("capabilities includes system.get_capabilities itself, classified READ", as
 // now a real, implemented capability (see the next test), replaced here by create_hypothesis
 // (agent-created hypotheses, §6's other named agent capability, deliberately left out of slice 2's
 // own narrower scope).
-test("plannedFutureCapabilities is exactly the one remaining extension point from the owner's spec §14, no more no less", async () => {
+test("plannedFutureCapabilities is exactly the one remaining reserved extension point, no more no less", async () => {
   const { services } = createFixture();
   const result = await services.getSystemCapabilities({});
 

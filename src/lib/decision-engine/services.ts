@@ -320,6 +320,31 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
       const rows = await deps.listExperimentOutcomesByExperiment(experimentId);
       return rows.map(toExperimentOutcome);
     },
+
+    /**
+     * Phase 10 slice 2 (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md) -- one hypothesis plus every
+     * one of its experiments, each with its own outcomes, in one call (mirrors
+     * market-intelligence's own `getWatchlistEntryContext` shape). Does ONE access check
+     * (`assertHypothesisAccessible`), then reads experiments/outcomes directly from the store --
+     * not `listExperimentsByHypothesis`/`listExperimentOutcomes` above, which would each re-run
+     * `assertExperimentAccessible` -> `assertHypothesisAccessible` per experiment (found by
+     * advisor review: real, avoidable duplication once a single caller already knows the
+     * hypothesis is accessible).
+     */
+    async getHypothesisTrail(
+      hypothesisId: string,
+      ctx: { userId: string | null | undefined }
+    ): Promise<{ hypothesis: Hypothesis; experiments: (Experiment & { outcomes: ExperimentOutcome[] })[] }> {
+      const hypothesisRow = await assertHypothesisAccessible(hypothesisId, ctx);
+      const experimentRows = await deps.listExperimentsByHypothesis(hypothesisId);
+      const experiments = await Promise.all(
+        experimentRows.map(async (experimentRow) => ({
+          ...toExperiment(experimentRow),
+          outcomes: (await deps.listExperimentOutcomesByExperiment(experimentRow.id)).map(toExperimentOutcome),
+        }))
+      );
+      return { hypothesis: toHypothesis(hypothesisRow), experiments };
+    },
   };
 }
 

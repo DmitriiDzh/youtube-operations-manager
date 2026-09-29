@@ -905,8 +905,11 @@ Deliberately **not** implemented in this phase (owner spec §14/§29): the Exper
 their own separate phases' own follow-up assignments, not part of this phase's own owner-spec
 slices. `query_market_intelligence`/`query_competitors` landed 2026-09-26 as Phase 9's own slice
 4 (§4k below); `create_experiment_proposal` landed 2026-09-29 as Phase 10's own slice 2 (§4l
-below) -- `plannedFutureCapabilities` now names `create_hypothesis` as the one remaining reserved
-extension point from that same owner spec §14 list.
+below) -- `plannedFutureCapabilities` now names `create_hypothesis` instead, a NEW reservation (not
+from the original owner spec §14 list) derived from `FUTURE_PHASES.md` §6's own "Agent
+integration" paragraph ("propose hypotheses") during slice 2's own scoping -- flagged for the
+project owner's awareness, since reserving a new agent-visible capability name is itself worth
+their explicit confirmation even though it changes no behavior on its own.
 
 ## 4k. Market intelligence query surface (Phase 9 slice 4, `docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`) -- IMPLEMENTED
 

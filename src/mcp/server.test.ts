@@ -5192,19 +5192,14 @@ test("AC-9G-B-11: agent_create_market_research_request is rejected while the ope
 });
 
 // Phase 10 slice 2 (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md)
-type DecisionEngineCoreStubShape = Pick<
-  DecisionEngineCore,
-  "listHypotheses" | "getHypothesis" | "listExperimentsByHypothesis" | "listExperimentOutcomes" | "createExperiment"
->;
+type DecisionEngineCoreStubShape = Pick<DecisionEngineCore, "listHypotheses" | "getHypothesisTrail" | "createExperiment">;
 
 function makeDecisionEngineCoreStub(overrides: Partial<DecisionEngineCoreStubShape> = {}): DecisionEngineCoreStubShape {
   return {
     listHypotheses: async () => [],
-    getHypothesis: async () => {
+    getHypothesisTrail: async () => {
       throw new DomainError({ code: "HYPOTHESIS_NOT_FOUND", message: "Hypothesis not found" });
     },
-    listExperimentsByHypothesis: async () => [],
-    listExperimentOutcomes: async () => [],
     createExperiment: async () => {
       throw new Error("not used");
     },
@@ -5261,8 +5256,12 @@ test("MCP agent_list_hypotheses returns exactly the service layer's own already-
   assert.deepEqual(payload.hypotheses, [fakeHypothesis]);
 });
 
-test("MCP agent_get_hypothesis_trail surfaces HYPOTHESIS_NOT_FOUND for an unknown id, before ever listing experiments", async () => {
-  let listExperimentsCalled = false;
+// The composition itself (hypothesis + experiments + outcomes, not-found-before-listing) is
+// tested at the service level now (getHypothesisTrail, decision-engine/services.test.ts) -- these
+// two just prove the MCP handler passes hypothesisId/ctx through and forwards the result/error
+// unchanged, since the handler no longer composes anything itself (advisor-review fix: the
+// composition used to be written out separately here and in the CLI handler).
+test("MCP agent_get_hypothesis_trail surfaces HYPOTHESIS_NOT_FOUND for an unknown id, from the service layer unchanged", async () => {
   const handlers = createMcpToolHandlers(
     makeCoreStub(),
     makeAuthStub(),
@@ -5273,33 +5272,18 @@ test("MCP agent_get_hypothesis_trail surfaces HYPOTHESIS_NOT_FOUND for an unknow
     undefined,
     undefined,
     undefined,
-    makeDecisionEngineCoreStub({
-      listExperimentsByHypothesis: async () => {
-        listExperimentsCalled = true;
-        return [];
-      },
-    })
+    makeDecisionEngineCoreStub()
   );
   const result = await handlers.agentGetHypothesisTrail({ hypothesisId: "hyp-unknown" });
 
   assert.equal(result.isError, true);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
   assert.equal(payload.error.code, "HYPOTHESIS_NOT_FOUND");
-  assert.equal(listExperimentsCalled, false);
 });
 
-test("MCP agent_get_hypothesis_trail composes one hypothesis with its experiments, each carrying its own outcomes", async () => {
-  const fakeOutcome = {
-    outcomeId: "out-1",
-    experimentId: "exp-1",
-    recordedBy: "owner",
-    recordedAt: "2026-10-01T00:00:00.000Z",
-    outcomeData: "CTR +6%",
-    dataQualityLimitations: null,
-    criteriaMet: "met" as const,
-    lessonsLearned: null,
-    createdVia: "web_ui",
-  };
+test("MCP agent_get_hypothesis_trail returns exactly what getHypothesisTrail resolves, passing hypothesisId/userId through", async () => {
+  let capturedArgs: unknown;
+  const fakeTrail = { hypothesis: fakeHypothesis, experiments: [{ ...fakeExperiment, outcomes: [] }] };
   const handlers = createMcpToolHandlers(
     makeCoreStub(),
     makeAuthStub(),
@@ -5311,19 +5295,18 @@ test("MCP agent_get_hypothesis_trail composes one hypothesis with its experiment
     undefined,
     undefined,
     makeDecisionEngineCoreStub({
-      getHypothesis: async () => fakeHypothesis,
-      listExperimentsByHypothesis: async () => [fakeExperiment],
-      listExperimentOutcomes: async () => [fakeOutcome],
+      getHypothesisTrail: async (hypothesisId, ctx) => {
+        capturedArgs = { hypothesisId, ctx };
+        return fakeTrail;
+      },
     })
   );
   const result = await handlers.agentGetHypothesisTrail({ hypothesisId: "hyp-1" });
 
   assert.equal(result.isError, undefined);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
-  assert.deepEqual(payload.hypothesis, fakeHypothesis);
-  assert.equal(payload.experiments.length, 1);
-  assert.deepEqual(payload.experiments[0].outcomes, [fakeOutcome]);
-  assert.equal(payload.experiments[0].experimentId, "exp-1");
+  assert.deepEqual(payload, fakeTrail);
+  assert.deepEqual(capturedArgs, { hypothesisId: "hyp-1", ctx: { userId: "active-user" } });
 });
 
 test("MCP create_experiment_proposal rejects a request missing a required field as validation_failed, before ever calling the core", async () => {

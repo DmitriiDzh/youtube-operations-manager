@@ -172,10 +172,7 @@ type MarketIntelligenceCoreSubset = Pick<
 // needed here. The status-transition and outcome-recording actions are deliberately NOT in this
 // subset -- no MCP tool or CLI command may reach either (approval/outcome-recording stay
 // Web-UI-only), verified mechanically by this module's own agent-approval inventory test.
-type DecisionEngineCoreSubset = Pick<
-  DecisionEngineCore,
-  "listHypotheses" | "getHypothesis" | "listExperimentsByHypothesis" | "listExperimentOutcomes" | "createExperiment"
->;
+type DecisionEngineCoreSubset = Pick<DecisionEngineCore, "listHypotheses" | "getHypothesisTrail" | "createExperiment">;
 
 const agentListHypothesesInputSchema = z.object({}).strict();
 
@@ -1619,10 +1616,11 @@ export function createMcpToolHandlers(
     // One combined "trail" read (owner spec §28: "prefer a small number of powerful composable
     // MCP tools over many thin wrappers") -- a hypothesis plus every one of its experiments, each
     // with its own outcomes, mirroring query_market_intelligence's single-deep-dive shape rather
-    // than five separate list/get tools. Composed here from decisionEngineCore's own already-
-    // exported functions (getHypothesis/listExperimentsByHypothesis/listExperimentOutcomes) --
-    // no new service-layer function added, per AGENTS.md §D (this module's services.ts is
-    // unchanged by this slice).
+    // than five separate list/get tools. `getHypothesisTrail` (services.ts) does the one access
+    // check and the composition itself, shared with the CLI's own identical command (found by
+    // advisor review: an earlier version composed this in both the MCP and CLI handlers
+    // separately, real duplication of exactly the kind BL-104's own round-1 review already
+    // flagged once for this project).
     async agentGetHypothesisTrail(input: unknown): Promise<ToolResponse> {
       const parsedInput = agentGetHypothesisTrailInputSchema.safeParse(input);
       if (!parsedInput.success) {
@@ -1631,16 +1629,10 @@ export function createMcpToolHandlers(
 
       try {
         const credentialRef = await resolveCredentialRef(undefined);
-        const ctx = { userId: getCredentialUserId(credentialRef) };
-        const hypothesis = await decisionEngineCore.getHypothesis(parsedInput.data.hypothesisId, ctx);
-        const experiments = await decisionEngineCore.listExperimentsByHypothesis(parsedInput.data.hypothesisId, ctx);
-        const experimentsWithOutcomes = await Promise.all(
-          experiments.map(async (experiment) => ({
-            ...experiment,
-            outcomes: await decisionEngineCore.listExperimentOutcomes(experiment.experimentId, ctx),
-          }))
-        );
-        return toolSuccessResult({ hypothesis, experiments: experimentsWithOutcomes } as unknown as Record<string, unknown>);
+        const result = await decisionEngineCore.getHypothesisTrail(parsedInput.data.hypothesisId, {
+          userId: getCredentialUserId(credentialRef),
+        });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
       } catch (error) {
         return toolErrorResult(error);
       }
