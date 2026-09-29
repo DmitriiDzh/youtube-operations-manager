@@ -33,6 +33,8 @@ type Experiment = {
   status: ExperimentStatus;
   approvedBy: string | null;
   approvedAt: string | null;
+  changeSetId: string | null;
+  executionBatchId: string | null;
   createdVia: string;
   createdAt: string;
 };
@@ -124,6 +126,15 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
 
   const [abandonTarget, setAbandonTarget] = useState<Experiment | null>(null);
   const [transitioning, setTransitioning] = useState(false);
+
+  // Phase 10 slice 5 (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md §6) -- attach/detach a Change
+  // Set, then execute it (creates a real, dry-run-by-default Batch through the existing pipeline).
+  const [changeSetIdInput, setChangeSetIdInput] = useState<Record<string, string>>({});
+  const [settingChangeSet, setSettingChangeSet] = useState(false);
+  const [executeTarget, setExecuteTarget] = useState<Experiment | null>(null);
+  const [executeAsLive, setExecuteAsLive] = useState(false);
+  const [executing, setExecuting] = useState(false);
+  const [executeResult, setExecuteResult] = useState<{ experimentId: string; batchId: string; videoCount: number } | null>(null);
 
   // Phase 10 slice 3 (docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md §8) -- structured evidence,
   // additive alongside the free-text evidenceNotes shown above. No picker UI (a real channel/
@@ -424,6 +435,50 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
     setAbandonTarget(null);
   }
 
+  async function handleSetChangeSet(experiment: Experiment, changeSetId: string | null) {
+    setSettingChangeSet(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/decision-engine/experiments/${encodeURIComponent(experiment.experimentId)}/change-set`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ changeSetId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.message ?? "Failed to update the experiment's Change Set");
+        return;
+      }
+      if (selectedHypothesisId) await fetchExperiments(selectedHypothesisId);
+    } finally {
+      setSettingChangeSet(false);
+    }
+  }
+
+  async function handleConfirmExecute() {
+    if (!executeTarget) return;
+    setExecuting(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/decision-engine/experiments/${encodeURIComponent(executeTarget.experimentId)}/execute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ live: executeAsLive }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.message ?? "Failed to execute experiment");
+        return;
+      }
+      setExecuteResult({ experimentId: executeTarget.experimentId, batchId: data.batchId, videoCount: data.videoCount });
+      if (selectedHypothesisId) await fetchExperiments(selectedHypothesisId);
+    } finally {
+      setExecuting(false);
+      setExecuteTarget(null);
+      setExecuteAsLive(false);
+    }
+  }
+
   async function handleRecordOutcome() {
     if (!selectedExperimentId || !outcomeData) {
       setError("Outcome data is required");
@@ -617,40 +672,96 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
             <p className="text-sm text-zinc-400">No experiments yet.</p>
           ) : (
             <ul className="space-y-2">
-              {experiments.map((exp) => (
-                <li key={exp.experimentId} className="rounded border border-zinc-700 p-2">
-                  <button className="w-full text-left text-sm" onClick={() => handleSelectExperiment(exp.experimentId)}>
-                    <div className="font-medium">{exp.treatment}</div>
-                    <div className="text-xs text-zinc-400">
-                      {STATUS_LABELS[exp.status]}
-                      {exp.approvedBy ? ` · approved by ${exp.approvedBy}` : ""}
+              {experiments.map((exp) => {
+                const hypothesisChannelId = hypotheses.find((h) => h.hypothesisId === exp.hypothesisId)?.channelId ?? null;
+                // Phase 10 slice 5 -- once a Change Set is attached, "running" is reached only
+                // through Execute, never the generic transition button (the server itself
+                // enforces this with EXPERIMENT_MUST_USE_EXECUTE; hidden here too so there is no
+                // button that always fails once attached).
+                const nextStatuses = NEXT_STATUSES[exp.status].filter((target) => !(target === "running" && exp.changeSetId));
+                const canEditChangeSet = exp.status === "proposed" || exp.status === "approved";
+                return (
+                  <li key={exp.experimentId} className="rounded border border-zinc-700 p-2">
+                    <button className="w-full text-left text-sm" onClick={() => handleSelectExperiment(exp.experimentId)}>
+                      <div className="font-medium">{exp.treatment}</div>
+                      <div className="text-xs text-zinc-400">
+                        {STATUS_LABELS[exp.status]}
+                        {exp.approvedBy ? ` · approved by ${exp.approvedBy}` : ""}
+                        {exp.executionBatchId ? ` · Batch ${exp.executionBatchId}` : ""}
+                      </div>
+                    </button>
+                    <div className="mt-2 flex gap-2">
+                      {nextStatuses.map((target) =>
+                        target === "abandoned" ? (
+                          <button
+                            key={target}
+                            className="rounded border border-zinc-600 px-2 py-1 text-xs disabled:opacity-50"
+                            disabled={transitioning}
+                            onClick={() => setAbandonTarget(exp)}
+                          >
+                            Abandon
+                          </button>
+                        ) : (
+                          <button
+                            key={target}
+                            className="rounded border border-zinc-600 px-2 py-1 text-xs disabled:opacity-50"
+                            disabled={transitioning}
+                            onClick={() => void transition(exp, target)}
+                          >
+                            {STATUS_LABELS[target]}
+                          </button>
+                        )
+                      )}
+                      {exp.status === "approved" && exp.changeSetId && (
+                        <button
+                          className="rounded bg-indigo-600 px-2 py-1 text-xs font-medium disabled:opacity-50"
+                          disabled={executing}
+                          onClick={() => setExecuteTarget(exp)}
+                        >
+                          Execute
+                        </button>
+                      )}
                     </div>
-                  </button>
-                  <div className="mt-2 flex gap-2">
-                    {NEXT_STATUSES[exp.status].map((target) =>
-                      target === "abandoned" ? (
-                        <button
-                          key={target}
-                          className="rounded border border-zinc-600 px-2 py-1 text-xs disabled:opacity-50"
-                          disabled={transitioning}
-                          onClick={() => setAbandonTarget(exp)}
-                        >
-                          Abandon
-                        </button>
-                      ) : (
-                        <button
-                          key={target}
-                          className="rounded border border-zinc-600 px-2 py-1 text-xs disabled:opacity-50"
-                          disabled={transitioning}
-                          onClick={() => void transition(exp, target)}
-                        >
-                          {STATUS_LABELS[target]}
-                        </button>
-                      )
+                    {hypothesisChannelId && canEditChangeSet && (
+                      <div className="mt-2 flex items-center gap-2 text-xs">
+                        {exp.changeSetId ? (
+                          <>
+                            <span className="text-zinc-400">Change Set: {exp.changeSetId}</span>
+                            <button
+                              className="rounded border border-zinc-600 px-2 py-0.5 disabled:opacity-50"
+                              disabled={settingChangeSet}
+                              onClick={() => void handleSetChangeSet(exp, null)}
+                            >
+                              Detach
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <input
+                              className="w-40 rounded border border-zinc-700 bg-zinc-800 p-1"
+                              placeholder="Change Set id"
+                              value={changeSetIdInput[exp.experimentId] ?? ""}
+                              onChange={(e) => setChangeSetIdInput((prev) => ({ ...prev, [exp.experimentId]: e.target.value }))}
+                            />
+                            <button
+                              className="rounded border border-zinc-600 px-2 py-0.5 disabled:opacity-50"
+                              disabled={settingChangeSet || !(changeSetIdInput[exp.experimentId] ?? "").trim()}
+                              onClick={() => void handleSetChangeSet(exp, (changeSetIdInput[exp.experimentId] ?? "").trim())}
+                            >
+                              Attach
+                            </button>
+                          </>
+                        )}
+                      </div>
                     )}
-                  </div>
-                </li>
-              ))}
+                    {executeResult && executeResult.experimentId === exp.experimentId && (
+                      <p className="mt-2 text-xs text-emerald-400">
+                        Created Batch {executeResult.batchId} ({executeResult.videoCount} video(s)) -- open the Batches tab to review/run it.
+                      </p>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
@@ -857,6 +968,35 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
           onCancel={() => setAbandonTarget(null)}
           onConfirm={() => void handleConfirmAbandon()}
         />
+      )}
+
+      {executeTarget && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50" onClick={() => setExecuteTarget(null)}>
+          <div className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="mb-2 font-medium">Execute experiment</h3>
+            <p className="mb-3 text-sm text-zinc-400">
+              Creates a real Batch from Change Set {executeTarget.changeSetId}&apos;s own approved changes. Dry-run by default;
+              a live write additionally requires the Live Writes toggle to already be on in Settings -- otherwise this stays
+              dry-run regardless of the choice below.
+            </p>
+            <div className="mb-4 flex items-center gap-2">
+              <ToggleSwitch checked={executeAsLive} onChange={setExecuteAsLive} label="Execute as a live write" />
+              <span className="text-sm">Execute as a live write (requires Live Writes already on)</span>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button className="rounded border border-zinc-600 px-3 py-1.5 text-sm" onClick={() => setExecuteTarget(null)}>
+                Cancel
+              </button>
+              <button
+                className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium disabled:opacity-50"
+                disabled={executing}
+                onClick={() => void handleConfirmExecute()}
+              >
+                {executing ? "Executing..." : "Execute"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

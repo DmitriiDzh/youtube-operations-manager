@@ -133,11 +133,21 @@ test("PHASE10-INV-01 helper: extractDbImportSpecifiers finds @/lib/db and relati
 // `MODULE_ROOT` and therefore untouched by this scan. Named PHASE10-INV-03, not -02 -- that
 // number is already `decision-engine-agent-approval-inventory.test.ts`'s own (slice 2), a
 // different invariant in a different file.
-test("PHASE10-INV-03: decision-engine's own module never imports @/lib/analytics or @/lib/market-intelligence", async () => {
+//
+// Widened in slice 5 (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md §3) to also forbid
+// @/lib/changesets and @/lib/batches, the same reasoning in the new direction: the real
+// dependency lives only in src/app/api/decision-engine/experiment-execution-resolver.ts, also
+// outside MODULE_ROOT.
+test("PHASE10-INV-03: decision-engine's own module never imports @/lib/analytics, @/lib/market-intelligence, @/lib/changesets, or @/lib/batches", async () => {
   const files = await listTsFilesRecursively(MODULE_ROOT);
   assert.ok(files.length > 0, "must actually scan some files -- an empty list would make this test vacuously pass");
   const offenders: string[] = [];
-  const forbiddenModuleSpecifiers = [/["']@\/lib\/analytics(?:\/|["'])/, /["']@\/lib\/market-intelligence(?:\/|["'])/];
+  const forbiddenModuleSpecifiers = [
+    /["']@\/lib\/analytics(?:\/|["'])/,
+    /["']@\/lib\/market-intelligence(?:\/|["'])/,
+    /["']@\/lib\/changesets(?:\/|["'])/,
+    /["']@\/lib\/batches(?:\/|["'])/,
+  ];
 
   for (const file of files) {
     const content = await readFile(file, "utf8");
@@ -151,6 +161,6 @@ test("PHASE10-INV-03: decision-engine's own module never imports @/lib/analytics
   assert.deepEqual(
     offenders,
     [],
-    `decision-engine/** must never import analytics/market-intelligence directly:\n${offenders.join("\n")}`
+    `decision-engine/** must never import analytics/market-intelligence/changesets/batches directly:\n${offenders.join("\n")}`
   );
 });

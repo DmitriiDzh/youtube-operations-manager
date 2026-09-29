@@ -1269,6 +1269,17 @@ export const experiments = sqliteTable(
       .default("proposed"),
     approvedBy: text("approved_by"),
     approvedAt: integer("approved_at", { mode: "timestamp" }),
+    // Phase 10 slice 5 -- deliberately plain TEXT, no `.references()`: `change_sets` rows are
+    // really deleted (change-drafts' `discardLocalAndAdoptPeer`, RISK-46's divergent-lineage
+    // flow), and this connection runs with `foreign_keys=ON`, so an FK here would make that
+    // unrelated delete throw. Validated at the application level instead (RISK-66's own "no FK
+    // for an informal reference" pattern), re-checked at execute time, not just at attach time.
+    changeSetId: text("change_set_id"),
+    executionBatchId: text("execution_batch_id"),
+    // The atomic execution claim (`claimExperimentForExecution`) -- deliberately its own field,
+    // never repurposing the user-visible `status` column as a lock, mirroring
+    // `research_channels.collection_claimed_at`'s own precedent (Phase 9 slice 9B).
+    executionClaimedAt: integer("execution_claimed_at", { mode: "timestamp" }),
     createdVia: text("created_via").notNull(),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
@@ -2078,6 +2089,27 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute(
         "CREATE INDEX IF NOT EXISTS hypothesis_generation_provenance_hypothesis_id_idx ON hypothesis_generation_provenance(hypothesis_id)"
       );
+    },
+  },
+  {
+    version: 32,
+    description:
+      "experiments.change_set_id/execution_batch_id/execution_claimed_at -- Phase 10 slice 5, localization-experiment execution via the existing Change Set/Batch pipeline (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md). No FK on change_set_id/execution_batch_id -- change_sets rows are really deleted (RISK-46's discardLocalAndAdoptPeer) and this connection runs with foreign_keys=ON, so an FK here would break that unrelated delete; validated at the application level instead.",
+    apply: async (client) => {
+      // isDuplicateColumnError tolerance, same as every other ADD-COLUMN migration above
+      // (RISK-33) -- required for the pre-versioning re-apply path (a `schema_meta`-less
+      // database re-runs every migration from v1, including ones that already succeeded).
+      for (const statement of [
+        "ALTER TABLE experiments ADD COLUMN change_set_id TEXT",
+        "ALTER TABLE experiments ADD COLUMN execution_batch_id TEXT",
+        "ALTER TABLE experiments ADD COLUMN execution_claimed_at INTEGER",
+      ]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
     },
   },
 ];
@@ -6029,6 +6061,9 @@ export type StoredExperiment = {
   status: ExperimentStatus;
   approvedBy: string | null;
   approvedAt: Date | null;
+  changeSetId: string | null;
+  executionBatchId: string | null;
+  executionClaimedAt: Date | null;
   createdVia: string;
   createdAt: Date;
 };
@@ -6158,6 +6193,79 @@ export async function transitionExperimentStatusIfValid(
     .where(and(eq(experiments.id, id), inArray(experiments.status, fromStatuses)))
     .returning();
   return rows[0] ?? null;
+}
+
+/**
+ * Phase 10 slice 5 -- attach/detach `changeSetId` on an experiment, guarded atomically by its
+ * current status (`fromStatuses`, the caller's own `["proposed", "approved"]` for both attach and
+ * detach per the plan's own §4). Same shape as `transitionExperimentStatusIfValid`: the check and
+ * the write happen atomically against the row's real current status, not a stale read-time value.
+ */
+export async function setExperimentChangeSetIfEligible(
+  id: string,
+  fromStatuses: ExperimentStatus[],
+  changeSetId: string | null,
+  database: AppDb = db
+): Promise<StoredExperiment | null> {
+  const rows = await database
+    .update(experiments)
+    .set({ changeSetId })
+    .where(and(eq(experiments.id, id), inArray(experiments.status, fromStatuses)))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/**
+ * Step 2 of `executeExperiment`'s claim-first design (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md
+ * §4, added after `advisor()` caught a real double-execution race in an earlier draft that called
+ * the Batch-creation resolver BEFORE any atomic guard). Mirrors
+ * `claimStaleResearchChannelsForCollection`'s own shape (Phase 9 slice 9B) -- this claim is
+ * exclusive (`execution_claimed_at IS NULL` in the WHERE), so at most one concurrent
+ * `executeExperiment` call for the same experiment ever proceeds to call the resolver. Also
+ * requires `change_set_id = expectedChangeSetId` so a concurrent detach between the caller's
+ * read-only check and this claim is caught here too, not just at the earlier read.
+ */
+export async function claimExperimentForExecution(
+  id: string,
+  expectedChangeSetId: string,
+  at: Date,
+  database: AppDb = db
+): Promise<StoredExperiment | null> {
+  const rows = await database
+    .update(experiments)
+    .set({ executionClaimedAt: at })
+    .where(
+      and(
+        eq(experiments.id, id),
+        eq(experiments.status, "approved"),
+        eq(experiments.changeSetId, expectedChangeSetId),
+        isNull(experiments.executionClaimedAt)
+      )
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** Releases a claim taken by `claimExperimentForExecution` when the resolver call after it fails
+ * (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md §4 step 4) -- the experiment returns to a normal,
+ * re-attemptable `"approved"` state (status itself was never touched by the claim), never stuck. */
+export async function releaseExperimentExecutionClaim(id: string, database: AppDb = db): Promise<void> {
+  await database.update(experiments).set({ executionClaimedAt: null }).where(eq(experiments.id, id));
+}
+
+/**
+ * Step 5 of `executeExperiment` -- unconditional (no further `WHERE` guard beyond `id`), safe
+ * because `claimExperimentForExecution`'s claim is already exclusive: no other call could have
+ * reached this point for the same experiment. `status` moves to `"running"` only here, the single
+ * place this module ever sets it as a side effect of a successful real execution (as opposed to
+ * `transitionExperimentStatusIfValid`, the manual/operator-driven path).
+ */
+export async function finalizeExperimentExecution(
+  id: string,
+  executionBatchId: string,
+  database: AppDb = db
+): Promise<void> {
+  await database.update(experiments).set({ status: "running", executionBatchId }).where(eq(experiments.id, id));
 }
 
 export async function insertExperimentOutcome(

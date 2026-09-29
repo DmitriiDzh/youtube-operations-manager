@@ -103,6 +103,10 @@ import {
   getExperimentById,
   listExperimentsByHypothesis,
   transitionExperimentStatusIfValid,
+  setExperimentChangeSetIfEligible,
+  claimExperimentForExecution,
+  releaseExperimentExecutionClaim,
+  finalizeExperimentExecution,
   insertExperimentOutcome,
   listExperimentOutcomesByExperiment,
   insertHypothesisEvidence,
@@ -2610,4 +2614,134 @@ test("transitionExperimentStatusIfValid: a call whose fromStatuses no longer mat
 
     const row = await getExperimentById("exp-1", isolatedDb);
     assert.equal(row?.approvedBy, "actor-a");
+  }));
+
+// ---------------------------------------------------------------------------
+// Phase 10 slice 5 (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md) -- execution of an approved,
+// localization-type experiment. `claimExperimentForExecution`'s own real-DB concurrency test
+// mirrors `transitionExperimentStatusIfValid`'s own above, and `claimStaleResearchChannelsForCollection`
+// (Phase 9 slice 9B) -- the same claim-first shape, proven against a real DB, not a fake store.
+// ---------------------------------------------------------------------------
+
+async function insertExperimentForExecutionTests(
+  isolatedDb: AppDb,
+  overrides: { hypothesisChannelId?: string | null; experimentId?: string } = {}
+): Promise<void> {
+  if (overrides.hypothesisChannelId) {
+    await seedChannel(isolatedDb, overrides.hypothesisChannelId);
+  }
+  await insertHypothesis(
+    { id: "hyp-1", channelId: overrides.hypothesisChannelId ?? null, statement: "s", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui" },
+    isolatedDb
+  );
+  await insertExperiment(
+    {
+      id: overrides.experimentId ?? "exp-1",
+      hypothesisId: "hyp-1",
+      treatment: "t",
+      controlBaseline: "c",
+      successCriteria: "s",
+      stoppingCriteria: "s",
+      responsible: "owner",
+      createdVia: "web_ui",
+    },
+    isolatedDb
+  );
+}
+
+test("setExperimentChangeSetIfEligible: attaches when status is proposed/approved, returns null (no write) for running", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+
+    const attached = await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", isolatedDb);
+    assert.equal(attached?.changeSetId, "cs-1");
+
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, isolatedDb);
+    await claimExperimentForExecution("exp-1", "cs-1", at, isolatedDb);
+    await finalizeExperimentExecution("exp-1", "batch-1", isolatedDb);
+
+    const result = await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], null, isolatedDb);
+    assert.equal(result, null, "a running experiment's changeSetId must be immutable via this function");
+    const row = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(row?.changeSetId, "cs-1", "nothing was actually changed by the rejected call");
+  }));
+
+test("claimExperimentForExecution: two literally-concurrent claims for the same approved+change-set-attached row -- exactly one succeeds", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", isolatedDb);
+    const approveAt = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", approveAt, isolatedDb);
+
+    const claimAt = new Date("2026-09-29T12:00:01.000Z");
+    const [first, second] = await Promise.all([
+      claimExperimentForExecution("exp-1", "cs-1", claimAt, isolatedDb),
+      claimExperimentForExecution("exp-1", "cs-1", claimAt, isolatedDb),
+    ]);
+
+    const succeeded = [first, second].filter((row) => row !== null);
+    const failed = [first, second].filter((row) => row === null);
+    assert.equal(succeeded.length, 1, "exactly one of the two concurrent claims must succeed");
+    assert.equal(failed.length, 1, "the other must observe the claim already taken and return null");
+
+    const row = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(row?.status, "approved", "the claim itself never touches status");
+    assert.ok(row?.executionClaimedAt, "the claim column is set");
+  }));
+
+test("claimExperimentForExecution: refuses when changeSetId no longer matches (concurrent detach)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", isolatedDb);
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, isolatedDb);
+
+    const result = await claimExperimentForExecution("exp-1", "cs-DIFFERENT", at, isolatedDb);
+    assert.equal(result, null);
+  }));
+
+test("releaseExperimentExecutionClaim: a released claim can be re-claimed afterward", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", isolatedDb);
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, isolatedDb);
+
+    const firstClaim = await claimExperimentForExecution("exp-1", "cs-1", at, isolatedDb);
+    assert.ok(firstClaim);
+    const blockedWhileClaimed = await claimExperimentForExecution("exp-1", "cs-1", at, isolatedDb);
+    assert.equal(blockedWhileClaimed, null);
+
+    await releaseExperimentExecutionClaim("exp-1", isolatedDb);
+    const rowAfterRelease = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(rowAfterRelease?.executionClaimedAt, null);
+    assert.equal(rowAfterRelease?.status, "approved", "release never touches status -- the experiment stays re-attemptable");
+
+    const secondClaim = await claimExperimentForExecution("exp-1", "cs-1", at, isolatedDb);
+    assert.ok(secondClaim, "a released claim can be re-claimed");
+  }));
+
+test("finalizeExperimentExecution: sets status to running and records the real Batch id", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", isolatedDb);
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, isolatedDb);
+    await claimExperimentForExecution("exp-1", "cs-1", at, isolatedDb);
+
+    await finalizeExperimentExecution("exp-1", "batch-1", isolatedDb);
+    const row = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(row?.status, "running");
+    assert.equal(row?.executionBatchId, "batch-1");
   }));

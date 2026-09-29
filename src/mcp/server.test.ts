@@ -5232,6 +5232,8 @@ const fakeExperiment = {
   status: "proposed" as const,
   approvedBy: null,
   approvedAt: null,
+  changeSetId: null,
+  executionBatchId: null,
   createdVia: "web_ui",
   createdAt: "2026-09-29T00:00:00.000Z",
 };

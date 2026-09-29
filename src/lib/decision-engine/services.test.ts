@@ -52,6 +52,9 @@ type ExperimentRow = {
   status: ExperimentStatus;
   approvedBy: string | null;
   approvedAt: Date | null;
+  changeSetId: string | null;
+  executionBatchId: string | null;
+  executionClaimedAt: Date | null;
   createdVia: string;
   createdAt: Date;
 };
@@ -161,6 +164,9 @@ function createFakeStore() {
         status: "proposed",
         approvedBy: null,
         approvedAt: null,
+        changeSetId: null,
+        executionBatchId: null,
+        executionClaimedAt: null,
         createdVia: input.createdVia,
         createdAt: input.at ?? new Date(),
       });
@@ -187,6 +193,32 @@ function createFakeStore() {
       };
       experimentsById.set(id, updated);
       return updated;
+    },
+    async setExperimentChangeSetIfEligible(id: string, fromStatuses: ExperimentStatus[], changeSetId: string | null) {
+      const row = experimentsById.get(id);
+      if (!row || !fromStatuses.includes(row.status)) return null;
+      const updated: ExperimentRow = { ...row, changeSetId };
+      experimentsById.set(id, updated);
+      return updated;
+    },
+    async claimExperimentForExecution(id: string, expectedChangeSetId: string, at: Date) {
+      const row = experimentsById.get(id);
+      if (!row || row.status !== "approved" || row.changeSetId !== expectedChangeSetId || row.executionClaimedAt !== null) {
+        return null;
+      }
+      const updated: ExperimentRow = { ...row, executionClaimedAt: at };
+      experimentsById.set(id, updated);
+      return updated;
+    },
+    async releaseExperimentExecutionClaim(id: string) {
+      const row = experimentsById.get(id);
+      if (!row) return;
+      experimentsById.set(id, { ...row, executionClaimedAt: null });
+    },
+    async finalizeExperimentExecution(id: string, executionBatchId: string) {
+      const row = experimentsById.get(id);
+      if (!row) return;
+      experimentsById.set(id, { ...row, status: "running", executionBatchId });
     },
     async insertExperimentOutcome(input: {
       id: string;
@@ -301,6 +333,10 @@ function createServices(activeChannelId: string | null, calls: string[] = []) {
     getExperimentById: store.getExperimentById,
     listExperimentsByHypothesis: store.listExperimentsByHypothesis,
     transitionExperimentStatusIfValid: store.transitionExperimentStatusIfValid,
+    setExperimentChangeSetIfEligible: store.setExperimentChangeSetIfEligible,
+    claimExperimentForExecution: store.claimExperimentForExecution,
+    releaseExperimentExecutionClaim: store.releaseExperimentExecutionClaim,
+    finalizeExperimentExecution: store.finalizeExperimentExecution,
     insertExperimentOutcome: store.insertExperimentOutcome,
     listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
     insertHypothesisEvidence: store.insertHypothesisEvidence,
@@ -535,6 +571,10 @@ test("AC-10-05e: every experiment/outcome route shape rejects a session active o
     getExperimentById: store.getExperimentById,
     listExperimentsByHypothesis: store.listExperimentsByHypothesis,
     transitionExperimentStatusIfValid: store.transitionExperimentStatusIfValid,
+    setExperimentChangeSetIfEligible: store.setExperimentChangeSetIfEligible,
+    claimExperimentForExecution: store.claimExperimentForExecution,
+    releaseExperimentExecutionClaim: store.releaseExperimentExecutionClaim,
+    finalizeExperimentExecution: store.finalizeExperimentExecution,
     insertExperimentOutcome: store.insertExperimentOutcome,
     listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
     insertHypothesisEvidence: store.insertHypothesisEvidence,
@@ -553,6 +593,10 @@ test("AC-10-05e: every experiment/outcome route shape rejects a session active o
     getExperimentById: store.getExperimentById,
     listExperimentsByHypothesis: store.listExperimentsByHypothesis,
     transitionExperimentStatusIfValid: store.transitionExperimentStatusIfValid,
+    setExperimentChangeSetIfEligible: store.setExperimentChangeSetIfEligible,
+    claimExperimentForExecution: store.claimExperimentForExecution,
+    releaseExperimentExecutionClaim: store.releaseExperimentExecutionClaim,
+    finalizeExperimentExecution: store.finalizeExperimentExecution,
     insertExperimentOutcome: store.insertExperimentOutcome,
     listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
     insertHypothesisEvidence: store.insertHypothesisEvidence,
@@ -853,6 +897,10 @@ test("AC-10-15: addHypothesisEvidence/listHypothesisEvidence reject a session ac
     getExperimentById: store.getExperimentById,
     listExperimentsByHypothesis: store.listExperimentsByHypothesis,
     transitionExperimentStatusIfValid: store.transitionExperimentStatusIfValid,
+    setExperimentChangeSetIfEligible: store.setExperimentChangeSetIfEligible,
+    claimExperimentForExecution: store.claimExperimentForExecution,
+    releaseExperimentExecutionClaim: store.releaseExperimentExecutionClaim,
+    finalizeExperimentExecution: store.finalizeExperimentExecution,
     insertExperimentOutcome: store.insertExperimentOutcome,
     listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
     insertHypothesisEvidence: store.insertHypothesisEvidence,
@@ -871,6 +919,10 @@ test("AC-10-15: addHypothesisEvidence/listHypothesisEvidence reject a session ac
     getExperimentById: store.getExperimentById,
     listExperimentsByHypothesis: store.listExperimentsByHypothesis,
     transitionExperimentStatusIfValid: store.transitionExperimentStatusIfValid,
+    setExperimentChangeSetIfEligible: store.setExperimentChangeSetIfEligible,
+    claimExperimentForExecution: store.claimExperimentForExecution,
+    releaseExperimentExecutionClaim: store.releaseExperimentExecutionClaim,
+    finalizeExperimentExecution: store.finalizeExperimentExecution,
     insertExperimentOutcome: store.insertExperimentOutcome,
     listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
     insertHypothesisEvidence: store.insertHypothesisEvidence,
@@ -937,6 +989,10 @@ function createServicesWithProvider(
     getExperimentById: store.getExperimentById,
     listExperimentsByHypothesis: store.listExperimentsByHypothesis,
     transitionExperimentStatusIfValid: store.transitionExperimentStatusIfValid,
+    setExperimentChangeSetIfEligible: store.setExperimentChangeSetIfEligible,
+    claimExperimentForExecution: store.claimExperimentForExecution,
+    releaseExperimentExecutionClaim: store.releaseExperimentExecutionClaim,
+    finalizeExperimentExecution: store.finalizeExperimentExecution,
     insertExperimentOutcome: store.insertExperimentOutcome,
     listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
     insertHypothesisEvidence: store.insertHypothesisEvidence,
@@ -1137,4 +1193,208 @@ test("AC-10H-08: generateHypothesisDraft throws provider_not_configured when no 
     () => services.generateHypothesisDraft({ notes: "n", evidenceReferences: [] }, { userId: "u1" }, resolver),
     (error: unknown) => isDomainError(error) && error.code === "provider_not_configured"
   );
+});
+
+// ---------------------------------------------------------------------------
+// Phase 10 slice 5 (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md) -- execution of an approved,
+// localization-type experiment. The claim-first atomic race itself is proven against a real DB
+// in db.test.ts (`claimExperimentForExecution`'s own concurrency test); these are service-layer
+// behavior tests using the fake store/resolver.
+// ---------------------------------------------------------------------------
+
+function createFakeExecutionResolver(
+  opts: {
+    belongsToChannel?: boolean;
+    batchResult?: { batchId: string; videoCount: number };
+    throwOnCreate?: unknown;
+  } = {}
+) {
+  const createCalls: { channelId: string; changeSetId: string; dryRun: boolean }[] = [];
+  const verifyCalls: { changeSetId: string; channelId: string }[] = [];
+  return {
+    resolver: {
+      async verifyChangeSetBelongsToChannel(changeSetId: string, channelId: string) {
+        verifyCalls.push({ changeSetId, channelId });
+        return opts.belongsToChannel ?? true;
+      },
+      async createDryRunBatch(args: { channelId: string; changeSetId: string; dryRun: boolean }) {
+        createCalls.push(args);
+        if (opts.throwOnCreate) throw opts.throwOnCreate;
+        return opts.batchResult ?? { batchId: "batch-1", videoCount: 1 };
+      },
+    },
+    createCalls,
+    verifyCalls,
+  };
+}
+
+async function createApprovedChannelScopedExperiment(services: ReturnType<typeof createServices>["services"], channelId: string) {
+  const hypothesis = await services.createHypothesis(
+    { channelId, statement: "s", evidenceNotes: "e" },
+    { userId: "u1", createdBy: "u1", createdVia: "web_ui" }
+  );
+  const experiment = await services.createExperiment(hypothesis.hypothesisId, VALID_EXPERIMENT_INPUT, {
+    userId: "u1",
+    createdBy: "u1",
+    createdVia: "web_ui",
+  });
+  await services.transitionExperiment(experiment.experimentId, { targetStatus: "approved" }, { userId: "u1", actor: "approver-1" });
+  return experiment;
+}
+
+test("setExperimentChangeSet: attach rejected when the hypothesis has no channel, resolver never called", async () => {
+  const { services } = createServices(null);
+  const hypothesis = await services.createHypothesis({ statement: "s", evidenceNotes: "e" }, { userId: "u1", createdBy: "u1", createdVia: "web_ui" });
+  const experiment = await services.createExperiment(hypothesis.hypothesisId, VALID_EXPERIMENT_INPUT, {
+    userId: "u1",
+    createdBy: "u1",
+    createdVia: "web_ui",
+  });
+  const { resolver, verifyCalls } = createFakeExecutionResolver();
+
+  await assert.rejects(
+    () => services.setExperimentChangeSet(experiment.experimentId, { changeSetId: "cs-1" }, { userId: "u1" }, resolver),
+    (error: unknown) => isDomainError(error) && error.code === "EXPERIMENT_CHANGE_SET_CHANNEL_MISMATCH"
+  );
+  assert.equal(verifyCalls.length, 0, "the resolver must never be called once the channel-less check fails first");
+});
+
+test("setExperimentChangeSet: attach rejected when the resolver says the Change Set doesn't belong to this channel", async () => {
+  const { services } = createServices("UCactive0000000000000001");
+  const hypothesis = await services.createHypothesis(
+    { channelId: "UCactive0000000000000001", statement: "s", evidenceNotes: "e" },
+    { userId: "u1", createdBy: "u1", createdVia: "web_ui" }
+  );
+  const experiment = await services.createExperiment(hypothesis.hypothesisId, VALID_EXPERIMENT_INPUT, {
+    userId: "u1",
+    createdBy: "u1",
+    createdVia: "web_ui",
+  });
+  const { resolver } = createFakeExecutionResolver({ belongsToChannel: false });
+
+  await assert.rejects(
+    () => services.setExperimentChangeSet(experiment.experimentId, { changeSetId: "cs-1" }, { userId: "u1" }, resolver),
+    (error: unknown) => isDomainError(error) && error.code === "EXPERIMENT_CHANGE_SET_NOT_FOUND"
+  );
+});
+
+test("executeExperiment: a proposed (never-approved) experiment throws EXPERIMENT_NOT_EXECUTABLE, resolver never called", async () => {
+  const { services } = createServices("UCactive0000000000000001");
+  const hypothesis = await services.createHypothesis(
+    { channelId: "UCactive0000000000000001", statement: "s", evidenceNotes: "e" },
+    { userId: "u1", createdBy: "u1", createdVia: "web_ui" }
+  );
+  const experiment = await services.createExperiment(hypothesis.hypothesisId, VALID_EXPERIMENT_INPUT, {
+    userId: "u1",
+    createdBy: "u1",
+    createdVia: "web_ui",
+  });
+  const { resolver, createCalls, verifyCalls } = createFakeExecutionResolver();
+
+  await assert.rejects(
+    () => services.executeExperiment(experiment.experimentId, {}, { userId: "u1" }, resolver, false),
+    (error: unknown) => isDomainError(error) && error.code === "EXPERIMENT_NOT_EXECUTABLE"
+  );
+  assert.equal(createCalls.length, 0);
+  assert.equal(verifyCalls.length, 0);
+});
+
+test("executeExperiment: an approved experiment with no Change Set attached throws EXPERIMENT_NOT_EXECUTABLE, resolver never called", async () => {
+  const { services } = createServices("UCactive0000000000000001");
+  const experiment = await createApprovedChannelScopedExperiment(services, "UCactive0000000000000001");
+  const { resolver, createCalls } = createFakeExecutionResolver();
+
+  await assert.rejects(
+    () => services.executeExperiment(experiment.experimentId, {}, { userId: "u1" }, resolver, false),
+    (error: unknown) => isDomainError(error) && error.code === "EXPERIMENT_NOT_EXECUTABLE"
+  );
+  assert.equal(createCalls.length, 0);
+});
+
+test("executeExperiment: happy path -- approved + Change Set attached creates a real Batch, status becomes running", async () => {
+  const { services } = createServices("UCactive0000000000000001");
+  const experiment = await createApprovedChannelScopedExperiment(services, "UCactive0000000000000001");
+  const attachResolver = createFakeExecutionResolver();
+  await services.setExperimentChangeSet(experiment.experimentId, { changeSetId: "cs-1" }, { userId: "u1" }, attachResolver.resolver);
+
+  const { resolver, createCalls } = createFakeExecutionResolver({ batchResult: { batchId: "batch-42", videoCount: 3 } });
+  const result = await services.executeExperiment(experiment.experimentId, {}, { userId: "u1" }, resolver, false);
+
+  assert.equal(result.batchId, "batch-42");
+  assert.equal(result.videoCount, 3);
+  assert.equal(result.experiment.status, "running");
+  assert.equal(result.experiment.executionBatchId, "batch-42");
+  assert.equal(createCalls.length, 1);
+  assert.equal(createCalls[0]?.channelId, "UCactive0000000000000001");
+  assert.equal(createCalls[0]?.changeSetId, "cs-1");
+});
+
+test("executeExperiment: dry-run gating mirrors the existing Batch-creation route's own fail-closed gate", async () => {
+  const { services } = createServices("UCactive0000000000000001");
+
+  // Live Writes disabled: {live: true} in the request still must not produce dryRun: false.
+  const experiment1 = await createApprovedChannelScopedExperiment(services, "UCactive0000000000000001");
+  await services.setExperimentChangeSet(experiment1.experimentId, { changeSetId: "cs-1" }, { userId: "u1" }, createFakeExecutionResolver().resolver);
+  const { resolver: resolver1, createCalls: calls1 } = createFakeExecutionResolver();
+  await services.executeExperiment(experiment1.experimentId, { live: true }, { userId: "u1" }, resolver1, false);
+  assert.equal(calls1[0]?.dryRun, true, "Live Writes off must force dry-run regardless of the request body");
+
+  // Live Writes enabled, live not requested: still dry-run by default.
+  const experiment2 = await createApprovedChannelScopedExperiment(services, "UCactive0000000000000001");
+  await services.setExperimentChangeSet(experiment2.experimentId, { changeSetId: "cs-2" }, { userId: "u1" }, createFakeExecutionResolver().resolver);
+  const { resolver: resolver2, createCalls: calls2 } = createFakeExecutionResolver();
+  await services.executeExperiment(experiment2.experimentId, {}, { userId: "u1" }, resolver2, true);
+  assert.equal(calls2[0]?.dryRun, true, "live must be opt-in per call, never inferred from the toggle alone");
+
+  // Live Writes enabled AND live explicitly requested: real dryRun: false.
+  const experiment3 = await createApprovedChannelScopedExperiment(services, "UCactive0000000000000001");
+  await services.setExperimentChangeSet(experiment3.experimentId, { changeSetId: "cs-3" }, { userId: "u1" }, createFakeExecutionResolver().resolver);
+  const { resolver: resolver3, createCalls: calls3 } = createFakeExecutionResolver();
+  await services.executeExperiment(experiment3.experimentId, { live: true }, { userId: "u1" }, resolver3, true);
+  assert.equal(calls3[0]?.dryRun, false);
+});
+
+test("executeExperiment: a resolver failure releases the claim -- experiment returns to approved, re-attemptable", async () => {
+  const { services } = createServices("UCactive0000000000000001");
+  const experiment = await createApprovedChannelScopedExperiment(services, "UCactive0000000000000001");
+  await services.setExperimentChangeSet(experiment.experimentId, { changeSetId: "cs-1" }, { userId: "u1" }, createFakeExecutionResolver().resolver);
+
+  const failingResolver = createFakeExecutionResolver({
+    throwOnCreate: new DomainError({ code: "EXPERIMENT_CHANGE_SET_NO_ELIGIBLE_CHANGES", message: "none eligible" }),
+  });
+  await assert.rejects(
+    () => services.executeExperiment(experiment.experimentId, {}, { userId: "u1" }, failingResolver.resolver, false),
+    (error: unknown) => isDomainError(error) && error.code === "EXPERIMENT_CHANGE_SET_NO_ELIGIBLE_CHANGES"
+  );
+
+  // A second, real attempt afterward must succeed -- the failed attempt never strands the row.
+  const { resolver: secondResolver, createCalls } = createFakeExecutionResolver();
+  const result = await services.executeExperiment(experiment.experimentId, {}, { userId: "u1" }, secondResolver, false);
+  assert.equal(result.experiment.status, "running");
+  assert.equal(createCalls.length, 1);
+});
+
+test("transitionExperiment: approved->running is rejected with EXPERIMENT_MUST_USE_EXECUTE once a Change Set is attached", async () => {
+  const { services } = createServices("UCactive0000000000000001");
+  const experiment = await createApprovedChannelScopedExperiment(services, "UCactive0000000000000001");
+  await services.setExperimentChangeSet(experiment.experimentId, { changeSetId: "cs-1" }, { userId: "u1" }, createFakeExecutionResolver().resolver);
+
+  await assert.rejects(
+    () => services.transitionExperiment(experiment.experimentId, { targetStatus: "running" }, { userId: "u1", actor: "actor-1" }),
+    (error: unknown) => isDomainError(error) && error.code === "EXPERIMENT_MUST_USE_EXECUTE"
+  );
+});
+
+test("transitionExperiment: approved->running still succeeds manually when no Change Set is attached (slice 1 regression)", async () => {
+  const { services } = createServices(null);
+  const hypothesis = await services.createHypothesis({ statement: "s", evidenceNotes: "e" }, { userId: "u1", createdBy: "u1", createdVia: "web_ui" });
+  const experiment = await services.createExperiment(hypothesis.hypothesisId, VALID_EXPERIMENT_INPUT, {
+    userId: "u1",
+    createdBy: "u1",
+    createdVia: "web_ui",
+  });
+  await services.transitionExperiment(experiment.experimentId, { targetStatus: "approved" }, { userId: "u1", actor: "actor-1" });
+
+  const updated = await services.transitionExperiment(experiment.experimentId, { targetStatus: "running" }, { userId: "u1", actor: "actor-1" });
+  assert.equal(updated.status, "running");
 });

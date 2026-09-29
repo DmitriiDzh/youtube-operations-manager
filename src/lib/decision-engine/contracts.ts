@@ -61,6 +61,8 @@ export type Experiment = {
   status: ExperimentStatus;
   approvedBy: string | null;
   approvedAt: string | null;
+  changeSetId: string | null;
+  executionBatchId: string | null;
   createdVia: string;
   createdAt: string;
 };
@@ -156,4 +158,33 @@ export type HypothesisGenerationOutcome =
 export type HypothesisDraftProvider = {
   readonly name: string;
   generateHypothesis(request: HypothesisGenerationRequest): Promise<HypothesisGenerationOutcome>;
+};
+
+// ---------------------------------------------------------------------------
+// Phase 10 slice 5 -- execution of an approved, localization-type experiment
+// (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md). Same reasoning as `EvidenceReferenceResolver`
+// above: a PORT this module defines but never implements. The real implementation (which imports
+// `@/lib/changesets`/`@/lib/batches`) lives in the route layer, outside `decision-engine/**` --
+// `PHASE10-INV-03` forbids this module from importing either directly, the same rule it already
+// enforces for `analytics`/`market-intelligence`.
+// ---------------------------------------------------------------------------
+
+export type ExperimentExecutionResolver = {
+  /** `true` only if `changeSetId` exists AND belongs to `channelId` -- the underlying real
+   * `getChangeSet` action requires `channelId` up front (every one of its existing public methods
+   * does), so there is no way to ask "which channel does this changeSetId belong to" independent
+   * of a candidate channel; this asks the only question that's actually answerable, and the only
+   * one either caller (`setExperimentChangeSet`/`executeExperiment`, both already holding the
+   * experiment's own `hypothesis.channelId`) actually needs. */
+  verifyChangeSetBelongsToChannel(changeSetId: string, channelId: string): Promise<boolean>;
+  /** Groups the Change Set's own eligible (approved + valid + non-conflicting +
+   * not-edited-after-approval) changes into a real Batch. Throws
+   * `EXPERIMENT_CHANGE_SET_TOO_LARGE`/`EXPERIMENT_CHANGE_SET_NO_ELIGIBLE_CHANGES` rather than
+   * silently truncating or failing with an opaque `createBatch` validation error. `dryRun` is
+   * threaded through explicitly by the caller (§1 of the plan) -- this port has no opinion on
+   * Live Writes itself. */
+  createDryRunBatch(args: { channelId: string; changeSetId: string; dryRun: boolean }): Promise<{
+    batchId: string;
+    videoCount: number;
+  }>;
 };

@@ -13,6 +13,10 @@ function patchRequest(pathname: string) {
   return new NextRequest(new Request(`http://localhost${pathname}`, { method: "PATCH" }));
 }
 
+function putRequest(pathname: string) {
+  return new NextRequest(new Request(`http://localhost${pathname}`, { method: "PUT" }));
+}
+
 function readRequest(pathname: string) {
   return new NextRequest(new Request(`http://localhost${pathname}`, { method: "GET" }));
 }
@@ -319,6 +323,29 @@ test("proxy gates the decision-engine generate/save route like any other real mu
   await acquireOperationLock(rawSqlClient, "export");
   try {
     const response = await proxy(mutatingRequest("/api/decision-engine/hypotheses/generate/save"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// Phase 10 slice 5 (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md) -- attaching/detaching a Change
+// Set is a real local-DB write, and executing creates a real Batch -- both stay behind the normal
+// gate exactly like every other mutating decision-engine route.
+test("proxy gates the decision-engine set-change-set route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(putRequest("/api/decision-engine/experiments/exp-1/change-set"));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("proxy gates the decision-engine execute-experiment route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(mutatingRequest("/api/decision-engine/experiments/exp-1/execute"));
     assert.equal(response.status, 409);
   } finally {
     await releaseOperationLock(rawSqlClient);

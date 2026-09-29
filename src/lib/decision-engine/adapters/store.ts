@@ -1,4 +1,6 @@
 import {
+  claimExperimentForExecution,
+  finalizeExperimentExecution,
   getExperimentById,
   getHypothesisById,
   getHypothesisGenerationProvenanceByHypothesis,
@@ -11,6 +13,8 @@ import {
   listExperimentsByHypothesis,
   listHypotheses,
   listHypothesisEvidenceByHypothesis,
+  releaseExperimentExecutionClaim,
+  setExperimentChangeSetIfEligible,
   transitionExperimentStatusIfValid,
 } from "@/lib/db";
 import { createIdGenerator } from "../contracts";
@@ -25,6 +29,10 @@ export function createDecisionEngineStoreAdapter() {
     getExperimentById,
     listExperimentsByHypothesis,
     transitionExperimentStatusIfValid,
+    setExperimentChangeSetIfEligible,
+    claimExperimentForExecution,
+    releaseExperimentExecutionClaim,
+    finalizeExperimentExecution,
     insertExperimentOutcome,
     listExperimentOutcomesByExperiment,
     insertHypothesisEvidence,

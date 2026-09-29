@@ -6,6 +6,7 @@ import {
   type EvidenceReference,
   type EvidenceReferenceResolver,
   type Experiment,
+  type ExperimentExecutionResolver,
   type ExperimentOutcome,
   type ExperimentStatus,
   type Hypothesis,
@@ -17,8 +18,10 @@ import {
   createExperimentInputSchema,
   createExperimentOutcomeInputSchema,
   createHypothesisInputSchema,
+  executeExperimentInputSchema,
   generateHypothesisDraftInputSchema,
   saveGeneratedHypothesisInputSchema,
+  setExperimentChangeSetInputSchema,
   transitionExperimentInputSchema,
 } from "./schemas";
 import type {
@@ -74,6 +77,20 @@ export type DecisionEngineServiceDependencies = {
     approvedBy: string | null,
     at: Date
   ) => Promise<StoredExperiment | null>;
+  /** Phase 10 slice 5. Attach (`changeSetId` set) or detach (`null`), guarded atomically by the
+   * caller's own `fromStatuses` (`["proposed", "approved"]` for both directions). */
+  setExperimentChangeSetIfEligible: (
+    id: string,
+    fromStatuses: ExperimentStatus[],
+    changeSetId: string | null
+  ) => Promise<StoredExperiment | null>;
+  /** Phase 10 slice 5 -- step 2 of `executeExperiment`'s claim-first design. `null` if the claim
+   * was not won (already claimed, not approved, or `changeSetId` no longer matches). */
+  claimExperimentForExecution: (id: string, expectedChangeSetId: string, at: Date) => Promise<StoredExperiment | null>;
+  /** Phase 10 slice 5 -- releases a claim when the resolver call after it fails. */
+  releaseExperimentExecutionClaim: (id: string) => Promise<void>;
+  /** Phase 10 slice 5 -- step 5, unconditional (the claim above is already exclusive). */
+  finalizeExperimentExecution: (id: string, executionBatchId: string) => Promise<void>;
   insertExperimentOutcome: (input: {
     id: string;
     experimentId: string;
@@ -149,6 +166,8 @@ function toExperiment(row: StoredExperiment): Experiment {
     status: row.status,
     approvedBy: row.approvedBy,
     approvedAt: row.approvedAt ? row.approvedAt.toISOString() : null,
+    changeSetId: row.changeSetId,
+    executionBatchId: row.executionBatchId,
     createdVia: row.createdVia,
     createdAt: row.createdAt.toISOString(),
   };
@@ -356,6 +375,18 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
     ): Promise<Experiment> {
       const { experiment } = await assertExperimentAccessible(experimentId, ctx);
       const parsed = parseWithSchema(transitionExperimentInputSchema, input, "transition experiment input");
+      // Phase 10 slice 5: an experiment with a Change Set attached must reach "running" only
+      // through executeExperiment, so "running" always corresponds to a real Batch -- never a bare
+      // manual transition. An experiment with no Change Set (any non-localization type, or a
+      // localization-type one that never got one attached) is unaffected, exactly slice 1's shipped
+      // behavior.
+      if (parsed.targetStatus === "running" && experiment.changeSetId !== null) {
+        throw new DomainError({
+          code: "EXPERIMENT_MUST_USE_EXECUTE",
+          message: "This experiment has a Change Set attached -- use the Execute action, not a manual status transition",
+          details: { experimentId, changeSetId: experiment.changeSetId },
+        });
+      }
       assertValidStatusTransition(experiment.status, parsed.targetStatus);
       // The atomic DB guard re-checks against the row's REAL status at write time, not this
       // read-time `experiment.status` -- a concurrent transition between this read and the write
@@ -378,6 +409,131 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
         });
       }
       return toExperiment(updated);
+    },
+
+    /** Phase 10 slice 5. Attach (`changeSetId` set, validated via `resolver`) or detach (`null`,
+     * no resolver call needed) -- both restricted to `["proposed", "approved"]` so a
+     * `running`/`concluded`/`abandoned` experiment's Change Set link is immutable. */
+    async setExperimentChangeSet(
+      experimentId: string,
+      input: unknown,
+      ctx: { userId: string | null | undefined },
+      resolver: ExperimentExecutionResolver
+    ): Promise<Experiment> {
+      const { hypothesis } = await assertExperimentAccessible(experimentId, ctx);
+      const parsed = parseWithSchema(setExperimentChangeSetInputSchema, input, "set experiment change set input");
+
+      if (parsed.changeSetId !== null) {
+        if (!hypothesis.channelId) {
+          throw new DomainError({
+            code: "EXPERIMENT_CHANGE_SET_CHANNEL_MISMATCH",
+            message: "This experiment's hypothesis has no channel -- a Change Set can only be attached to a channel-scoped experiment",
+            details: { experimentId, hypothesisId: hypothesis.id },
+          });
+        }
+        const belongs = await resolver.verifyChangeSetBelongsToChannel(parsed.changeSetId, hypothesis.channelId);
+        if (!belongs) {
+          throw new DomainError({
+            code: "EXPERIMENT_CHANGE_SET_NOT_FOUND",
+            message: `Change Set ${parsed.changeSetId} does not exist for this experiment's channel`,
+            details: { changeSetId: parsed.changeSetId, channelId: hypothesis.channelId },
+          });
+        }
+      }
+
+      const updated = await deps.setExperimentChangeSetIfEligible(experimentId, ["proposed", "approved"], parsed.changeSetId);
+      if (!updated) {
+        const current = await deps.getExperimentById(experimentId);
+        throw new DomainError({
+          code: "EXPERIMENT_INVALID_TRANSITION",
+          message: `Experiment is no longer in a state that allows changing its Change Set (status "${current?.status ?? "unknown"}")`,
+          details: { experimentId, actualCurrentStatus: current?.status ?? null },
+        });
+      }
+      return toExperiment(updated);
+    },
+
+    /** Phase 10 slice 5 -- claim-first execution (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md §4),
+     * redesigned after `advisor()` caught a real double-execution race in an earlier draft that
+     * called the resolver BEFORE any atomic guard. */
+    async executeExperiment(
+      experimentId: string,
+      input: unknown,
+      ctx: { userId: string | null | undefined },
+      resolver: ExperimentExecutionResolver,
+      liveWritesEnabled: boolean
+    ): Promise<{ experiment: Experiment; batchId: string; videoCount: number }> {
+      const { experiment, hypothesis } = await assertExperimentAccessible(experimentId, ctx);
+      const parsed = parseWithSchema(executeExperimentInputSchema, input, "execute experiment input");
+
+      // Step 1: fast, friendly early rejection -- not the real guard (step 2 is).
+      if (experiment.status !== "approved" || experiment.changeSetId === null) {
+        throw new DomainError({
+          code: "EXPERIMENT_NOT_EXECUTABLE",
+          message: 'Only an "approved" experiment with a Change Set attached can be executed',
+          details: { experimentId, status: experiment.status, changeSetId: experiment.changeSetId },
+        });
+      }
+      const changeSetId = experiment.changeSetId;
+      // Fail-closed, identical to the existing Batch-creation route's own gate (AGENTS.md §G): a
+      // request body cannot force a live write while the global Live Writes toggle is off.
+      const dryRun = liveWritesEnabled ? !(parsed.live ?? false) : true;
+
+      // Step 2: atomic claim -- exclusive, so at most one concurrent call ever reaches step 3/4
+      // for the same experiment.
+      const at = deps.clock.now();
+      const claimed = await deps.claimExperimentForExecution(experimentId, changeSetId, at);
+      if (!claimed) {
+        const current = await deps.getExperimentById(experimentId);
+        throw new DomainError({
+          code: "EXPERIMENT_INVALID_TRANSITION",
+          message: "Experiment is no longer in a state that allows execution (already claimed, or its state changed)",
+          details: { experimentId, actualCurrentStatus: current?.status ?? null, actualChangeSetId: current?.changeSetId ?? null },
+        });
+      }
+
+      try {
+        // Step 3: re-verify -- the attach-time check is not trusted as still valid (AC-BATCH-03's
+        // own "re-run the full safety pipeline immediately before send" principle). `channelId` is
+        // guaranteed non-null here: `setExperimentChangeSet` never persists a non-null
+        // `changeSetId` unless `hypothesis.channelId` is also non-null, and step 1 above already
+        // confirmed `experiment.changeSetId !== null` -- asserted explicitly rather than silently
+        // cast, so a future change to that invariant fails loudly here instead of type-casting
+        // around a real bug.
+        const channelId = hypothesis.channelId;
+        if (!channelId) {
+          throw new DomainError({
+            code: "EXPERIMENT_CHANGE_SET_CHANNEL_MISMATCH",
+            message: "This experiment's hypothesis has no channel -- cannot execute",
+            details: { experimentId },
+          });
+        }
+        const belongs = await resolver.verifyChangeSetBelongsToChannel(changeSetId, channelId);
+        if (!belongs) {
+          throw new DomainError({
+            code: "EXPERIMENT_CHANGE_SET_NOT_FOUND",
+            message: `Change Set ${changeSetId} no longer exists for this channel`,
+            details: { changeSetId, channelId },
+          });
+        }
+
+        // Step 4: create the real Batch.
+        const { batchId, videoCount } = await resolver.createDryRunBatch({
+          channelId,
+          changeSetId,
+          dryRun,
+        });
+
+        // Step 5: finalize -- unconditional, safe because the claim above is exclusive.
+        await deps.finalizeExperimentExecution(experimentId, batchId);
+        const updated = await deps.getExperimentById(experimentId);
+        return { experiment: toExperiment(updated as StoredExperiment), batchId, videoCount };
+      } catch (error) {
+        // Release the claim so a failed attempt never strands the experiment -- it returns to a
+        // normal, re-attemptable "approved" state (status itself was never touched by the claim).
+        await deps.releaseExperimentExecutionClaim(experimentId);
+        throw error;
+      }
     },
 
     async createExperimentOutcome(

@@ -118,7 +118,15 @@ export type DomainErrorCode =
   | "HYPOTHESIS_NOT_FOUND"
   | "EXPERIMENT_NOT_FOUND"
   | "EXPERIMENT_INVALID_TRANSITION"
-  | "EXPERIMENT_NOT_OBSERVABLE";
+  | "EXPERIMENT_NOT_OBSERVABLE"
+  // Phase 10 slice 5 (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md) -- execution of an approved
+  // localization-type experiment via the existing Change Set/Batch pipeline.
+  | "EXPERIMENT_NOT_EXECUTABLE"
+  | "EXPERIMENT_MUST_USE_EXECUTE"
+  | "EXPERIMENT_CHANGE_SET_NOT_FOUND"
+  | "EXPERIMENT_CHANGE_SET_CHANNEL_MISMATCH"
+  | "EXPERIMENT_CHANGE_SET_TOO_LARGE"
+  | "EXPERIMENT_CHANGE_SET_NO_ELIGIBLE_CHANGES";
 
 export type DomainErrorShape = {
   code: DomainErrorCode;

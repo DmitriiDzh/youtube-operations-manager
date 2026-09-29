@@ -137,3 +137,23 @@ export const saveGeneratedHypothesisInputSchema = z
     modelId: z.string().min(1).optional(),
   })
   .strict();
+
+// ---------------------------------------------------------------------------
+// Phase 10 slice 5 (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md) -- execution of an approved,
+// localization-type experiment via the existing Change Set/Batch pipeline.
+// ---------------------------------------------------------------------------
+
+export const setExperimentChangeSetInputSchema = z
+  .object({
+    changeSetId: z.string().min(1).nullable(),
+  })
+  .strict();
+
+/** `live` mirrors `batch-manager.tsx`'s own `createAsLive` checkbox -- honored only when the
+ * global Live Writes toggle is on (fail-closed, see services.ts/route.ts), never a guarantee by
+ * itself. Absent/false always means dry-run. */
+export const executeExperimentInputSchema = z
+  .object({
+    live: z.boolean().optional(),
+  })
+  .strict();
