@@ -3,21 +3,27 @@ import {
   parseWithSchema,
   EXPERIMENT_OUTCOME_RECORDABLE_STATUSES,
   EXPERIMENT_STATUS_TRANSITIONS,
+  type EvidenceReference,
+  type EvidenceReferenceResolver,
   type Experiment,
   type ExperimentOutcome,
   type ExperimentStatus,
   type Hypothesis,
+  type HypothesisEvidence,
 } from "./contracts";
 import {
+  addHypothesisEvidenceInputSchema,
   createExperimentInputSchema,
   createExperimentOutcomeInputSchema,
   createHypothesisInputSchema,
   transitionExperimentInputSchema,
 } from "./schemas";
 import type {
+  HypothesisEvidenceSourceType,
   StoredExperiment,
   StoredExperimentOutcome,
   StoredHypothesis,
+  StoredHypothesisEvidence,
 } from "@/lib/db";
 
 type ChannelAccess = {
@@ -76,6 +82,16 @@ export type DecisionEngineServiceDependencies = {
     at?: Date;
   }) => Promise<void>;
   listExperimentOutcomesByExperiment: (experimentId: string) => Promise<StoredExperimentOutcome[]>;
+  insertHypothesisEvidence: (input: {
+    id: string;
+    hypothesisId: string;
+    sourceType: HypothesisEvidenceSourceType;
+    referenceJson: string;
+    note?: string | null;
+    createdVia: string;
+    at?: Date;
+  }) => Promise<void>;
+  listHypothesisEvidenceByHypothesis: (hypothesisId: string) => Promise<StoredHypothesisEvidence[]>;
 };
 
 function toHypothesis(row: StoredHypothesis): Hypothesis {
@@ -122,6 +138,20 @@ function toExperimentOutcome(row: StoredExperimentOutcome): ExperimentOutcome {
     criteriaMet: row.criteriaMet,
     lessonsLearned: row.lessonsLearned,
     createdVia: row.createdVia,
+  };
+}
+
+// `referenceJson` is trusted here -- it was already validated as real JSON matching
+// `EvidenceReference`'s own shape by `addHypothesisEvidenceInputSchema` at write time, before
+// this row was ever inserted (services.ts's own `addHypothesisEvidence`, not this function).
+function toHypothesisEvidence(row: StoredHypothesisEvidence): HypothesisEvidence {
+  return {
+    evidenceId: row.id,
+    hypothesisId: row.hypothesisId,
+    reference: JSON.parse(row.referenceJson) as EvidenceReference,
+    note: row.note,
+    createdVia: row.createdVia,
+    createdAt: row.createdAt.toISOString(),
   };
 }
 
@@ -334,7 +364,11 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
     async getHypothesisTrail(
       hypothesisId: string,
       ctx: { userId: string | null | undefined }
-    ): Promise<{ hypothesis: Hypothesis; experiments: (Experiment & { outcomes: ExperimentOutcome[] })[] }> {
+    ): Promise<{
+      hypothesis: Hypothesis;
+      experiments: (Experiment & { outcomes: ExperimentOutcome[] })[];
+      evidence: HypothesisEvidence[];
+    }> {
       const hypothesisRow = await assertHypothesisAccessible(hypothesisId, ctx);
       const experimentRows = await deps.listExperimentsByHypothesis(hypothesisId);
       const experiments = await Promise.all(
@@ -343,7 +377,78 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
           outcomes: (await deps.listExperimentOutcomesByExperiment(experimentRow.id)).map(toExperimentOutcome),
         }))
       );
-      return { hypothesis: toHypothesis(hypothesisRow), experiments };
+      const evidence = (await deps.listHypothesisEvidenceByHypothesis(hypothesisId)).map(toHypothesisEvidence);
+      return { hypothesis: toHypothesis(hypothesisRow), experiments, evidence };
+    },
+
+    /**
+     * Phase 10 slice 3 (docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md) -- `resolver` is supplied by
+     * the CALLER (the route file), never constructed here: this module must never import
+     * `@/lib/analytics`/`@/lib/market-intelligence` (`AGENTS.md` §M, contracts.ts's own block
+     * comment has the full rationale). The reference is validated (does it actually exist, and is
+     * the caller actually authorized for it) BEFORE the insert -- a failed resolve throws
+     * `validation_failed` and nothing is written.
+     */
+    async addHypothesisEvidence(
+      hypothesisId: string,
+      input: unknown,
+      ctx: { userId: string | null | undefined; createdVia: string },
+      resolver: EvidenceReferenceResolver
+    ): Promise<HypothesisEvidence> {
+      const hypothesisRow = await assertHypothesisAccessible(hypothesisId, ctx);
+      const parsed = parseWithSchema(addHypothesisEvidenceInputSchema, input, "add hypothesis evidence input");
+
+      if (
+        parsed.reference.sourceType === "phase8_metric" &&
+        hypothesisRow.channelId !== null &&
+        parsed.reference.channelId !== hypothesisRow.channelId
+      ) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "A phase8_metric reference's channelId must match the hypothesis's own channelId",
+          details: { hypothesisChannelId: hypothesisRow.channelId, referenceChannelId: parsed.reference.channelId },
+        });
+      }
+
+      const resolved = await resolver.resolve(parsed.reference, ctx);
+      if (!resolved) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "The referenced Phase 8/9 row does not exist",
+          details: { reference: parsed.reference },
+        });
+      }
+
+      const id = deps.idGenerator();
+      const at = deps.clock.now();
+      await deps.insertHypothesisEvidence({
+        id,
+        hypothesisId,
+        sourceType: parsed.reference.sourceType,
+        referenceJson: JSON.stringify(parsed.reference),
+        note: parsed.note ?? null,
+        createdVia: ctx.createdVia,
+        at,
+      });
+      const rows = await deps.listHypothesisEvidenceByHypothesis(hypothesisId);
+      const row = rows.find((candidate) => candidate.id === id);
+      if (!row) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: "Hypothesis evidence not found immediately after creation",
+          details: { id },
+        });
+      }
+      return toHypothesisEvidence(row);
+    },
+
+    async listHypothesisEvidence(
+      hypothesisId: string,
+      ctx: { userId: string | null | undefined }
+    ): Promise<HypothesisEvidence[]> {
+      await assertHypothesisAccessible(hypothesisId, ctx);
+      const rows = await deps.listHypothesisEvidenceByHypothesis(hypothesisId);
+      return rows.map(toHypothesisEvidence);
     },
   };
 }

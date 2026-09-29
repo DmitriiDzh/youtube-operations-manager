@@ -105,6 +105,10 @@ export const SNAPSHOT_TRANSFERRED_TABLES = [
   "hypotheses",
   "experiments",
   "experiment_outcomes",
+  // Phase 10 slice 3 (docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md §6) -- structured evidence
+  // references, added from this table's own first commit for the same RISK-52-avoidance reason.
+  // FK order: after hypotheses (its own parent), which is already above.
+  "hypothesis_evidence",
 ] as const;
 
 /**

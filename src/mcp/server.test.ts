@@ -5283,7 +5283,7 @@ test("MCP agent_get_hypothesis_trail surfaces HYPOTHESIS_NOT_FOUND for an unknow
 
 test("MCP agent_get_hypothesis_trail returns exactly what getHypothesisTrail resolves, passing hypothesisId/userId through", async () => {
   let capturedArgs: unknown;
-  const fakeTrail = { hypothesis: fakeHypothesis, experiments: [{ ...fakeExperiment, outcomes: [] }] };
+  const fakeTrail = { hypothesis: fakeHypothesis, experiments: [{ ...fakeExperiment, outcomes: [] }], evidence: [] };
   const handlers = createMcpToolHandlers(
     makeCoreStub(),
     makeAuthStub(),

@@ -76,3 +76,48 @@ export type ExperimentOutcome = {
   lessonsLearned: string | null;
   createdVia: string;
 };
+
+// ---------------------------------------------------------------------------
+// Phase 10 slice 3 -- structured evidence references (docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md).
+// `EvidenceReference` is a discriminated union of real identifying fields already returned by
+// Phase 8 (`analytics`) / Phase 9 (`market-intelligence`)'s own existing read functions -- nothing
+// invented. `EvidenceReferenceResolver` is a PORT this module defines but never implements: the
+// real implementation is built by the route file (the interface layer), which is the only place
+// allowed to import `@/lib/analytics`/`@/lib/market-intelligence` for this purpose. This module
+// itself (`decision-engine/**`) must never import either -- `AGENTS.md` §M, the same
+// module-independence rule `PHASE_9_PLAN.md` §5 already established for market-intelligence
+// itself ("no existing route/service/component may take a hard dependency on market-intelligence's
+// tables or services"), applied here in the new direction (decision-engine depending on them).
+// ---------------------------------------------------------------------------
+
+export const HYPOTHESIS_EVIDENCE_SOURCE_TYPES = [
+  "phase8_metric",
+  "phase9_channel_snapshot",
+  "phase9_video_snapshot",
+  "phase9_trend_candidate",
+] as const;
+export type HypothesisEvidenceSourceType = (typeof HYPOTHESIS_EVIDENCE_SOURCE_TYPES)[number];
+
+export type EvidenceReference =
+  | { sourceType: "phase8_metric"; channelId: string; videoId: string; metricDate: string; metricName: string }
+  | { sourceType: "phase9_channel_snapshot"; researchChannelId: string; snapshotId: string }
+  | { sourceType: "phase9_video_snapshot"; researchChannelId: string; snapshotId: string }
+  | { sourceType: "phase9_trend_candidate"; trendCandidateId: string };
+
+/** Implemented by the route file, never by this module -- see the block comment above. Each
+ * method resolves `true` only if the referenced row genuinely exists (and, for `phase8_metric`,
+ * only if the caller is actually authorized for that channel -- `analyticsCore.listMetrics`
+ * already enforces this internally via its own `channelAccess.assertActiveChannel` call, so the
+ * real implementation gets this for free by reusing that function rather than re-checking). */
+export type EvidenceReferenceResolver = {
+  resolve(reference: EvidenceReference, ctx: { userId: string | null | undefined }): Promise<boolean>;
+};
+
+export type HypothesisEvidence = {
+  evidenceId: string;
+  hypothesisId: string;
+  reference: EvidenceReference;
+  note: string | null;
+  createdVia: string;
+  createdAt: string;
+};

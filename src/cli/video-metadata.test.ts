@@ -3819,6 +3819,7 @@ test("CLI agent list-hypotheses/get-hypothesis-trail are never blocked by the op
         createdAt: "2026-09-29T00:00:00.000Z",
       },
       experiments: [],
+      evidence: [],
     });
 
     const listExit = await runCliCommand({

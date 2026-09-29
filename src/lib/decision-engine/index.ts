@@ -18,9 +18,19 @@ export function createDecisionEngineCore() {
     transitionExperimentStatusIfValid: store.transitionExperimentStatusIfValid,
     insertExperimentOutcome: store.insertExperimentOutcome,
     listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
+    insertHypothesisEvidence: store.insertHypothesisEvidence,
+    listHypothesisEvidenceByHypothesis: store.listHypothesisEvidenceByHypothesis,
   });
 }
 
 export type DecisionEngineCore = ReturnType<typeof createDecisionEngineCore>;
-export type { Experiment, ExperimentOutcome, ExperimentStatus, Hypothesis } from "./contracts";
+export type {
+  EvidenceReference,
+  EvidenceReferenceResolver,
+  Experiment,
+  ExperimentOutcome,
+  ExperimentStatus,
+  Hypothesis,
+  HypothesisEvidence,
+} from "./contracts";
 export { DomainError, isDomainError } from "./contracts";

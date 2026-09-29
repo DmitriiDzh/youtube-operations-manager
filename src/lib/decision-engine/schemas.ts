@@ -59,3 +59,50 @@ export const createExperimentProposalInputSchema = createExperimentInputSchema
     hypothesisId: z.string().min(1, "hypothesisId is required"),
   })
   .strict();
+
+// ---------------------------------------------------------------------------
+// Phase 10 slice 3 (docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md) -- structured evidence
+// references. Each identifying field mirrors a real field already returned by analytics'/
+// market-intelligence's own existing read functions (contracts.ts's own block comment has the
+// full rationale) -- this schema only shapes/requires them, it never validates existence (that
+// happens in services.ts via the caller-supplied resolver, never here).
+// ---------------------------------------------------------------------------
+
+const evidenceReferenceSchema = z.discriminatedUnion("sourceType", [
+  z
+    .object({
+      sourceType: z.literal("phase8_metric"),
+      channelId: z.string().min(1),
+      videoId: z.string().min(1),
+      metricDate: z.string().min(1),
+      metricName: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      sourceType: z.literal("phase9_channel_snapshot"),
+      researchChannelId: z.string().min(1),
+      snapshotId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      sourceType: z.literal("phase9_video_snapshot"),
+      researchChannelId: z.string().min(1),
+      snapshotId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      sourceType: z.literal("phase9_trend_candidate"),
+      trendCandidateId: z.string().min(1),
+    })
+    .strict(),
+]);
+
+export const addHypothesisEvidenceInputSchema = z
+  .object({
+    reference: evidenceReferenceSchema,
+    note: z.string().min(1).optional(),
+  })
+  .strict();

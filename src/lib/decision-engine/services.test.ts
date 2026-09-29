@@ -56,6 +56,16 @@ type ExperimentRow = {
   createdAt: Date;
 };
 
+type EvidenceRow = {
+  id: string;
+  hypothesisId: string;
+  sourceType: "phase8_metric" | "phase9_channel_snapshot" | "phase9_video_snapshot" | "phase9_trend_candidate";
+  referenceJson: string;
+  note: string | null;
+  createdVia: string;
+  createdAt: Date;
+};
+
 type OutcomeRow = {
   id: string;
   experimentId: string;
@@ -72,6 +82,7 @@ function createFakeStore() {
   const hypothesesById = new Map<string, HypothesisRow>();
   const experimentsById = new Map<string, ExperimentRow>();
   const outcomesById = new Map<string, OutcomeRow>();
+  const evidenceById = new Map<string, EvidenceRow>();
   let nextId = 0;
 
   return {
@@ -187,6 +198,28 @@ function createFakeStore() {
     async listExperimentOutcomesByExperiment(experimentId: string) {
       return [...outcomesById.values()].filter((r) => r.experimentId === experimentId);
     },
+    async insertHypothesisEvidence(input: {
+      id: string;
+      hypothesisId: string;
+      sourceType: EvidenceRow["sourceType"];
+      referenceJson: string;
+      note?: string | null;
+      createdVia: string;
+      at?: Date;
+    }) {
+      evidenceById.set(input.id, {
+        id: input.id,
+        hypothesisId: input.hypothesisId,
+        sourceType: input.sourceType,
+        referenceJson: input.referenceJson,
+        note: input.note ?? null,
+        createdVia: input.createdVia,
+        createdAt: input.at ?? new Date(),
+      });
+    },
+    async listHypothesisEvidenceByHypothesis(hypothesisId: string) {
+      return [...evidenceById.values()].filter((r) => r.hypothesisId === hypothesisId);
+    },
   };
 }
 
@@ -224,6 +257,8 @@ function createServices(activeChannelId: string | null, calls: string[] = []) {
     transitionExperimentStatusIfValid: store.transitionExperimentStatusIfValid,
     insertExperimentOutcome: store.insertExperimentOutcome,
     listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
+    insertHypothesisEvidence: store.insertHypothesisEvidence,
+    listHypothesisEvidenceByHypothesis: store.listHypothesisEvidenceByHypothesis,
   });
   return { services, store };
 }
@@ -454,6 +489,8 @@ test("AC-10-05e: every experiment/outcome route shape rejects a session active o
     transitionExperimentStatusIfValid: store.transitionExperimentStatusIfValid,
     insertExperimentOutcome: store.insertExperimentOutcome,
     listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
+    insertHypothesisEvidence: store.insertHypothesisEvidence,
+    listHypothesisEvidenceByHypothesis: store.listHypothesisEvidenceByHypothesis,
   });
   const servicesOnB = createDecisionEngineServices({
     idGenerator: store.idGenerator,
@@ -468,6 +505,8 @@ test("AC-10-05e: every experiment/outcome route shape rejects a session active o
     transitionExperimentStatusIfValid: store.transitionExperimentStatusIfValid,
     insertExperimentOutcome: store.insertExperimentOutcome,
     listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
+    insertHypothesisEvidence: store.insertHypothesisEvidence,
+    listHypothesisEvidenceByHypothesis: store.listHypothesisEvidenceByHypothesis,
   });
 
   const hypothesis = await servicesOnA.createHypothesis(
@@ -607,4 +646,198 @@ test("AC-10-09: getHypothesisTrail enforces channel access exactly once, not onc
   await services.getHypothesisTrail(hypothesis.hypothesisId, { userId: "u1" });
 
   assert.deepEqual(calls, ["UCactive0000000000000001"]);
+});
+
+// ---------------------------------------------------------------------------
+// Phase 10 slice 3 (docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md §9) -- structured evidence
+// references. `resolver` is a fake `EvidenceReferenceResolver`, exactly the shape the real route
+// file supplies in production (services.ts never constructs one itself).
+// ---------------------------------------------------------------------------
+
+function createFakeResolver(resolvesTo: boolean, calls: unknown[] = []) {
+  return {
+    async resolve(reference: unknown, ctx: unknown) {
+      calls.push({ reference, ctx });
+      return resolvesTo;
+    },
+  };
+}
+
+test("AC-10-10: a reference the resolver confirms exists is accepted and stored", async () => {
+  const { services } = createServices(null);
+  const hypothesis = await services.createHypothesis(
+    { statement: "s", evidenceNotes: "e" },
+    { userId: "u1", createdBy: "u1", createdVia: "web_ui" }
+  );
+  const resolver = createFakeResolver(true);
+
+  const evidence = await services.addHypothesisEvidence(
+    hypothesis.hypothesisId,
+    { reference: { sourceType: "phase9_trend_candidate", trendCandidateId: "trend-1" } },
+    { userId: "u1", createdVia: "web_ui" },
+    resolver
+  );
+
+  assert.equal(evidence.hypothesisId, hypothesis.hypothesisId);
+  assert.deepEqual(evidence.reference, { sourceType: "phase9_trend_candidate", trendCandidateId: "trend-1" });
+
+  const listed = await services.listHypothesisEvidence(hypothesis.hypothesisId, { userId: "u1" });
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].evidenceId, evidence.evidenceId);
+});
+
+test("AC-10-11: a reference the resolver reports as not existing is rejected, and nothing is stored", async () => {
+  const { services } = createServices(null);
+  const hypothesis = await services.createHypothesis(
+    { statement: "s", evidenceNotes: "e" },
+    { userId: "u1", createdBy: "u1", createdVia: "web_ui" }
+  );
+  const resolver = createFakeResolver(false);
+
+  await assert.rejects(
+    () =>
+      services.addHypothesisEvidence(
+        hypothesis.hypothesisId,
+        { reference: { sourceType: "phase9_trend_candidate", trendCandidateId: "fabricated" } },
+        { userId: "u1", createdVia: "web_ui" },
+        resolver
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+
+  const listed = await services.listHypothesisEvidence(hypothesis.hypothesisId, { userId: "u1" });
+  assert.equal(listed.length, 0);
+});
+
+test("AC-10-12: a phase8_metric reference whose channelId differs from a channel-scoped hypothesis's own channelId is rejected, even though the resolver would confirm it exists", async () => {
+  const { services } = createServices("UCactive0000000000000001");
+  const hypothesis = await services.createHypothesis(
+    { channelId: "UCactive0000000000000001", statement: "s", evidenceNotes: "e" },
+    { userId: "u1", createdBy: "u1", createdVia: "web_ui" }
+  );
+  const resolverCalls: unknown[] = [];
+  const resolver = createFakeResolver(true, resolverCalls);
+
+  await assert.rejects(
+    () =>
+      services.addHypothesisEvidence(
+        hypothesis.hypothesisId,
+        {
+          reference: {
+            sourceType: "phase8_metric",
+            channelId: "UCother00000000000000001",
+            videoId: "v1",
+            metricDate: "2026-09-01",
+            metricName: "views",
+          },
+        },
+        { userId: "u1", createdVia: "web_ui" },
+        resolver
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+  assert.equal(resolverCalls.length, 0, "the resolver must never be called once the channel mismatch is already known");
+});
+
+test("AC-10-13: a phase8_metric reference is accepted for a channel-less hypothesis regardless of which channel it names", async () => {
+  const { services } = createServices(null);
+  const hypothesis = await services.createHypothesis(
+    { statement: "new channel concept", evidenceNotes: "e" },
+    { userId: "u1", createdBy: "u1", createdVia: "web_ui" }
+  );
+  const resolver = createFakeResolver(true);
+
+  const evidence = await services.addHypothesisEvidence(
+    hypothesis.hypothesisId,
+    {
+      reference: {
+        sourceType: "phase8_metric",
+        channelId: "UCanyChannel000000000001",
+        videoId: "v1",
+        metricDate: "2026-09-01",
+        metricName: "views",
+      },
+    },
+    { userId: "u1", createdVia: "web_ui" },
+    resolver
+  );
+
+  assert.equal(evidence.reference.sourceType, "phase8_metric");
+});
+
+test("AC-10-14: getHypothesisTrail includes structured evidence alongside experiments/outcomes", async () => {
+  const { services } = createServices(null);
+  const hypothesis = await services.createHypothesis(
+    { statement: "s", evidenceNotes: "e" },
+    { userId: "u1", createdBy: "u1", createdVia: "web_ui" }
+  );
+  const resolver = createFakeResolver(true);
+  await services.addHypothesisEvidence(
+    hypothesis.hypothesisId,
+    { reference: { sourceType: "phase9_trend_candidate", trendCandidateId: "trend-1" } },
+    { userId: "u1", createdVia: "web_ui" },
+    resolver
+  );
+
+  const trail = await services.getHypothesisTrail(hypothesis.hypothesisId, { userId: "u1" });
+
+  assert.equal(trail.evidence.length, 1);
+  assert.deepEqual(trail.evidence[0].reference, { sourceType: "phase9_trend_candidate", trendCandidateId: "trend-1" });
+});
+
+test("AC-10-15: addHypothesisEvidence/listHypothesisEvidence reject a session active on a different channel than the hypothesis", async () => {
+  const store = createFakeStore();
+  const servicesOnA = createDecisionEngineServices({
+    idGenerator: store.idGenerator,
+    clock: { now: () => new Date("2026-09-29T12:00:00Z") },
+    channelAccess: createFakeChannelAccess("UCactive0000000000000001", []),
+    insertHypothesis: store.insertHypothesis,
+    getHypothesisById: store.getHypothesisById,
+    listHypotheses: store.listHypotheses,
+    insertExperiment: store.insertExperiment,
+    getExperimentById: store.getExperimentById,
+    listExperimentsByHypothesis: store.listExperimentsByHypothesis,
+    transitionExperimentStatusIfValid: store.transitionExperimentStatusIfValid,
+    insertExperimentOutcome: store.insertExperimentOutcome,
+    listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
+    insertHypothesisEvidence: store.insertHypothesisEvidence,
+    listHypothesisEvidenceByHypothesis: store.listHypothesisEvidenceByHypothesis,
+  });
+  const servicesOnB = createDecisionEngineServices({
+    idGenerator: store.idGenerator,
+    clock: { now: () => new Date("2026-09-29T12:00:00Z") },
+    channelAccess: createFakeChannelAccess("UCother00000000000000001", []),
+    insertHypothesis: store.insertHypothesis,
+    getHypothesisById: store.getHypothesisById,
+    listHypotheses: store.listHypotheses,
+    insertExperiment: store.insertExperiment,
+    getExperimentById: store.getExperimentById,
+    listExperimentsByHypothesis: store.listExperimentsByHypothesis,
+    transitionExperimentStatusIfValid: store.transitionExperimentStatusIfValid,
+    insertExperimentOutcome: store.insertExperimentOutcome,
+    listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
+    insertHypothesisEvidence: store.insertHypothesisEvidence,
+    listHypothesisEvidenceByHypothesis: store.listHypothesisEvidenceByHypothesis,
+  });
+
+  const hypothesis = await servicesOnA.createHypothesis(
+    { channelId: "UCactive0000000000000001", statement: "s", evidenceNotes: "e" },
+    { userId: "u1", createdBy: "u1", createdVia: "web_ui" }
+  );
+  const resolver = createFakeResolver(true);
+
+  await assert.rejects(
+    () =>
+      servicesOnB.addHypothesisEvidence(
+        hypothesis.hypothesisId,
+        { reference: { sourceType: "phase9_trend_candidate", trendCandidateId: "trend-1" } },
+        { userId: "u2", createdVia: "web_ui" },
+        resolver
+      ),
+    (error: unknown) => isDomainError(error) && error.code === "CHANNEL_NOT_ACTIVE"
+  );
+  await assert.rejects(
+    () => servicesOnB.listHypothesisEvidence(hypothesis.hypothesisId, { userId: "u2" }),
+    (error: unknown) => isDomainError(error) && error.code === "CHANNEL_NOT_ACTIVE"
+  );
 });

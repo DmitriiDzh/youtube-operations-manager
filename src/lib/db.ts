@@ -1303,6 +1303,33 @@ export const experimentOutcomes = sqliteTable(
   (table) => [index("experiment_outcomes_experiment_id_idx").on(table.experimentId)]
 );
 
+// Append-only (mirrors experimentOutcomes/market_*_snapshots) -- no update/delete function is
+// ever written. A wrong reference is superseded by adding a corrected one, never edited in place.
+// `referenceJson` is validated (the referenced Phase 8/9 row actually exists) BEFORE this insert
+// happens, by decision-engine/services.ts's `addHypothesisEvidence` -- via a resolver the caller
+// (the route file, not this module) supplies, since decision-engine itself must never import
+// analytics/market-intelligence (AGENTS.md §M, PHASE_9_PLAN.md §5's own precedent -- see
+// docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md §4).
+export const hypothesisEvidence = sqliteTable(
+  "hypothesis_evidence",
+  {
+    id: text("id").primaryKey(),
+    hypothesisId: text("hypothesis_id")
+      .notNull()
+      .references(() => hypotheses.id),
+    sourceType: text("source_type", {
+      enum: ["phase8_metric", "phase9_channel_snapshot", "phase9_video_snapshot", "phase9_trend_candidate"],
+    }).notNull(),
+    referenceJson: text("reference_json").notNull(),
+    note: text("note"),
+    createdVia: text("created_via").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [index("hypothesis_evidence_hypothesis_id_idx").on(table.hypothesisId)]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -1979,6 +2006,26 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
       await client.execute(
         "CREATE INDEX IF NOT EXISTS experiment_outcomes_experiment_id_idx ON experiment_outcomes(experiment_id)"
+      );
+    },
+  },
+  {
+    version: 30,
+    description:
+      "hypothesis_evidence -- Phase 10 slice 3, structured (validated at creation) references from a hypothesis to real Phase 8/Phase 9 rows, additive alongside the existing free-text evidenceNotes (docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS hypothesis_evidence (" +
+          "id TEXT PRIMARY KEY, " +
+          "hypothesis_id TEXT NOT NULL REFERENCES hypotheses(id), " +
+          "source_type TEXT NOT NULL, " +
+          "reference_json TEXT NOT NULL, " +
+          "note TEXT, " +
+          "created_via TEXT NOT NULL, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS hypothesis_evidence_hypothesis_id_idx ON hypothesis_evidence(hypothesis_id)"
       );
     },
   },
@@ -6098,4 +6145,54 @@ export async function listExperimentOutcomesByExperiment(
     .from(experimentOutcomes)
     .where(eq(experimentOutcomes.experimentId, experimentId))
     .orderBy(desc(experimentOutcomes.recordedAt));
+}
+
+export type HypothesisEvidenceSourceType =
+  | "phase8_metric"
+  | "phase9_channel_snapshot"
+  | "phase9_video_snapshot"
+  | "phase9_trend_candidate";
+
+export type StoredHypothesisEvidence = {
+  id: string;
+  hypothesisId: string;
+  sourceType: HypothesisEvidenceSourceType;
+  referenceJson: string;
+  note: string | null;
+  createdVia: string;
+  createdAt: Date;
+};
+
+export async function insertHypothesisEvidence(
+  input: {
+    id: string;
+    hypothesisId: string;
+    sourceType: HypothesisEvidenceSourceType;
+    referenceJson: string;
+    note?: string | null;
+    createdVia: string;
+    at?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(hypothesisEvidence).values({
+    id: input.id,
+    hypothesisId: input.hypothesisId,
+    sourceType: input.sourceType,
+    referenceJson: input.referenceJson,
+    note: input.note ?? null,
+    createdVia: input.createdVia,
+    ...(input.at ? { createdAt: input.at } : {}),
+  });
+}
+
+export async function listHypothesisEvidenceByHypothesis(
+  hypothesisId: string,
+  database: AppDb = db
+): Promise<StoredHypothesisEvidence[]> {
+  return database
+    .select()
+    .from(hypothesisEvidence)
+    .where(eq(hypothesisEvidence.hypothesisId, hypothesisId))
+    .orderBy(desc(hypothesisEvidence.createdAt));
 }
