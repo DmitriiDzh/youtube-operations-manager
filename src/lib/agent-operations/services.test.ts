@@ -229,7 +229,9 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   const result = await services.getSystemCapabilities({});
 
   assert.equal(result.productVersion, "9.9.9");
-  assert.equal(result.agentApiVersion, "0.13.0");
+  // Bumped 0.13.0 -> 0.14.0, Phase 10 slice 2 (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md):
+  // new decision_engine capabilities added.
+  assert.equal(result.agentApiVersion, "0.14.0");
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -292,16 +294,17 @@ test("capabilities includes system.get_capabilities itself, classified READ", as
   assert.equal(self!.domain, "system");
 });
 
-// AC-CAP-05: exactly one future capability remains from the owner's spec §14 -- Phase 10's
-// create_experiment_proposal. Updated 2026-09-26 (Phase 9 slice 4,
-// `docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`): the requirement itself changed, not that this
-// test was wrong -- query_market_intelligence/query_competitors are now real, implemented
-// capabilities (see the next test), so they must NOT still be reported as merely "planned."
-test("plannedFutureCapabilities is exactly the one remaining extension point from the owner's spec §14, no more no less", async () => {
+// AC-CAP-05: exactly one future capability remains from the owner's spec §14/FUTURE_PHASES.md §6.
+// Updated 2026-09-29 (Phase 10 slice 2, `docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md`): the
+// requirement itself changed again, not that this test was wrong -- create_experiment_proposal is
+// now a real, implemented capability (see the next test), replaced here by create_hypothesis
+// (agent-created hypotheses, §6's other named agent capability, deliberately left out of slice 2's
+// own narrower scope).
+test("plannedFutureCapabilities is exactly the one remaining reserved extension point, no more no less", async () => {
   const { services } = createFixture();
   const result = await services.getSystemCapabilities({});
 
-  assert.deepEqual([...result.plannedFutureCapabilities].sort(), ["create_experiment_proposal"]);
+  assert.deepEqual([...result.plannedFutureCapabilities].sort(), ["create_hypothesis"]);
 });
 
 // AC-CAP-05b: Phase 9 slice 4 -- the two previously-planned capabilities must now appear as real,

@@ -16,6 +16,7 @@ import type { AnalyticsCore } from "@/lib/analytics";
 import type { AiLocalizationCore } from "@/lib/ai-localization";
 import type { AssetCatalogCore } from "@/lib/asset-catalog";
 import type { MarketIntelligenceCore } from "@/lib/market-intelligence";
+import type { DecisionEngineCore } from "@/lib/decision-engine";
 import type { VideoContextSection } from "@/lib/agent-operations";
 import type { AgentConnectionsCoreSubset } from "@/lib/agent-connections";
 import { rawSqlClient } from "@/lib/db";
@@ -2859,7 +2860,9 @@ test("CLI agent capabilities returns version/capabilities with no auth/channel r
       dataDomains: [],
       actionClasses: ["READ", "DRAFT", "APPROVE", "EXECUTE"] as const,
       grantedPermissions: ["READ", "DRAFT"] as const,
-      plannedFutureCapabilities: ["create_experiment_proposal"] as const,
+      // "create_experiment_proposal" moved to a real capability (Phase 10 slice 2); this fixture
+      // just needs a value matching the current PlannedFutureCapability type, not this specific one.
+      plannedFutureCapabilities: ["create_hypothesis"] as const,
       schemaVersions: { app: 14 },
     }),
     getChannelContext: async () => { throw new Error("not used"); },
@@ -3764,6 +3767,267 @@ test("CLI agent competitors/market-intelligence/market-records are never blocked
       writeStdout: () => {},
     });
     assert.equal(marketRecordsExit, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// Phase 10 slice 2 (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md)
+function makeDecisionEngineCliCoreStub(): Pick<DecisionEngineCore, "listHypotheses" | "getHypothesisTrail" | "createExperiment"> {
+  return {
+    listHypotheses: async () => [],
+    getHypothesisTrail: async () => {
+      throw new DomainError({ code: "HYPOTHESIS_NOT_FOUND", message: "Hypothesis not found" });
+    },
+    createExperiment: async () => {
+      throw new Error("not used");
+    },
+  };
+}
+
+const fakeExperimentForCli = {
+  experimentId: "exp-1",
+  hypothesisId: "hyp-1",
+  treatment: "10-char titles",
+  controlBaseline: "current titles",
+  successCriteria: "CTR +5%",
+  stoppingCriteria: "14 days",
+  startConditions: null,
+  plannedDuration: null,
+  sampleCoverageConstraints: null,
+  budgetEstimate: null,
+  responsible: "owner",
+  status: "proposed" as const,
+  approvedBy: null,
+  approvedAt: null,
+  changeSetId: null,
+  executionBatchId: null,
+  createdVia: "cli",
+  createdAt: "2026-09-29T00:00:00.000Z",
+};
+
+test("CLI agent list-hypotheses/get-hypothesis-trail are never blocked by the operation lock (read-only)", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const decisionEngineCore = makeDecisionEngineCliCoreStub();
+    decisionEngineCore.getHypothesisTrail = async () => ({
+      hypothesis: {
+        hypothesisId: "hyp-1",
+        channelId: null,
+        statement: "s",
+        evidenceNotes: "e",
+        createdBy: "u1",
+        createdVia: "web_ui",
+        createdAt: "2026-09-29T00:00:00.000Z",
+      },
+      experiments: [],
+      evidence: [],
+    });
+
+    const listExit = await runCliCommand({
+      argv: ["agent", "list-hypotheses"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      decisionEngineCore,
+      writeStdout: () => {},
+    });
+    assert.equal(listExit, 0);
+
+    const trailExit = await runCliCommand({
+      argv: ["agent", "get-hypothesis-trail", "--hypothesisId", "hyp-1"],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      decisionEngineCore,
+      writeStdout: () => {},
+    });
+    assert.equal(trailExit, 0);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("CLI agent create-experiment-proposal server-stamps createdBy:\"agent\"/createdVia:\"cli\" and forwards the parsed flags", async () => {
+  let capturedArgs: unknown;
+  const decisionEngineCore = makeDecisionEngineCliCoreStub();
+  decisionEngineCore.createExperiment = async (hypothesisId, input, ctx) => {
+    capturedArgs = { hypothesisId, input, ctx };
+    return fakeExperimentForCli;
+  };
+
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "agent",
+      "create-experiment-proposal",
+      "--hypothesisId",
+      "hyp-1",
+      "--treatment",
+      "10-char titles",
+      "--controlBaseline",
+      "current titles",
+      "--successCriteria",
+      "CTR +5%",
+      "--stoppingCriteria",
+      "14 days",
+      "--responsible",
+      "owner",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    decisionEngineCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(capturedArgs, {
+    hypothesisId: "hyp-1",
+    input: {
+      treatment: "10-char titles",
+      controlBaseline: "current titles",
+      successCriteria: "CTR +5%",
+      stoppingCriteria: "14 days",
+      responsible: "owner",
+    },
+    ctx: { userId: "active-user", createdBy: "agent", createdVia: "cli" },
+  });
+});
+
+test("CLI agent create-experiment-proposal rejects a missing --hypothesisId as validation_failed", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "agent",
+      "create-experiment-proposal",
+      "--treatment",
+      "t",
+      "--controlBaseline",
+      "c",
+      "--successCriteria",
+      "s",
+      "--stoppingCriteria",
+      "st",
+      "--responsible",
+      "r",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    decisionEngineCore: makeDecisionEngineCliCoreStub(),
+    writeStdout: () => {},
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "validation_failed");
+});
+
+test("CLI agent create-experiment-proposal is actually wired through agent-zone enforcement (rejected when the stub always denies)", async () => {
+  const stderr: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: [
+      "agent",
+      "create-experiment-proposal",
+      "--hypothesisId",
+      "hyp-1",
+      "--treatment",
+      "t",
+      "--controlBaseline",
+      "c",
+      "--successCriteria",
+      "s",
+      "--stoppingCriteria",
+      "st",
+      "--responsible",
+      "r",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    decisionEngineCore: makeDecisionEngineCliCoreStub(),
+    agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
+    writeStdout: () => {},
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stderr[0] ?? "{}");
+  assert.equal(envelope.error.code, "AGENT_ZONE_VIOLATION");
+});
+
+test("CLI agent create-experiment-proposal passes exactly capabilityId \"decision_engine.create_experiment_proposal\" and --agentConnectionId to assertAgentAllowedForCapability", async () => {
+  const capturing = makeCapturingAgentConnectionsCoreStub();
+  const decisionEngineCore = makeDecisionEngineCliCoreStub();
+  decisionEngineCore.createExperiment = async () => fakeExperimentForCli;
+
+  const exitCode = await runCliCommand({
+    argv: [
+      "agent",
+      "create-experiment-proposal",
+      "--hypothesisId",
+      "hyp-1",
+      "--treatment",
+      "t",
+      "--controlBaseline",
+      "c",
+      "--successCriteria",
+      "s",
+      "--stoppingCriteria",
+      "st",
+      "--responsible",
+      "r",
+      "--agentConnectionId",
+      "test-caller",
+    ],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    decisionEngineCore,
+    agentConnectionsCore: capturing,
+    writeStdout: () => {},
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(capturing.calls.length, 1);
+  assert.deepEqual(capturing.calls[0], {
+    capabilityId: "decision_engine.create_experiment_proposal",
+    callerConnectionId: "test-caller",
+  });
+});
+
+test("CLI agent create-experiment-proposal is rejected while the operation lock is held", async () => {
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    const decisionEngineCore = makeDecisionEngineCliCoreStub();
+    decisionEngineCore.createExperiment = async () => {
+      throw new Error("must not be called");
+    };
+
+    const stderr: string[] = [];
+    const exitCode = await runCliCommand({
+      argv: [
+        "agent",
+        "create-experiment-proposal",
+        "--hypothesisId",
+        "hyp-1",
+        "--treatment",
+        "t",
+        "--controlBaseline",
+        "c",
+        "--successCriteria",
+        "s",
+        "--stoppingCriteria",
+        "st",
+        "--responsible",
+        "r",
+      ],
+      core: makeCoreStub(),
+      auth: makeAuthStub(),
+      decisionEngineCore,
+      writeStdout: () => {},
+      writeStderr: (line) => stderr.push(line),
+    });
+
+    assert.equal(exitCode, 1);
+    const envelope = JSON.parse(stderr[0] ?? "{}");
+    assert.equal(envelope.error.code, "operation_lock_held");
   } finally {
     await releaseOperationLock(rawSqlClient);
   }

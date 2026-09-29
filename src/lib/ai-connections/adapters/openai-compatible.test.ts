@@ -72,6 +72,40 @@ test("a well-formed response is parsed into a valid ok outcome with usage", asyn
   assert.deepEqual(usage, { inputTokens: 42, outputTokens: 8 });
 });
 
+// Phase 10 slice 4 -- proves `performChatCompletion`'s extraction serves `generateHypothesis`
+// correctly too, not just the pre-existing `generate` path above.
+test("generateHypothesis: a well-formed response is parsed into a valid ok outcome with usage", async () => {
+  const fetchImpl: FetchLike = async () =>
+    jsonResponse(200, {
+      choices: [{ message: { content: JSON.stringify({ statement: "Shorter titles help.", rationale: "Based on evidence X." }) } }],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    });
+  const adapter = createOpenAiCompatibleAdapter({ fetchImpl, dnsLookup: PUBLIC_DNS_LOOKUP });
+
+  const { outcome, usage } = await adapter.generateHypothesis({
+    connection: makeConnection(),
+    credential: null,
+    request: { channelId: null, notes: "n", evidenceSummaries: [] },
+  });
+
+  assert.deepEqual(outcome, { status: "ok", statement: "Shorter titles help.", rationale: "Based on evidence X." });
+  assert.deepEqual(usage, { inputTokens: 10, outputTokens: 5 });
+});
+
+test("generateHypothesis: a response missing statement/rationale is reported as a provider error", async () => {
+  const fetchImpl: FetchLike = async () =>
+    jsonResponse(200, { choices: [{ message: { content: JSON.stringify({ foo: "bar" }) } }] });
+  const adapter = createOpenAiCompatibleAdapter({ fetchImpl, dnsLookup: PUBLIC_DNS_LOOKUP });
+
+  const { outcome } = await adapter.generateHypothesis({
+    connection: makeConnection(),
+    credential: null,
+    request: { channelId: null, notes: "n", evidenceSummaries: [] },
+  });
+
+  assert.equal(outcome.status, "error");
+});
+
 // AC-CONN-12
 test("AC-CONN-12: a provider timeout is bounded and reported, not hung indefinitely", async () => {
   const fetchImpl: FetchLike = (_url, init) =>

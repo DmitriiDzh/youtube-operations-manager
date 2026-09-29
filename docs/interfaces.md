@@ -674,6 +674,44 @@ Key MCP tools:
     market-records --kind <kind>` / `agent create-research-request --query <q> --rationale <r>
     [--monitorDurationDays <n>]`.
 
+- **Decision & Experiment Engine (Phase 10 slice 2, `docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md`):**
+  - `agent_list_hypotheses` — `{}` → `{ hypotheses: Hypothesis[] }`, already channel-filtered by the
+    service layer (channel-scoped rows narrowed to the caller's active channel, channel-less rows
+    always included).
+  - `agent_get_hypothesis_trail` — `{ hypothesisId }` → `{ hypothesis, experiments: (Experiment &
+    { outcomes: ExperimentOutcome[] })[], evidence: HypothesisEvidence[] }`. One combined "trail"
+    read (owner spec §25's "few composable tools" rule) rather than five separate list/get tools;
+    composed from `decision-engine`'s own `getHypothesisTrail` service function.
+    `HYPOTHESIS_NOT_FOUND` for an unknown id. `evidence` added additively in Phase 10 slice 3
+    (`docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md`) — no `AGENT_API_VERSION` bump, per that
+    constant's own doc comment (a purely additive, backward-compatible widening of an existing
+    tool's output is not a capability-discovery-relevant change).
+  - `create_experiment_proposal` — `{ hypothesisId, treatment, controlBaseline, successCriteria,
+    stoppingCriteria, responsible, startConditions?, plannedDuration?, sampleCoverageConstraints?,
+    budgetEstimate? }` → the created experiment, always `status: "proposed"` (schema is `.strict()`,
+    no `status` field accepted at all). The one reserved capability name
+    (`PLANNED_FUTURE_CAPABILITIES` since Phase 7), zoned
+    (`decision_engine.create_experiment_proposal`) and gated the same way as
+    `agent_create_market_research_request`. `createdVia`: `"mcp"`/`"cli"` (persisted, matches
+    `Experiment.createdVia`). The MCP/CLI handler also passes `createdBy: "agent"` in the
+    service-layer call's `ctx` (never a real user id, since MCP/CLI callers have no session), but
+    `createExperiment`/`insertExperiment` never actually persist `createdBy` anywhere -- the
+    `Experiment` type has no such field, only `responsible` (a caller-supplied input value, not an
+    identity stamp).
+  - **There is no MCP tool or CLI command to create a hypothesis from scratch, transition an
+    experiment's status, or record an outcome** — all Web-UI-only, verified mechanically by
+    `decision-engine-agent-approval-inventory.test.ts` (`PHASE10-INV-02`, same scan technique as
+    `market-research-request-approval-inventory.test.ts` above).
+  - All three registered directly against `createDecisionEngineCore()` in `src/mcp/server.ts`/
+    `src/cli/video-metadata.ts`, not through `agent-operations`'s own service layer — same
+    module-independence reasoning as market-intelligence above; `decision-engine`'s own service
+    layer already does its own channel-access assertion internally, so no separate check is needed
+    in the MCP/CLI handler layer.
+    CLI parity: `agent list-hypotheses` / `agent get-hypothesis-trail --hypothesisId <id>` / `agent
+    create-experiment-proposal --hypothesisId <id> --treatment <t> --controlBaseline <c>
+    --successCriteria <s> --stoppingCriteria <st> --responsible <r> [--startConditions <...>]
+    [--plannedDuration <...>] [--sampleCoverageConstraints <...>] [--budgetEstimate <...>]`.
+
 Most tools accept optional `credentialRef`; if omitted, server falls back to active local auth context.
 
 ### MCP connection (Settings tab toggle, off by default)
@@ -814,6 +852,28 @@ the operator does not necessarily own (`docs/ARCHITECTURE.md` §18).
 - `GET /api/market-intelligence/research-requests` (Phase 9 slice 9G, part B) — list all agent-created research requests, for the Web UI's own review queue
 - `POST /api/market-intelligence/research-requests/[requestId]/approve` — no request body; the ONLY way a request moves `pending -> approved` (verified mechanically, see `docs/ARCHITECTURE.md` §18) — uses the approving human's own session credentials for the one real `search.list` call this triggers; records `status: "executed"` + `candidatesFound`/`candidatesNew` on success, `status: "execution_failed"` + `executionError` on failure (never reverts the approval itself)
 - `POST /api/market-intelligence/research-requests/[requestId]/reject` — `{ reason }`; the ONLY way a request moves `pending -> rejected`
+
+### Decision & Experiment Engine API (Phase 10 slices 1-4, `docs/roadmap/plans/PHASE_10_SLICE_{1,3,4}_PLAN.md`)
+
+All routes are global (not nested under `/api/channels/[channelId]/...`) — a hypothesis is only
+*sometimes* channel-scoped (`channelId` nullable; a "new channel concept" hypothesis has none),
+mirroring Market Intelligence's own global routing shape (`docs/ARCHITECTURE.md` §19). Every
+route checks the caller's active channel (`channelAccess.assertActiveChannel`) whenever the
+resource it resolves to has a non-null `channelId` — including reads, not only creation.
+
+- `GET /api/decision-engine/hypotheses` — list hypotheses, narrowed to the session's active channel for channel-scoped rows, always including channel-less ones; `POST` — create one (`{ channelId?, statement, evidenceNotes }`)
+- `GET /api/decision-engine/hypotheses/[hypothesisId]` — one hypothesis
+- `GET /api/decision-engine/hypotheses/[hypothesisId]/experiments` — experiments for a hypothesis; `POST` — create one (`{ treatment, controlBaseline, successCriteria, stoppingCriteria, startConditions?, plannedDuration?, sampleCoverageConstraints?, budgetEstimate?, responsible }`; always starts at status `"proposed"`)
+- `GET /api/decision-engine/experiments/[experimentId]` — one experiment
+- `POST /api/decision-engine/experiments/[experimentId]/transition` — `{ targetStatus }`; the ONLY way `status`/`approvedBy`/`approvedAt` change, via one atomic `UPDATE ... WHERE status IN (<valid predecessors>) ... RETURNING` (`EXPERIMENT_INVALID_TRANSITION` if the row's real current status no longer allows it — including a losing concurrent race); `approvedBy` is server-stamped from the session, never accepted in the request body
+- `GET /api/decision-engine/experiments/[experimentId]/outcomes` — outcomes for an experiment, newest-first (append-only, no update/delete route exists); `POST` — record one (`{ outcomeData, dataQualityLimitations?, criteriaMet: "met" | "not_met" | "inconclusive", lessonsLearned? }`; rejected with `EXPERIMENT_NOT_OBSERVABLE` unless the experiment's status is `running`/`concluded`/`abandoned`)
+- `GET /api/decision-engine/hypotheses/[hypothesisId]/evidence` — structured evidence references for a hypothesis, newest-first (append-only, no update/delete route exists); `POST` — add one (`{ reference: EvidenceReference, note? }`, Phase 10 slice 3, `docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md`) — `reference` is a discriminated union (`phase8_metric`/`phase9_channel_snapshot`/`phase9_video_snapshot`/`phase9_trend_candidate`), validated against the real Phase 8/9 row before insert (`validation_failed` if it doesn't exist); the route file (not `decision-engine`'s own module) is the only place that constructs the real resolver against `analyticsCore`/`marketIntelligenceCore` (`src/app/api/decision-engine/evidence-reference-resolver.ts`)
+- `POST /api/decision-engine/hypotheses/generate` — AI-generated hypothesis draft, preview only, persists nothing (Phase 10 slice 4, `docs/roadmap/plans/PHASE_10_SLICE_4_PLAN.md`) — `{ channelId?, notes, evidenceReferences?: EvidenceReference[], connectionId? }` → `{ draft: { statement, rationale, providerName, connectionId, evidenceReferences } }`; `connectionId` omitted uses the mock provider; `proxy.ts`-exempt (read-only with respect to local persistence, same classification as `/ai-localization/generate`)
+- `POST /api/decision-engine/hypotheses/generate/save` — persists a (possibly human-edited) generated draft: creates the hypothesis, attaches every evidence reference (re-validated, never trusted from the `generate` call), and records one `hypothesis_generation_provenance` row — `{ channelId?, finalStatement, evidenceNotes, evidenceReferences?, generatedStatement, rationale?, providerName, connectionId?, modelId? }` → `{ hypothesis: Hypothesis }`; NOT `proxy.ts`-exempt, a real mutation like the plain `POST /hypotheses` route
+- `PUT /api/decision-engine/experiments/[experimentId]/change-set` — attach or detach the Change Set this (localization-type) experiment will execute (Phase 10 slice 5, `docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md`) — `{ changeSetId: string | null }` → `{ experiment: Experiment }`; only legal in status `proposed`/`approved`, and only while no fresh execution claim is held; attaching validates the Change Set actually exists for the hypothesis's own channel (`EXPERIMENT_CHANGE_SET_NOT_FOUND`/`EXPERIMENT_CHANGE_SET_CHANNEL_MISMATCH`)
+- `POST /api/decision-engine/experiments/[experimentId]/execute` — creates a real Batch from the attached Change Set's own eligible approved changes, via the existing Change Set/Batch pipeline (Phase 10 slice 5) — `{ live?: boolean }` → `{ experiment: Experiment, batchId, videoCount, dryRun }`; requires status `"approved"` with a Change Set attached (`EXPERIMENT_NOT_EXECUTABLE` otherwise); `dryRun` mirrors `/api/channels/[channelId]/batches`' own fail-closed Live Writes gate exactly (`live: true` honored only when that toggle is already on server-side, via `getLiveWritesEnabled()` — never assumed from the request); claim-first internally (`execution_claimed_at`, 15-minute expiry, same precedent as Phase 9's collection claim) so two concurrent calls can never both create a Batch; moves `status` to `"running"` only on success — a manual `POST .../transition {targetStatus:"running"}` is refused (`EXPERIMENT_MUST_USE_EXECUTE`) once a Change Set is attached
+
+MCP/CLI contract: `agent_list_hypotheses`/`agent_get_hypothesis_trail` (read) and `create_experiment_proposal` (draft) exist since slice 2 (`docs/ARCHITECTURE.md` §19) — creating a hypothesis from scratch, AI generation, transitioning status, and recording an outcome remain Web-UI-only, mechanically verified.
 
 ### Analytics API (Phase 8 + Studio-Parity S6b, BL-055..059/BL-072 — previously undocumented here)
 

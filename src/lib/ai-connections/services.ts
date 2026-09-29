@@ -6,6 +6,7 @@ import {
   type AiConnection,
   type ConnectionProtocolAdapter,
   type CreateConnectionInput,
+  type HypothesisDraftProvider,
   type LocalizationProvider,
   type PricingMetadata,
   type UpdateConnectionInput,
@@ -103,6 +104,30 @@ function resolveAdapter(deps: ServiceDependencies, adapterType: AdapterType): Co
     throw new DomainError({ code: "provider_not_configured", message: `No protocol adapter registered for "${adapterType}"` });
   }
   return adapter;
+}
+
+/**
+ * The shared require/enabled-check/resolve-adapter/decrypt-once sequence both
+ * `resolveConnectionProvider` and `resolveHypothesisGenerationProvider` below need before they can
+ * wrap their own, different adapter method into the shape their own caller's domain depends on.
+ * Extracted after independent review of Phase 10 found `resolveHypothesisGenerationProvider` had
+ * grown into a full hand-copy of this sequence rather than sharing it -- any future gating change
+ * here (a budget/quota check, an additional connection-state validation) now has exactly one call
+ * site to update, not two that can silently drift apart.
+ */
+async function resolveEnabledConnectionAndAdapter(
+  deps: ServiceDependencies,
+  connectionId: string
+): Promise<{ connection: AiConnection; adapter: ConnectionProtocolAdapter; credential: string | null }> {
+  const stored = await requireConnection(deps, connectionId);
+  if (!stored.enabled) {
+    throw new DomainError({ code: "connection_disabled", message: "This connection is disabled", details: { connectionId } });
+  }
+  const connection = toPublicConnection(stored, false);
+  const adapter = resolveAdapter(deps, connection.adapterType);
+  const credentialRecord = await deps.credentialStore.getCredential(stored.id);
+  const credential = credentialRecord ? decryptSecret(credentialRecord, requireEncryptionKey(deps.resolveEncryptionKey)) : null;
+  return { connection, adapter, credential };
 }
 
 export function createAiConnectionServices(deps: ServiceDependencies) {
@@ -254,19 +279,34 @@ export function createAiConnectionServices(deps: ServiceDependencies) {
      * the per-target loop in `generateProposals`.
      */
     async resolveConnectionProvider(connectionId: string): Promise<LocalizationProvider> {
-      const stored = await requireConnection(deps, connectionId);
-      if (!stored.enabled) {
-        throw new DomainError({ code: "connection_disabled", message: "This connection is disabled", details: { connectionId } });
-      }
-      const connection = toPublicConnection(stored, false);
-      const adapter = resolveAdapter(deps, connection.adapterType);
-      const credentialRecord = await deps.credentialStore.getCredential(stored.id);
-      const credential = credentialRecord ? decryptSecret(credentialRecord, requireEncryptionKey(deps.resolveEncryptionKey)) : null;
-
+      const { connection, adapter, credential } = await resolveEnabledConnectionAndAdapter(deps, connectionId);
       return {
         name: connection.displayName,
         async generate(request) {
           const { outcome, usage } = await adapter.generate({ connection, credential, request });
+          if (outcome.status === "ok" && usage) {
+            return { ...outcome, usage };
+          }
+          return outcome;
+        },
+      };
+    },
+
+    /**
+     * Phase 10 slice 4 -- sibling to `resolveConnectionProvider` above, bridging a chosen, enabled
+     * connection into the `HypothesisDraftProvider` shape `decision-engine` depends on. Shares
+     * `resolveEnabledConnectionAndAdapter`'s own require/enabled-check/decrypt-once sequence
+     * (extracted into that one shared function after independent review found this had drifted
+     * into a full hand-copy of `resolveConnectionProvider`'s own body -- a future gating change
+     * applied to one and not the other was a real risk, not just a style nit) -- only the returned
+     * provider's own method differs.
+     */
+    async resolveHypothesisGenerationProvider(connectionId: string): Promise<HypothesisDraftProvider> {
+      const { connection, adapter, credential } = await resolveEnabledConnectionAndAdapter(deps, connectionId);
+      return {
+        name: connection.displayName,
+        async generateHypothesis(request) {
+          const { outcome, usage } = await adapter.generateHypothesis({ connection, credential, request });
           if (outcome.status === "ok" && usage) {
             return { ...outcome, usage };
           }

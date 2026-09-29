@@ -23,6 +23,7 @@ import { MarketDiscoveryPanel } from "@/components/market-discovery-panel";
 import { MarketTopicsPanel } from "@/components/market-topics-panel";
 import { MarketTrendsPanel } from "@/components/market-trends-panel";
 import { MarketResearchRequestsPanel } from "@/components/market-research-requests-panel";
+import { DecisionsManager } from "@/components/decisions-manager";
 import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
 import { ChannelConnectionsSettings } from "@/components/channel-connections-settings";
@@ -37,6 +38,7 @@ import {
   AnalyticsIcon,
   BatchesIcon,
   ContentIcon,
+  DecisionsIcon,
   DeviceIcon,
   HomeIcon,
   LocalizationsIcon,
@@ -64,6 +66,9 @@ const NAV_ITEMS = [
   // MarketResearchPanel's own doc comment), so it doesn't need `channel` the way Content/
   // Analytics/Languages/Batches do.
   { value: "research", label: "Research", icon: ResearchIcon },
+  // Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md) -- global, not channel-scoped
+  // as a tab, though an individual hypothesis may itself be channel-scoped (see DecisionsManager).
+  { value: "decisions", label: "Decisions", icon: DecisionsIcon },
   { value: "settings", label: "Settings", icon: SettingsIcon },
   // Renamed from "Device" (2026-09-21, AUTOMERGE_MIGRATION_PLAN.md §6 CD6, owner instruction):
   // this tab is now also where every detected draft-sync conflict is tracked and presented for a
@@ -336,6 +341,19 @@ export default function Dashboard() {
             <MarketTopicsPanel />
             <MarketTrendsPanel />
             <MarketResearchRequestsPanel />
+          </div>
+        </FeatureErrorBoundary>
+      )}
+
+      {tab === "decisions" && (
+        <FeatureErrorBoundary label="Decisions">
+          <div className="space-y-6">
+            <p className="text-sm text-zinc-400">
+              Hypotheses, experiments, and their recorded outcomes &mdash; manual record-keeping
+              only. No AI-generated hypotheses and no automatic execution of an approved
+              experiment yet (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md).
+            </p>
+            <DecisionsManager channel={channel ?? null} />
           </div>
         </FeatureErrorBoundary>
       )}

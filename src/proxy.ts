@@ -37,6 +37,11 @@ const EXEMPT_READ_ONLY_PATH_SUFFIXES = [
   "/localizations/import/preview",
   "/ai-localization/generate",
   "/details/preview",
+  // Phase 10 slice 4 -- generates a draft only, persists nothing (mirrors `/ai-localization/
+  // generate` above exactly). The sibling `/hypotheses/generate/save` route DOES persist and is
+  // deliberately NOT exempt -- it goes through the normal mutation gate below, same as the plain
+  // `/hypotheses` create route.
+  "/decision-engine/hypotheses/generate",
 ];
 
 function isExemptReadOnlyPath(pathname: string): boolean {

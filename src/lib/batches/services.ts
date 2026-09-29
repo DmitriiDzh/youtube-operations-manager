@@ -218,33 +218,52 @@ function allowedFromStatuses(to: LedgerStatus): LedgerStatus[] {
 }
 
 /**
+ * The non-throwing predicate half of `assertApprovalStillValid` below, exported so a caller that
+ * needs to SILENTLY FILTER a list of candidate changes (rather than abort on the first ineligible
+ * one) can reuse the exact same eligibility rule instead of hand-copying it -- found necessary by
+ * independent review of Phase 10: `decision-engine`'s own experiment-execution resolver had
+ * hand-copied this predicate's first half only (missing the `approvedValue`-vs-`proposedValue`
+ * check entirely), which would only have caught the "edited after approval" case by accident, if
+ * ever, since nothing kept the copy in sync with this function's own history of fixes. Deliberately
+ * typed structurally (only the fields this rule actually needs) rather than against
+ * `PendingChangeRecord` specifically, so `changesets`' own differently-named `Change` type (which
+ * has the same fields) can satisfy it without an import into this module going the wrong direction.
+ */
+export function isApprovalStillValid(change: {
+  approvalStatus: string;
+  validationStatus: string;
+  conflictStatus: string;
+  approvedValue: string | null;
+  proposedValue: string;
+}): boolean {
+  if (change.approvalStatus !== "approved" || change.validationStatus !== "valid" || change.conflictStatus !== "none") {
+    return false;
+  }
+  // Independent-review finding (2026-09-18, Slice 5) / AC-BATCH-03 sub-case (c), AC-TIMEOUT-02:
+  // `approvalStatus === "approved"` alone does not prove the CURRENT `proposedValue` is the one
+  // that was actually approved -- a change edited in place after approval, without a fresh
+  // approve/reject cycle, would pass the check above while carrying a value nobody ever approved.
+  // `approvedValue` is the frozen snapshot taken at approval time (mirrors changesets' own
+  // `Change.approvedValue`); a mismatch means the payload would be built from neither a known-good
+  // stale value nor a properly re-approved new one, so it must be treated as ineligible, exactly
+  // as an already-invalidated approval is.
+  return change.approvedValue === null || change.approvedValue === change.proposedValue;
+}
+
+/**
  * AC-BATCH-03 / AC-MERGE-04: a change must be exactly `approved` + `valid` +
  * non-conflicting to be published, checked identically whether this is the first time
  * (batch creation) or a re-check immediately before send (§0.F Step 4's "re-run the full
  * safety pipeline") -- one function, two call sites, per architectural decision #3.
  */
 function assertApprovalStillValid(change: PendingChangeRecord): void {
-  if (change.approvalStatus !== "approved" || change.validationStatus !== "valid" || change.conflictStatus !== "none") {
+  if (!isApprovalStillValid(change)) {
     throw new DomainError({
       code: "change_approval_invalid",
-      message: `Change ${change.id} is not (or is no longer) approved/valid/non-conflicting -- approvalStatus=${change.approvalStatus}, validationStatus=${change.validationStatus}, conflictStatus=${change.conflictStatus}`,
-      details: { changeId: change.id },
-    });
-  }
-
-  // Independent-review finding (2026-09-18, Slice 5) / AC-BATCH-03 sub-case (c),
-  // AC-TIMEOUT-02: `approvalStatus === "approved"` alone does not prove the CURRENT
-  // `proposedValue` is the one that was actually approved -- a change edited in place
-  // after approval, without a fresh approve/reject cycle, would pass the check above
-  // while carrying a value nobody ever approved. `approvedValue` is the frozen snapshot
-  // taken at approval time (mirrors changesets' own `Change.approvedValue`); a mismatch
-  // means the payload would be built from neither a known-good stale value nor a
-  // properly re-approved new one, so the write must be blocked outright, exactly as an
-  // already-invalidated approval is.
-  if (change.approvedValue !== null && change.approvedValue !== change.proposedValue) {
-    throw new DomainError({
-      code: "change_approval_invalid",
-      message: `Change ${change.id} was edited after approval -- its current proposedValue no longer matches the value that was actually approved`,
+      message:
+        change.approvalStatus !== "approved" || change.validationStatus !== "valid" || change.conflictStatus !== "none"
+          ? `Change ${change.id} is not (or is no longer) approved/valid/non-conflicting -- approvalStatus=${change.approvalStatus}, validationStatus=${change.validationStatus}, conflictStatus=${change.conflictStatus}`
+          : `Change ${change.id} was edited after approval -- its current proposedValue no longer matches the value that was actually approved`,
       details: { changeId: change.id, approvedValue: change.approvedValue, proposedValue: change.proposedValue },
     });
   }

@@ -96,6 +96,21 @@ import {
   approveMarketResearchRequestIfPending,
   rejectMarketResearchRequestIfPending,
   recordMarketResearchRequestExecutionOutcome,
+  insertHypothesis,
+  getHypothesisById,
+  listHypotheses,
+  insertExperiment,
+  getExperimentById,
+  listExperimentsByHypothesis,
+  transitionExperimentStatusIfValid,
+  setExperimentChangeSetIfEligible,
+  claimExperimentForExecution,
+  releaseExperimentExecutionClaim,
+  finalizeExperimentExecution,
+  insertExperimentOutcome,
+  listExperimentOutcomesByExperiment,
+  insertHypothesisEvidence,
+  listHypothesisEvidenceByHypothesis,
 } from "./db";
 import { readSchemaVersion } from "@/lib/schema-versioning";
 import { SchemaVersionError } from "@/lib/schema-versioning/contracts";
@@ -2353,4 +2368,548 @@ test("clearStoredCloudConnection removes the row -- a later getStoredCloudConnec
 
     await clearStoredCloudConnection(isolatedDb);
     assert.equal(await getStoredCloudConnection(isolatedDb), null);
+  }));
+
+// ---------------------------------------------------------------------------
+// Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md) -- hypotheses/experiments/
+// experiment_outcomes persistence.
+// ---------------------------------------------------------------------------
+
+test("insertHypothesis/getHypothesisById/listHypotheses: round trip, including a channel-less (new-channel-concept) hypothesis", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+
+    await insertHypothesis(
+      { id: "hyp-1", channelId: null, statement: "Shorter titles improve CTR", evidenceNotes: "gut feeling for now", createdBy: "owner", createdVia: "web_ui" },
+      isolatedDb
+    );
+    await insertHypothesis(
+      { id: "hyp-2", channelId: null, statement: "New channel concept: lo-fi cooking", evidenceNotes: "n/a", createdBy: "owner", createdVia: "web_ui" },
+      isolatedDb
+    );
+
+    const fetched = await getHypothesisById("hyp-1", isolatedDb);
+    assert.equal(fetched?.statement, "Shorter titles improve CTR");
+    assert.equal(fetched?.channelId, null);
+
+    const all = await listHypotheses(isolatedDb);
+    assert.equal(all.length, 2);
+  }));
+
+test("insertExperiment/getExperimentById/listExperimentsByHypothesis: round trip, defaults status to proposed", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertHypothesis({ id: "hyp-1", statement: "s", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui" }, isolatedDb);
+
+    await insertExperiment(
+      {
+        id: "exp-1",
+        hypothesisId: "hyp-1",
+        treatment: "shorter titles",
+        controlBaseline: "current titles",
+        successCriteria: "CTR +10%",
+        stoppingCriteria: "14 days or -20% CTR",
+        responsible: "owner",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+
+    const fetched = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(fetched?.status, "proposed");
+    assert.equal(fetched?.approvedBy, null);
+    assert.equal(fetched?.approvedAt, null);
+
+    const byHypothesis = await listExperimentsByHypothesis("hyp-1", isolatedDb);
+    assert.equal(byHypothesis.length, 1);
+  }));
+
+test("insertHypothesis/insertExperiment: an explicit `at` stamps createdAt, not real wall-clock time (two clock sources bug class, already fixed once for Phase 9 trend evidence -- not repeating it here)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const at = new Date("2020-01-01T00:00:00.000Z");
+
+    await insertHypothesis({ id: "hyp-1", statement: "s", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui", at }, isolatedDb);
+    await insertExperiment(
+      {
+        id: "exp-1",
+        hypothesisId: "hyp-1",
+        treatment: "t",
+        controlBaseline: "c",
+        successCriteria: "s",
+        stoppingCriteria: "s",
+        responsible: "owner",
+        createdVia: "web_ui",
+        at,
+      },
+      isolatedDb
+    );
+
+    const hypothesis = await getHypothesisById("hyp-1", isolatedDb);
+    const experiment = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(hypothesis?.createdAt.toISOString(), at.toISOString());
+    assert.equal(experiment?.createdAt.toISOString(), at.toISOString());
+  }));
+
+test("insertExperimentOutcome/listExperimentOutcomesByExperiment: append-only -- multiple outcome rows for one experiment all survive", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertHypothesis({ id: "hyp-1", statement: "s", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui" }, isolatedDb);
+    await insertExperiment(
+      {
+        id: "exp-1",
+        hypothesisId: "hyp-1",
+        treatment: "t",
+        controlBaseline: "c",
+        successCriteria: "s",
+        stoppingCriteria: "s",
+        responsible: "owner",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+
+    await insertExperimentOutcome(
+      { id: "out-1", experimentId: "exp-1", recordedBy: "owner", createdVia: "web_ui", outcomeData: "interim: +3%", criteriaMet: "inconclusive" },
+      isolatedDb
+    );
+    await insertExperimentOutcome(
+      { id: "out-2", experimentId: "exp-1", recordedBy: "owner", createdVia: "web_ui", outcomeData: "final: +9%", criteriaMet: "met", lessonsLearned: "worked" },
+      isolatedDb
+    );
+
+    const outcomes = await listExperimentOutcomesByExperiment("exp-1", isolatedDb);
+    assert.equal(outcomes.length, 2);
+  }));
+
+test("insertHypothesisEvidence/listHypothesisEvidenceByHypothesis: round trip, append-only across source types", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertHypothesis({ id: "hyp-1", statement: "s", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui" }, isolatedDb);
+
+    await insertHypothesisEvidence(
+      {
+        id: "ev-1",
+        hypothesisId: "hyp-1",
+        sourceType: "phase9_trend_candidate",
+        referenceJson: JSON.stringify({ sourceType: "phase9_trend_candidate", trendCandidateId: "trend-1" }),
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+    await insertHypothesisEvidence(
+      {
+        id: "ev-2",
+        hypothesisId: "hyp-1",
+        sourceType: "phase8_metric",
+        referenceJson: JSON.stringify({
+          sourceType: "phase8_metric",
+          channelId: "UC1",
+          videoId: "v1",
+          metricDate: "2026-09-01",
+          metricName: "views",
+        }),
+        note: "supports the hypothesis directly",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+
+    const rows = await listHypothesisEvidenceByHypothesis("hyp-1", isolatedDb);
+    assert.equal(rows.length, 2);
+    assert.ok(rows.some((r) => r.id === "ev-1" && r.sourceType === "phase9_trend_candidate"));
+    const withNote = rows.find((r) => r.id === "ev-2");
+    assert.equal(withNote?.note, "supports the hypothesis directly");
+  }));
+
+test("insertHypothesisEvidence: an explicit `at` stamps createdAt, not real wall-clock time (two clock sources bug class)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertHypothesis({ id: "hyp-1", statement: "s", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui" }, isolatedDb);
+    const at = new Date("2026-01-01T00:00:00.000Z");
+
+    await insertHypothesisEvidence(
+      {
+        id: "ev-1",
+        hypothesisId: "hyp-1",
+        sourceType: "phase9_trend_candidate",
+        referenceJson: JSON.stringify({ sourceType: "phase9_trend_candidate", trendCandidateId: "trend-1" }),
+        createdVia: "web_ui",
+        at,
+      },
+      isolatedDb
+    );
+
+    const rows = await listHypothesisEvidenceByHypothesis("hyp-1", isolatedDb);
+    assert.equal(rows[0]?.createdAt.toISOString(), at.toISOString());
+  }));
+
+// RISK-70's own lesson (a fake in-memory store proves nothing about real atomicity) -- forces two
+// literally-concurrent calls against the real libsql driver, exactly like
+// approveMarketResearchRequestIfPending's own race test.
+test("transitionExperimentStatusIfValid: two literally-concurrent approve attempts for the same proposed row -- exactly one succeeds", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertHypothesis({ id: "hyp-1", statement: "s", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui" }, isolatedDb);
+    await insertExperiment(
+      {
+        id: "exp-race",
+        hypothesisId: "hyp-1",
+        treatment: "t",
+        controlBaseline: "c",
+        successCriteria: "s",
+        stoppingCriteria: "s",
+        responsible: "owner",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    const [first, second] = await Promise.all([
+      transitionExperimentStatusIfValid("exp-race", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb),
+      transitionExperimentStatusIfValid("exp-race", ["proposed"], "approved", "actor-b", at, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb),
+    ]);
+
+    const succeeded = [first, second].filter((row) => row !== null);
+    const failed = [first, second].filter((row) => row === null);
+    assert.equal(succeeded.length, 1, "exactly one of the two concurrent calls must succeed");
+    assert.equal(failed.length, 1, "the other must observe the row already approved and return null");
+
+    const finalRow = await getExperimentById("exp-race", isolatedDb);
+    assert.equal(finalRow?.status, "approved");
+    assert.equal(finalRow?.approvedBy, succeeded[0]?.approvedBy, "the final row's approvedBy must match only the winning call's actor");
+  }));
+
+test("transitionExperimentStatusIfValid: a call whose fromStatuses no longer matches the row's real status returns null and changes nothing", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertHypothesis({ id: "hyp-1", statement: "s", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui" }, isolatedDb);
+    await insertExperiment(
+      {
+        id: "exp-1",
+        hypothesisId: "hyp-1",
+        treatment: "t",
+        controlBaseline: "c",
+        successCriteria: "s",
+        stoppingCriteria: "s",
+        responsible: "owner",
+        createdVia: "web_ui",
+      },
+      isolatedDb
+    );
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb);
+
+    const result = await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-b", at, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb);
+    assert.equal(result, null);
+
+    const row = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(row?.approvedBy, "actor-a");
+  }));
+
+// ---------------------------------------------------------------------------
+// Phase 10 slice 5 (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md) -- execution of an approved,
+// localization-type experiment. `claimExperimentForExecution`'s own real-DB concurrency test
+// mirrors `transitionExperimentStatusIfValid`'s own above, and `claimStaleResearchChannelsForCollection`
+// (Phase 9 slice 9B) -- the same claim-first shape, proven against a real DB, not a fake store.
+//
+// `FAR_PAST_CLAIM_CUTOFF`/`FAR_FUTURE_CLAIM_CUTOFF`: a claim-expiry cutoff in the far past never
+// treats a just-taken claim as stale (used by every test that isn't specifically about expiry); a
+// cutoff in the far future treats EVERY claim as already-expired (used to simulate "the claim is
+// old enough to be reclaimed/bypassed").
+// ---------------------------------------------------------------------------
+
+const FAR_PAST_CLAIM_CUTOFF = new Date(0);
+const FAR_FUTURE_CLAIM_CUTOFF = new Date("2999-01-01T00:00:00.000Z");
+
+async function insertExperimentForExecutionTests(
+  isolatedDb: AppDb,
+  overrides: { hypothesisChannelId?: string | null; experimentId?: string } = {}
+): Promise<void> {
+  if (overrides.hypothesisChannelId) {
+    await seedChannel(isolatedDb, overrides.hypothesisChannelId);
+  }
+  await insertHypothesis(
+    { id: "hyp-1", channelId: overrides.hypothesisChannelId ?? null, statement: "s", evidenceNotes: "e", createdBy: "owner", createdVia: "web_ui" },
+    isolatedDb
+  );
+  await insertExperiment(
+    {
+      id: overrides.experimentId ?? "exp-1",
+      hypothesisId: "hyp-1",
+      treatment: "t",
+      controlBaseline: "c",
+      successCriteria: "s",
+      stoppingCriteria: "s",
+      responsible: "owner",
+      createdVia: "web_ui",
+    },
+    isolatedDb
+  );
+}
+
+test("setExperimentChangeSetIfEligible: attaches when status is proposed/approved, returns null (no write) for running", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+
+    const attached = await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    assert.equal(attached?.changeSetId, "cs-1");
+
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb);
+    const claimed = await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    await finalizeExperimentExecution("exp-1", "batch-1", claimed!.executionClaimedAt as Date, isolatedDb);
+
+    const result = await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], null, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    assert.equal(result, null, "a running experiment's changeSetId must be immutable via this function");
+    const row = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(row?.changeSetId, "cs-1", "nothing was actually changed by the rejected call");
+  }));
+
+test("claimExperimentForExecution: two literally-concurrent claims for the same approved+change-set-attached row -- exactly one succeeds", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    const approveAt = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", approveAt, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb);
+
+    const claimAt = new Date("2026-09-29T12:00:01.000Z");
+    const [first, second] = await Promise.all([
+      claimExperimentForExecution("exp-1", "cs-1", claimAt, FAR_PAST_CLAIM_CUTOFF, isolatedDb),
+      claimExperimentForExecution("exp-1", "cs-1", claimAt, FAR_PAST_CLAIM_CUTOFF, isolatedDb),
+    ]);
+
+    const succeeded = [first, second].filter((row) => row !== null);
+    const failed = [first, second].filter((row) => row === null);
+    assert.equal(succeeded.length, 1, "exactly one of the two concurrent claims must succeed");
+    assert.equal(failed.length, 1, "the other must observe the claim already taken and return null");
+
+    const row = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(row?.status, "approved", "the claim itself never touches status");
+    assert.ok(row?.executionClaimedAt, "the claim column is set");
+  }));
+
+test("claimExperimentForExecution: refuses when changeSetId no longer matches (concurrent detach)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb);
+
+    const result = await claimExperimentForExecution("exp-1", "cs-DIFFERENT", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    assert.equal(result, null);
+  }));
+
+test("claimExperimentForExecution: an expired (stale) claim can be reclaimed", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb);
+
+    const firstClaim = await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    assert.ok(firstClaim, "first claim succeeds (simulates a crashed prior attempt -- claim taken, never released or finalized)");
+
+    const blockedByFreshCutoff = await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    assert.equal(blockedByFreshCutoff, null, "a cutoff that treats the claim as still fresh must block a second claim");
+
+    const reclaimedViaExpiry = await claimExperimentForExecution("exp-1", "cs-1", at, FAR_FUTURE_CLAIM_CUTOFF, isolatedDb);
+    assert.ok(reclaimedViaExpiry, "a cutoff that treats the claim as expired must allow reclaiming it -- a crash never permanently locks the row");
+  }));
+
+test("releaseExperimentExecutionClaim: a released claim can be re-claimed afterward", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb);
+
+    const firstClaim = await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    assert.ok(firstClaim);
+    const blockedWhileClaimed = await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    assert.equal(blockedWhileClaimed, null);
+
+    const released = await releaseExperimentExecutionClaim("exp-1", at, isolatedDb);
+    assert.equal(released, true, "releasing the exact claim that was actually held must report success");
+    const rowAfterRelease = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(rowAfterRelease?.executionClaimedAt, null);
+    assert.equal(rowAfterRelease?.status, "approved", "release never touches status -- the experiment stays re-attemptable");
+
+    const secondClaim = await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    assert.ok(secondClaim, "a released claim can be re-claimed");
+  }));
+
+test("releaseExperimentExecutionClaim: a stale caller's release never clears a DIFFERENT, newer claim (independent review finding)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb);
+
+    // Caller A claims, then (simulated by the far-future cutoff below) stalls past expiry.
+    const firstClaimAt = new Date("2026-09-29T12:00:00.000Z");
+    const firstClaim = await claimExperimentForExecution("exp-1", "cs-1", firstClaimAt, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    assert.ok(firstClaim);
+
+    // Caller B legitimately reclaims once A's claim is treated as expired -- FAR_FUTURE_CLAIM_CUTOFF
+    // makes any real timestamp count as stale, exactly like real wall-clock time passing far enough
+    // would (storage truncates to whole seconds, so a same-second cutoff cannot be used here).
+    const secondClaimAt = new Date("2026-09-29T12:20:00.000Z");
+    const secondClaim = await claimExperimentForExecution("exp-1", "cs-1", secondClaimAt, FAR_FUTURE_CLAIM_CUTOFF, isolatedDb);
+    assert.ok(secondClaim, "B must be able to reclaim once A's claim is stale");
+    assert.equal(secondClaim.executionClaimedAt?.getTime(), secondClaimAt.getTime());
+
+    // A's stalled cleanup finally runs, releasing what IT believes is its own claim (firstClaimAt)
+    // -- this must be a no-op against B's fresh claim, never clearing it.
+    const releasedByStaleA = await releaseExperimentExecutionClaim("exp-1", firstClaimAt, isolatedDb);
+    assert.equal(releasedByStaleA, false, "a stale caller's release must report failure, not silently succeed");
+
+    const rowAfterStaleRelease = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(
+      rowAfterStaleRelease?.executionClaimedAt?.getTime(),
+      secondClaimAt.getTime(),
+      "B's own fresh claim must survive A's stale release attempt untouched"
+    );
+
+    // A third caller must NOT be able to claim while B's claim is still genuinely fresh.
+    const thirdClaimBlocked = await claimExperimentForExecution("exp-1", "cs-1", new Date("2026-09-29T12:21:00.000Z"), FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    assert.equal(thirdClaimBlocked, null, "B's still-fresh claim must keep a third caller out");
+  }));
+
+test("transitionExperimentStatusIfValid/setExperimentChangeSetIfEligible: refuse while a FRESH execution claim is held (Abandon/detach during the claim window)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb);
+    await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+
+    // advisor() round 2: without this guard, Abandon could land here, then finalize would
+    // resurrect the terminal state back to "running" -- both must be refused while claimed.
+    const abandonAttempt = await transitionExperimentStatusIfValid("exp-1", ["approved"], "abandoned", null, at, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb);
+    assert.equal(abandonAttempt, null, "Abandon must be refused while a fresh claim is held");
+    const detachAttempt = await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], null, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    assert.equal(detachAttempt, null, "Detach must be refused while a fresh claim is held");
+
+    const row = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(row?.status, "approved", "neither rejected call actually changed anything");
+    assert.equal(row?.changeSetId, "cs-1");
+
+    // The same calls succeed once the claim is old enough to count as expired/abandoned.
+    const abandonAfterExpiry = await transitionExperimentStatusIfValid(
+      "exp-1",
+      ["approved"],
+      "abandoned",
+      null,
+      at,
+      FAR_FUTURE_CLAIM_CUTOFF,
+      undefined,
+      isolatedDb
+    );
+    assert.ok(abandonAfterExpiry, "an expired claim must not block a transition forever");
+  }));
+
+test("transitionExperimentStatusIfValid: requiredChangeSetId atomically re-verifies at write time, closing a concurrent-attach race (independent review finding)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb);
+
+    // The row genuinely has no Change Set attached yet (matches the read-time check a caller
+    // would have just performed) -- but a Change Set gets attached AFTER that read, simulating
+    // the exact race a concurrent setExperimentChangeSet call would create.
+    const rowBeforeAttach = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(rowBeforeAttach?.changeSetId, null);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+
+    // A manual transition to "running" that trusts requiredChangeSetId: null (mirroring the
+    // service layer's own read-time belief) must now be refused atomically at write time, not
+    // silently succeed against the row's REAL, now-changed changeSetId.
+    const raced = await transitionExperimentStatusIfValid("exp-1", ["approved"], "running", null, at, FAR_PAST_CLAIM_CUTOFF, null, isolatedDb);
+    assert.equal(raced, null, "the write must refuse once a Change Set is really attached, regardless of what the caller read earlier");
+
+    const row = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(row?.status, "approved", "status must NOT have advanced to running through the raced manual path");
+    assert.equal(row?.changeSetId, "cs-1", "the concurrently-attached Change Set must survive untouched");
+
+    // Sanity check: the same call succeeds when requiredChangeSetId genuinely matches reality.
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], null, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    const legitimate = await transitionExperimentStatusIfValid("exp-1", ["approved"], "running", null, at, FAR_PAST_CLAIM_CUTOFF, null, isolatedDb);
+    assert.ok(legitimate, "the same guard must not block a genuinely eligible manual transition");
+    assert.equal(legitimate.status, "running");
+
+    // Sanity check: omitting requiredChangeSetId (undefined) applies no such constraint at all --
+    // every non-"running"-targeting transition in this codebase relies on this.
+    const noConstraint = await transitionExperimentStatusIfValid("exp-1", ["running"], "concluded", null, at, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb);
+    assert.ok(noConstraint, "omitting requiredChangeSetId must not add any changeSetId constraint");
+  }));
+
+test("finalizeExperimentExecution: sets status to running, records the real Batch id, and clears the claim so running->concluded still works", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb);
+    const claimed = await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+
+    const finalized = await finalizeExperimentExecution("exp-1", "batch-1", claimed!.executionClaimedAt as Date, isolatedDb);
+    assert.equal(finalized, true);
+    const row = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(row?.status, "running");
+    assert.equal(row?.executionBatchId, "batch-1");
+    assert.equal(row?.executionClaimedAt, null, "the claim is cleared by finalize itself");
+
+    // advisor() round 2: the claim guard on transitions must not then permanently block the
+    // experiment's own normal running -> concluded/abandoned lifecycle.
+    const concluded = await transitionExperimentStatusIfValid("exp-1", ["running"], "concluded", null, at, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb);
+    assert.equal(concluded?.status, "concluded");
+  }));
+
+test("finalizeExperimentExecution: returns false (not an exception) when the guard doesn't match, and never touches the row", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, undefined, isolatedDb);
+    await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+
+    // Wrong expectedClaimedAt -- simulates the claim having moved/cleared between claim and
+    // finalize (should be impossible given the claim's own exclusivity, but the guard must still
+    // report failure honestly rather than silently "succeeding").
+    const finalized = await finalizeExperimentExecution("exp-1", "batch-wrong", new Date("2020-01-01T00:00:00.000Z"), isolatedDb);
+    assert.equal(finalized, false);
+
+    const row = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(row?.status, "approved", "the mismatched finalize call must not have changed anything");
+    assert.equal(row?.executionBatchId, null);
+    assert.ok(row?.executionClaimedAt, "the claim stays held -- a failed finalize self-heals via expiry, never silently releases");
   }));

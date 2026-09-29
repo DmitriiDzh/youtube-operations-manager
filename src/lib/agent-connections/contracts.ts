@@ -67,6 +67,10 @@ export const CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT = "content_proposal.r
 // ZONED_CAPABILITIES entry is added at that point"), already anticipated when Phase 9 Part II was
 // assigned.
 export const CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE = "market_intelligence.agent_create_market_research_request";
+// Phase 10 slice 2 (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md) -- the reserved
+// `create_experiment_proposal` name from `PLANNED_FUTURE_CAPABILITIES`, kept exactly as reserved
+// (never renamed, same discipline as query_market_intelligence/query_competitors).
+export const CAPABILITY_DECISION_ENGINE_CREATE_EXPERIMENT_PROPOSAL = "decision_engine.create_experiment_proposal";
 
 /**
  * Shared by both MCP (`startMcpServer`, reads `process.env.AGENT_CONNECTION_ID` once at startup)
@@ -86,4 +90,5 @@ export const ZONED_CAPABILITIES: ReadonlyArray<{ capabilityId: string; label: st
   { capabilityId: CAPABILITY_CONTENT_PROPOSAL_CREATE, label: "Create Content Proposal", domain: "Content proposals" },
   { capabilityId: CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT, label: "Register external artifact", domain: "Content proposals" },
   { capabilityId: CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE, label: "Create market research request", domain: "Market intelligence" },
+  { capabilityId: CAPABILITY_DECISION_ENGINE_CREATE_EXPERIMENT_PROPOSAL, label: "Create experiment proposal", domain: "Decision engine" },
 ];

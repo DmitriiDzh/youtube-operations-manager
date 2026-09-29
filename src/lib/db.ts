@@ -1230,6 +1230,144 @@ export const marketResearchRequests = sqliteTable(
   (table) => [index("market_research_requests_status_idx").on(table.status)]
 );
 
+// Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md) -- Decision & Experiment Engine,
+// manual-entry record-keeping foundation. `channelId` nullable: a "new channel concept" hypothesis
+// has no existing channel yet (FUTURE_PHASES.md §6).
+export const hypotheses = sqliteTable("hypotheses", {
+  id: text("id").primaryKey(),
+  channelId: text("channel_id").references(() => channels.id),
+  statement: text("statement").notNull(),
+  evidenceNotes: text("evidence_notes").notNull(),
+  createdBy: text("created_by").notNull(),
+  createdVia: text("created_via").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+// `approvedBy`/`approvedAt` are set ONLY by transitionExperimentStatus's own atomic
+// `WHERE status IN (...)` update (never at row creation, never by a generic "update experiment"
+// call -- there isn't one) -- the structural approval gate FUTURE_PHASES.md §6 requires.
+export const experiments = sqliteTable(
+  "experiments",
+  {
+    id: text("id").primaryKey(),
+    hypothesisId: text("hypothesis_id")
+      .notNull()
+      .references(() => hypotheses.id),
+    treatment: text("treatment").notNull(),
+    controlBaseline: text("control_baseline").notNull(),
+    successCriteria: text("success_criteria").notNull(),
+    stoppingCriteria: text("stopping_criteria").notNull(),
+    startConditions: text("start_conditions"),
+    plannedDuration: text("planned_duration"),
+    sampleCoverageConstraints: text("sample_coverage_constraints"),
+    budgetEstimate: text("budget_estimate"),
+    responsible: text("responsible").notNull(),
+    status: text("status", { enum: ["proposed", "approved", "running", "concluded", "abandoned"] })
+      .notNull()
+      .default("proposed"),
+    approvedBy: text("approved_by"),
+    approvedAt: integer("approved_at", { mode: "timestamp" }),
+    // Phase 10 slice 5 -- deliberately plain TEXT, no `.references()`: `change_sets` rows are
+    // really deleted (change-drafts' `discardLocalAndAdoptPeer`, RISK-46's divergent-lineage
+    // flow), and this connection runs with `foreign_keys=ON`, so an FK here would make that
+    // unrelated delete throw. Validated at the application level instead (RISK-66's own "no FK
+    // for an informal reference" pattern), re-checked at execute time, not just at attach time.
+    changeSetId: text("change_set_id"),
+    executionBatchId: text("execution_batch_id"),
+    // The atomic execution claim (`claimExperimentForExecution`) -- deliberately its own field,
+    // never repurposing the user-visible `status` column as a lock, mirroring
+    // `research_channels.collection_claimed_at`'s own precedent (Phase 9 slice 9B).
+    executionClaimedAt: integer("execution_claimed_at", { mode: "timestamp" }),
+    createdVia: text("created_via").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [index("experiments_hypothesis_id_idx").on(table.hypothesisId)]
+);
+
+// Append-only, mirroring market_channel_snapshots/market_video_snapshots (Phase 9) -- no
+// update/delete function is ever written for this table. A correction is a new row, never an
+// edit, which is what FUTURE_PHASES.md §6's "an AI agent may never silently rewrite a past
+// outcome" requires structurally, not just by convention. `lessonsLearned` folds the
+// "Retrospective" entity in as a field (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md §2) rather
+// than a fifth table, for this first slice.
+export const experimentOutcomes = sqliteTable(
+  "experiment_outcomes",
+  {
+    id: text("id").primaryKey(),
+    experimentId: text("experiment_id")
+      .notNull()
+      .references(() => experiments.id),
+    recordedBy: text("recorded_by").notNull(),
+    recordedAt: integer("recorded_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    outcomeData: text("outcome_data").notNull(),
+    dataQualityLimitations: text("data_quality_limitations"),
+    criteriaMet: text("criteria_met", { enum: ["met", "not_met", "inconclusive"] }).notNull(),
+    lessonsLearned: text("lessons_learned"),
+    createdVia: text("created_via").notNull(),
+  },
+  (table) => [index("experiment_outcomes_experiment_id_idx").on(table.experimentId)]
+);
+
+// Append-only (mirrors experimentOutcomes/market_*_snapshots) -- no update/delete function is
+// ever written. A wrong reference is superseded by adding a corrected one, never edited in place.
+// `referenceJson` is validated (the referenced Phase 8/9 row actually exists) BEFORE this insert
+// happens, by decision-engine/services.ts's `addHypothesisEvidence` -- via a resolver the caller
+// (the route file, not this module) supplies, since decision-engine itself must never import
+// analytics/market-intelligence (AGENTS.md §M, PHASE_9_PLAN.md §5's own precedent -- see
+// docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md §4).
+export const hypothesisEvidence = sqliteTable(
+  "hypothesis_evidence",
+  {
+    id: text("id").primaryKey(),
+    hypothesisId: text("hypothesis_id")
+      .notNull()
+      .references(() => hypotheses.id),
+    sourceType: text("source_type", {
+      enum: ["phase8_metric", "phase9_channel_snapshot", "phase9_video_snapshot", "phase9_trend_candidate"],
+    }).notNull(),
+    referenceJson: text("reference_json").notNull(),
+    note: text("note"),
+    createdVia: text("created_via").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [index("hypothesis_evidence_hypothesis_id_idx").on(table.hypothesisId)]
+);
+
+// Phase 10 slice 4 (docs/roadmap/plans/PHASE_10_SLICE_4_PLAN.md §4) -- append-only, one row per
+// AI generation call that was actually saved as a hypothesis. Distinct from `createdVia` (mcp/
+// cli/web_ui -- transport), which cannot represent "AI authored this text, a human may have then
+// edited it" -- mirrors `aiLocalizationGenerationProvenance`'s own reason for existing as a
+// separate table rather than overloading an existing column.
+export const hypothesisGenerationProvenance = sqliteTable(
+  "hypothesis_generation_provenance",
+  {
+    id: text("id").primaryKey(),
+    hypothesisId: text("hypothesis_id")
+      .notNull()
+      .references(() => hypotheses.id),
+    connectionId: text("connection_id"),
+    providerName: text("provider_name").notNull(),
+    modelId: text("model_id"),
+    generatedStatement: text("generated_statement").notNull(),
+    finalStatement: text("final_statement").notNull(),
+    rationale: text("rationale"),
+    evidenceRefCount: integer("evidence_ref_count").notNull(),
+    editedBeforeSave: integer("edited_before_save", { mode: "boolean" }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [index("hypothesis_generation_provenance_hypothesis_id_idx").on(table.hypothesisId)]
+);
+
 // docs/decisions/0002-additive-schema-versioning.md: every table this baseline block creates
 // is retroactively "schema version 1". A version newer than this is applied via
 // SCHEMA_MIGRATIONS below, never by editing the statements inside this block.
@@ -1854,6 +1992,123 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         await client.execute("ALTER TABLE market_video_snapshots ADD COLUMN title TEXT");
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
+  {
+    version: 29,
+    description:
+      "hypotheses/experiments/experiment_outcomes -- Phase 10 slice 1, Decision & Experiment Engine manual-entry foundation (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS hypotheses (" +
+          "id TEXT PRIMARY KEY, " +
+          "channel_id TEXT REFERENCES channels(id), " +
+          "statement TEXT NOT NULL, " +
+          "evidence_notes TEXT NOT NULL, " +
+          "created_by TEXT NOT NULL, " +
+          "created_via TEXT NOT NULL, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS experiments (" +
+          "id TEXT PRIMARY KEY, " +
+          "hypothesis_id TEXT NOT NULL REFERENCES hypotheses(id), " +
+          "treatment TEXT NOT NULL, " +
+          "control_baseline TEXT NOT NULL, " +
+          "success_criteria TEXT NOT NULL, " +
+          "stopping_criteria TEXT NOT NULL, " +
+          "start_conditions TEXT, " +
+          "planned_duration TEXT, " +
+          "sample_coverage_constraints TEXT, " +
+          "budget_estimate TEXT, " +
+          "responsible TEXT NOT NULL, " +
+          "status TEXT NOT NULL DEFAULT 'proposed', " +
+          "approved_by TEXT, " +
+          "approved_at INTEGER, " +
+          "created_via TEXT NOT NULL, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS experiments_hypothesis_id_idx ON experiments(hypothesis_id)");
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS experiment_outcomes (" +
+          "id TEXT PRIMARY KEY, " +
+          "experiment_id TEXT NOT NULL REFERENCES experiments(id), " +
+          "recorded_by TEXT NOT NULL, " +
+          "recorded_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "outcome_data TEXT NOT NULL, " +
+          "data_quality_limitations TEXT, " +
+          "criteria_met TEXT NOT NULL, " +
+          "lessons_learned TEXT, " +
+          "created_via TEXT NOT NULL)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS experiment_outcomes_experiment_id_idx ON experiment_outcomes(experiment_id)"
+      );
+    },
+  },
+  {
+    version: 30,
+    description:
+      "hypothesis_evidence -- Phase 10 slice 3, structured (validated at creation) references from a hypothesis to real Phase 8/Phase 9 rows, additive alongside the existing free-text evidenceNotes (docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS hypothesis_evidence (" +
+          "id TEXT PRIMARY KEY, " +
+          "hypothesis_id TEXT NOT NULL REFERENCES hypotheses(id), " +
+          "source_type TEXT NOT NULL, " +
+          "reference_json TEXT NOT NULL, " +
+          "note TEXT, " +
+          "created_via TEXT NOT NULL, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS hypothesis_evidence_hypothesis_id_idx ON hypothesis_evidence(hypothesis_id)"
+      );
+    },
+  },
+  {
+    version: 31,
+    description:
+      "hypothesis_generation_provenance -- Phase 10 slice 4, one row per AI hypothesis-generation call that was saved, recording AI authorship separately from createdVia's transport meaning (docs/roadmap/plans/PHASE_10_SLICE_4_PLAN.md)",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS hypothesis_generation_provenance (" +
+          "id TEXT PRIMARY KEY, " +
+          "hypothesis_id TEXT NOT NULL REFERENCES hypotheses(id), " +
+          "connection_id TEXT, " +
+          "provider_name TEXT NOT NULL, " +
+          "model_id TEXT, " +
+          "generated_statement TEXT NOT NULL, " +
+          "final_statement TEXT NOT NULL, " +
+          "rationale TEXT, " +
+          "evidence_ref_count INTEGER NOT NULL, " +
+          "edited_before_save INTEGER NOT NULL, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS hypothesis_generation_provenance_hypothesis_id_idx ON hypothesis_generation_provenance(hypothesis_id)"
+      );
+    },
+  },
+  {
+    version: 32,
+    description:
+      "experiments.change_set_id/execution_batch_id/execution_claimed_at -- Phase 10 slice 5, localization-experiment execution via the existing Change Set/Batch pipeline (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md). No FK on change_set_id/execution_batch_id -- change_sets rows are really deleted (RISK-46's discardLocalAndAdoptPeer) and this connection runs with foreign_keys=ON, so an FK here would break that unrelated delete; validated at the application level instead.",
+    apply: async (client) => {
+      // isDuplicateColumnError tolerance, same as every other ADD-COLUMN migration above
+      // (RISK-33) -- required for the pre-versioning re-apply path (a `schema_meta`-less
+      // database re-runs every migration from v1, including ones that already succeeded).
+      for (const statement of [
+        "ALTER TABLE experiments ADD COLUMN change_set_id TEXT",
+        "ALTER TABLE experiments ADD COLUMN execution_batch_id TEXT",
+        "ALTER TABLE experiments ADD COLUMN execution_claimed_at INTEGER",
+      ]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
       }
     },
   },
@@ -5769,5 +6024,487 @@ export async function recordMarketResearchRequestExecutionOutcome(
     .set({ status: "execution_failed", executionError: outcome.executionError })
     .where(and(eq(marketResearchRequests.id, id), eq(marketResearchRequests.status, "approved")))
     .returning();
+  return rows[0] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md) -- Decision & Experiment Engine,
+// manual-entry record-keeping foundation. Read/written only by `src/lib/decision-engine/
+// adapters/store.ts`.
+// ---------------------------------------------------------------------------
+
+export type ExperimentStatus = "proposed" | "approved" | "running" | "concluded" | "abandoned";
+export type ExperimentOutcomeCriteriaMet = "met" | "not_met" | "inconclusive";
+
+export type StoredHypothesis = {
+  id: string;
+  channelId: string | null;
+  statement: string;
+  evidenceNotes: string;
+  createdBy: string;
+  createdVia: string;
+  createdAt: Date;
+};
+
+export type StoredExperiment = {
+  id: string;
+  hypothesisId: string;
+  treatment: string;
+  controlBaseline: string;
+  successCriteria: string;
+  stoppingCriteria: string;
+  startConditions: string | null;
+  plannedDuration: string | null;
+  sampleCoverageConstraints: string | null;
+  budgetEstimate: string | null;
+  responsible: string;
+  status: ExperimentStatus;
+  approvedBy: string | null;
+  approvedAt: Date | null;
+  changeSetId: string | null;
+  executionBatchId: string | null;
+  executionClaimedAt: Date | null;
+  createdVia: string;
+  createdAt: Date;
+};
+
+export type StoredExperimentOutcome = {
+  id: string;
+  experimentId: string;
+  recordedBy: string;
+  recordedAt: Date;
+  outcomeData: string;
+  dataQualityLimitations: string | null;
+  criteriaMet: ExperimentOutcomeCriteriaMet;
+  lessonsLearned: string | null;
+  createdVia: string;
+};
+
+export async function insertHypothesis(
+  input: {
+    id: string;
+    channelId?: string | null;
+    statement: string;
+    evidenceNotes: string;
+    createdBy: string;
+    createdVia: string;
+    at?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(hypotheses).values({
+    id: input.id,
+    channelId: input.channelId ?? null,
+    statement: input.statement,
+    evidenceNotes: input.evidenceNotes,
+    createdBy: input.createdBy,
+    createdVia: input.createdVia,
+    ...(input.at ? { createdAt: input.at } : {}),
+  });
+}
+
+export async function getHypothesisById(id: string, database: AppDb = db): Promise<StoredHypothesis | null> {
+  const [row] = await database.select().from(hypotheses).where(eq(hypotheses.id, id));
+  return row ?? null;
+}
+
+export async function listHypotheses(database: AppDb = db): Promise<StoredHypothesis[]> {
+  return database.select().from(hypotheses).orderBy(desc(hypotheses.createdAt));
+}
+
+export async function insertExperiment(
+  input: {
+    id: string;
+    hypothesisId: string;
+    treatment: string;
+    controlBaseline: string;
+    successCriteria: string;
+    stoppingCriteria: string;
+    startConditions?: string | null;
+    plannedDuration?: string | null;
+    sampleCoverageConstraints?: string | null;
+    budgetEstimate?: string | null;
+    responsible: string;
+    createdVia: string;
+    at?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(experiments).values({
+    id: input.id,
+    hypothesisId: input.hypothesisId,
+    treatment: input.treatment,
+    controlBaseline: input.controlBaseline,
+    successCriteria: input.successCriteria,
+    stoppingCriteria: input.stoppingCriteria,
+    startConditions: input.startConditions ?? null,
+    plannedDuration: input.plannedDuration ?? null,
+    sampleCoverageConstraints: input.sampleCoverageConstraints ?? null,
+    budgetEstimate: input.budgetEstimate ?? null,
+    responsible: input.responsible,
+    status: "proposed",
+    createdVia: input.createdVia,
+    ...(input.at ? { createdAt: input.at } : {}),
+  });
+}
+
+export async function getExperimentById(id: string, database: AppDb = db): Promise<StoredExperiment | null> {
+  const [row] = await database.select().from(experiments).where(eq(experiments.id, id));
+  return row ?? null;
+}
+
+export async function listExperimentsByHypothesis(
+  hypothesisId: string,
+  database: AppDb = db
+): Promise<StoredExperiment[]> {
+  return database
+    .select()
+    .from(experiments)
+    .where(eq(experiments.hypothesisId, hypothesisId))
+    .orderBy(desc(experiments.createdAt));
+}
+
+/**
+ * The shared "is there no FRESH execution claim in the way" guard clause -- identical logic was
+ * previously copy-pasted independently into `transitionExperimentStatusIfValid`,
+ * `setExperimentChangeSetIfEligible`, and `claimExperimentForExecution` (found by independent
+ * review of the whole phase: three copies of one invariant is exactly the drift risk `AGENTS.md`
+ * §D exists to prevent -- a future revision to the claim-expiry rule applied to one write path and
+ * missed in the other two would silently change what counts as "stale" depending on which
+ * operation runs). A claim is fresh (blocks) when it's set and newer than `claimExpiryCutoff`; a
+ * `null` or expired claim never blocks.
+ */
+function noFreshExecutionClaim(claimExpiryCutoff: Date) {
+  return or(isNull(experiments.executionClaimedAt), lt(experiments.executionClaimedAt, claimExpiryCutoff));
+}
+
+/**
+ * The one atomic conditional transition this slice's own approval integrity depends on -- same
+ * shape as `approveMarketResearchRequestIfPending` (Phase 9). `fromStatuses` is the caller's own
+ * precomputed set of valid predecessor statuses for `toStatus` (`assertValidStatusTransition`'s
+ * own transition table, `src/lib/decision-engine/services.ts`) -- this function itself has no
+ * opinion on which transitions are valid, it only guarantees the check and the write happen
+ * atomically against whatever the row's real current status is at write time, not at read time.
+ * `approvedBy`/`approvedAt` are only set when `toStatus === "approved"`. Returns `null` if the
+ * row's real current status was not in `fromStatuses` (either a genuinely unknown id, or a
+ * same-row race the caller lost) -- the caller distinguishes those via its own upfront read, not
+ * from this return value.
+ *
+ * `claimExpiryCutoff` (Phase 10 slice 5, added after `advisor()` found a real hole: an Abandon or
+ * a manual transition could otherwise land WHILE an `executeExperiment` claim is held, and the
+ * later `finalizeExperimentExecution` would then resurrect a terminal state) -- refuses to run
+ * while a FRESH claim is held (`execution_claimed_at` within the cutoff), exactly like
+ * `setExperimentChangeSetIfEligible` below. A stale/expired claim (a crashed execute attempt) does
+ * NOT block a transition, mirroring `research_channels.collection_claimed_at`'s own "a crash never
+ * permanently locks the row" precedent (Phase 9 slice 9B, `docs/ARCHITECTURE.md`'s 15-minute
+ * claim-expiry note).
+ *
+ * `requiredChangeSetId` (added after independent review of the whole phase found a second real
+ * race: the caller does its own read-time "does this experiment already have a Change Set"
+ * check before calling in, but that read is stale by the time this atomic UPDATE actually runs --
+ * the same class of race `claimExpiryCutoff` above already exists to close for the claim. A
+ * concurrent `setExperimentChangeSetIfEligible` call landing in that window could attach a Change
+ * Set between the caller's read and this write, letting a manual "approved -> running" transition
+ * slip through with a real `changeSetId` attached but no Batch ever created -- exactly the state
+ * `EXPERIMENT_MUST_USE_EXECUTE` exists to prevent. When provided (not `undefined`), this
+ * re-verifies `changeSetId` against the row's REAL value at write time, atomically, the same way
+ * `claimExperimentForExecution` already does for its own claim. Pass `null` to require no Change
+ * Set is attached (the only real caller today: a manual transition INTO `"running"`); omit for
+ * every other transition, which has no such invariant to protect.
+ */
+export async function transitionExperimentStatusIfValid(
+  id: string,
+  fromStatuses: ExperimentStatus[],
+  toStatus: ExperimentStatus,
+  approvedBy: string | null,
+  at: Date,
+  claimExpiryCutoff: Date,
+  requiredChangeSetId?: string | null,
+  database: AppDb = db
+): Promise<StoredExperiment | null> {
+  const rows = await database
+    .update(experiments)
+    .set({
+      status: toStatus,
+      ...(toStatus === "approved" ? { approvedBy, approvedAt: at } : {}),
+    })
+    .where(
+      and(
+        eq(experiments.id, id),
+        inArray(experiments.status, fromStatuses),
+        noFreshExecutionClaim(claimExpiryCutoff),
+        requiredChangeSetId === undefined
+          ? undefined
+          : requiredChangeSetId === null
+            ? isNull(experiments.changeSetId)
+            : eq(experiments.changeSetId, requiredChangeSetId)
+      )
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
+/**
+ * Phase 10 slice 5 -- attach/detach `changeSetId` on an experiment, guarded atomically by its
+ * current status (`fromStatuses`, the caller's own `["proposed", "approved"]` for both attach and
+ * detach per the plan's own §4). Same shape as `transitionExperimentStatusIfValid`: the check and
+ * the write happen atomically against the row's real current status, not a stale read-time value.
+ * `claimExpiryCutoff` -- same fresh-claim guard as `transitionExperimentStatusIfValid` (a concurrent
+ * detach must not race a claimed-but-not-yet-finalized execute attempt).
+ */
+export async function setExperimentChangeSetIfEligible(
+  id: string,
+  fromStatuses: ExperimentStatus[],
+  changeSetId: string | null,
+  claimExpiryCutoff: Date,
+  database: AppDb = db
+): Promise<StoredExperiment | null> {
+  const rows = await database
+    .update(experiments)
+    .set({ changeSetId })
+    .where(
+      and(
+        eq(experiments.id, id),
+        inArray(experiments.status, fromStatuses),
+        noFreshExecutionClaim(claimExpiryCutoff)
+      )
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
+/**
+ * Step 2 of `executeExperiment`'s claim-first design (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md
+ * §4, added after `advisor()` caught a real double-execution race in an earlier draft that called
+ * the Batch-creation resolver BEFORE any atomic guard). Mirrors
+ * `claimStaleResearchChannelsForCollection`'s own shape (Phase 9 slice 9B) -- this claim is
+ * exclusive against another FRESH claim (`execution_claimed_at IS NULL OR < claimExpiryCutoff`),
+ * so at most one concurrent `executeExperiment` call for the same experiment ever proceeds to call
+ * the resolver, while a crashed/expired prior claim can still be reclaimed (never permanently
+ * stuck). Also requires `change_set_id = expectedChangeSetId` so a concurrent detach between the
+ * caller's read-only check and this claim is caught here too, not just at the earlier read.
+ */
+export async function claimExperimentForExecution(
+  id: string,
+  expectedChangeSetId: string,
+  at: Date,
+  claimExpiryCutoff: Date,
+  database: AppDb = db
+): Promise<StoredExperiment | null> {
+  const rows = await database
+    .update(experiments)
+    .set({ executionClaimedAt: at })
+    .where(
+      and(
+        eq(experiments.id, id),
+        eq(experiments.status, "approved"),
+        eq(experiments.changeSetId, expectedChangeSetId),
+        noFreshExecutionClaim(claimExpiryCutoff)
+      )
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** Releases a claim taken by `claimExperimentForExecution` -- called ONLY when the Batch-creation
+ * resolver call itself throws (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md §4 step 4), never when
+ * `finalizeExperimentExecution` itself fails (that leaves the claim held, self-healing via
+ * expiry -- see that function's own doc comment for why). The experiment returns to a normal,
+ * re-attemptable `"approved"` state (status itself was never touched by the claim), never stuck.
+ *
+ * `expectedClaimedAt` (added after independent review of the whole phase found a real race: the
+ * original unconditional `WHERE id` version could clear a DIFFERENT, newer claim than the one this
+ * caller itself took, if this caller's own resolver call stalled past `claimExperimentForExecution`'s
+ * 15-minute expiry window before throwing -- by then a second, legitimate caller could already have
+ * reclaimed and be mid-execution. Releasing unconditionally would clear that second caller's fresh
+ * claim, opening the door to a THIRD caller reclaiming and creating a second real Batch, and would
+ * make the second caller's own later `finalizeExperimentExecution` guard fail (claim no longer
+ * matches), orphaning its already-created Batch. Guarding by the exact claim timestamp -- the same
+ * discipline `finalizeExperimentExecution` below already applies -- means a stalled caller's release
+ * only ever clears ITS OWN claim, never someone else's. Returns `false` (not thrown) if the guard
+ * did not match, since a lost race here is an expected, benign outcome (this call's own claim was
+ * already superseded), not an error the caller needs to react to.
+ */
+export async function releaseExperimentExecutionClaim(
+  id: string,
+  expectedClaimedAt: Date,
+  database: AppDb = db
+): Promise<boolean> {
+  const rows = await database
+    .update(experiments)
+    .set({ executionClaimedAt: null })
+    .where(and(eq(experiments.id, id), eq(experiments.executionClaimedAt, expectedClaimedAt)))
+    .returning();
+  return rows.length > 0;
+}
+
+/**
+ * Step 5 of `executeExperiment`. **Revised after `advisor()`:** now guarded by the exact claim
+ * timestamp (`WHERE ... AND execution_claimed_at = expectedClaimedAt`), not unconditional -- the
+ * earlier unconditional version could resurrect a terminal state if an Abandon/detach had somehow
+ * landed in between (now impossible given the two functions above also check the claim, but this
+ * guard is real defense in depth, not decorative). Clears `execution_claimed_at` back to `null` in
+ * the SAME write, so the row is no longer "claimed" once it's genuinely `"running"` -- required so
+ * `transitionExperimentStatusIfValid`'s own claim-freshness guard above does not then permanently
+ * block the normal `running -> concluded/abandoned` lifecycle. Returns `false` if the guard did not
+ * match (the claim already moved/cleared by something else) -- the caller must treat this as a real
+ * failure, not assume success.
+ */
+export async function finalizeExperimentExecution(
+  id: string,
+  executionBatchId: string,
+  expectedClaimedAt: Date,
+  database: AppDb = db
+): Promise<boolean> {
+  const rows = await database
+    .update(experiments)
+    .set({ status: "running", executionBatchId, executionClaimedAt: null })
+    .where(and(eq(experiments.id, id), eq(experiments.status, "approved"), eq(experiments.executionClaimedAt, expectedClaimedAt)))
+    .returning();
+  return rows.length > 0;
+}
+
+export async function insertExperimentOutcome(
+  input: {
+    id: string;
+    experimentId: string;
+    recordedBy: string;
+    outcomeData: string;
+    dataQualityLimitations?: string | null;
+    criteriaMet: ExperimentOutcomeCriteriaMet;
+    lessonsLearned?: string | null;
+    createdVia: string;
+    at?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(experimentOutcomes).values({
+    id: input.id,
+    experimentId: input.experimentId,
+    recordedBy: input.recordedBy,
+    outcomeData: input.outcomeData,
+    dataQualityLimitations: input.dataQualityLimitations ?? null,
+    criteriaMet: input.criteriaMet,
+    lessonsLearned: input.lessonsLearned ?? null,
+    createdVia: input.createdVia,
+    ...(input.at ? { recordedAt: input.at } : {}),
+  });
+}
+
+export async function listExperimentOutcomesByExperiment(
+  experimentId: string,
+  database: AppDb = db
+): Promise<StoredExperimentOutcome[]> {
+  return database
+    .select()
+    .from(experimentOutcomes)
+    .where(eq(experimentOutcomes.experimentId, experimentId))
+    .orderBy(desc(experimentOutcomes.recordedAt));
+}
+
+export type HypothesisEvidenceSourceType =
+  | "phase8_metric"
+  | "phase9_channel_snapshot"
+  | "phase9_video_snapshot"
+  | "phase9_trend_candidate";
+
+export type StoredHypothesisEvidence = {
+  id: string;
+  hypothesisId: string;
+  sourceType: HypothesisEvidenceSourceType;
+  referenceJson: string;
+  note: string | null;
+  createdVia: string;
+  createdAt: Date;
+};
+
+export async function insertHypothesisEvidence(
+  input: {
+    id: string;
+    hypothesisId: string;
+    sourceType: HypothesisEvidenceSourceType;
+    referenceJson: string;
+    note?: string | null;
+    createdVia: string;
+    at?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(hypothesisEvidence).values({
+    id: input.id,
+    hypothesisId: input.hypothesisId,
+    sourceType: input.sourceType,
+    referenceJson: input.referenceJson,
+    note: input.note ?? null,
+    createdVia: input.createdVia,
+    ...(input.at ? { createdAt: input.at } : {}),
+  });
+}
+
+export async function listHypothesisEvidenceByHypothesis(
+  hypothesisId: string,
+  database: AppDb = db
+): Promise<StoredHypothesisEvidence[]> {
+  return database
+    .select()
+    .from(hypothesisEvidence)
+    .where(eq(hypothesisEvidence.hypothesisId, hypothesisId))
+    .orderBy(desc(hypothesisEvidence.createdAt));
+}
+
+export type StoredHypothesisGenerationProvenance = {
+  id: string;
+  hypothesisId: string;
+  connectionId: string | null;
+  providerName: string;
+  modelId: string | null;
+  generatedStatement: string;
+  finalStatement: string;
+  rationale: string | null;
+  evidenceRefCount: number;
+  editedBeforeSave: boolean;
+  createdAt: Date;
+};
+
+export async function insertHypothesisGenerationProvenance(
+  input: {
+    id: string;
+    hypothesisId: string;
+    connectionId?: string | null;
+    providerName: string;
+    modelId?: string | null;
+    generatedStatement: string;
+    finalStatement: string;
+    rationale?: string | null;
+    evidenceRefCount: number;
+    editedBeforeSave: boolean;
+    at?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(hypothesisGenerationProvenance).values({
+    id: input.id,
+    hypothesisId: input.hypothesisId,
+    connectionId: input.connectionId ?? null,
+    providerName: input.providerName,
+    modelId: input.modelId ?? null,
+    generatedStatement: input.generatedStatement,
+    finalStatement: input.finalStatement,
+    rationale: input.rationale ?? null,
+    evidenceRefCount: input.evidenceRefCount,
+    editedBeforeSave: input.editedBeforeSave,
+    ...(input.at ? { createdAt: input.at } : {}),
+  });
+}
+
+export async function getHypothesisGenerationProvenanceByHypothesis(
+  hypothesisId: string,
+  database: AppDb = db
+): Promise<StoredHypothesisGenerationProvenance | null> {
+  const rows = await database
+    .select()
+    .from(hypothesisGenerationProvenance)
+    .where(eq(hypothesisGenerationProvenance.hypothesisId, hypothesisId))
+    .limit(1);
   return rows[0] ?? null;
 }

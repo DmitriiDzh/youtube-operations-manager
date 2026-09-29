@@ -1,4 +1,5 @@
 import { createMockLocalizationProvider } from "@/lib/ai-localization/adapters/mock-provider";
+import { createMockHypothesisDraftProvider } from "@/lib/decision-engine/adapters/mock-provider";
 import type { ConnectionProtocolAdapter } from "../contracts";
 
 /**
@@ -15,12 +16,17 @@ import type { ConnectionProtocolAdapter } from "../contracts";
  */
 export function createMockConnectionAdapter(): ConnectionProtocolAdapter {
   const provider = createMockLocalizationProvider();
+  const hypothesisProvider = createMockHypothesisDraftProvider();
 
   return {
     adapterType: "mock",
     async generate({ request }) {
       const outcome = await provider.generate(request);
       return { outcome, usage: null }; // mock has no real token cost -- usage is unknown, not zero
+    },
+    async generateHypothesis({ request }) {
+      const outcome = await hypothesisProvider.generateHypothesis(request);
+      return { outcome, usage: null };
     },
     async testConnection() {
       return { ok: true, message: "Mock adapter is always reachable (no network call).", mayIncurCost: false };
