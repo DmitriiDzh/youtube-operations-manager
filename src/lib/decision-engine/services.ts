@@ -77,7 +77,8 @@ export type DecisionEngineServiceDependencies = {
     toStatus: ExperimentStatus,
     approvedBy: string | null,
     at: Date,
-    claimExpiryCutoff: Date
+    claimExpiryCutoff: Date,
+    requiredChangeSetId?: string | null
   ) => Promise<StoredExperiment | null>;
   /** Phase 10 slice 5. Attach (`changeSetId` set) or detach (`null`), guarded atomically by the
    * caller's own `fromStatuses` (`["proposed", "approved"]` for both directions) and by there
@@ -96,8 +97,11 @@ export type DecisionEngineServiceDependencies = {
     at: Date,
     claimExpiryCutoff: Date
   ) => Promise<StoredExperiment | null>;
-  /** Phase 10 slice 5 -- releases a claim ONLY when the resolver call after it fails. */
-  releaseExperimentExecutionClaim: (id: string) => Promise<void>;
+  /** Phase 10 slice 5 -- releases a claim ONLY when the resolver call after it fails, and ONLY
+   * if `expectedClaimedAt` still matches (a stalled/expired caller must never clear a different,
+   * newer claim someone else already took). Returns `false` (benign, not an error) if the guard
+   * didn't match -- this call's own claim was already superseded. */
+  releaseExperimentExecutionClaim: (id: string, expectedClaimedAt: Date) => Promise<boolean>;
   /** Phase 10 slice 5 -- step 5, guarded by the exact claim timestamp; `false` if the guard didn't
    * match (must be treated as a real failure, not assumed success). */
   finalizeExperimentExecution: (id: string, executionBatchId: string, expectedClaimedAt: Date) => Promise<boolean>;
@@ -410,10 +414,23 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
         parsed.targetStatus,
         parsed.targetStatus === "approved" ? ctx.actor : null,
         at,
-        claimExpiryCutoff
+        claimExpiryCutoff,
+        // Re-verified atomically at write time, not just via the read-time check above -- a
+        // concurrent setExperimentChangeSet attach landing in between could otherwise slip a
+        // Change Set onto the row between this function's own read and this write (found by
+        // independent review of the whole phase; the read-time check alone only closes the race
+        // when the request that reads first also writes first).
+        parsed.targetStatus === "running" ? null : undefined
       );
       if (!updated) {
         const current = await deps.getExperimentById(experimentId);
+        if (parsed.targetStatus === "running" && current?.changeSetId != null) {
+          throw new DomainError({
+            code: "EXPERIMENT_MUST_USE_EXECUTE",
+            message: "This experiment has a Change Set attached -- use the Execute action, not a manual status transition",
+            details: { experimentId, changeSetId: current.changeSetId },
+          });
+        }
         throw new DomainError({
           code: "EXPERIMENT_INVALID_TRANSITION",
           message: `Experiment is no longer in a state that allows transitioning to "${parsed.targetStatus}"`,
@@ -511,13 +528,11 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
       let batchId: string;
       let videoCount: number;
       try {
-        // Step 3: re-verify -- the attach-time check is not trusted as still valid (AC-BATCH-03's
-        // own "re-run the full safety pipeline immediately before send" principle). `channelId` is
-        // guaranteed non-null here: `setExperimentChangeSet` never persists a non-null
-        // `changeSetId` unless `hypothesis.channelId` is also non-null, and step 1 above already
-        // confirmed `experiment.changeSetId !== null` -- asserted explicitly rather than silently
-        // cast, so a future change to that invariant fails loudly here instead of type-casting
-        // around a real bug.
+        // `channelId` is guaranteed non-null here: `setExperimentChangeSet` never persists a
+        // non-null `changeSetId` unless `hypothesis.channelId` is also non-null, and step 1 above
+        // already confirmed `experiment.changeSetId !== null` -- asserted explicitly rather than
+        // silently cast, so a future change to that invariant fails loudly here instead of
+        // type-casting around a real bug.
         const channelId = hypothesis.channelId;
         if (!channelId) {
           throw new DomainError({
@@ -526,24 +541,26 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
             details: { experimentId },
           });
         }
-        const belongs = await resolver.verifyChangeSetBelongsToChannel(changeSetId, channelId);
-        if (!belongs) {
-          throw new DomainError({
-            code: "EXPERIMENT_CHANGE_SET_NOT_FOUND",
-            message: `Change Set ${changeSetId} no longer exists for this channel`,
-            details: { changeSetId, channelId },
-          });
-        }
 
-        // Step 4: create the real Batch.
+        // Create the real Batch (formerly "step 4" -- the former "step 3", a separate
+        // `verifyChangeSetBelongsToChannel` re-check, was removed after independent review of the
+        // whole phase: `createDryRunBatch` below already calls the real `getChangeSet` scoped to
+        // this exact `channelId`, so it
+        // independently re-verifies channel ownership on its own (a wrong/stale `changeSetId`
+        // surfaces as that call's own `not_found` DomainError) -- the former step 3 paid an
+        // identical extra DB round-trip on every real execute for a guarantee step 4 already
+        // provides, "re-run the full safety pipeline immediately before send" (AC-BATCH-03) is
+        // still satisfied by this single real check, not lost by removing the duplicate of it.
         const created = await resolver.createDryRunBatch({ channelId, changeSetId, dryRun });
         batchId = created.batchId;
         videoCount = created.videoCount;
       } catch (error) {
         // Release the claim ONLY here -- the Batch was never created, so returning to a normal,
         // re-attemptable "approved" state is exactly correct (status itself was never touched by
-        // the claim).
-        await deps.releaseExperimentExecutionClaim(experimentId);
+        // the claim). Guarded by `at` (this call's own claim timestamp) -- if this call stalled
+        // long enough for the claim to expire and a second caller already reclaimed it, this
+        // release is a benign no-op, never a release of that second caller's own fresh claim.
+        await deps.releaseExperimentExecutionClaim(experimentId, at);
         throw error;
       }
 

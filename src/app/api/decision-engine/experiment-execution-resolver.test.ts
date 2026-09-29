@@ -14,6 +14,7 @@ import { createRealExperimentExecutionResolver } from "./experiment-execution-re
 type FakeChange = {
   id: string;
   videoId: string;
+  approvalStatus: "approved" | "pending" | "rejected";
   validationStatus: "valid" | "invalid";
   conflictStatus: "none" | "conflict";
   approvedValue: string | null;
@@ -89,9 +90,9 @@ test("createDryRunBatch: groups eligible changes by videoId into selections, for
       channelId: "UC1",
       changeSetId: "cs-1",
       changes: [
-        { id: "c1", videoId: "v1", validationStatus: "valid", conflictStatus: "none", approvedValue: null, proposedValue: "x" },
-        { id: "c2", videoId: "v1", validationStatus: "valid", conflictStatus: "none", approvedValue: null, proposedValue: "y" },
-        { id: "c3", videoId: "v2", validationStatus: "valid", conflictStatus: "none", approvedValue: null, proposedValue: "z" },
+        { id: "c1", videoId: "v1", approvalStatus: "approved", validationStatus: "valid", conflictStatus: "none", approvedValue: null, proposedValue: "x" },
+        { id: "c2", videoId: "v1", approvalStatus: "approved", validationStatus: "valid", conflictStatus: "none", approvedValue: null, proposedValue: "y" },
+        { id: "c3", videoId: "v2", approvalStatus: "approved", validationStatus: "valid", conflictStatus: "none", approvedValue: null, proposedValue: "z" },
       ],
     }),
     batchCore: createFakeBatchCore(calls),
@@ -119,10 +120,10 @@ test("createDryRunBatch: excludes invalid/conflicting/edited-after-approval chan
       channelId: "UC1",
       changeSetId: "cs-1",
       changes: [
-        { id: "c1", videoId: "v1", validationStatus: "invalid", conflictStatus: "none", approvedValue: null, proposedValue: "x" },
-        { id: "c2", videoId: "v2", validationStatus: "valid", conflictStatus: "conflict", approvedValue: null, proposedValue: "y" },
-        { id: "c3", videoId: "v3", validationStatus: "valid", conflictStatus: "none", approvedValue: "old", proposedValue: "new" },
-        { id: "c4", videoId: "v4", validationStatus: "valid", conflictStatus: "none", approvedValue: null, proposedValue: "ok" },
+        { id: "c1", videoId: "v1", approvalStatus: "approved", validationStatus: "invalid", conflictStatus: "none", approvedValue: null, proposedValue: "x" },
+        { id: "c2", videoId: "v2", approvalStatus: "approved", validationStatus: "valid", conflictStatus: "conflict", approvedValue: null, proposedValue: "y" },
+        { id: "c3", videoId: "v3", approvalStatus: "approved", validationStatus: "valid", conflictStatus: "none", approvedValue: "old", proposedValue: "new" },
+        { id: "c4", videoId: "v4", approvalStatus: "approved", validationStatus: "valid", conflictStatus: "none", approvedValue: null, proposedValue: "ok" },
       ],
     }),
     batchCore: createFakeBatchCore(calls),
@@ -133,13 +134,36 @@ test("createDryRunBatch: excludes invalid/conflicting/edited-after-approval chan
   assert.deepEqual((calls[0] as { selections: unknown[] }).selections, [{ videoId: "v4", changeIds: ["c4"] }]);
 });
 
+test("createDryRunBatch: excludes a change whose approvalStatus is not \"approved\", reusing the real isApprovalStillValid rule (independent review finding)", async () => {
+  // The resolver's own eligibility check used to be a hand-copied predicate that never checked
+  // approvalStatus at all -- this proves the real, shared rule (batches/services.ts's
+  // isApprovalStillValid) is what actually runs now, not just that the other three fields work.
+  const calls: unknown[] = [];
+  const resolver = createRealExperimentExecutionResolver({
+    changeSetCore: createFakeChangeSetCore({
+      channelId: "UC1",
+      changeSetId: "cs-1",
+      changes: [
+        { id: "c1", videoId: "v1", approvalStatus: "pending", validationStatus: "valid", conflictStatus: "none", approvedValue: null, proposedValue: "x" },
+        { id: "c2", videoId: "v2", approvalStatus: "rejected", validationStatus: "valid", conflictStatus: "none", approvedValue: null, proposedValue: "y" },
+        { id: "c3", videoId: "v3", approvalStatus: "approved", validationStatus: "valid", conflictStatus: "none", approvedValue: null, proposedValue: "z" },
+      ],
+    }),
+    batchCore: createFakeBatchCore(calls),
+  });
+
+  const result = await resolver.createDryRunBatch({ channelId: "UC1", changeSetId: "cs-1", dryRun: true });
+  assert.equal(result.videoCount, 1, "only the genuinely approved c3/v3 is eligible");
+  assert.deepEqual((calls[0] as { selections: unknown[] }).selections, [{ videoId: "v3", changeIds: ["c3"] }]);
+});
+
 test("createDryRunBatch: throws EXPERIMENT_CHANGE_SET_NO_ELIGIBLE_CHANGES when zero changes are eligible, never calls createBatch", async () => {
   const calls: unknown[] = [];
   const resolver = createRealExperimentExecutionResolver({
     changeSetCore: createFakeChangeSetCore({
       channelId: "UC1",
       changeSetId: "cs-1",
-      changes: [{ id: "c1", videoId: "v1", validationStatus: "invalid", conflictStatus: "none", approvedValue: null, proposedValue: "x" }],
+      changes: [{ id: "c1", videoId: "v1", approvalStatus: "approved", validationStatus: "invalid", conflictStatus: "none", approvedValue: null, proposedValue: "x" }],
     }),
     batchCore: createFakeBatchCore(calls),
   });
@@ -157,7 +181,7 @@ test("createDryRunBatch: throws EXPERIMENT_CHANGE_SET_TOO_LARGE when the real to
     changeSetCore: createFakeChangeSetCore({
       channelId: "UC1",
       changeSetId: "cs-1",
-      changes: [{ id: "c1", videoId: "v1", validationStatus: "valid", conflictStatus: "none", approvedValue: null, proposedValue: "x" }],
+      changes: [{ id: "c1", videoId: "v1", approvalStatus: "approved", validationStatus: "valid", conflictStatus: "none", approvedValue: null, proposedValue: "x" }],
       totalOverride: 501,
     }),
     batchCore: createFakeBatchCore(calls),

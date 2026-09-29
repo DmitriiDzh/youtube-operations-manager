@@ -6165,6 +6165,20 @@ export async function listExperimentsByHypothesis(
 }
 
 /**
+ * The shared "is there no FRESH execution claim in the way" guard clause -- identical logic was
+ * previously copy-pasted independently into `transitionExperimentStatusIfValid`,
+ * `setExperimentChangeSetIfEligible`, and `claimExperimentForExecution` (found by independent
+ * review of the whole phase: three copies of one invariant is exactly the drift risk `AGENTS.md`
+ * §D exists to prevent -- a future revision to the claim-expiry rule applied to one write path and
+ * missed in the other two would silently change what counts as "stale" depending on which
+ * operation runs). A claim is fresh (blocks) when it's set and newer than `claimExpiryCutoff`; a
+ * `null` or expired claim never blocks.
+ */
+function noFreshExecutionClaim(claimExpiryCutoff: Date) {
+  return or(isNull(experiments.executionClaimedAt), lt(experiments.executionClaimedAt, claimExpiryCutoff));
+}
+
+/**
  * The one atomic conditional transition this slice's own approval integrity depends on -- same
  * shape as `approveMarketResearchRequestIfPending` (Phase 9). `fromStatuses` is the caller's own
  * precomputed set of valid predecessor statuses for `toStatus` (`assertValidStatusTransition`'s
@@ -6184,6 +6198,19 @@ export async function listExperimentsByHypothesis(
  * NOT block a transition, mirroring `research_channels.collection_claimed_at`'s own "a crash never
  * permanently locks the row" precedent (Phase 9 slice 9B, `docs/ARCHITECTURE.md`'s 15-minute
  * claim-expiry note).
+ *
+ * `requiredChangeSetId` (added after independent review of the whole phase found a second real
+ * race: the caller does its own read-time "does this experiment already have a Change Set"
+ * check before calling in, but that read is stale by the time this atomic UPDATE actually runs --
+ * the same class of race `claimExpiryCutoff` above already exists to close for the claim. A
+ * concurrent `setExperimentChangeSetIfEligible` call landing in that window could attach a Change
+ * Set between the caller's read and this write, letting a manual "approved -> running" transition
+ * slip through with a real `changeSetId` attached but no Batch ever created -- exactly the state
+ * `EXPERIMENT_MUST_USE_EXECUTE` exists to prevent. When provided (not `undefined`), this
+ * re-verifies `changeSetId` against the row's REAL value at write time, atomically, the same way
+ * `claimExperimentForExecution` already does for its own claim. Pass `null` to require no Change
+ * Set is attached (the only real caller today: a manual transition INTO `"running"`); omit for
+ * every other transition, which has no such invariant to protect.
  */
 export async function transitionExperimentStatusIfValid(
   id: string,
@@ -6192,6 +6219,7 @@ export async function transitionExperimentStatusIfValid(
   approvedBy: string | null,
   at: Date,
   claimExpiryCutoff: Date,
+  requiredChangeSetId?: string | null,
   database: AppDb = db
 ): Promise<StoredExperiment | null> {
   const rows = await database
@@ -6204,7 +6232,12 @@ export async function transitionExperimentStatusIfValid(
       and(
         eq(experiments.id, id),
         inArray(experiments.status, fromStatuses),
-        or(isNull(experiments.executionClaimedAt), lt(experiments.executionClaimedAt, claimExpiryCutoff))
+        noFreshExecutionClaim(claimExpiryCutoff),
+        requiredChangeSetId === undefined
+          ? undefined
+          : requiredChangeSetId === null
+            ? isNull(experiments.changeSetId)
+            : eq(experiments.changeSetId, requiredChangeSetId)
       )
     )
     .returning();
@@ -6233,7 +6266,7 @@ export async function setExperimentChangeSetIfEligible(
       and(
         eq(experiments.id, id),
         inArray(experiments.status, fromStatuses),
-        or(isNull(experiments.executionClaimedAt), lt(experiments.executionClaimedAt, claimExpiryCutoff))
+        noFreshExecutionClaim(claimExpiryCutoff)
       )
     )
     .returning();
@@ -6266,7 +6299,7 @@ export async function claimExperimentForExecution(
         eq(experiments.id, id),
         eq(experiments.status, "approved"),
         eq(experiments.changeSetId, expectedChangeSetId),
-        or(isNull(experiments.executionClaimedAt), lt(experiments.executionClaimedAt, claimExpiryCutoff))
+        noFreshExecutionClaim(claimExpiryCutoff)
       )
     )
     .returning();
@@ -6277,9 +6310,32 @@ export async function claimExperimentForExecution(
  * resolver call itself throws (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md §4 step 4), never when
  * `finalizeExperimentExecution` itself fails (that leaves the claim held, self-healing via
  * expiry -- see that function's own doc comment for why). The experiment returns to a normal,
- * re-attemptable `"approved"` state (status itself was never touched by the claim), never stuck. */
-export async function releaseExperimentExecutionClaim(id: string, database: AppDb = db): Promise<void> {
-  await database.update(experiments).set({ executionClaimedAt: null }).where(eq(experiments.id, id));
+ * re-attemptable `"approved"` state (status itself was never touched by the claim), never stuck.
+ *
+ * `expectedClaimedAt` (added after independent review of the whole phase found a real race: the
+ * original unconditional `WHERE id` version could clear a DIFFERENT, newer claim than the one this
+ * caller itself took, if this caller's own resolver call stalled past `claimExperimentForExecution`'s
+ * 15-minute expiry window before throwing -- by then a second, legitimate caller could already have
+ * reclaimed and be mid-execution. Releasing unconditionally would clear that second caller's fresh
+ * claim, opening the door to a THIRD caller reclaiming and creating a second real Batch, and would
+ * make the second caller's own later `finalizeExperimentExecution` guard fail (claim no longer
+ * matches), orphaning its already-created Batch. Guarding by the exact claim timestamp -- the same
+ * discipline `finalizeExperimentExecution` below already applies -- means a stalled caller's release
+ * only ever clears ITS OWN claim, never someone else's. Returns `false` (not thrown) if the guard
+ * did not match, since a lost race here is an expected, benign outcome (this call's own claim was
+ * already superseded), not an error the caller needs to react to.
+ */
+export async function releaseExperimentExecutionClaim(
+  id: string,
+  expectedClaimedAt: Date,
+  database: AppDb = db
+): Promise<boolean> {
+  const rows = await database
+    .update(experiments)
+    .set({ executionClaimedAt: null })
+    .where(and(eq(experiments.id, id), eq(experiments.executionClaimedAt, expectedClaimedAt)))
+    .returning();
+  return rows.length > 0;
 }
 
 /**

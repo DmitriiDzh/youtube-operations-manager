@@ -212,10 +212,11 @@ function createFakeStore() {
       experimentsById.set(id, updated);
       return updated;
     },
-    async releaseExperimentExecutionClaim(id: string) {
+    async releaseExperimentExecutionClaim(id: string, expectedClaimedAt: Date) {
       const row = experimentsById.get(id);
-      if (!row) return;
+      if (!row || row.executionClaimedAt?.getTime() !== expectedClaimedAt.getTime()) return false;
       experimentsById.set(id, { ...row, executionClaimedAt: null });
+      return true;
     },
     async finalizeExperimentExecution(id: string, executionBatchId: string, expectedClaimedAt: Date) {
       const row = experimentsById.get(id);
@@ -1418,9 +1419,9 @@ test("executeExperiment: a finalize failure (real Batch created, but the finaliz
     transitionExperimentStatusIfValid: store.transitionExperimentStatusIfValid,
     setExperimentChangeSetIfEligible: store.setExperimentChangeSetIfEligible,
     claimExperimentForExecution: store.claimExperimentForExecution,
-    releaseExperimentExecutionClaim: async (id: string) => {
+    releaseExperimentExecutionClaim: async (id: string, expectedClaimedAt: Date) => {
       releaseCalls += 1;
-      return store.releaseExperimentExecutionClaim(id);
+      return store.releaseExperimentExecutionClaim(id, expectedClaimedAt);
     },
     // advisor() round 2's own scenario: the Batch gets created successfully, but finalize's own
     // guard somehow doesn't match (simulated here directly) -- this must NOT release the claim.

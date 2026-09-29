@@ -1,4 +1,5 @@
 import type { BatchCore } from "@/lib/batches";
+import { isApprovalStillValid } from "@/lib/batches/services";
 import type { ChangeSetCore } from "@/lib/changesets";
 import { DomainError, type ExperimentExecutionResolver } from "@/lib/decision-engine/contracts";
 
@@ -65,16 +66,17 @@ export function createRealExperimentExecutionResolver(deps: {
         });
       }
 
-      // The exact same eligibility predicate `assertApprovalStillValid` (batches/services.ts)
-      // enforces per-change -- filtered here so one stale/conflicting change never aborts the
-      // whole call with an opaque `createBatch` error; a change that fails this is simply excluded,
-      // not reported as a batch-level failure.
-      const eligible = result.changes.filter(
-        (change) =>
-          change.validationStatus === "valid" &&
-          change.conflictStatus === "none" &&
-          (change.approvedValue === null || change.approvedValue === change.proposedValue)
-      );
+      // Reuses batches/services.ts's own `isApprovalStillValid` predicate (the non-throwing half
+      // of `assertApprovalStillValid`) instead of a hand-copied duplicate (found by independent
+      // review: an earlier hand-copy here had silently drifted from the real rule, missing the
+      // `approvedValue`-vs-`proposedValue` "edited after approval" check entirely) -- filtered
+      // here rather than asserted, so one stale/conflicting change never aborts the whole call
+      // with an opaque `createBatch` error; a change that fails this is simply excluded, not
+      // reported as a batch-level failure. `getChangeSet` is only ever called with
+      // `status: "approved"` above, so `approvalStatus` itself is already guaranteed `"approved"`
+      // here -- this predicate's own re-check of it is what still catches a race where a change
+      // was un-approved between that fetch and this filter running.
+      const eligible = result.changes.filter(isApprovalStillValid);
       if (eligible.length === 0) {
         throw new DomainError({
           code: "EXPERIMENT_CHANGE_SET_NO_ELIGIBLE_CHANGES",
