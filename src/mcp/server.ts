@@ -48,6 +48,7 @@ import {
   CAPABILITY_CONTENT_PROPOSAL_CREATE,
   CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT,
   CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE,
+  CAPABILITY_DECISION_ENGINE_CREATE_EXPERIMENT_PROPOSAL,
   resolveAgentConnectionIdFromEnv,
 } from "@/lib/agent-connections";
 import {
@@ -81,6 +82,11 @@ import {
 } from "@/lib/analytics/schemas";
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
 import { createMarketResearchRequestInputSchema, getWatchlistEntryInputSchema } from "@/lib/market-intelligence/schemas";
+import { createDecisionEngineCore, type DecisionEngineCore } from "@/lib/decision-engine";
+import {
+  agentGetHypothesisTrailInputSchema,
+  createExperimentProposalInputSchema,
+} from "@/lib/decision-engine/schemas";
 
 loadEnvConfig(process.cwd());
 
@@ -158,6 +164,20 @@ type MarketIntelligenceCoreSubset = Pick<
   | "listDiscoveryCandidates"
   | "createMarketResearchRequest"
 >;
+
+// Phase 10 slice 2 (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md): same "registered directly here,
+// not through agentOperationsCore" reasoning as MarketIntelligenceCoreSubset above --
+// decision-engine's own service layer already does its own channel-access assertion internally
+// (see assertHypothesisAccessible in src/lib/decision-engine/services.ts), so no reshaping is
+// needed here. The status-transition and outcome-recording actions are deliberately NOT in this
+// subset -- no MCP tool or CLI command may reach either (approval/outcome-recording stay
+// Web-UI-only), verified mechanically by this module's own agent-approval inventory test.
+type DecisionEngineCoreSubset = Pick<
+  DecisionEngineCore,
+  "listHypotheses" | "getHypothesis" | "listExperimentsByHypothesis" | "listExperimentOutcomes" | "createExperiment"
+>;
+
+const agentListHypothesesInputSchema = z.object({}).strict();
 
 // BL-075/BL-078 (docs/roadmap/BACKLOG.md): the same "generate proposals" -> "create Change Set"
 // two-step workflow the Web UI's own ai-localization routes already expose, now reachable by an
@@ -250,6 +270,9 @@ type McpToolHandlers = {
   queryMarketIntelligence: (input: unknown) => Promise<ToolResponse>;
   agentListMarketRecords: (input: unknown) => Promise<ToolResponse>;
   agentCreateMarketResearchRequest: (input: unknown) => Promise<ToolResponse>;
+  agentListHypotheses: (input: unknown) => Promise<ToolResponse>;
+  agentGetHypothesisTrail: (input: unknown) => Promise<ToolResponse>;
+  createExperimentProposal: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -477,7 +500,8 @@ export function createMcpToolHandlers(
   analyticsCore: AnalyticsCoreSubset = createAnalyticsCore(),
   aiLocalizationCore: AiLocalizationCoreSubset = createAiLocalizationCore(),
   agentOperationsCore: AgentOperationsCoreSubset = createAgentOperationsCore(),
-  marketIntelligenceCore: MarketIntelligenceCoreSubset = createMarketIntelligenceCore()
+  marketIntelligenceCore: MarketIntelligenceCoreSubset = createMarketIntelligenceCore(),
+  decisionEngineCore: DecisionEngineCoreSubset = createDecisionEngineCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -1572,6 +1596,81 @@ export function createMcpToolHandlers(
         return toolErrorResult(error);
       }
     },
+
+    // Phase 10 slice 2 (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md) -- decision-engine's own
+    // service layer already does channel-access assertion internally (assertHypothesisAccessible/
+    // assertExperimentAccessible in services.ts), so this handler need not repeat it, unlike
+    // changesetList/changesetGet above which call a core with no such internal check of its own.
+    async agentListHypotheses(input: unknown): Promise<ToolResponse> {
+      const parsedInput = agentListHypothesesInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        const result = await decisionEngineCore.listHypotheses({ userId: getCredentialUserId(credentialRef) });
+        return toolSuccessResult({ hypotheses: result } as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    // One combined "trail" read (owner spec §28: "prefer a small number of powerful composable
+    // MCP tools over many thin wrappers") -- a hypothesis plus every one of its experiments, each
+    // with its own outcomes, mirroring query_market_intelligence's single-deep-dive shape rather
+    // than five separate list/get tools. Composed here from decisionEngineCore's own already-
+    // exported functions (getHypothesis/listExperimentsByHypothesis/listExperimentOutcomes) --
+    // no new service-layer function added, per AGENTS.md §D (this module's services.ts is
+    // unchanged by this slice).
+    async agentGetHypothesisTrail(input: unknown): Promise<ToolResponse> {
+      const parsedInput = agentGetHypothesisTrailInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        const ctx = { userId: getCredentialUserId(credentialRef) };
+        const hypothesis = await decisionEngineCore.getHypothesis(parsedInput.data.hypothesisId, ctx);
+        const experiments = await decisionEngineCore.listExperimentsByHypothesis(parsedInput.data.hypothesisId, ctx);
+        const experimentsWithOutcomes = await Promise.all(
+          experiments.map(async (experiment) => ({
+            ...experiment,
+            outcomes: await decisionEngineCore.listExperimentOutcomes(experiment.experimentId, ctx),
+          }))
+        );
+        return toolSuccessResult({ hypothesis, experiments: experimentsWithOutcomes } as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    // The one reserved capability (`PLANNED_FUTURE_CAPABILITIES` -> real, this slice) -- an agent
+    // may only create an experiment against an ALREADY-EXISTING, human-created hypothesis, and
+    // the created row always starts at status "proposed" (insertExperiment accepts no caller-
+    // supplied status at all -- structurally, not just conventionally, never anything an agent can
+    // set to "approved"). Zoned (see registerTool's zoneCapabilityId) and mutation-gated, like
+    // agentCreateMarketResearchRequest above.
+    async createExperimentProposal(input: unknown): Promise<ToolResponse> {
+      const parsedInput = createExperimentProposalInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const { hypothesisId, ...experimentInput } = parsedInput.data;
+        const credentialRef = await resolveCredentialRef(undefined);
+        const result = await decisionEngineCore.createExperiment(hypothesisId, experimentInput, {
+          userId: getCredentialUserId(credentialRef),
+          createdBy: "agent",
+          createdVia: "mcp",
+        });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
   };
 
   return wrapMcpHandlersWithMutationGate(handlers);
@@ -1713,6 +1812,14 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // like `agentCreateContentProposal` above.
     agentCreateMarketResearchRequest: async (input) =>
       (await assertMcpDeviceAvailable()) ?? handlers.agentCreateMarketResearchRequest(input),
+    // Phase 10 slice 2 -- pure local reads over decision-engine's own hypothesis/experiment/
+    // outcome storage, same classification as queryCompetitors/queryMarketIntelligence above.
+    agentListHypotheses: handlers.agentListHypotheses,
+    agentGetHypothesisTrail: handlers.agentGetHypothesisTrail,
+    // A real local-state mutation (a new "proposed" experiment row) -- gated, like
+    // agentCreateMarketResearchRequest above.
+    createExperimentProposal: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.createExperimentProposal(input),
   };
 }
 
@@ -2357,6 +2464,37 @@ export function createMcpServer(
     },
     (args) => handlers.agentCreateMarketResearchRequest(args),
     CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE
+  );
+
+  registerTool(
+    "agent_list_hypotheses",
+    {
+      description:
+        "Lists every hypothesis visible to the caller (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md) -- channel-scoped rows narrowed to the caller's own active channel, channel-less 'new channel concept' rows always included. Local read only. Does not include each hypothesis's experiments -- use agent_get_hypothesis_trail for a single hypothesis's full evidence-to-outcome trail (owner spec §25: prefer a small number of composable tools).",
+      inputSchema: agentListHypothesesInputSchema,
+    },
+    (args) => handlers.agentListHypotheses(args)
+  );
+
+  registerTool(
+    "agent_get_hypothesis_trail",
+    {
+      description:
+        "One hypothesis plus every one of its experiments, each with its own recorded outcomes -- the full evidence -> hypothesis -> experiment -> outcome trail FUTURE_PHASES.md §6's own completion criterion describes, in one call. Fails with HYPOTHESIS_NOT_FOUND if the id is unknown, or the same channel-context error as any other channel-scoped read if the hypothesis belongs to a channel the caller isn't authorized for. Local read only, never a live YouTube call. Never includes a transition/approval action -- status changes and outcome recording remain Web-UI-only.",
+      inputSchema: agentGetHypothesisTrailInputSchema,
+    },
+    (args) => handlers.agentGetHypothesisTrail(args)
+  );
+
+  registerTool(
+    "create_experiment_proposal",
+    {
+      description:
+        "Creates an experiment (treatment, control/baseline, success/stopping criteria, responsible party) against an ALREADY-EXISTING hypothesis, identified by hypothesisId. Always starts status:\"proposed\" -- there is no field or MCP tool that lets an agent set any other status; a human must separately move it to \"approved\" through the Web UI before it is considered authorized (FUTURE_PHASES.md §6: \"no consequential action executes merely because an AI agent proposed it\"). Creating a new hypothesis, recording an outcome, and any status transition are all deliberately NOT reachable through MCP/CLI -- Web-UI-only (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md).",
+      inputSchema: createExperimentProposalInputSchema,
+    },
+    (args) => handlers.createExperimentProposal(args),
+    CAPABILITY_DECISION_ENGINE_CREATE_EXPERIMENT_PROPOSAL
   );
 
   return server;

@@ -23,6 +23,7 @@ import { createAiLocalizationCore, type AiLocalizationCore } from "@/lib/ai-loca
 import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent-operations";
 import { createAssetCatalogCore, type AssetCatalogCore } from "@/lib/asset-catalog";
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
+import { createDecisionEngineCore, type DecisionEngineCore } from "@/lib/decision-engine";
 import {
   createAgentConnectionsCore,
   type AgentConnectionsCoreSubset,
@@ -33,6 +34,7 @@ import {
   CAPABILITY_CONTENT_PROPOSAL_CREATE,
   CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT,
   CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE,
+  CAPABILITY_DECISION_ENGINE_CREATE_EXPERIMENT_PROPOSAL,
   resolveAgentConnectionIdFromEnv,
 } from "@/lib/agent-connections";
 
@@ -96,6 +98,15 @@ type MarketIntelligenceCliCoreSubset = Pick<
   | "listTrendCandidates"
   | "listDiscoveryCandidates"
   | "createMarketResearchRequest"
+>;
+
+// Phase 10 slice 2 -- CLI parity for the agent_list_hypotheses/agent_get_hypothesis_trail/
+// create_experiment_proposal MCP tools. Same "registered directly here" reasoning as
+// MarketIntelligenceCliCoreSubset above -- decision-engine's own service layer already does its
+// own channel-access assertion internally.
+type DecisionEngineCliCoreSubset = Pick<
+  DecisionEngineCore,
+  "listHypotheses" | "getHypothesis" | "listExperimentsByHypothesis" | "listExperimentOutcomes" | "createExperiment"
 >;
 
 loadEnvConfig(process.cwd());
@@ -165,7 +176,10 @@ export type ParsedArgs = {
     | "competitors"
     | "market-intelligence"
     | "market-records"
-    | "create-research-request";
+    | "create-research-request"
+    | "list-hypotheses"
+    | "get-hypothesis-trail"
+    | "create-experiment-proposal";
   flags: Record<string, string | boolean>;
 };
 
@@ -213,6 +227,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
       "market-intelligence",
       "market-records",
       "create-research-request",
+      "list-hypotheses",
+      "get-hypothesis-trail",
+      "create-experiment-proposal",
     ],
     asset: ["register"],
   };
@@ -543,6 +560,7 @@ export async function runCliCommand(args: {
   assetCatalogCore?: AssetCatalogCliCoreSubset;
   agentConnectionsCore?: AgentConnectionsCoreSubset;
   marketIntelligenceCore?: MarketIntelligenceCliCoreSubset;
+  decisionEngineCore?: DecisionEngineCliCoreSubset;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
 }): Promise<number> {
@@ -560,6 +578,7 @@ export async function runCliCommand(args: {
   const assetCatalogCore = args.assetCatalogCore ?? createAssetCatalogCore();
   const agentConnectionsCore = args.agentConnectionsCore ?? createAgentConnectionsCore();
   const marketIntelligenceCore = args.marketIntelligenceCore ?? createMarketIntelligenceCore();
+  const decisionEngineCore = args.decisionEngineCore ?? createDecisionEngineCore();
   const writeStdout =
     args.writeStdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const writeStderr =
@@ -945,6 +964,76 @@ export async function runCliCommand(args: {
           // version actually mediates (owner spec §22), so it is the only one that stamps a real
           // value.
           { createdVia: "cli", agentApiVersion: null }
+        );
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Phase 10 slice 2 -- decision-engine's own service layer does its own channel-access
+      // assertion internally (see DecisionEngineCliCoreSubset's own doc comment above), so this
+      // block only needs to resolve `userId`, not call channelAccessCore itself, unlike the
+      // generic channelId-required fallthrough below.
+      if (parsedArgs.command === "list-hypotheses") {
+        const agentCredentialRef = await auth.resolveEffectiveCredentialRef({
+          explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+        });
+        const result = await decisionEngineCore.listHypotheses({
+          userId: "userId" in agentCredentialRef ? agentCredentialRef.userId : null,
+        });
+        writeStdout(serializeSuccess({ hypotheses: result }));
+        return 0;
+      }
+
+      if (parsedArgs.command === "get-hypothesis-trail") {
+        const hypothesisId = requiredStringFlag(parsedArgs.flags, "hypothesisId");
+        const agentCredentialRef = await auth.resolveEffectiveCredentialRef({
+          explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+        });
+        const ctx = { userId: "userId" in agentCredentialRef ? agentCredentialRef.userId : null };
+        const hypothesis = await decisionEngineCore.getHypothesis(hypothesisId, ctx);
+        const experiments = await decisionEngineCore.listExperimentsByHypothesis(hypothesisId, ctx);
+        const experimentsWithOutcomes = await Promise.all(
+          experiments.map(async (experiment) => ({
+            ...experiment,
+            outcomes: await decisionEngineCore.listExperimentOutcomes(experiment.experimentId, ctx),
+          }))
+        );
+        writeStdout(serializeSuccess({ hypothesis, experiments: experimentsWithOutcomes }));
+        return 0;
+      }
+
+      // The one reserved capability, zoned exactly like create-research-request above.
+      if (parsedArgs.command === "create-experiment-proposal") {
+        await agentConnectionsCore.assertAgentAllowedForCapability({
+          capabilityId: CAPABILITY_DECISION_ENGINE_CREATE_EXPERIMENT_PROPOSAL,
+          callerConnectionId,
+        });
+        const hypothesisId = requiredStringFlag(parsedArgs.flags, "hypothesisId");
+        const agentCredentialRef = await auth.resolveEffectiveCredentialRef({
+          explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
+        });
+        const startConditionsFlag = optionalStringFlag(parsedArgs.flags, "startConditions");
+        const plannedDurationFlag = optionalStringFlag(parsedArgs.flags, "plannedDuration");
+        const sampleCoverageConstraintsFlag = optionalStringFlag(parsedArgs.flags, "sampleCoverageConstraints");
+        const budgetEstimateFlag = optionalStringFlag(parsedArgs.flags, "budgetEstimate");
+        const result = await decisionEngineCore.createExperiment(
+          hypothesisId,
+          {
+            treatment: requiredStringFlag(parsedArgs.flags, "treatment"),
+            controlBaseline: requiredStringFlag(parsedArgs.flags, "controlBaseline"),
+            successCriteria: requiredStringFlag(parsedArgs.flags, "successCriteria"),
+            stoppingCriteria: requiredStringFlag(parsedArgs.flags, "stoppingCriteria"),
+            responsible: requiredStringFlag(parsedArgs.flags, "responsible"),
+            ...(startConditionsFlag ? { startConditions: startConditionsFlag } : {}),
+            ...(plannedDurationFlag ? { plannedDuration: plannedDurationFlag } : {}),
+            ...(sampleCoverageConstraintsFlag ? { sampleCoverageConstraints: sampleCoverageConstraintsFlag } : {}),
+            ...(budgetEstimateFlag ? { budgetEstimate: budgetEstimateFlag } : {}),
+          },
+          {
+            userId: "userId" in agentCredentialRef ? agentCredentialRef.userId : null,
+            createdBy: "agent",
+            createdVia: "cli",
+          }
         );
         writeStdout(serializeSuccess(result));
         return 0;

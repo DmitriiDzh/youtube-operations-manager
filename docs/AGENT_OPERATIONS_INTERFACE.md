@@ -901,11 +901,12 @@ second error-code enum:
 | J | Independent security/integration review | **Per-slice review cycles: covered by each slice's own `docs/roadmap/BACKLOG.md` row (BL-079 onward through BL-089) -- not restated here as a round tally.** Slice J's own NEW, phase-wide work (owner spec §28's acceptance contract, backfilled for A-I plus fresh cross-cutting checks for the assembled whole) is done -- see §4i and `docs/acceptance/PHASE_7_ACCEPTANCE.md` §8-§11, `BL-090`. Remaining before this phase can be considered fully closed: the owner's own explicit "yes, merge" approval (`AGENTS.md` §K.2) -- never inferred from a clean review, and never granted by this document. |
 
 Deliberately **not** implemented in this phase (owner spec §14/§29): the Experiment Engine
-(Phase 10). `plannedFutureCapabilities` names its eventual extension point
-(`create_experiment_proposal`); no speculative schema or code for it exists yet. The competitor/
-trend intelligence extension point (`query_market_intelligence`/`query_competitors`) was
-implemented 2026-09-26 as Phase 9's own slice 4, not part of this phase's own owner-spec slices --
-see §4k below.
+(Phase 10) and the competitor/trend intelligence extension point -- both later implemented as
+their own separate phases' own follow-up assignments, not part of this phase's own owner-spec
+slices. `query_market_intelligence`/`query_competitors` landed 2026-09-26 as Phase 9's own slice
+4 (§4k below); `create_experiment_proposal` landed 2026-09-29 as Phase 10's own slice 2 (§4l
+below) -- `plannedFutureCapabilities` now names `create_hypothesis` as the one remaining reserved
+extension point from that same owner spec §14 list.
 
 ## 4k. Market intelligence query surface (Phase 9 slice 4, `docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md`) -- IMPLEMENTED
 
@@ -934,6 +935,29 @@ plugs into this interface.
   makes a live YouTube call.
 - `AGENT_DATA_DOMAINS` gained `competitor_intelligence` (the literal name this module's own
   contracts already reserved for it). `AGENT_API_VERSION` → `0.11.0`.
+
+## 4l. Decision-engine agent surface (Phase 10 slice 2, `docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md`) -- IMPLEMENTED
+
+Fulfils the `create_experiment_proposal` name this interface reserved since Phase 7 (§14, kept
+exactly as reserved, never renamed). Full design lives in the slice's own plan doc; this section
+records only how it plugs into this interface.
+
+- **`agent_list_hypotheses`** (MCP)/`agent list-hypotheses` (CLI, `READ`) -- every hypothesis
+  visible to the caller, channel-filtered by `decision-engine`'s own service layer.
+- **`agent_get_hypothesis_trail`** (MCP)/`agent get-hypothesis-trail --hypothesisId <id>` (CLI,
+  `READ`) -- one hypothesis plus every experiment against it, each with its own outcomes, in one
+  call (owner spec §25's "few composable tools" rule) -- `HYPOTHESIS_NOT_FOUND` for an unknown id.
+- **`create_experiment_proposal`** (MCP)/`agent create-experiment-proposal` (CLI, `DRAFT`) --
+  creates an experiment against an already-existing hypothesis, always `status:"proposed"`; no
+  field or tool lets an agent set any other status. Gated the same way as
+  `market_intelligence.agent_create_market_research_request`.
+- Deliberately NOT reachable via MCP/CLI, mechanically verified
+  (`decision-engine-agent-approval-inventory.test.ts`, `PHASE10-INV-02`): creating a hypothesis
+  from scratch, any experiment status transition, and recording an outcome -- all Web-UI-only.
+  `PLANNED_FUTURE_CAPABILITIES` now names `create_hypothesis` instead (agent-created hypotheses,
+  deliberately deferred to its own future slice).
+- `AGENT_CAPABILITY_DOMAINS` gained `decision_engine`; `AGENT_DATA_DOMAINS` gained
+  `experiment_history` (the literal name already reserved for it). `AGENT_API_VERSION` → `0.14.0`.
 
 ## 8. Safety invariants this interface must never violate
 

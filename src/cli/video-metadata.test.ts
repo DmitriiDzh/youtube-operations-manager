@@ -2859,7 +2859,9 @@ test("CLI agent capabilities returns version/capabilities with no auth/channel r
       dataDomains: [],
       actionClasses: ["READ", "DRAFT", "APPROVE", "EXECUTE"] as const,
       grantedPermissions: ["READ", "DRAFT"] as const,
-      plannedFutureCapabilities: ["create_experiment_proposal"] as const,
+      // "create_experiment_proposal" moved to a real capability (Phase 10 slice 2); this fixture
+      // just needs a value matching the current PlannedFutureCapability type, not this specific one.
+      plannedFutureCapabilities: ["create_hypothesis"] as const,
       schemaVersions: { app: 14 },
     }),
     getChannelContext: async () => { throw new Error("not used"); },

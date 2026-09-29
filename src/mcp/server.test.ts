@@ -14,6 +14,7 @@ import type { AnalyticsCore } from "@/lib/analytics";
 import type { AiLocalizationCore } from "@/lib/ai-localization";
 import type { AgentOperationsCore } from "@/lib/agent-operations";
 import type { MarketIntelligenceCore } from "@/lib/market-intelligence";
+import type { DecisionEngineCore } from "@/lib/decision-engine";
 import type { AgentConnectionsCoreSubset } from "@/lib/agent-connections";
 import { AGENT_API_VERSION } from "@/lib/agent-operations";
 import { rawSqlClient } from "@/lib/db";
@@ -2803,7 +2804,8 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
 
   assert.equal(result.isError, undefined);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
-  assert.equal(payload.agentApiVersion, "0.13.0");
+  // Bumped 0.13.0 -> 0.14.0, Phase 10 slice 2: new decision_engine capabilities added.
+  assert.equal(payload.agentApiVersion, "0.14.0");
   assert.deepEqual(payload.grantedPermissions, ["READ", "DRAFT"]);
   assert.ok(payload.capabilities.some((c: { id: string }) => c.id === "system.get_capabilities"));
 });
@@ -2872,7 +2874,9 @@ function makeAgentOperationsCoreStub(): Pick<
       dataDomains: [],
       actionClasses: ["READ", "DRAFT", "APPROVE", "EXECUTE"],
       grantedPermissions: ["READ", "DRAFT"],
-      plannedFutureCapabilities: ["create_experiment_proposal"],
+      // "create_experiment_proposal" moved to a real capability (Phase 10 slice 2); this fixture
+      // just needs a value matching the current PlannedFutureCapability type, not this specific one.
+      plannedFutureCapabilities: ["create_hypothesis"],
       schemaVersions: { app: 14 },
     }),
     getChannelContext: async () => ({
@@ -4644,6 +4648,7 @@ const EXPECTED_ZONE_CAPABILITY_IDS: Record<string, string> = {
   agent_create_content_proposal: "content_proposal.create_content_proposal",
   agent_register_external_artifact: "content_proposal.register_external_artifact",
   agent_create_market_research_request: "market_intelligence.agent_create_market_research_request",
+  create_experiment_proposal: "decision_engine.create_experiment_proposal",
 };
 
 const ZONED_MCP_TOOL_NAMES = Object.keys(EXPECTED_ZONE_CAPABILITY_IDS) as (keyof typeof EXPECTED_ZONE_CAPABILITY_IDS)[];
@@ -5184,4 +5189,253 @@ test("AC-9G-B-11: agent_create_market_research_request is rejected while the ope
   } finally {
     await releaseOperationLock(rawSqlClient);
   }
+});
+
+// Phase 10 slice 2 (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md)
+type DecisionEngineCoreStubShape = Pick<
+  DecisionEngineCore,
+  "listHypotheses" | "getHypothesis" | "listExperimentsByHypothesis" | "listExperimentOutcomes" | "createExperiment"
+>;
+
+function makeDecisionEngineCoreStub(overrides: Partial<DecisionEngineCoreStubShape> = {}): DecisionEngineCoreStubShape {
+  return {
+    listHypotheses: async () => [],
+    getHypothesis: async () => {
+      throw new DomainError({ code: "HYPOTHESIS_NOT_FOUND", message: "Hypothesis not found" });
+    },
+    listExperimentsByHypothesis: async () => [],
+    listExperimentOutcomes: async () => [],
+    createExperiment: async () => {
+      throw new Error("not used");
+    },
+    ...overrides,
+  };
+}
+
+const fakeHypothesis = {
+  hypothesisId: "hyp-1",
+  channelId: null,
+  statement: "Shorter titles improve CTR",
+  evidenceNotes: "Manual observation",
+  createdBy: "user-1",
+  createdVia: "web_ui",
+  createdAt: "2026-09-29T00:00:00.000Z",
+} as const;
+
+const fakeExperiment = {
+  experimentId: "exp-1",
+  hypothesisId: "hyp-1",
+  treatment: "10-char titles",
+  controlBaseline: "current titles",
+  successCriteria: "CTR +5%",
+  stoppingCriteria: "14 days",
+  startConditions: null,
+  plannedDuration: null,
+  sampleCoverageConstraints: null,
+  budgetEstimate: null,
+  responsible: "owner",
+  status: "proposed" as const,
+  approvedBy: null,
+  approvedAt: null,
+  createdVia: "web_ui",
+  createdAt: "2026-09-29T00:00:00.000Z",
+};
+
+test("MCP agent_list_hypotheses returns exactly the service layer's own already-channel-filtered list", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    makeDecisionEngineCoreStub({ listHypotheses: async () => [fakeHypothesis] })
+  );
+  const result = await handlers.agentListHypotheses({});
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.deepEqual(payload.hypotheses, [fakeHypothesis]);
+});
+
+test("MCP agent_get_hypothesis_trail surfaces HYPOTHESIS_NOT_FOUND for an unknown id, before ever listing experiments", async () => {
+  let listExperimentsCalled = false;
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    makeDecisionEngineCoreStub({
+      listExperimentsByHypothesis: async () => {
+        listExperimentsCalled = true;
+        return [];
+      },
+    })
+  );
+  const result = await handlers.agentGetHypothesisTrail({ hypothesisId: "hyp-unknown" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "HYPOTHESIS_NOT_FOUND");
+  assert.equal(listExperimentsCalled, false);
+});
+
+test("MCP agent_get_hypothesis_trail composes one hypothesis with its experiments, each carrying its own outcomes", async () => {
+  const fakeOutcome = {
+    outcomeId: "out-1",
+    experimentId: "exp-1",
+    recordedBy: "owner",
+    recordedAt: "2026-10-01T00:00:00.000Z",
+    outcomeData: "CTR +6%",
+    dataQualityLimitations: null,
+    criteriaMet: "met" as const,
+    lessonsLearned: null,
+    createdVia: "web_ui",
+  };
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    makeDecisionEngineCoreStub({
+      getHypothesis: async () => fakeHypothesis,
+      listExperimentsByHypothesis: async () => [fakeExperiment],
+      listExperimentOutcomes: async () => [fakeOutcome],
+    })
+  );
+  const result = await handlers.agentGetHypothesisTrail({ hypothesisId: "hyp-1" });
+
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.deepEqual(payload.hypothesis, fakeHypothesis);
+  assert.equal(payload.experiments.length, 1);
+  assert.deepEqual(payload.experiments[0].outcomes, [fakeOutcome]);
+  assert.equal(payload.experiments[0].experimentId, "exp-1");
+});
+
+test("MCP create_experiment_proposal rejects a request missing a required field as validation_failed, before ever calling the core", async () => {
+  let createExperimentCalled = false;
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    makeDecisionEngineCoreStub({
+      createExperiment: async () => {
+        createExperimentCalled = true;
+        return fakeExperiment;
+      },
+    })
+  );
+  const result = await handlers.createExperimentProposal({ hypothesisId: "hyp-1" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "validation_failed");
+  assert.equal(createExperimentCalled, false);
+});
+
+test("MCP create_experiment_proposal forwards hypothesisId separately, stamps createdBy/createdVia, and never accepts a caller-supplied status", async () => {
+  let capturedArgs: unknown;
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    makeDecisionEngineCoreStub({
+      createExperiment: async (hypothesisId, input, ctx) => {
+        capturedArgs = { hypothesisId, input, ctx };
+        return fakeExperiment;
+      },
+    })
+  );
+  const result = await handlers.createExperimentProposal({
+    hypothesisId: "hyp-1",
+    treatment: "10-char titles",
+    controlBaseline: "current titles",
+    successCriteria: "CTR +5%",
+    stoppingCriteria: "14 days",
+    responsible: "owner",
+    status: "approved",
+  });
+
+  assert.equal(result.isError, true);
+  const rejected = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(rejected.error.code, "validation_failed");
+  assert.equal(capturedArgs, undefined);
+
+  const success = await handlers.createExperimentProposal({
+    hypothesisId: "hyp-1",
+    treatment: "10-char titles",
+    controlBaseline: "current titles",
+    successCriteria: "CTR +5%",
+    stoppingCriteria: "14 days",
+    responsible: "owner",
+  });
+  assert.equal(success.isError, undefined);
+  assert.deepEqual(capturedArgs, {
+    hypothesisId: "hyp-1",
+    input: {
+      treatment: "10-char titles",
+      controlBaseline: "current titles",
+      successCriteria: "CTR +5%",
+      stoppingCriteria: "14 days",
+      responsible: "owner",
+    },
+    ctx: { userId: "active-user", createdBy: "agent", createdVia: "mcp" },
+  });
+});
+
+test("MCP create_experiment_proposal propagates a channel-context rejection from the service layer unchanged", async () => {
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    makeDecisionEngineCoreStub({
+      createExperiment: async () => {
+        throw new DomainError({ code: "CHANNEL_NOT_AUTHORIZED", message: "Not authorized for this channel" });
+      },
+    })
+  );
+  const result = await handlers.createExperimentProposal({
+    hypothesisId: "hyp-other-channel",
+    treatment: "t",
+    controlBaseline: "c",
+    successCriteria: "s",
+    stoppingCriteria: "st",
+    responsible: "owner",
+  });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_AUTHORIZED");
 });

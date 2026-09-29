@@ -674,6 +674,38 @@ Key MCP tools:
     market-records --kind <kind>` / `agent create-research-request --query <q> --rationale <r>
     [--monitorDurationDays <n>]`.
 
+- **Decision & Experiment Engine (Phase 10 slice 2, `docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md`):**
+  - `agent_list_hypotheses` — `{}` → `{ hypotheses: Hypothesis[] }`, already channel-filtered by the
+    service layer (channel-scoped rows narrowed to the caller's active channel, channel-less rows
+    always included).
+  - `agent_get_hypothesis_trail` — `{ hypothesisId }` → `{ hypothesis, experiments: (Experiment &
+    { outcomes: ExperimentOutcome[] })[] }`. One combined "trail" read (owner spec §25's "few
+    composable tools" rule) rather than five separate list/get tools; composed in the MCP/CLI
+    handler from `decision-engine`'s own already-existing `getHypothesis`/
+    `listExperimentsByHypothesis`/`listExperimentOutcomes` — no new service-layer function.
+    `HYPOTHESIS_NOT_FOUND` for an unknown id.
+  - `create_experiment_proposal` — `{ hypothesisId, treatment, controlBaseline, successCriteria,
+    stoppingCriteria, responsible, startConditions?, plannedDuration?, sampleCoverageConstraints?,
+    budgetEstimate? }` → the created experiment, always `status: "proposed"` (schema is `.strict()`,
+    no `status` field accepted at all). The one reserved capability name
+    (`PLANNED_FUTURE_CAPABILITIES` since Phase 7), zoned
+    (`decision_engine.create_experiment_proposal`) and gated the same way as
+    `agent_create_market_research_request`. `createdBy: "agent"` (never a real user id, since MCP/
+    CLI callers have no session), `createdVia`: `"mcp"`/`"cli"`.
+  - **There is no MCP tool or CLI command to create a hypothesis from scratch, transition an
+    experiment's status, or record an outcome** — all Web-UI-only, verified mechanically by
+    `decision-engine-agent-approval-inventory.test.ts` (`PHASE10-INV-02`, same scan technique as
+    `market-research-request-approval-inventory.test.ts` above).
+  - All three registered directly against `createDecisionEngineCore()` in `src/mcp/server.ts`/
+    `src/cli/video-metadata.ts`, not through `agent-operations`'s own service layer — same
+    module-independence reasoning as market-intelligence above; `decision-engine`'s own service
+    layer already does its own channel-access assertion internally, so no separate check is needed
+    in the MCP/CLI handler layer.
+    CLI parity: `agent list-hypotheses` / `agent get-hypothesis-trail --hypothesisId <id>` / `agent
+    create-experiment-proposal --hypothesisId <id> --treatment <t> --controlBaseline <c>
+    --successCriteria <s> --stoppingCriteria <st> --responsible <r> [--startConditions <...>]
+    [--plannedDuration <...>] [--sampleCoverageConstraints <...>] [--budgetEstimate <...>]`.
+
 Most tools accept optional `credentialRef`; if omitted, server falls back to active local auth context.
 
 ### MCP connection (Settings tab toggle, off by default)

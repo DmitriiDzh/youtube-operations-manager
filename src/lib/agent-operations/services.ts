@@ -299,6 +299,32 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Creates a structured research/discovery draft (query, rationale, optional monitorDurationDays -- stored as descriptive metadata only, never consulted by any scheduler, since none exists in this application). Always starts status:\"pending\". Makes zero YouTube calls and spends zero quota -- a human must separately approve it through the Web UI before the one real search.list run it can ever trigger actually happens (owner spec §29: \"this must not automatically create unlimited collection jobs\"). createdVia/agentApiVersion (owner spec §22) are SERVER-STAMPED, never caller-supplied. Implemented as the `agent_create_market_research_request` MCP tool/`agent create-research-request` CLI command (`src/lib/market-intelligence/`). Mutates local application state, so this tool is gated by the same device-availability/recovery-mode check as agent_create_content_proposal.",
   },
+  // Phase 10 slice 2 (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md, FUTURE_PHASES.md §6) -- the
+  // reserved `create_experiment_proposal` capability, now real. Channel-scoped where the
+  // referenced hypothesis itself has a channelId, global (a "new channel concept" hypothesis) when
+  // it doesn't -- decision-engine's own service layer enforces this internally, not this
+  // registration layer.
+  {
+    id: "decision_engine.agent_list_hypotheses",
+    domain: "decision_engine",
+    permission: "READ",
+    description:
+      "Lists every hypothesis visible to the caller -- channel-scoped rows narrowed to the caller's own active channel, channel-less rows always included. Implemented as the `agent_list_hypotheses` MCP tool/`agent list-hypotheses` CLI command (`src/lib/decision-engine/`). Local read only.",
+  },
+  {
+    id: "decision_engine.agent_get_hypothesis_trail",
+    domain: "decision_engine",
+    permission: "READ",
+    description:
+      "One hypothesis plus every one of its experiments, each with its own recorded outcomes -- the evidence -> hypothesis -> experiment -> outcome trail FUTURE_PHASES.md §6's completion criterion describes, in one call. Implemented as the `agent_get_hypothesis_trail` MCP tool/`agent get-hypothesis-trail` CLI command. Local read only, fails with HYPOTHESIS_NOT_FOUND for an unknown id.",
+  },
+  {
+    id: "decision_engine.create_experiment_proposal",
+    domain: "decision_engine",
+    permission: "DRAFT",
+    description:
+      "Creates an experiment (treatment, control/baseline, success/stopping criteria, responsible party) against an already-existing hypothesis. Always starts status:\"proposed\" -- no field or tool lets an agent set any other status; a human must separately approve it through the Web UI (FUTURE_PHASES.md §6: \"no consequential action executes merely because an AI agent proposed it\"). Creating a hypothesis, recording an outcome, and any status transition remain Web-UI-only. Implemented as the `create_experiment_proposal` MCP tool/`agent create-experiment-proposal` CLI command. Mutates local application state, gated the same way as market_intelligence.agent_create_market_research_request above.",
+  },
 ];
 
 

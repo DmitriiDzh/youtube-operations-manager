@@ -39,3 +39,23 @@ export const createExperimentOutcomeInputSchema = z
     lessonsLearned: z.string().min(1).optional(),
   })
   .strict();
+
+// ---------------------------------------------------------------------------
+// Phase 10 slice 2 (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md) -- agent-facing MCP/CLI input
+// shapes. `agentGetHypothesisTrailInputSchema` and `createExperimentProposalInputSchema` are
+// specific to the agent surface (a single combined "trail" read, and an experiment proposal that
+// must name which hypothesis it belongs to) -- the plain list/get/create schemas above stay as
+// the Web UI's own shapes, unchanged.
+// ---------------------------------------------------------------------------
+
+export const agentGetHypothesisTrailInputSchema = z
+  .object({
+    hypothesisId: z.string().min(1, "hypothesisId is required"),
+  })
+  .strict();
+
+export const createExperimentProposalInputSchema = createExperimentInputSchema
+  .extend({
+    hypothesisId: z.string().min(1, "hypothesisId is required"),
+  })
+  .strict();
