@@ -134,7 +134,9 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
   const [executeTarget, setExecuteTarget] = useState<Experiment | null>(null);
   const [executeAsLive, setExecuteAsLive] = useState(false);
   const [executing, setExecuting] = useState(false);
-  const [executeResult, setExecuteResult] = useState<{ experimentId: string; batchId: string; videoCount: number } | null>(null);
+  const [executeResult, setExecuteResult] = useState<{ experimentId: string; batchId: string; videoCount: number; dryRun: boolean } | null>(
+    null
+  );
 
   // Phase 10 slice 3 (docs/roadmap/plans/PHASE_10_SLICE_3_PLAN.md §8) -- structured evidence,
   // additive alongside the free-text evidenceNotes shown above. No picker UI (a real channel/
@@ -470,7 +472,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
         setError(data.message ?? "Failed to execute experiment");
         return;
       }
-      setExecuteResult({ experimentId: executeTarget.experimentId, batchId: data.batchId, videoCount: data.videoCount });
+      setExecuteResult({ experimentId: executeTarget.experimentId, batchId: data.batchId, videoCount: data.videoCount, dryRun: data.dryRun });
       if (selectedHypothesisId) await fetchExperiments(selectedHypothesisId);
     } finally {
       setExecuting(false);
@@ -755,8 +757,9 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
                       </div>
                     )}
                     {executeResult && executeResult.experimentId === exp.experimentId && (
-                      <p className="mt-2 text-xs text-emerald-400">
-                        Created Batch {executeResult.batchId} ({executeResult.videoCount} video(s)) -- open the Batches tab to review/run it.
+                      <p className={`mt-2 text-xs ${executeResult.dryRun ? "text-emerald-400" : "text-red-400"}`}>
+                        Created {executeResult.dryRun ? "dry-run" : "LIVE"} Batch {executeResult.batchId} ({executeResult.videoCount}{" "}
+                        video(s)) -- open the Batches tab to review/run it.
                       </p>
                     )}
                   </li>

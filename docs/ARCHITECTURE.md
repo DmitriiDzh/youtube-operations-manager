@@ -1820,7 +1820,7 @@ that constant explicitly excludes exactly this shape of change ("a new optional 
 an existing caller can simply ignore... not every field-level widening"), reserving MINOR bumps for
 capability-discovery-relevant changes only. `getMarketVideosOverview` itself has no MCP/CLI surface.
 
-## 19. Decision & Experiment Engine (`src/lib/decision-engine/`) — Phase 10, slices 1-4
+## 19. Decision & Experiment Engine (`src/lib/decision-engine/`) — Phase 10, slices 1-5
 
 Owner instruction, Telegram 2026-09-29: an explicit assignment to plan and implement Phase 10
 (`docs/roadmap/FUTURE_PHASES.md` §6). **Detailed design, transition rules, and acceptance
@@ -1925,9 +1925,54 @@ hypothesis and stays behind the ordinary mutation gate. No real, non-mock AI pro
 in this session -- validated only against the mock adapter and an injected `fetchImpl` fake,
 per `AGENTS.md` §K.2's separate gate on a real paid AI API call.
 
+**Execution of an approved, localization-type experiment (slice 5, 2026-09-29) reuses the existing
+Change Set/Batch pipeline unchanged -- no new write path.** Owner-confirmed scope, three explicit
+safety questions answered before this slice started (Telegram): only localization-type experiments
+get real execution (the only type with an existing execution interface); approval alone never
+triggers it (a separate, explicit Execute action is required); execution never bypasses an existing
+gate (Live Writes, identity, dry-run) -- it is one more caller of `createBatchCore().createBatch`,
+never `prepareBatchExecution`/`executeBatch`. `experiments` gained `changeSetId`/`executionBatchId`/
+`executionClaimedAt` (SCHEMA_MIGRATIONS v32) -- **deliberately no FK** on the first two: `change_sets`
+rows are really deleted (`change-drafts/services.ts`'s `discardLocalAndAdoptPeer`, RISK-46's
+divergent-lineage flow), and this connection runs with `foreign_keys=ON`, so an FK would break that
+unrelated delete; validated at the application level instead, the same "no FK for an informal
+reference" pattern RISK-66 already accepts. Execution is a second cross-module dependency in the
+same shape as slice 3's evidence resolver: `ExperimentExecutionResolver` (`contracts.ts`) is a port
+`decision-engine/**` depends on but never implements; the real implementation
+(`experiment-execution-resolver.ts`) lives outside that directory, the only place allowed to import
+both `@/lib/decision-engine` and `@/lib/changesets`/`@/lib/batches` (`PHASE10-INV-03` widened to
+forbid both inside `decision-engine/**`, alongside the pre-existing analytics/market-intelligence
+ban). **The execution design went through two real `advisor()`-caught redesigns, not one.** The
+first draft called the resolver (creating a real Batch) BEFORE any atomic guard -- two concurrent
+Execute calls could both create one, an exact repeat of the RISK-68 anti-pattern this project
+already knows to avoid, not the claim-first pattern it was meant to copy. Redesigned claim-first,
+mirroring Phase 9 slice 9B's `claimStaleResearchChannelsForCollection` exactly: an atomic claim
+(`execution_claimed_at`, exclusive against another FRESH claim but reclaimable once stale --
+`EXPERIMENT_EXECUTION_CLAIM_EXPIRY_MS`, the identical 15-minute precedent) taken BEFORE the resolver
+is ever called. The second round found the claim alone wasn't sufficient: `transitionExperimentStatusIfValid`/
+`setExperimentChangeSetIfEligible` never checked it, so an Abandon or a detach could land inside the
+claim window and `finalizeExperimentExecution`'s then-unconditional write would resurrect a terminal
+state back to `"running"`. Both functions now refuse while a fresh claim is held (still permitting
+the action once the claim is stale/expired -- a crash must never permanently lock the experiment out
+of its own lifecycle); `finalizeExperimentExecution` is now guarded by the exact claim timestamp and
+clears the claim in the same write (required so the claim-freshness guard above doesn't then block
+the experiment's own normal `running -> concluded/abandoned` transitions); and finalize was moved
+OUTSIDE the resolver's own try/catch, so a finalize failure never releases a claim whose Batch
+already exists (which would let a second call create a second real Batch for it) -- it self-heals
+only via the same 15-minute expiry, a narrow, documented residual (`docs/TECHNICAL_DEBT.md`
+RISK-82). `dryRun` mirrors the existing Batch-creation route's own fail-closed gate exactly
+(`getLiveWritesEnabled()`, `live: true` in the request honored only when that toggle is already on)
+-- the route is an injectable factory (`createExecuteExperimentHandler`) specifically so this
+wiring itself has a test, not just the service's own boolean-in/boolean-out logic. The response
+(and the UI) surface `dryRun` explicitly, so the operator can tell "dry-run Batch" from "LIVE
+Batch" rather than the outcome being silent.
+
 **Still not built, named explicitly rather than silently deferred:** agent-created hypotheses from
 scratch (`create_hypothesis`, the reserved extension point left after slice 2); recording an
-outcome/retrospective through MCP/CLI; automatic execution of an approved experiment; evidence
-selection during AI generation is not yet exposed in the Web UI (fully built and tested at the
+outcome/retrospective through MCP/CLI; execution of any non-localization experiment type (no
+execution interface exists for one yet); MCP/CLI exposure of Change Set attach/execute (a
+Batch-creating agent action is a materially different risk category than slice 2's read+draft
+surface, needs its own separate assignment); evidence selection during AI generation is not yet
+exposed in the Web UI (fully built and tested at the
 API/service layer -- the "Generate with AI" panel is notes-only for this first UI pass, evidence
 still attaches to a saved hypothesis through the existing, separate evidence form).

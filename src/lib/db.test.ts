@@ -2574,8 +2574,8 @@ test("transitionExperimentStatusIfValid: two literally-concurrent approve attemp
 
     const at = new Date("2026-09-29T12:00:00.000Z");
     const [first, second] = await Promise.all([
-      transitionExperimentStatusIfValid("exp-race", ["proposed"], "approved", "actor-a", at, isolatedDb),
-      transitionExperimentStatusIfValid("exp-race", ["proposed"], "approved", "actor-b", at, isolatedDb),
+      transitionExperimentStatusIfValid("exp-race", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb),
+      transitionExperimentStatusIfValid("exp-race", ["proposed"], "approved", "actor-b", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb),
     ]);
 
     const succeeded = [first, second].filter((row) => row !== null);
@@ -2607,9 +2607,9 @@ test("transitionExperimentStatusIfValid: a call whose fromStatuses no longer mat
       isolatedDb
     );
     const at = new Date("2026-09-29T12:00:00.000Z");
-    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, isolatedDb);
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
 
-    const result = await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-b", at, isolatedDb);
+    const result = await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-b", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
     assert.equal(result, null);
 
     const row = await getExperimentById("exp-1", isolatedDb);
@@ -2621,7 +2621,15 @@ test("transitionExperimentStatusIfValid: a call whose fromStatuses no longer mat
 // localization-type experiment. `claimExperimentForExecution`'s own real-DB concurrency test
 // mirrors `transitionExperimentStatusIfValid`'s own above, and `claimStaleResearchChannelsForCollection`
 // (Phase 9 slice 9B) -- the same claim-first shape, proven against a real DB, not a fake store.
+//
+// `FAR_PAST_CLAIM_CUTOFF`/`FAR_FUTURE_CLAIM_CUTOFF`: a claim-expiry cutoff in the far past never
+// treats a just-taken claim as stale (used by every test that isn't specifically about expiry); a
+// cutoff in the far future treats EVERY claim as already-expired (used to simulate "the claim is
+// old enough to be reclaimed/bypassed").
 // ---------------------------------------------------------------------------
+
+const FAR_PAST_CLAIM_CUTOFF = new Date(0);
+const FAR_FUTURE_CLAIM_CUTOFF = new Date("2999-01-01T00:00:00.000Z");
 
 async function insertExperimentForExecutionTests(
   isolatedDb: AppDb,
@@ -2655,15 +2663,15 @@ test("setExperimentChangeSetIfEligible: attaches when status is proposed/approve
     const isolatedDb = createIsolatedDb(client);
     await insertExperimentForExecutionTests(isolatedDb);
 
-    const attached = await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", isolatedDb);
+    const attached = await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
     assert.equal(attached?.changeSetId, "cs-1");
 
     const at = new Date("2026-09-29T12:00:00.000Z");
-    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, isolatedDb);
-    await claimExperimentForExecution("exp-1", "cs-1", at, isolatedDb);
-    await finalizeExperimentExecution("exp-1", "batch-1", isolatedDb);
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    const claimed = await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    await finalizeExperimentExecution("exp-1", "batch-1", claimed!.executionClaimedAt as Date, isolatedDb);
 
-    const result = await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], null, isolatedDb);
+    const result = await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], null, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
     assert.equal(result, null, "a running experiment's changeSetId must be immutable via this function");
     const row = await getExperimentById("exp-1", isolatedDb);
     assert.equal(row?.changeSetId, "cs-1", "nothing was actually changed by the rejected call");
@@ -2674,14 +2682,14 @@ test("claimExperimentForExecution: two literally-concurrent claims for the same 
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
     await insertExperimentForExecutionTests(isolatedDb);
-    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
     const approveAt = new Date("2026-09-29T12:00:00.000Z");
-    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", approveAt, isolatedDb);
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", approveAt, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
 
     const claimAt = new Date("2026-09-29T12:00:01.000Z");
     const [first, second] = await Promise.all([
-      claimExperimentForExecution("exp-1", "cs-1", claimAt, isolatedDb),
-      claimExperimentForExecution("exp-1", "cs-1", claimAt, isolatedDb),
+      claimExperimentForExecution("exp-1", "cs-1", claimAt, FAR_PAST_CLAIM_CUTOFF, isolatedDb),
+      claimExperimentForExecution("exp-1", "cs-1", claimAt, FAR_PAST_CLAIM_CUTOFF, isolatedDb),
     ]);
 
     const succeeded = [first, second].filter((row) => row !== null);
@@ -2699,12 +2707,31 @@ test("claimExperimentForExecution: refuses when changeSetId no longer matches (c
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
     await insertExperimentForExecutionTests(isolatedDb);
-    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
     const at = new Date("2026-09-29T12:00:00.000Z");
-    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, isolatedDb);
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
 
-    const result = await claimExperimentForExecution("exp-1", "cs-DIFFERENT", at, isolatedDb);
+    const result = await claimExperimentForExecution("exp-1", "cs-DIFFERENT", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
     assert.equal(result, null);
+  }));
+
+test("claimExperimentForExecution: an expired (stale) claim can be reclaimed", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+
+    const firstClaim = await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    assert.ok(firstClaim, "first claim succeeds (simulates a crashed prior attempt -- claim taken, never released or finalized)");
+
+    const blockedByFreshCutoff = await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    assert.equal(blockedByFreshCutoff, null, "a cutoff that treats the claim as still fresh must block a second claim");
+
+    const reclaimedViaExpiry = await claimExperimentForExecution("exp-1", "cs-1", at, FAR_FUTURE_CLAIM_CUTOFF, isolatedDb);
+    assert.ok(reclaimedViaExpiry, "a cutoff that treats the claim as expired must allow reclaiming it -- a crash never permanently locks the row");
   }));
 
 test("releaseExperimentExecutionClaim: a released claim can be re-claimed afterward", () =>
@@ -2712,13 +2739,13 @@ test("releaseExperimentExecutionClaim: a released claim can be re-claimed afterw
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
     await insertExperimentForExecutionTests(isolatedDb);
-    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
     const at = new Date("2026-09-29T12:00:00.000Z");
-    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, isolatedDb);
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
 
-    const firstClaim = await claimExperimentForExecution("exp-1", "cs-1", at, isolatedDb);
+    const firstClaim = await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
     assert.ok(firstClaim);
-    const blockedWhileClaimed = await claimExperimentForExecution("exp-1", "cs-1", at, isolatedDb);
+    const blockedWhileClaimed = await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
     assert.equal(blockedWhileClaimed, null);
 
     await releaseExperimentExecutionClaim("exp-1", isolatedDb);
@@ -2726,22 +2753,85 @@ test("releaseExperimentExecutionClaim: a released claim can be re-claimed afterw
     assert.equal(rowAfterRelease?.executionClaimedAt, null);
     assert.equal(rowAfterRelease?.status, "approved", "release never touches status -- the experiment stays re-attemptable");
 
-    const secondClaim = await claimExperimentForExecution("exp-1", "cs-1", at, isolatedDb);
+    const secondClaim = await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
     assert.ok(secondClaim, "a released claim can be re-claimed");
   }));
 
-test("finalizeExperimentExecution: sets status to running and records the real Batch id", () =>
+test("transitionExperimentStatusIfValid/setExperimentChangeSetIfEligible: refuse while a FRESH execution claim is held (Abandon/detach during the claim window)", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
     await insertExperimentForExecutionTests(isolatedDb);
-    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
     const at = new Date("2026-09-29T12:00:00.000Z");
-    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, isolatedDb);
-    await claimExperimentForExecution("exp-1", "cs-1", at, isolatedDb);
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
 
-    await finalizeExperimentExecution("exp-1", "batch-1", isolatedDb);
+    // advisor() round 2: without this guard, Abandon could land here, then finalize would
+    // resurrect the terminal state back to "running" -- both must be refused while claimed.
+    const abandonAttempt = await transitionExperimentStatusIfValid("exp-1", ["approved"], "abandoned", null, at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    assert.equal(abandonAttempt, null, "Abandon must be refused while a fresh claim is held");
+    const detachAttempt = await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], null, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    assert.equal(detachAttempt, null, "Detach must be refused while a fresh claim is held");
+
+    const row = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(row?.status, "approved", "neither rejected call actually changed anything");
+    assert.equal(row?.changeSetId, "cs-1");
+
+    // The same calls succeed once the claim is old enough to count as expired/abandoned.
+    const abandonAfterExpiry = await transitionExperimentStatusIfValid(
+      "exp-1",
+      ["approved"],
+      "abandoned",
+      null,
+      at,
+      FAR_FUTURE_CLAIM_CUTOFF,
+      isolatedDb
+    );
+    assert.ok(abandonAfterExpiry, "an expired claim must not block a transition forever");
+  }));
+
+test("finalizeExperimentExecution: sets status to running, records the real Batch id, and clears the claim so running->concluded still works", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    const claimed = await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+
+    const finalized = await finalizeExperimentExecution("exp-1", "batch-1", claimed!.executionClaimedAt as Date, isolatedDb);
+    assert.equal(finalized, true);
     const row = await getExperimentById("exp-1", isolatedDb);
     assert.equal(row?.status, "running");
     assert.equal(row?.executionBatchId, "batch-1");
+    assert.equal(row?.executionClaimedAt, null, "the claim is cleared by finalize itself");
+
+    // advisor() round 2: the claim guard on transitions must not then permanently block the
+    // experiment's own normal running -> concluded/abandoned lifecycle.
+    const concluded = await transitionExperimentStatusIfValid("exp-1", ["running"], "concluded", null, at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    assert.equal(concluded?.status, "concluded");
+  }));
+
+test("finalizeExperimentExecution: returns false (not an exception) when the guard doesn't match, and never touches the row", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertExperimentForExecutionTests(isolatedDb);
+    await setExperimentChangeSetIfEligible("exp-1", ["proposed", "approved"], "cs-1", FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    const at = new Date("2026-09-29T12:00:00.000Z");
+    await transitionExperimentStatusIfValid("exp-1", ["proposed"], "approved", "actor-a", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+    await claimExperimentForExecution("exp-1", "cs-1", at, FAR_PAST_CLAIM_CUTOFF, isolatedDb);
+
+    // Wrong expectedClaimedAt -- simulates the claim having moved/cleared between claim and
+    // finalize (should be impossible given the claim's own exclusivity, but the guard must still
+    // report failure honestly rather than silently "succeeding").
+    const finalized = await finalizeExperimentExecution("exp-1", "batch-wrong", new Date("2020-01-01T00:00:00.000Z"), isolatedDb);
+    assert.equal(finalized, false);
+
+    const row = await getExperimentById("exp-1", isolatedDb);
+    assert.equal(row?.status, "approved", "the mismatched finalize call must not have changed anything");
+    assert.equal(row?.executionBatchId, null);
+    assert.ok(row?.executionClaimedAt, "the claim stays held -- a failed finalize self-heals via expiry, never silently releases");
   }));

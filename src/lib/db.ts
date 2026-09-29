@@ -6175,6 +6175,15 @@ export async function listExperimentsByHypothesis(
  * row's real current status was not in `fromStatuses` (either a genuinely unknown id, or a
  * same-row race the caller lost) -- the caller distinguishes those via its own upfront read, not
  * from this return value.
+ *
+ * `claimExpiryCutoff` (Phase 10 slice 5, added after `advisor()` found a real hole: an Abandon or
+ * a manual transition could otherwise land WHILE an `executeExperiment` claim is held, and the
+ * later `finalizeExperimentExecution` would then resurrect a terminal state) -- refuses to run
+ * while a FRESH claim is held (`execution_claimed_at` within the cutoff), exactly like
+ * `setExperimentChangeSetIfEligible` below. A stale/expired claim (a crashed execute attempt) does
+ * NOT block a transition, mirroring `research_channels.collection_claimed_at`'s own "a crash never
+ * permanently locks the row" precedent (Phase 9 slice 9B, `docs/ARCHITECTURE.md`'s 15-minute
+ * claim-expiry note).
  */
 export async function transitionExperimentStatusIfValid(
   id: string,
@@ -6182,6 +6191,7 @@ export async function transitionExperimentStatusIfValid(
   toStatus: ExperimentStatus,
   approvedBy: string | null,
   at: Date,
+  claimExpiryCutoff: Date,
   database: AppDb = db
 ): Promise<StoredExperiment | null> {
   const rows = await database
@@ -6190,7 +6200,13 @@ export async function transitionExperimentStatusIfValid(
       status: toStatus,
       ...(toStatus === "approved" ? { approvedBy, approvedAt: at } : {}),
     })
-    .where(and(eq(experiments.id, id), inArray(experiments.status, fromStatuses)))
+    .where(
+      and(
+        eq(experiments.id, id),
+        inArray(experiments.status, fromStatuses),
+        or(isNull(experiments.executionClaimedAt), lt(experiments.executionClaimedAt, claimExpiryCutoff))
+      )
+    )
     .returning();
   return rows[0] ?? null;
 }
@@ -6200,17 +6216,26 @@ export async function transitionExperimentStatusIfValid(
  * current status (`fromStatuses`, the caller's own `["proposed", "approved"]` for both attach and
  * detach per the plan's own §4). Same shape as `transitionExperimentStatusIfValid`: the check and
  * the write happen atomically against the row's real current status, not a stale read-time value.
+ * `claimExpiryCutoff` -- same fresh-claim guard as `transitionExperimentStatusIfValid` (a concurrent
+ * detach must not race a claimed-but-not-yet-finalized execute attempt).
  */
 export async function setExperimentChangeSetIfEligible(
   id: string,
   fromStatuses: ExperimentStatus[],
   changeSetId: string | null,
+  claimExpiryCutoff: Date,
   database: AppDb = db
 ): Promise<StoredExperiment | null> {
   const rows = await database
     .update(experiments)
     .set({ changeSetId })
-    .where(and(eq(experiments.id, id), inArray(experiments.status, fromStatuses)))
+    .where(
+      and(
+        eq(experiments.id, id),
+        inArray(experiments.status, fromStatuses),
+        or(isNull(experiments.executionClaimedAt), lt(experiments.executionClaimedAt, claimExpiryCutoff))
+      )
+    )
     .returning();
   return rows[0] ?? null;
 }
@@ -6220,15 +6245,17 @@ export async function setExperimentChangeSetIfEligible(
  * §4, added after `advisor()` caught a real double-execution race in an earlier draft that called
  * the Batch-creation resolver BEFORE any atomic guard). Mirrors
  * `claimStaleResearchChannelsForCollection`'s own shape (Phase 9 slice 9B) -- this claim is
- * exclusive (`execution_claimed_at IS NULL` in the WHERE), so at most one concurrent
- * `executeExperiment` call for the same experiment ever proceeds to call the resolver. Also
- * requires `change_set_id = expectedChangeSetId` so a concurrent detach between the caller's
- * read-only check and this claim is caught here too, not just at the earlier read.
+ * exclusive against another FRESH claim (`execution_claimed_at IS NULL OR < claimExpiryCutoff`),
+ * so at most one concurrent `executeExperiment` call for the same experiment ever proceeds to call
+ * the resolver, while a crashed/expired prior claim can still be reclaimed (never permanently
+ * stuck). Also requires `change_set_id = expectedChangeSetId` so a concurrent detach between the
+ * caller's read-only check and this claim is caught here too, not just at the earlier read.
  */
 export async function claimExperimentForExecution(
   id: string,
   expectedChangeSetId: string,
   at: Date,
+  claimExpiryCutoff: Date,
   database: AppDb = db
 ): Promise<StoredExperiment | null> {
   const rows = await database
@@ -6239,33 +6266,46 @@ export async function claimExperimentForExecution(
         eq(experiments.id, id),
         eq(experiments.status, "approved"),
         eq(experiments.changeSetId, expectedChangeSetId),
-        isNull(experiments.executionClaimedAt)
+        or(isNull(experiments.executionClaimedAt), lt(experiments.executionClaimedAt, claimExpiryCutoff))
       )
     )
     .returning();
   return rows[0] ?? null;
 }
 
-/** Releases a claim taken by `claimExperimentForExecution` when the resolver call after it fails
- * (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md §4 step 4) -- the experiment returns to a normal,
+/** Releases a claim taken by `claimExperimentForExecution` -- called ONLY when the Batch-creation
+ * resolver call itself throws (docs/roadmap/plans/PHASE_10_SLICE_5_PLAN.md §4 step 4), never when
+ * `finalizeExperimentExecution` itself fails (that leaves the claim held, self-healing via
+ * expiry -- see that function's own doc comment for why). The experiment returns to a normal,
  * re-attemptable `"approved"` state (status itself was never touched by the claim), never stuck. */
 export async function releaseExperimentExecutionClaim(id: string, database: AppDb = db): Promise<void> {
   await database.update(experiments).set({ executionClaimedAt: null }).where(eq(experiments.id, id));
 }
 
 /**
- * Step 5 of `executeExperiment` -- unconditional (no further `WHERE` guard beyond `id`), safe
- * because `claimExperimentForExecution`'s claim is already exclusive: no other call could have
- * reached this point for the same experiment. `status` moves to `"running"` only here, the single
- * place this module ever sets it as a side effect of a successful real execution (as opposed to
- * `transitionExperimentStatusIfValid`, the manual/operator-driven path).
+ * Step 5 of `executeExperiment`. **Revised after `advisor()`:** now guarded by the exact claim
+ * timestamp (`WHERE ... AND execution_claimed_at = expectedClaimedAt`), not unconditional -- the
+ * earlier unconditional version could resurrect a terminal state if an Abandon/detach had somehow
+ * landed in between (now impossible given the two functions above also check the claim, but this
+ * guard is real defense in depth, not decorative). Clears `execution_claimed_at` back to `null` in
+ * the SAME write, so the row is no longer "claimed" once it's genuinely `"running"` -- required so
+ * `transitionExperimentStatusIfValid`'s own claim-freshness guard above does not then permanently
+ * block the normal `running -> concluded/abandoned` lifecycle. Returns `false` if the guard did not
+ * match (the claim already moved/cleared by something else) -- the caller must treat this as a real
+ * failure, not assume success.
  */
 export async function finalizeExperimentExecution(
   id: string,
   executionBatchId: string,
+  expectedClaimedAt: Date,
   database: AppDb = db
-): Promise<void> {
-  await database.update(experiments).set({ status: "running", executionBatchId }).where(eq(experiments.id, id));
+): Promise<boolean> {
+  const rows = await database
+    .update(experiments)
+    .set({ status: "running", executionBatchId, executionClaimedAt: null })
+    .where(and(eq(experiments.id, id), eq(experiments.status, "approved"), eq(experiments.executionClaimedAt, expectedClaimedAt)))
+    .returning();
+  return rows.length > 0;
 }
 
 export async function insertExperimentOutcome(

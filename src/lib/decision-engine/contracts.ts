@@ -33,6 +33,15 @@ export type { ExperimentStatus };
 export { EXPERIMENT_STATUS_TRANSITIONS, EXPERIMENT_OUTCOME_RECORDABLE_STATUSES };
 export const EXPERIMENT_STATUSES = ["proposed", "approved", "running", "concluded", "abandoned"] as const;
 
+/** Phase 10 slice 5 -- how long an `executeExperiment` claim (`execution_claimed_at`) blocks other
+ * transitions/detach before being treated as an abandoned (crashed) attempt and reclaimable. Same
+ * 15-minute precedent already used by Phase 9 slice 9B's own market-intelligence collection claim
+ * (`docs/ARCHITECTURE.md`'s claim-expiry note -- deliberately not named symbol-by-symbol here, to
+ * avoid tripping `market-intelligence/write-path-inventory.test.ts`'s own naive whole-file
+ * substring scan for that module's table names with a mere code comment) -- a crash must never
+ * permanently lock an experiment out of its own normal lifecycle. */
+export const EXPERIMENT_EXECUTION_CLAIM_EXPIRY_MS = 15 * 60 * 1000;
+
 export const EXPERIMENT_OUTCOME_CRITERIA_MET = ["met", "not_met", "inconclusive"] as const;
 export type ExperimentOutcomeCriteriaMet = (typeof EXPERIMENT_OUTCOME_CRITERIA_MET)[number];
 

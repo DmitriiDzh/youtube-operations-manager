@@ -182,10 +182,12 @@ function createFakeStore() {
       fromStatuses: ExperimentStatus[],
       toStatus: ExperimentStatus,
       approvedBy: string | null,
-      at: Date
+      at: Date,
+      claimExpiryCutoff: Date
     ) {
       const row = experimentsById.get(id);
       if (!row || !fromStatuses.includes(row.status)) return null;
+      if (row.executionClaimedAt && row.executionClaimedAt >= claimExpiryCutoff) return null;
       const updated: ExperimentRow = {
         ...row,
         status: toStatus,
@@ -194,18 +196,18 @@ function createFakeStore() {
       experimentsById.set(id, updated);
       return updated;
     },
-    async setExperimentChangeSetIfEligible(id: string, fromStatuses: ExperimentStatus[], changeSetId: string | null) {
+    async setExperimentChangeSetIfEligible(id: string, fromStatuses: ExperimentStatus[], changeSetId: string | null, claimExpiryCutoff: Date) {
       const row = experimentsById.get(id);
       if (!row || !fromStatuses.includes(row.status)) return null;
+      if (row.executionClaimedAt && row.executionClaimedAt >= claimExpiryCutoff) return null;
       const updated: ExperimentRow = { ...row, changeSetId };
       experimentsById.set(id, updated);
       return updated;
     },
-    async claimExperimentForExecution(id: string, expectedChangeSetId: string, at: Date) {
+    async claimExperimentForExecution(id: string, expectedChangeSetId: string, at: Date, claimExpiryCutoff: Date) {
       const row = experimentsById.get(id);
-      if (!row || row.status !== "approved" || row.changeSetId !== expectedChangeSetId || row.executionClaimedAt !== null) {
-        return null;
-      }
+      if (!row || row.status !== "approved" || row.changeSetId !== expectedChangeSetId) return null;
+      if (row.executionClaimedAt && row.executionClaimedAt >= claimExpiryCutoff) return null;
       const updated: ExperimentRow = { ...row, executionClaimedAt: at };
       experimentsById.set(id, updated);
       return updated;
@@ -215,10 +217,11 @@ function createFakeStore() {
       if (!row) return;
       experimentsById.set(id, { ...row, executionClaimedAt: null });
     },
-    async finalizeExperimentExecution(id: string, executionBatchId: string) {
+    async finalizeExperimentExecution(id: string, executionBatchId: string, expectedClaimedAt: Date) {
       const row = experimentsById.get(id);
-      if (!row) return;
-      experimentsById.set(id, { ...row, status: "running", executionBatchId });
+      if (!row || row.status !== "approved" || row.executionClaimedAt?.getTime() !== expectedClaimedAt.getTime()) return false;
+      experimentsById.set(id, { ...row, status: "running", executionBatchId, executionClaimedAt: null });
+      return true;
     },
     async insertExperimentOutcome(input: {
       id: string;
@@ -1397,4 +1400,55 @@ test("transitionExperiment: approved->running still succeeds manually when no Ch
 
   const updated = await services.transitionExperiment(experiment.experimentId, { targetStatus: "running" }, { userId: "u1", actor: "actor-1" });
   assert.equal(updated.status, "running");
+});
+
+test("executeExperiment: a finalize failure (real Batch created, but the finalize guard didn't match) does NOT release the claim -- a second call never reaches the resolver again", async () => {
+  const store = createFakeStore();
+  let releaseCalls = 0;
+  const services = createDecisionEngineServices({
+    idGenerator: store.idGenerator,
+    clock: { now: () => new Date("2026-09-29T12:00:00Z") },
+    channelAccess: createFakeChannelAccess("UCactive0000000000000001", []),
+    insertHypothesis: store.insertHypothesis,
+    getHypothesisById: store.getHypothesisById,
+    listHypotheses: store.listHypotheses,
+    insertExperiment: store.insertExperiment,
+    getExperimentById: store.getExperimentById,
+    listExperimentsByHypothesis: store.listExperimentsByHypothesis,
+    transitionExperimentStatusIfValid: store.transitionExperimentStatusIfValid,
+    setExperimentChangeSetIfEligible: store.setExperimentChangeSetIfEligible,
+    claimExperimentForExecution: store.claimExperimentForExecution,
+    releaseExperimentExecutionClaim: async (id: string) => {
+      releaseCalls += 1;
+      return store.releaseExperimentExecutionClaim(id);
+    },
+    // advisor() round 2's own scenario: the Batch gets created successfully, but finalize's own
+    // guard somehow doesn't match (simulated here directly) -- this must NOT release the claim.
+    finalizeExperimentExecution: async () => false,
+    insertExperimentOutcome: store.insertExperimentOutcome,
+    listExperimentOutcomesByExperiment: store.listExperimentOutcomesByExperiment,
+    insertHypothesisEvidence: store.insertHypothesisEvidence,
+    listHypothesisEvidenceByHypothesis: store.listHypothesisEvidenceByHypothesis,
+    insertHypothesisGenerationProvenance: store.insertHypothesisGenerationProvenance,
+    getHypothesisGenerationProvenanceByHypothesis: store.getHypothesisGenerationProvenanceByHypothesis,
+  });
+
+  const experiment = await createApprovedChannelScopedExperiment(services, "UCactive0000000000000001");
+  await services.setExperimentChangeSet(experiment.experimentId, { changeSetId: "cs-1" }, { userId: "u1" }, createFakeExecutionResolver().resolver);
+
+  const { resolver, createCalls } = createFakeExecutionResolver({ batchResult: { batchId: "batch-orphan", videoCount: 1 } });
+  await assert.rejects(
+    () => services.executeExperiment(experiment.experimentId, {}, { userId: "u1" }, resolver, false),
+    (error: unknown) => isDomainError(error) && error.code === "EXPERIMENT_INVALID_TRANSITION"
+  );
+  assert.equal(releaseCalls, 0, "the claim must NOT be released when the Batch was already created -- a second call must never re-create it");
+  assert.equal(createCalls.length, 1);
+
+  // A second execute attempt must never reach the resolver again -- the claim is still held.
+  const secondResolver = createFakeExecutionResolver({ batchResult: { batchId: "batch-should-not-exist", videoCount: 1 } });
+  await assert.rejects(
+    () => services.executeExperiment(experiment.experimentId, {}, { userId: "u1" }, secondResolver.resolver, false),
+    (error: unknown) => isDomainError(error) && error.code === "EXPERIMENT_INVALID_TRANSITION"
+  );
+  assert.equal(secondResolver.createCalls.length, 0, "the claim is still held -- the resolver must never be reached again");
 });

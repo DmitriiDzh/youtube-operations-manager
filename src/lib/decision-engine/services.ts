@@ -1,6 +1,7 @@
 import {
   DomainError,
   parseWithSchema,
+  EXPERIMENT_EXECUTION_CLAIM_EXPIRY_MS,
   EXPERIMENT_OUTCOME_RECORDABLE_STATUSES,
   EXPERIMENT_STATUS_TRANSITIONS,
   type EvidenceReference,
@@ -75,22 +76,31 @@ export type DecisionEngineServiceDependencies = {
     fromStatuses: ExperimentStatus[],
     toStatus: ExperimentStatus,
     approvedBy: string | null,
-    at: Date
+    at: Date,
+    claimExpiryCutoff: Date
   ) => Promise<StoredExperiment | null>;
   /** Phase 10 slice 5. Attach (`changeSetId` set) or detach (`null`), guarded atomically by the
-   * caller's own `fromStatuses` (`["proposed", "approved"]` for both directions). */
+   * caller's own `fromStatuses` (`["proposed", "approved"]` for both directions) and by there
+   * being no FRESH execution claim held. */
   setExperimentChangeSetIfEligible: (
     id: string,
     fromStatuses: ExperimentStatus[],
-    changeSetId: string | null
+    changeSetId: string | null,
+    claimExpiryCutoff: Date
   ) => Promise<StoredExperiment | null>;
   /** Phase 10 slice 5 -- step 2 of `executeExperiment`'s claim-first design. `null` if the claim
-   * was not won (already claimed, not approved, or `changeSetId` no longer matches). */
-  claimExperimentForExecution: (id: string, expectedChangeSetId: string, at: Date) => Promise<StoredExperiment | null>;
-  /** Phase 10 slice 5 -- releases a claim when the resolver call after it fails. */
+   * was not won (already freshly claimed, not approved, or `changeSetId` no longer matches). */
+  claimExperimentForExecution: (
+    id: string,
+    expectedChangeSetId: string,
+    at: Date,
+    claimExpiryCutoff: Date
+  ) => Promise<StoredExperiment | null>;
+  /** Phase 10 slice 5 -- releases a claim ONLY when the resolver call after it fails. */
   releaseExperimentExecutionClaim: (id: string) => Promise<void>;
-  /** Phase 10 slice 5 -- step 5, unconditional (the claim above is already exclusive). */
-  finalizeExperimentExecution: (id: string, executionBatchId: string) => Promise<void>;
+  /** Phase 10 slice 5 -- step 5, guarded by the exact claim timestamp; `false` if the guard didn't
+   * match (must be treated as a real failure, not assumed success). */
+  finalizeExperimentExecution: (id: string, executionBatchId: string, expectedClaimedAt: Date) => Promise<boolean>;
   insertExperimentOutcome: (input: {
     id: string;
     experimentId: string;
@@ -393,12 +403,14 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
       // below is exactly the race `advisor()` flagged; the atomic UPDATE...WHERE below is what
       // actually closes it, this read-time check is only a fast, friendly early rejection.
       const at = deps.clock.now();
+      const claimExpiryCutoff = new Date(at.getTime() - EXPERIMENT_EXECUTION_CLAIM_EXPIRY_MS);
       const updated = await deps.transitionExperimentStatusIfValid(
         experimentId,
         [experiment.status],
         parsed.targetStatus,
         parsed.targetStatus === "approved" ? ctx.actor : null,
-        at
+        at,
+        claimExpiryCutoff
       );
       if (!updated) {
         const current = await deps.getExperimentById(experimentId);
@@ -441,12 +453,14 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
         }
       }
 
-      const updated = await deps.setExperimentChangeSetIfEligible(experimentId, ["proposed", "approved"], parsed.changeSetId);
+      const setAt = deps.clock.now();
+      const claimExpiryCutoff = new Date(setAt.getTime() - EXPERIMENT_EXECUTION_CLAIM_EXPIRY_MS);
+      const updated = await deps.setExperimentChangeSetIfEligible(experimentId, ["proposed", "approved"], parsed.changeSetId, claimExpiryCutoff);
       if (!updated) {
         const current = await deps.getExperimentById(experimentId);
         throw new DomainError({
           code: "EXPERIMENT_INVALID_TRANSITION",
-          message: `Experiment is no longer in a state that allows changing its Change Set (status "${current?.status ?? "unknown"}")`,
+          message: `Experiment is no longer in a state that allows changing its Change Set (status "${current?.status ?? "unknown"}", or a fresh execution claim is held)`,
           details: { experimentId, actualCurrentStatus: current?.status ?? null },
         });
       }
@@ -462,7 +476,7 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
       ctx: { userId: string | null | undefined },
       resolver: ExperimentExecutionResolver,
       liveWritesEnabled: boolean
-    ): Promise<{ experiment: Experiment; batchId: string; videoCount: number }> {
+    ): Promise<{ experiment: Experiment; batchId: string; videoCount: number; dryRun: boolean }> {
       const { experiment, hypothesis } = await assertExperimentAccessible(experimentId, ctx);
       const parsed = parseWithSchema(executeExperimentInputSchema, input, "execute experiment input");
 
@@ -479,10 +493,12 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
       // request body cannot force a live write while the global Live Writes toggle is off.
       const dryRun = liveWritesEnabled ? !(parsed.live ?? false) : true;
 
-      // Step 2: atomic claim -- exclusive, so at most one concurrent call ever reaches step 3/4
-      // for the same experiment.
+      // Step 2: atomic claim -- exclusive against another FRESH claim, so at most one concurrent
+      // call ever reaches step 3/4 for the same experiment; a stale/expired claim (a crashed prior
+      // attempt) can still be reclaimed.
       const at = deps.clock.now();
-      const claimed = await deps.claimExperimentForExecution(experimentId, changeSetId, at);
+      const claimExpiryCutoff = new Date(at.getTime() - EXPERIMENT_EXECUTION_CLAIM_EXPIRY_MS);
+      const claimed = await deps.claimExperimentForExecution(experimentId, changeSetId, at, claimExpiryCutoff);
       if (!claimed) {
         const current = await deps.getExperimentById(experimentId);
         throw new DomainError({
@@ -492,6 +508,8 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
         });
       }
 
+      let batchId: string;
+      let videoCount: number;
       try {
         // Step 3: re-verify -- the attach-time check is not trusted as still valid (AC-BATCH-03's
         // own "re-run the full safety pipeline immediately before send" principle). `channelId` is
@@ -518,22 +536,34 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
         }
 
         // Step 4: create the real Batch.
-        const { batchId, videoCount } = await resolver.createDryRunBatch({
-          channelId,
-          changeSetId,
-          dryRun,
-        });
-
-        // Step 5: finalize -- unconditional, safe because the claim above is exclusive.
-        await deps.finalizeExperimentExecution(experimentId, batchId);
-        const updated = await deps.getExperimentById(experimentId);
-        return { experiment: toExperiment(updated as StoredExperiment), batchId, videoCount };
+        const created = await resolver.createDryRunBatch({ channelId, changeSetId, dryRun });
+        batchId = created.batchId;
+        videoCount = created.videoCount;
       } catch (error) {
-        // Release the claim so a failed attempt never strands the experiment -- it returns to a
-        // normal, re-attemptable "approved" state (status itself was never touched by the claim).
+        // Release the claim ONLY here -- the Batch was never created, so returning to a normal,
+        // re-attemptable "approved" state is exactly correct (status itself was never touched by
+        // the claim).
         await deps.releaseExperimentExecutionClaim(experimentId);
         throw error;
       }
+
+      // Step 5: finalize -- deliberately OUTSIDE the try/catch above (`advisor()` review, round 2:
+      // the earlier version released the claim on ANY failure including finalize's own, which
+      // would let a second call re-create a second real Batch for a Batch that already exists). A
+      // finalize failure here leaves the claim held -- self-healing via `claimExpiryCutoff` above,
+      // never silently duplicating a Batch. `false` means the guard didn't match (the claim/status
+      // moved between step 2 and here, which should be impossible given the claim's own
+      // exclusivity, but is treated as a real, loud failure rather than assumed success).
+      const finalized = await deps.finalizeExperimentExecution(experimentId, batchId, at);
+      if (!finalized) {
+        throw new DomainError({
+          code: "EXPERIMENT_INVALID_TRANSITION",
+          message: "A real Batch was created but the experiment's own state could not be finalized -- this needs manual investigation",
+          details: { experimentId, batchId },
+        });
+      }
+      const updated = await deps.getExperimentById(experimentId);
+      return { experiment: toExperiment(updated as StoredExperiment), batchId, videoCount, dryRun };
     },
 
     async createExperimentOutcome(
