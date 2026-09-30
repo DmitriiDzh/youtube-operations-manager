@@ -648,3 +648,31 @@ test("applyMetadata fails closed when write-channel guardrail rejects", async ()
 
   assert.equal(applyCalls, 0);
 });
+
+// Architecture audit 2026-10-01 (H5, docs/roadmap/plans/HARDENING_AUDIT_2026-10_PLAN.md AC-H5-1/2):
+// AGENTS.md §F -- this path never sets snippet.defaultLanguage as a side effect. A video without
+// one stays without one (even via the single-localization fallback); an existing value is sent back
+// unchanged; other languages' localizations are preserved.
+test("AC-H5: applyMetadata never adds or changes snippet.defaultLanguage and keeps other localizations", async () => {
+  const noDefault = {
+    snippet: { title: "T", description: "D", categoryId: "22" },
+    localizations: { de: { title: "DE", description: "DE desc" } },
+  };
+  const services = createVideoMetadataServices(makeDeps({ youtubeApi: { getVideoMetadataContext: async () => noDefault } }));
+  const input = {
+    credentialRef: { userId: "user-1" },
+    videoId: "video-1",
+    finalTitle: "New title",
+    description: "New description",
+    expectedChannelId: "UC_ACTIVE",
+    dryRun: true,
+  };
+  const result = await services.applyMetadata(input);
+  assert.equal(result.targetLanguage, "de");
+  assert.equal("defaultLanguage" in result.snippet.proposed, false, "no defaultLanguage may be introduced");
+
+  const withDefault = createVideoMetadataServices(makeDeps());
+  const kept = await withDefault.applyMetadata(input);
+  assert.equal((kept.snippet.proposed as { defaultLanguage?: string }).defaultLanguage, "es");
+  assert.deepEqual(Object.keys(kept.localizations.proposed).sort(), ["en", "es"]);
+});

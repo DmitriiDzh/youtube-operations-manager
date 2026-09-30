@@ -154,7 +154,11 @@ function buildMetadataSyncProposal(args: {
     ...beforeSnippet,
     title: args.draft.finalTitle,
     description: args.draft.description,
-    defaultLanguage: resolvedLanguage.targetLanguage,
+    // Architecture audit 2026-10-01 (H5): `snippet.defaultLanguage` is never set as a side effect
+    // (AGENTS.md §F -- the localization pipeline has authority over title/description only). The
+    // video's existing value, if any, is carried through unchanged via `beforeSnippet`; a video
+    // without one stays without one even when the target language came from the
+    // single-localization fallback.
   });
 
   const beforeLocalizations = { ...args.context.localizations };
