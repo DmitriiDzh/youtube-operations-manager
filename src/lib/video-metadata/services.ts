@@ -135,7 +135,7 @@ function resolveTargetLanguage(context: VideoMetadataContext): {
   throw new DomainError({
     code: "target_language_unresolvable",
     message:
-      "Cannot resolve target language. Set snippet.defaultLanguage on the video or leave exactly one localization.",
+      "Cannot resolve target language. Set the video's default language (snippet.defaultLanguage) on YouTube -- this app never sets it itself.",
     details: {
       videoDefaultLanguage: context.snippet.defaultLanguage ?? null,
       localizationLocales,

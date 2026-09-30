@@ -1,5 +1,6 @@
 "use client";
 
+import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "./confirm-dialog";
 import { InfoTooltip } from "./info-tooltip";
@@ -23,6 +24,7 @@ export function OperatorCliSettings() {
     const res = await fetch("/api/settings");
     if (!res.ok) return;
     const data = (await res.json()) as { operatorCliEnabled: boolean };
+    if (ownSettingsUnavailable(data, ["operatorCliEnabled"])) return;
     setSaved(data.operatorCliEnabled);
     setDraft(data.operatorCliEnabled);
   }, []);

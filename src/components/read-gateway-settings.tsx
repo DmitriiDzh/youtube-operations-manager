@@ -1,5 +1,6 @@
 "use client";
 
+import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState } from "react";
 import { CloudQuotaProgress, type ServiceQuotaStatusView } from "./cloud-quota-progress";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
@@ -38,6 +39,7 @@ export function ReadGatewaySettings() {
     const res = await fetch("/api/settings");
     if (!res.ok) return;
     const data = (await res.json()) as Settings;
+    if (ownSettingsUnavailable(data, ["dataApiReadsEnabled", "analyticsReadsEnabled"])) return;
     setSettings(data);
     setDraft(data);
   }, []);

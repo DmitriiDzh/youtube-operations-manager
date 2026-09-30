@@ -1,5 +1,6 @@
 "use client";
 
+import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState } from "react";
 import { CloudQuotaProgress, type ServiceQuotaStatusView } from "./cloud-quota-progress";
 import { ConfirmDialog } from "./confirm-dialog";
@@ -36,6 +37,7 @@ export function LiveWritesSettings() {
     const res = await fetch("/api/settings");
     if (!res.ok) return;
     const data = (await res.json()) as Settings;
+    if (ownSettingsUnavailable(data, ["liveWritesEnabled"])) return;
     setSettings(data);
     setDraft(data);
   }, []);
