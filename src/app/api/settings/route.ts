@@ -22,6 +22,7 @@ import {
   setOperationsWorkspacePath,
 } from "@/lib/db";
 import { validateOperationsWorkspacePath } from "@/lib/operations-instructions";
+import { buildSettingsSnapshot } from "./settings-snapshot";
 
 // A thin passthrough to the market-intelligence module's own quota-budget actions, never a direct
 // `@/lib/db` import for that setting -- this module's own PHASE9-INV-02 inventory test forbids any
@@ -95,43 +96,18 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
  * later while debugging something unrelated.
  */
 async function getSettingsSnapshot() {
-  const [
-    liveWritesEnabled,
-    mcpConnectionEnabled,
-    analyticsSync,
-    dataApiReadsEnabled,
-    analyticsReadsEnabled,
-    gatewayTraffic,
-    cloudQuotaStatus,
-    operationsWorkspacePath,
-    marketIntelligenceDailyQuotaBudgetUnits,
-    operatorCliEnabled,
-  ] = await Promise.all([
-    getLiveWritesEnabled(),
-    getMcpConnectionEnabled(),
-    getAnalyticsSyncSettings(),
-    getDataApiReadsEnabled(),
-    getAnalyticsReadsEnabled(),
-    getGatewayTrafficLast24h(),
-    createCloudQuotasCore().getQuotaStatus(),
-    getOperationsWorkspacePath(),
-    marketIntelligenceCore.getDailyQuotaBudgetUnits(),
-    getOperatorCliEnabled(),
-  ]);
-
-  return {
-    liveWritesEnabled,
-    mcpConnectionEnabled,
-    analyticsSyncLocalTime: analyticsSync.localTime,
-    analyticsSyncTimezone: analyticsSync.timezone,
-    dataApiReadsEnabled,
-    analyticsReadsEnabled,
-    gatewayTraffic,
-    cloudQuotaStatus,
-    operationsWorkspacePath,
-    marketIntelligenceDailyQuotaBudgetUnits,
-    operatorCliEnabled,
-  };
+  return buildSettingsSnapshot({
+    liveWritesEnabled: () => getLiveWritesEnabled(),
+    mcpConnectionEnabled: () => getMcpConnectionEnabled(),
+    analyticsSync: () => getAnalyticsSyncSettings(),
+    dataApiReadsEnabled: () => getDataApiReadsEnabled(),
+    analyticsReadsEnabled: () => getAnalyticsReadsEnabled(),
+    gatewayTraffic: () => getGatewayTrafficLast24h(),
+    cloudQuotaStatus: () => createCloudQuotasCore().getQuotaStatus(),
+    operationsWorkspacePath: () => getOperationsWorkspacePath(),
+    marketIntelligenceDailyQuotaBudgetUnits: () => marketIntelligenceCore.getDailyQuotaBudgetUnits(),
+    operatorCliEnabled: () => getOperatorCliEnabled(),
+  });
 }
 
 export async function GET() {
