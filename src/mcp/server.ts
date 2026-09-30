@@ -81,6 +81,11 @@ import {
   listWeeklyReportsInputSchema,
 } from "@/lib/analytics/schemas";
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
+import {
+  createChannelWorkspacesCore,
+  getChannelWorkspaceInputSchema,
+  type ChannelWorkspacesCore,
+} from "@/lib/channel-workspaces";
 import { createMarketResearchRequestInputSchema, getWatchlistEntryInputSchema } from "@/lib/market-intelligence/schemas";
 import { createDecisionEngineCore, type DecisionEngineCore } from "@/lib/decision-engine";
 import {
@@ -270,6 +275,7 @@ type McpToolHandlers = {
   agentListHypotheses: (input: unknown) => Promise<ToolResponse>;
   agentGetHypothesisTrail: (input: unknown) => Promise<ToolResponse>;
   createExperimentProposal: (input: unknown) => Promise<ToolResponse>;
+  agentGetChannelWorkspace: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -498,7 +504,12 @@ export function createMcpToolHandlers(
   aiLocalizationCore: AiLocalizationCoreSubset = createAiLocalizationCore(),
   agentOperationsCore: AgentOperationsCoreSubset = createAgentOperationsCore(),
   marketIntelligenceCore: MarketIntelligenceCoreSubset = createMarketIntelligenceCore(),
-  decisionEngineCore: DecisionEngineCoreSubset = createDecisionEngineCore()
+  decisionEngineCore: DecisionEngineCoreSubset = createDecisionEngineCore(),
+  // Phase 11 (docs/roadmap/plans/PHASE_11_PLAN.md) -- registered directly here, not through
+  // `agentOperationsCore`, for the same module-independence reason as `marketIntelligenceCore`
+  // above. Read-only subset on purpose: `setWorkspace` is operator-only (`/api/channel-workspaces`)
+  // and is deliberately NOT reachable from any MCP tool (AC-P11-10).
+  channelWorkspacesCore: Pick<ChannelWorkspacesCore, "getWorkspace"> = createChannelWorkspacesCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -1142,6 +1153,31 @@ export function createMcpToolHandlers(
           channelId: parsedInput.data.channelId,
         });
         const result = await agentOperationsCore.getChannelContext(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * Phase 11 -- the per-channel production-workspace path this device's operator set in Settings.
+     * Same active-channel scoping as `agentGetChannelContext` (resolve identity, then
+     * `assertActiveChannel`, before the core is ever reached). Returns the stored string only --
+     * the core makes no filesystem call of any kind, and nothing here can set or clear the path.
+     */
+    async agentGetChannelWorkspace(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getChannelWorkspaceInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await channelWorkspacesCore.getWorkspace(parsedInput.data);
         return toolSuccessResult(result as unknown as Record<string, unknown>);
       } catch (error) {
         return toolErrorResult(error);
@@ -1812,6 +1848,9 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // agentCreateMarketResearchRequest above.
     createExperimentProposal: async (input) =>
       (await assertMcpDeviceAvailable()) ?? handlers.createExperimentProposal(input),
+    // Phase 11 -- a pure local read of one stored string, never a mutation -- ungated, same
+    // classification as agentGetChannelContext above.
+    agentGetChannelWorkspace: handlers.agentGetChannelWorkspace,
   };
 }
 
@@ -2417,6 +2456,16 @@ export function createMcpServer(
   // reads over the market-intelligence module's own watchlist/evidence storage, never a live
   // YouTube call, never channel-scoped (this data is global, about channels the operator does not
   // necessarily own).
+  registerTool(
+    "agent_get_channel_workspace",
+    {
+      description:
+        "Phase 11: the local production-workspace folder path the operator set for this channel on THIS device (Settings -> Channels), as an absolute path string. Returns { configured: false } when none is set -- never an empty-string path. This application never opens, lists, reads, writes, or re-validates anything inside that folder; the path is returned exactly as stored, even if the folder has since been moved or deleted, so check it with your own filesystem tools. Device-local: a path set on another computer is never returned here. Read-only: no MCP tool or CLI command can set or clear it -- only the operator, through the Settings UI. Requires channelId to be the caller's currently-active channel.",
+      inputSchema: getChannelWorkspaceInputSchema,
+    },
+    (args) => handlers.agentGetChannelWorkspace(args)
+  );
+
   registerTool(
     "query_competitors",
     {

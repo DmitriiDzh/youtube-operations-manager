@@ -2805,7 +2805,14 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
   assert.equal(result.isError, undefined);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
   // Bumped 0.13.0 -> 0.14.0, Phase 10 slice 2: new decision_engine capabilities added.
-  assert.equal(payload.agentApiVersion, "0.14.0");
+  // Bumped 0.14.0 -> 0.15.0, Phase 11: new channel_workspace.get_channel_workspace capability
+  // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11).
+  assert.equal(payload.agentApiVersion, "0.15.0");
+  assert.ok(
+    payload.capabilities.some(
+      (c: { id: string; permission: string }) => c.id === "channel_workspace.get_channel_workspace" && c.permission === "READ"
+    )
+  );
   assert.deepEqual(payload.grantedPermissions, ["READ", "DRAFT"]);
   assert.ok(payload.capabilities.some((c: { id: string }) => c.id === "system.get_capabilities"));
 });
@@ -5423,4 +5430,71 @@ test("MCP create_experiment_proposal propagates a channel-context rejection from
   assert.equal(result.isError, true);
   const payload = JSON.parse(result.content[0]?.text ?? "{}");
   assert.equal(payload.error.code, "CHANNEL_NOT_AUTHORIZED");
+});
+
+// Phase 11 (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-07/08/10) -- agent_get_channel_workspace.
+// Positional args up to the new trailing channelWorkspacesCore parameter.
+function makeChannelWorkspaceHandlers(
+  channelAccessCore: Parameters<typeof createMcpToolHandlers>[4],
+  getWorkspace: (input: unknown) => Promise<{ configured: false } | { configured: true; path: string }>
+) {
+  return createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    channelAccessCore,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { getWorkspace }
+  );
+}
+
+test("MCP agent_get_channel_workspace returns the stored path for the active channel, and { configured: false } when unset", async () => {
+  const stored: Record<string, string> = { UC_1: "/Users/op/channels/one" };
+  const handlers = makeChannelWorkspaceHandlers(makeChannelAccessCoreStub(), async (input) => {
+    const { channelId } = input as { channelId: string };
+    return stored[channelId] ? { configured: true, path: stored[channelId] } : { configured: false };
+  });
+
+  const configured = await handlers.agentGetChannelWorkspace({ channelId: "UC_1" });
+  assert.equal(configured.isError, undefined);
+  assert.deepEqual(JSON.parse(configured.content[0]?.text ?? "{}"), { configured: true, path: "/Users/op/channels/one" });
+
+  const unset = await handlers.agentGetChannelWorkspace({ channelId: "UC_2" });
+  assert.deepEqual(JSON.parse(unset.content[0]?.text ?? "{}"), { configured: false });
+});
+
+test("MCP agent_get_channel_workspace rejects a non-active channel before the core is ever reached", async () => {
+  const handlers = makeChannelWorkspaceHandlers(makeRestrictiveChannelAccessStub(), async () => {
+    throw new Error("must not be called");
+  });
+  const result = await handlers.agentGetChannelWorkspace({ channelId: "UC_OTHER" });
+
+  assert.equal(result.isError, true);
+  const payload = JSON.parse(result.content[0]?.text ?? "{}");
+  assert.equal(payload.error.code, "CHANNEL_NOT_ACTIVE");
+  assert.equal(JSON.stringify(payload).includes("/"), false, "no path may leak in the error");
+});
+
+test("MCP agent_get_channel_workspace rejects an extra `path` field -- it can never act as a setter", async () => {
+  const handlers = makeChannelWorkspaceHandlers(makeChannelAccessCoreStub(), async () => {
+    throw new Error("must not be called");
+  });
+  const result = await handlers.agentGetChannelWorkspace({ channelId: "UC_1", path: "/tmp/evil" });
+
+  assert.equal(result.isError, true);
+  assert.equal(JSON.parse(result.content[0]?.text ?? "{}").error.code, "validation_failed");
+});
+
+test("MCP server registers agent_get_channel_workspace and no tool that can set or clear a channel workspace", () => {
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
+  const tools = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {};
+
+  assert.ok(tools.agent_get_channel_workspace, "agent_get_channel_workspace must be registered");
+  const workspaceTools = Object.keys(tools).filter((name) => name.includes("workspace"));
+  assert.deepEqual(workspaceTools.sort(), ["agent_get_channel_workspace"]);
 });

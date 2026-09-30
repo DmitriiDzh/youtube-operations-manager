@@ -351,3 +351,15 @@ test("proxy gates the decision-engine execute-experiment route like any other re
     await releaseOperationLock(rawSqlClient);
   }
 });
+
+// Phase 11 (docs/roadmap/plans/PHASE_11_PLAN.md) -- the operator-only set path for a channel
+// workspace is a real local mutation, gated like every other one.
+test("proxy gates the channel-workspaces PUT route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(new NextRequest(new Request("http://localhost/api/channel-workspaces", { method: "PUT" })));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});

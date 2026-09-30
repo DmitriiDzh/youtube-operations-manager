@@ -325,6 +325,18 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Creates an experiment (treatment, control/baseline, success/stopping criteria, responsible party) against an already-existing hypothesis. Always starts status:\"proposed\" -- no field or tool lets an agent set any other status; a human must separately approve it through the Web UI (FUTURE_PHASES.md §6: \"no consequential action executes merely because an AI agent proposed it\"). Creating a hypothesis, recording an outcome, and any status transition remain Web-UI-only. Implemented as the `create_experiment_proposal` MCP tool/`agent create-experiment-proposal` CLI command. Mutates local application state, gated the same way as market_intelligence.agent_create_market_research_request above.",
   },
+  // Phase 11 (docs/roadmap/plans/PHASE_11_PLAN.md) -- registered directly as the
+  // `agent_get_channel_workspace` MCP tool / `agent channel-workspace` CLI command calling
+  // `createChannelWorkspacesCore()` (`src/lib/channel-workspaces/`), NOT wrapped by this module --
+  // same "registered here for capability-discovery completeness" pattern as the
+  // market_intelligence entries above.
+  {
+    id: "channel_workspace.get_channel_workspace",
+    domain: "channel_workspace",
+    permission: "READ",
+    description:
+      "The local production-workspace folder path the operator set for a channel on THIS device (Settings -> Channels), returned as an absolute path string, or { configured: false } when none is set (never an empty-string path). Implemented as the `agent_get_channel_workspace` MCP tool / `agent channel-workspace` CLI command (`src/lib/channel-workspaces/`). This application never opens, lists, reads, writes, or re-validates anything inside the folder -- the string is returned exactly as stored, even if the folder has since been moved or deleted. Device-local: never synced or handed off, and a path set on another device is never returned. Read-only: no agent-callable way exists to set or clear it -- only the operator, through the Settings UI (`PUT /api/channel-workspaces`), the same self-authorization concern owner spec §17 raised for `local_path` asset registration. Requires channelId to be the caller's currently-active channel.",
+  },
 ];
 
 
