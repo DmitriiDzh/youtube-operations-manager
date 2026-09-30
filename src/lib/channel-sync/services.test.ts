@@ -20,24 +20,28 @@ function createFakeChannelAccess() {
 function createFakeStore() {
   const channels = new Map<string, StoredChannelRecord>();
   const videos = new Map<string, StoredVideoRecord[]>();
+  const upsertCalls: Array<{ channelId: string; connectedUserId?: string | null }> = [];
 
   return {
     channels,
     videos,
+    upsertCalls,
     async upsertChannel(args: {
       channelId: string;
       title: string;
       thumbnailUrl: string | null;
       uploadsPlaylistId: string;
-      connectedUserId: string | null;
+      connectedUserId?: string | null;
     }) {
       const existing = channels.get(args.channelId);
+      upsertCalls.push(args);
       channels.set(args.channelId, {
         channelId: args.channelId,
         title: args.title,
         thumbnailUrl: args.thumbnailUrl,
         uploadsPlaylistId: args.uploadsPlaylistId,
-        connectedUserId: args.connectedUserId,
+        // Mirrors db.ts upsertChannel's contract (architecture audit H3): absent owner = unchanged.
+        connectedUserId: args.connectedUserId ?? existing?.connectedUserId ?? null,
         connectedAt: existing?.connectedAt ?? new Date("2026-01-01T00:00:00.000Z"),
         lastSyncedAt: existing?.lastSyncedAt ?? null,
       });
@@ -345,4 +349,23 @@ test("syncChannel with an explicit channelId never changes the caller's active c
   await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_SOMEONE_ELSE" });
 
   assert.equal(await channelAccess.getActiveChannelId("user-1"), "UC_MINE_ALREADY");
+});
+
+// Architecture audit 2026-10-01 (H3, docs/roadmap/plans/HARDENING_AUDIT_2026-10_PLAN.md AC-H3-1..3):
+// only the implicit "my channel" sync may record who owns a channel; an explicit-id sync or a
+// credential without a user id must never re-own or disconnect it.
+test("AC-H3: implicit sync records the owner; explicit-id and user-less syncs never touch it", async () => {
+  const { services, store } = createServicesFixture({ videoIds: [] });
+
+  await services.syncChannel({ credentialRef: { userId: "owner-user" } });
+  assert.equal(store.channels.get("UC_MINE")?.connectedUserId, "owner-user");
+  assert.equal(store.upsertCalls.at(-1)?.connectedUserId, "owner-user");
+
+  await services.syncChannel({ credentialRef: { userId: "someone-else" }, channelId: "UC_MINE" });
+  assert.equal(store.upsertCalls.at(-1)?.connectedUserId, undefined);
+  assert.equal(store.channels.get("UC_MINE")?.connectedUserId, "owner-user");
+
+  await services.syncChannel({ credentialRef: { accessToken: "ya29.raw" } });
+  assert.equal(store.upsertCalls.at(-1)?.connectedUserId, undefined);
+  assert.equal(store.channels.get("UC_MINE")?.connectedUserId, "owner-user");
 });

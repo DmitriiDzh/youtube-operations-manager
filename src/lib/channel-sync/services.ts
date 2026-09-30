@@ -79,7 +79,8 @@ type ServiceDependencies = {
       title: string;
       thumbnailUrl: string | null;
       uploadsPlaylistId: string;
-      connectedUserId: string | null;
+      /** `undefined` = leave the stored owner unchanged (never cleared by a sync). */
+      connectedUserId?: string;
     }): Promise<void>;
     markChannelSynced(channelId: string, syncedAt: Date): Promise<void>;
     listChannels(): Promise<StoredChannelRecord[]>;
@@ -200,7 +201,11 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
           title: channel.title,
           thumbnailUrl: channel.thumbnailUrl,
           uploadsPlaylistId: channel.uploadsPlaylistId,
-          connectedUserId,
+          // Architecture audit 2026-10-01 (H3): only the implicit "my channel" resolution is evidence
+          // of which Google identity OWNS this channel. An explicit-id sync is a public lookup and a
+          // credential without a user id (raw access token) proves nothing -- neither may re-own or
+          // disconnect the channel (that column now also decides agent-token validity, Phase 12).
+          connectedUserId: !parsedInput.channelId && connectedUserId ? connectedUserId : undefined,
         });
 
         const videoIds = await deps.youtubeApi.listUploadsPlaylistVideoIds({

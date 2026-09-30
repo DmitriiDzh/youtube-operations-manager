@@ -2933,7 +2933,10 @@ export async function upsertChannel(input: {
   title: string;
   thumbnailUrl: string | null;
   uploadsPlaylistId: string;
-  connectedUserId: string | null;
+  /** Architecture audit H3: `undefined` leaves an existing row's owner untouched; only a proven
+   * owner (the implicit "my channel" sync) ever sets it, and a sync never clears it (`null` is
+   * treated like `undefined` here). */
+  connectedUserId?: string | null;
 }): Promise<void> {
   await db
     .insert(channels)
@@ -2942,7 +2945,7 @@ export async function upsertChannel(input: {
       title: input.title,
       thumbnailUrl: input.thumbnailUrl,
       uploadsPlaylistId: input.uploadsPlaylistId,
-      connectedUserId: input.connectedUserId,
+      connectedUserId: input.connectedUserId ?? null,
     })
     .onConflictDoUpdate({
       target: channels.id,
@@ -2950,7 +2953,7 @@ export async function upsertChannel(input: {
         title: input.title,
         thumbnailUrl: input.thumbnailUrl,
         uploadsPlaylistId: input.uploadsPlaylistId,
-        connectedUserId: input.connectedUserId,
+        ...(input.connectedUserId ? { connectedUserId: input.connectedUserId } : {}),
       },
     });
 }

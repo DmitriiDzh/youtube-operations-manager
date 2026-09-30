@@ -657,6 +657,14 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 ## RISK-39 — `syncChannel`'s explicit-`channelId` path has no ownership check (write side) — OPEN, 2026-09-20
 
+- **Update 2026-10-01 (architecture audit H3).** The impact was larger than "quota plus a harmless
+  row". Every sync overwrote `channels.connected_user_id`, and a raw-access-token credential set it
+  to NULL. Since ADR 0010 and Phase 12, that column decides channel reactivation and whether a
+  channel's agent token is valid. So an operator re-sync of another channel silently re-owned or
+  disconnected it.
+  - **Fixed:** only the implicit "my channel" sync sets the owner, and no sync ever clears it
+    (`channel-sync/services.ts`, `db.ts` `upsertChannel`).
+  - **Still open:** the original quota and local-row concern below.
 - **Affected components:** `src/lib/youtube-read-gateway/data-api.ts` (`getChannelForSync`), `src/lib/channel-sync/adapters/youtube-api.ts`, `src/lib/channel-sync/services.ts` (`syncChannel`), `src/app/api/channels/sync/route.ts`, `src/components/channel-sync.tsx` ("Re-sync this channel" picker action).
 - **Current behavior:** When `syncChannel` is called with an explicit `channelId` (the Sync tab's "re-sync a previously-known channel" action, or a direct API/MCP/CLI call), `getChannelForSync` performs a public, unauthenticated-scope `youtube.channels.list({ id: [channelId] })` lookup — **not** cross-checked against the caller's OAuth-authenticated ("mine") channel at all. The result is upserted into the local `channels`/`videos` tables regardless of whether it has anything to do with the calling session's actual Google account.
 - **Actual risk:** A caller can cause the local database to sync (fetch + persist) metadata for **any** public YouTube channel ID, not just their own, consuming their own YouTube API quota to do so. Found alongside the RISK-02 fix (2026-09-20) — discovered, not introduced, by that work: RISK-02's read-scoping fix (`docs/decisions/0004-active-channel-read-scoping.md`) means the result of such a sync is no longer *visible* afterward (it never becomes the active channel), which narrows the practical impact to "wasted quota + a harmless local row," but the write itself is still unauthenticated-scope.
