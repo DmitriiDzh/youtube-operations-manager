@@ -55,7 +55,11 @@ export function AnalyticsCollectionSettings() {
       const res = await fetch("/api/settings", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(draft),
+        // Only this card's own two fields -- never the whole snapshot (see read-gateway-settings.tsx).
+        body: JSON.stringify({
+          analyticsSyncLocalTime: draft.analyticsSyncLocalTime,
+          analyticsSyncTimezone: draft.analyticsSyncTimezone,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {

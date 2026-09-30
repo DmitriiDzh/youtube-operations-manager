@@ -146,7 +146,7 @@ export async function POST(request: Request) {
   // validation or write depends on another field's write already having landed, so this reordering
   // changes nothing about what a fully-valid request ends up persisting.
   let analyticsSyncLocalTimeToSet: string | undefined;
-  if (body.analyticsSyncLocalTime !== undefined) {
+  if (body.analyticsSyncLocalTime !== undefined && body.analyticsSyncLocalTime !== null) {
     if (typeof body.analyticsSyncLocalTime !== "string" || !isValidLocalTimeOfDay(body.analyticsSyncLocalTime)) {
       return NextResponse.json(
         { error: "validation_failed", message: "analyticsSyncLocalTime must be a valid 24-hour HH:MM string" },
@@ -157,7 +157,7 @@ export async function POST(request: Request) {
   }
 
   let analyticsSyncTimezoneToSet: string | undefined;
-  if (body.analyticsSyncTimezone !== undefined) {
+  if (body.analyticsSyncTimezone !== undefined && body.analyticsSyncTimezone !== null) {
     if (typeof body.analyticsSyncTimezone !== "string" || !isValidIanaTimezone(body.analyticsSyncTimezone)) {
       return NextResponse.json(
         { error: "validation_failed", message: "analyticsSyncTimezone must be a valid IANA timezone name" },

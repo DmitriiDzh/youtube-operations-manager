@@ -54,7 +54,14 @@ export function ReadGatewaySettings() {
       const res = await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(next),
+        // Only this card's own two fields (architecture-audit review): POSTing the whole mount-time
+        // snapshot re-sent stale values of OTHER cards' settings -- e.g. silently turning Live writes
+        // back on after it had been switched off in its own card, or saving a `null` placeholder of
+        // a field whose read failed.
+        body: JSON.stringify({
+          dataApiReadsEnabled: next.dataApiReadsEnabled,
+          analyticsReadsEnabled: next.analyticsReadsEnabled,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
