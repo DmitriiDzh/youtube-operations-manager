@@ -12,12 +12,14 @@ function createFixture(opts: {
   monitoringPerMinuteLimit?: number | null;
   monitoringPerMinuteUsage?: number;
   throwForMonitoringOwnQuota?: boolean;
+  throwOnResolveCredentials?: boolean;
 }) {
   const cloudConnection = {
     async getStatus() {
       return { connected: opts.connected ?? true };
     },
     async resolveCloudCredentials() {
+      if (opts.throwOnResolveCredentials) throw new Error("Cloud connection token refresh failed");
       return { accessToken: "fake-access-token" };
     },
   };
@@ -146,4 +148,14 @@ test("getQuotaStatus: Cloud Monitoring's own per-minute quota query fails -> mon
     analytics: { limit: 100000, usedLast24h: 28 },
     monitoring: null,
   });
+});
+
+// Found live 2026-09-30: a revoked Cloud grant made resolveCloudCredentials throw, which propagated
+// out of GET /api/settings as a 500 and broke the whole Settings tab. It must degrade like any other
+// quota failure: connected, all three unknown, no Monitoring call attempted.
+test("getQuotaStatus: Cloud credentials cannot be refreshed -> degrades to unknown rather than throwing", async () => {
+  const { services, getMonitoringCallCount } = createFixture({ connected: true, throwOnResolveCredentials: true });
+  const status = await services.getQuotaStatus();
+  assert.deepEqual(status, { connected: true, dataApi: null, analytics: null, monitoring: null });
+  assert.equal(getMonitoringCallCount(), 0);
 });

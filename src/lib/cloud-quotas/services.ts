@@ -95,7 +95,16 @@ export function createCloudQuotasServices(deps: ServiceDependencies) {
         return { connected: connectionStatus.connected, dataApi: null, analytics: null, monitoring: null };
       }
 
-      const { accessToken } = await deps.cloudConnection.resolveCloudCredentials();
+      // A Cloud connection whose token can no longer be refreshed (revoked/expired grant) degrades
+      // to "unknown" like every other quota failure here -- it must never throw, because this
+      // status rides inside GET /api/settings, and one failed quota lookup took the whole Settings
+      // tab down with a 500 (found live, 2026-09-30).
+      let accessToken: string;
+      try {
+        ({ accessToken } = await deps.cloudConnection.resolveCloudCredentials());
+      } catch {
+        return { connected: true, dataApi: null, analytics: null, monitoring: null };
+      }
       const projectNumber = deps.projectNumber;
 
       const [dataApi, analytics, monitoring] = await Promise.all([
