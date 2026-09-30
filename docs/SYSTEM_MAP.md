@@ -523,6 +523,24 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 ---
 
+### 2.16a Automatic device sync (`src/lib/device-sync/`) — **IMPLEMENTED** (feature branch `feature/device-auto-sync`, until merged)
+
+- **Ответственность:** серверный планировщик поверх §2.16. Раз в 30 с:
+  - экспорт при локальных изменениях (не чаще раза в минуту);
+  - авто-импорт fast-forward снапшота другого устройства, если локально нечего публиковать;
+  - иначе расхождение: колокольчик в шапке, решение только человеком («keep mine» / «take theirs»).
+- Черновики `sync-gateway` крутятся тем же планировщиком. ADR 0012, план `docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md`.
+- **Файлы:**
+  - `src/lib/device-sync/{contracts,services,index}.ts`;
+  - `src/lib/snapshot/adapters/fingerprint.ts`, `lineage.json` в `adapters/filesystem.ts`;
+  - `src/instrumentation.ts`;
+  - `src/app/api/device-sync/{status,sync-now,resolve}`;
+  - `src/components/device-sync-bell.tsx`, `device-auto-sync-settings.tsx`;
+  - `src/lib/sync-gateway/run-all-families.ts`.
+- **Схема:** v36 (`snapshot_lineage.content_fingerprint`, `ancestors_json`).
+- **Настройки:** `app_settings` `device_auto_sync_enabled` (по умолчанию вкл) и `device_sync_status`.
+- **Ограничения:** RISK-89.
+
 ### 2.16 Cross-Platform Persistence & Device Handoff (Pre-Release, Variant A) — **IMPLEMENTED for the scope below**
 
 - **Ответственность:** платформо-зависимое расположение данных приложения; явное версионирование схемы поверх аддитивного boot-паттерна (`docs/decisions/0002-additive-schema-versioning.md`); экспорт/импорт scrub-and-checksum снапшотов БД для переноса состояния между устройствами через Syncthing как внешний транспорт (Syncthing никогда не рассматривается как база данных); явный workflow передачи устройства (`Finish work / Export` — `Continue work / Import`) с restricted read-only recovery mode при незавершённых YouTube-операциях. Полный контракт: `docs/acceptance/PRE_RELEASE_CROSS_PLATFORM_ACCEPTANCE.md`.
@@ -539,7 +557,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Точки входа:** `POST /api/device-handoff/export`, `POST /api/device-handoff/import`, `GET /api/device-handoff/status`, `GET /api/device-handoff/snapshots`, `POST /api/device-handoff/acknowledge`, `GET/PUT /api/device-handoff/bootstrap-config`.
 - **Read/Write:** ноль вызовов YouTube API и ноль вызовов AI-провайдера в любом коде этого раздела (не структурная гарантия отдельным инвентарным тестом, как у Phase 5/6, но ни один файл этого раздела не импортирует `googleapis` или AI-connections адаптеры — проверено при разработке). Экспорт/импорт пишут только в локальные файлы снапшота и в собственную БД (той же машины).
 - **Важные ограничения безопасности:** снапшот никогда не содержит `users` (OAuth-токены) и `ai_connection_credentials` — не просто исключены из экспорта, а вообще не упоминаются в коде импорта (`SNAPSHOT_REPLACE_ON_IMPORT_TABLES` их не содержит). `users.id` подтверждён инспекцией как стабильный Google OAuth `sub` (не локальный артефакт) — импорт никогда не создаёт/не меняет строку `users`, поэтому здесь структурно невозможна путаница идентичности между устройствами. Divergent lineage (форк истории снапшотов) блокируется явно, никогда не разрешается по `createdAt`. `acknowledgeRecoveryDiagnostics` не может изменить статус ни одной строки `batch_ledger_rows` и не может снять recovery mode сама по себе — это отдельно протестировано (AC-HANDOFF-05). **M6, 2026-09-23** (`docs/decisions/0009-defer-write-pipeline-sync-gateway-migration.md`, владелец выбрал вариант (б) после исследования индустриальных паттернов): `SNAPSHOT_TRANSFERRED_TABLES` сужен до `schema_meta` + четырёх таблиц Category D (`batches`/`batch_ledger_rows`/`batch_attempts`/`audit_events`) — `change_sets`/`changes`/`channel_editorial_profiles`/`ai_localization_generation_provenance`/`ai_connections` больше не переезжают этим механизмом (все пять теперь непрерывно синхронизируются через `src/lib/sync-gateway/`); упомянутый выше upsert-по-`id` для `ai_connections` удалён вместе с ним — этот механизм остаётся живым, но только как явная, атомарная передача владения именно этими четырьмя таблицами (аналог LiteFS/Litestream-style primary handoff), не общей синхронизацией.
-- **Чего нет:** installer/auto-updater для standalone-среза `published/<version>/` (без `.git`) — осознанно вне рамок этой задачи (`docs/RELEASE_LAYOUT.md`). `scripts/{macos,windows}/start.{sh,bat}` больше НЕ делают `git pull` сами (убрано 2026-09-21 по прямому запросу владельца — «за актуальностью гита я буду следить сам»; см. BL-048) — они вообще не трогают git/сеть/рабочее дерево. Вместо этого при запуске из git-чекаута сверяют текущий закоммиченный HEAD с маркер-файлом, в котором записано, из какого коммита был собран `.next`, и пересобирают при расхождении (закрывает реальный баг: раньше `.next`, уже существующий на диске, считался «актуальным» независимо от того, менялся ли исходный код) — см. `docs/FIRST_LOCAL_TEST_BUILD.md` §3/§4. Также чего нет: OS-keychain для credential; application-managed синхронизация (Syncthing остаётся внешним транспортом); одновременное редактирование с нескольких устройств; реальная macOS-валидация (только Windows, см. `docs/TECHNICAL_DEBT.md` RISK-17); in-app способ выйти из recovery mode (нужны CLI/MCP-инструменты для Batches, RISK-04/RISK-16).
+- **Чего нет:** installer/auto-updater для standalone-среза `published/<version>/` (без `.git`) — осознанно вне рамок этой задачи (`docs/RELEASE_LAYOUT.md`). `scripts/{macos,windows}/start.{sh,bat}` больше НЕ делают `git pull` сами (убрано 2026-09-21 по прямому запросу владельца — «за актуальностью гита я буду следить сам»; см. BL-048) — они вообще не трогают git/сеть/рабочее дерево. Вместо этого при запуске из git-чекаута сверяют текущий закоммиченный HEAD с маркер-файлом, в котором записано, из какого коммита был собран `.next`, и пересобирают при расхождении (закрывает реальный баг: раньше `.next`, уже существующий на диске, считался «актуальным» независимо от того, менялся ли исходный код) — см. `docs/FIRST_LOCAL_TEST_BUILD.md` §3/§4. Также чего нет: OS-keychain для credential; (автоматическая синхронизация снапшотов теперь есть — см. §2.16a; Syncthing остаётся внешним транспортом); одновременное редактирование с нескольких устройств; реальная macOS-валидация (только Windows, см. `docs/TECHNICAL_DEBT.md` RISK-17); in-app способ выйти из recovery mode (нужны CLI/MCP-инструменты для Batches, RISK-04/RISK-16).
 
 ---
 

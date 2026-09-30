@@ -1432,4 +1432,23 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   or disableable independently.
 - **Status:** OPEN, accepted.
 
+## RISK-89 — Automatic device sync: residual limits — OPEN, accepted, 2026-10-01
+
+- **Affected components:** `src/lib/device-sync/`, `src/instrumentation.ts` (ADR 0012).
+- **Residual risks:**
+  - **Changes made just before a manual stop.** Changes from the last ~minute before a manual stop
+    (`stop.sh` / SIGTERM) are not published until this device's server runs again. There is
+    deliberately no export in signal handlers: a killed export leaves an operation lock that is
+    never auto-released. The idle shutdown does flush.
+  - **Only the web server syncs.** MCP/CLI writes made while the server is down are detected by the
+    fingerprint and published at the next server start.
+  - **A crash mid-export or mid-import** still leaves the pre-existing stale operation lock, which
+    blocks mutations until the operator clears it. This is unchanged from manual handoff, but
+    automatic exports make it more frequent.
+  - **Two tips from more than two devices** are reported as one divergence at a time.
+- **Why accepted:** each of these fails toward "ask a human" or "publish later", never toward
+  overwriting data (AC-AS-01/07).
+- **Trigger to revisit:** a reported lost change after a stop, or a stale lock in the field.
+- **Status:** OPEN, accepted.
+
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

@@ -1,5 +1,11 @@
 # Device-Handoff Auto-Sync Plan — auto-export, auto-import, and an update notification
 
+> **Superseded 2026-10-01** by `DEVICE_AUTO_SYNC_PLAN.md` (implemented, ADR 0012). It is kept for
+> history. Two differences:
+> - The shutdown export (D1) was deliberately not built in the signal handler. A killed export
+>   leaves a stale lock.
+> - A content fingerprint closes a silent-overwrite gap this plan did not see.
+
 Produced 2026-09-20, per the project owner's Telegram request (msg 128): "часть процесса
 закрытия сессии должно подразумевать сохранения файлов... и/или мы это сохраняем каждый раз как
 что-то меняем... При старте должна так же подгружаться последняя актуальная информация...

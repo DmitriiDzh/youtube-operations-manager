@@ -65,3 +65,4 @@ A decision made before this policy existed (e.g. the Phase 2 choice to keep addi
 | [0008](0008-cloud-connection.md) | A single, device-persistent Google Cloud OAuth grant, entirely decoupled from per-channel YouTube login | Accepted |
 | [0009](0009-defer-write-pipeline-sync-gateway-migration.md) | Reaffirm ADR 0006's exclusion of the write pipeline from Automerge, with stronger evidence | Accepted |
 | [0010](0010-persistent-channel-connections.md) | Persistent, re-activatable channel connections without re-consenting to Google each switch | Accepted |
+| [0012](0012-automatic-device-sync.md) | Automatic device sync on top of the snapshot handoff (fingerprint, ancestry, human-resolved divergence) | Accepted |

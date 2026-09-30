@@ -433,8 +433,9 @@ decision: `docs/decisions/0002-additive-schema-versioning.md`.
 
 Makes the application safe to run alternately on Windows and macOS, with Syncthing as an
 external file-transport only (never a database), under a strict single-active-device model
-(Variant A — no simultaneous multi-device editing, no application-managed sync, no automatic
-database merging). Four new leaf/near-leaf modules plus one small domain-adjacent module:
+(Variant A — no simultaneous multi-device editing, no automatic database merging). Since
+2026-10-01 the handoff itself is scheduled automatically (§23, ADR 0012), but it is still one writer
+at a time and Syncthing is still the only transport. Four new leaf/near-leaf modules plus one small domain-adjacent module:
 
 ```text
 src/lib/platform-paths/    — pure resolveAppPaths(platform, env, homedir); zero I/O
@@ -2132,3 +2133,69 @@ low-severity divergences, recorded here as the actual rules rather than changed.
   - Both write device-local state only, which is never part of a snapshot. They are therefore not
     behind the method-based mutation gate. The equivalent MCP/CLI selection actions are
     operator-only and gated.
+
+## 23. Automatic device sync (`src/lib/device-sync/`) — ADR 0012, branch `feature/device-auto-sync`
+
+**Purpose.** Removes the manual export/import from the §13 handoff without changing its
+single-writer, whole-copy semantics. Plan and acceptance criteria:
+`docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md` (AC-AS-01..15).
+
+**Data flow (one tick, every 30 s, from `src/instrumentation.ts`):**
+
+1. Gates:
+   - the toggle (`device_auto_sync_enabled`) and a configured Syncthing folder;
+   - no operation lock, no recovery mode, no `RUNNING` batch, no `video_execution_locks` row.
+2. The folder is scanned. Only UUID-named directories count, which excludes the sync-gateway
+   folders. An unreadable or incomplete snapshot is "pending": it is retried silently and noticed
+   after 10 minutes.
+3. `hasUnpublishedLocalChanges`: the current content fingerprint is compared with
+   `snapshot_lineage.content_fingerprint`.
+   - The fingerprint is a SHA-256 over every table `SNAPSHOT_REPLACE_ON_IMPORT_TABLES` names, with
+     columns in name order and rows sorted by all columns, so rowids and physical column order do
+     not matter.
+   - Export records the fingerprint of the exported file itself, so a write racing the copy stays
+     dirty.
+   - Import records it from the live DB inside the lock.
+   - An unknown fingerprint (a pre-v36 lineage) counts as dirty. No lineage counts as clean only
+     when every transferred table is empty.
+4. `decideSyncAction` (pure):
+   - "Known" is the local head plus its ancestry: recorded `ancestors_json`, `lineage.json`, and
+     parent pointers through every manifest in the folder.
+   - "Newer" means other devices' snapshots that are not known. Of those, only the tips count.
+   - No tips: export if dirty, otherwise idle.
+   - One tip that is a fast-forward, with local clean: import.
+   - A newer schema: `update_app`.
+   - Anything else: divergence.
+5. Actions go through the existing `exportHandoff` / `importHandoff`. `assertStillSafe` re-checks
+   the gates, and the fingerprint for an import, inside the operation lock, right before anything
+   is written. In a divergence, local unpublished changes are still published on their own branch,
+   so the other computer sees the conflict too.
+
+**Resolution (human only, via the bell → `POST /api/device-sync/resolve`):**
+- `keep_mine` exports with `supersede` (parent = the peer's tip, ancestry = the peer's plus the
+  local one), so the peer fast-forwards.
+- `take_theirs` imports with `acceptDivergentLineage`, using its own backup prefix
+  `pre-take-theirs-`, which is never pruned. It then publishes a marker whose ancestry names this
+  device's abandoned branch, so the peer sees a fast-forward.
+
+**Retention.**
+- This device's own snapshots: the newest 5 plus the head.
+- `pre-auto-import-*` backups: the newest 10.
+- Another device's files are never touched, since Syncthing would propagate the deletion.
+
+**Why a dedicated DB connection.** `importHandoff`'s `BEGIN IMMEDIATE` on the shared
+`rawSqlClient` would absorb any unrelated in-process write issued meanwhile, such as the Live-writes
+lease renewal or a draft cycle. On its own connection, such a write just waits for the busy
+timeout.
+
+**Draft cycle.** `runAllSyncFamiliesOnce` (sync-gateway) is shared by the "Sync now" route and
+the scheduler, with a `globalThis` single-flight guard, because instrumentation and route bundles
+may not share module state. It runs every 60 s under the same gate the route gets from
+`src/proxy.ts`.
+
+**Not done, by design.**
+- No export in SIGINT/SIGTERM handlers, because a killed export leaves a never-auto-released
+  operation lock. The idle shutdown does flush, since nothing is in flight.
+- No concurrent editing.
+
+See RISK-89.
