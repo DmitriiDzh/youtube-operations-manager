@@ -1977,7 +1977,7 @@ exposed in the Web UI (fully built and tested at the
 API/service layer -- the "Generate with AI" panel is notes-only for this first UI pass, evidence
 still attaches to a saved hypothesis through the existing, separate evidence form).
 
-## 20. Channel Workspaces (`src/lib/channel-workspaces/`) — Phase 11, on `feature/phase-11-channel-workspaces`
+## 20. Channel Workspaces (`src/lib/channel-workspaces/`) — Phase 11, in `dev` (`f15a8c3`)
 
 Scope comes from `docs/roadmap/FUTURE_PHASES.md` §11. The plan and acceptance criteria
 (AC-P11-01..14) are in `docs/roadmap/plans/PHASE_11_PLAN.md`. The agent-facing contract is in
