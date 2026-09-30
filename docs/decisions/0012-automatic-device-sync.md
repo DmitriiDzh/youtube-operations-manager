@@ -42,8 +42,9 @@ human out of the safe cases only:
 
    A divergence is resolved only by an explicit human choice:
    - "keep mine" publishes the local state as a child of the peer's tip;
-   - "take theirs" imports past the lineage check, backup first, then removes this device's
-     own abandoned branch from the sync folder.
+   - "take theirs" imports past the lineage check, backup first. It then publishes a marker
+     naming this device's abandoned branch as ancestors, and never deletes from the shared folder.
+     A concurrent opposite resolution then fails closed, and both computers ask again.
 4. **Safety.**
    - Every automatic action is re-checked inside the operation lock.
    - Nothing runs during a running Batch, in recovery mode, or while a lock is held.

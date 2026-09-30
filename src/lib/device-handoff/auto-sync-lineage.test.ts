@@ -262,3 +262,67 @@ test("AC-AS-10: only UUID-named directories are listed as snapshots", () =>
     }
     assert.deepEqual(await listSnapshotIdsStrict(root), ["0b7f2c4e-1d2a-4c3b-9e8f-0123456789ab"]);
   }));
+
+// Review round 2 (#2): the checks and the lineage write happen INSIDE the merge transaction.
+test("R2-2: assertStillSafe runs while the merge holds the write lock (another connection cannot write)", () =>
+  withTempDir("auto-sync-", async (dir) => {
+    const a = await makeClient(dir, "a.db");
+    const b = await makeClient(dir, "b.db");
+    await addResearchChannel(b, "UC-b");
+    const sb = await exportFrom(b, dir, "device-b");
+    const other = createClient({ url: `file:${path.join(dir, "a.db")}` });
+    await other.execute("PRAGMA busy_timeout = 0");
+    let otherWrite: "ok" | "busy" | null = null;
+    await importInto(a, dir, sb.snapshotId, {
+      assertStillSafe: async () => {
+        try {
+          await addResearchChannel(other, "UC-raced");
+          otherWrite = "ok";
+        } catch (error) {
+          otherWrite = /BUSY|locked/i.test(String(error)) ? "busy" : "ok";
+        }
+      },
+    });
+    assert.equal(otherWrite, "busy");
+    // And the fingerprint was recorded for exactly the merged content: the device is clean.
+    assert.equal(await hasUnpublishedLocalChanges(a), false);
+    other.close();
+    a.close();
+    b.close();
+  }));
+
+test("R2-2: a write landing between the backup and the merge aborts the import; nothing is replaced", () =>
+  withTempDir("auto-sync-", async (dir) => {
+    const a = await makeClient(dir, "a.db");
+    const b = await makeClient(dir, "b.db");
+    await addResearchChannel(b, "UC-b");
+    const sb = await exportFrom(b, dir, "device-b");
+    let injected = false;
+    const racing: SqlExecutor = {
+      execute: async (query: Parameters<SqlExecutor["execute"]>[0]) => {
+        const sql = typeof query === "string" ? query : (query as { sql: string }).sql;
+        if (!injected && /ATTACH DATABASE \? AS staged/i.test(sql)) {
+          injected = true;
+          await addResearchChannel(a, "UC-raced");
+        }
+        return a.execute(query as never);
+      },
+    } as SqlExecutor;
+    const d = dirs(dir);
+    await mkdir(d.backups, { recursive: true });
+    await mkdir(d.work, { recursive: true });
+    await assert.rejects(
+      () =>
+        importHandoff({
+          liveClient: racing,
+          snapshotDir: path.join(d.snapshotsDir, sb.snapshotId),
+          migrationBackupsDir: d.backups,
+          workingDir: d.work,
+        }),
+      (error: unknown) => error instanceof SnapshotError && error.code === "snapshot_local_changed_during_import"
+    );
+    assert.equal(injected, true);
+    assert.deepEqual(await researchIds(a), ["UC-raced"]);
+    a.close();
+    b.close();
+  }));

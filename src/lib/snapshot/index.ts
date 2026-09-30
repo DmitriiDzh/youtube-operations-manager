@@ -36,4 +36,4 @@ export {
 } from "./adapters/filesystem";
 export { sha256File } from "./adapters/checksum";
 export { scrubDatabaseCopy } from "./adapters/scrub";
-export { computeContentFingerprint } from "./adapters/fingerprint";
+export { computeContentFingerprint, computeFileContentFingerprint } from "./adapters/fingerprint";

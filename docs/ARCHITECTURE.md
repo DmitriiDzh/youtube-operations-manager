@@ -2172,16 +2172,45 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
    so the other computer sees the conflict too.
 
 **Resolution (human only, via the bell → `POST /api/device-sync/resolve`):**
-- `keep_mine` exports with `supersede` (parent = the named peer tip; ancestry = every current
-  peer tip and its history, plus the local one), so every peer fast-forwards.
+- Both actions accept only a CURRENT conflicting peer tip.
+- `keep_mine` exports with `supersede` (parent = the named tip; ancestry = every current peer tip
+  and its history, plus the local one), so every peer fast-forwards.
 - `take_theirs` imports with `acceptDivergentLineage`, using its own backup prefix
-  `pre-take-theirs-`, which is never pruned. It then removes this device's own published snapshots
-  that the adopted one does not descend from: the branch the human chose to discard. So the peer
-  stops seeing a conflict, and the peer's further work still arrives as a fast-forward.
-- All actions on one runner are serialized, and the runner is a `globalThis` singleton shared by
-  the scheduler and the routes.
+  `pre-take-theirs-`, which is never pruned. If this device had already published its own branch,
+  it then publishes a marker: the adopted state again, with that branch as ancestors. So the peer
+  sees a fast-forward.
+- Resolutions never delete from the shared folder. A deletion propagates asynchronously and looks
+  like "not arrived yet". Review round 2 showed two opposite resolutions made at the same time then
+  left both computers "synced" with swapped data. Markers fail closed instead: both computers ask
+  again.
+- `lineage.json` `supersedes` lists what a resolution replaces: the peer tips for `keep_mine`, the
+  own abandoned branch for a marker. It never widens the fast-forward rule. It only makes the
+  receiving import keep a `pre-superseded-*` backup, which is never pruned, when its head is
+  replaced.
+- **Import atomicity (round 2).** Three things run inside `applySnapshotToDatabase`'s
+  `BEGIN IMMEDIATE`, via hooks:
+  1. "Live content still equals the pre-import backup's", plus the caller's re-checks, before
+     the first DELETE.
+  2. The merged content's fingerprint.
+  3. The lineage pointer, before COMMIT.
+
+  A write that lands between the backup and the merge aborts the import with
+  `snapshot_local_changed_during_import`, and nothing is replaced.
+- A snapshot whose data fails schema migration is remembered in the status and reported as
+  `update_app`, never retried.
+- All actions on one runner are serialized. The runner is a `globalThis` singleton shared by the
+  scheduler and the routes.
 - The decision uses exactly the fast-forward rule `verifySnapshotForImport` enforces. An
   older-build chain without `lineage.json` is caught up one direct child at a time.
+- `src/lib/device-sync/convergence.test.ts` runs the resolution matrix with one folder per device
+  and delayed propagation:
+  - {keep, take} on A × {keep, take, none} on B;
+  - sequential and simultaneous;
+  - with and without further work;
+  - plus a third device.
+
+  The invariant: identical content and no notices, or someone is asked; never lost without a
+  backup.
 
 **Retention.**
 - This device's own snapshots: the newest 5 plus the head.

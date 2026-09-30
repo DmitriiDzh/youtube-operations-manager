@@ -122,7 +122,10 @@ export async function scanSnapshotFolder(folder: string): Promise<{ snapshots: S
         generation: manifest.generation,
         schemaVersion: manifest.schemaVersion,
         createdAt: manifest.createdAt,
-        ancestors: await readLineageFile(dir, manifest),
+        ...(await readLineageFile(dir, manifest).then((file) => ({
+          ancestors: file?.ancestors ?? null,
+          supersedes: file?.supersedes ?? [],
+        }))),
       });
     } catch {
       unreadable.push(id);
@@ -191,7 +194,14 @@ export type DeviceSyncDeps = {
   now?: () => number;
 };
 
-class SyncAbort extends Error {}
+class SyncAbort extends Error {
+  constructor(
+    message: string,
+    readonly reason: "busy" | "local_changed" | "nothing_to_export" = "busy"
+  ) {
+    super(message);
+  }
+}
 
 async function hasActiveExecution(client: SqlExecutor): Promise<string | null> {
   const running = (await client.execute("SELECT 1 FROM batches WHERE status = 'RUNNING' LIMIT 1")) as {
@@ -273,19 +283,26 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
 
   async function exportNow(
     config: { deviceId: string; folder: string },
-    supersede?: { snapshotId: string; generation: number; ancestors: string[] },
-    requireDirty = true
+    options: {
+      supersede?: { snapshotId: string; generation: number; ancestors: string[] };
+      supersedes?: string[];
+      requireDirty?: boolean;
+    } = {}
   ) {
+    const { supersede, supersedes, requireDirty = true } = options;
     const result = await exportHandoff({
       client: deps.client,
       snapshotsDir: config.folder,
       deviceId: config.deviceId,
       schemaVersion: deps.currentSchemaVersion,
       supersede,
+      supersedes,
       assertStillSafe: async () => {
         const active = await hasActiveExecution(deps.client);
         if (active) throw new SyncAbort(active);
-        if (requireDirty && !(await hasUnpublishedLocalChanges(deps.client))) throw new SyncAbort("nothing to export");
+        if (requireDirty && !(await hasUnpublishedLocalChanges(deps.client))) {
+          throw new SyncAbort("nothing to export", "nothing_to_export");
+        }
       },
     });
     try {
@@ -321,7 +338,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         if (active) throw new SyncAbort(active);
         // AC-AS-07: a local change that landed after the decision aborts the automatic import.
         if (mode.requireClean && (await hasUnpublishedLocalChanges(deps.client))) {
-          throw new SyncAbort("local data changed");
+          throw new SyncAbort("local data changed", "local_changed");
         }
       },
     });
@@ -374,12 +391,15 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       status = withPending(status, previousPending, unreadable);
       const lineage = await readLineageState(deps.client);
       const localDirty = await hasUnpublishedLocalChanges(deps.client);
+      const unsupported = new Set(status.unsupportedSnapshotIds ?? []);
       const decision = decideSyncAction({
         deviceId: config.deviceId,
         currentSchemaVersion: deps.currentSchemaVersion,
         local: { lastSnapshotId: lineage.lastSnapshotId, ancestors: lineage.ancestors ?? [] },
         localDirty,
-        snapshots,
+        // A snapshot this build already failed to migrate is reported as "update the app", never
+        // re-imported every tick (plan §3.4).
+        snapshots: snapshots.map((s) => (unsupported.has(s.snapshotId) ? { ...s, schemaVersion: Number.MAX_SAFE_INTEGER } : s)),
       });
 
       const wouldExport = decision.kind === "export" || (decision.kind === "divergence" && decision.localDirty);
@@ -478,6 +498,32 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
                 notices: [divergenceNotice(decision.snapshot, false, false), ...stuckNotice(status)],
               });
             }
+            // Local data changed after the decision (plan §3.4): that is a divergence now.
+            if (
+              (error instanceof SyncAbort && error.reason === "local_changed") ||
+              (error instanceof SnapshotError && error.code === "snapshot_local_changed_during_import")
+            ) {
+              return finish({
+                ...status,
+                state: "attention",
+                notices: [divergenceNotice(decision.snapshot, true, false), ...stuckNotice(status)],
+              });
+            }
+            if (error instanceof SchemaVersionError) {
+              return finish({
+                ...status,
+                state: "attention",
+                unsupportedSnapshotIds: [...(status.unsupportedSnapshotIds ?? []), decision.snapshot.snapshotId],
+                notices: [
+                  {
+                    kind: "update_app",
+                    message: "The other computer's data needs a newer app version. Update the app on this computer.",
+                    snapshotId: decision.snapshot.snapshotId,
+                    sourceDeviceId: decision.snapshot.sourceDeviceId,
+                  },
+                ],
+              });
+            }
             throw error;
           }
         }
@@ -511,49 +557,58 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     }
   }
 
-  /** The other device's snapshot a divergence is about, re-read from the folder -- never trusted
-   * from the request beyond its id. */
-  async function requirePeerSnapshot(snapshotId: string) {
-    const config = await deps.resolveConfig();
-    if (!config.folder) throw new DeviceSyncError("device_sync_not_configured", "No sync folder is configured.");
-    const { snapshots } = await scanSnapshotFolder(config.folder);
-    const snapshot = snapshots.find((s) => s.snapshotId === snapshotId && s.sourceDeviceId !== config.deviceId);
-    if (!snapshot) {
-      throw new DeviceSyncError("device_sync_snapshot_not_found", "That snapshot from another computer is not in the sync folder.");
-    }
-    return { config: { deviceId: config.deviceId, folder: config.folder }, snapshot, snapshots };
-  }
-
   /** Other devices' snapshots that are not in the local history and not covered by another one. */
-  async function peerTips(config: { deviceId: string }, snapshots: SnapshotEntry[]): Promise<SnapshotEntry[]> {
+  async function peerTips(deviceId: string, snapshots: SnapshotEntry[]): Promise<SnapshotEntry[]> {
     const lineage = await readLineageState(deps.client);
     const known = ancestryOf(lineage.lastSnapshotId, snapshots, lineage.ancestors ?? []);
     if (lineage.lastSnapshotId) known.add(lineage.lastSnapshotId);
-    const newer = snapshots.filter((s) => s.sourceDeviceId !== config.deviceId && !known.has(s.snapshotId));
+    const newer = snapshots.filter((s) => s.sourceDeviceId !== deviceId && !known.has(s.snapshotId));
     const covered = new Set<string>();
     for (const s of newer) for (const id of ancestryOf(s.snapshotId, snapshots)) covered.add(id);
     return newer.filter((s) => !covered.has(s.snapshotId));
   }
 
+  /** The conflicting snapshot a resolution names, re-read from the folder and required to be a
+   * CURRENT conflicting tip -- never any older snapshot from another device, and never trusted
+   * from the request beyond its id (review round 2). */
+  async function requireCurrentPeerTip(snapshotId: string) {
+    const config = await deps.resolveConfig();
+    if (!config.folder) throw new DeviceSyncError("device_sync_not_configured", "No sync folder is configured.");
+    const { snapshots } = await scanSnapshotFolder(config.folder);
+    const tips = await peerTips(config.deviceId, snapshots);
+    const snapshot = tips.find((s) => s.snapshotId === snapshotId);
+    if (!snapshot) {
+      throw new DeviceSyncError(
+        "device_sync_snapshot_not_found",
+        "That snapshot from another computer is not in the sync folder, or is no longer the one in conflict. Refresh and choose again."
+      );
+    }
+    return { config: { deviceId: config.deviceId, folder: config.folder }, snapshot, snapshots, tips };
+  }
+
   /**
    * §3.6 "Keep this computer's data": publish the local state as a child of the other device's
    * snapshot, so that device fast-forwards to it. Every other conflicting tip currently in the
-   * folder is folded into the ancestry too, so one decision settles all of them (review round 1).
+   * folder is folded into the ancestry too, so one decision settles all of them. Each replaced tip
+   * is listed in `supersedes`, so the computer that loses keeps a never-pruned backup.
    * Explicit human action only.
    */
   async function keepMineUnlocked(snapshotId: string): Promise<DeviceSyncStatus> {
-    const { config, snapshot, snapshots } = await requirePeerSnapshot(snapshotId);
+    const { config, snapshot, snapshots, tips } = await requireCurrentPeerTip(snapshotId);
     const busy = await busyReason();
     if (busy) throw new DeviceSyncError("device_sync_busy", `Cannot sync now: ${busy.reason}.`);
-    const tips = await peerTips(config, snapshots);
-    const superseded = new Set<string>(ancestryOf(snapshot.snapshotId, snapshots));
+    const replaced = new Set<string>(ancestryOf(snapshot.snapshotId, snapshots));
     for (const tip of tips) {
-      superseded.add(tip.snapshotId);
-      for (const id of ancestryOf(tip.snapshotId, snapshots)) superseded.add(id);
+      replaced.add(tip.snapshotId);
+      for (const id of ancestryOf(tip.snapshotId, snapshots)) replaced.add(id);
     }
-    superseded.delete(snapshot.snapshotId);
+    replaced.delete(snapshot.snapshotId);
     const generation = Math.max(snapshot.generation, ...tips.map((t) => t.generation));
-    const manifest = await exportNow(config, { snapshotId: snapshot.snapshotId, generation, ancestors: [...superseded] }, false);
+    const manifest = await exportNow(config, {
+      supersede: { snapshotId: snapshot.snapshotId, generation, ancestors: [...replaced] },
+      supersedes: tips.map((t) => t.snapshotId),
+      requireDirty: false,
+    });
     const status = await loadStatusSafe();
     const next: DeviceSyncStatus = {
       ...status,
@@ -570,22 +625,35 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
    * §3.6 "Take the other computer's data": import it past the divergence refusal. Every other
    * import check stays (checksums, recovery-mode refusal, backup first). Explicit human action only.
    *
-   * This computer's own published snapshots that the adopted one does not descend from are the
-   * branch the human just chose to discard -- they are removed from the sync folder (their data
-   * stays in the local `pre-take-theirs-*` backup). Otherwise the other computer would keep seeing
-   * them as a conflict; and unlike a "same data" marker snapshot, removing them lets the other
-   * computer's own further work still arrive here as a plain fast-forward (review round 1).
+   * If this computer had already published its own now-abandoned branch, it then publishes the
+   * adopted state once more with that branch as an ancestor (and in `supersedes`), so the other
+   * computer sees a plain fast-forward and settles. Never by DELETING the branch from the shared
+   * folder (review round 2): deletion propagates asynchronously and is indistinguishable from "not
+   * arrived yet", so two opposite resolutions made at the same time left both computers "synced"
+   * with swapped data. With markers, that race fails closed -- each computer sees the other's marker
+   * as a conflict and asks again (RISK-89).
    */
   async function takeTheirsUnlocked(snapshotId: string): Promise<DeviceSyncStatus> {
-    const { config, snapshots } = await requirePeerSnapshot(snapshotId);
+    const { config, snapshot, snapshots } = await requireCurrentPeerTip(snapshotId);
     const busy = await busyReason();
     if (busy && !busy.recovery) throw new DeviceSyncError("device_sync_busy", `Cannot sync now: ${busy.reason}.`);
     const result = await importNow(config.folder, snapshotId, { acceptDivergentLineage: true, requireClean: false });
 
     const adoptedAncestry = ancestryOf(snapshotId, snapshots);
-    for (const own of snapshots) {
-      if (own.sourceDeviceId === config.deviceId && !adoptedAncestry.has(own.snapshotId)) {
-        await rm(path.join(config.folder, own.snapshotId), { recursive: true, force: true }).catch(() => undefined);
+    const abandoned = snapshots
+      .filter((s) => s.sourceDeviceId === config.deviceId && !adoptedAncestry.has(s.snapshotId))
+      .map((s) => s.snapshotId);
+    let markerId: string | null = null;
+    if (abandoned.length > 0) {
+      try {
+        const marker = await exportNow(config, {
+          supersede: { snapshotId, generation: snapshot.generation, ancestors: [...adoptedAncestry, ...abandoned] },
+          supersedes: abandoned,
+          requireDirty: false,
+        });
+        markerId = marker.snapshotId;
+      } catch {
+        // The import itself succeeded; the other computer keeps showing the conflict (fail closed).
       }
     }
 
@@ -595,6 +663,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       state: result.status === "activated_recovery_mode" ? "attention" : "imported",
       lastImportAt: new Date(now()).toISOString(),
       lastImportSnapshotId: snapshotId,
+      ...(markerId ? { lastExportAt: new Date(now()).toISOString(), lastExportSnapshotId: markerId } : {}),
       notices:
         result.status === "activated_recovery_mode"
           ? [{ kind: "recovery_mode", message: "The imported data contains a YouTube write whose outcome is unknown. This computer is now in recovery mode." }]

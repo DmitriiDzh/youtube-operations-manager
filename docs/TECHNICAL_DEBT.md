@@ -1446,6 +1446,16 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
     blocks mutations until the operator clears it. This is unchanged from manual handoff, but
     automatic exports make it more frequent.
   - **Two tips from more than two devices** are reported as one divergence at a time.
+  - **Accepted fail-closed re-prompts (review round 2).** In the cases below, the computers ask a
+    human again instead of converging on their own:
+    - one computer resolves while the other keeps working before it sees the resolution;
+    - two computers resolve at the same time, even when they agree.
+
+    Nothing is overwritten, and every replaced state has a never-pruned backup
+    (`pre-take-theirs-*`, `pre-superseded-*`). Automatic convergence here would need
+    content-identity tracking, which proved unsafe under concurrent opposite resolutions.
+    Revisit if re-prompts are reported in practice. The resolution matrix is
+    `src/lib/device-sync/convergence.test.ts`.
 - **Why accepted:** each of these fails toward "ask a human" or "publish later", never toward
   overwriting data (AC-AS-01/07).
 - **Trigger to revisit:** a reported lost change after a stop, or a stale lock in the field.

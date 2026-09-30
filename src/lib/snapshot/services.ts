@@ -67,6 +67,8 @@ export async function exportSnapshot(params: {
    * history stays in the ancestry too.
    */
   supersede?: { snapshotId: string; generation: number; ancestors: string[] };
+  /** Snapshots this one deliberately replaces by a human decision (see `SnapshotLineageFile`). */
+  supersedes?: string[];
 }): Promise<SnapshotManifest> {
   const lineage = await readLineageState(params.client);
   const snapshotId = randomUUID();
@@ -87,7 +89,7 @@ export async function exportSnapshot(params: {
     // the copy is not in this snapshot, so it must still read as unpublished (AC-AS-05).
     contentFingerprint = await computeFileContentFingerprint(params.client, dbDestPath);
     const { sha256, sizeBytes } = await sha256File(dbDestPath);
-    await writeLineageFile(stagingDir, ancestors);
+    await writeLineageFile(stagingDir, { ancestors, supersedes: params.supersedes ?? [] });
     const lineageFile = await sha256File(path.join(stagingDir, LINEAGE_FILE_NAME));
 
     const manifest: SnapshotManifest = {
@@ -176,7 +178,12 @@ export async function verifySnapshotForImport(params: {
    * checksums are still verified.
    */
   acceptDivergentLineage?: boolean;
-}): Promise<{ manifest: SnapshotManifest; isDuplicateOfCurrent: boolean; ancestors: string[] | null }> {
+}): Promise<{
+  manifest: SnapshotManifest;
+  isDuplicateOfCurrent: boolean;
+  ancestors: string[] | null;
+  supersedes: string[];
+}> {
   const manifest = await readManifestFromDir(params.snapshotDir);
 
   if (!manifest.complete) {
@@ -206,7 +213,8 @@ export async function verifySnapshotForImport(params: {
   }
 
   const local = params.localLineage;
-  const ancestors = await readLineageFile(params.snapshotDir, manifest);
+  const lineageFile = await readLineageFile(params.snapshotDir, manifest);
+  const ancestors = lineageFile?.ancestors ?? null;
   const isDuplicateOfCurrent = manifest.snapshotId === local.lastSnapshotId;
   // Direct child, a descendant several generations on (its recorded ancestry contains the local
   // head, §3.1), or this device's very first import.
@@ -229,7 +237,7 @@ export async function verifySnapshotForImport(params: {
     );
   }
 
-  return { manifest, isDuplicateOfCurrent, ancestors };
+  return { manifest, isDuplicateOfCurrent, ancestors, supersedes: lineageFile?.supersedes ?? [] };
 }
 
 /**
@@ -295,7 +303,14 @@ async function getColumnNames(client: SqlExecutor, table: string): Promise<strin
 
 export async function applySnapshotToDatabase(
   liveClient: SqlExecutor,
-  stagedDbPath: string
+  stagedDbPath: string,
+  /**
+   * Automatic device sync, review round 2: steps that must run INSIDE the merge transaction, so no
+   * other connection's write can land between them and the merge (`BEGIN IMMEDIATE` holds the
+   * write lock until COMMIT). `beforeMerge` runs before the first DELETE and may throw to roll back
+   * with nothing changed; `afterMerge` runs after the last INSERT, before COMMIT. Neither may ATTACH.
+   */
+  hooks: { beforeMerge?: () => Promise<void>; afterMerge?: () => Promise<void> } = {}
 ): Promise<void> {
   // ATTACH must happen *before* any transaction is opened on this connection -- attaching a
   // new database file after `BEGIN` was found to fail with "database staged is locked"
@@ -318,6 +333,7 @@ export async function applySnapshotToDatabase(
     try {
       await liveClient.execute("BEGIN IMMEDIATE");
       try {
+        if (hooks.beforeMerge) await hooks.beforeMerge();
         // Review of the architecture-audit fixes (2026-10-01): a snapshot exported by an OLDER build
         // may lack a table that is transferred today (e.g. `video_edit_audit_events`, allowlisted
         // only from 2026-10-01 on; its scrub dropped it). Such a table is left exactly as it is on
@@ -336,6 +352,7 @@ export async function applySnapshotToDatabase(
           );
         }
 
+        if (hooks.afterMerge) await hooks.afterMerge();
         await liveClient.execute("COMMIT");
       } catch (error) {
         await liveClient.execute("ROLLBACK");

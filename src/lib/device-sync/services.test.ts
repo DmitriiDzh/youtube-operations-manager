@@ -77,6 +77,7 @@ function entry(id: string, parent: string | null, device: string, generation: nu
     schemaVersion: 1,
     createdAt: "2026-10-01T00:00:00.000Z",
     ancestors,
+    supersedes: [],
   };
 }
 
@@ -520,7 +521,11 @@ test("'keep mine' on the computer that looked first settles both", () =>
 // Review round 1 findings (each test states the scenario the reviewer derived from the plan)
 // ---------------------------------------------------------------------------------------------
 
-test("R1-1: after 'take theirs' on B, A's further work still reaches B as a fast-forward (no new conflict)", () =>
+// R1-1, as revised after review round 2: when one side resolves ("take theirs") and the other keeps
+// working before it sees the resolution, the accepted behavior is FAIL-CLOSED -- a new conflict
+// prompt, never a silent overwrite. Automatically converging this case would need content-identity
+// tracking the round-2 review showed to be unsafe under concurrent resolutions; deferred (RISK-89).
+test("R1-1: 'take theirs' on B while A keeps working -> a new prompt, never a silent overwrite", () =>
   withTempDir("device-sync-", async (root) => {
     const a = await makeDevice(root, "a");
     const b = await makeDevice(root, "b");
@@ -535,17 +540,19 @@ test("R1-1: after 'take theirs' on B, A's further work still reaches B as a fast
     const bNotice = (await b.runner.tick()).notices[0];
     assert.equal(bNotice?.kind, "divergence");
     await b.runner.takeTheirs(bNotice!.snapshotId!);
+    await addResearchChannel(a.client, "UC-a2"); // A keeps working before it sees B's marker
 
-    // A keeps working and publishes again.
-    await addResearchChannel(a.client, "UC-a2");
-    later(a);
-    const aStatus = await a.runner.tick();
-    assert.deepEqual(aStatus.notices, []);
-    later(b);
-    assert.equal((await b.runner.tick()).state, "imported");
-    assert.deepEqual(await researchIds(b.client), ["UC-a", "UC-a2", "UC1"]);
-    later(a);
-    assert.equal((await a.runner.tick()).state, "synced");
+    for (let i = 0; i < 3; i++) {
+      later(a);
+      later(b);
+      await a.runner.tick();
+      await b.runner.tick();
+    }
+    const aIds = await researchIds(a.client);
+    const bIds = await researchIds(b.client);
+    assert.deepEqual(aIds, ["UC-a", "UC-a2", "UC1"], "A's newest work is never lost");
+    const prompted = [a.status(), b.status()].some((st) => st.notices.some((n) => n.kind === "divergence"));
+    assert.ok(prompted || JSON.stringify(aIds) === JSON.stringify(bIds), "either converged or a human is asked");
     a.client.close();
     b.client.close();
   }));
@@ -631,4 +638,36 @@ test("R1-5: overlapping actions on one runner run one after another", () =>
     assert.equal(second.state, "synced");
     assert.equal((await readdir(path.join(root, "sync"))).length, 1);
     a.client.close();
+  }));
+
+test("R2-4: a snapshot whose data needs a newer schema is tried once, then reported without retrying", () =>
+  withTempDir("device-sync-", async (root) => {
+    const { readFile, writeFile: write } = await import("node:fs/promises");
+    const { sha256File } = await import("@/lib/snapshot");
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    await addResearchChannel(b.client, "UC-b");
+    await b.runner.tick();
+    const id = (await readdir(path.join(root, "sync")))[0];
+    const dir = path.join(root, "sync", id);
+    // The manifest still claims a readable schema, but the data itself is from a newer build.
+    const c = createClient({ url: `file:${path.join(dir, "data.db")}` });
+    await c.execute("UPDATE schema_meta SET value = '9999' WHERE key = 'schema_version'");
+    c.close();
+    const manifest = JSON.parse(await readFile(path.join(dir, "manifest.json"), "utf8"));
+    const entry = manifest.files.find((f: { path: string }) => f.path === "data.db");
+    Object.assign(entry, await sha256File(path.join(dir, "data.db")));
+    await write(path.join(dir, "manifest.json"), JSON.stringify(manifest));
+
+    const first = await a.runner.tick();
+    assert.equal(first.notices[0]?.kind, "update_app");
+    assert.deepEqual(first.unsupportedSnapshotIds, [id]);
+    const backupsAfterFirst = await readdir(path.join(root, "a-backups")).catch(() => []);
+    later(a);
+    const second = await a.runner.tick();
+    assert.equal(second.notices[0]?.kind, "update_app");
+    assert.deepEqual(await readdir(path.join(root, "a-backups")).catch(() => []), backupsAfterFirst);
+    assert.deepEqual(await researchIds(a.client), []);
+    a.client.close();
+    b.client.close();
   }));

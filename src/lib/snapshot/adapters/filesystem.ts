@@ -87,18 +87,35 @@ export async function listPublishedSnapshotIds(snapshotsDir: string): Promise<st
 export const LINEAGE_FILE_NAME = "lineage.json";
 export const MAX_ANCESTORS = 500;
 
-export async function writeLineageFile(stagingDir: string, ancestors: string[]): Promise<void> {
+/**
+ * `supersedes` (review round 2): snapshots whose content this one deliberately REPLACES by a human
+ * decision -- "keep mine" lists the other computers' conflicting tips, a "take theirs" marker lists
+ * its author's own abandoned branch. It never widens what counts as a fast-forward; it only tells a
+ * receiving computer whose head is listed that its own divergent data is being replaced, so that
+ * import keeps a backup automatic retention never deletes.
+ */
+export type SnapshotLineageFile = { ancestors: string[]; supersedes: string[] };
+
+export async function writeLineageFile(stagingDir: string, lineage: SnapshotLineageFile): Promise<void> {
   await writeFile(
     path.join(stagingDir, LINEAGE_FILE_NAME),
-    JSON.stringify({ formatVersion: 1, ancestors: ancestors.slice(0, MAX_ANCESTORS) }),
+    JSON.stringify({
+      formatVersion: 1,
+      ancestors: lineage.ancestors.slice(0, MAX_ANCESTORS),
+      supersedes: lineage.supersedes.slice(0, MAX_ANCESTORS),
+    }),
     "utf8"
   );
 }
 
-/** The snapshot's ancestors (newest first), or `null` when the manifest lists no lineage file
- * (a snapshot from a build before automatic sync). A listed-but-unreadable file throws, like any
- * other missing/corrupt snapshot file. */
-export async function readLineageFile(snapshotDir: string, manifest: SnapshotManifest): Promise<string[] | null> {
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((id) => typeof id === "string");
+}
+
+/** The snapshot's lineage file, or `null` when the manifest lists none (a snapshot from a build
+ * before automatic sync). A listed-but-unreadable file throws, like any other missing/corrupt
+ * snapshot file. */
+export async function readLineageFile(snapshotDir: string, manifest: SnapshotManifest): Promise<SnapshotLineageFile | null> {
   if (!manifest.files.some((file) => file.path === LINEAGE_FILE_NAME)) return null;
   const filePath = path.join(snapshotDir, LINEAGE_FILE_NAME);
   if (!(await pathExists(filePath))) {
@@ -110,11 +127,11 @@ export async function readLineageFile(snapshotDir: string, manifest: SnapshotMan
   } catch {
     throw new SnapshotError("snapshot_manifest_invalid", `Snapshot ${manifest.snapshotId}'s ${LINEAGE_FILE_NAME} is not valid JSON.`);
   }
-  const ancestors = (parsed as { ancestors?: unknown } | null)?.ancestors;
-  if (!Array.isArray(ancestors) || !ancestors.every((id) => typeof id === "string")) {
+  const record = (parsed ?? {}) as { ancestors?: unknown; supersedes?: unknown };
+  if (!isStringArray(record.ancestors) || (record.supersedes !== undefined && !isStringArray(record.supersedes))) {
     throw new SnapshotError("snapshot_manifest_invalid", `Snapshot ${manifest.snapshotId}'s ${LINEAGE_FILE_NAME} is malformed.`);
   }
-  return ancestors as string[];
+  return { ancestors: record.ancestors, supersedes: record.supersedes ?? [] };
 }
 
 const SNAPSHOT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

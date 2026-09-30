@@ -15,6 +15,8 @@ export type SnapshotEntry = {
   createdAt: string;
   /** From `lineage.json`; `null` for a snapshot from a build before automatic sync. */
   ancestors: string[] | null;
+  /** From `lineage.json`: snapshots this one replaces by a human decision (backup choice only). */
+  supersedes: string[];
 };
 
 export type DecisionInput = {
@@ -65,6 +67,9 @@ export type DeviceSyncStatus = {
   /** snapshotId -> first time it was seen unreadable / not yet fully transferred (ms). */
   pendingSince: Record<string, number>;
   busyReason: string | null;
+  /** Snapshots this build could not import because their data needs a newer schema -- never retried
+   * (each attempt would copy the whole live DB for nothing, plan §3.4). */
+  unsupportedSnapshotIds: string[];
 };
 
 export const EMPTY_DEVICE_SYNC_STATUS: DeviceSyncStatus = {
@@ -77,6 +82,7 @@ export const EMPTY_DEVICE_SYNC_STATUS: DeviceSyncStatus = {
   notices: [],
   pendingSince: {},
   busyReason: null,
+  unsupportedSnapshotIds: [],
 };
 
 /** §3.5 cadence. */
