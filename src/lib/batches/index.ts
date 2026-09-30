@@ -42,3 +42,8 @@ export function createBatchCore() {
 }
 
 export type BatchCore = ReturnType<typeof createBatchCore>;
+
+// Architecture audit 2026-10-01 (M8): exported through the barrel so app-layer callers never reach
+// into this module's services/adapters directly.
+export { isApprovalStillValid } from "./services";
+export { createLiveWriteExecutorIfEnabled } from "./adapters/write-executor";

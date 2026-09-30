@@ -1,5 +1,5 @@
 import { getStoredVideo, setSelectedChannelId } from "@/lib/db";
-import { assertAgentScopeChannel, assertAgentScopeVideo, readStringField } from "@/lib/channel-access/agent-scope";
+import { assertAgentScopeChannel, assertAgentScopeVideo, readStringField } from "@/lib/channel-access";
 import { createWriteContextCore } from "@/lib/write-context";
 import { createMetadataGenerator } from "./adapters/metadata-generator";
 import { createDefaultLogger } from "@/lib/shared-logger";

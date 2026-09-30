@@ -2,7 +2,7 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createBatchCore } from "@/lib/batches";
-import { createLiveWriteExecutorIfEnabled } from "@/lib/batches/adapters/write-executor";
+import { createLiveWriteExecutorIfEnabled } from "@/lib/batches";
 import { DomainError } from "@/lib/batches/contracts";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";

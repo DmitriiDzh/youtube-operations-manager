@@ -1,5 +1,6 @@
 import { createDefaultLogger } from "@/lib/shared-logger";
-import { createChangeSetChannelStoreAdapter, createIdGenerator } from "@/lib/changesets/adapters/store";
+import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
+import { createIdGenerator } from "@/lib/shared-domain";
 import { createChangeSetCore } from "@/lib/changesets";
 import { createAiConnectionCore } from "@/lib/ai-connections";
 import { createEditorialProfileStoreAdapter, createGenerationProvenanceStoreAdapter } from "./adapters/profile-store";
@@ -13,7 +14,7 @@ export function createAiLocalizationCore() {
   const connectionCore = createAiConnectionCore();
 
   return createAiLocalizationServices({
-    channelStore: createChangeSetChannelStoreAdapter(),
+    channelStore: createChannelVideoStoreAdapter(),
     resolveProvider: resolveLocalizationProvider,
     defaultProviderName: "mock",
     resolveConnectionProvider: connectionCore.resolveConnectionProvider,
