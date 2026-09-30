@@ -284,8 +284,8 @@ Not every issue in this register must be fixed immediately. It must, however, al
     - A lease dated more than 60 s in the future does not count as fresh (a clock that ran
       ahead).
   - A lease renewal made during an in-process snapshot import joins the import's transaction.
-    If the import fails, that renewal rolls back, and the lease may briefly lapse. This fails
-    closed.
+    If the import fails, that renewal rolls back. If that leaves the lease stale, Live writes
+    lapses to a persisted OFF and the operator re-enables it. This fails closed.
   - Only the web boot hook and the settings route may renew the lease; this is inventory-tested.
   - Older progress notes below that say "reset on every process boot" describe the previous
     mechanism.
