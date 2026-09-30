@@ -133,6 +133,17 @@ test("decide: a peer snapshot already in local history is not 'newer' (legacy li
   assert.equal(d.kind, "idle");
 });
 
+test("decide: an older-build catch-up step that needs a newer schema -> update_app, not a conflict", () => {
+  const d = decideSyncAction({
+    deviceId: "A",
+    currentSchemaVersion: 1,
+    local: { lastSnapshotId: "s1", ancestors: [] },
+    localDirty: false,
+    snapshots: [entry("s1", null, "A", 1), { ...entry("s2", "s1", "B", 2, null), schemaVersion: 5 }, entry("s3", "s2", "B", 3, null)],
+  });
+  assert.equal(d.kind, "update_app");
+});
+
 test("decide: a newer schema than this build -> update_app", () => {
   const newer = { ...entry("s2", "s1", "B", 2, ["s1"]), schemaVersion: 99 };
   const d = decideSyncAction({
@@ -668,6 +679,23 @@ test("R2-4: a snapshot whose data needs a newer schema is tried once, then repor
     assert.equal(second.notices[0]?.kind, "update_app");
     assert.deepEqual(await readdir(path.join(root, "a-backups")).catch(() => []), backupsAfterFirst);
     assert.deepEqual(await researchIds(a.client), []);
+
+    // Review round 3: after an app update, the remembered failure no longer applies -- tried again.
+    let saved = a.status();
+    const updated = createDeviceSyncRunner({
+      client: a.client,
+      currentSchemaVersion: SCHEMA_CURRENT_VERSION + 1,
+      resolveConfig: async () => ({ deviceId: "device-a", folder: path.join(root, "sync") }),
+      migrationBackupsDir: path.join(root, "a-backups"),
+      workingDir: path.join(root, "a-work"),
+      isEnabled: async () => true,
+      loadStatus: async () => saved,
+      saveStatus: async (s) => {
+        saved = s;
+      },
+    });
+    const retried = await updated.tick();
+    assert.equal(retried.unsupportedForSchemaVersion, SCHEMA_CURRENT_VERSION + 1, "retried under the new build");
     a.client.close();
     b.client.close();
   }));

@@ -70,6 +70,9 @@ export type DeviceSyncStatus = {
   /** Snapshots this build could not import because their data needs a newer schema -- never retried
    * (each attempt would copy the whole live DB for nothing, plan §3.4). */
   unsupportedSnapshotIds: string[];
+  /** The build (schema version) that recorded `unsupportedSnapshotIds`: after an app update the list
+   * no longer applies and is dropped (review round 3). */
+  unsupportedForSchemaVersion: number | null;
 };
 
 export const EMPTY_DEVICE_SYNC_STATUS: DeviceSyncStatus = {
@@ -83,6 +86,7 @@ export const EMPTY_DEVICE_SYNC_STATUS: DeviceSyncStatus = {
   pendingSince: {},
   busyReason: null,
   unsupportedSnapshotIds: [],
+  unsupportedForSchemaVersion: null,
 };
 
 /** §3.5 cadence. */

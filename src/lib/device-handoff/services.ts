@@ -97,7 +97,7 @@ export async function importHandoff(params: {
    * Automatic sync (§3.3): re-checked INSIDE the operation lock, immediately before the live DB is
    * touched. Throwing aborts the import with the live DB unchanged (AC-AS-07).
    */
-  assertStillSafe?: () => Promise<void>;
+  assertStillSafe?: (context: { liveFingerprint: string }) => Promise<void>;
   /** File-name prefix of the pre-import backup. Automatic imports use their own prefix so that
    * retention can prune exactly those and never a manual or "take theirs" backup. */
   backupPrefix?: string;
@@ -176,7 +176,9 @@ export async function importHandoff(params: {
               "Local data changed while the import was being prepared; nothing was replaced. Try again."
             );
           }
-          if (params.assertStillSafe) await params.assertStillSafe();
+          // Live content equals the backup's, so its fingerprint is already known -- no second
+          // full scan while holding the write lock (review round 3).
+          if (params.assertStillSafe) await params.assertStillSafe({ liveFingerprint: backupFingerprint });
         },
         afterMerge: async () => {
           await writeLineageState(params.liveClient, {

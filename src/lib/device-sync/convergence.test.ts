@@ -100,13 +100,21 @@ function divergenceSnapshot(device: Device): string | null {
   return device.status().notices.find((n) => n.kind === "divergence")?.snapshotId ?? null;
 }
 
-async function resolve(device: Device, action: "keep" | "take", snapshotId: string | null) {
-  if (!snapshotId) return;
+/** `mustSucceed`: the first resolution of a conflict must work -- a refusal or error there is a
+ * failure, never silently tolerated (review round 3: a swallowed error let the whole matrix pass
+ * even with resolutions that did nothing). A second computer's resolution may be legitimately
+ * refused once the conflict it names is no longer current. */
+async function resolve(device: Device, action: "keep" | "take", snapshotId: string | null, mustSucceed: boolean) {
+  if (!snapshotId) {
+    assert.ok(!mustSucceed, `${device.name}: no conflict to resolve`);
+    return;
+  }
   try {
     if (action === "keep") await device.runner.keepMine(snapshotId);
     else await device.runner.takeTheirs(snapshotId);
-  } catch {
-    // Refused (e.g. no longer the current conflict) -- a legitimate outcome, nothing changed.
+  } catch (error) {
+    if (mustSucceed) throw error;
+    assert.match(String(error), /no longer the one in conflict|not in the sync folder/);
   }
 }
 
@@ -131,7 +139,7 @@ async function backupIds(device: Device): Promise<Set<string>> {
   return out;
 }
 
-async function settleAndCheck(devices: Device[], syncAll: () => Promise<void>, label: string) {
+async function settleAndCheck(devices: Device[], syncAll: () => Promise<void>, label: string, mustConverge = false) {
   for (let round = 0; round < 6; round++) {
     await syncAll();
     for (const d of devices) await tick(d);
@@ -139,6 +147,9 @@ async function settleAndCheck(devices: Device[], syncAll: () => Promise<void>, l
   const contents = await Promise.all(devices.map((d) => ids(d.client)));
   const asking = devices.some((d) => d.status().notices.some((n) => n.kind === "divergence"));
   const identical = contents.every((c) => JSON.stringify(c) === JSON.stringify(contents[0]));
+  if (mustConverge) {
+    assert.ok(identical && !asking, `${label}: must converge without asking again, got ${devices.map((d, i) => `${d.name}=${contents[i].join(",")}`).join(" ")} asking=${asking}`);
+  }
   assert.ok(
     asking || identical,
     `${label}: devices settled "synced" with different data: ${devices.map((d, i) => `${d.name}=${contents[i].join(",")}`).join(" ")}`
@@ -184,16 +195,20 @@ for (const c of MATRIX) {
       const { a, b, syncAll } = await divergedPair(root);
       assert.ok(divergenceSnapshot(a) && divergenceSnapshot(b), "precondition: both computers show the conflict");
       const bTarget = divergenceSnapshot(b);
-      await resolve(a, c.a as "keep" | "take", divergenceSnapshot(a));
+      await resolve(a, c.a as "keep" | "take", divergenceSnapshot(a), true);
       if (c.b !== "none") {
         if (!c.delayed) {
           await syncAll();
           await tick(b);
         }
-        await resolve(b, c.b, c.delayed ? bTarget : divergenceSnapshot(b));
+        await resolve(b, c.b, c.delayed ? bTarget : divergenceSnapshot(b), false);
       }
       if (c.laterWork) await create(b, "UC-b-later");
-      await settleAndCheck([a, b], syncAll, label);
+      // Only a SIMULTANEOUS second resolution, or B working before it saw A's resolution, is allowed
+      // to end in a new prompt (RISK-89). Everything else must converge on its own (AC-AS-11/12).
+      // (With B=none, B never looked before working, so "+B keeps working" is that accepted case.)
+      const mustConverge = c.b === "none" ? !c.laterWork : !c.delayed;
+      await settleAndCheck([a, b], syncAll, label, mustConverge);
       a.client.close();
       b.client.close();
     }));
@@ -216,8 +231,8 @@ test("convergence: a third, passive computer follows a 'keep mine' resolution", 
     await tick(b);
     await syncAll();
     await tick(a);
-    await resolve(a, "keep", divergenceSnapshot(a));
-    await settleAndCheck([a, b, c], syncAll, "three computers");
+    await resolve(a, "keep", divergenceSnapshot(a), true);
+    await settleAndCheck([a, b, c], syncAll, "three computers", true);
     assert.deepEqual(await ids(c.client), ["UC-a", "UC1"]);
     for (const d of [a, b, c]) d.client.close();
   }));
@@ -225,7 +240,7 @@ test("convergence: a third, passive computer follows a 'keep mine' resolution", 
 test("round 2 #3: the computer that loses a 'keep mine' keeps a never-pruned backup of its data", () =>
   withTempDir("device-sync-conv-", async (root) => {
     const { a, b, syncAll } = await divergedPair(root);
-    await resolve(a, "keep", divergenceSnapshot(a));
+    await resolve(a, "keep", divergenceSnapshot(a), true);
     await syncAll();
     await tick(b);
     assert.deepEqual(await ids(b.client), ["UC-a", "UC1"]);

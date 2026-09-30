@@ -92,7 +92,11 @@ export function decideSyncAction(input: DecisionInput): SyncDecision {
       const step = newer
         .filter((s) => tipAncestry.has(s.snapshotId) && isFastForwardOf(s, s.ancestors, local))
         .sort((a, b) => b.generation - a.generation)[0];
-      if (step && step.schemaVersion <= input.currentSchemaVersion) return { kind: "import", snapshot: step };
+      if (step) {
+        return step.schemaVersion > input.currentSchemaVersion
+          ? { kind: "update_app", snapshot: step }
+          : { kind: "import", snapshot: step };
+      }
     }
   }
   return { kind: "divergence", snapshot: tip, localDirty: input.localDirty, multipleTips: false };
@@ -333,11 +337,11 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       workingDir: deps.workingDir,
       acceptDivergentLineage: mode.acceptDivergentLineage,
       backupPrefix: mode.acceptDivergentLineage ? TAKE_THEIRS_BACKUP_PREFIX : AUTO_IMPORT_BACKUP_PREFIX,
-      assertStillSafe: async () => {
+      assertStillSafe: async ({ liveFingerprint }) => {
         const active = await hasActiveExecution(deps.client);
         if (active) throw new SyncAbort(active);
         // AC-AS-07: a local change that landed after the decision aborts the automatic import.
-        if (mode.requireClean && (await hasUnpublishedLocalChanges(deps.client))) {
+        if (mode.requireClean && (await hasUnpublishedLocalChanges(deps.client, liveFingerprint))) {
           throw new SyncAbort("local data changed", "local_changed");
         }
       },
@@ -391,7 +395,9 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       status = withPending(status, previousPending, unreadable);
       const lineage = await readLineageState(deps.client);
       const localDirty = await hasUnpublishedLocalChanges(deps.client);
-      const unsupported = new Set(status.unsupportedSnapshotIds ?? []);
+      const unsupported = new Set(
+        status.unsupportedForSchemaVersion === deps.currentSchemaVersion ? (status.unsupportedSnapshotIds ?? []) : []
+      );
       const decision = decideSyncAction({
         deviceId: config.deviceId,
         currentSchemaVersion: deps.currentSchemaVersion,
@@ -513,7 +519,8 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
               return finish({
                 ...status,
                 state: "attention",
-                unsupportedSnapshotIds: [...(status.unsupportedSnapshotIds ?? []), decision.snapshot.snapshotId],
+                unsupportedSnapshotIds: [...unsupported, decision.snapshot.snapshotId],
+                unsupportedForSchemaVersion: deps.currentSchemaVersion,
                 notices: [
                   {
                     kind: "update_app",

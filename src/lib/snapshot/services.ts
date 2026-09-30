@@ -146,11 +146,15 @@ export function isFastForwardOf(
  * not in its lineage head. Fails toward "dirty": an unknown fingerprint (a lineage from before
  * v36) is dirty; with no lineage at all, only completely empty transferred tables are clean.
  */
-export async function hasUnpublishedLocalChanges(client: SqlExecutor): Promise<boolean> {
+export async function hasUnpublishedLocalChanges(
+  client: SqlExecutor,
+  /** The current content fingerprint, when the caller already computed it (saves a full scan). */
+  currentFingerprint?: string
+): Promise<boolean> {
   const lineage = await readLineageState(client);
   if (lineage.lastSnapshotId === null) return !(await transferredTablesAreEmpty(client));
   if (!lineage.contentFingerprint) return true;
-  return (await computeContentFingerprint(client)) !== lineage.contentFingerprint;
+  return (currentFingerprint ?? (await computeContentFingerprint(client))) !== lineage.contentFingerprint;
 }
 
 async function pathExistsChecked(filePath: string): Promise<boolean> {

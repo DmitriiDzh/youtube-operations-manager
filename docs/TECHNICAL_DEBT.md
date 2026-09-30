@@ -1455,7 +1455,12 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
     (`pre-take-theirs-*`, `pre-superseded-*`). Automatic convergence here would need
     content-identity tracking, which proved unsafe under concurrent opposite resolutions.
     Revisit if re-prompts are reported in practice. The resolution matrix is
-    `src/lib/device-sync/convergence.test.ts`.
+    `src/lib/device-sync/convergence.test.ts`. Every other case there must converge without a
+    prompt.
+  - **Merge-transaction length grows with the Research history.** An import holds the write lock
+    for two full fingerprint scans. It measured 8 ms for three scans on the owner's DB on
+    2026-10-01. Other writers wait up to their 5 s `busy_timeout`. Revisit if the transferred
+    tables reach hundreds of thousands of rows.
 - **Why accepted:** each of these fails toward "ask a human" or "publish later", never toward
   overwriting data (AC-AS-01/07).
 - **Trigger to revisit:** a reported lost change after a stop, or a stale lock in the field.
