@@ -17,9 +17,15 @@ import type { MarketIntelligenceCore } from "@/lib/market-intelligence";
 import type { DecisionEngineCore } from "@/lib/decision-engine";
 import type { AgentConnectionsCoreSubset } from "@/lib/agent-connections";
 import { AGENT_API_VERSION } from "@/lib/agent-operations";
+import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { createMcpServer, createMcpToolHandlers } from "./server";
+
+// Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-01): tools are registered only for a
+// channel-bound agent session. Tests that exercise registered tools inject one explicitly (a test
+// seam, never a relaxed production rule); its token is treated as always valid.
+const TEST_AGENT_SESSION = { channelId: "UC_1", reverify: async () => {} };
 
 function makeCoreStub(): Pick<
   VideoMetadataCore & PlaylistManagementCore,
@@ -322,11 +328,16 @@ test("MCP whoami returns active local user", async () => {
   assert.equal(payload.email, "active-user@example.com");
 });
 
-test("MCP server registers auth_user_select tool", () => {
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
-  const tools = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools;
+// Requirement changed by the owner's Phase 12 decision (Telegram, msg 1048; PHASE_12_PLAN.md
+// AC-P12-04): identity/selection-switching tools are operator-only and never exist in an agent
+// session. This test previously asserted auth_user_select WAS registered.
+test("MCP agent session: identity/selection-switching tools are never registered", () => {
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION });
+  const tools = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {};
 
-  assert.equal(Boolean(tools?.auth_user_select), true);
+  for (const name of ["auth_user_select", "write_channel_select", "write_channel_list"]) {
+    assert.equal(Boolean(tools[name]), false, `${name} must not be registered`);
+  }
 });
 
 // Phase 9 slice 4 -- the handler tests above only prove createMcpToolHandlers().queryCompetitors/
@@ -334,16 +345,15 @@ test("MCP server registers auth_user_select tool", () => {
 // tool names PLANNED_FUTURE_CAPABILITIES reserved are actually wired into createMcpServer's real
 // registration, using the real default createMarketIntelligenceCore() (an empty local watchlist,
 // so both calls succeed with an empty/not-found result rather than needing a fixture).
-test("MCP server registers query_competitors and query_market_intelligence tools", async () => {
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
-  const tools = (server as unknown as { _registeredTools?: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean }> }> })
-    ._registeredTools;
+// Phase 12: global market-intelligence tools are operator-only until records are owned by/assigned
+// to channels (PHASE_12_PLAN.md slice 12.4, owner decision D1). Previously asserted registered.
+test("MCP agent session: global market-intelligence tools are not registered", () => {
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION });
+  const tools = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {};
 
-  assert.ok(tools?.query_competitors, "query_competitors must be registered");
-  assert.ok(tools?.query_market_intelligence, "query_market_intelligence must be registered");
-
-  const competitorsResult = await tools!.query_competitors.handler({});
-  assert.equal(competitorsResult.isError, undefined);
+  for (const name of ["query_competitors", "query_market_intelligence", "agent_list_market_records", "agent_create_market_research_request"]) {
+    assert.equal(Boolean(tools[name]), false, `${name} must not be registered`);
+  }
 });
 
 // The SDK validates an incoming tool call against the REGISTERED inputSchema, using its OWN
@@ -355,7 +365,7 @@ test("MCP server registers query_competitors and query_market_intelligence tools
 // handler directly, which bypasses the SDK) ever gets a chance to run. This test exercises the
 // REAL registered schema object, not the handler, to prove that specific gap is actually closed.
 test("MCP server registers agent_find_comparable_videos with an SDK-facing schema that does not itself require credentialRef when performanceMetric is set", () => {
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION });
   const tools = (server as unknown as { _registeredTools?: Record<string, { inputSchema?: { safeParse: (input: unknown) => { success: boolean } } }> })
     ._registeredTools;
   const tool = tools?.agent_find_comparable_videos;
@@ -371,7 +381,7 @@ test("MCP server registers agent_find_comparable_videos with an SDK-facing schem
 });
 
 test("MCP server registers agent_list_asset_performance with an SDK-facing schema that does not itself require credentialRef when performanceMetric is set", () => {
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION });
   const tools = (server as unknown as { _registeredTools?: Record<string, { inputSchema?: { safeParse: (input: unknown) => { success: boolean } } }> })
     ._registeredTools;
   const tool = tools?.agent_list_asset_performance;
@@ -428,8 +438,8 @@ test("MCP server (connectionEnabled: false) registers zero tools, including ever
   }
 });
 
-test("MCP server (connectionEnabled: true) registers every tool, including write/identity-switching ones", () => {
-  const names = registeredToolNames(createMcpServer(makeCoreStub(), { connectionEnabled: true }));
+test("MCP server (connectionEnabled: true, agent session) registers every bound tool, including writes", () => {
+  const names = registeredToolNames(createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION }));
 
   for (const tool of [
     "whoami",
@@ -455,8 +465,6 @@ test("MCP server (connectionEnabled: true) registers every tool, including write
     "playlist_delete",
     "playlist_add_videos",
     "playlist_remove_videos",
-    "write_channel_select",
-    "auth_user_select",
     "write_context",
     // Slice K: proves the real MCP SDK's own server.registerTool() accepts
     // findComparableVideosInputSchema (a ZodEffects, via .refine()) without throwing --
@@ -4658,7 +4666,11 @@ const EXPECTED_ZONE_CAPABILITY_IDS: Record<string, string> = {
   create_experiment_proposal: "decision_engine.create_experiment_proposal",
 };
 
-const ZONED_MCP_TOOL_NAMES = Object.keys(EXPECTED_ZONE_CAPABILITY_IDS) as (keyof typeof EXPECTED_ZONE_CAPABILITY_IDS)[];
+// Phase 12: only tools that exist in an agent session can be exercised here -- operator-only ones
+// (agent_create_market_research_request, until slice 12.4) are never registered for an agent.
+const ZONED_MCP_TOOL_NAMES = (Object.keys(EXPECTED_ZONE_CAPABILITY_IDS) as (keyof typeof EXPECTED_ZONE_CAPABILITY_IDS)[]).filter(
+  (name) => MCP_TOOL_CLASSIFICATION[name] === "bound"
+);
 
 function makeCapturingAgentConnectionsCoreStub(): AgentConnectionsCoreSubset & {
   calls: { capabilityId: string; callerConnectionId: string | null }[];
@@ -4674,7 +4686,7 @@ function makeCapturingAgentConnectionsCoreStub(): AgentConnectionsCoreSubset & {
 
 for (const toolName of ZONED_MCP_TOOL_NAMES) {
   test(`MCP ${toolName} is actually wired through agent-zone enforcement (rejected when the stub always denies)`, async () => {
-    const server = createMcpServer(makeCoreStub(), { connectionEnabled: true }, makeAlwaysDenyingAgentConnectionsCoreStub());
+    const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION }, makeAlwaysDenyingAgentConnectionsCoreStub());
     const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: { text: string }[] }> }> })
       ._registeredTools;
 
@@ -4687,7 +4699,7 @@ for (const toolName of ZONED_MCP_TOOL_NAMES) {
 
   test(`MCP ${toolName} passes exactly its own capabilityId ("${EXPECTED_ZONE_CAPABILITY_IDS[toolName]}") and this server's callerConnectionId to assertAgentAllowedForCapability`, async () => {
     const capturing = makeCapturingAgentConnectionsCoreStub();
-    const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, callerConnectionId: "test-caller" }, capturing);
+    const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION, callerConnectionId: "test-caller" }, capturing);
     const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<unknown> }> })._registeredTools;
 
     await tools[toolName].handler({});
@@ -4699,7 +4711,7 @@ for (const toolName of ZONED_MCP_TOOL_NAMES) {
 
 test("MCP createMcpServer forwards options.callerConnectionId: null (the default) when not explicitly set", async () => {
   const capturing = makeCapturingAgentConnectionsCoreStub();
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true }, capturing);
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION }, capturing);
   const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<unknown> }> })._registeredTools;
 
   await tools.channel_sync.handler({});
@@ -4708,7 +4720,7 @@ test("MCP createMcpServer forwards options.callerConnectionId: null (the default
 });
 
 test("MCP whoami (an unzoned tool) is never affected by agent-zone enforcement, even when the stub always denies", async () => {
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true }, makeAlwaysDenyingAgentConnectionsCoreStub());
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION }, makeAlwaysDenyingAgentConnectionsCoreStub());
   const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: { text: string }[] }> }> })
     ._registeredTools;
 
@@ -4721,7 +4733,7 @@ test("MCP whoami (an unzoned tool) is never affected by agent-zone enforcement, 
 test("MCP channel_sync passes through to the real handler when zoning allows the call (zero connections registered, real default agent-connections core)", async () => {
   // No 3rd arg -- uses createMcpServer's own real default (createAgentConnectionsCore()), which
   // is a no-op while zero connections are registered (this test's actual DB state).
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION });
   const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: { text: string }[] }> }> })
     ._registeredTools;
 
@@ -5491,10 +5503,59 @@ test("MCP agent_get_channel_workspace rejects an extra `path` field -- it can ne
 });
 
 test("MCP server registers agent_get_channel_workspace and no tool that can set or clear a channel workspace", () => {
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION });
   const tools = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {};
 
   assert.ok(tools.agent_get_channel_workspace, "agent_get_channel_workspace must be registered");
   const workspaceTools = Object.keys(tools).filter((name) => name.includes("workspace"));
   assert.deepEqual(workspaceTools.sort(), ["agent_get_channel_workspace"]);
+});
+
+// Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-01/02/08).
+test("AC-P12-01: connection enabled but no agent session (no/invalid token) registers zero tools", () => {
+  assert.deepEqual(registeredToolNames(createMcpServer(makeCoreStub(), { connectionEnabled: true })), []);
+  assert.deepEqual(registeredToolNames(createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: null })), []);
+});
+
+test("AC-P12-01: the master connection toggle off still registers zero tools even with a valid session", () => {
+  assert.deepEqual(registeredToolNames(createMcpServer(makeCoreStub(), { connectionEnabled: false, agentSession: TEST_AGENT_SESSION })), []);
+});
+
+test("AC-P12-08: an agent session registers exactly the tools classified bound -- nothing unclassified, nothing operator-only", () => {
+  const names = registeredToolNames(createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION })).sort();
+  const bound = Object.entries(MCP_TOOL_CLASSIFICATION)
+    .filter(([, toolClass]) => toolClass === "bound")
+    .map(([name]) => name)
+    .sort();
+  assert.deepEqual(names, bound);
+});
+
+test("AC-P12-08: the classification table covers every tool the server source registers", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("./server.ts", import.meta.url), "utf8");
+  const registered = [...source.matchAll(/registerTool\(\s*"([a-z_]+)"/g)].map((match) => match[1]).sort();
+  assert.ok(registered.length > 40, "sanity: expected to find the registered tool names in server.ts");
+  assert.deepEqual(registered, Object.keys(MCP_TOOL_CLASSIFICATION).sort());
+});
+
+test("AC-P12-02: a revoked token fails the very next call of a running session, before any handler runs", async () => {
+  let revoked = false;
+  const server = createMcpServer(makeCoreStub(), {
+    connectionEnabled: true,
+    agentSession: {
+      channelId: "UC_1",
+      async reverify() {
+        if (revoked) throw new DomainError({ code: "AGENT_TOKEN_INVALID", message: "revoked" });
+      },
+    },
+  });
+  const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: Array<{ text: string }> }> }> })
+    ._registeredTools;
+
+  const before = await tools.agent_get_capabilities.handler({});
+  assert.notEqual(before.isError, true);
+  revoked = true;
+  const after = await tools.agent_get_capabilities.handler({});
+  assert.equal(after.isError, true);
+  assert.equal(JSON.parse(after.content[0].text).error.code, "AGENT_TOKEN_INVALID");
 });

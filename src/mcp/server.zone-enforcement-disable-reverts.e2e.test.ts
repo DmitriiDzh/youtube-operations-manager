@@ -4,6 +4,11 @@ import { randomUUID } from "node:crypto";
 import { createMcpServer } from "./server";
 import { createAgentConnectionsCore } from "@/lib/agent-connections";
 
+// Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-01): tools are registered only for a
+// channel-bound agent session. Tests that exercise registered tools inject one explicitly (a test
+// seam, never a relaxed production rule); its token is treated as always valid.
+const TEST_AGENT_SESSION = { channelId: "UC_1", reverify: async () => {} };
+
 // BL-091 (docs/roadmap/plans/AGENT_ZONES_PLAN.md) -- deliberately a SEPARATE file from
 // server.zone-enforcement.e2e.test.ts (each test FILE gets its own pristine real database, per
 // src/lib/platform-paths/runtime.ts). This scenario needs "zero connections enabled" to hold for
@@ -24,7 +29,7 @@ test("real agent-connections core: disabling every enabled connection reverts a 
   await core.registerConnection({ id: oneId, label: "Solo (test)" });
   await core.registerConnection({ id: twoId, label: "Duo (test)" });
 
-  const serverWithTwoEnabled = createMcpServer(undefined, { connectionEnabled: true, callerConnectionId: oneId }, core);
+  const serverWithTwoEnabled = createMcpServer(undefined, { connectionEnabled: true, agentSession: TEST_AGENT_SESSION, callerConnectionId: oneId }, core);
   const toolsWithTwoEnabled = (serverWithTwoEnabled as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: { text: string }[] }> }> })._registeredTools;
   const blockedResult = await toolsWithTwoEnabled.channel_sync.handler({});
   assert.equal(blockedResult.isError, true);
@@ -34,7 +39,7 @@ test("real agent-connections core: disabling every enabled connection reverts a 
 
   // Still exactly ONE connection enabled (oneId) -- the unassigned capability stays blocked, even
   // for that sole remaining enabled connection. No implicit "last one standing" grant.
-  const serverWithOneEnabled = createMcpServer(undefined, { connectionEnabled: true, callerConnectionId: oneId }, core);
+  const serverWithOneEnabled = createMcpServer(undefined, { connectionEnabled: true, agentSession: TEST_AGENT_SESSION, callerConnectionId: oneId }, core);
   const toolsWithOneEnabled = (serverWithOneEnabled as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: { text: string }[] }> }> })._registeredTools;
   const stillBlockedResult = await toolsWithOneEnabled.channel_sync.handler({});
   assert.equal(stillBlockedResult.isError, true);
@@ -43,7 +48,7 @@ test("real agent-connections core: disabling every enabled connection reverts a 
   await core.setConnectionEnabled({ id: oneId, enabled: false });
 
   // Zero connections enabled -- the only real escape hatch. Zoning is now a true no-op.
-  const serverWithZeroEnabled = createMcpServer(undefined, { connectionEnabled: true, callerConnectionId: oneId }, core);
+  const serverWithZeroEnabled = createMcpServer(undefined, { connectionEnabled: true, agentSession: TEST_AGENT_SESSION, callerConnectionId: oneId }, core);
   const toolsWithZeroEnabled = (serverWithZeroEnabled as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: { text: string }[] }> }> })._registeredTools;
   const openResult = await toolsWithZeroEnabled.channel_sync.handler({});
   const openPayload = JSON.parse(openResult.content[0]?.text ?? "{}");

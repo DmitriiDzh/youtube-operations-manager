@@ -15,6 +15,7 @@ import {
   type SchemaMigration,
 } from "@/lib/schema-versioning";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
+import { getAgentSession } from "@/lib/agent-session";
 
 // Platform-aware app-data location (docs/decisions/0002-additive-schema-versioning.md's
 // companion task, "Pre-Release Cross-Platform Persistence"). getProductionAppPaths() is the
@@ -2806,6 +2807,13 @@ export async function clearUserOAuthTokens(userId: string) {
 }
 
 export async function getSelectedChannelId(userId: string): Promise<string | null> {
+  // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md §6): in a channel-bound agent process the
+  // "selected channel" IS the bound channel, never the operator's stored selection -- and only for
+  // the bound identity (anyone else: null, which every active-channel check treats as fail-closed).
+  const agentSession = getAgentSession();
+  if (agentSession) {
+    return userId === agentSession.userId ? agentSession.channelId : null;
+  }
   const [row] = await db
     .select({ selectedChannelId: users.selectedChannelId })
     .from(users)
@@ -2815,6 +2823,13 @@ export async function getSelectedChannelId(userId: string): Promise<string | nul
 }
 
 export async function setSelectedChannelId(userId: string, channelId: string): Promise<void> {
+  // Phase 12: a silent no-op in a channel-bound agent process. Deliberately not an error -- `apply`
+  // and every playlist write persist the selection AFTER a real YouTube write already succeeded,
+  // and failing there would misreport that write. The operator's selection is never touched by an
+  // agent (AC-P12-04/06).
+  if (getAgentSession()) {
+    return;
+  }
   await db
     .update(users)
     .set({ selectedChannelId: channelId })
@@ -3046,6 +3061,22 @@ export async function getMcpConnectionEnabled(): Promise<boolean> {
 
 export async function setMcpConnectionEnabled(enabled: boolean): Promise<void> {
   await setAppSetting(MCP_CONNECTION_ENABLED_SETTING_KEY, enabled ? "true" : "false");
+}
+
+const OPERATOR_CLI_ENABLED_SETTING_KEY = "operator_cli_enabled";
+
+/**
+ * Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md slice 12.5, AC-P12-10) -- whether the CLI may run
+ * WITHOUT an agent token, as the operator. Off by default and persistent (like MCP connection):
+ * otherwise a shell-capable agent could bypass its channel binding simply by omitting its token.
+ * Settable only through the Web Settings tab (`POST /api/settings`), never from the CLI itself.
+ */
+export async function getOperatorCliEnabled(): Promise<boolean> {
+  return (await getAppSetting(OPERATOR_CLI_ENABLED_SETTING_KEY)) === "true";
+}
+
+export async function setOperatorCliEnabled(enabled: boolean): Promise<void> {
+  await setAppSetting(OPERATOR_CLI_ENABLED_SETTING_KEY, enabled ? "true" : "false");
 }
 
 const DATA_API_READS_ENABLED_SETTING_KEY = "data_api_reads_enabled";

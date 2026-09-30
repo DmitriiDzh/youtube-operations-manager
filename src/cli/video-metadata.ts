@@ -11,7 +11,7 @@ import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
 import { createCliAuthService } from "@/lib/cli-auth";
 import type { CredentialRef } from "@/lib/video-metadata/contracts";
-import { rawSqlClient } from "@/lib/db";
+import { getOperatorCliEnabled, rawSqlClient } from "@/lib/db";
 import { assertDeviceAvailableForMutation, RecoveryModeError } from "@/lib/device-handoff";
 import { OperationLockError } from "@/lib/operation-lock";
 import { createChangeSetCore, type ChangeSetCore } from "@/lib/changesets";
@@ -24,6 +24,9 @@ import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent
 import { createAssetCatalogCore, type AssetCatalogCore } from "@/lib/asset-catalog";
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
 import { createChannelWorkspacesCore, type ChannelWorkspacesCore } from "@/lib/channel-workspaces";
+import { createAgentTokenCore, type AgentTokenBinding } from "@/lib/agent-tokens";
+import { enterAgentSession } from "@/lib/agent-session";
+import { CLI_COMMAND_CLASSIFICATION } from "./command-classification";
 import { createDecisionEngineCore, type DecisionEngineCore } from "@/lib/decision-engine";
 import {
   createAgentConnectionsCore,
@@ -576,6 +579,13 @@ export async function runCliCommand(args: {
   channelWorkspacesCore?: Pick<ChannelWorkspacesCore, "getWorkspace">;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
+  // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md §6) -- the channel-bound agent session this
+  // invocation runs as, established by the entrypoint below from `--agentToken`/`YTOM_AGENT_TOKEN`
+  // (which also enters the process-wide scope, `src/lib/agent-session`). Absent = operator mode.
+  agentSession?: { channelId: string } | null;
+  // Phase 12 slice 12.5 -- whether operator mode (no token) is allowed at all. Injectable for tests;
+  // defaults to the persisted "Operator CLI access" setting (off unless the operator turned it on).
+  operatorCliEnabled?: () => Promise<boolean>;
 }): Promise<number> {
   const core = args.core ?? {
     ...createVideoMetadataCore(),
@@ -600,6 +610,28 @@ export async function runCliCommand(args: {
 
   try {
     const parsedArgs = parseArgs(args.argv);
+
+    // Phase 12 (AC-P12-04/08/10): an agent session may run only commands classified `bound`; with no
+    // agent session the CLI is the operator's tool and runs only while "Operator CLI access" is on.
+    // Checked before anything else touches state.
+    const commandKey = `${parsedArgs.namespace} ${parsedArgs.command}`;
+    if (args.agentSession) {
+      const commandClass = CLI_COMMAND_CLASSIFICATION[commandKey];
+      if (commandClass !== "bound") {
+        throw new DomainError({
+          code: "AGENT_SESSION_OPERATOR_ONLY",
+          message: commandClass
+            ? `"${commandKey}" is operator-only and unavailable to a channel-bound agent`
+            : `"${commandKey}" is not classified for agent sessions`,
+        });
+      }
+    } else if (!(await (args.operatorCliEnabled ?? getOperatorCliEnabled)())) {
+      throw new DomainError({
+        code: "AGENT_TOKEN_INVALID",
+        message:
+          "no agent token: set YTOM_AGENT_TOKEN (or --agentToken) to this channel's token, or enable \"Operator CLI access\" in Settings to use the CLI as the operator",
+      });
+    }
 
     // Decision 7 (docs/decisions/0002-additive-schema-versioning.md's companion plan): a
     // single choke point, mirroring src/proxy.ts's and MCP's, gating every mutating command
@@ -1572,8 +1604,33 @@ export async function runCliCommand(args: {
 
 const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
 
+/**
+ * Phase 12 -- the CLI process entrypoint resolves its agent token ONCE, before any command runs:
+ * `--agentToken <token>` (removed from argv before parsing) or `YTOM_AGENT_TOKEN`. A valid token
+ * freezes this process into its channel's scope (`src/lib/agent-session`); an invalid one is a
+ * refusal, never a silent fall-back to operator mode.
+ */
+async function runCliProcess(argv: string[]): Promise<number> {
+  const tokenFlagIndex = argv.indexOf("--agentToken");
+  const flagToken = tokenFlagIndex >= 0 ? argv[tokenFlagIndex + 1] : undefined;
+  const remainingArgv = tokenFlagIndex >= 0 ? [...argv.slice(0, tokenFlagIndex), ...argv.slice(tokenFlagIndex + 2)] : argv;
+  const token = flagToken ?? process.env.YTOM_AGENT_TOKEN;
+  if (token === undefined || token === "") {
+    return runCliCommand({ argv: remainingArgv });
+  }
+  let binding: AgentTokenBinding;
+  try {
+    binding = await createAgentTokenCore().verifyToken(token);
+  } catch (error) {
+    process.stderr.write(`${serializeError(error)}\n`);
+    return 1;
+  }
+  enterAgentSession(binding);
+  return runCliCommand({ argv: remainingArgv, agentSession: { channelId: binding.channelId } });
+}
+
 if (isMainModule) {
-  runCliCommand({ argv: process.argv.slice(2) })
+  runCliProcess(process.argv.slice(2))
     .then((exitCode) => {
       process.exitCode = exitCode;
     })

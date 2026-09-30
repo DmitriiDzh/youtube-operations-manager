@@ -5,6 +5,11 @@ import { runCliCommand } from "./video-metadata";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 
+// Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-10): without an agent token the CLI runs only
+// in operator mode, which the persisted "Operator CLI access" setting gates (off by default). These
+// tests exercise operator-mode behavior, so they state that mode explicitly via the injectable seam.
+const OPERATOR_MODE = async () => true;
+
 // AC-LOCK-02: a mutating CLI command must be rejected while the local operation lock is held,
 // via the exact same choke point src/proxy.ts and MCP use (assertDeviceAvailableForMutation),
 // never bypassable by invoking the CLI directly. Uses `select-channel` (a local-state mutation,
@@ -17,6 +22,7 @@ test("a mutating CLI command is rejected while the operation lock is held; a rea
   try {
     const stderrLines: string[] = [];
     const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["auth", "select-channel", "--channelId", "chan-1"],
       auth: {
         login: async () => ({}),
@@ -42,6 +48,7 @@ test("a mutating CLI command is rejected while the operation lock is held; a rea
     // A read-only command must still work.
     const stdoutLines: string[] = [];
     const readonlyExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["auth", "whoami"],
       auth: {
         login: async () => ({}),
@@ -90,6 +97,7 @@ test("login/logout/revoke remain available while the operation lock is held", as
     for (const argv of [["auth", "login"], ["auth", "logout"], ["auth", "revoke"]]) {
       const stdoutLines: string[] = [];
       const exitCode = await runCliCommand({
+        operatorCliEnabled: OPERATOR_MODE,
         argv,
         auth: fakeAuth,
         writeStdout: (line) => stdoutLines.push(line),
@@ -128,6 +136,7 @@ test("a mutating CLI command is rejected while this device is in recovery mode (
   try {
     const stderrLines: string[] = [];
     const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["auth", "select-channel", "--channelId", "chan-1"],
       auth: {
         login: async () => ({}),
@@ -154,6 +163,7 @@ test("a mutating CLI command is rejected while this device is in recovery mode (
     // operation-lock case above).
     const stdoutLines: string[] = [];
     const readonlyExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["auth", "whoami"],
       auth: {
         login: async () => ({}),
@@ -221,6 +231,7 @@ test("changeset import and channel sync are rejected while the operation lock is
 
     const importStderr: string[] = [];
     const importExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["changeset", "import", "--channelId", "UC_1", "--file", import.meta.url],
       auth: fakeAuth,
       operationsCore: operationsCore as never,
@@ -234,6 +245,7 @@ test("changeset import and channel sync are rejected while the operation lock is
 
     const syncStderr: string[] = [];
     const syncExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["channel", "sync", "--channelId", "UC_1"],
       auth: fakeAuth,
       operationsCore: operationsCore as never,
@@ -247,6 +259,7 @@ test("changeset import and channel sync are rejected while the operation lock is
 
     const listStdout: string[] = [];
     const changesetListExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["changeset", "list", "--channelId", "UC_1"],
       auth: fakeAuth,
       operationsCore: operationsCore as never,
@@ -259,6 +272,7 @@ test("changeset import and channel sync are rejected while the operation lock is
 
     const channelListStdout: string[] = [];
     const channelListExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["channel", "list"],
       auth: fakeAuth,
       operationsCore: operationsCore as never,

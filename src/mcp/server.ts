@@ -81,6 +81,9 @@ import {
   listWeeklyReportsInputSchema,
 } from "@/lib/analytics/schemas";
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
+import { createAgentTokenCore, type AgentTokenBinding } from "@/lib/agent-tokens";
+import { enterAgentSession } from "@/lib/agent-session";
+import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
 import {
   createChannelWorkspacesCore,
   getChannelWorkspaceInputSchema,
@@ -1881,11 +1884,19 @@ export function createMcpServer(
     // `null`/undefined means "no identity" -- fine while zero connections are enabled
     // (`assertAgentAllowedForCapability`'s own no-op fast path), rejected once any are.
     callerConnectionId?: string | null;
+    // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md §6) -- the channel-bound agent session this
+    // process runs as. Absent means "no valid token": ZERO tools are registered (owner decision
+    // msg 1048, "agent without a token has nothing to receive"), on top of the unchanged
+    // connectionEnabled master switch. `reverify` re-checks the token on every call so a revocation
+    // takes effect mid-session (AC-P12-02). The process-wide scope itself
+    // (`src/lib/agent-session`) is entered by `startMcpServer`, not here, so tests can inject this.
+    agentSession?: { channelId: string; reverify(): Promise<void> } | null;
   } = {},
   agentConnectionsCore: AgentConnectionsCoreSubset = createAgentConnectionsCore()
 ) {
   const connectionEnabled = options.connectionEnabled ?? false;
   const callerConnectionId = options.callerConnectionId ?? null;
+  const agentSession = options.agentSession ?? null;
 
   const server = new McpServer({
     name: "youtube-video-metadata",
@@ -1912,7 +1923,15 @@ export function createMcpServer(
     // scoped to the tools actually in scope rather than touching every other registration.
     zoneCapabilityId?: string
   ) {
-    if (!connectionEnabled) {
+    if (!connectionEnabled || !agentSession) {
+      return;
+    }
+    const toolClass = MCP_TOOL_CLASSIFICATION[name];
+    if (!toolClass) {
+      // AC-P12-08: a tool nobody classified must never be exposed silently.
+      throw new Error(`MCP tool "${name}" is not classified in src/mcp/tool-classification.ts`);
+    }
+    if (toolClass !== "bound") {
       return;
     }
     // Counts real tool invocations for the Settings tab's traffic stats (owner instruction,
@@ -1921,6 +1940,12 @@ export function createMcpServer(
     // BL-091 zone rejection below IS a real, counted "blocked" attempt through this gateway
     // category, exactly like the other three gateways record their own rejections.
     const countedHandler = (async (args: never) => {
+      try {
+        await agentSession.reverify();
+      } catch (error) {
+        await recordGatewayCallOutcome("mcp_tool_calls", "blocked");
+        return toolErrorResult(error);
+      }
       if (zoneCapabilityId) {
         try {
           await agentConnectionsCore.assertAgentAllowedForCapability({
@@ -2544,6 +2569,29 @@ export function createMcpServer(
   return server;
 }
 
+async function resolveMcpAgentSession(
+  token: string | undefined
+): Promise<{ channelId: string; reverify(): Promise<void> } | null> {
+  if (!token) return null;
+  const agentTokenCore = createAgentTokenCore();
+  let binding: AgentTokenBinding;
+  try {
+    binding = await agentTokenCore.verifyToken(token);
+  } catch {
+    return null;
+  }
+  enterAgentSession(binding);
+  return {
+    channelId: binding.channelId,
+    async reverify() {
+      const current = await agentTokenCore.verifyToken(token);
+      if (current.tokenId !== binding.tokenId) {
+        throw new DomainError({ code: "AGENT_TOKEN_INVALID", message: "agent token is missing, unknown, or revoked" });
+      }
+    },
+  };
+}
+
 export async function startMcpServer() {
   // Read once, here, at process startup -- see getMcpConnectionEnabled's own doc comment in
   // src/lib/db.ts for the one known limitation: createMcpServer()'s tool registration is fixed
@@ -2554,7 +2602,11 @@ export async function startMcpServer() {
   // MCP launch config spawned it (docs/roadmap/plans/AGENT_ZONES_PLAN.md §6). An empty string is
   // treated the same as unset, not as a literal empty-string connection id.
   const callerConnectionId = resolveAgentConnectionIdFromEnv(process.env.AGENT_CONNECTION_ID);
-  const server = createMcpServer(undefined, { connectionEnabled, callerConnectionId });
+  // Phase 12 -- the channel token (YTOM_AGENT_TOKEN, set in this client's MCP launch config). A
+  // valid one freezes this whole process into its channel's scope BEFORE any tool exists; a
+  // missing/invalid one leaves the server with zero tools.
+  const agentSession = await resolveMcpAgentSession(process.env.YTOM_AGENT_TOKEN);
+  const server = createMcpServer(undefined, { connectionEnabled, callerConnectionId, agentSession });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

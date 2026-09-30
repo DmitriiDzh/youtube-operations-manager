@@ -25,6 +25,7 @@ import {
 import { createWriteContextCore, type WriteChannelContext } from "@/lib/write-context";
 import type { CredentialRef, ResolvedCredentials } from "@/lib/video-metadata/contracts";
 import { DomainError } from "@/lib/video-metadata/contracts";
+import { getAgentSession } from "@/lib/agent-session";
 import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
 import { authUserNotFound, type AuthUserSummary, type SelectUserResult } from "./contracts";
 import { selectWriteChannelInputSchema, selectUserInputSchema, toValidationIssues } from "./schemas";
@@ -191,9 +192,35 @@ export function createCliAuthService(
     startLoopbackCallbackServer: deps.startLoopbackCallbackServer ?? createLoopbackCallbackServer,
   };
 
+  // Phase 12 (AC-P12-04): identity/session-switching and identity-enumerating operations are
+  // operator-only. Defense in depth -- the MCP registry and CLI dispatch already never expose them
+  // in an agent session; this makes the service itself refuse too.
+  function assertNotAgentSession(): void {
+    if (getAgentSession()) {
+      throw new DomainError({
+        code: "AGENT_SESSION_OPERATOR_ONLY",
+        message: "this action is operator-only and unavailable in a channel-bound agent session",
+      });
+    }
+  }
+
   async function resolveEffectiveCredentialRef(args: {
     explicit?: CredentialRef;
   }): Promise<CredentialRef> {
+    // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md §6, AC-P12-05): a channel-bound agent process
+    // always acts as the identity recorded on its token -- never a caller-supplied ref, and never
+    // the device-global auth-context.json.
+    const agentSession = getAgentSession();
+    if (agentSession) {
+      if (args.explicit) {
+        throw new DomainError({
+          code: "AGENT_SESSION_CREDENTIAL_OVERRIDE",
+          message: "an agent session cannot supply its own credentials; it always acts as its channel's identity",
+        });
+      }
+      return { userId: agentSession.userId };
+    }
+
     if (args.explicit) {
       return args.explicit;
     }
@@ -253,6 +280,7 @@ export function createCliAuthService(
     resolveEffectiveCredentialRef,
 
     async login(args?: { timeoutMs?: number }) {
+      assertNotAgentSession();
       const timeoutMs = args?.timeoutMs ?? 120_000;
       const state = resolvedDeps.oauth.generateState();
       const pkce = resolvedDeps.oauth.generatePkcePair();
@@ -302,6 +330,7 @@ export function createCliAuthService(
     },
 
     async loginDevice(args?: { onPending?: (data: DeviceAuthorizationStart) => void }) {
+      assertNotAgentSession();
       const start = await resolvedDeps.oauth.startDeviceAuthorization();
       args?.onPending?.(start);
 
@@ -373,6 +402,7 @@ export function createCliAuthService(
     },
 
     async selectUser(args: { userId: string }): Promise<SelectUserResult> {
+      assertNotAgentSession();
       const parsed = selectUserInputSchema.safeParse(args);
       if (!parsed.success) {
         throw new DomainError({
@@ -416,6 +446,7 @@ export function createCliAuthService(
     },
 
     async listKnownWriteChannels(args?: { credentialRef?: CredentialRef }) {
+      assertNotAgentSession();
       const effectiveCredentialRef = await resolveEffectiveCredentialRef({
         explicit: args?.credentialRef,
       });
@@ -459,6 +490,7 @@ export function createCliAuthService(
     },
 
     async selectWriteChannel(args: { channelId: string; credentialRef?: CredentialRef }) {
+      assertNotAgentSession();
       const parsed = selectWriteChannelInputSchema.safeParse({
         channelId: args.channelId,
         credentialRef: args.credentialRef,
@@ -508,6 +540,7 @@ export function createCliAuthService(
     },
 
     async listUsers() {
+      assertNotAgentSession();
       const context = await resolvedDeps.storage.read();
       const activeUserId = context?.activeUserId ?? null;
 
@@ -518,11 +551,13 @@ export function createCliAuthService(
     },
 
     async logout() {
+      assertNotAgentSession();
       await resolvedDeps.storage.clear();
       return { loggedOut: true };
     },
 
     async revoke(args?: { userId?: string }) {
+      assertNotAgentSession();
       let targetUserId = args?.userId;
 
       if (!targetUserId) {
