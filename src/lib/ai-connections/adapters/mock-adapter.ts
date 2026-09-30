@@ -1,5 +1,4 @@
-import { createMockLocalizationProvider } from "@/lib/ai-localization/adapters/mock-provider";
-import { createMockHypothesisDraftProvider } from "@/lib/decision-engine/adapters/mock-provider";
+import { createMockHypothesisDraftProvider, createMockLocalizationProvider } from "@/lib/ai-generation-contracts";
 import type { ConnectionProtocolAdapter } from "../contracts";
 
 /**
@@ -9,10 +8,8 @@ import type { ConnectionProtocolAdapter } from "../contracts";
  * what lets the mock remain manageable through the same Settings UI/API as a real
  * connection, satisfying "preserve the existing deterministic mock provider."
  *
- * Imports the mock provider directly from its own file, not via
- * `src/lib/ai-localization`'s barrel (`index.ts`) -- that barrel wires
- * `resolveConnectionProvider` back from `src/lib/ai-connections`, so importing it here
- * would create a circular module dependency between the two domains' `index.ts` files.
+ * Both mocks come from the shared leaf `src/lib/ai-generation-contracts` (architecture audit M2),
+ * so this shared transport depends on neither consumer feature.
  */
 export function createMockConnectionAdapter(): ConnectionProtocolAdapter {
   const provider = createMockLocalizationProvider();

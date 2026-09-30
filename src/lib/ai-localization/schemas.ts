@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { parseWithSchema } from "@/lib/changesets/schemas";
+import { parseWithSchema } from "@/lib/video-metadata/contracts";
 import { CREATED_VIA_VALUES, MAX_EVIDENCE_LIST_ITEMS, evidenceReferenceSchema, evidenceSourceTypeSchema } from "@/lib/shared-provenance";
 
 export { parseWithSchema };

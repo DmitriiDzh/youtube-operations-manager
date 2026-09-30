@@ -146,28 +146,14 @@ export type HypothesisEvidence = {
 // LocalizationProvider/ai-connections relationship.
 // ---------------------------------------------------------------------------
 
-export type HypothesisGenerationTokenUsage = { inputTokens: number; outputTokens: number };
-
-/** What the provider is given -- never a raw DB row, only the operator's own notes plus
- * already-resolved, human-readable summaries of evidence the operator selected before generation
- * (see `EvidenceReferenceResolver.describe` below). The model never sees, and never produces, an
- * `EvidenceReference` itself -- it cannot invent one, per the plan's own §3. */
-export type HypothesisGenerationRequest = {
-  channelId: string | null;
-  notes: string;
-  evidenceSummaries: string[];
-};
-
-export type HypothesisGenerationOutcome =
-  | { status: "ok"; statement: string; rationale: string; usage?: HypothesisGenerationTokenUsage }
-  | { status: "error"; message: string };
-
-/** The replaceable extension point this slice adds, alongside `LocalizationProvider` -- a second
- * real caller of the same shared `ai-connections` transport infrastructure (`AGENTS.md` §M). */
-export type HypothesisDraftProvider = {
-  readonly name: string;
-  generateHypothesis(request: HypothesisGenerationRequest): Promise<HypothesisGenerationOutcome>;
-};
+// Moved to the shared leaf `src/lib/ai-generation-contracts` (architecture audit M2); re-exported
+// unchanged.
+export type {
+  HypothesisDraftProvider,
+  HypothesisGenerationOutcome,
+  HypothesisGenerationRequest,
+  HypothesisGenerationTokenUsage,
+} from "@/lib/ai-generation-contracts";
 
 // ---------------------------------------------------------------------------
 // Phase 10 slice 5 -- execution of an approved, localization-type experiment
