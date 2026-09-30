@@ -89,6 +89,9 @@ export async function importHandoff(params: {
    * touched. Throwing aborts the import with the live DB unchanged (AC-AS-07).
    */
   assertStillSafe?: () => Promise<void>;
+  /** File-name prefix of the pre-import backup. Automatic imports use their own prefix so that
+   * retention can prune exactly those and never a manual or "take theirs" backup. */
+  backupPrefix?: string;
 }): Promise<ImportHandoffResult> {
   return withOperationLock(params.liveClient, "import", async () => {
     // A device already in restricted recovery mode must not import again: applySnapshotToDatabase
@@ -119,7 +122,7 @@ export async function importHandoff(params: {
     // below without a fresh, verified recovery point already on disk.
     const backupPath = path.join(
       params.migrationBackupsDir,
-      `pre-import-${Date.now()}-${randomUUID().slice(0, 8)}.db`
+      `${params.backupPrefix ?? "pre-import"}-${Date.now()}-${randomUUID().slice(0, 8)}.db`
     );
     await copyDatabaseConsistently(params.liveClient, backupPath);
 

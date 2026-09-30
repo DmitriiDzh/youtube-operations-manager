@@ -3168,6 +3168,33 @@ export async function setOperatorCliEnabled(enabled: boolean): Promise<void> {
   await setAppSetting(OPERATOR_CLI_ENABLED_SETTING_KEY, enabled ? "true" : "false");
 }
 
+const DEVICE_AUTO_SYNC_ENABLED_SETTING_KEY = "device_auto_sync_enabled";
+const DEVICE_SYNC_STATUS_SETTING_KEY = "device_sync_status";
+
+/**
+ * Automatic device sync (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §3.7) -- ON unless the
+ * operator turned it off (the owner asked for sync to stop needing manual steps). Persistent,
+ * device-local like every `app_settings` row.
+ */
+export async function getDeviceAutoSyncEnabled(): Promise<boolean> {
+  return (await getAppSetting(DEVICE_AUTO_SYNC_ENABLED_SETTING_KEY)) !== "false";
+}
+
+export async function setDeviceAutoSyncEnabled(enabled: boolean): Promise<void> {
+  await setAppSetting(DEVICE_AUTO_SYNC_ENABLED_SETTING_KEY, enabled ? "true" : "false");
+}
+
+/** The automatic sync's own last-known state (JSON, owned by `src/lib/device-sync`). Stored rather
+ * than kept in memory: Next.js route handlers and the instrumentation scheduler are separate
+ * bundles and do not share module state. */
+export async function getDeviceSyncStatusJson(): Promise<string | null> {
+  return getAppSetting(DEVICE_SYNC_STATUS_SETTING_KEY);
+}
+
+export async function setDeviceSyncStatusJson(value: string): Promise<void> {
+  await setAppSetting(DEVICE_SYNC_STATUS_SETTING_KEY, value);
+}
+
 const DATA_API_READS_ENABLED_SETTING_KEY = "data_api_reads_enabled";
 const ANALYTICS_READS_ENABLED_SETTING_KEY = "analytics_reads_enabled";
 
