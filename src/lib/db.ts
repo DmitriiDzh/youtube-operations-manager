@@ -3044,12 +3044,45 @@ const MCP_CONNECTION_ENABLED_SETTING_KEY = "mcp_connection_enabled";
  * CLI) agrees. "Off by default each session" is achieved by `resetLiveWritesForNewServerSession`,
  * run once at web-server boot only (never per process -- H1).
  */
-export async function getLiveWritesEnabled(): Promise<boolean> {
-  return (await getAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY)) === "true";
+const LIVE_WRITES_SESSION_LEASE_SETTING_KEY = "live_writes_session_lease_at";
+
+/**
+ * How long a web-server session lease stays valid without renewal (architecture-audit review, round
+ * 3). The web server renews it every `LIVE_WRITES_SESSION_LEASE_RENEW_MS`; a few missed renewals
+ * (event-loop stall, laptop sleep) do not flip the toggle off, but any ungraceful end of the web
+ * server -- a crash, Windows `taskkill /F`, a closed console window -- makes Live writes lapse
+ * within this TTL on every platform.
+ */
+export const LIVE_WRITES_SESSION_LEASE_TTL_MS = 3 * 60 * 1000;
+export const LIVE_WRITES_SESSION_LEASE_RENEW_MS = 30 * 1000;
+
+/**
+ * Gate B: Live writes are honored only while a web-server session is alive (owner rule "off by
+ * default at the start of every session", 2026-09-21; architecture audit H1 + review). True only
+ * when the persisted toggle is on AND the web server's session lease is fresh. Every consumer (the
+ * write gateway, the Batch executor factory, the batch/experiment routes, the Settings snapshot)
+ * reads this one function, so the UI toggle and the real write permission can never disagree.
+ */
+export async function getLiveWritesEnabled(now: Date = new Date()): Promise<boolean> {
+  if ((await getAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY)) !== "true") return false;
+  const leaseAt = Number(await getAppSetting(LIVE_WRITES_SESSION_LEASE_SETTING_KEY));
+  return Number.isFinite(leaseAt) && now.getTime() - leaseAt < LIVE_WRITES_SESSION_LEASE_TTL_MS;
 }
 
+/** Called only by the operator-facing web settings route -- turning the toggle on happens inside a
+ * live web-server session, so it also stamps that session's lease. */
 export async function setLiveWritesEnabled(enabled: boolean): Promise<void> {
   await setAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY, enabled ? "true" : "false");
+  if (enabled) await renewLiveWritesSessionLease();
+}
+
+/**
+ * Renews the web-server session lease. ONLY the web server's boot hook (`src/instrumentation.ts`)
+ * and `setLiveWritesEnabled` may call this -- never an MCP or CLI process (inventory-tested), or a
+ * process that is not the operator's web session could keep Live writes alive by itself.
+ */
+export async function renewLiveWritesSessionLease(now: Date = new Date(), database: AppDb = db): Promise<void> {
+  await setAppSetting(LIVE_WRITES_SESSION_LEASE_SETTING_KEY, String(now.getTime()), database);
 }
 
 /**

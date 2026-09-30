@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { getLiveWritesEnabled, resetLiveWritesForNewServerSession, setLiveWritesEnabled } from "@/lib/db";
+import {
+  LIVE_WRITES_SESSION_LEASE_TTL_MS,
+  getLiveWritesEnabled,
+  renewLiveWritesSessionLease,
+  resetLiveWritesForNewServerSession,
+  setLiveWritesEnabled,
+} from "@/lib/db";
+import { assertLiveWritesAuthorized } from "@/lib/youtube-write-gateway";
 
 // Architecture audit 2026-10-01 (H1, docs/roadmap/plans/HARDENING_AUDIT_2026-10_PLAN.md AC-H1-1/2):
 // the shared Live-writes flag is reset ONLY at web-server boot. Database initialization (which runs
@@ -44,4 +51,36 @@ test("AC-H1-1: only the web boot hook resets the flag; no initialization code wr
   assert.deepEqual(callers.sort(), [path.join("instrumentation.ts"), path.join("lib", "db.ts")].sort());
   const db = await readFile(path.join(SRC, "lib", "db.ts"), "utf8");
   assert.equal(db.split('"live_writes_enabled"').length - 1, 1, "db.ts names the key once (its setting constant), never in a raw reset");
+});
+
+// Architecture-audit review, round 3: Live writes are honored only while a web-server session lease
+// is fresh -- so a force-killed/crashed web server (Windows `taskkill /F`, a closed console window,
+// a crash: no signal handler runs) cannot leave them on for a later MCP/CLI-only period.
+test("lease: flag on + fresh lease -> enabled; flag on + stale lease -> disabled and the gateway refuses; flag off -> disabled", async () => {
+  await setLiveWritesEnabled(true); // stamps a fresh lease
+  assert.equal(await getLiveWritesEnabled(), true);
+
+  const stale = new Date(Date.now() - LIVE_WRITES_SESSION_LEASE_TTL_MS - 1000);
+  await renewLiveWritesSessionLease(stale);
+  assert.equal(await getLiveWritesEnabled(), false);
+  await assert.rejects(assertLiveWritesAuthorized(), (e: unknown) => (e as { code?: string }).code === "live_writes_disabled");
+
+  await renewLiveWritesSessionLease(new Date());
+  assert.equal(await getLiveWritesEnabled(), true);
+  // Just inside the TTL is still honored; just past it is not.
+  const now = Date.now();
+  assert.equal(await getLiveWritesEnabled(new Date(now + LIVE_WRITES_SESSION_LEASE_TTL_MS - 5000)), true);
+  assert.equal(await getLiveWritesEnabled(new Date(now + LIVE_WRITES_SESSION_LEASE_TTL_MS + 5000)), false);
+
+  await setLiveWritesEnabled(false);
+  await renewLiveWritesSessionLease(new Date());
+  assert.equal(await getLiveWritesEnabled(), false);
+});
+
+test("lease: only the web boot hook (and db.ts itself) ever renews the session lease -- never MCP/CLI code", async () => {
+  const callers: string[] = [];
+  for (const file of await listSourceFiles(SRC)) {
+    if ((await readFile(file, "utf8")).includes("renewLiveWritesSessionLease(")) callers.push(path.relative(SRC, file));
+  }
+  assert.deepEqual(callers.sort(), [path.join("instrumentation.ts"), path.join("lib", "db.ts")].sort());
 });

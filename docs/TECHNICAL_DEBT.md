@@ -266,15 +266,23 @@ Not every issue in this register must be fixed immediately. It must, however, al
 
 ## RISK-09 — Phase 5 write-safety infrastructure does not exist yet
 
-- **Update 2026-10-01 (architecture audit H1 and its review).** "Live writes off by default each
-  session" is now enforced by the web server: `src/instrumentation.ts` resets the flag at server
-  start and on its graceful end (idle auto-shutdown, SIGINT/SIGTERM).
-  - It is no longer reset on every process's database initialization. Doing so let every MCP/CLI
-    process switch the operator's toggle off mid-session and could strand a Batch in APPLYING.
-  - **Residual:** if the web server crashes (no graceful end) while Live writes is on, the flag
-    stays on for any MCP/CLI activity until the next web boot. The flag is still re-checked
-    before every real write, and an agent session also needs the MCP connection toggle and a
-    valid channel token.
+- **Update 2026-10-01 (architecture audit H1 and its review).** Rule: **Live writes are honored
+  only while a web-server session is alive.**
+  - `getLiveWritesEnabled` is true only when the toggle is on AND the web server's session lease
+    (`live_writes_session_lease_at`) is fresh.
+  - The web server renews the lease every 30 s (`src/instrumentation.ts`) and resets the toggle
+    at start and on graceful end.
+  - The lease TTL is 3 min.
+  - Previously the toggle was reset on every process's database initialization. That let every
+    MCP/CLI process switch the operator's toggle off mid-session and could strand a Batch in
+    APPLYING.
+  - **Residual:** after an ungraceful stop on any platform (a crash, Windows `stop.bat`'s
+    `taskkill /F`, a closed console window), the toggle is still honored for at most the lease
+    TTL. After that it lapses.
+  - A lease renewal made during an in-process snapshot import joins the import's transaction.
+    If the import fails, that renewal rolls back, and the lease may briefly lapse. This fails
+    closed.
+  - Only the web boot hook and the settings route may renew the lease; this is inventory-tested.
   - Older progress notes below that say "reset on every process boot" describe the previous
     mechanism.
 - **Affected components:** none yet — this documents an absence, not a defect in existing code. Relevant future modules: a `write-context`-reusing localization-write path, plus new `backup/`, `audit/`, `batches/` domain modules (per `docs/PROJECT_SPEC.md` §47).

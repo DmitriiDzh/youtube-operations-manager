@@ -20,8 +20,23 @@ export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
 
   // Dynamic import keeps db.ts out of the edge/instrumentation bundle graph.
-  const { resetLiveWritesForNewServerSession } = await import("@/lib/db");
+  const { LIVE_WRITES_SESSION_LEASE_RENEW_MS, renewLiveWritesSessionLease, resetLiveWritesForNewServerSession } =
+    await import("@/lib/db");
   await resetLiveWritesForNewServerSession();
+
+  // Session lease (architecture-audit review, round 3): Live writes are honored only while this web
+  // server keeps renewing it, so ANY end of the session -- including a crash or Windows
+  // `taskkill /F` / a closed console window, where no signal handler runs -- makes them lapse within
+  // LIVE_WRITES_SESSION_LEASE_TTL_MS. A failed renewal never crashes the server; it only fails closed.
+  const renewQuietly = async () => {
+    try {
+      await renewLiveWritesSessionLease();
+    } catch {
+      // Fail closed: the lease simply expires.
+    }
+  };
+  await renewQuietly();
+  setInterval(() => void renewQuietly(), LIVE_WRITES_SESSION_LEASE_RENEW_MS).unref();
 
   const resetQuietly = async () => {
     try {
