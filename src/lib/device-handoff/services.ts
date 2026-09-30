@@ -6,6 +6,7 @@ import { copyDatabaseConsistently } from "@/lib/db-backup";
 import { withOperationLock } from "@/lib/operation-lock";
 import {
   applySnapshotToDatabase,
+  computeContentFingerprint,
   exportSnapshot,
   migrateStagedCopy,
   readLineageState,
@@ -44,14 +45,20 @@ export async function exportHandoff(params: {
   snapshotsDir: string;
   deviceId: string;
   schemaVersion: number;
+  /** "Keep this computer's data" (DEVICE_AUTO_SYNC_PLAN.md §3.6). */
+  supersede?: { snapshotId: string; generation: number; ancestors: string[] };
+  /** Automatic sync (§3.3): re-checked inside the operation lock before anything is written. */
+  assertStillSafe?: () => Promise<void>;
 }): Promise<ExportHandoffResult> {
   return withOperationLock(params.client, "export", async () => {
+    if (params.assertStillSafe) await params.assertStillSafe();
     const unresolvedAtExportTime = await scanForUnresolvedExecutionState(params.client);
     const manifest = await exportSnapshot({
       client: params.client,
       snapshotsDir: params.snapshotsDir,
       deviceId: params.deviceId,
       schemaVersion: params.schemaVersion,
+      supersede: params.supersede,
     });
     await recordHandoffLog(params.client, {
       direction: "export",
@@ -75,6 +82,13 @@ export async function importHandoff(params: {
   snapshotDir: string;
   migrationBackupsDir: string;
   workingDir: string;
+  /** "Take the other computer's data" (DEVICE_AUTO_SYNC_PLAN.md §3.6): explicit human choice. */
+  acceptDivergentLineage?: boolean;
+  /**
+   * Automatic sync (§3.3): re-checked INSIDE the operation lock, immediately before the live DB is
+   * touched. Throwing aborts the import with the live DB unchanged (AC-AS-07).
+   */
+  assertStillSafe?: () => Promise<void>;
 }): Promise<ImportHandoffResult> {
   return withOperationLock(params.liveClient, "import", async () => {
     // A device already in restricted recovery mode must not import again: applySnapshotToDatabase
@@ -91,9 +105,10 @@ export async function importHandoff(params: {
     }
 
     const localLineage = await readLineageState(params.liveClient);
-    const { manifest, isDuplicateOfCurrent } = await verifySnapshotForImport({
+    const { manifest, isDuplicateOfCurrent, ancestors } = await verifySnapshotForImport({
       snapshotDir: params.snapshotDir,
       localLineage,
+      acceptDivergentLineage: params.acceptDivergentLineage,
     });
 
     if (isDuplicateOfCurrent) {
@@ -137,11 +152,18 @@ export async function importHandoff(params: {
       // single, already-atomic statement; a crash between the merge commit and these would at
       // worst leave the lineage pointer one step stale, which the next export/import attempt
       // can recover from -- it does not affect the data merge's own correctness.
+      if (params.assertStillSafe) await params.assertStillSafe();
       await applySnapshotToDatabase(params.liveClient, workingCopyPath);
       liveDbMutated = true;
+      // Still inside the operation lock, so no gated mutation can land between the merge and this
+      // fingerprint (DEVICE_AUTO_SYNC_PLAN.md §2) -- written with the pointer in one statement.
       await writeLineageState(params.liveClient, {
         lastSnapshotId: manifest.snapshotId,
         lastGeneration: manifest.generation,
+        contentFingerprint: await computeContentFingerprint(params.liveClient),
+        ancestors: [manifest.parentSnapshotId, ...(ancestors ?? [])].filter(
+          (id, index, all): id is string => id !== null && all.indexOf(id) === index
+        ),
       });
       await recordHandoffLog(params.liveClient, {
         direction: "import",

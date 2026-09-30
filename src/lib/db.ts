@@ -2205,6 +2205,20 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 36,
+    description:
+      "snapshot_lineage.content_fingerprint + ancestors_json -- automatic device sync (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §2/§3.1): what this device's transferred tables looked like at its lineage head, and that head's ancestry. Device-local.",
+    apply: async (client) => {
+      for (const column of ["content_fingerprint", "ancestors_json"]) {
+        try {
+          await client.execute(`ALTER TABLE snapshot_lineage ADD COLUMN ${column} TEXT`);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =

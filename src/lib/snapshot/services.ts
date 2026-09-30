@@ -21,44 +21,87 @@ import { scrubDatabaseCopy } from "./adapters/scrub";
 import {
   createStagingDir,
   discardStagingDir,
+  LINEAGE_FILE_NAME,
   listPublishedSnapshotIds,
+  MAX_ANCESTORS,
   publishSnapshot,
+  readLineageFile,
   readManifestFromDir,
+  writeLineageFile,
   writeManifest,
 } from "./adapters/filesystem";
+import {
+  computeContentFingerprint,
+  computeFileContentFingerprint,
+  transferredTablesAreEmpty,
+} from "./adapters/fingerprint";
 import { readLineageState, writeLineageState, type LineageState } from "./adapters/lineage-store";
 
 /** Execution-ledger statuses where a real YouTube write may have been sent but the outcome is
  * not yet certain -- the only ones a device-handoff import must never silently resolve
  * (`PENDING`/`AWAITING_EXECUTION` are always safe: no write was ever attempted for them). */
 
+/** Newest-first, de-duplicated, capped ancestry list. */
+function mergeAncestors(...lists: Array<Array<string | null>>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const list of lists) {
+    for (const id of list) {
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        out.push(id);
+      }
+    }
+  }
+  return out.slice(0, MAX_ANCESTORS);
+}
+
 export async function exportSnapshot(params: {
   client: SqlExecutor;
   snapshotsDir: string;
   deviceId: string;
   schemaVersion: number;
+  /**
+   * "Keep this computer's data" (DEVICE_AUTO_SYNC_PLAN.md §3.6): publish the local state as the
+   * CHILD of another device's snapshot, so that device fast-forwards to it. The local lineage's own
+   * history stays in the ancestry too.
+   */
+  supersede?: { snapshotId: string; generation: number; ancestors: string[] };
 }): Promise<SnapshotManifest> {
   const lineage = await readLineageState(params.client);
   const snapshotId = randomUUID();
-  const generation = lineage.lastGeneration + 1;
+  const parentSnapshotId = params.supersede ? params.supersede.snapshotId : lineage.lastSnapshotId;
+  const generation = Math.max(lineage.lastGeneration, params.supersede?.generation ?? 0) + 1;
+  const ancestors = params.supersede
+    ? mergeAncestors([params.supersede.snapshotId], params.supersede.ancestors, [lineage.lastSnapshotId], lineage.ancestors ?? [])
+    : mergeAncestors([lineage.lastSnapshotId], lineage.ancestors ?? []);
 
   const { dir: stagingDir } = await createStagingDir(params.snapshotsDir);
   let published: SnapshotManifest;
+  let contentFingerprint: string;
   try {
     const dbDestPath = path.join(stagingDir, "data.db");
     await copyDatabaseConsistently(params.client, dbDestPath);
     await scrubDatabaseCopy(params.client, dbDestPath);
+    // The fingerprint of the EXPORTED FILE, not of the live DB after the copy: a change that raced
+    // the copy is not in this snapshot, so it must still read as unpublished (AC-AS-05).
+    contentFingerprint = await computeFileContentFingerprint(params.client, dbDestPath);
     const { sha256, sizeBytes } = await sha256File(dbDestPath);
+    await writeLineageFile(stagingDir, ancestors);
+    const lineageFile = await sha256File(path.join(stagingDir, LINEAGE_FILE_NAME));
 
     const manifest: SnapshotManifest = {
       formatVersion: 1,
       snapshotId,
-      parentSnapshotId: lineage.lastSnapshotId,
+      parentSnapshotId,
       sourceDeviceId: params.deviceId,
       generation,
       schemaVersion: params.schemaVersion,
       createdAt: new Date().toISOString(),
-      files: [{ path: "data.db", sha256, sizeBytes }],
+      files: [
+        { path: "data.db", sha256, sizeBytes },
+        { path: LINEAGE_FILE_NAME, sha256: lineageFile.sha256, sizeBytes: lineageFile.sizeBytes },
+      ],
       complete: true,
     };
 
@@ -72,8 +115,40 @@ export async function exportSnapshot(params: {
     throw error;
   }
 
-  await writeLineageState(params.client, { lastSnapshotId: snapshotId, lastGeneration: generation });
+  await writeLineageState(params.client, {
+    lastSnapshotId: snapshotId,
+    lastGeneration: generation,
+    contentFingerprint,
+    ancestors,
+  });
   return published;
+}
+
+/**
+ * DEVICE_AUTO_SYNC_PLAN.md §3.1: `manifest` continues the local lineage without discarding
+ * anything the local head contains -- its parent IS the local head, the local head is among its
+ * recorded ancestors, or this device has no lineage yet.
+ */
+export function isFastForwardOf(
+  manifest: Pick<SnapshotManifest, "parentSnapshotId">,
+  ancestors: string[] | null,
+  local: Pick<LineageState, "lastSnapshotId">
+): boolean {
+  if (local.lastSnapshotId === null) return true;
+  if (manifest.parentSnapshotId === local.lastSnapshotId) return true;
+  return (ancestors ?? []).includes(local.lastSnapshotId);
+}
+
+/**
+ * DEVICE_AUTO_SYNC_PLAN.md §2: whether this device has changes to its transferred tables that are
+ * not in its lineage head. Fails toward "dirty": an unknown fingerprint (a lineage from before
+ * v36) is dirty; with no lineage at all, only completely empty transferred tables are clean.
+ */
+export async function hasUnpublishedLocalChanges(client: SqlExecutor): Promise<boolean> {
+  const lineage = await readLineageState(client);
+  if (lineage.lastSnapshotId === null) return !(await transferredTablesAreEmpty(client));
+  if (!lineage.contentFingerprint) return true;
+  return (await computeContentFingerprint(client)) !== lineage.contentFingerprint;
 }
 
 async function pathExistsChecked(filePath: string): Promise<boolean> {
@@ -95,7 +170,13 @@ async function pathExistsChecked(filePath: string): Promise<boolean> {
 export async function verifySnapshotForImport(params: {
   snapshotDir: string;
   localLineage: LineageState;
-}): Promise<{ manifest: SnapshotManifest; isDuplicateOfCurrent: boolean }> {
+  /**
+   * "Take the other computer's data" (DEVICE_AUTO_SYNC_PLAN.md §3.6) -- an explicit human choice
+   * to discard this device's divergent history. Skips ONLY the lineage check; completeness and
+   * checksums are still verified.
+   */
+  acceptDivergentLineage?: boolean;
+}): Promise<{ manifest: SnapshotManifest; isDuplicateOfCurrent: boolean; ancestors: string[] | null }> {
   const manifest = await readManifestFromDir(params.snapshotDir);
 
   if (!manifest.complete) {
@@ -125,11 +206,13 @@ export async function verifySnapshotForImport(params: {
   }
 
   const local = params.localLineage;
+  const ancestors = await readLineageFile(params.snapshotDir, manifest);
   const isDuplicateOfCurrent = manifest.snapshotId === local.lastSnapshotId;
-  const isDirectChild = manifest.parentSnapshotId === local.lastSnapshotId;
-  const isFirstEverImport = local.lastSnapshotId === null;
+  // Direct child, a descendant several generations on (its recorded ancestry contains the local
+  // head, §3.1), or this device's very first import.
+  const continuesLocalLineage = isFastForwardOf(manifest, ancestors, local);
 
-  if (!isDuplicateOfCurrent && !isDirectChild && !isFirstEverImport) {
+  if (!isDuplicateOfCurrent && !continuesLocalLineage && !params.acceptDivergentLineage) {
     throw new SnapshotError(
       "snapshot_divergent_lineage",
       `Snapshot ${manifest.snapshotId} (generation ${manifest.generation}, parent ` +
@@ -146,7 +229,7 @@ export async function verifySnapshotForImport(params: {
     );
   }
 
-  return { manifest, isDuplicateOfCurrent };
+  return { manifest, isDuplicateOfCurrent, ancestors };
 }
 
 /**

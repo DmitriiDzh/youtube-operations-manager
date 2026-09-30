@@ -77,3 +77,50 @@ export async function listPublishedSnapshotIds(snapshotsDir: string): Promise<st
     .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
     .map((entry) => entry.name);
 }
+
+/**
+ * Automatic device sync (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §3.1): a snapshot's ancestry
+ * travels as an extra data file, `lineage.json`, listed in the manifest's `files` (so it is
+ * checksummed like `data.db`). The manifest schema itself is unchanged -- an older build's
+ * `.strict()` schema would reject a new manifest field, but only verifies an extra file's hash.
+ */
+export const LINEAGE_FILE_NAME = "lineage.json";
+export const MAX_ANCESTORS = 500;
+
+export async function writeLineageFile(stagingDir: string, ancestors: string[]): Promise<void> {
+  await writeFile(
+    path.join(stagingDir, LINEAGE_FILE_NAME),
+    JSON.stringify({ formatVersion: 1, ancestors: ancestors.slice(0, MAX_ANCESTORS) }),
+    "utf8"
+  );
+}
+
+/** The snapshot's ancestors (newest first), or `null` when the manifest lists no lineage file
+ * (a snapshot from a build before automatic sync). A listed-but-unreadable file throws, like any
+ * other missing/corrupt snapshot file. */
+export async function readLineageFile(snapshotDir: string, manifest: SnapshotManifest): Promise<string[] | null> {
+  if (!manifest.files.some((file) => file.path === LINEAGE_FILE_NAME)) return null;
+  const filePath = path.join(snapshotDir, LINEAGE_FILE_NAME);
+  if (!(await pathExists(filePath))) {
+    throw new SnapshotError("snapshot_file_missing", `Snapshot ${manifest.snapshotId} is missing ${LINEAGE_FILE_NAME}.`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(filePath, "utf8"));
+  } catch {
+    throw new SnapshotError("snapshot_manifest_invalid", `Snapshot ${manifest.snapshotId}'s ${LINEAGE_FILE_NAME} is not valid JSON.`);
+  }
+  const ancestors = (parsed as { ancestors?: unknown } | null)?.ancestors;
+  if (!Array.isArray(ancestors) || !ancestors.every((id) => typeof id === "string")) {
+    throw new SnapshotError("snapshot_manifest_invalid", `Snapshot ${manifest.snapshotId}'s ${LINEAGE_FILE_NAME} is malformed.`);
+  }
+  return ancestors as string[];
+}
+
+const SNAPSHOT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Like `listPublishedSnapshotIds`, but only UUID-named directories: the Syncthing root also holds
+ * the sync-gateway families' folders (`change-drafts/`, ...), which are not snapshots (§3.2). */
+export async function listSnapshotIdsStrict(snapshotsDir: string): Promise<string[]> {
+  return (await listPublishedSnapshotIds(snapshotsDir)).filter((name) => SNAPSHOT_ID_RE.test(name));
+}
