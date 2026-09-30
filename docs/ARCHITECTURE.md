@@ -2044,3 +2044,51 @@ It is recorded here rather than carried silently (`AGENTS.md` §F).
 - Any read-time re-validation. It would be meaningless, because nothing here ever opens the path.
 - Cleanup of a row when its channel is disconnected. The row stays, is hidden from the Settings
   list, and reappears if the channel is reconnected.
+
+## 21. Channel-bound agent isolation — Phase 12, on `feature/phase-12-agent-channel-isolation`
+
+Plan, the inventory of holes it closes, the owner decisions (D0–D5) and the acceptance criteria:
+`docs/roadmap/plans/PHASE_12_PLAN.md`. Interface contract: `docs/AGENT_OPERATIONS_INTERFACE.md`
+§4n.
+
+**Why choke points.** Before this phase, channel scoping rested on one mutable column,
+`users.selected_channel_id`, shared by the Web UI and every agent. Agents could repoint it
+(`write_channel_select`) or sidestep it with a caller-supplied `credentialRef`. Instead of adding a
+check to each of 57 MCP tools and roughly 70 CLI commands, a process-wide immutable scope
+(`src/lib/agent-session`, a zero-import leaf) is consulted at the two functions every path already
+funnels through:
+- `db.ts`'s `getSelectedChannelId` / `setSelectedChannelId`: the bound channel, and a no-op
+  write. The no-op is not an error, because `apply` and playlist writes persist the selection
+  *after* a successful YouTube write.
+- `cli-auth`'s `resolveEffectiveCredentialRef`: always the token's identity, and explicit refs
+  rejected.
+
+Every pre-existing `assertActiveChannel` and write-context identity check then enforces the
+binding without modification. The few reads that never called `assertActiveChannel` (`list`,
+`transcript`, `preview`, `channel_sync`'s explicit id) are wrapped once in their core wiring.
+
+**Identity.** A channel token (`src/lib/agent-tokens`) is the only agent identity.
+- It is a SHA-256 hash with the `ytom_ch_` prefix, stored device-locally.
+- It records the Google identity that owned the channel live at issue time; credentials come
+  from there, never from `channels.connected_user_id`.
+- The token is verified once at process entry, which enters the scope, and re-verified on every
+  MCP call so revocation is immediate.
+- BL-091 zones and `AGENT_CONNECTION_ID` are retired (ADR 0011). The tables stay, inert.
+
+**Market data (D1).** Phase 9 data stays global and unaware of channels. `src/lib/market-assignments`
+(table `channel_record_assignments`, v35, part of the snapshot) maps records to channels, and the
+MCP/CLI market handlers narrow results for agents. Its `db.ts` exports avoid the words
+"market"/"research" so PHASE9-INV-02 continues to guarantee that no other module reaches into
+market-intelligence's own tables.
+
+**Surface.** `src/mcp/tool-classification.ts` and `src/cli/command-classification.ts` classify
+every tool and command as `bound` or `operator-only`. Inventory tests compare them with the real
+registries: `server.ts`'s `registerTool` names, and `parseArgs`' command lists. Without a token
+the MCP server registers nothing. The CLI runs as the operator only under the "Operator CLI
+access" setting (default off).
+
+**Accepted limit (owner decision D0(b)).** The server still runs as a stdio child in the agent's
+own OS user, so the wall is in-app. An agent that deliberately reads `data.db` or another agent's
+launch config can bypass it. This is recorded as RISK-87, with mitigations in
+`docs/AGENT_ISOLATION_SETUP.md`. OAuth-token encryption at rest (12.8) is pending the owner's
+key-storage choice.

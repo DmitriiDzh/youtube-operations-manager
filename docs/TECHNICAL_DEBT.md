@@ -1348,4 +1348,26 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Approval required from:** project owner, for scheduling.
 - **Status:** OPEN, tracked.
 
+## RISK-87 — The channel wall between agents is in-app only (same OS user) — OPEN, accepted, 2026-09-30
+
+- **Affected components:** Phase 12 channel-bound agent sessions (`src/lib/agent-session`,
+  `src/lib/agent-tokens`, MCP/CLI).
+- **Found during:** Phase 12 design. The owner chose it knowingly: decision D0(b), Telegram
+  msg 1051, *"мне нужно иметь возможность быстро сменять каналы... не могу заводить 10 учеток"*.
+- **Actual risk:** the MCP server is a stdio child running as the agent's OS user and opens
+  `data.db` itself. So an agent with its own filesystem tools, as the same OS user, can read
+  another channel's data from the database file directly, read another channel's workspace
+  folder, or read another agent's launch config, including its plaintext channel token.
+  - Within the product's interface the wall is complete (AC-P12-01..10).
+  - The risk is a deliberate bypass, or a careless agent wandering the disk.
+- **Mitigations in place:** the documented per-agent sandbox / working-directory setup
+  (`docs/AGENT_ISOLATION_SETUP.md`). The OAuth-token encryption at rest (PHASE_12_PLAN.md 12.8)
+  is still pending the owner's key-storage choice.
+- **Required remediation (only if the threat model changes):** serve the agent interface from the
+  operator's own process (MCP over localhost HTTP with the token as bearer credential), plus one
+  OS user or sandbox per agent. This is PHASE_12_PLAN.md D0(a).
+- **Gate(s):** none.
+- **Approval required from:** project owner, to change the threat model.
+- **Status:** OPEN, accepted by the owner.
+
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
