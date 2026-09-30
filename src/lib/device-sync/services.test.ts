@@ -699,3 +699,67 @@ test("R2-4: a snapshot whose data needs a newer schema is tried once, then repor
     a.client.close();
     b.client.close();
   }));
+
+// Review round 4 (#2): the runner's OWN in-lock re-check (AC-AS-07), not a stub. A write that lands
+// before the pre-import backup is in the backup, so only this re-check can stop the merge.
+test("R4-2 (AC-AS-07): a local write landing after the decision stops the automatic import", () =>
+  withTempDir("device-sync-", async (root) => {
+    const b = await makeDevice(root, "b");
+    await addResearchChannel(b.client, "UC-b");
+    await b.runner.tick();
+
+    const aClient = createClient({ url: `file:${path.join(root, "a.db")}` });
+    await initializeDatabaseSchema(aClient);
+    let injected = false;
+    const racing = {
+      execute: async (query: unknown) => {
+        const sql = typeof query === "string" ? query : (query as { sql: string }).sql;
+        if (!injected && /^VACUUM INTO/i.test(sql)) {
+          injected = true;
+          await addResearchChannel(aClient, "UC-local");
+        }
+        return aClient.execute(query as never);
+      },
+    };
+    let status: DeviceSyncStatus = { ...EMPTY_DEVICE_SYNC_STATUS };
+    const runner = createDeviceSyncRunner({
+      client: racing as never,
+      currentSchemaVersion: SCHEMA_CURRENT_VERSION,
+      resolveConfig: async () => ({ deviceId: "device-a", folder: path.join(root, "sync") }),
+      migrationBackupsDir: path.join(root, "a-backups"),
+      workingDir: path.join(root, "a-work"),
+      isEnabled: async () => true,
+      loadStatus: async () => status,
+      saveStatus: async (s) => {
+        status = s;
+      },
+    });
+    const result = await runner.tick();
+    assert.equal(injected, true, "precondition: the write raced the import");
+    assert.deepEqual(await researchIds(aClient), ["UC-local"], "the local write survives; nothing was replaced");
+    assert.equal(result.notices[0]?.kind, "divergence");
+    aClient.close();
+    b.client.close();
+  }));
+
+test("R4-3 (AC-AS-09): a checksum mismatch (Syncthing mid-transfer) is silently retried, noticed only after the grace period", () =>
+  withTempDir("device-sync-", async (root) => {
+    const { appendFile } = await import("node:fs/promises");
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    await addResearchChannel(b.client, "UC-b");
+    await b.runner.tick();
+    const id = (await readdir(path.join(root, "sync")))[0];
+    await appendFile(path.join(root, "sync", id, "data.db"), Buffer.from("partial"));
+
+    let status = await a.runner.tick();
+    assert.equal(status.state, "waiting");
+    assert.deepEqual(status.notices, []);
+    assert.deepEqual(await researchIds(a.client), []);
+    a.clock.t += 11 * 60_000;
+    status = await a.runner.tick();
+    assert.equal(status.notices[0]?.kind, "transfer_stuck");
+    assert.deepEqual(await researchIds(a.client), []);
+    a.client.close();
+    b.client.close();
+  }));

@@ -2150,9 +2150,10 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
    after 10 minutes.
 3. `hasUnpublishedLocalChanges`: the current content fingerprint is compared with
    `snapshot_lineage.content_fingerprint`.
-   - The fingerprint is a SHA-256 over every table `SNAPSHOT_REPLACE_ON_IMPORT_TABLES` names, with
-     columns in name order and rows sorted by all columns, so rowids and physical column order do
-     not matter.
+   - The fingerprint is a SHA-256 over every table `SNAPSHOT_REPLACE_ON_IMPORT_TABLES` names. Rows
+     are sorted by all columns, and each row is hashed as its non-NULL `column=value` pairs. A
+     missing table hashes like an empty one. So rowids and physical column order do not matter, and
+     a migration that adds a nullable column or a new transferred table leaves it unchanged.
    - Export records the fingerprint of the exported file itself, so a write racing the copy stays
      dirty.
    - Import records it from the live DB inside the lock.

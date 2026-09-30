@@ -1457,6 +1457,10 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
     Revisit if re-prompts are reported in practice. The resolution matrix is
     `src/lib/device-sync/convergence.test.ts`. Every other case there must converge without a
     prompt.
+  - **App updates that add a column with a non-NULL DEFAULT** to a transferred table read as a
+    local change once. The fingerprint ignores added nullable columns and newly transferred empty
+    tables (review round 4). If both computers are upgraded in between, this ends in one conflict
+    prompt. It fails closed, and nothing is lost.
   - **Merge-transaction length grows with the Research history.** An import holds the write lock
     for two full fingerprint scans. It measured 8 ms for three scans on the owner's DB on
     2026-10-01. Other writers wait up to their 5 s `busy_timeout`. Revisit if the transferred

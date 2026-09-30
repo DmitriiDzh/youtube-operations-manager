@@ -326,3 +326,31 @@ test("R2-2: a write landing between the backup and the merge aborts the import; 
     a.close();
     b.close();
   }));
+
+// Review round 4 (#1): an app update's schema migration alone must not read as a local change.
+test("R4-1: adding a nullable column to a transferred table does not make a clean device dirty", () =>
+  withTempDir("auto-sync-", async (dir) => {
+    const a = await makeClient(dir, "a.db");
+    await addResearchChannel(a, "UC1");
+    await exportFrom(a, dir, "device-a");
+    await a.execute("ALTER TABLE research_channels ADD COLUMN future_note TEXT");
+    assert.equal(await hasUnpublishedLocalChanges(a), false);
+    // ...while an actual value in that new column is a change.
+    await a.execute("UPDATE research_channels SET future_note = 'x'");
+    assert.equal(await hasUnpublishedLocalChanges(a), true);
+    a.close();
+  }));
+
+test("R4-1: a table that a newer build starts transferring (absent before, empty now) changes nothing", () =>
+  withTempDir("auto-sync-", async (dir) => {
+    const a = await makeClient(dir, "a.db");
+    await addResearchChannel(a, "UC1");
+    await exportFrom(a, dir, "device-a");
+    // Simulate the previous build not having the table at all at export time: drop it, record, recreate empty.
+    const schema = await a.execute("SELECT sql FROM sqlite_master WHERE name = 'channel_record_assignments'");
+    await a.execute("DROP TABLE channel_record_assignments");
+    await exportFrom(a, dir, "device-a");
+    await a.execute(String(schema.rows[0].sql));
+    assert.equal(await hasUnpublishedLocalChanges(a), false);
+    a.close();
+  }));

@@ -16,32 +16,41 @@ function encodeValue(value: unknown): string {
 
 /**
  * Automatic device sync (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §2): a deterministic SHA-256
- * over the CONTENT of every table a snapshot import replaces (`schema_meta` excluded). Columns are
- * taken in name order and rows sorted by every column, so the value depends only on the data --
- * never on physical column order (RISK-29) or rowids, which an import renumbers.
+ * over the CONTENT of every table a snapshot import replaces (`schema_meta` excluded). Rows are
+ * sorted by every column, so the value never depends on physical column order (RISK-29) or rowids,
+ * which an import renumbers.
  *
- * `schema` names an attached database ("main" for the live one); a table missing there hashes as
- * absent, distinct from empty. The value is only ever compared against one this same device
- * recorded, so it never has to agree across builds or machines.
+ * The same device compares a fingerprint recorded under one build with one computed under the
+ * next, so a schema MIGRATION must not change it by itself (review round 4: otherwise every
+ * release that adds a column raised a false "both computers changed data" prompt). Hence:
+ *   - each row is hashed as its NON-NULL `column=value` pairs only -- an added nullable column
+ *     changes nothing, while NULL vs a value stays distinguishable (the pair is present or not);
+ *   - a missing table hashes exactly like an empty one -- a newly transferred table changes nothing.
+ * A migration that adds a column with a non-NULL DEFAULT still reads as a local change (fails
+ * toward "ask", never toward overwrite -- RISK-89).
+ *
+ * `schema` names an attached database ("main" for the live one).
  */
 export async function computeContentFingerprint(client: SqlExecutor, schema = "main"): Promise<string> {
   const hash = createHash("sha256");
-  hash.update("ytom-content-fingerprint-v1\n");
+  hash.update("ytom-content-fingerprint-v2\n");
   const tables = [...SNAPSHOT_REPLACE_ON_IMPORT_TABLES].sort();
   for (const table of tables) {
     const info = (await client.execute(`PRAGMA "${schema}".table_info("${table}")`)) as ExecuteResult;
     const columns = info.rows.map((row) => String(row.name)).sort();
-    if (columns.length === 0) {
-      hash.update(`T${table}:absent\n`);
-      continue;
-    }
-    hash.update(`T${table}:${columns.join(",")}\n`);
+    if (columns.length === 0) continue;
     const columnList = columns.map((c) => `"${c}"`).join(", ");
     const result = (await client.execute(
       `SELECT ${columnList} FROM "${schema}"."${table}" ORDER BY ${columns.map((_, i) => i + 1).join(", ")}`
     )) as ExecuteResult;
+    if (result.rows.length === 0) continue;
+    hash.update(`T${table.length}:${table}\n`);
     for (const row of result.rows) {
-      hash.update(columns.map((c) => encodeValue(row[c])).join("|"));
+      for (const c of columns) {
+        const value = row[c];
+        if (value === null || value === undefined) continue;
+        hash.update(`${c.length}:${c}=${encodeValue(value)}|`);
+      }
       hash.update("\n");
     }
   }
