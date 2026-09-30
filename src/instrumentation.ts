@@ -8,9 +8,16 @@ import { startIdleShutdownWatcher } from "@/lib/idle-shutdown";
  * active development session's server never exits just because no browser tab happened to poll
  * it for a while.
  */
-export function register() {
+export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
-  if (process.env.NODE_ENV !== "production") return;
 
+  // Gate B "off at the start of every session" -- the web server's boot is the session start. Runs
+  // for `next dev` too. Deliberately here and NOT in db.ts initialization, which also runs in every
+  // MCP/CLI process and used to switch the operator's live toggle off (architecture audit H1).
+  // Dynamic import keeps db.ts out of the edge/instrumentation bundle graph.
+  const { resetLiveWritesForNewServerSession } = await import("@/lib/db");
+  await resetLiveWritesForNewServerSession();
+
+  if (process.env.NODE_ENV !== "production") return;
   startIdleShutdownWatcher();
 }

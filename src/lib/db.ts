@@ -2522,20 +2522,11 @@ async function initializeDatabase() {
     if (lockAcquired) await releaseOperationLock(rawClient);
   }
 
-  // Gate B toggle (owner instruction, 2026-09-21): "по дефолту при запуске сессии он выключен"
-  // -- unconditionally forced back to false on every process boot (Web app, MCP server, or CLI
-  // command, whichever imports this module first), regardless of what was last saved. This is
-  // what makes "off by default each session" hold even though the flag itself is durably
-  // persisted (required for multiple processes/workers to agree on its value while a session is
-  // actually running) rather than an in-memory variable.
-  //
-  // Deliberately `rawClient.execute` here, NOT `setLiveWritesEnabled`/the guarded `db` object:
-  // this function's own promise IS `databaseInitialization`, so the guarded client's "await
-  // databaseInitialization first" wrapper would deadlock waiting for this very call to finish.
-  await rawClient.execute({
-    sql: "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    args: ["live_writes_enabled", "false"],
-  });
+  // Gate B toggle: NOT reset here any more (architecture audit 2026-10-01, finding H1). It used to
+  // be forced to false on EVERY process boot -- but the flag is shared by every process, so each CLI
+  // call or MCP spawn silently switched the operator's toggle off (and could strand a running Batch
+  // in APPLYING). "Off by default each session" is now enforced where a session actually starts:
+  // the web server's boot hook (`src/instrumentation.ts` -> `resetLiveWritesForNewServerSession`).
 
   // The read-side toggles (`data_api_reads_enabled`/`analytics_reads_enabled`, see
   // `getDataApiReadsEnabled`/`getAnalyticsReadsEnabled` below) are deliberately NOT reset here,
@@ -3041,14 +3032,13 @@ const MCP_CONNECTION_ENABLED_SETTING_KEY = "mcp_connection_enabled";
 
 /**
  * The persisted half of the Gate B toggle (owner instruction, 2026-09-21, Settings tab) --
- * `src/lib/batches/adapters/write-executor.youtube.ts`'s `assertLiveWritesAuthorized()` reads
- * this at call time (not cached, not captured at construction) as the SECOND of two independent
- * layers: `src/lib/batches/index.ts` still only constructs a real `WriteExecutor` when this is
- * true (layer 1 -- no code path to `videos.update` exists at all otherwise), and this function
- * re-checks it again immediately before the write (layer 2). Persisted, not an in-memory module
+ * `src/lib/youtube-write-gateway`'s `assertLiveWritesAuthorized()` reads this at call time (not
+ * cached, not captured at construction) immediately before every real write, on every write path
+ * (Batches, single-item apply, playlists); Batches additionally only construct a real
+ * `WriteExecutor` when it is true (`createLiveWriteExecutorIfEnabled`). Persisted, not an in-memory module
  * variable, so every process that reads it (the Web app, a separately-spawned MCP process, the
- * CLI) agrees -- see `initializeDatabase()`'s unconditional reset to `false` on every process
- * boot for how "off by default each session" is actually achieved despite that.
+ * CLI) agrees. "Off by default each session" is achieved by `resetLiveWritesForNewServerSession`,
+ * run once at web-server boot only (never per process -- H1).
  */
 export async function getLiveWritesEnabled(): Promise<boolean> {
   return (await getAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY)) === "true";
@@ -3056,6 +3046,17 @@ export async function getLiveWritesEnabled(): Promise<boolean> {
 
 export async function setLiveWritesEnabled(enabled: boolean): Promise<void> {
   await setAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY, enabled ? "true" : "false");
+}
+
+/**
+ * Gate B's "off by default at the start of every session" (owner instruction, 2026-09-21: "по
+ * дефолту при запуске сессии он выключен") -- called ONLY by the web server's boot hook
+ * (`src/instrumentation.ts`), never by an MCP server or CLI process: the flag is shared by all
+ * processes, so resetting it from any of them would switch the operator's live toggle off
+ * mid-session (architecture audit 2026-10-01, H1).
+ */
+export async function resetLiveWritesForNewServerSession(database: AppDb = db): Promise<void> {
+  await setAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY, "false", database);
 }
 
 /**
