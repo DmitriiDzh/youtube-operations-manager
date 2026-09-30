@@ -363,3 +363,17 @@ test("proxy gates the channel-workspaces PUT route like any other real mutation"
     await releaseOperationLock(rawSqlClient);
   }
 });
+
+// Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md 12.1) -- issuing/revoking agent tokens are real local
+// mutations, gated like every other one.
+test("proxy gates the agent-tokens POST and DELETE routes like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    for (const method of ["POST", "DELETE"]) {
+      const response = await proxy(new NextRequest(new Request("http://localhost/api/agent-tokens", { method })));
+      assert.equal(response.status, 409, method);
+    }
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});

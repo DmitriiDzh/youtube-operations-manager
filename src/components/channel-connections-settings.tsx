@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { ChannelAgentTokenField } from "./channel-agent-token-field";
 import { ChannelWorkspaceField } from "./channel-workspace-field";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { InfoTooltip } from "./info-tooltip";
@@ -126,6 +127,9 @@ export function ChannelConnectionsSettings() {
                 </div>
                 <FeatureErrorBoundary label="Channel workspace path">
                   <ChannelWorkspaceField channelId={c.channelId} />
+                </FeatureErrorBoundary>
+                <FeatureErrorBoundary label="Channel agent token">
+                  <ChannelAgentTokenField channelId={c.channelId} />
                 </FeatureErrorBoundary>
               </li>
             );

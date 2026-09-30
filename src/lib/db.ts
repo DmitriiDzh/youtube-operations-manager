@@ -594,6 +594,30 @@ export const cloudConnection = sqliteTable("cloud_connection", {
 });
 
 /**
+ * Phase 12 (channel-bound agent isolation, `docs/roadmap/plans/PHASE_12_PLAN.md` slice 12.1),
+ * SCHEMA_MIGRATIONS version 34. One row per issued agent channel token. Only a SHA-256 hash of the
+ * token is ever stored (AC-P12-11); the plaintext is shown to the operator once at issue time.
+ * `user_id` is the Google identity recorded AT ISSUE TIME (verified then to own the channel live) --
+ * an agent session's credentials always come from here, never from `channels.connected_user_id`
+ * (which an explicit-id `channel_sync` can overwrite). At most one non-revoked row per channel
+ * (one agent = one channel, owner decision): issuing a new token revokes the previous one.
+ *
+ * Device-local: NOT in `SNAPSHOT_TRANSFERRED_TABLES` and not in `sync-gateway` -- an agent is
+ * configured per machine, the same reasoning as `agent_connections`.
+ */
+export const agentChannelTokens = sqliteTable("agent_channel_tokens", {
+  id: text("id").primaryKey(),
+  channelId: text("channel_id").notNull(),
+  userId: text("user_id").notNull(),
+  tokenHash: text("token_hash").notNull().unique(),
+  label: text("label"),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  revokedAt: integer("revoked_at", { mode: "timestamp" }),
+});
+
+/**
  * Phase 11 (Channel Workspaces, `docs/roadmap/plans/PHASE_11_PLAN.md` §1), SCHEMA_MIGRATIONS
  * version 33. One operator-set local filesystem path per (device, channel) -- the channel's
  * production-workspace folder on THIS machine. This product stores and returns the string only;
@@ -2151,6 +2175,26 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 34,
+    description:
+      "agent_channel_tokens -- Phase 12, channel-bound agent tokens (docs/roadmap/plans/PHASE_12_PLAN.md slice 12.1). SHA-256 hash only; device-local (excluded from SNAPSHOT_TRANSFERRED_TABLES and sync-gateway).",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS agent_channel_tokens (" +
+          "id TEXT PRIMARY KEY, " +
+          "channel_id TEXT NOT NULL, " +
+          "user_id TEXT NOT NULL, " +
+          "token_hash TEXT NOT NULL UNIQUE, " +
+          "label TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "revoked_at INTEGER)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS agent_channel_tokens_channel_id_idx ON agent_channel_tokens(channel_id)"
+      );
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -3063,6 +3107,67 @@ export async function getOperationsWorkspacePath(database: AppDb = db): Promise<
 
 export async function setOperationsWorkspacePath(path: string | null, database: AppDb = db): Promise<void> {
   await setAppSetting(OPERATIONS_WORKSPACE_PATH_SETTING_KEY, path ?? "", database);
+}
+
+export type StoredAgentChannelToken = {
+  id: string;
+  channelId: string;
+  userId: string;
+  label: string | null;
+  createdAt: Date;
+  revokedAt: Date | null;
+};
+
+const agentChannelTokenColumns = {
+  id: agentChannelTokens.id,
+  channelId: agentChannelTokens.channelId,
+  userId: agentChannelTokens.userId,
+  label: agentChannelTokens.label,
+  createdAt: agentChannelTokens.createdAt,
+  revokedAt: agentChannelTokens.revokedAt,
+};
+
+/** Phase 12. Revokes any active token of the channel and inserts the new one in ONE transaction,
+ * so "at most one active token per channel" can never be observed violated. */
+export async function replaceAgentChannelToken(
+  input: { id: string; channelId: string; userId: string; tokenHash: string; label: string | null },
+  database: AppDb = db
+): Promise<void> {
+  const now = new Date();
+  await database.transaction(async (tx) => {
+    await tx
+      .update(agentChannelTokens)
+      .set({ revokedAt: now })
+      .where(and(eq(agentChannelTokens.channelId, input.channelId), isNull(agentChannelTokens.revokedAt)));
+    await tx.insert(agentChannelTokens).values({ ...input, createdAt: now, revokedAt: null });
+  });
+}
+
+/** Returns the number of tokens revoked (0 when the channel had no active token). */
+export async function revokeAgentChannelTokens(channelId: string, database: AppDb = db): Promise<number> {
+  const revoked = await database
+    .update(agentChannelTokens)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(agentChannelTokens.channelId, channelId), isNull(agentChannelTokens.revokedAt)))
+    .returning({ id: agentChannelTokens.id });
+  return revoked.length;
+}
+
+/** Active (non-revoked) token by hash, or null. */
+export async function findActiveAgentChannelTokenByHash(
+  tokenHash: string,
+  database: AppDb = db
+): Promise<StoredAgentChannelToken | null> {
+  const rows = await database
+    .select(agentChannelTokenColumns)
+    .from(agentChannelTokens)
+    .where(and(eq(agentChannelTokens.tokenHash, tokenHash), isNull(agentChannelTokens.revokedAt)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function listActiveAgentChannelTokens(database: AppDb = db): Promise<StoredAgentChannelToken[]> {
+  return database.select(agentChannelTokenColumns).from(agentChannelTokens).where(isNull(agentChannelTokens.revokedAt));
 }
 
 /** Phase 11. Every read/write is filtered on `deviceId` -- see `channelWorkspaces` above. */
