@@ -908,46 +908,11 @@ export const contentProposalArtifacts = sqliteTable(
   (table) => [index("content_proposal_artifacts_proposal_id_idx").on(table.proposalId)]
 );
 
-/**
- * BL-091 (`docs/roadmap/plans/AGENT_ZONES_PLAN.md`) -- registry of distinct agent connections
- * (e.g. "claude"/"codex"), identified by an operator-chosen slug `id`. **No secret/token field**
- * -- this is a coordination guardrail between agent clients the project owner already controls
- * both ends of, never an authentication boundary (`AGENTS.md` §F only governs real credentials).
- * Read by `assertAgentAllowedForCapability` (`src/lib/agent-connections/services.ts`) -- the
- * enabled-connection count and identity this table holds directly drives the fail-closed policy.
- *
- * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`) -- deliberately
- * per-device, same reasoning as `creative_assets`/`content_proposals` (RISK-52): an MCP client's
- * own launch config (and the `AGENT_CONNECTION_ID` it sets) is inherently per-machine.
- */
-export const agentConnections = sqliteTable("agent_connections", {
-  id: text("id").primaryKey(),
-  label: text("label").notNull(),
-  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
-  createdAt: integer("created_at", { mode: "timestamp" })
-    .notNull()
-    .$defaultFn(() => new Date()),
-});
-
-/**
- * BL-091 -- which `agent_connections.id` (if any) exclusively owns a given capability id (e.g.
- * `"content_proposal.create_content_proposal"`). Zoned per capability, not per domain, so two
- * DRAFT actions in the same domain can go to different connections if the owner ever wants that
- * split; the Web UI groups capabilities visually by domain but assigns each one individually (no
- * domain-level bulk-assign control). `assignedConnectionId IS NULL` means "unassigned" -- read by
- * `assertAgentAllowedForCapability` (`src/lib/agent-connections/services.ts`), which rejects it
- * for EVERY connection once one or more are enabled, with no exception for exactly one enabled
- * connection (the owner's exclusivity rule -- an unassigned zone must never be silently granted
- * to anyone, even the only connection that exists; see
- * `docs/roadmap/plans/AGENT_ZONES_PLAN.md` §5 for the full policy).
- *
- * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** -- same per-device reasoning as `agent_connections`
- * above (a zone assignment is only meaningful together with the connection ids it references).
- */
-export const agentCapabilityZones = sqliteTable("agent_capability_zones", {
-  capabilityId: text("capability_id").primaryKey(),
-  assignedConnectionId: text("assigned_connection_id").references(() => agentConnections.id),
-});
+// BL-091's `agent_connections`/`agent_capability_zones` tables (SCHEMA_MIGRATIONS v20) were retired
+// in Phase 12 (owner decision D4, `docs/decisions/0011-retire-agent-capability-zones.md`): no code
+// reads or writes them any more. The migration and the (now inert) tables are deliberately kept --
+// dropping a table is a subtractive schema change this project's additive policy
+// (`docs/decisions/0001-additive-idempotent-schema-strategy.md`) does not do incidentally.
 
 /**
  * Phase 9 slice 1 (`src/lib/market-intelligence/`) -- a manually-seeded market-research
@@ -5261,82 +5226,6 @@ export async function upsertStoredCloudConnection(
 
 export async function clearStoredCloudConnection(database: AppDb = db): Promise<void> {
   await database.delete(cloudConnection).where(eq(cloudConnection.id, CLOUD_CONNECTION_SINGLETON_ID));
-}
-
-// ---------------------------------------------------------------------------
-// BL-091 (`docs/roadmap/plans/AGENT_ZONES_PLAN.md`) -- agent connections + capability zones.
-// Read by `assertAgentAllowedForCapability` (`src/lib/agent-connections/services.ts`).
-// ---------------------------------------------------------------------------
-
-export type StoredAgentConnection = {
-  id: string;
-  label: string;
-  enabled: boolean;
-  createdAt: Date;
-};
-
-export async function insertAgentConnection(
-  input: { id: string; label: string; enabled: boolean },
-  database: AppDb = db
-): Promise<void> {
-  await database.insert(agentConnections).values({
-    id: input.id,
-    label: input.label,
-    enabled: input.enabled,
-  });
-}
-
-export async function listAgentConnections(database: AppDb = db): Promise<StoredAgentConnection[]> {
-  return database.select().from(agentConnections).orderBy(agentConnections.id);
-}
-
-export async function getAgentConnectionById(
-  id: string,
-  database: AppDb = db
-): Promise<StoredAgentConnection | null> {
-  const [row] = await database.select().from(agentConnections).where(eq(agentConnections.id, id));
-  return row ?? null;
-}
-
-export async function updateAgentConnectionEnabled(
-  id: string,
-  enabled: boolean,
-  database: AppDb = db
-): Promise<void> {
-  await database.update(agentConnections).set({ enabled }).where(eq(agentConnections.id, id));
-}
-
-export type StoredAgentCapabilityZone = {
-  capabilityId: string;
-  assignedConnectionId: string | null;
-};
-
-export async function upsertAgentCapabilityZone(
-  input: { capabilityId: string; assignedConnectionId: string | null },
-  database: AppDb = db
-): Promise<void> {
-  await database
-    .insert(agentCapabilityZones)
-    .values({ capabilityId: input.capabilityId, assignedConnectionId: input.assignedConnectionId })
-    .onConflictDoUpdate({
-      target: agentCapabilityZones.capabilityId,
-      set: { assignedConnectionId: input.assignedConnectionId },
-    });
-}
-
-export async function listAgentCapabilityZones(database: AppDb = db): Promise<StoredAgentCapabilityZone[]> {
-  return database.select().from(agentCapabilityZones).orderBy(agentCapabilityZones.capabilityId);
-}
-
-export async function getAgentCapabilityZoneById(
-  capabilityId: string,
-  database: AppDb = db
-): Promise<StoredAgentCapabilityZone | null> {
-  const [row] = await database
-    .select()
-    .from(agentCapabilityZones)
-    .where(eq(agentCapabilityZones.capabilityId, capabilityId));
-  return row ?? null;
 }
 
 // ---------------------------------------------------------------------------

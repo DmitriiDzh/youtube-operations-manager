@@ -100,13 +100,6 @@ export type DomainErrorCode =
   | "AGENT_TOKEN_IDENTITY_MISMATCH"
   | "AGENT_SESSION_CREDENTIAL_OVERRIDE"
   | "AGENT_SESSION_OPERATOR_ONLY"
-  // BL-091 (docs/roadmap/plans/AGENT_ZONES_PLAN.md) -- multi-agent responsibility zones.
-  | "AGENT_CONNECTION_NOT_AVAILABLE"
-  | "AGENT_CONNECTION_ID_CONFLICT"
-  // Slice 2 -- thrown by assertAgentAllowedForCapability for both "no/unknown caller identity
-  // once zoning is in use" and "caller identity does not match this capability's assigned zone",
-  // same one-code-covers-related-reasons convention as CONTENT_PROPOSAL_NOT_AVAILABLE.
-  | "AGENT_ZONE_VIOLATION"
   // Owner-reported: the generic "Connection failed" Cloud Connection callback message gave no way
   // to tell "Google rejected the token exchange" (most often: docs/decisions/0008-cloud-connection.md's
   // separate `/api/cloud-connection/callback` redirect URI was never added to the OAuth client's own

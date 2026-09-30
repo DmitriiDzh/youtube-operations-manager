@@ -70,9 +70,6 @@ const DOMAIN_ERROR_STATUS = {
   AGENT_TOKEN_IDENTITY_MISMATCH: 409,
   AGENT_SESSION_CREDENTIAL_OVERRIDE: 403,
   AGENT_SESSION_OPERATOR_ONLY: 403,
-  AGENT_CONNECTION_NOT_AVAILABLE: 404,
-  AGENT_CONNECTION_ID_CONFLICT: 409,
-  AGENT_ZONE_VIOLATION: 403,
   // Cloud Connection OAuth callback (`src/lib/cloud-connection/`) -- never actually surfaced
   // through a JSON API response (that route always redirects), but this table is indexed with the
   // full `DomainErrorCode` union, so every code needs an entry.
