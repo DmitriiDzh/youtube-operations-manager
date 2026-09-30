@@ -2172,11 +2172,16 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
    so the other computer sees the conflict too.
 
 **Resolution (human only, via the bell → `POST /api/device-sync/resolve`):**
-- `keep_mine` exports with `supersede` (parent = the peer's tip, ancestry = the peer's plus the
-  local one), so the peer fast-forwards.
+- `keep_mine` exports with `supersede` (parent = the named peer tip; ancestry = every current
+  peer tip and its history, plus the local one), so every peer fast-forwards.
 - `take_theirs` imports with `acceptDivergentLineage`, using its own backup prefix
-  `pre-take-theirs-`, which is never pruned. It then publishes a marker whose ancestry names this
-  device's abandoned branch, so the peer sees a fast-forward.
+  `pre-take-theirs-`, which is never pruned. It then removes this device's own published snapshots
+  that the adopted one does not descend from: the branch the human chose to discard. So the peer
+  stops seeing a conflict, and the peer's further work still arrives as a fast-forward.
+- All actions on one runner are serialized, and the runner is a `globalThis` singleton shared by
+  the scheduler and the routes.
+- The decision uses exactly the fast-forward rule `verifySnapshotForImport` enforces. An
+  older-build chain without `lineage.json` is caught up one direct child at a time.
 
 **Retention.**
 - This device's own snapshots: the newest 5 plus the head.

@@ -80,10 +80,21 @@ export function decideSyncAction(input: DecisionInput): SyncDecision {
   // A newer schema can't be read by this build at all, whatever the lineage says.
   if (tip.schemaVersion > input.currentSchemaVersion) return { kind: "update_app", snapshot: tip };
 
-  const fastForward =
-    isFastForwardOf(tip, tip.ancestors, { lastSnapshotId: head }) ||
-    (head !== null && ancestryOf(tip.snapshotId, input.snapshots).has(head));
-  if (fastForward && !input.localDirty) return { kind: "import", snapshot: tip };
+  // The SAME rule `verifySnapshotForImport` enforces (recorded `lineage.json` ancestry or a direct
+  // parent) -- never a looser one, or the import would be refused after the decision (AC-AS-14).
+  const local = { lastSnapshotId: head };
+  if (!input.localDirty) {
+    if (isFastForwardOf(tip, tip.ancestors, local)) return { kind: "import", snapshot: tip };
+    // A chain from an older build (no `lineage.json`): catch up one verifiable step at a time --
+    // the newest of the tip's own ancestors that is a direct fast-forward of the local head.
+    const tipAncestry = ancestryOf(tip.snapshotId, input.snapshots);
+    if (head !== null && tipAncestry.has(head)) {
+      const step = newer
+        .filter((s) => tipAncestry.has(s.snapshotId) && isFastForwardOf(s, s.ancestors, local))
+        .sort((a, b) => b.generation - a.generation)[0];
+      if (step && step.schemaVersion <= input.currentSchemaVersion) return { kind: "import", snapshot: step };
+    }
+  }
   return { kind: "divergence", snapshot: tip, localDirty: input.localDirty, multipleTips: false };
 }
 
@@ -371,7 +382,8 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         snapshots,
       });
 
-      if (options.exportOnly && decision.kind !== "export") {
+      const wouldExport = decision.kind === "export" || (decision.kind === "divergence" && decision.localDirty);
+      if (options.exportOnly && !wouldExport) {
         return finish({ ...status, notices: status.notices });
       }
 
@@ -458,6 +470,14 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
               const next = withPending(status, previousPending, unreadable, [decision.snapshot.snapshotId]);
               return finish({ ...next, state: "waiting", notices: stuckNotice(next) });
             }
+            if (error instanceof SnapshotError && error.code === "snapshot_divergent_lineage") {
+              // Verification disagreed with the decision: a human decides, with the buttons.
+              return finish({
+                ...status,
+                state: "attention",
+                notices: [divergenceNotice(decision.snapshot, false, false), ...stuckNotice(status)],
+              });
+            }
             throw error;
           }
         }
@@ -504,19 +524,36 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     return { config: { deviceId: config.deviceId, folder: config.folder }, snapshot, snapshots };
   }
 
+  /** Other devices' snapshots that are not in the local history and not covered by another one. */
+  async function peerTips(config: { deviceId: string }, snapshots: SnapshotEntry[]): Promise<SnapshotEntry[]> {
+    const lineage = await readLineageState(deps.client);
+    const known = ancestryOf(lineage.lastSnapshotId, snapshots, lineage.ancestors ?? []);
+    if (lineage.lastSnapshotId) known.add(lineage.lastSnapshotId);
+    const newer = snapshots.filter((s) => s.sourceDeviceId !== config.deviceId && !known.has(s.snapshotId));
+    const covered = new Set<string>();
+    for (const s of newer) for (const id of ancestryOf(s.snapshotId, snapshots)) covered.add(id);
+    return newer.filter((s) => !covered.has(s.snapshotId));
+  }
+
   /**
    * §3.6 "Keep this computer's data": publish the local state as a child of the other device's
-   * snapshot, so that device fast-forwards to it. Explicit human action only.
+   * snapshot, so that device fast-forwards to it. Every other conflicting tip currently in the
+   * folder is folded into the ancestry too, so one decision settles all of them (review round 1).
+   * Explicit human action only.
    */
-  async function keepMine(snapshotId: string): Promise<DeviceSyncStatus> {
+  async function keepMineUnlocked(snapshotId: string): Promise<DeviceSyncStatus> {
     const { config, snapshot, snapshots } = await requirePeerSnapshot(snapshotId);
     const busy = await busyReason();
     if (busy) throw new DeviceSyncError("device_sync_busy", `Cannot sync now: ${busy.reason}.`);
-    const manifest = await exportNow(
-      config,
-      { snapshotId: snapshot.snapshotId, generation: snapshot.generation, ancestors: [...ancestryOf(snapshot.snapshotId, snapshots)] },
-      false
-    );
+    const tips = await peerTips(config, snapshots);
+    const superseded = new Set<string>(ancestryOf(snapshot.snapshotId, snapshots));
+    for (const tip of tips) {
+      superseded.add(tip.snapshotId);
+      for (const id of ancestryOf(tip.snapshotId, snapshots)) superseded.add(id);
+    }
+    superseded.delete(snapshot.snapshotId);
+    const generation = Math.max(snapshot.generation, ...tips.map((t) => t.generation));
+    const manifest = await exportNow(config, { snapshotId: snapshot.snapshotId, generation, ancestors: [...superseded] }, false);
     const status = await loadStatusSafe();
     const next: DeviceSyncStatus = {
       ...status,
@@ -532,31 +569,23 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
   /**
    * §3.6 "Take the other computer's data": import it past the divergence refusal. Every other
    * import check stays (checksums, recovery-mode refusal, backup first). Explicit human action only.
+   *
+   * This computer's own published snapshots that the adopted one does not descend from are the
+   * branch the human just chose to discard -- they are removed from the sync folder (their data
+   * stays in the local `pre-take-theirs-*` backup). Otherwise the other computer would keep seeing
+   * them as a conflict; and unlike a "same data" marker snapshot, removing them lets the other
+   * computer's own further work still arrive here as a plain fast-forward (review round 1).
    */
-  async function takeTheirs(snapshotId: string): Promise<DeviceSyncStatus> {
-    const { config, snapshot, snapshots } = await requirePeerSnapshot(snapshotId);
+  async function takeTheirsUnlocked(snapshotId: string): Promise<DeviceSyncStatus> {
+    const { config, snapshots } = await requirePeerSnapshot(snapshotId);
     const busy = await busyReason();
     if (busy && !busy.recovery) throw new DeviceSyncError("device_sync_busy", `Cannot sync now: ${busy.reason}.`);
     const result = await importNow(config.folder, snapshotId, { acceptDivergentLineage: true, requireClean: false });
 
-    // If this computer had already published its own now-abandoned branch, the other computer would
-    // keep seeing it as a conflict. Publish the adopted state once more, naming that branch as an
-    // ancestor: the other computer then sees a plain fast-forward (identical data) and settles.
     const adoptedAncestry = ancestryOf(snapshotId, snapshots);
-    const abandoned = snapshots
-      .filter((s) => s.sourceDeviceId === config.deviceId && !adoptedAncestry.has(s.snapshotId))
-      .map((s) => s.snapshotId);
-    let markerId: string | null = null;
-    if (abandoned.length > 0) {
-      try {
-        const marker = await exportNow(
-          config,
-          { snapshotId, generation: snapshot.generation, ancestors: [...adoptedAncestry, ...abandoned] },
-          false
-        );
-        markerId = marker.snapshotId;
-      } catch {
-        // The import itself succeeded; the next tick/resolution can still settle the other side.
+    for (const own of snapshots) {
+      if (own.sourceDeviceId === config.deviceId && !adoptedAncestry.has(own.snapshotId)) {
+        await rm(path.join(config.folder, own.snapshotId), { recursive: true, force: true }).catch(() => undefined);
       }
     }
 
@@ -566,7 +595,6 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       state: result.status === "activated_recovery_mode" ? "attention" : "imported",
       lastImportAt: new Date(now()).toISOString(),
       lastImportSnapshotId: snapshotId,
-      ...(markerId ? { lastExportAt: new Date(now()).toISOString(), lastExportSnapshotId: markerId } : {}),
       notices:
         result.status === "activated_recovery_mode"
           ? [{ kind: "recovery_mode", message: "The imported data contains a YouTube write whose outcome is unknown. This computer is now in recovery mode." }]
@@ -576,7 +604,21 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     return next;
   }
 
-  return { tick, keepMine, takeTheirs, getStatus: loadStatusSafe };
+  // One action at a time per runner (review round 1): a tick and a resolution each load the status
+  // at the start and save it at the end, so overlapping ones would overwrite each other's result.
+  let queue: Promise<unknown> = Promise.resolve();
+  function serialize<T>(fn: () => Promise<T>): Promise<T> {
+    const run = queue.then(fn, fn);
+    queue = run.catch(() => undefined);
+    return run;
+  }
+
+  return {
+    tick: (options: { force?: boolean; exportOnly?: boolean } = {}) => serialize(() => tick(options)),
+    keepMine: (snapshotId: string) => serialize(() => keepMineUnlocked(snapshotId)),
+    takeTheirs: (snapshotId: string) => serialize(() => takeTheirsUnlocked(snapshotId)),
+    getStatus: loadStatusSafe,
+  };
 }
 
 export type DeviceSyncRunner = ReturnType<typeof createDeviceSyncRunner>;

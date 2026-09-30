@@ -515,3 +515,120 @@ test("'keep mine' on the computer that looked first settles both", () =>
     a.client.close();
     b.client.close();
   }));
+
+// ---------------------------------------------------------------------------------------------
+// Review round 1 findings (each test states the scenario the reviewer derived from the plan)
+// ---------------------------------------------------------------------------------------------
+
+test("R1-1: after 'take theirs' on B, A's further work still reaches B as a fast-forward (no new conflict)", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    await addResearchChannel(a.client, "UC1");
+    await a.runner.tick();
+    await b.runner.tick();
+    await addResearchChannel(a.client, "UC-a");
+    await addResearchChannel(b.client, "UC-b");
+    later(a);
+    later(b);
+    await a.runner.tick();
+    const bNotice = (await b.runner.tick()).notices[0];
+    assert.equal(bNotice?.kind, "divergence");
+    await b.runner.takeTheirs(bNotice!.snapshotId!);
+
+    // A keeps working and publishes again.
+    await addResearchChannel(a.client, "UC-a2");
+    later(a);
+    const aStatus = await a.runner.tick();
+    assert.deepEqual(aStatus.notices, []);
+    later(b);
+    assert.equal((await b.runner.tick()).state, "imported");
+    assert.deepEqual(await researchIds(b.client), ["UC-a", "UC-a2", "UC1"]);
+    later(a);
+    assert.equal((await a.runner.tick()).state, "synced");
+    a.client.close();
+    b.client.close();
+  }));
+
+test("R1-2 (AC-AS-14): an older-build chain without lineage.json is caught up one direct child at a time", () => {
+  const snapshots = [entry("s1", null, "A", 1), entry("s2", "s1", "B", 2, null), entry("s3", "s2", "B", 3, null)];
+  const d = decideSyncAction({
+    deviceId: "A",
+    currentSchemaVersion: 1,
+    local: { lastSnapshotId: "s1", ancestors: [] },
+    localDirty: false,
+    snapshots,
+  });
+  assert.equal(d.kind, "import");
+  assert.equal(d.kind === "import" && d.snapshot.snapshotId, "s2");
+  const next = decideSyncAction({
+    deviceId: "A",
+    currentSchemaVersion: 1,
+    local: { lastSnapshotId: "s2", ancestors: [] },
+    localDirty: false,
+    snapshots,
+  });
+  assert.equal(next.kind === "import" && next.snapshot.snapshotId, "s3");
+});
+
+test("R1-3: 'keep mine' settles every conflicting tip at once, not only the one named", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    const c = await makeDevice(root, "c");
+    await addResearchChannel(a.client, "UC1");
+    await a.runner.tick();
+    await b.runner.tick();
+    await c.runner.tick();
+    await addResearchChannel(b.client, "UC-b");
+    await addResearchChannel(c.client, "UC-c");
+    later(b);
+    later(c);
+    await b.runner.tick();
+    await c.runner.tick(); // c sees b's snapshot while dirty: conflict, publishes its own branch
+    later(a);
+    const aStatus = await a.runner.tick();
+    assert.equal(aStatus.notices[0]?.kind, "divergence");
+    await a.runner.keepMine(aStatus.notices[0]!.snapshotId!);
+    later(a);
+    assert.deepEqual((await a.runner.tick()).notices, []);
+    for (const peer of [b, c]) {
+      later(peer);
+      await peer.runner.tick();
+      assert.deepEqual(await researchIds(peer.client), ["UC1"]);
+    }
+    a.client.close();
+    b.client.close();
+    c.client.close();
+  }));
+
+test("R1-4: the idle-shutdown flush still publishes local changes while a conflict is open", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    await addResearchChannel(a.client, "UC1");
+    await a.runner.tick();
+    await b.runner.tick();
+    await addResearchChannel(a.client, "UC-a");
+    await addResearchChannel(b.client, "UC-b");
+    later(b);
+    await b.runner.tick();
+    const before = a.status().lastExportSnapshotId;
+    const flushed = await a.runner.tick({ force: true, exportOnly: true });
+    assert.equal(flushed.notices[0]?.kind, "divergence");
+    assert.ok(flushed.lastExportSnapshotId && flushed.lastExportSnapshotId !== before, "the flush published a new snapshot");
+    assert.deepEqual(await researchIds(a.client), ["UC-a", "UC1"]);
+    a.client.close();
+    b.client.close();
+  }));
+
+test("R1-5: overlapping actions on one runner run one after another", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    await addResearchChannel(a.client, "UC1");
+    const [first, second] = await Promise.all([a.runner.tick({ force: true }), a.runner.tick({ force: true })]);
+    assert.equal(first.state, "exported");
+    assert.equal(second.state, "synced");
+    assert.equal((await readdir(path.join(root, "sync"))).length, 1);
+    a.client.close();
+  }));

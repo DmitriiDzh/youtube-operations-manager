@@ -14,7 +14,11 @@ import { createDeviceSyncRunner, type DeviceSyncRunner } from "./services";
 export * from "./contracts";
 export { ancestryOf, decideSyncAction, type DeviceSyncRunner } from "./services";
 
-let runner: DeviceSyncRunner | null = null;
+// Process-wide, keyed on `globalThis` (review round 1): Next.js compiles `instrumentation.ts` (the
+// scheduler) separately from the route handlers, so a module-level singleton could give "Sync now"
+// its own runner -- with its own action queue -- next to the scheduler's.
+const RUNNER_KEY = Symbol.for("ytom.deviceSync.runner");
+type GlobalWithRunner = typeof globalThis & { [RUNNER_KEY]?: DeviceSyncRunner };
 
 /**
  * A DEDICATED connection, not the shared `rawSqlClient`: an import runs one `BEGIN IMMEDIATE`
@@ -35,9 +39,11 @@ function createDedicatedClient(): Client {
  * other computer can see.
  */
 export function getDeviceSyncRunner(): DeviceSyncRunner {
-  if (runner) return runner;
+  const g = globalThis as GlobalWithRunner;
+  const existing = g[RUNNER_KEY];
+  if (existing) return existing;
   const bootstrapConfigStore = createBootstrapConfigStore(appDataPaths.bootstrapConfigPath);
-  runner = createDeviceSyncRunner({
+  const runner = createDeviceSyncRunner({
     client: createDedicatedClient(),
     currentSchemaVersion: SCHEMA_CURRENT_VERSION,
     resolveConfig: async () => {
@@ -54,5 +60,6 @@ export function getDeviceSyncRunner(): DeviceSyncRunner {
     },
     saveStatus: (status) => setDeviceSyncStatusJson(JSON.stringify(status)),
   });
+  g[RUNNER_KEY] = runner;
   return runner;
 }
