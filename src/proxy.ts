@@ -44,6 +44,19 @@ const EXEMPT_READ_ONLY_PATH_SUFFIXES = [
   "/decision-engine/hypotheses/generate",
 ];
 
+// Architecture audit 2026-10-01 (H4): the operator's stop switches must work even while the device
+// is in recovery mode or holds an export/import lock -- otherwise the operator cannot switch agents
+// or Live writes off, revoke an agent's token, or disconnect a channel exactly when something has
+// gone wrong. Each touches only device-local state that never travels in a snapshot
+// (`app_settings`, `agent_channel_tokens`, the `users` token columns / `channels.connected_user_id`),
+// so exempting them cannot corrupt a handoff. Exact method + path only: issuing a token (POST) and
+// every other route stay gated.
+const EXEMPT_STOP_SWITCH_ROUTES = new Set([
+  "POST /api/settings",
+  "DELETE /api/agent-tokens",
+  "POST /api/channel-connections/disconnect",
+]);
+
 function isExemptReadOnlyPath(pathname: string): boolean {
   if (EXEMPT_READ_ONLY_PATHS.has(pathname)) return true;
   return EXEMPT_READ_ONLY_PATH_SUFFIXES.some((suffix) => pathname.endsWith(suffix));
@@ -63,6 +76,9 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
   if (isExemptReadOnlyPath(pathname)) {
+    return NextResponse.next();
+  }
+  if (EXEMPT_STOP_SWITCH_ROUTES.has(`${request.method} ${pathname}`)) {
     return NextResponse.next();
   }
 

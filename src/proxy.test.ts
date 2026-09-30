@@ -366,17 +366,43 @@ test("proxy gates the channel-workspaces PUT route like any other real mutation"
 
 // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md 12.1) -- issuing/revoking agent tokens are real local
 // mutations, gated like every other one.
-test("proxy gates the agent-tokens POST and DELETE routes like any other real mutation", async () => {
+test("proxy gates issuing an agent token (POST) like any other real mutation", async () => {
   await acquireOperationLock(rawSqlClient, "export");
   try {
-    for (const method of ["POST", "DELETE"]) {
-      const response = await proxy(new NextRequest(new Request("http://localhost/api/agent-tokens", { method })));
-      assert.equal(response.status, 409, method);
+    const response = await proxy(new NextRequest(new Request("http://localhost/api/agent-tokens", { method: "POST" })));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+// Architecture audit 2026-10-01 (H4, AC-H4-1/2): the operator's stop switches stay usable under the
+// lock, and nothing else is loosened.
+test("AC-H4: settings POST, agent-token revoke and channel disconnect pass the gate while locked; neighbours stay gated", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    for (const [method, pathname] of [
+      ["POST", "/api/settings"],
+      ["DELETE", "/api/agent-tokens"],
+      ["POST", "/api/channel-connections/disconnect"],
+    ]) {
+      const response = await proxy(new NextRequest(new Request(`http://localhost${pathname}`, { method })));
+      assert.notEqual(response.status, 409, `${method} ${pathname} must not be gated`);
+    }
+    for (const [method, pathname] of [
+      ["PUT", "/api/settings"],
+      ["POST", "/api/agent-tokens"],
+      ["POST", "/api/channel-connections/disconnect/extra"],
+      ["PUT", "/api/channel-workspaces"],
+    ]) {
+      const response = await proxy(new NextRequest(new Request(`http://localhost${pathname}`, { method })));
+      assert.equal(response.status, 409, `${method} ${pathname} must stay gated`);
     }
   } finally {
     await releaseOperationLock(rawSqlClient);
   }
 });
+
 
 // Phase 12 slice 12.4 -- assigning market records to channels is a real local mutation.
 test("proxy gates the market-assignments PUT route like any other real mutation", async () => {
