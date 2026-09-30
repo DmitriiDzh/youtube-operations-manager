@@ -227,6 +227,13 @@ Not every issue in this register must be fixed immediately. It must, however, al
 
 ## RISK-07 — OAuth tokens stored in plaintext
 
+- **Update 2026-09-30 (Phase 12 slice 12.8): PARTIALLY MITIGATED.** With
+  `OAUTH_TOKENS_ENCRYPTION_KEY` configured, access and refresh tokens are AES-256-GCM encrypted at
+  rest (`src/lib/oauth-token-crypto`), and legacy plaintext rows are re-encrypted on first read.
+  Without the key, behavior is unchanged (plaintext). The key lives in the environment file, not
+  in an OS keychain; the owner chose the "env" variant (Telegram, msg 1060), so the remaining gap
+  is "database file + env file both read". Pre-migration database backups (`backups/migrations/`)
+  taken before this change still contain plaintext tokens.
 - **Affected components:** `src/lib/db.ts` (`users.accessToken`, `users.refreshToken`), `data/playlist-manager.db`.
 - **Current behavior:** Access/refresh tokens are stored as plain SQLite text columns, no field-level encryption. `data/` is entirely `.gitignore`d (confirmed: `data/*.db`, `data/auth-context.json`, `data/oauth/`, `data/tokens/`, `credentials/`), and tokens are never logged or sent to an AI provider (`AGENTS.md` rule, verified: no `console.log`/logger call in `src/lib/auth.ts` or `db.ts` includes token fields).
 - **Actual risk:** Anyone with filesystem read access to the operator's machine (or a backup of `data/playlist-manager.db`) can read live OAuth tokens in plaintext.
@@ -1360,9 +1367,11 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   folder, or read another agent's launch config, including its plaintext channel token.
   - Within the product's interface the wall is complete (AC-P12-01..10).
   - The risk is a deliberate bypass, or a careless agent wandering the disk.
-- **Mitigations in place:** the documented per-agent sandbox / working-directory setup
-  (`docs/AGENT_ISOLATION_SETUP.md`). The OAuth-token encryption at rest (PHASE_12_PLAN.md 12.8)
-  is still pending the owner's key-storage choice.
+- **Mitigations in place:**
+  - the documented per-agent sandbox / working-directory setup (`docs/AGENT_ISOLATION_SETUP.md`);
+  - OAuth tokens encrypted at rest when `OAUTH_TOKENS_ENCRYPTION_KEY` is set (PHASE_12_PLAN.md
+    12.8), so reading the database file alone yields no usable Google credential. The key itself
+    is in the environment file, which a determined same-user agent could also read.
 - **Required remediation (only if the threat model changes):** serve the agent interface from the
   operator's own process (MCP over localhost HTTP with the token as bearer credential), plus one
   OS user or sandbox per agent. This is PHASE_12_PLAN.md D0(a).

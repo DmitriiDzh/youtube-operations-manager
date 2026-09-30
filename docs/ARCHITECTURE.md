@@ -2090,5 +2090,16 @@ access" setting (default off).
 **Accepted limit (owner decision D0(b)).** The server still runs as a stdio child in the agent's
 own OS user, so the wall is in-app. An agent that deliberately reads `data.db` or another agent's
 launch config can bypass it. This is recorded as RISK-87, with mitigations in
-`docs/AGENT_ISOLATION_SETUP.md`. OAuth-token encryption at rest (12.8) is pending the owner's
-key-storage choice.
+`docs/AGENT_ISOLATION_SETUP.md`.
+
+**OAuth tokens at rest (12.8, owner chose the "env" key variant).** `db.ts`'s OAuth-token
+functions are the only readers and writers of `users.access_token` / `refresh_token`. They route
+through `src/lib/oauth-token-crypto`:
+- With `OAUTH_TOKENS_ENCRYPTION_KEY` configured, values are stored as
+  `enc:v1:<iv>:<tag>:<ciphertext>` (AES-256-GCM, `src/lib/shared-crypto`). Legacy plaintext rows
+  are re-encrypted on first read.
+- Without the key, values are stored as plaintext exactly as before. Sign-in is never blocked.
+- A value that cannot be decrypted reads as "no token", so the user signs in again.
+
+This protects against reading the database file alone. It does not protect against an agent that
+also reads the key from the environment file.

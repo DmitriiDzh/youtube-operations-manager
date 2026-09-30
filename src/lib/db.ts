@@ -16,6 +16,7 @@ import {
 } from "@/lib/schema-versioning";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { getAgentSession } from "@/lib/agent-session";
+import { decodeStoredOAuthToken, encodeStoredOAuthToken } from "@/lib/oauth-token-crypto";
 
 // Platform-aware app-data location (docs/decisions/0002-additive-schema-versioning.md's
 // companion task, "Pre-Release Cross-Platform Persistence"). getProductionAppPaths() is the
@@ -2627,10 +2628,21 @@ export async function getUserOAuthTokens(
   const [row] = await db.select().from(users).where(eq(users.id, userId));
   if (!row) return null;
 
+  // Phase 12 slice 12.8 -- decrypt at rest (src/lib/oauth-token-crypto). A legacy plaintext row
+  // is re-encrypted the first time it is read while a key is configured.
+  const access = decodeStoredOAuthToken(row.accessToken);
+  const refresh = decodeStoredOAuthToken(row.refreshToken);
+  if (access.needsReencrypt || refresh.needsReencrypt) {
+    await db
+      .update(users)
+      .set({ accessToken: encodeStoredOAuthToken(access.value), refreshToken: encodeStoredOAuthToken(refresh.value) })
+      .where(eq(users.id, userId));
+  }
+
   return {
     userId: row.id,
-    accessToken: row.accessToken,
-    refreshToken: row.refreshToken,
+    accessToken: access.value,
+    refreshToken: refresh.value,
     tokenExpiry: row.tokenExpiry,
     scope: row.oauthScope,
   };
@@ -2643,8 +2655,8 @@ export async function saveUserOAuthTokens(
   await db
     .update(users)
     .set({
-      accessToken: patch.accessToken,
-      refreshToken: patch.refreshToken,
+      accessToken: encodeStoredOAuthToken(patch.accessToken),
+      refreshToken: encodeStoredOAuthToken(patch.refreshToken),
       tokenExpiry: patch.tokenExpiry,
       oauthScope: patch.scope,
     })
@@ -2674,8 +2686,8 @@ export async function upsertUserOAuthOnSignIn(
         name: input.name,
         email: input.email,
         image: input.image,
-        accessToken: input.accessToken ?? existing.accessToken,
-        refreshToken: input.refreshToken ?? existing.refreshToken,
+        accessToken: encodeStoredOAuthToken(input.accessToken ?? existing.accessToken),
+        refreshToken: encodeStoredOAuthToken(input.refreshToken ?? existing.refreshToken),
         tokenExpiry: input.tokenExpiry,
         oauthScope: input.scope ?? existing.scope,
       })
@@ -2688,8 +2700,8 @@ export async function upsertUserOAuthOnSignIn(
     name: input.name,
     email: input.email,
     image: input.image,
-    accessToken: input.accessToken,
-    refreshToken: input.refreshToken,
+    accessToken: encodeStoredOAuthToken(input.accessToken),
+    refreshToken: encodeStoredOAuthToken(input.refreshToken),
     tokenExpiry: input.tokenExpiry,
     oauthScope: input.scope,
   });
@@ -2724,8 +2736,10 @@ export async function upsertOAuthUserFromCli(input: UpsertOAuthUserFromCliInput)
         email: input.email,
         name: input.name,
         image: input.image,
-        accessToken: input.accessToken,
-        refreshToken: input.refreshToken ?? existing.refreshToken,
+        accessToken: encodeStoredOAuthToken(input.accessToken),
+        // `existing.refreshToken` is the raw stored value (already encoded, or legacy plaintext that
+        // the next read re-encrypts) -- kept as-is, never double-encoded.
+        refreshToken: input.refreshToken != null ? encodeStoredOAuthToken(input.refreshToken) : existing.refreshToken,
         tokenExpiry: input.tokenExpiry,
         oauthScope: input.scope ?? existing.oauthScope,
       })
@@ -2739,8 +2753,8 @@ export async function upsertOAuthUserFromCli(input: UpsertOAuthUserFromCliInput)
     email: input.email,
     name: input.name,
     image: input.image,
-    accessToken: input.accessToken,
-    refreshToken: input.refreshToken,
+    accessToken: encodeStoredOAuthToken(input.accessToken),
+    refreshToken: encodeStoredOAuthToken(input.refreshToken),
     tokenExpiry: input.tokenExpiry,
     oauthScope: input.scope,
   });
@@ -2755,7 +2769,7 @@ export async function listOAuthUsers(): Promise<OAuthUserSummary[]> {
       email: row.email,
       name: row.name,
       tokenExpiry: row.tokenExpiry,
-      hasRefreshToken: !!row.refreshToken,
+      hasRefreshToken: decodeStoredOAuthToken(row.refreshToken).value !== null,
     }))
     .sort((a, b) => a.email.localeCompare(b.email));
 }
@@ -2771,7 +2785,7 @@ export async function getOAuthUserSummary(
     email: row.email,
     name: row.name,
     tokenExpiry: row.tokenExpiry,
-    hasRefreshToken: !!row.refreshToken,
+    hasRefreshToken: decodeStoredOAuthToken(row.refreshToken).value !== null,
   };
 }
 
@@ -2797,7 +2811,7 @@ export async function getUserProfileForActivation(
     email: row.email,
     name: row.name,
     image: row.image,
-    hasAccessToken: !!row.accessToken,
+    hasAccessToken: decodeStoredOAuthToken(row.accessToken).value !== null,
   };
 }
 
