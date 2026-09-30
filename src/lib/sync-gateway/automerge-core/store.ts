@@ -1,5 +1,6 @@
+import { writeFileAtomic } from "@/lib/atomic-json-file";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -38,9 +39,7 @@ export function createFilesystemDocumentStore(baseDir: string): DocumentByteStor
       // Same atomic temp-file+rename discipline as change-drafts' own store -- a crash mid-write
       // must never leave a truncated, unloadable document.
       const finalPath = documentPath(baseDir, key);
-      const tmpPath = `${finalPath}.${randomUUID()}.tmp`;
-      await writeFile(tmpPath, bytes);
-      await rename(tmpPath, finalPath);
+      await writeFileAtomic(finalPath, bytes); // tmp + fsync + RISK-22 rename retry (audit M4)
     },
   };
 }

@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { writeFileAtomic } from "@/lib/atomic-json-file";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -50,9 +50,7 @@ export function createFilesystemChangeDraftsStore(baseDir: string): ChangeDrafts
       // is atomic within the same directory on both POSIX and Windows, so the real file is either
       // the old complete bytes or the new complete bytes, never a partial write.
       const finalPath = documentPath(baseDir, channelId);
-      const tmpPath = `${finalPath}.${randomUUID()}.tmp`;
-      await writeFile(tmpPath, bytes);
-      await rename(tmpPath, finalPath);
+      await writeFileAtomic(finalPath, bytes); // tmp + fsync + RISK-22 rename retry (audit M4)
     },
   };
 }

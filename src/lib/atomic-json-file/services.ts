@@ -22,9 +22,30 @@ export async function writeJsonFileAtomic(
   data: unknown,
   openFn: (path: string, flags: string, mode: number) => Promise<FileHandle> = open
 ): Promise<void> {
+  await writeAtomic(targetPath, JSON.stringify(data, null, 2), { privateFile: true }, openFn);
+}
+
+/**
+ * Architecture audit 2026-10-01 (M4): the same crash-safe write (tmp file -> fsync -> RISK-22
+ * `renameWithRetry`, tmp cleanup on failure) for arbitrary bytes, WITHOUT the private-file
+ * permission changes -- for files that live in a user-shared folder (the Syncthing root used by
+ * `sync-gateway`), whose directory permissions this app must never tighten. Previously
+ * `sync-gateway` had four separate plain `writeFile`+`rename` copies with no fsync and no Windows
+ * EBUSY/EPERM retry.
+ */
+export async function writeFileAtomic(targetPath: string, content: string | Uint8Array): Promise<void> {
+  await writeAtomic(targetPath, content, { privateFile: false }, open);
+}
+
+async function writeAtomic(
+  targetPath: string,
+  content: string | Uint8Array,
+  options: { privateFile: boolean },
+  openFn: (path: string, flags: string, mode: number) => Promise<FileHandle>
+): Promise<void> {
   const dir = path.dirname(targetPath);
   await mkdir(dir, { recursive: true });
-  if (process.platform !== "win32") {
+  if (options.privateFile && process.platform !== "win32") {
     try {
       await chmod(dir, 0o700);
     } catch {
@@ -49,9 +70,10 @@ export async function writeJsonFileAtomic(
     // still lose or tear this write. Reduces the original bug's window (any interruption at
     // all) to a narrower one (an actual power/OS-crash mid-write), not to zero (review series
     // cycle 3 -- corrects an earlier overclaim in this same comment).
-    const handle = await openFn(tmpPath, "w", fsConstants.S_IRUSR | fsConstants.S_IWUSR);
+    const mode = options.privateFile ? fsConstants.S_IRUSR | fsConstants.S_IWUSR : 0o666;
+    const handle = await openFn(tmpPath, "w", mode);
     try {
-      await handle.writeFile(JSON.stringify(data, null, 2), "utf8");
+      await handle.writeFile(content);
       await handle.sync();
     } catch (error) {
       // The write/sync itself failed -- a close() failure on top must never replace that real
@@ -67,7 +89,7 @@ export async function writeJsonFileAtomic(
     // keep a flag in sync with the code it's tracking (review series cycle 5).
     await handle.close();
 
-    if (process.platform !== "win32") {
+    if (options.privateFile && process.platform !== "win32") {
       await chmod(tmpPath, 0o600);
     }
 
