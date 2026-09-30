@@ -96,3 +96,19 @@ test("recordAgentOwnership assigns an agent-created record to the agent's channe
   await agent.services.recordAgentOwnership("research_request", "req-1");
   assert.deepEqual(operator.shared.rows, [{ channelId: "UC_A", recordKind: "research_request", recordId: "req-1" }]);
 });
+
+// Review round 2: after a channel is disconnected, the operator can still remove its stale assignment
+// and edit the others; only a newly added channel must be connected.
+test("setAssignment keeps or removes an already-assigned disconnected channel, but never adds one", async () => {
+  const shared = createStore();
+  shared.rows.push({ channelId: "UC_GONE", recordKind: "research_channel", recordId: "UCcompetitorX" });
+  const operator = createServices(null, shared);
+
+  await operator.services.setAssignment({ recordKind: "research_channel", recordId: "UCcompetitorX", channelIds: ["UC_GONE", "UC_A"] });
+  await operator.services.setAssignment({ recordKind: "research_channel", recordId: "UCcompetitorX", channelIds: ["UC_A"] });
+  assert.deepEqual(shared.rows.map((r) => r.channelId), ["UC_A"]);
+  await assert.rejects(
+    operator.services.setAssignment({ recordKind: "research_channel", recordId: "UCcompetitorX", channelIds: ["UC_A", "UC_GONE"] }),
+    isCode("validation_failed")
+  );
+});

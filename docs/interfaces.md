@@ -791,7 +791,9 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
   - the operator's selected channel is neither read nor changed.
 
   The token is re-verified on every MCP call, so revocation takes effect immediately
-  (`AGENT_TOKEN_INVALID`).
+  (`AGENT_TOKEN_INVALID`). A token is also invalid once its channel is disconnected or reconnected
+  under another Google identity, and disconnecting revokes it. The "MCP connection" master switch
+  gates token-bound CLI use too.
 - **What an agent session can reach.**
   - Only tools and commands classified `bound` (`src/mcp/tool-classification.ts`,
     `src/cli/command-classification.ts`, both enforced by inventory tests).

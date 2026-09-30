@@ -99,7 +99,13 @@ export function MarketChannelAssignment({ recordKind, recordId }: { recordKind: 
   return (
     <div className="flex flex-wrap items-center gap-1.5 text-xs">
       <span className="text-zinc-500">Visible to agents of:</span>
-      {channels.map((channel) => {
+      {[
+        ...channels,
+        // A channel assigned before it was disconnected stays visible so it can be removed.
+        ...assigned
+          .filter((id) => !channels.some((channel) => channel.channelId === id))
+          .map((id) => ({ channelId: id, title: `${id} (disconnected)` })),
+      ].map((channel) => {
         const on = assigned.includes(channel.channelId);
         return (
           <button

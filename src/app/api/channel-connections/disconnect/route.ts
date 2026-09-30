@@ -1,6 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
+import { createAgentTokenCore } from "@/lib/agent-tokens";
 import { createChannelConnectionsCore } from "@/lib/channel-connections";
 import { DomainError } from "@/lib/video-metadata/contracts";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
@@ -29,6 +30,9 @@ export async function POST(request: Request) {
     }
 
     const result = await createChannelConnectionsCore().disconnectChannel(channelId);
+    // Phase 12 (review round 2): disconnecting a channel also revokes its agent token -- the token
+    // is already unusable (verifyToken requires a live connection), this just keeps the record honest.
+    await createAgentTokenCore().revokeToken({ channelId });
     const forceSignOut = result.disconnectedUserId === session.user.id;
     return NextResponse.json({ ...result, forceSignOut });
   } catch (error) {

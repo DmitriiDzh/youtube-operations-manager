@@ -6130,7 +6130,7 @@ test("AC-P12-04: an agent session refuses every operator-only command", async ()
   for (const key of operatorOnly) {
     const [namespace, command] = key.split(" ");
     const argv = namespace === "metadata" ? [command] : [namespace, command];
-    const result = await runForError({ argv, core: makeCoreStub(), auth: makeAuthStub(), agentSession: { channelId: "UC_1" } });
+    const result = await runForError({ argv, core: makeCoreStub(), auth: makeAuthStub(), agentSession: { channelId: "UC_1" }, agentConnectionEnabled: async () => true });
     assert.equal(result.code, "AGENT_SESSION_OPERATOR_ONLY", key);
   }
 });
@@ -6141,6 +6141,7 @@ test("AC-P12-05: an agent session rejects a caller-supplied --userId before any 
       argv: ["changeset", "list", "--channelId", "UC_1", "--userId", "someone-else"],
       core: makeCoreStub(),
       agentSession: { channelId: "UC_1" },
+      agentConnectionEnabled: async () => true,
     });
     assert.equal(result.code, "AGENT_SESSION_CREDENTIAL_OVERRIDE");
   });
@@ -6172,9 +6173,24 @@ test("runCliProcess: --agentToken with an empty or missing value is refused befo
     assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken", ""]), 1);
     assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken"]), 1);
     assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken", "--userId"]), 1);
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken="]), 1);
+    // The `=` form is read as a token (here an unknown one -> refused), never ignored as "no token".
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken=ytom_ch_unknown"]), 1);
   } finally {
     process.stderr.write = originalWrite;
   }
-  assert.equal(stderr.length, 3);
+  assert.equal(stderr.length, 5);
   for (const line of stderr) assert.equal(JSON.parse(line).error.code, "AGENT_TOKEN_INVALID");
+});
+
+// Review round 2: the "MCP connection" master switch also stops agent use of the CLI.
+test("AC-P12-01 (CLI): with the MCP connection switched off, a token-bound CLI session is refused", async () => {
+  const result = await runForError({
+    argv: ["agent", "capabilities"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    agentSession: { channelId: "UC_1" },
+    agentConnectionEnabled: async () => false,
+  });
+  assert.equal(result.code, "AGENT_TOKEN_INVALID");
 });

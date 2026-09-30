@@ -78,7 +78,15 @@ export function createMarketAssignmentServices(deps: ServiceDependencies) {
       const parsed = parseWithSchema(setMarketAssignmentInputSchema, input, "set market assignment input");
       const channelIds = [...new Set(parsed.channelIds)].sort();
       const connected = new Set(await deps.listConnectedChannelIds());
-      const unknown = channelIds.filter((channelId) => !connected.has(channelId));
+      // Review round 2: a channel that was assigned before it got disconnected may stay in (or be
+      // removed from) the set -- only NEWLY added channels must be connected. Otherwise one stale
+      // assignment would make the record impossible to edit at all.
+      const currentlyAssigned = new Set(
+        (await deps.store.listByKind(parsed.recordKind))
+          .filter((row) => row.recordId === parsed.recordId)
+          .map((row) => row.channelId)
+      );
+      const unknown = channelIds.filter((channelId) => !connected.has(channelId) && !currentlyAssigned.has(channelId));
       if (unknown.length > 0) {
         throw new DomainError({
           code: "validation_failed",

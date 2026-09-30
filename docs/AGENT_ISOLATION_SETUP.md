@@ -12,8 +12,8 @@ repository.
   token, and it can read and change only that channel's data through this product.
 - **No token means no access.** An MCP server started without a valid token exposes no tools. A
   CLI call without a token is refused unless the operator has turned on "Operator CLI access".
-- **The "MCP connection" toggle** (Settings → AI Agent) stays the master switch. While it is off,
-  no agent gets anything, token or not.
+- **The "MCP connection" toggle** (Settings → AI Agent) stays the master switch, for the MCP
+  server and for a token-bound CLI alike. While it is off, no agent gets anything, token or not.
 
 ## 2. Issuing a token
 
@@ -22,8 +22,9 @@ repository.
 3. **Rotate** issues a new token and invalidates the old one at once. **Revoke** invalidates it
    without issuing a new one. A running agent's next call then fails with `AGENT_TOKEN_INVALID`.
 
-The token is tied to the channel's Google identity as it is at issue time. If a channel is
-reconnected with a different Google account, issue a new token.
+The token is tied to the channel's Google identity as it is at issue time. **Disconnecting the
+channel, or reconnecting it with a different Google account, invalidates the token immediately**
+(disconnecting also revokes it). Issue a new one afterwards.
 
 ## 3. MCP client configuration
 

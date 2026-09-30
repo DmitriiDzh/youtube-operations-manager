@@ -95,6 +95,10 @@ export function createAgentTokenServices(deps: ServiceDependencies) {
       }
       const row = await deps.store.findActiveByHash(hashAgentToken(token));
       if (!row) throw invalid();
+      // Review round 2: a token is only as valid as the channel connection it was issued for. A
+      // channel disconnected (or reconnected under another Google identity) since issue invalidates
+      // it immediately -- checked on every verification, including MCP's per-call re-verification.
+      if ((await deps.getChannelConnectedUserId(row.channelId)) !== row.userId) throw invalid();
       return { tokenId: row.id, channelId: row.channelId, userId: row.userId };
     },
   };

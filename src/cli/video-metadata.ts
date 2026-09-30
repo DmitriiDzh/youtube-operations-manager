@@ -11,7 +11,7 @@ import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
 import { createCliAuthService } from "@/lib/cli-auth";
 import type { CredentialRef } from "@/lib/video-metadata/contracts";
-import { getOperatorCliEnabled, rawSqlClient } from "@/lib/db";
+import { getMcpConnectionEnabled, getOperatorCliEnabled, rawSqlClient } from "@/lib/db";
 import { assertDeviceAvailableForMutation, RecoveryModeError } from "@/lib/device-handoff";
 import { OperationLockError } from "@/lib/operation-lock";
 import { createChangeSetCore, type ChangeSetCore } from "@/lib/changesets";
@@ -575,6 +575,9 @@ export async function runCliCommand(args: {
   // Phase 12 slice 12.5 -- whether operator mode (no token) is allowed at all. Injectable for tests;
   // defaults to the persisted "Operator CLI access" setting (off unless the operator turned it on).
   operatorCliEnabled?: () => Promise<boolean>;
+  // Review round 2 -- the "MCP connection" master switch governs agent CLI use too (owner rule,
+  // 2026-09-21: every MCP/agent interaction goes through it). Injectable for tests.
+  agentConnectionEnabled?: () => Promise<boolean>;
 }): Promise<number> {
   const core = args.core ?? {
     ...createVideoMetadataCore(),
@@ -605,6 +608,12 @@ export async function runCliCommand(args: {
     // Checked before anything else touches state.
     const commandKey = `${parsedArgs.namespace} ${parsedArgs.command}`;
     if (args.agentSession) {
+      if (!(await (args.agentConnectionEnabled ?? getMcpConnectionEnabled)())) {
+        throw new DomainError({
+          code: "AGENT_TOKEN_INVALID",
+          message: "agent access is switched off (Settings -> AI Agent -> MCP connection)",
+        });
+      }
       const commandClass = CLI_COMMAND_CLASSIFICATION[commandKey];
       if (commandClass !== "bound") {
         throw new DomainError({
@@ -1567,14 +1576,19 @@ const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
  * refusal, never a silent fall-back to operator mode.
  */
 export async function runCliProcess(argv: string[]): Promise<number> {
-  const tokenFlagIndex = argv.indexOf("--agentToken");
-  const remainingArgv = tokenFlagIndex >= 0 ? [...argv.slice(0, tokenFlagIndex), ...argv.slice(tokenFlagIndex + 2)] : argv;
-  // An explicit --agentToken must carry a value; an empty or missing one is a refusal (review round
-  // 1), never a silent fall-back to operator mode. An empty env var counts as unset.
+  // Accepts `--agentToken <token>` and `--agentToken=<token>` (review round 2: the `=` form must
+  // never be mistaken for "no token"). An explicit flag must carry a value; an empty or missing one
+  // is a refusal (review round 1), never a silent fall-back to operator mode. An empty env var
+  // counts as unset.
+  const tokenFlagIndex = argv.findIndex((arg) => arg === "--agentToken" || arg.startsWith("--agentToken="));
   let token: string | undefined;
+  let remainingArgv = argv;
   if (tokenFlagIndex >= 0) {
-    token = argv[tokenFlagIndex + 1];
+    const flag = argv[tokenFlagIndex];
+    const inline = flag.startsWith("--agentToken=");
+    token = inline ? flag.slice("--agentToken=".length) : argv[tokenFlagIndex + 1];
     if (!token || token.startsWith("--")) token = "";
+    remainingArgv = [...argv.slice(0, tokenFlagIndex), ...argv.slice(tokenFlagIndex + (inline ? 1 : 2))];
   } else {
     token = process.env.YTOM_AGENT_TOKEN || undefined;
   }

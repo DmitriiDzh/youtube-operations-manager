@@ -97,3 +97,23 @@ test("verifyToken: missing, malformed, oversized and unknown tokens all fail wit
     await assertCode(services.verifyToken(candidate), "AGENT_TOKEN_INVALID");
   }
 });
+
+// Review round 2: a token dies with its channel connection (disconnect, or reconnect under another
+// Google identity) -- without the operator having to find and revoke it separately.
+test("verifyToken rejects a token whose channel is no longer connected to the token's identity", async () => {
+  const connected: Record<string, string> = { UC_A: "user-a" };
+  const memory = createMemoryStore();
+  const services = createAgentTokenServices({
+    store: memory.store,
+    getChannelConnectedUserId: async (channelId) => connected[channelId] ?? null,
+    getLiveChannelIdForUser: async () => "UC_A",
+    generateSecret: () => "s",
+  });
+  const issued = await services.issueToken({ channelId: "UC_A" });
+  assert.equal((await services.verifyToken(issued.token)).channelId, "UC_A");
+
+  connected.UC_A = "user-someone-else";
+  await assertCode(services.verifyToken(issued.token), "AGENT_TOKEN_INVALID");
+  delete connected.UC_A;
+  await assertCode(services.verifyToken(issued.token), "AGENT_TOKEN_INVALID");
+});
