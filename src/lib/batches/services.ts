@@ -34,7 +34,7 @@ import {
   type PendingChange,
 } from "./merge";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
-import type { CredentialRef, ResolvedCredentials } from "@/lib/video-metadata/contracts";
+import type { CredentialRef, ResolvedCredentials } from "@/lib/shared-domain";
 
 type BatchStoreDeps = {
   createBatchWithLedger(input: {

@@ -1,6 +1,6 @@
 import { readFile, rm, stat } from "node:fs/promises";
 import { z } from "zod";
-import { DomainError } from "@/lib/video-metadata/contracts";
+import { DomainError } from "@/lib/shared-domain";
 import { getProductionAppPaths } from "@/lib/platform-paths";
 import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
 

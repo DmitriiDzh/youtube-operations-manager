@@ -1,4 +1,4 @@
-import type { DomainErrorCode } from "@/lib/video-metadata/contracts";
+import type { DomainErrorCode } from "@/lib/shared-domain";
 
 const DOMAIN_ERROR_STATUS = {
   validation_failed: 400,

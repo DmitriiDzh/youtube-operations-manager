@@ -1,5 +1,5 @@
 import { YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
-import type { ResolvedCredentials } from "@/lib/video-metadata/contracts";
+import type { ResolvedCredentials } from "@/lib/shared-domain";
 import {
   DomainError,
   mapUnknownError,

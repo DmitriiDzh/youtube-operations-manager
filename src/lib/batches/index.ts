@@ -1,5 +1,5 @@
 import { createDefaultLogger } from "@/lib/shared-logger";
-import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
+import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createWriteContextCore } from "@/lib/write-context";
 import { createBackupCore } from "@/lib/backup";
 import { createAuditCore } from "@/lib/audit";

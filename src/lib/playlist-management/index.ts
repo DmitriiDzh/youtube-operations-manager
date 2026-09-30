@@ -1,6 +1,6 @@
 import { setSelectedChannelId } from "@/lib/db";
 import { createWriteContextCore } from "@/lib/write-context";
-import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
+import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createPlaylistYoutubeApiAdapter } from "./adapters/youtube-api";
 import { createPlaylistManagementServices } from "./services";
 

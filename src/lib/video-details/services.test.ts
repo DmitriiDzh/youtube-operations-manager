@@ -32,7 +32,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DomainError } from "./contracts";
 import { createVideoDetailsServices, type ServiceDependencies } from "./services";
-import type { ResolvedCredentials } from "@/lib/video-metadata/contracts";
+import type { ResolvedCredentials } from "@/lib/shared-domain";
 import type { VideoDetailsSnapshot } from "./contracts";
 
 function makeCredentials(): ResolvedCredentials {

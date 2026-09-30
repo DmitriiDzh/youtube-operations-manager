@@ -1,4 +1,4 @@
-import { DomainError, type CredentialRef, type ResolvedCredentials } from "@/lib/video-metadata/contracts";
+import { DomainError, type CredentialRef, type ResolvedCredentials } from "@/lib/shared-domain";
 import type {
   AssertWriteChannelInput,
   AssertWriteChannelOutput,

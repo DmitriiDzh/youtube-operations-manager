@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { parseWithSchema } from "@/lib/video-metadata/contracts";
+import { parseWithSchema } from "@/lib/shared-domain";
 
 export { parseWithSchema };
 

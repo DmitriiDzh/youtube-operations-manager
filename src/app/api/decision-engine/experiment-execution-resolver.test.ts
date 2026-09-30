@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DomainError } from "@/lib/video-metadata/contracts";
+import { DomainError } from "@/lib/shared-domain";
 import { createRealExperimentExecutionResolver } from "./experiment-execution-resolver";
 
 type FakeChange = {

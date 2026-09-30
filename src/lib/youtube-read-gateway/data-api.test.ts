@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { youtube_v3 } from "googleapis";
 import { getDataApiReadsEnabled, setDataApiReadsEnabled } from "@/lib/db";
-import { DomainError } from "@/lib/video-metadata/contracts";
+import { DomainError } from "@/lib/shared-domain";
 import {
   assertDataApiReadsAuthorized,
   createYoutubeClient,

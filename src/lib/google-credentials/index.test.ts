@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as authModule from "@/lib/auth";
-import { DomainError } from "../contracts";
-import { createGoogleCredentialResolver } from "./google-auth";
+import { DomainError } from "@/lib/shared-domain";
+import { createGoogleCredentialResolver } from "./index";
 
 type OAuthClientStub = {
   setCredentials: (value: unknown) => void;

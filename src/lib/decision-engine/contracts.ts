@@ -6,7 +6,7 @@ import {
   createIdGenerator,
   type DomainErrorCode,
   type DomainErrorShape,
-} from "@/lib/video-metadata/contracts";
+} from "@/lib/shared-domain";
 import {
   EXPERIMENT_STATUS_TRANSITIONS,
   EXPERIMENT_OUTCOME_RECORDABLE_STATUSES,

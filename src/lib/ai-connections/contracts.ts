@@ -5,7 +5,7 @@ import {
   createIdGenerator,
   type DomainErrorCode,
   type DomainErrorShape,
-} from "@/lib/video-metadata/contracts";
+} from "@/lib/shared-domain";
 // Architecture audit M2: both generation kinds' shapes come from the shared leaf module, never from
 // the consumer features themselves.
 import type {

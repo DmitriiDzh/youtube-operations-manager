@@ -1,4 +1,4 @@
-import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
+import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/shared-domain";
 import type { FieldConflict } from "../change-drafts/contracts";
 
 export type { DomainErrorCode, DomainErrorShape, FieldConflict };

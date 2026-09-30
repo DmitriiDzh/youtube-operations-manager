@@ -1,6 +1,6 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
 import { createYoutubeClient } from "@/lib/youtube-read-gateway";
-import type { ResolvedCredentials } from "@/lib/video-metadata/contracts";
+import type { ResolvedCredentials } from "@/lib/shared-domain";
 import type { WriteChannelInfo } from "../contracts";
 
 // This adapter resolves the active-channel identity `write-context.assertWriteChannel` uses as

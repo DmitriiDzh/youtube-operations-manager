@@ -1,5 +1,5 @@
 import * as Automerge from "@automerge/automerge";
-import { DomainError } from "@/lib/video-metadata/contracts";
+import { DomainError } from "@/lib/shared-domain";
 import type { DiscardedDocumentBackupStore, DocumentByteStore } from "./store";
 
 /**

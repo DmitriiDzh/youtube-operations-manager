@@ -5,7 +5,7 @@ import { createMetadataGenerator } from "./adapters/metadata-generator";
 import { createDefaultLogger } from "@/lib/shared-logger";
 import { createTranscriptProvider } from "./adapters/transcript-provider";
 import { createYoutubeApiAdapter } from "./adapters/youtube-api";
-import { resolveGoogleCredentials } from "./adapters/google-auth";
+import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createVideoMetadataServices } from "./services";
 
 function defaultAuthResolver() {

@@ -1,4 +1,4 @@
-import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
+import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { assertAgentScopeChannel, createChannelAccessCore, readStringField } from "@/lib/channel-access";
 import { createChannelSyncStoreAdapter } from "./adapters/store";
 import { createChannelSyncYoutubeApiAdapter } from "./adapters/youtube-api";
