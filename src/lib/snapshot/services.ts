@@ -235,7 +235,16 @@ export async function applySnapshotToDatabase(
     try {
       await liveClient.execute("BEGIN IMMEDIATE");
       try {
+        // Review of the architecture-audit fixes (2026-10-01): a snapshot exported by an OLDER build
+        // may lack a table that is transferred today (e.g. `video_edit_audit_events`, allowlisted
+        // only from 2026-10-01 on; its scrub dropped it). Such a table is left exactly as it is on
+        // the receiving device -- never wiped, and never allowed to fail the whole import.
+        const stagedTablesResult = (await liveClient.execute(
+          "SELECT name FROM staged.sqlite_master WHERE type = 'table'"
+        )) as { rows: Array<Record<string, unknown>> };
+        const stagedTables = new Set(stagedTablesResult.rows.map((row) => String(row.name)));
         for (const table of SNAPSHOT_REPLACE_ON_IMPORT_TABLES) {
+          if (!stagedTables.has(table)) continue;
           const columns = await getColumnNames(liveClient, table);
           const columnList = columns.map((c) => `"${c}"`).join(", ");
           await liveClient.execute(`DELETE FROM "${table}"`);

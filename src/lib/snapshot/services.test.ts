@@ -797,3 +797,42 @@ test("every schema table is classified as either transferred or device-local, ne
   const unknown = [...transferred, ...local].filter((t) => !created.has(t));
   assert.deepEqual({ unclassified, both, unknown }, { unclassified: [], both: [], unknown: [] });
 });
+
+// Review of the architecture-audit fixes (2026-10-01): a snapshot from an OLDER build whose scrub
+// dropped a now-transferred table (video_edit_audit_events) must still import, leaving that table's
+// receiving-device rows untouched -- never failing the whole import.
+test("applySnapshotToDatabase: a transferred table missing from an older snapshot is left as-is, not an import failure", () =>
+  withTempDir("snapshot-test-", async (dir) => {
+    const source = await makeClient(dir, "source.db");
+    await seedResearchChannel(source, "UCsource0000000000000001");
+    const manifest = await exportSnapshot({ client: source, snapshotsDir: path.join(dir, "snapshots"), deviceId: "device-a", schemaVersion: 3 });
+    const workingCopyPath = path.join(dir, "working-copy.db");
+    await copyDatabaseConsistently(
+      createClient({ url: `file:${path.join(dir, "snapshots", manifest.snapshotId, "data.db")}` }),
+      workingCopyPath
+    );
+    await migrateStagedCopy(workingCopyPath);
+    // Simulate the older build's scrub, which did not keep this table.
+    const staged = createClient({ url: `file:${workingCopyPath}` });
+    await staged.execute("DROP TABLE video_edit_audit_events");
+    staged.close();
+
+    const receiving = await makeClient(dir, "receiving.db");
+    const columns = (await receiving.execute("PRAGMA table_info(video_edit_audit_events)")).rows.map((r) => String(r.name));
+    assert.ok(columns.length > 0);
+    await receiving.execute({
+      sql: "INSERT INTO video_edit_audit_events (channel_id, video_id, event_type, detail_json) VALUES (?, ?, ?, ?)",
+      args: ["UCreceiving000000000001", "v1", "APPLY", "{}"],
+    });
+    const before = (await receiving.execute("SELECT COUNT(*) AS n FROM video_edit_audit_events")).rows[0].n;
+    assert.equal(before, 1);
+
+    await applySnapshotToDatabase(receiving, workingCopyPath);
+
+    const after = (await receiving.execute("SELECT COUNT(*) AS n FROM video_edit_audit_events")).rows[0].n;
+    assert.equal(after, before);
+    const channels = await receiving.execute("SELECT id FROM research_channels");
+    assert.deepEqual(channels.rows.map((r) => r.id), ["UCsource0000000000000001"]);
+    source.close();
+    receiving.close();
+  }));
