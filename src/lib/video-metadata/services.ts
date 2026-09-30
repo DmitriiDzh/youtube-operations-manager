@@ -149,6 +149,18 @@ function buildMetadataSyncProposal(args: {
   draft: MetadataDraft;
 }): MetadataSyncProposal {
   const resolvedLanguage = resolveTargetLanguage(args.context);
+  // Architecture-audit review (H5): without a `snippet.defaultLanguage`, YouTube rejects localized
+  // details (videos.update `defaultLanguageNotSet`), and this app may not set that field itself
+  // (AGENTS.md §F). So the single-localization fallback can only ever produce a request YouTube
+  // refuses -- fail locally, clearly, before any write, instead.
+  if (resolvedLanguage.languageSource === "existing-localization") {
+    throw new DomainError({
+      code: "target_language_unresolvable",
+      message:
+        "This video has no default language (snippet.defaultLanguage). Set it on YouTube first -- this app never sets it itself.",
+      details: { inferredLanguage: resolvedLanguage.targetLanguage },
+    });
+  }
   const beforeSnippet = removeReadOnlySnippetFields(args.context.snippet);
   const proposedSnippet = removeReadOnlySnippetFields({
     ...beforeSnippet,
