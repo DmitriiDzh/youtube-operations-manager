@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { rawSqlClient } from "@/lib/db";
-import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
+import { assertDeviceAvailableForMutation, assertNoOperationLock } from "@/lib/device-mutation-gate";
 import { OperationLockError } from "@/lib/operation-lock";
 import { RecoveryModeError } from "@/lib/device-mutation-gate";
 import { recordActivity } from "@/lib/idle-shutdown";
@@ -44,13 +44,13 @@ const EXEMPT_READ_ONLY_PATH_SUFFIXES = [
   "/decision-engine/hypotheses/generate",
 ];
 
-// Architecture audit 2026-10-01 (H4): the operator's stop switches must work even while the device
-// is in recovery mode or holds an export/import lock -- otherwise the operator cannot switch agents
-// or Live writes off, revoke an agent's token, or disconnect a channel exactly when something has
-// gone wrong. Each touches only device-local state that never travels in a snapshot
-// (`app_settings`, `agent_channel_tokens`, the `users` token columns / `channels.connected_user_id`),
-// so exempting them cannot corrupt a handoff. Exact method + path only: issuing a token (POST) and
-// every other route stay gated.
+// Architecture audit 2026-10-01 (H4): the operator's stop switches must work while the device is in
+// RECOVERY MODE -- otherwise the operator cannot switch agents or Live writes off, revoke an agent's
+// token, or disconnect a channel exactly when something has gone wrong. Each touches only
+// device-local state that never travels in a snapshot. They are still refused while an
+// export/import/migration holds the operation lock (short-lived): an in-process import runs its
+// transaction on the same shared connection, so a write made meanwhile would join it and be silently
+// rolled back if the import failed. Exact method + path only.
 const EXEMPT_STOP_SWITCH_ROUTES = new Set([
   "POST /api/settings",
   "DELETE /api/agent-tokens",
@@ -78,12 +78,14 @@ export async function proxy(request: NextRequest) {
   if (isExemptReadOnlyPath(pathname)) {
     return NextResponse.next();
   }
-  if (EXEMPT_STOP_SWITCH_ROUTES.has(`${request.method} ${pathname}`)) {
-    return NextResponse.next();
-  }
+  const isStopSwitch = EXEMPT_STOP_SWITCH_ROUTES.has(`${request.method} ${pathname}`);
 
   try {
-    await assertDeviceAvailableForMutation(rawSqlClient);
+    if (isStopSwitch) {
+      await assertNoOperationLock(rawSqlClient);
+    } else {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+    }
   } catch (error) {
     if (error instanceof OperationLockError) {
       return NextResponse.json(

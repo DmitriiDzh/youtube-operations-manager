@@ -79,9 +79,20 @@ export async function assertNotInRecoveryMode(client: SqlExecutor): Promise<void
  * `runCliCommand` and MCP's mutation wrapper -- one implementation, not three (AGENTS.md §D).
  */
 export async function assertDeviceAvailableForMutation(client: SqlExecutor): Promise<void> {
+  await assertNoOperationLock(client);
+  await assertNotInRecoveryMode(client);
+}
+
+/**
+ * Only the operation-lock half of the gate. Used for the operator's stop switches, which must work
+ * in recovery mode but must NOT run while an export/import/migration holds the lock: an in-process
+ * import runs its transaction on the same shared connection, so a write made meanwhile would join
+ * that transaction and be silently rolled back if the import failed (architecture-audit review,
+ * H4 refinement).
+ */
+export async function assertNoOperationLock(client: SqlExecutor): Promise<void> {
   const lock = await getOperationLock(client);
   if (lock) {
     throw new OperationLockError({ heldBy: lock, stale: false });
   }
-  await assertNotInRecoveryMode(client);
 }
