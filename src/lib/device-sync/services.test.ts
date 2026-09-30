@@ -452,3 +452,66 @@ test("exportOnly (idle-shutdown flush) exports pending changes but never imports
     a.client.close();
     b.client.close();
   }));
+
+// Found in the live two-server run: the computer that looked FIRST saw no conflict at all.
+test("a divergence is visible on BOTH computers, and 'take theirs' on either one settles both", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    await addResearchChannel(a.client, "UC1");
+    await a.runner.tick();
+    await b.runner.tick();
+    await addResearchChannel(a.client, "UC-a");
+    await addResearchChannel(b.client, "UC-b");
+    later(a);
+    later(b);
+    assert.equal((await a.runner.tick()).state, "exported"); // a looks first: nothing newer yet
+    const bStatus = await b.runner.tick(); // b sees a's snapshot while dirty -> conflict, publishes its own
+    assert.equal(bStatus.notices[0]?.kind, "divergence");
+    later(a);
+    const aStatus = await a.runner.tick();
+    assert.equal(aStatus.notices[0]?.kind, "divergence", "a must see the conflict too");
+    assert.deepEqual(await researchIds(a.client), ["UC-a", "UC1"]);
+    assert.deepEqual(await researchIds(b.client), ["UC-b", "UC1"]);
+
+    // b resolves by taking a's data; a must then settle without another question.
+    await b.runner.takeTheirs(bStatus.notices[0]!.snapshotId!);
+    later(a);
+    later(b);
+    const aAfter = await a.runner.tick();
+    assert.deepEqual(aAfter.notices, []);
+    assert.deepEqual(await researchIds(a.client), ["UC-a", "UC1"]);
+    assert.deepEqual(await researchIds(b.client), ["UC-a", "UC1"]);
+    assert.equal((await b.runner.tick()).state, "synced");
+    later(a);
+    assert.equal((await a.runner.tick()).state, "synced");
+    a.client.close();
+    b.client.close();
+  }));
+
+test("'keep mine' on the computer that looked first settles both", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    await addResearchChannel(a.client, "UC1");
+    await a.runner.tick();
+    await b.runner.tick();
+    await addResearchChannel(a.client, "UC-a");
+    await addResearchChannel(b.client, "UC-b");
+    later(a);
+    later(b);
+    await a.runner.tick();
+    await b.runner.tick();
+    later(a);
+    const aStatus = await a.runner.tick();
+    await a.runner.keepMine(aStatus.notices[0]!.snapshotId!);
+    later(b);
+    assert.equal((await b.runner.tick()).state, "imported");
+    assert.deepEqual(await researchIds(b.client), ["UC-a", "UC1"]);
+    later(a);
+    assert.equal((await a.runner.tick()).state, "synced");
+    later(b);
+    assert.equal((await b.runner.tick()).state, "synced");
+    a.client.close();
+    b.client.close();
+  }));

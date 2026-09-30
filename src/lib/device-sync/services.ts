@@ -394,12 +394,22 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
             ],
           });
 
-        case "divergence":
-          return finish({
+        case "divergence": {
+          let next: DeviceSyncStatus = {
             ...status,
             state: "attention",
             notices: [divergenceNotice(decision.snapshot, decision.localDirty, decision.multipleTips), ...stuckNotice(status)],
-          });
+          };
+          // Still publish this computer's own unpublished changes (on its own branch; nothing is
+          // overwritten anywhere), so the OTHER computer sees the conflict and can resolve it too,
+          // instead of only the computer that happened to look second.
+          const lastExportMs = status.lastExportAt ? Date.parse(status.lastExportAt) : 0;
+          if (decision.localDirty && (options.force || now() - lastExportMs >= DEVICE_SYNC_MIN_EXPORT_INTERVAL_MS)) {
+            const manifest = await exportNow({ deviceId: config.deviceId, folder });
+            next = { ...next, lastExportAt: new Date(now()).toISOString(), lastExportSnapshotId: manifest.snapshotId };
+          }
+          return finish(next);
+        }
 
         case "export": {
           const lastExportMs = status.lastExportAt ? Date.parse(status.lastExportAt) : 0;
@@ -524,16 +534,39 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
    * import check stays (checksums, recovery-mode refusal, backup first). Explicit human action only.
    */
   async function takeTheirs(snapshotId: string): Promise<DeviceSyncStatus> {
-    const { config } = await requirePeerSnapshot(snapshotId);
+    const { config, snapshot, snapshots } = await requirePeerSnapshot(snapshotId);
     const busy = await busyReason();
     if (busy && !busy.recovery) throw new DeviceSyncError("device_sync_busy", `Cannot sync now: ${busy.reason}.`);
     const result = await importNow(config.folder, snapshotId, { acceptDivergentLineage: true, requireClean: false });
+
+    // If this computer had already published its own now-abandoned branch, the other computer would
+    // keep seeing it as a conflict. Publish the adopted state once more, naming that branch as an
+    // ancestor: the other computer then sees a plain fast-forward (identical data) and settles.
+    const adoptedAncestry = ancestryOf(snapshotId, snapshots);
+    const abandoned = snapshots
+      .filter((s) => s.sourceDeviceId === config.deviceId && !adoptedAncestry.has(s.snapshotId))
+      .map((s) => s.snapshotId);
+    let markerId: string | null = null;
+    if (abandoned.length > 0) {
+      try {
+        const marker = await exportNow(
+          config,
+          { snapshotId, generation: snapshot.generation, ancestors: [...adoptedAncestry, ...abandoned] },
+          false
+        );
+        markerId = marker.snapshotId;
+      } catch {
+        // The import itself succeeded; the next tick/resolution can still settle the other side.
+      }
+    }
+
     const status = await loadStatusSafe();
     const next: DeviceSyncStatus = {
       ...status,
       state: result.status === "activated_recovery_mode" ? "attention" : "imported",
       lastImportAt: new Date(now()).toISOString(),
       lastImportSnapshotId: snapshotId,
+      ...(markerId ? { lastExportAt: new Date(now()).toISOString(), lastExportSnapshotId: markerId } : {}),
       notices:
         result.status === "activated_recovery_mode"
           ? [{ kind: "recovery_mode", message: "The imported data contains a YouTube write whose outcome is unknown. This computer is now in recovery mode." }]
