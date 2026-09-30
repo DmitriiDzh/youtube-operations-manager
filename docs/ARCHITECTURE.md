@@ -2045,7 +2045,7 @@ It is recorded here rather than carried silently (`AGENTS.md` §F).
 - Cleanup of a row when its channel is disconnected. The row stays, is hidden from the Settings
   list, and reappears if the channel is reconnected.
 
-## 21. Channel-bound agent isolation — Phase 12, on `feature/phase-12-agent-channel-isolation`
+## 21. Channel-bound agent isolation — Phase 12, in `dev` (`7a57a48`)
 
 Plan, the inventory of holes it closes, the owner decisions (D0–D5) and the acceptance criteria:
 `docs/roadmap/plans/PHASE_12_PLAN.md`. Interface contract: `docs/AGENT_OPERATIONS_INTERFACE.md`

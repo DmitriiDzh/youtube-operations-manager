@@ -640,8 +640,8 @@ receives nothing. The phase covers the whole architecture at once: MCP, CLI, ide
 resolution, and per-channel ownership of market/decision data.
 
 Plan, inventory of today's holes, slices and open decisions:
-`docs/roadmap/plans/PHASE_12_PLAN.md`. The owner asked for the plan; implementation needs the
-open decisions (D0–D5) answered first. Backlog: BL-109.
+`docs/roadmap/plans/PHASE_12_PLAN.md`. **DONE:** merged into `dev` in `7a57a48` on 2026-09-30,
+with owner approval. Backlog: BL-109.
 
 ## 12. Current next-action marker
 
