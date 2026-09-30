@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { writeFileAtomic } from "@/lib/atomic-json-file";
+import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -46,9 +46,7 @@ export function createPerChannelFilesystemTransport(): PerChannelTransportAdapte
       const dir = channelDir(root, channelId);
       await mkdir(dir, { recursive: true });
       const finalPath = path.join(dir, `${sanitize(deviceId)}.automerge`);
-      const tmpPath = `${finalPath}.${randomUUID()}.tmp`;
-      await writeFile(tmpPath, bytes);
-      await rename(tmpPath, finalPath);
+      await writeFileAtomic(finalPath, bytes); // tmp + fsync + RISK-22 rename retry (audit M4)
     },
 
     async listPeerFiles(root, channelId, ownDeviceId) {

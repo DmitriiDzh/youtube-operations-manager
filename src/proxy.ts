@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { rawSqlClient } from "@/lib/db";
-import { assertDeviceAvailableForMutation } from "@/lib/device-handoff";
+import { assertDeviceAvailableForMutation, assertNoOperationLock } from "@/lib/device-mutation-gate";
 import { OperationLockError } from "@/lib/operation-lock";
-import { RecoveryModeError } from "@/lib/device-handoff";
+import { RecoveryModeError } from "@/lib/device-mutation-gate";
 import { recordActivity } from "@/lib/idle-shutdown";
 
 // Next.js 16 renamed `middleware.ts` to `proxy.ts` (functionally identical) --
@@ -44,6 +44,19 @@ const EXEMPT_READ_ONLY_PATH_SUFFIXES = [
   "/decision-engine/hypotheses/generate",
 ];
 
+// Architecture audit 2026-10-01 (H4): the operator's stop switches must work while the device is in
+// RECOVERY MODE -- otherwise the operator cannot switch agents or Live writes off, revoke an agent's
+// token, or disconnect a channel exactly when something has gone wrong. Each touches only
+// device-local state that never travels in a snapshot. They are still refused while an
+// export/import/migration holds the operation lock (short-lived): an in-process import runs its
+// transaction on the same shared connection, so a write made meanwhile would join it and be silently
+// rolled back if the import failed. Exact method + path only.
+const EXEMPT_STOP_SWITCH_ROUTES = new Set([
+  "POST /api/settings",
+  "DELETE /api/agent-tokens",
+  "POST /api/channel-connections/disconnect",
+]);
+
 function isExemptReadOnlyPath(pathname: string): boolean {
   if (EXEMPT_READ_ONLY_PATHS.has(pathname)) return true;
   return EXEMPT_READ_ONLY_PATH_SUFFIXES.some((suffix) => pathname.endsWith(suffix));
@@ -65,9 +78,14 @@ export async function proxy(request: NextRequest) {
   if (isExemptReadOnlyPath(pathname)) {
     return NextResponse.next();
   }
+  const isStopSwitch = EXEMPT_STOP_SWITCH_ROUTES.has(`${request.method} ${pathname}`);
 
   try {
-    await assertDeviceAvailableForMutation(rawSqlClient);
+    if (isStopSwitch) {
+      await assertNoOperationLock(rawSqlClient);
+    } else {
+      await assertDeviceAvailableForMutation(rawSqlClient);
+    }
   } catch (error) {
     if (error instanceof OperationLockError) {
       return NextResponse.json(

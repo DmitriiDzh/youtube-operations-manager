@@ -266,6 +266,29 @@ Not every issue in this register must be fixed immediately. It must, however, al
 
 ## RISK-09 — Phase 5 write-safety infrastructure does not exist yet
 
+- **Update 2026-10-01 (architecture audit H1 and its review).** Rule: **Live writes are honored
+  only while a web-server session is alive.**
+  - `getLiveWritesEnabled` is true only when the toggle is on AND the web server's session lease
+    (`live_writes_session_lease_at`) is fresh.
+  - The web server renews the lease every 30 s (`src/instrumentation.ts`) and resets the toggle
+    at start and on graceful end.
+  - The lease TTL is 3 min.
+  - Previously the toggle was reset on every process's database initialization. That let every
+    MCP/CLI process switch the operator's toggle off mid-session and could strand a Batch in
+    APPLYING.
+  - **Residual:** after an ungraceful stop on any platform (a crash, Windows `stop.bat`'s
+    `taskkill /F`, a closed console window), the toggle is still honored for at most the lease
+    TTL.
+    - A lapse is persisted as OFF, so it never silently comes back on after a later renewal
+      (e.g. after the laptop wakes). Re-enabling is always an explicit operator action.
+    - A lease dated more than 60 s in the future does not count as fresh (a clock that ran
+      ahead).
+  - A lease renewal made during an in-process snapshot import joins the import's transaction.
+    If the import fails, that renewal rolls back. If that leaves the lease stale, Live writes
+    lapses to a persisted OFF and the operator re-enables it. This fails closed.
+  - Only the web boot hook and the settings route may renew the lease; this is inventory-tested.
+  - Older progress notes below that say "reset on every process boot" describe the previous
+    mechanism.
 - **Affected components:** none yet — this documents an absence, not a defect in existing code. Relevant future modules: a `write-context`-reusing localization-write path, plus new `backup/`, `audit/`, `batches/` domain modules (per `docs/PROJECT_SPEC.md` §47).
 - **Current behavior:** Phase 4 ends at `Change.approvalStatus === "approved"` — a purely local database state. None of the following exist for **bulk localization writes** specifically: immutable pre-write backups, a fresh remote conflict check (RISK-03), a durable audit log, a per-item execution ledger, resumable/idempotent batch processing, or post-write remote verification. (Note: single-item `video-metadata/services.ts` `applyMetadata` already has identity check + diff + dry-run, but not backup/audit/ledger either, and it is not the bulk-localization path.)
 - **Actual risk:** Without this infrastructure, enabling real bulk localization writes would have no recovery information preserved before a destructive change, no tamper-evident record of what was changed and by whom, and no safe way to resume an interrupted batch without risking duplicate or inconsistent writes.
@@ -657,6 +680,14 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 ## RISK-39 — `syncChannel`'s explicit-`channelId` path has no ownership check (write side) — OPEN, 2026-09-20
 
+- **Update 2026-10-01 (architecture audit H3).** The impact was larger than "quota plus a harmless
+  row". Every sync overwrote `channels.connected_user_id`, and a raw-access-token credential set it
+  to NULL. Since ADR 0010 and Phase 12, that column decides channel reactivation and whether a
+  channel's agent token is valid. So an operator re-sync of another channel silently re-owned or
+  disconnected it.
+  - **Fixed:** only the implicit "my channel" sync sets the owner, and no sync ever clears it
+    (`channel-sync/services.ts`, `db.ts` `upsertChannel`).
+  - **Still open:** the original quota and local-row concern below.
 - **Affected components:** `src/lib/youtube-read-gateway/data-api.ts` (`getChannelForSync`), `src/lib/channel-sync/adapters/youtube-api.ts`, `src/lib/channel-sync/services.ts` (`syncChannel`), `src/app/api/channels/sync/route.ts`, `src/components/channel-sync.tsx` ("Re-sync this channel" picker action).
 - **Current behavior:** When `syncChannel` is called with an explicit `channelId` (the Sync tab's "re-sync a previously-known channel" action, or a direct API/MCP/CLI call), `getChannelForSync` performs a public, unauthenticated-scope `youtube.channels.list({ id: [channelId] })` lookup — **not** cross-checked against the caller's OAuth-authenticated ("mine") channel at all. The result is upserted into the local `channels`/`videos` tables regardless of whether it has anything to do with the calling session's actual Google account.
 - **Actual risk:** A caller can cause the local database to sync (fetch + persist) metadata for **any** public YouTube channel ID, not just their own, consuming their own YouTube API quota to do so. Found alongside the RISK-02 fix (2026-09-20) — discovered, not introduced, by that work: RISK-02's read-scoping fix (`docs/decisions/0004-active-channel-read-scoping.md`) means the result of such a sync is no longer *visible* afterward (it never becomes the active channel), which narrows the practical impact to "wasted quota + a harmless local row," but the write itself is still unauthenticated-scope.
@@ -1378,5 +1409,27 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Gate(s):** none.
 - **Approval required from:** project owner, to change the threat model.
 - **Status:** OPEN, accepted by the owner.
+
+## RISK-88 — `db.ts` is a single persistence module for every feature; one migration failure blocks all — OPEN, accepted, 2026-10-01
+
+- **Affected components:** `src/lib/db.ts`: about 6,700 lines, 50+ tables, one linear
+  `SCHEMA_MIGRATIONS` chain, and a boot-time `databaseInitialization` that every client awaits.
+- **Found during:** the independent architecture audit, 2026-10-01 (modularity, finding 6).
+- **Actual risk (`AGENTS.md` §M in practice):**
+  - Any failing migration makes the database client reject for every feature: sign-in, settings,
+    translations, and the proxy mutation gate (503).
+  - Every feature's schema and queries live in one file.
+  - This follows ADR 0001/0002 (one database, additive linear migrations). It is a design limit,
+    not an implementer's mistake.
+- **Related, low:** `cli-auth/services.ts` and `snapshot/services.ts` import `db.ts` at runtime
+  from a services layer (DEVELOPMENT_PLAYBOOK §6.2 layering). Also, small duplications remain:
+  `requireChannel` ×3, `formatCount` ×2, and a local date formatter ×2. Fold these when the code
+  is touched.
+- **Why not fixed now:** a per-feature split of `db.ts` (`src/lib/db/<feature>.ts` sharing one
+  client and one migration list) is a large mechanical refactor with no bug behind it. It would
+  also not remove the linear-migration coupling itself. Out of scope of the audit fixes, by plan.
+- **Trigger to revisit:** a migration failure in the field, or a feature that must be deployable
+  or disableable independently.
+- **Status:** OPEN, accepted.
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

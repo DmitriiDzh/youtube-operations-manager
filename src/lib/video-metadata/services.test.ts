@@ -495,7 +495,11 @@ test("RISK-11 (legacy single-item path, 2026-09-18): every documented read-only 
   assert.equal(proposal.update.snippet.defaultAudioLanguage, "es");
 });
 
-test("applyMetadata resolves target language from defaultLanguage or single localization fallback", async () => {
+// Requirement change (architecture audit 2026-10-01, H5 + its review): the single-localization
+// fallback case used to "resolve" by SETTING snippet.defaultLanguage, which AGENTS.md §F forbids this
+// pipeline to touch -- and without it YouTube rejects localized details (defaultLanguageNotSet). That
+// case is now refused locally (see the AC-H5 test below); only the defaultLanguage case resolves.
+test("applyMetadata resolves target language from defaultLanguage", async () => {
   const testCases = [
     {
       name: "defaultLanguage",
@@ -513,21 +517,6 @@ test("applyMetadata resolves target language from defaultLanguage or single loca
       },
       expectedLanguage: "es",
       expectedSource: "defaultLanguage",
-    },
-    {
-      name: "single-localization-fallback",
-      context: {
-        snippet: {
-          title: "t",
-          description: "d",
-          categoryId: "22",
-        },
-        localizations: {
-          pt: { title: "t-pt", description: "d-pt" },
-        },
-      },
-      expectedLanguage: "pt",
-      expectedSource: "existing-localization",
     },
   ] as const;
 
@@ -647,4 +636,45 @@ test("applyMetadata fails closed when write-channel guardrail rejects", async ()
   );
 
   assert.equal(applyCalls, 0);
+});
+
+// Architecture audit 2026-10-01 (H5, docs/roadmap/plans/HARDENING_AUDIT_2026-10_PLAN.md AC-H5-1/2, as
+// refined after review): AGENTS.md §F -- this path never sets snippet.defaultLanguage. A video without
+// one is refused locally (YouTube would reject localized details anyway) and nothing is written; an
+// existing value is sent back unchanged; other languages' localizations are preserved.
+test("AC-H5: applyMetadata never adds snippet.defaultLanguage -- refuses without one, preserves it and other localizations with one", async () => {
+  let applyCalls = 0;
+  const noDefault = {
+    snippet: { title: "T", description: "D", categoryId: "22" },
+    localizations: { de: { title: "DE", description: "DE desc" } },
+  };
+  const refusing = createVideoMetadataServices(
+    makeDeps({
+      youtubeApi: {
+        getVideoMetadataContext: async () => noDefault,
+        applyMetadataProposal: async () => {
+          applyCalls += 1;
+        },
+      },
+    })
+  );
+  const input = {
+    credentialRef: { userId: "user-1" },
+    videoId: "video-1",
+    finalTitle: "New title",
+    description: "New description",
+    expectedChannelId: "UC_ACTIVE",
+  };
+  for (const dryRun of [true, false]) {
+    await assert.rejects(
+      refusing.applyMetadata({ ...input, dryRun }),
+      (error: unknown) => error instanceof DomainError && error.code === "target_language_unresolvable"
+    );
+  }
+  assert.equal(applyCalls, 0);
+
+  const withDefault = createVideoMetadataServices(makeDeps());
+  const kept = await withDefault.applyMetadata({ ...input, dryRun: true });
+  assert.equal((kept.snippet.proposed as { defaultLanguage?: string }).defaultLanguage, "es");
+  assert.deepEqual(Object.keys(kept.localizations.proposed).sort(), ["en", "es"]);
 });

@@ -23,10 +23,10 @@ import {
   type OAuthUserSummary,
 } from "@/lib/db";
 import { createWriteContextCore, type WriteChannelContext } from "@/lib/write-context";
-import type { CredentialRef, ResolvedCredentials } from "@/lib/video-metadata/contracts";
-import { DomainError } from "@/lib/video-metadata/contracts";
+import type { CredentialRef, ResolvedCredentials } from "@/lib/shared-domain";
+import { DomainError } from "@/lib/shared-domain";
 import { getAgentSession } from "@/lib/agent-session";
-import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
+import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { authUserNotFound, type AuthUserSummary, type SelectUserResult } from "./contracts";
 import { selectWriteChannelInputSchema, selectUserInputSchema, toValidationIssues } from "./schemas";
 import { createActiveAuthStorage, type ActiveAuthStorage } from "./adapters/active-auth-storage";

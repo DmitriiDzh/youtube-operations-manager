@@ -264,9 +264,13 @@ export default function Dashboard() {
               unconfirmed) — everything else Studio&apos;s own Home shows from already-available
               data is below.
             </p>
-            <HomeDashboardPanel subscriberCount={channel?.subscriberCount} onViewAllContent={() => setTab("content")} />
+            <FeatureErrorBoundary label="Home — Dashboard">
+              <HomeDashboardPanel subscriberCount={channel?.subscriberCount} onViewAllContent={() => setTab("content")} />
+            </FeatureErrorBoundary>
             <div className="max-w-3xl">
-              <EditorialProfilePanel />
+              <FeatureErrorBoundary label="Home — Editorial profile">
+                <EditorialProfilePanel />
+              </FeatureErrorBoundary>
             </div>
           </div>
         </FeatureErrorBoundary>
@@ -334,13 +338,27 @@ export default function Dashboard() {
               runs on your own explicit request below, never automatically, and this is never a
               source of private analytics for a channel you don&rsquo;t own.
             </p>
-            <MarketOverviewPanel />
-            <MarketResearchPanel />
-            <MarketVideosPanel />
-            <MarketDiscoveryPanel />
-            <MarketTopicsPanel />
-            <MarketTrendsPanel />
-            <MarketResearchRequestsPanel />
+            <FeatureErrorBoundary label="Research — Overview">
+              <MarketOverviewPanel />
+            </FeatureErrorBoundary>
+            <FeatureErrorBoundary label="Research — Watchlist">
+              <MarketResearchPanel />
+            </FeatureErrorBoundary>
+            <FeatureErrorBoundary label="Research — Videos">
+              <MarketVideosPanel />
+            </FeatureErrorBoundary>
+            <FeatureErrorBoundary label="Research — Discovery">
+              <MarketDiscoveryPanel />
+            </FeatureErrorBoundary>
+            <FeatureErrorBoundary label="Research — Topics">
+              <MarketTopicsPanel />
+            </FeatureErrorBoundary>
+            <FeatureErrorBoundary label="Research — Trends">
+              <MarketTrendsPanel />
+            </FeatureErrorBoundary>
+            <FeatureErrorBoundary label="Research — Requests">
+              <MarketResearchRequestsPanel />
+            </FeatureErrorBoundary>
           </div>
         </FeatureErrorBoundary>
       )}
@@ -392,11 +410,19 @@ export default function Dashboard() {
             visited this session. Hidden-not-unmounted keeps each card's already-fetched state,
             so only the FIRST visit to a sub-tab shows a loading moment. */}
         <div className={settingsSubTab === "api" ? "space-y-6" : "hidden"}>
-          <FeatureErrorBoundary label="Settings — API">
+          <FeatureErrorBoundary label="Settings — Live writes">
             <LiveWritesSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Data reads">
             <ReadGatewaySettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Google Cloud">
             <CloudConnectionSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Analytics collection">
             <AnalyticsCollectionSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Market intelligence collection">
             <MarketIntelligenceCollectionSettings />
           </FeatureErrorBoundary>
         </div>
@@ -408,10 +434,16 @@ export default function Dashboard() {
         </div>
 
         <div className={settingsSubTab === "ai-agent" ? "space-y-6" : "hidden"}>
-          <FeatureErrorBoundary label="Settings — AI Agent">
+          <FeatureErrorBoundary label="Settings — MCP connection">
             <McpConnectionSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Operator CLI">
             <OperatorCliSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Operations workspace">
             <OperationsWorkspaceSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — AI providers">
             <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
               <h3 className="mb-4 flex items-center gap-1.5 text-base font-semibold text-zinc-100">
                 AI provider connections

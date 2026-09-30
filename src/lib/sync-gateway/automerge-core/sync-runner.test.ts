@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DomainError, isDomainError } from "@/lib/video-metadata/contracts";
+import { DomainError, isDomainError } from "@/lib/shared-domain";
 import { createSyncRunner, type DocumentFamilyForSync, type SyncRunnerDeps } from "./sync-runner";
 import type { PerChannelTransportAdapter } from "./transport";
 

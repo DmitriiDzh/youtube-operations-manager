@@ -881,7 +881,10 @@ second error-code enum:
 | `DRAFT_VALIDATION_FAILED` | 422 | a DRAFT object failed field-level validation |
 | `APPROVAL_REQUIRED` | 403 | an operation that needs human approval was attempted without it |
 | `EXECUTION_NOT_AUTHORIZED` | 403 | an EXECUTE-class operation attempted without that permission |
-| `AGENT_ZONE_VIOLATION` | 403 | **not from owner spec §27** -- added by BL-091 (`docs/roadmap/plans/AGENT_ZONES_PLAN.md`), a separate cross-cutting feature, not this phase. Can now be thrown by `content_proposal.create_content_proposal`/`content_proposal.register_external_artifact` (the two `AGENT_CAPABILITIES` entries this table otherwise covers) as well as by non-agent-operations tools (`channel_sync`, `changeset_create_from_import`, `ai_localization_generate`/`create_change_set`) once one or more agent connections are enabled and the calling connection is unknown or not authorized for that specific action's zone. See `docs/interfaces.md`'s "Multi-agent responsibility zones" section for the full policy. |
+| `AGENT_TOKEN_INVALID` | 401 | Phase 12: missing/unknown/revoked agent token, a token whose channel is no longer connected to its identity, or agent access switched off (MCP connection). One indistinguishable code. |
+| `AGENT_SESSION_OPERATOR_ONLY` | 403 | Phase 12: an operator-only action (identity/selection switching, `auth *`, `asset register`, operations workspace) attempted in a channel-bound agent session. |
+| `AGENT_SESSION_CREDENTIAL_OVERRIDE` | 403 | Phase 12: an agent session supplied its own `credentialRef`/`--userId`/`--accessToken`. |
+| ~~`AGENT_ZONE_VIOLATION`~~ | -- | Retired with BL-091 capability zones (`docs/decisions/0011-retire-agent-capability-zones.md`); never thrown any more. |
 
 ## 7. Implementation status by slice (owner spec §29's recommended order)
 

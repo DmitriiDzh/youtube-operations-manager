@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { DomainError } from "@/lib/video-metadata/contracts";
+import { DomainError } from "@/lib/shared-domain";
 import { createVideoMetadataCore } from "@/lib/video-metadata";
 import { getVideoMetadataErrorStatus } from "../error-status";
 import { parseVideoMetadataJsonBody } from "../parse-json-body";

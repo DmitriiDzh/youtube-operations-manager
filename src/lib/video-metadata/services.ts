@@ -135,7 +135,7 @@ function resolveTargetLanguage(context: VideoMetadataContext): {
   throw new DomainError({
     code: "target_language_unresolvable",
     message:
-      "Cannot resolve target language. Set snippet.defaultLanguage on the video or leave exactly one localization.",
+      "Cannot resolve target language. Set the video's default language (snippet.defaultLanguage) on YouTube -- this app never sets it itself.",
     details: {
       videoDefaultLanguage: context.snippet.defaultLanguage ?? null,
       localizationLocales,
@@ -149,12 +149,28 @@ function buildMetadataSyncProposal(args: {
   draft: MetadataDraft;
 }): MetadataSyncProposal {
   const resolvedLanguage = resolveTargetLanguage(args.context);
+  // Architecture-audit review (H5): without a `snippet.defaultLanguage`, YouTube rejects localized
+  // details (videos.update `defaultLanguageNotSet`), and this app may not set that field itself
+  // (AGENTS.md §F). So the single-localization fallback can only ever produce a request YouTube
+  // refuses -- fail locally, clearly, before any write, instead.
+  if (resolvedLanguage.languageSource === "existing-localization") {
+    throw new DomainError({
+      code: "target_language_unresolvable",
+      message:
+        "This video has no default language (snippet.defaultLanguage). Set it on YouTube first -- this app never sets it itself.",
+      details: { inferredLanguage: resolvedLanguage.targetLanguage },
+    });
+  }
   const beforeSnippet = removeReadOnlySnippetFields(args.context.snippet);
   const proposedSnippet = removeReadOnlySnippetFields({
     ...beforeSnippet,
     title: args.draft.finalTitle,
     description: args.draft.description,
-    defaultLanguage: resolvedLanguage.targetLanguage,
+    // Architecture audit 2026-10-01 (H5): `snippet.defaultLanguage` is never set as a side effect
+    // (AGENTS.md §F -- the localization pipeline has authority over title/description only). The
+    // video's existing value, if any, is carried through unchanged via `beforeSnippet`; a video
+    // without one stays without one even when the target language came from the
+    // single-localization fallback.
   });
 
   const beforeLocalizations = { ...args.context.localizations };

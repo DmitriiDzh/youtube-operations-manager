@@ -6,7 +6,7 @@ import {
   createIdGenerator,
   type DomainErrorCode,
   type DomainErrorShape,
-} from "@/lib/video-metadata/contracts";
+} from "@/lib/shared-domain";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "./ledger-state";
 
 export type { DomainErrorCode, DomainErrorShape };

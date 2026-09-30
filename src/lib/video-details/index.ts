@@ -1,7 +1,7 @@
-import { createIdGenerator } from "@/lib/video-metadata/contracts";
+import { createIdGenerator } from "@/lib/shared-domain";
 import { setSelectedChannelId } from "@/lib/db";
 import { createWriteContextCore } from "@/lib/write-context";
-import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
+import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createBackupCore } from "@/lib/backup";
 import { createVideoDetailsYoutubeApiAdapter } from "./adapters/youtube-api";
 import { createVideoDetailsAuditStoreAdapter, createVideoDetailsLocalCacheAdapter } from "./adapters/store";

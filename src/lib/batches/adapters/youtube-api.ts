@@ -1,6 +1,6 @@
 import { createGoogleOAuthClient } from "@/lib/auth";
 import { createYoutubeClient, getVideoMetadataContext, getVideosMetadataContextBatch } from "@/lib/youtube-read-gateway";
-import type { ResolvedCredentials } from "@/lib/video-metadata/contracts";
+import type { ResolvedCredentials } from "@/lib/shared-domain";
 
 // Architectural decision #2 (2026-09-17 plan approval): preliminary batched metadata
 // collection and the mandatory fresh per-video pre-write check are two explicitly

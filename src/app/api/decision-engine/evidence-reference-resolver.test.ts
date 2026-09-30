@@ -9,7 +9,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DomainError } from "@/lib/video-metadata/contracts";
+import { DomainError } from "@/lib/shared-domain";
 import { createRealEvidenceReferenceResolver } from "./evidence-reference-resolver";
 
 function createFakeAnalyticsCore(rows: { videoId: string; metricDate: string; metricName: string; metricValue: number }[]) {

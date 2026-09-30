@@ -1,5 +1,5 @@
 import type { BatchCore } from "@/lib/batches";
-import { isApprovalStillValid } from "@/lib/batches/services";
+import { isApprovalStillValid } from "@/lib/batches";
 import type { ChangeSetCore } from "@/lib/changesets";
 import { DomainError, type ExperimentExecutionResolver } from "@/lib/decision-engine/contracts";
 

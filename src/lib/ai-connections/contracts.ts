@@ -5,13 +5,17 @@ import {
   createIdGenerator,
   type DomainErrorCode,
   type DomainErrorShape,
-} from "@/lib/video-metadata/contracts";
-import type { LocalizationGenerationOutcome, LocalizationGenerationRequest, LocalizationProvider } from "@/lib/ai-localization/contracts";
+} from "@/lib/shared-domain";
+// Architecture audit M2: both generation kinds' shapes come from the shared leaf module, never from
+// the consumer features themselves.
 import type {
+  HypothesisDraftProvider,
   HypothesisGenerationOutcome,
   HypothesisGenerationRequest,
-  HypothesisDraftProvider,
-} from "@/lib/decision-engine/contracts";
+  LocalizationGenerationOutcome,
+  LocalizationGenerationRequest,
+  LocalizationProvider,
+} from "@/lib/ai-generation-contracts";
 
 export type { DomainErrorCode, DomainErrorShape, LocalizationGenerationOutcome, LocalizationGenerationRequest, LocalizationProvider };
 // Phase 10 slice 4 -- same relationship as the LocalizationProvider trio above: decision-engine

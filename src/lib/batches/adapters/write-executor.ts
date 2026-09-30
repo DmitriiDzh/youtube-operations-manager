@@ -1,7 +1,7 @@
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
 import { getLiveWritesEnabled } from "@/lib/db";
-import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
-import type { CredentialRef } from "@/lib/video-metadata/contracts";
+import { resolveGoogleCredentials } from "@/lib/google-credentials";
+import type { CredentialRef } from "@/lib/shared-domain";
 import type { WriteExecutor } from "../contracts";
 import { createAuthorizedClient } from "./youtube-api";
 import { createYoutubeWriteExecutor } from "./write-executor.youtube";

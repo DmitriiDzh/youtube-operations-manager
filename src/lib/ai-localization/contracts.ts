@@ -1,4 +1,4 @@
-import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
+import { DomainError, isDomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/shared-domain";
 import type { ChangeValidationStatus, StoredChannelRecord, StoredVideoRecord } from "@/lib/changesets/contracts";
 import type { CreatedVia, EvidenceReference, EvidenceSourceType } from "@/lib/shared-provenance";
 
@@ -36,66 +36,16 @@ export type GenerationTarget = {
   language: string;
 };
 
-/**
- * Generic, content-free editorial context an API caller may supply per generation
- * call. Every field is caller-supplied, per-request, and never persisted by this
- * module -- `AGENTS.md` §B prohibits channel-specific editorial guidelines from
- * living in this repository, so no default value, per-channel lookup, or
- * repository-committed content backs any of this (see
- * docs/ai-localization/CHANNEL_CONTEXT_PROPOSAL.md Part A). A future real provider
- * adapter MAY use these fields to shape its prompt; the deterministic mock provider
- * ignores them.
- */
-export type GenerationContext = {
-  targetAudience?: string;
-  toneNotes?: string;
-  terminologyNotes?: string;
-  titleConstraints?: string;
-  descriptionConstraints?: string;
-};
-
-/** What the provider is given to generate one language's localization from. */
-export type LocalizationGenerationRequest = {
-  videoId: string;
-  targetLanguage: string;
-  sourceLanguage: string | null;
-  sourceTitle: string;
-  sourceDescription: string;
-  editorialBrief?: GenerationContext;
-};
-
-/**
- * A provider either produces text, or reports it could not (rate limit, malformed
- * upstream response, transient failure, etc.) -- modeled explicitly so a single
- * provider failure never throws and aborts sibling videos/languages (mirrors Phase 5's
- * AC-ISOLATION-01 item-level-failure principle, applied to generation instead of write).
- */
-/** Token usage a real provider reported for one generation call, when available.
- * Never fabricated: a provider/adapter that doesn't report usage simply omits this
- * (docs/acceptance/PHASE_6_AI_CONNECTIONS_ACCEPTANCE.md AC-CONN-16 -- unknown is
- * never reported as zero). Purely informational; nothing in validation/approval
- * depends on it. */
-export type GenerationTokenUsage = {
-  inputTokens: number;
-  outputTokens: number;
-};
-
-export type LocalizationGenerationOutcome =
-  | { status: "ok"; title: string; description: string; usage?: GenerationTokenUsage }
-  | { status: "error"; message: string };
-
-/**
- * The single replaceable extension point named by docs/PROJECT_SPEC.md §32
- * ("LocalizationProvider"). A real provider (OpenAI/Anthropic/DeepL/etc.) is an
- * explicit, separate, future-authorized integration -- see `resolveLocalizationProvider`
- * in `./provider-registry.ts`. This interface is deliberately minimal: no channel
- * editorial/SEO instructions live in this repository (AGENTS.md §B), so a real
- * implementation must source those out-of-band and pass only plain source text in.
- */
-export type LocalizationProvider = {
-  readonly name: string;
-  generate(request: LocalizationGenerationRequest): Promise<LocalizationGenerationOutcome>;
-};
+// Moved to the shared leaf `src/lib/ai-generation-contracts` (architecture audit M2); re-exported
+// unchanged so every existing importer keeps working.
+export type {
+  GenerationContext,
+  GenerationTokenUsage,
+  LocalizationGenerationOutcome,
+  LocalizationGenerationRequest,
+  LocalizationProvider,
+} from "@/lib/ai-generation-contracts";
+import type { GenerationContext, GenerationTokenUsage } from "@/lib/ai-generation-contracts";
 
 export type GeneratedFieldOutcome = {
   videoId: string;

@@ -366,17 +366,64 @@ test("proxy gates the channel-workspaces PUT route like any other real mutation"
 
 // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md 12.1) -- issuing/revoking agent tokens are real local
 // mutations, gated like every other one.
-test("proxy gates the agent-tokens POST and DELETE routes like any other real mutation", async () => {
+test("proxy gates issuing an agent token (POST) like any other real mutation", async () => {
   await acquireOperationLock(rawSqlClient, "export");
   try {
-    for (const method of ["POST", "DELETE"]) {
-      const response = await proxy(new NextRequest(new Request("http://localhost/api/agent-tokens", { method })));
-      assert.equal(response.status, 409, method);
-    }
+    const response = await proxy(new NextRequest(new Request("http://localhost/api/agent-tokens", { method: "POST" })));
+    assert.equal(response.status, 409);
   } finally {
     await releaseOperationLock(rawSqlClient);
   }
 });
+
+// Architecture audit 2026-10-01 (H4, AC-H4-1/2, refined after review): the operator's stop switches
+// pass the gate in RECOVERY MODE, but (like everything else) not while the operation lock is held;
+// neighbouring routes stay fully gated.
+test("AC-H4: stop switches are exempt from recovery mode only; the operation lock still blocks them", async () => {
+  const stopSwitches: Array<[string, string]> = [
+    ["POST", "/api/settings"],
+    ["DELETE", "/api/agent-tokens"],
+    ["POST", "/api/channel-connections/disconnect"],
+  ];
+  const neighbours: Array<[string, string]> = [
+    ["PUT", "/api/settings"],
+    ["POST", "/api/agent-tokens"],
+    ["POST", "/api/channel-connections/disconnect/extra"],
+    ["PUT", "/api/channel-workspaces"],
+  ];
+  const call = (method: string, pathname: string) => proxy(new NextRequest(new Request(`http://localhost${pathname}`, { method })));
+
+  await acquireOperationLock(rawSqlClient, "import");
+  try {
+    for (const [method, pathname] of [...stopSwitches, ...neighbours]) {
+      assert.equal((await call(method, pathname)).status, 409, `${method} ${pathname} under the lock`);
+    }
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+
+  const channelId = `chan-h4-${Date.now()}`;
+  await rawSqlClient.execute({ sql: "INSERT INTO channels (id, title, uploads_playlist_id) VALUES (?, ?, ?)", args: [channelId, "H4", "UU_H4"] });
+  await rawSqlClient.execute({ sql: "INSERT INTO batches (id, channel_id, status) VALUES (?, ?, ?)", args: [`${channelId}-b`, channelId, "RUNNING"] });
+  await rawSqlClient.execute({
+    sql: "INSERT INTO batch_ledger_rows (id, batch_id, video_id, change_ids_json, status) VALUES (?, ?, ?, ?, ?)",
+    args: [`${channelId}-r`, `${channelId}-b`, "v1", "[]", "UNKNOWN"],
+  });
+  try {
+    for (const [method, pathname] of stopSwitches) {
+      assert.notEqual((await call(method, pathname)).status, 423, `${method} ${pathname} in recovery mode`);
+    }
+    for (const [method, pathname] of neighbours) {
+      assert.equal((await call(method, pathname)).status, 423, `${method} ${pathname} in recovery mode`);
+    }
+  } finally {
+    await rawSqlClient.execute({ sql: "DELETE FROM batch_ledger_rows WHERE id = ?", args: [`${channelId}-r`] });
+    await rawSqlClient.execute({ sql: "DELETE FROM batches WHERE id = ?", args: [`${channelId}-b`] });
+    await rawSqlClient.execute({ sql: "DELETE FROM channels WHERE id = ?", args: [channelId] });
+  }
+});
+
+
 
 // Phase 12 slice 12.4 -- assigning market records to channels is a real local mutation.
 test("proxy gates the market-assignments PUT route like any other real mutation", async () => {

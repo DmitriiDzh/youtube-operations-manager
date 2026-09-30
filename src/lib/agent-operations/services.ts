@@ -427,7 +427,7 @@ type ServiceDependencies = {
   getProductVersion(): string;
   getSchemaVersion(): number;
   // Slice B -- reused unchanged from `changesets`' own channel/video store adapter
-  // (`createChangeSetChannelStoreAdapter`), the same local-sync mirror `ai-localization` already
+  // (`createChannelVideoStoreAdapter`), the same local-sync mirror `ai-localization` already
   // reads (AGENTS.md §D: no parallel read path).
   channelStore: {
     getChannel(channelId: string): Promise<StoredChannelForContext | null>;

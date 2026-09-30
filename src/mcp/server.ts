@@ -6,14 +6,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { createVideoMetadataCore } from "@/lib/video-metadata";
-import { DomainError } from "@/lib/video-metadata/contracts";
+import { DomainError } from "@/lib/shared-domain";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth";
 import { getMcpConnectionEnabled, recordGatewayCallOutcome } from "@/lib/db";
-import type { CredentialRef } from "@/lib/video-metadata/contracts";
+import type { CredentialRef } from "@/lib/shared-domain";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
 import { OperationLockError } from "@/lib/operation-lock";
-import { RecoveryModeError } from "@/lib/device-handoff";
+import { RecoveryModeError } from "@/lib/device-mutation-gate";
 import {
   playlistAddVideosInputSchema,
   playlistCreateInputSchema,
@@ -1617,10 +1617,9 @@ export function createMcpToolHandlers(
      * `createdVia: "mcp"`/`agentApiVersion` are SERVER-STAMPED (owner spec §22), mirrors
      * `agentCreateContentProposal` above exactly. A real local-state mutation (writes a pending row
      * to local SQLite) even though it never touches YouTube, so this tool is gated by
-     * `assertMcpDeviceAvailable` (via `wrapMcpHandlersWithMutationGate` below) and by agent-zone
-     * enforcement (`registerTool`'s zoning argument, at the bottom of this file), same as
-     * `agentCreateContentProposal`. Global, no `assertActiveChannel` check -- this data is not
-     * scoped to any owned channel, same as `queryCompetitors`/`queryMarketIntelligence` above.
+     * `assertMcpDeviceAvailable` (via `wrapMcpHandlersWithMutationGate` below), same as
+     * `agentCreateContentProposal`. Market data is not scoped to an owned channel; in an agent
+     * session the created request is recorded as owned by the agent's channel (Phase 12).
      */
     async agentCreateMarketResearchRequest(input: unknown): Promise<ToolResponse> {
       const parsedInput = createMarketResearchRequestInputSchema.safeParse(input);
@@ -1727,7 +1726,7 @@ export function createMcpToolHandlers(
 async function assertMcpDeviceAvailable(): Promise<ToolResponse | null> {
   try {
     const { rawSqlClient } = await import("@/lib/db");
-    const { assertDeviceAvailableForMutation } = await import("@/lib/device-handoff");
+    const { assertDeviceAvailableForMutation } = await import("@/lib/device-mutation-gate");
     await assertDeviceAvailableForMutation(rawSqlClient);
     return null;
   } catch (error) {

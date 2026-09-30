@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { youtubeAnalytics_v2 } from "googleapis";
 import { getAnalyticsReadsEnabled, setAnalyticsReadsEnabled } from "@/lib/db";
-import { DomainError } from "@/lib/video-metadata/contracts";
+import { DomainError } from "@/lib/shared-domain";
 import {
   assertAnalyticsReadsAuthorized,
   createYoutubeAnalyticsClient,

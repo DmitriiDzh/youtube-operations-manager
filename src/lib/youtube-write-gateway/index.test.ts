@@ -41,13 +41,14 @@ function fakeYoutubeClient(overrides: {
 
 // ---------------------------------------------------------------------------
 // assertLiveWritesAuthorized -- moved here from write-executor.youtube.ts (2026-09-21
-// single-funnel refactor). Every process boot forces live_writes_enabled back to false
-// (src/lib/db.ts's initializeDatabase), so a sanity check that it starts false is safe here.
+// single-funnel refactor). This test process starts on a fresh per-file database where the setting
+// was never saved, so it reads as false (the web server's own session reset lives in
+// src/instrumentation.ts since the 2026-10-01 architecture audit, H1).
 // ---------------------------------------------------------------------------
 
 test("assertLiveWritesAuthorized: throws a live_writes_disabled DomainError when the setting is off", async () => {
   const alreadyEnabled = await getLiveWritesEnabled();
-  assert.equal(alreadyEnabled, false, "sanity check -- every process boot forces this off");
+  assert.equal(alreadyEnabled, false, "sanity check -- a fresh test database reads as off");
 
   await assert.rejects(
     () => assertLiveWritesAuthorized(),

@@ -7,7 +7,7 @@ import {
   pickWritableSnippetFields,
   pickWritableStatusFields,
 } from "@/lib/youtube-write-gateway";
-import { DomainError, type ResolvedCredentials } from "@/lib/video-metadata/contracts";
+import { DomainError, type ResolvedCredentials } from "@/lib/shared-domain";
 import type { VideoDetailsPatch, VideoDetailsSnapshot } from "../contracts";
 
 function createAuthorizedClient(credentials: ResolvedCredentials) {

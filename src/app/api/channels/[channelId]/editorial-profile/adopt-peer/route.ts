@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createEditorialProfileSyncRunnerForProduction } from "@/lib/sync-gateway";
 import { createChannelAccessCore } from "@/lib/channel-access";
-import { DomainError } from "@/lib/video-metadata/contracts";
+import { DomainError } from "@/lib/shared-domain";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
 const runner = createEditorialProfileSyncRunnerForProduction();

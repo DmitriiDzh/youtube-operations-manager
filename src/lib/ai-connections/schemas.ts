@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { parseWithSchema } from "@/lib/changesets/schemas";
+import { parseWithSchema } from "@/lib/shared-domain";
 
 export { parseWithSchema };
 

@@ -5,7 +5,7 @@ import {
   formatZodError,
   type DomainErrorCode,
   type DomainErrorShape,
-} from "@/lib/video-metadata/contracts";
+} from "@/lib/shared-domain";
 import type { AssetReferenceKind, AssetType } from "@/lib/asset-catalog";
 
 export type { DomainErrorCode, DomainErrorShape };

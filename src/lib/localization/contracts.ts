@@ -6,7 +6,7 @@ import {
   mapUnknownError,
   type DomainErrorCode,
   type DomainErrorShape,
-} from "@/lib/video-metadata/contracts";
+} from "@/lib/shared-domain";
 
 export type { DomainErrorCode, DomainErrorShape };
 export { DomainError, isDomainError, parseWithSchema, formatZodError, mapUnknownError };

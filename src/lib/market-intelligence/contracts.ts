@@ -7,7 +7,7 @@ import {
   type DomainErrorCode,
   type DomainErrorShape,
   type ResolvedCredentials,
-} from "@/lib/video-metadata/contracts";
+} from "@/lib/shared-domain";
 
 export type { DomainErrorCode, DomainErrorShape, ResolvedCredentials };
 export { DomainError, isDomainError, parseWithSchema, formatZodError, createIdGenerator };

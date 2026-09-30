@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { getLiveWritesEnabled } from "@/lib/db";
-import { DomainError, type ResolvedCredentials } from "@/lib/video-metadata/contracts";
+import { DomainError, type ResolvedCredentials } from "@/lib/shared-domain";
 import { createVideoDetailsYoutubeApiAdapter } from "./youtube-api";
 
 // End-to-end check that the Gate B fix (src/lib/youtube-write-gateway, 2026-09-21) actually

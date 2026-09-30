@@ -1,5 +1,6 @@
 "use client";
 
+import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { isValidIanaTimezone, isValidLocalTimeOfDay } from "@/lib/analytics/staleness";
@@ -38,6 +39,7 @@ export function AnalyticsCollectionSettings() {
     const res = await fetch("/api/settings");
     if (!res.ok) return;
     const data = (await res.json()) as SyncSettings;
+    if (ownSettingsUnavailable(data, ["analyticsSync"])) return;
     setSettings(data);
     setDraft(data);
   }, []);
@@ -55,7 +57,11 @@ export function AnalyticsCollectionSettings() {
       const res = await fetch("/api/settings", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(draft),
+        // Only this card's own two fields -- never the whole snapshot (see read-gateway-settings.tsx).
+        body: JSON.stringify({
+          analyticsSyncLocalTime: draft.analyticsSyncLocalTime,
+          analyticsSyncTimezone: draft.analyticsSyncTimezone,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {

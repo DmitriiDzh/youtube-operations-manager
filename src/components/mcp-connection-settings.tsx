@@ -1,5 +1,6 @@
 "use client";
 
+import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "./confirm-dialog";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
@@ -34,6 +35,7 @@ export function McpConnectionSettings() {
     const res = await fetch("/api/settings");
     if (!res.ok) return;
     const data = (await res.json()) as Settings;
+    if (ownSettingsUnavailable(data, ["mcpConnectionEnabled"])) return;
     setSettings(data);
     setDraft(data);
   }, []);

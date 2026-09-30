@@ -1,5 +1,6 @@
 "use client";
 
+import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 
@@ -29,6 +30,7 @@ export function OperationsWorkspaceSettings() {
     const res = await fetch("/api/settings");
     if (!res.ok) return;
     const data = (await res.json()) as WorkspaceSettings;
+    if (ownSettingsUnavailable(data, ["operationsWorkspacePath"])) return;
     setSettings(data);
     setDraft(data.operationsWorkspacePath ?? "");
   }, []);

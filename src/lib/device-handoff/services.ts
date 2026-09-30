@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { createClient } from "@libsql/client";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
-import { withOperationLock, OperationLockError } from "@/lib/operation-lock";
+import { withOperationLock } from "@/lib/operation-lock";
 import {
   applySnapshotToDatabase,
   exportSnapshot,
@@ -18,32 +18,10 @@ import { RecoveryModeError, type ExportHandoffResult, type ImportHandoffResult, 
 
 export { RecoveryModeError };
 
-/** Fresh, uncached: true iff `batch_ledger_rows` currently has any row whose execution outcome
- * is genuinely uncertain. Never a stored flag (see RecoveryModeError's own doc comment). */
-export async function isDeviceInRecoveryMode(client: SqlExecutor): Promise<boolean> {
-  const unresolved = await scanForUnresolvedExecutionState(client);
-  return unresolved.length > 0;
-}
-
-export async function assertNotInRecoveryMode(client: SqlExecutor): Promise<void> {
-  const unresolved = await scanForUnresolvedExecutionState(client);
-  if (unresolved.length > 0) throw new RecoveryModeError(unresolved);
-}
-
-/**
- * The single combined pre-mutation gate every interface choke point calls (decision 7 + the
- * tightened decision on recovery mode): an in-progress export/import/migration blocks first,
- * then recovery mode. Reused by src/proxy.ts, the CLI's `runCliCommand`, and MCP's
- * `createMcpToolHandlers` -- one implementation, not three (AGENTS.md §D).
- */
-export async function assertDeviceAvailableForMutation(client: SqlExecutor): Promise<void> {
-  const { getOperationLock } = await import("@/lib/operation-lock");
-  const lock = await getOperationLock(client);
-  if (lock) {
-    throw new OperationLockError({ heldBy: lock, stale: false });
-  }
-  await assertNotInRecoveryMode(client);
-}
+// The pre-mutation gate lives in `src/lib/device-mutation-gate` (architecture audit M5); re-exported
+// here unchanged for this feature's existing callers.
+import { isDeviceInRecoveryMode } from "@/lib/device-mutation-gate";
+export { assertDeviceAvailableForMutation, assertNotInRecoveryMode, isDeviceInRecoveryMode } from "@/lib/device-mutation-gate";
 
 async function recordHandoffLog(
   client: SqlExecutor,

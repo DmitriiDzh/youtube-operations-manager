@@ -2,7 +2,7 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { AI_CONNECTIONS_GLOBAL_DOCUMENT_KEY, createAiConnectionsCatalogSyncRunnerForProduction } from "@/lib/sync-gateway";
-import { DomainError } from "@/lib/video-metadata/contracts";
+import { DomainError } from "@/lib/shared-domain";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
 const runner = createAiConnectionsCatalogSyncRunnerForProduction();

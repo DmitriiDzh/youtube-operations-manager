@@ -2,7 +2,7 @@ import { getAgentSession } from "@/lib/agent-session";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { getChannelTargetLanguages, SCHEMA_CURRENT_VERSION } from "@/lib/db";
-import { createChangeSetChannelStoreAdapter } from "@/lib/changesets/adapters/store";
+import { createChannelVideoStoreAdapter } from "@/lib/channel-video-store";
 import { createAiLocalizationCore } from "@/lib/ai-localization";
 import { createAnalyticsCore } from "@/lib/analytics";
 import { createAssetCatalogCore } from "@/lib/asset-catalog";
@@ -35,7 +35,7 @@ export function createAgentOperationsCore() {
   // Reused unchanged (AGENTS.md §D): the same channel/video store adapter `ai-localization`/
   // `changesets` already use, and `ai-localization`'s own `getEditorialProfile` service function
   // -- this module never re-reads `channel_editorial_profiles` or the video-sync tables itself.
-  const channelStore = createChangeSetChannelStoreAdapter();
+  const channelStore = createChannelVideoStoreAdapter();
   const aiLocalizationCore = createAiLocalizationCore();
   const analyticsCore = createAnalyticsCore();
   const assetCatalogCore = createAssetCatalogCore();

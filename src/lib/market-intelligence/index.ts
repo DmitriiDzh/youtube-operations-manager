@@ -1,4 +1,4 @@
-import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
+import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createMarketIntelligenceStoreAdapter } from "./adapters/store";
 import { createMarketIntelligenceYoutubeApiAdapter } from "./adapters/youtube-api";
 import { createMarketIntelligenceServices } from "./services";

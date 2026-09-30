@@ -125,7 +125,49 @@ export const SNAPSHOT_TRANSFERRED_TABLES = [
   // assignment of the Phase 9 market records above. Business data, added from its own first commit
   // (the RISK-52 lesson); no FK, so order is irrelevant.
   "channel_record_assignments",
+  // Architecture audit 2026-10-01 (M6): the audit trail of real single-video "Details" writes.
+  // Previously unclassified and therefore silently dropped on handoff, while the Batch write trail
+  // (`audit_events`, above) travels -- the two write audit trails must be treated alike. No FK.
+  "video_edit_audit_events",
 ] as const;
+
+/**
+ * Architecture audit 2026-10-01 (M6): EVERY table the schema creates must be classified -- either
+ * transferred (`SNAPSHOT_TRANSFERRED_TABLES`) or deliberately device-local (this list, with the
+ * reason). A test fails the suite on any table in neither list, so a new table can never again be
+ * dropped from handoff by accident (the RISK-52 pattern) or leak by accident.
+ */
+export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Object.freeze({
+  users: "OAuth identities/tokens -- re-established per device by signing in",
+  ai_connection_credentials: "encrypted secrets; the key is per device",
+  cloud_connection: "encrypted Google Cloud grant; re-connected per device",
+  video_execution_locks: "runtime-only execution locks",
+  app_operation_locks: "runtime-only operation lock",
+  handoff_log: "this device's own handoff bookkeeping",
+  recovery_acknowledgements: "this device's own recovery bookkeeping",
+  snapshot_lineage: "this device's own snapshot lineage state",
+  video_metrics_daily: "accepted limitation (RISK-52, ARCHITECTURE §14.7): collected metrics stay local",
+  analytics_collection_runs: "collection bookkeeping for the local metrics above",
+  analytics_weekly_reports: "rebuilt from the device's own local metrics",
+  creative_assets: "accepted limitation (RISK-52)",
+  content_proposals: "accepted limitation (RISK-52)",
+  content_proposal_artifacts: "accepted limitation (RISK-52), child of content_proposals",
+  rules: "retired feature, table kept inert",
+  channels: "cache of YouTube; re-synced per device",
+  videos: "cache of YouTube; re-synced per device",
+  change_sets: "propagated continuously by sync-gateway instead",
+  changes: "propagated continuously by sync-gateway instead",
+  channel_editorial_profiles: "propagated continuously by sync-gateway instead",
+  ai_localization_generation_provenance: "propagated continuously by sync-gateway instead",
+  ai_connections: "propagated continuously by sync-gateway instead",
+  channel_workspaces: "per-device local filesystem paths (Phase 11)",
+  agent_channel_tokens: "per-machine agent credentials (Phase 12)",
+  agent_connections: "retired (ADR 0011), table kept inert",
+  agent_capability_zones: "retired (ADR 0011), table kept inert",
+  app_settings: "per-device settings and toggles (Live writes, MCP, reads, ...)",
+  gateway_call_events: "per-device traffic counters",
+  sync_family_status: "this device's own sync-gateway status",
+});
 
 /**
  * Of the transferred tables, these import as a table-level replace (the incoming snapshot is

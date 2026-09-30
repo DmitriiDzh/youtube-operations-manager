@@ -1,4 +1,4 @@
-import { DomainError } from "@/lib/video-metadata/contracts";
+import { DomainError } from "@/lib/shared-domain";
 import type { OAuthUserSummary } from "@/lib/db";
 import type { WriteChannelContext } from "@/lib/write-context/contracts";
 

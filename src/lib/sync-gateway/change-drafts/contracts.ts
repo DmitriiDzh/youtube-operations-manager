@@ -5,7 +5,7 @@ import {
   formatZodError,
   type DomainErrorCode,
   type DomainErrorShape,
-} from "@/lib/video-metadata/contracts";
+} from "@/lib/shared-domain";
 import type {
   ChangeApprovalStatus,
   ChangeConflictStatus,

@@ -86,15 +86,22 @@ export function HomeDashboardPanel({
   // Home is a large feature module, and the rest of it must keep working when one dependency of
   // it is unavailable. Verified live: with Analytics reads switched off, Home's video cards still
   // render normally and only the "Channel analytics" card shows its own unavailable-state message.
+  // Videos and local metrics are also fetched independently of each other (architecture audit
+  // 2026-10-01): a non-JSON 500 from the analytics route must not drop the video cards or skip the
+  // overview fetch that follows.
   const fetchVideosAndMetrics = useCallback(async (channelId: string) => {
-    const [videosRes, metricsRes] = await Promise.all([
-      fetch(`/api/channels/${encodeURIComponent(channelId)}/videos`),
-      fetch(`/api/channels/${encodeURIComponent(channelId)}/analytics`),
+    await Promise.allSettled([
+      (async () => {
+        const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/videos`);
+        const data = await res.json();
+        if (res.ok && Array.isArray(data.videos)) setVideos(data.videos);
+      })(),
+      (async () => {
+        const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/analytics`);
+        const data = await res.json();
+        if (res.ok && Array.isArray(data.rows)) setMetricRows(data.rows);
+      })(),
     ]);
-    const videosData = await videosRes.json();
-    const metricsData = await metricsRes.json();
-    if (videosRes.ok && Array.isArray(videosData.videos)) setVideos(videosData.videos);
-    if (metricsRes.ok && Array.isArray(metricsData.rows)) setMetricRows(metricsData.rows);
   }, []);
 
   const fetchOverview = useCallback(async (channelId: string) => {

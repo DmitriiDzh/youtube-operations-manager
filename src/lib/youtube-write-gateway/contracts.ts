@@ -1,4 +1,4 @@
-import { DomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/video-metadata/contracts";
+import { DomainError, type DomainErrorCode, type DomainErrorShape } from "@/lib/shared-domain";
 
 export type { DomainErrorCode, DomainErrorShape };
 export { DomainError };

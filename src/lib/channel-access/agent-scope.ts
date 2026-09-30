@@ -1,5 +1,5 @@
 import { getAgentSession } from "@/lib/agent-session";
-import { DomainError } from "@/lib/video-metadata/contracts";
+import { DomainError } from "@/lib/shared-domain";
 
 /**
  * Phase 12 (`docs/roadmap/plans/PHASE_12_PLAN.md` slice 12.3) -- confinement for the few

@@ -1,8 +1,8 @@
-import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
+import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createAnalyticsStoreAdapter } from "./adapters/store";
 import { createAnalyticsYoutubeApiAdapter } from "./adapters/youtube-api";
-import { createDefaultLogger } from "./adapters/logger";
+import { createDefaultLogger } from "@/lib/shared-logger";
 import { createAnalyticsServices } from "./services";
 
 function defaultAuthResolver() {

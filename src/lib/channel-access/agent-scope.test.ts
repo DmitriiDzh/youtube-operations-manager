@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { withAgentSessionForTests } from "@/lib/agent-session";
-import { isDomainError } from "@/lib/video-metadata/contracts";
+import { isDomainError } from "@/lib/shared-domain";
 import { createVideoMetadataCore } from "@/lib/video-metadata";
 import { createChannelSyncCore } from "@/lib/channel-sync";
 import { assertAgentScopeChannel, assertAgentScopeVideo } from "./agent-scope";

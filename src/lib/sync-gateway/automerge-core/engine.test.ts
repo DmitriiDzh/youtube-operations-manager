@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as Automerge from "@automerge/automerge";
-import { DomainError } from "@/lib/video-metadata/contracts";
+import { DomainError } from "@/lib/shared-domain";
 import { createAutomergeCore, type ConflictLike } from "./engine";
 import type { DiscardedDocumentBackupStore, DocumentByteStore } from "./store";
 

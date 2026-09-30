@@ -14,7 +14,7 @@ import {
 } from "./services";
 import { listPublishedSnapshotIds, createStagingDir, writeManifest } from "./adapters/filesystem";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
-import { SnapshotError, SNAPSHOT_TRANSFERRED_TABLES } from "./contracts";
+import { SnapshotError, SNAPSHOT_DEVICE_LOCAL_TABLES, SNAPSHOT_TRANSFERRED_TABLES } from "./contracts";
 import { withTempDir } from "@/test-support/temp-dir";
 
 async function makeClient(dir: string, name: string): Promise<Client> {
@@ -780,6 +780,59 @@ test("applySnapshotToDatabase: Phase 11 channel_workspaces is device-local -- ne
       { device_id: "device-b", channel_id: "UCreceiving000000000001", path: "/Users/b/work/receiving" },
     ]);
 
+    source.close();
+    receiving.close();
+  }));
+
+// Architecture audit 2026-10-01 (M6): every table the schema creates is classified exactly once --
+// transferred with a handoff, or deliberately device-local with a reason.
+test("every schema table is classified as either transferred or device-local, never both, never neither", async () => {
+  const source = await readFile(path.resolve(process.cwd(), "src/lib/db.ts"), "utf8");
+  const created = new Set([...source.matchAll(/CREATE TABLE IF NOT EXISTS ([a-z_]+)/g)].map((m) => m[1]));
+  created.add("schema_meta");
+  const transferred = new Set<string>(SNAPSHOT_TRANSFERRED_TABLES);
+  const local = new Set(Object.keys(SNAPSHOT_DEVICE_LOCAL_TABLES));
+  const unclassified = [...created].filter((t) => !transferred.has(t) && !local.has(t));
+  const both = [...created].filter((t) => transferred.has(t) && local.has(t));
+  const unknown = [...transferred, ...local].filter((t) => !created.has(t));
+  assert.deepEqual({ unclassified, both, unknown }, { unclassified: [], both: [], unknown: [] });
+});
+
+// Review of the architecture-audit fixes (2026-10-01): a snapshot from an OLDER build whose scrub
+// dropped a now-transferred table (video_edit_audit_events) must still import, leaving that table's
+// receiving-device rows untouched -- never failing the whole import.
+test("applySnapshotToDatabase: a transferred table missing from an older snapshot is left as-is, not an import failure", () =>
+  withTempDir("snapshot-test-", async (dir) => {
+    const source = await makeClient(dir, "source.db");
+    await seedResearchChannel(source, "UCsource0000000000000001");
+    const manifest = await exportSnapshot({ client: source, snapshotsDir: path.join(dir, "snapshots"), deviceId: "device-a", schemaVersion: 3 });
+    const workingCopyPath = path.join(dir, "working-copy.db");
+    await copyDatabaseConsistently(
+      createClient({ url: `file:${path.join(dir, "snapshots", manifest.snapshotId, "data.db")}` }),
+      workingCopyPath
+    );
+    await migrateStagedCopy(workingCopyPath);
+    // Simulate the older build's scrub, which did not keep this table.
+    const staged = createClient({ url: `file:${workingCopyPath}` });
+    await staged.execute("DROP TABLE video_edit_audit_events");
+    staged.close();
+
+    const receiving = await makeClient(dir, "receiving.db");
+    const columns = (await receiving.execute("PRAGMA table_info(video_edit_audit_events)")).rows.map((r) => String(r.name));
+    assert.ok(columns.length > 0);
+    await receiving.execute({
+      sql: "INSERT INTO video_edit_audit_events (channel_id, video_id, event_type, detail_json) VALUES (?, ?, ?, ?)",
+      args: ["UCreceiving000000000001", "v1", "APPLY", "{}"],
+    });
+    const before = (await receiving.execute("SELECT COUNT(*) AS n FROM video_edit_audit_events")).rows[0].n;
+    assert.equal(before, 1);
+
+    await applySnapshotToDatabase(receiving, workingCopyPath);
+
+    const after = (await receiving.execute("SELECT COUNT(*) AS n FROM video_edit_audit_events")).rows[0].n;
+    assert.equal(after, before);
+    const channels = await receiving.execute("SELECT id FROM research_channels");
+    assert.deepEqual(channels.rows.map((r) => r.id), ["UCsource0000000000000001"]);
     source.close();
     receiving.close();
   }));

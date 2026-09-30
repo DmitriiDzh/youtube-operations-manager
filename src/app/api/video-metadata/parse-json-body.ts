@@ -1,4 +1,4 @@
-import { DomainError } from "@/lib/video-metadata/contracts";
+import { DomainError } from "@/lib/shared-domain";
 
 export async function parseVideoMetadataJsonBody(
   request: Request

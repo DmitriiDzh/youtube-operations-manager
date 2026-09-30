@@ -1,5 +1,6 @@
 "use client";
 
+import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 
@@ -41,6 +42,10 @@ export function MarketIntelligenceCollectionSettings() {
         return;
       }
       const data = (await res.json()) as Settings;
+      if (ownSettingsUnavailable(data, ["marketIntelligenceDailyQuotaBudgetUnits"])) {
+        setLoadError("Failed to load settings.");
+        return;
+      }
       setLoadError(null);
       setSettings(data);
       setDraftUnits(data.marketIntelligenceDailyQuotaBudgetUnits ?? 0);

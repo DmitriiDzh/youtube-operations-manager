@@ -109,3 +109,25 @@ test("writeJsonFileAtomic: a close() failure after a successful write/sync propa
     assert.deepEqual(entries, []); // the real tmp file this run created is gone
     assert.equal(existsSync(target), false); // never renamed into place either
   }));
+
+// Architecture audit 2026-10-01 (M4): the byte-level variant used by sync-gateway -- same crash-safe
+// write, but it must never tighten permissions of a user-shared (Syncthing) folder, and must leave no
+// temp file behind.
+test("writeFileAtomic writes bytes in place, leaves no temp file, and does not chmod the directory", async () => {
+  const { mkdtemp, readdir, readFile: read, stat, chmod: chmodDir, rm: remove } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const pathModule = await import("node:path");
+  const { writeFileAtomic } = await import("./services");
+  const dir = await mkdtemp(pathModule.join(tmpdir(), "write-file-atomic-"));
+  try {
+    await chmodDir(dir, 0o755);
+    const target = pathModule.join(dir, "device-a.automerge");
+    await writeFileAtomic(target, new Uint8Array([1, 2, 3]));
+    await writeFileAtomic(target, new Uint8Array([4, 5]));
+    assert.deepEqual([...(await read(target))], [4, 5]);
+    assert.deepEqual(await readdir(dir), ["device-a.automerge"]);
+    if (process.platform !== "win32") assert.equal((await stat(dir)).mode & 0o777, 0o755);
+  } finally {
+    await remove(dir, { recursive: true, force: true });
+  }
+});

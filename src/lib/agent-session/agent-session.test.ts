@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { db, getSelectedChannelId, setSelectedChannelId, users } from "@/lib/db";
 import { createCliAuthService } from "@/lib/cli-auth/services";
 import { createChannelAccessCore } from "@/lib/channel-access";
-import { isDomainError } from "@/lib/video-metadata/contracts";
+import { isDomainError } from "@/lib/shared-domain";
 import { enterAgentSession, getAgentSession, withAgentSessionForTests } from "./index";
 
 // docs/roadmap/plans/PHASE_12_PLAN.md §6 enforcement design + AC-P12-04/05/06. These run against

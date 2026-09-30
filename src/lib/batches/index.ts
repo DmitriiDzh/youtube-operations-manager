@@ -1,5 +1,5 @@
 import { createDefaultLogger } from "@/lib/shared-logger";
-import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
+import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createWriteContextCore } from "@/lib/write-context";
 import { createBackupCore } from "@/lib/backup";
 import { createAuditCore } from "@/lib/audit";
@@ -42,3 +42,8 @@ export function createBatchCore() {
 }
 
 export type BatchCore = ReturnType<typeof createBatchCore>;
+
+// Architecture audit 2026-10-01 (M8): exported through the barrel so app-layer callers never reach
+// into this module's services/adapters directly.
+export { isApprovalStillValid } from "./services";
+export { createLiveWriteExecutorIfEnabled } from "./adapters/write-executor";

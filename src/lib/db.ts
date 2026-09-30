@@ -496,11 +496,10 @@ export const videoEditAuditEvents = sqliteTable("video_edit_audit_events", {
     .$defaultFn(() => new Date()),
 });
 
-// Generic key/value app settings (SCHEMA_MIGRATIONS version 7) -- currently backs the Gate B
-// "live writes" toggle and the MCP restricted-mode toggle (owner instruction, 2026-09-21,
-// Settings tab). Deliberately a plain key/value table rather than one dedicated column per
-// setting, since these two toggles are the first of what is expected to be several small,
-// independent app-wide flags -- see `getAppSetting`/`setAppSetting` below.
+// Generic key/value app settings (SCHEMA_MIGRATIONS version 7) -- backs the per-device Settings-tab
+// toggles and values (Live writes, MCP connection, Operator CLI access, read toggles, analytics
+// sync time, operations workspace path, market-intelligence quota budget, ...). A plain key/value
+// table rather than one column per setting -- see `getAppSetting`/`setAppSetting` below.
 export const appSettings = sqliteTable("app_settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
@@ -517,9 +516,9 @@ export const appSettings = sqliteTable("app_settings", {
  * `pruneOldGatewayCallEvents` for why this table does not grow unboundedly forever.
  * `mcp_tool_calls` never records a `blocked` outcome for the "MCP connection off" case: a tool is
  * never registered at all then, so there is no failed call to log, only an absent one. It DOES
- * record `blocked` for a BL-091 agent-zone rejection (`src/mcp/server.ts`'s `registerTool`
- * wrapper) -- that is a real, counted call attempt through an actually-registered tool, unlike the
- * "connection off" case.
+ * record `blocked` for a call whose agent token fails re-verification (Phase 12, `src/mcp/server.ts`'s
+ * `registerTool` wrapper; BL-091's zone rejections were retired with the zones, ADR 0011) -- a real,
+ * counted call attempt through an actually-registered tool, unlike the "connection off" case.
  *
  * `cloud_monitoring_reads` (added 2026-09-22, owner instruction, Telegram, after being told
  * checking Google Cloud's own quota numbers is itself a real API call: "в таком случае на него
@@ -770,10 +769,12 @@ export const analyticsCollectionRuns = sqliteTable(
  * layer (`runWeeklyReportIfDue`), not this table, enforces that a `status: "final"` row is never
  * overwritten by a later `upsertWeeklyReport` call for the same week.
  *
- * **Deliberately NOT added to `SNAPSHOT_TRANSFERRED_TABLES`** -- derived, re-computable data, the
- * same reasoning as `video_metrics_daily`/`analytics_collection_runs` above (docs/ARCHITECTURE.md
- * §14.7/§14.9): a snapshot report can always be regenerated locally from the data that IS
- * transferred, so it does not need to travel with a device handoff.
+ * **Deliberately NOT added to `SNAPSHOT_TRANSFERRED_TABLES`** -- device-local together with the
+ * data it is computed from: `video_metrics_daily` does not travel either (RISK-52's accepted
+ * limitation, docs/ARCHITECTURE.md §14.7), so on a new device weekly reports are rebuilt from that
+ * device's own collected metrics, never copied. (Corrected 2026-10-01, architecture audit M6: this
+ * comment previously claimed the reports could be regenerated "from the data that IS transferred",
+ * which was false.)
  */
 export const analyticsWeeklyReports = sqliteTable(
   "analytics_weekly_reports",
@@ -2522,20 +2523,11 @@ async function initializeDatabase() {
     if (lockAcquired) await releaseOperationLock(rawClient);
   }
 
-  // Gate B toggle (owner instruction, 2026-09-21): "по дефолту при запуске сессии он выключен"
-  // -- unconditionally forced back to false on every process boot (Web app, MCP server, or CLI
-  // command, whichever imports this module first), regardless of what was last saved. This is
-  // what makes "off by default each session" hold even though the flag itself is durably
-  // persisted (required for multiple processes/workers to agree on its value while a session is
-  // actually running) rather than an in-memory variable.
-  //
-  // Deliberately `rawClient.execute` here, NOT `setLiveWritesEnabled`/the guarded `db` object:
-  // this function's own promise IS `databaseInitialization`, so the guarded client's "await
-  // databaseInitialization first" wrapper would deadlock waiting for this very call to finish.
-  await rawClient.execute({
-    sql: "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    args: ["live_writes_enabled", "false"],
-  });
+  // Gate B toggle: NOT reset here any more (architecture audit 2026-10-01, finding H1). It used to
+  // be forced to false on EVERY process boot -- but the flag is shared by every process, so each CLI
+  // call or MCP spawn silently switched the operator's toggle off (and could strand a running Batch
+  // in APPLYING). "Off by default each session" is now enforced where a session actually starts:
+  // the web server's boot hook (`src/instrumentation.ts` -> `resetLiveWritesForNewServerSession`).
 
   // The read-side toggles (`data_api_reads_enabled`/`analytics_reads_enabled`, see
   // `getDataApiReadsEnabled`/`getAnalyticsReadsEnabled` below) are deliberately NOT reset here,
@@ -2942,7 +2934,10 @@ export async function upsertChannel(input: {
   title: string;
   thumbnailUrl: string | null;
   uploadsPlaylistId: string;
-  connectedUserId: string | null;
+  /** Architecture audit H3: `undefined` leaves an existing row's owner untouched; only a proven
+   * owner (the implicit "my channel" sync) ever sets it, and a sync never clears it (`null` is
+   * treated like `undefined` here). */
+  connectedUserId?: string | null;
 }): Promise<void> {
   await db
     .insert(channels)
@@ -2951,7 +2946,7 @@ export async function upsertChannel(input: {
       title: input.title,
       thumbnailUrl: input.thumbnailUrl,
       uploadsPlaylistId: input.uploadsPlaylistId,
-      connectedUserId: input.connectedUserId,
+      connectedUserId: input.connectedUserId ?? null,
     })
     .onConflictDoUpdate({
       target: channels.id,
@@ -2959,7 +2954,7 @@ export async function upsertChannel(input: {
         title: input.title,
         thumbnailUrl: input.thumbnailUrl,
         uploadsPlaylistId: input.uploadsPlaylistId,
-        connectedUserId: input.connectedUserId,
+        ...(input.connectedUserId ? { connectedUserId: input.connectedUserId } : {}),
       },
     });
 }
@@ -3041,21 +3036,80 @@ const MCP_CONNECTION_ENABLED_SETTING_KEY = "mcp_connection_enabled";
 
 /**
  * The persisted half of the Gate B toggle (owner instruction, 2026-09-21, Settings tab) --
- * `src/lib/batches/adapters/write-executor.youtube.ts`'s `assertLiveWritesAuthorized()` reads
- * this at call time (not cached, not captured at construction) as the SECOND of two independent
- * layers: `src/lib/batches/index.ts` still only constructs a real `WriteExecutor` when this is
- * true (layer 1 -- no code path to `videos.update` exists at all otherwise), and this function
- * re-checks it again immediately before the write (layer 2). Persisted, not an in-memory module
+ * `src/lib/youtube-write-gateway`'s `assertLiveWritesAuthorized()` reads this at call time (not
+ * cached, not captured at construction) immediately before every real write, on every write path
+ * (Batches, single-item apply, playlists); Batches additionally only construct a real
+ * `WriteExecutor` when it is true (`createLiveWriteExecutorIfEnabled`). Persisted, not an in-memory module
  * variable, so every process that reads it (the Web app, a separately-spawned MCP process, the
- * CLI) agrees -- see `initializeDatabase()`'s unconditional reset to `false` on every process
- * boot for how "off by default each session" is actually achieved despite that.
+ * CLI) agrees. "Off by default each session" is achieved by `resetLiveWritesForNewServerSession`,
+ * run once at web-server boot only (never per process -- H1).
  */
-export async function getLiveWritesEnabled(): Promise<boolean> {
-  return (await getAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY)) === "true";
+const LIVE_WRITES_SESSION_LEASE_SETTING_KEY = "live_writes_session_lease_at";
+
+/**
+ * How long a web-server session lease stays valid without renewal (architecture-audit review, round
+ * 3). The web server renews it every `LIVE_WRITES_SESSION_LEASE_RENEW_MS`; a few missed renewals
+ * (event-loop stall, laptop sleep) do not flip the toggle off, but any ungraceful end of the web
+ * server -- a crash, Windows `taskkill /F`, a closed console window -- makes Live writes lapse
+ * within this TTL on every platform.
+ */
+export const LIVE_WRITES_SESSION_LEASE_TTL_MS = 3 * 60 * 1000;
+export const LIVE_WRITES_SESSION_LEASE_RENEW_MS = 30 * 1000;
+/** Tolerated clock skew for a lease stamped slightly "in the future" (e.g. two processes' clocks). */
+export const LIVE_WRITES_SESSION_LEASE_MAX_SKEW_MS = 60 * 1000;
+
+/**
+ * Gate B: Live writes are honored only while a web-server session is alive (owner rule "off by
+ * default at the start of every session", 2026-09-21; architecture audit H1 + review). True only
+ * when the persisted toggle is on AND the web server's session lease is fresh. Every consumer (the
+ * write gateway, the Batch executor factory, the batch/experiment routes, the Settings snapshot)
+ * reads this one function, so the UI toggle and the real write permission can never disagree.
+ */
+export async function getLiveWritesEnabled(now: Date = new Date()): Promise<boolean> {
+  if ((await getAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY)) !== "true") return false;
+  const leaseAt = Number(await getAppSetting(LIVE_WRITES_SESSION_LEASE_SETTING_KEY));
+  const age = now.getTime() - leaseAt;
+  // Fresh = stamped within the TTL AND not meaningfully in the future (a lease stamped while the
+  // clock ran ahead must not stay "fresh" for hours after the clock is corrected -- review round 4).
+  if (Number.isFinite(leaseAt) && age < LIVE_WRITES_SESSION_LEASE_TTL_MS && age > -LIVE_WRITES_SESSION_LEASE_MAX_SKEW_MS) {
+    return true;
+  }
+  // A lapsed lease is a real OFF, persisted: the toggle must not silently come back on when a later
+  // renewal happens (e.g. after the laptop wakes), and the Settings UI must show exactly what is
+  // enforced. Re-enabling is always an explicit operator action (review round 4).
+  try {
+    await setAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY, "false");
+  } catch {
+    // Still reported as off below.
+  }
+  return false;
 }
 
+/** Called only by the operator-facing web settings route -- turning the toggle on happens inside a
+ * live web-server session, so it also stamps that session's lease. */
 export async function setLiveWritesEnabled(enabled: boolean): Promise<void> {
   await setAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY, enabled ? "true" : "false");
+  if (enabled) await renewLiveWritesSessionLease();
+}
+
+/**
+ * Renews the web-server session lease. ONLY the web server's boot hook (`src/instrumentation.ts`)
+ * and `setLiveWritesEnabled` may call this -- never an MCP or CLI process (inventory-tested), or a
+ * process that is not the operator's web session could keep Live writes alive by itself.
+ */
+export async function renewLiveWritesSessionLease(now: Date = new Date(), database: AppDb = db): Promise<void> {
+  await setAppSetting(LIVE_WRITES_SESSION_LEASE_SETTING_KEY, String(now.getTime()), database);
+}
+
+/**
+ * Gate B's "off by default at the start of every session" (owner instruction, 2026-09-21: "по
+ * дефолту при запуске сессии он выключен") -- called ONLY by the web server's boot hook
+ * (`src/instrumentation.ts`), never by an MCP server or CLI process: the flag is shared by all
+ * processes, so resetting it from any of them would switch the operator's live toggle off
+ * mid-session (architecture audit 2026-10-01, H1).
+ */
+export async function resetLiveWritesForNewServerSession(database: AppDb = db): Promise<void> {
+  await setAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY, "false", database);
 }
 
 /**

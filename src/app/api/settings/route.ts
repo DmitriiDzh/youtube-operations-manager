@@ -22,6 +22,7 @@ import {
   setOperationsWorkspacePath,
 } from "@/lib/db";
 import { validateOperationsWorkspacePath } from "@/lib/operations-instructions";
+import { buildSettingsSnapshot } from "./settings-snapshot";
 
 // A thin passthrough to the market-intelligence module's own quota-budget actions, never a direct
 // `@/lib/db` import for that setting -- this module's own PHASE9-INV-02 inventory test forbids any
@@ -30,8 +31,9 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
 
 /**
  * App-wide settings (Settings tab, owner instruction 2026-09-21). Two flags today:
- * - `liveWritesEnabled` -- Gate B toggle (docs/TECHNICAL_DEBT.md RISK-09). Defaults off every
- *   process boot (`src/lib/db.ts`'s `initializeDatabase`), regardless of what was last saved;
+ * - `liveWritesEnabled` -- Gate B toggle (docs/TECHNICAL_DEBT.md RISK-09). Reset to off when the
+ *   web server starts and when it shuts down (`src/instrumentation.ts`), regardless of what was
+ *   last saved;
  *   turning this on is layer 1 of the two-layer live-write barrier, not the write itself.
  * - `operatorCliEnabled` -- Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md 12.5): whether the CLI
  *   may run without an agent token (as the operator). Off by default, persistent.
@@ -95,43 +97,18 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
  * later while debugging something unrelated.
  */
 async function getSettingsSnapshot() {
-  const [
-    liveWritesEnabled,
-    mcpConnectionEnabled,
-    analyticsSync,
-    dataApiReadsEnabled,
-    analyticsReadsEnabled,
-    gatewayTraffic,
-    cloudQuotaStatus,
-    operationsWorkspacePath,
-    marketIntelligenceDailyQuotaBudgetUnits,
-    operatorCliEnabled,
-  ] = await Promise.all([
-    getLiveWritesEnabled(),
-    getMcpConnectionEnabled(),
-    getAnalyticsSyncSettings(),
-    getDataApiReadsEnabled(),
-    getAnalyticsReadsEnabled(),
-    getGatewayTrafficLast24h(),
-    createCloudQuotasCore().getQuotaStatus(),
-    getOperationsWorkspacePath(),
-    marketIntelligenceCore.getDailyQuotaBudgetUnits(),
-    getOperatorCliEnabled(),
-  ]);
-
-  return {
-    liveWritesEnabled,
-    mcpConnectionEnabled,
-    analyticsSyncLocalTime: analyticsSync.localTime,
-    analyticsSyncTimezone: analyticsSync.timezone,
-    dataApiReadsEnabled,
-    analyticsReadsEnabled,
-    gatewayTraffic,
-    cloudQuotaStatus,
-    operationsWorkspacePath,
-    marketIntelligenceDailyQuotaBudgetUnits,
-    operatorCliEnabled,
-  };
+  return buildSettingsSnapshot({
+    liveWritesEnabled: () => getLiveWritesEnabled(),
+    mcpConnectionEnabled: () => getMcpConnectionEnabled(),
+    analyticsSync: () => getAnalyticsSyncSettings(),
+    dataApiReadsEnabled: () => getDataApiReadsEnabled(),
+    analyticsReadsEnabled: () => getAnalyticsReadsEnabled(),
+    gatewayTraffic: () => getGatewayTrafficLast24h(),
+    cloudQuotaStatus: () => createCloudQuotasCore().getQuotaStatus(),
+    operationsWorkspacePath: () => getOperationsWorkspacePath(),
+    marketIntelligenceDailyQuotaBudgetUnits: () => marketIntelligenceCore.getDailyQuotaBudgetUnits(),
+    operatorCliEnabled: () => getOperatorCliEnabled(),
+  });
 }
 
 export async function GET() {
@@ -170,7 +147,7 @@ export async function POST(request: Request) {
   // validation or write depends on another field's write already having landed, so this reordering
   // changes nothing about what a fully-valid request ends up persisting.
   let analyticsSyncLocalTimeToSet: string | undefined;
-  if (body.analyticsSyncLocalTime !== undefined) {
+  if (body.analyticsSyncLocalTime !== undefined && body.analyticsSyncLocalTime !== null) {
     if (typeof body.analyticsSyncLocalTime !== "string" || !isValidLocalTimeOfDay(body.analyticsSyncLocalTime)) {
       return NextResponse.json(
         { error: "validation_failed", message: "analyticsSyncLocalTime must be a valid 24-hour HH:MM string" },
@@ -181,7 +158,7 @@ export async function POST(request: Request) {
   }
 
   let analyticsSyncTimezoneToSet: string | undefined;
-  if (body.analyticsSyncTimezone !== undefined) {
+  if (body.analyticsSyncTimezone !== undefined && body.analyticsSyncTimezone !== null) {
     if (typeof body.analyticsSyncTimezone !== "string" || !isValidIanaTimezone(body.analyticsSyncTimezone)) {
       return NextResponse.json(
         { error: "validation_failed", message: "analyticsSyncTimezone must be a valid IANA timezone name" },

@@ -760,3 +760,40 @@ test("AGENTS.md §G / RISK-28: resuming a RUNNING batch still enforces the write
   const finalBatch = await harness.store.getBatch(batch.id);
   assert.equal(finalBatch?.status, "ABORTED");
 });
+
+// Architecture audit 2026-10-01 (H1, docs/roadmap/plans/HARDENING_AUDIT_2026-10_PLAN.md AC-H1-3): the
+// Live-writes gate refusing an attempt (it runs before anything is sent) must end the row as a clean
+// FAILED with its lock released -- never a stranded APPLYING row (which is an unresolved execution
+// and would put the device into recovery mode) -- and halt the rest of the batch systemically.
+test("AC-H1-3: an attempt refused by the Live-writes gate ends FAILED (not APPLYING), releases its lock, and halts the batch", async () => {
+  const harness = createHarness();
+  const batch = await createApprovedBatch(harness, {
+    channelId: "UC_TEST",
+    dryRun: false,
+    selections: [
+      { videoId: "v1", changeIds: ["c1"] },
+      { videoId: "v2", changeIds: ["c2"] },
+    ],
+  });
+  const executor: WriteExecutor = {
+    async attemptWrite() {
+      throw new DomainError({ code: "live_writes_disabled", message: "off" });
+    },
+  };
+
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor });
+
+  assert.equal(summary.haltedSystemically, true);
+  const rows = await harness.services.listLedgerRows(batch.id);
+  assert.equal(rows.some((r) => r.status === "APPLYING"), false, "no row may be left APPLYING");
+  const statuses = rows.map((r) => r.status).sort();
+  assert.ok(statuses.includes("FAILED"));
+  const attemptsOfFailed = await harness.services.listAttempts(rows.find((r) => r.status === "FAILED")!.id);
+  assert.equal(attemptsOfFailed.at(-1)?.outcome, "FAILED");
+  // The failed row's video lock is free again: another batch can take it.
+  const failedVideo = rows.find((r) => r.status === "FAILED")!.videoId;
+  assert.equal(
+    await harness.store.acquireVideoExecutionLock({ videoId: failedVideo, batchId: "other-batch", ledgerRowId: "other-row" }),
+    true
+  );
+});

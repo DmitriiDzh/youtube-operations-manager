@@ -1,6 +1,6 @@
 import { YOUTUBE_READ_SCOPE } from "@/lib/auth";
 import { getStoredChannel } from "@/lib/db";
-import { resolveGoogleCredentials } from "@/lib/video-metadata/adapters/google-auth";
+import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createWriteContextCore } from "@/lib/write-context";
 import { createAgentTokenStore } from "./adapters/store";
 import { createAgentTokenServices } from "./services";

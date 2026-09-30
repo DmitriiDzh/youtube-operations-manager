@@ -34,7 +34,7 @@ import {
   type PendingChange,
 } from "./merge";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
-import type { CredentialRef, ResolvedCredentials } from "@/lib/video-metadata/contracts";
+import type { CredentialRef, ResolvedCredentials } from "@/lib/shared-domain";
 
 type BatchStoreDeps = {
   createBatchWithLedger(input: {
@@ -1038,7 +1038,30 @@ export function createBatchServices(deps: ServiceDependencies) {
       const { attemptId, attemptNumber } = await beginAttempt(row.id, payload);
       await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "ATTEMPT", detail: { attemptId, attemptNumber } });
 
-      const result = await executor.attemptWrite(payload);
+      let result: Awaited<ReturnType<WriteExecutor["attemptWrite"]>>;
+      try {
+        result = await executor.attemptWrite(payload);
+      } catch (error) {
+        // Architecture audit 2026-10-01 (H1): the Live-writes gate refused this attempt BEFORE
+        // anything was sent (it runs ahead of the client/network in attemptWrite). That is a
+        // definite, clean FAILED -- never left APPLYING, which would count as an unresolved
+        // execution and put the whole device into recovery mode. Systemic: the remaining rows would
+        // be refused the same way, so the batch stops here. Any other thrown error keeps its prior
+        // (uncaught) behavior -- its outcome is genuinely unknown.
+        if (!(error instanceof Error && (error as { code?: unknown }).code === "live_writes_disabled")) throw error;
+        const detail = "live_writes_disabled: the Live writes toggle is off -- nothing was sent to YouTube";
+        await completeAttempt(attemptId, "FAILED", detail);
+        await audit.record({
+          batchId: batch.id,
+          ledgerRowId: row.id,
+          videoId: row.videoId,
+          eventType: "RESULT",
+          detail: { attemptId, attemptNumber, outcome: "FAILED", ownResponseObserved: false, detail },
+        });
+        await transitionLedgerStatus(row.id, "FAILED", { error: detail });
+        await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
+        return { ledgerRowId: row.id, videoId: row.videoId, status: "FAILED", detail, systemic: true };
+      }
       const outcomeDetail = result.outcome === "SUCCESS" ? result.detail ?? null : result.detail;
       await completeAttempt(attemptId, result.outcome, outcomeDetail);
       await audit.record({

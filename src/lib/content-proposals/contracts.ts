@@ -6,7 +6,7 @@ import {
   createIdGenerator,
   type DomainErrorCode,
   type DomainErrorShape,
-} from "@/lib/video-metadata/contracts";
+} from "@/lib/shared-domain";
 import type { CreatedVia, EvidenceReference } from "@/lib/shared-provenance";
 import type { CreativeAsset } from "@/lib/asset-catalog";
 
