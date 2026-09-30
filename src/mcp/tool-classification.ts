@@ -7,8 +7,8 @@
  * - `bound`: available to a channel-bound agent; the process-wide agent scope
  *   (`src/lib/agent-session`) plus the tool's own checks confine it to the bound channel.
  * - `operator-only`: never registered in an agent session. Identity/selection switching (hole #1/#2),
- *   the global operations workspace (owner decision D2: channel folders only), and data that has no
- *   per-channel ownership yet.
+ *   and the global operations workspace (owner decision D2: channel folders only). Market tools are
+ *   `bound`: their results are narrowed to records assigned to the agent's channel (D1, slice 12.4).
  */
 export type McpToolClass = "bound" | "operator-only";
 
@@ -63,10 +63,10 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_find_comparable_videos: "bound",
   agent_list_asset_performance: "bound",
   agent_get_channel_workspace: "bound",
-  query_competitors: "operator-only",
-  query_market_intelligence: "operator-only",
-  agent_list_market_records: "operator-only",
-  agent_create_market_research_request: "operator-only",
+  query_competitors: "bound",
+  query_market_intelligence: "bound",
+  agent_list_market_records: "bound",
+  agent_create_market_research_request: "bound",
   agent_list_hypotheses: "bound",
   agent_get_hypothesis_trail: "bound",
   create_experiment_proposal: "bound",

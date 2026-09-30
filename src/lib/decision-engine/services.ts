@@ -43,6 +43,10 @@ export type DecisionEngineServiceDependencies = {
   idGenerator(): string;
   clock: { now(): Date };
   channelAccess: ChannelAccess;
+  /** Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md 12.4, AC-P12-09): true inside a channel-bound agent
+   * session. Channel-less ("new channel concept") hypotheses are operator-only there -- an agent sees
+   * and touches only its own channel's rows. Optional; absent means false (operator semantics). */
+  isAgentSession?: () => boolean;
   insertHypothesis: (input: {
     id: string;
     channelId?: string | null;
@@ -282,6 +286,9 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
     }
     if (row.channelId) {
       await deps.channelAccess.assertActiveChannel({ userId: ctx.userId, channelId: row.channelId });
+    } else if (deps.isAgentSession?.()) {
+      // Same error as a nonexistent id -- an agent cannot even learn a channel-less row exists.
+      throw new DomainError({ code: "HYPOTHESIS_NOT_FOUND", message: "Hypothesis not found", details: { hypothesisId } });
     }
     return row;
   }
@@ -335,7 +342,8 @@ export function createDecisionEngineServices(deps: DecisionEngineServiceDependen
     async listHypotheses(ctx: { userId: string | null | undefined }): Promise<Hypothesis[]> {
       const activeChannelId = await deps.channelAccess.getActiveChannelId(ctx.userId);
       const rows = await deps.listHypotheses();
-      const filtered = rows.filter((row) => row.channelId === null || row.channelId === activeChannelId);
+      const includeChannelless = !deps.isAgentSession?.();
+      const filtered = rows.filter((row) => (row.channelId === null ? includeChannelless : row.channelId === activeChannelId));
       return filtered.map(toHypothesis);
     },
 

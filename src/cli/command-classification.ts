@@ -63,11 +63,11 @@ export const CLI_COMMAND_CLASSIFICATION: Readonly<Record<string, CliCommandClass
   "agent get-operations-file": "operator-only",
   "agent find-comparable-videos": "bound",
   "agent list-asset-performance": "bound",
-  // Global market data -- operator-only until records are assigned to channels (slice 12.4).
-  "agent competitors": "operator-only",
-  "agent market-intelligence": "operator-only",
-  "agent market-records": "operator-only",
-  "agent create-research-request": "operator-only",
+  // Market data -- narrowed to records assigned to the agent's channel (owner decision D1, 12.4).
+  "agent competitors": "bound",
+  "agent market-intelligence": "bound",
+  "agent market-records": "bound",
+  "agent create-research-request": "bound",
   "agent list-hypotheses": "bound",
   "agent get-hypothesis-trail": "bound",
   "agent create-experiment-proposal": "bound",

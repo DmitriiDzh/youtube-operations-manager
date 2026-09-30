@@ -595,6 +595,30 @@ export const cloudConnection = sqliteTable("cloud_connection", {
 });
 
 /**
+ * Phase 12 (`docs/roadmap/plans/PHASE_12_PLAN.md` slice 12.4, owner decision D1: "общий сбор и потом
+ * выдаем каждому каналу что нужно ему"), SCHEMA_MIGRATIONS version 35. Market records are collected
+ * once, globally (Phase 9); the operator then assigns individual records to channels, and a
+ * channel-bound agent sees only what is assigned to its own channel. `record_kind` names which
+ * Phase 9 record `record_id` refers to (no FK -- five different parent tables; validated in the
+ * service). A research request an agent creates is recorded here as owned by its channel.
+ *
+ * Unlike `agent_channel_tokens`, this IS business data and travels with a device handoff
+ * (`SNAPSHOT_TRANSFERRED_TABLES`), exactly like the Phase 9 tables it annotates.
+ */
+export const channelRecordAssignments = sqliteTable(
+  "channel_record_assignments",
+  {
+    channelId: text("channel_id").notNull(),
+    recordKind: text("record_kind").notNull(),
+    recordId: text("record_id").notNull(),
+    assignedAt: integer("assigned_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.recordKind, table.recordId] })]
+);
+
+/**
  * Phase 12 (channel-bound agent isolation, `docs/roadmap/plans/PHASE_12_PLAN.md` slice 12.1),
  * SCHEMA_MIGRATIONS version 34. One row per issued agent channel token. Only a SHA-256 hash of the
  * token is ever stored (AC-P12-11); the plaintext is shown to the operator once at issue time.
@@ -2196,6 +2220,24 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 35,
+    description:
+      "channel_record_assignments -- Phase 12 slice 12.4 (owner decision D1): per-channel assignment of globally collected market records (docs/roadmap/plans/PHASE_12_PLAN.md). Travels with device handoff.",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS channel_record_assignments (" +
+          "channel_id TEXT NOT NULL, " +
+          "record_kind TEXT NOT NULL, " +
+          "record_id TEXT NOT NULL, " +
+          "assigned_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "PRIMARY KEY (channel_id, record_kind, record_id))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS channel_record_assignments_record_idx ON channel_record_assignments(record_kind, record_id)"
+      );
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -3138,6 +3180,63 @@ export async function getOperationsWorkspacePath(database: AppDb = db): Promise<
 
 export async function setOperationsWorkspacePath(path: string | null, database: AppDb = db): Promise<void> {
   await setAppSetting(OPERATIONS_WORKSPACE_PATH_SETTING_KEY, path ?? "", database);
+}
+
+/** Phase 12 slice 12.4. Record ids of one kind assigned to a channel. */
+export async function listChannelAssignedRecordIds(channelId: string, recordKind: string, database: AppDb = db): Promise<string[]> {
+  const rows = await database
+    .select({ recordId: channelRecordAssignments.recordId })
+    .from(channelRecordAssignments)
+    .where(and(eq(channelRecordAssignments.channelId, channelId), eq(channelRecordAssignments.recordKind, recordKind)));
+  return rows.map((row) => row.recordId);
+}
+
+/** Channels one record is assigned to. */
+export async function listRecordAssignmentChannels(recordKind: string, recordId: string, database: AppDb = db): Promise<string[]> {
+  const rows = await database
+    .select({ channelId: channelRecordAssignments.channelId })
+    .from(channelRecordAssignments)
+    .where(and(eq(channelRecordAssignments.recordKind, recordKind), eq(channelRecordAssignments.recordId, recordId)));
+  return rows.map((row) => row.channelId);
+}
+
+/** Every assignment of one kind -- the operator UI's bulk view. */
+export async function listRecordAssignmentsByKind(
+  recordKind: string,
+  database: AppDb = db
+): Promise<Array<{ channelId: string; recordId: string }>> {
+  return database
+    .select({ channelId: channelRecordAssignments.channelId, recordId: channelRecordAssignments.recordId })
+    .from(channelRecordAssignments)
+    .where(eq(channelRecordAssignments.recordKind, recordKind));
+}
+
+/** Replaces the full set of channels a record is assigned to, in one transaction. */
+export async function setRecordAssignmentChannels(
+  recordKind: string,
+  recordId: string,
+  channelIds: string[],
+  database: AppDb = db
+): Promise<void> {
+  await database.transaction(async (tx) => {
+    await tx
+      .delete(channelRecordAssignments)
+      .where(and(eq(channelRecordAssignments.recordKind, recordKind), eq(channelRecordAssignments.recordId, recordId)));
+    if (channelIds.length > 0) {
+      const assignedAt = new Date();
+      await tx
+        .insert(channelRecordAssignments)
+        .values(channelIds.map((channelId) => ({ channelId, recordKind, recordId, assignedAt })));
+    }
+  });
+}
+
+/** Adds one assignment (idempotent) -- used when an agent creates a record owned by its channel. */
+export async function addChannelRecordAssignment(channelId: string, recordKind: string, recordId: string, database: AppDb = db): Promise<void> {
+  await database
+    .insert(channelRecordAssignments)
+    .values({ channelId, recordKind, recordId, assignedAt: new Date() })
+    .onConflictDoNothing();
 }
 
 export type StoredAgentChannelToken = {

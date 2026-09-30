@@ -737,6 +737,8 @@ test("applySnapshotToDatabase: Phase 11 channel_workspaces is device-local -- ne
   withTempDir("snapshot-test-", async (dir) => {
     assert.equal((SNAPSHOT_TRANSFERRED_TABLES as readonly string[]).includes("channel_workspaces"), false);
     assert.equal((SNAPSHOT_TRANSFERRED_TABLES as readonly string[]).includes("agent_channel_tokens"), false);
+    // ...whereas the per-channel market assignments (Phase 12 slice 12.4) ARE business data and travel.
+    assert.equal((SNAPSHOT_TRANSFERRED_TABLES as readonly string[]).includes("channel_record_assignments"), true);
 
     const source = await makeClient(dir, "source.db");
     await source.execute({

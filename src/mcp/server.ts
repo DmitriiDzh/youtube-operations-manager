@@ -82,6 +82,7 @@ import {
 } from "@/lib/analytics/schemas";
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
 import { createAgentTokenCore, type AgentTokenBinding } from "@/lib/agent-tokens";
+import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
 import { enterAgentSession } from "@/lib/agent-session";
 import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
 import {
@@ -512,7 +513,10 @@ export function createMcpToolHandlers(
   // `agentOperationsCore`, for the same module-independence reason as `marketIntelligenceCore`
   // above. Read-only subset on purpose: `setWorkspace` is operator-only (`/api/channel-workspaces`)
   // and is deliberately NOT reachable from any MCP tool (AC-P11-10).
-  channelWorkspacesCore: Pick<ChannelWorkspacesCore, "getWorkspace"> = createChannelWorkspacesCore()
+  channelWorkspacesCore: Pick<ChannelWorkspacesCore, "getWorkspace"> = createChannelWorkspacesCore(),
+  // Phase 12 slice 12.4 (owner decision D1) -- per-channel assignment of the global market records
+  // above. Agent-confinement subset only; assigning is operator-only (Web UI).
+  marketAssignmentCore: Pick<MarketAssignmentCore, "filterForAgent" | "assertAvailableToAgent" | "recordAgentOwnership"> = createMarketAssignmentCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -1548,7 +1552,9 @@ export function createMcpToolHandlers(
 
       try {
         const result = await marketIntelligenceCore.listWatchlist();
-        return toolSuccessResult(result as unknown as Record<string, unknown>);
+        // Phase 12 (AC-P12-09): an agent sees only watchlist entries assigned to its channel.
+        const channels = await marketAssignmentCore.filterForAgent("research_channel", result.channels, (c) => c.channelId);
+        return toolSuccessResult({ ...result, channels } as unknown as Record<string, unknown>);
       } catch (error) {
         return toolErrorResult(error);
       }
@@ -1570,6 +1576,8 @@ export function createMcpToolHandlers(
       }
 
       try {
+        // Phase 12 (AC-P12-09): not assigned to the agent's channel = same error as not watchlisted.
+        await marketAssignmentCore.assertAvailableToAgent("research_channel", parsedInput.data.channelId);
         const result = await marketIntelligenceCore.getWatchlistEntryContext(parsedInput.data);
         return toolSuccessResult(result as unknown as Record<string, unknown>);
       } catch (error) {
@@ -1592,16 +1600,24 @@ export function createMcpToolHandlers(
       }
 
       try {
+        // Phase 12 (AC-P12-09): each kind narrowed to what is assigned to the agent's channel.
         if (parsedInput.data.kind === "topics") {
           const result = await marketIntelligenceCore.listTopics();
-          return toolSuccessResult({ kind: "topics", ...result });
+          const topics = await marketAssignmentCore.filterForAgent("topic", result.topics, (t) => t.topicId);
+          return toolSuccessResult({ kind: "topics", ...result, topics });
         }
         if (parsedInput.data.kind === "trend_candidates") {
           const result = await marketIntelligenceCore.listTrendCandidates();
-          return toolSuccessResult({ kind: "trend_candidates", ...result });
+          const trendCandidates = await marketAssignmentCore.filterForAgent(
+            "trend_candidate",
+            result.trendCandidates,
+            (t) => t.trendCandidateId
+          );
+          return toolSuccessResult({ kind: "trend_candidates", ...result, trendCandidates });
         }
         const result = await marketIntelligenceCore.listDiscoveryCandidates();
-        return toolSuccessResult({ kind: "discovery_candidates", ...result });
+        const candidates = await marketAssignmentCore.filterForAgent("discovery_candidate", result.candidates, (c) => c.channelId);
+        return toolSuccessResult({ kind: "discovery_candidates", ...result, candidates });
       } catch (error) {
         return toolErrorResult(error);
       }
@@ -1628,6 +1644,8 @@ export function createMcpToolHandlers(
           createdVia: "mcp",
           agentApiVersion: AGENT_API_VERSION,
         });
+        // Phase 12: a request an agent files is owned by its channel (operator sees all requests).
+        await marketAssignmentCore.recordAgentOwnership("research_request", result.requestId);
         return toolSuccessResult(result as unknown as Record<string, unknown>);
       } catch (error) {
         return toolErrorResult(error);

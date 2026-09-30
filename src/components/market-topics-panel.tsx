@@ -1,5 +1,7 @@
 "use client";
 
+import { FeatureErrorBoundary } from "./feature-error-boundary";
+import { MarketChannelAssignment } from "./market-channel-assignment";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { ConfirmDialog } from "./confirm-dialog";
@@ -198,6 +200,11 @@ export function MarketTopicsPanel() {
       <div className="space-y-2">
         {topics.map((topic) => (
           <div key={topic.topicId} className="rounded-lg border border-zinc-800 p-3">
+            <div className="mb-2">
+              <FeatureErrorBoundary label="Channel assignment">
+                <MarketChannelAssignment recordKind="topic" recordId={topic.topicId} />
+              </FeatureErrorBoundary>
+            </div>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <button onClick={() => handleToggleExpand(topic)} className="text-left text-sm font-medium text-zinc-100 hover:underline">
                 {topic.name}

@@ -25,6 +25,7 @@ import { createAssetCatalogCore, type AssetCatalogCore } from "@/lib/asset-catal
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
 import { createChannelWorkspacesCore, type ChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { createAgentTokenCore, type AgentTokenBinding } from "@/lib/agent-tokens";
+import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
 import { enterAgentSession } from "@/lib/agent-session";
 import { CLI_COMMAND_CLASSIFICATION } from "./command-classification";
 import { createDecisionEngineCore, type DecisionEngineCore } from "@/lib/decision-engine";
@@ -577,6 +578,8 @@ export async function runCliCommand(args: {
   decisionEngineCore?: DecisionEngineCliCoreSubset;
   // Phase 11 -- read-only subset on purpose; `setWorkspace` is operator-only (Web UI).
   channelWorkspacesCore?: Pick<ChannelWorkspacesCore, "getWorkspace">;
+  // Phase 12 slice 12.4 -- agent-confinement subset of the per-channel market assignments.
+  marketAssignmentCore?: Pick<MarketAssignmentCore, "filterForAgent" | "assertAvailableToAgent" | "recordAgentOwnership">;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
   // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md §6) -- the channel-bound agent session this
@@ -603,6 +606,7 @@ export async function runCliCommand(args: {
   const marketIntelligenceCore = args.marketIntelligenceCore ?? createMarketIntelligenceCore();
   const decisionEngineCore = args.decisionEngineCore ?? createDecisionEngineCore();
   const channelWorkspacesCore = args.channelWorkspacesCore ?? createChannelWorkspacesCore();
+  const marketAssignmentCore = args.marketAssignmentCore ?? createMarketAssignmentCore();
   const writeStdout =
     args.writeStdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const writeStderr =
@@ -953,12 +957,15 @@ export async function runCliCommand(args: {
       // "list-operations-files"/"get-operations-file" above.
       if (parsedArgs.command === "competitors") {
         const result = await marketIntelligenceCore.listWatchlist();
-        writeStdout(serializeSuccess(result));
+        // Phase 12 (AC-P12-09): an agent sees only entries assigned to its channel.
+        const channels = await marketAssignmentCore.filterForAgent("research_channel", result.channels, (c) => c.channelId);
+        writeStdout(serializeSuccess({ ...result, channels }));
         return 0;
       }
 
       if (parsedArgs.command === "market-intelligence") {
         const requestedChannelId = requiredStringFlag(parsedArgs.flags, "channelId");
+        await marketAssignmentCore.assertAvailableToAgent("research_channel", requestedChannelId);
         const result = await marketIntelligenceCore.getWatchlistEntryContext({ channelId: requestedChannelId });
         writeStdout(serializeSuccess(result));
         return 0;
@@ -968,19 +975,23 @@ export async function runCliCommand(args: {
       // agent_list_market_records tool's own "kind discriminator, not three tools" shape.
       if (parsedArgs.command === "market-records") {
         const kind = requiredStringFlag(parsedArgs.flags, "kind");
+        // Phase 12 (AC-P12-09): each kind narrowed to what is assigned to the agent's channel.
         if (kind === "topics") {
           const result = await marketIntelligenceCore.listTopics();
-          writeStdout(serializeSuccess({ kind, ...result }));
+          const topics = await marketAssignmentCore.filterForAgent("topic", result.topics, (t) => t.topicId);
+          writeStdout(serializeSuccess({ kind, ...result, topics }));
           return 0;
         }
         if (kind === "trend_candidates") {
           const result = await marketIntelligenceCore.listTrendCandidates();
-          writeStdout(serializeSuccess({ kind, ...result }));
+          const trendCandidates = await marketAssignmentCore.filterForAgent("trend_candidate", result.trendCandidates, (t) => t.trendCandidateId);
+          writeStdout(serializeSuccess({ kind, ...result, trendCandidates }));
           return 0;
         }
         if (kind === "discovery_candidates") {
           const result = await marketIntelligenceCore.listDiscoveryCandidates();
-          writeStdout(serializeSuccess({ kind, ...result }));
+          const candidates = await marketAssignmentCore.filterForAgent("discovery_candidate", result.candidates, (c) => c.channelId);
+          writeStdout(serializeSuccess({ kind, ...result, candidates }));
           return 0;
         }
         throw new DomainError({
@@ -1011,6 +1022,7 @@ export async function runCliCommand(args: {
           // value.
           { createdVia: "cli", agentApiVersion: null }
         );
+        await marketAssignmentCore.recordAgentOwnership("research_request", result.requestId);
         writeStdout(serializeSuccess(result));
         return 0;
       }

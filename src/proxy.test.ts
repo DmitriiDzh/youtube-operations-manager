@@ -377,3 +377,14 @@ test("proxy gates the agent-tokens POST and DELETE routes like any other real mu
     await releaseOperationLock(rawSqlClient);
   }
 });
+
+// Phase 12 slice 12.4 -- assigning market records to channels is a real local mutation.
+test("proxy gates the market-assignments PUT route like any other real mutation", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const response = await proxy(new NextRequest(new Request("http://localhost/api/market-assignments", { method: "PUT" })));
+    assert.equal(response.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});

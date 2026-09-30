@@ -1,5 +1,7 @@
 "use client";
 
+import { FeatureErrorBoundary } from "./feature-error-boundary";
+import { MarketChannelAssignment } from "./market-channel-assignment";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { ConfirmDialog } from "./confirm-dialog";
@@ -421,6 +423,11 @@ export function MarketResearchPanel() {
         {!loading && channels.length === 0 && <p className="text-sm text-zinc-500">No channels on the watchlist yet.</p>}
         {channels.map((c) => (
           <div key={c.channelId} className="rounded-lg border border-zinc-800 p-3">
+            <div className="mb-2">
+              <FeatureErrorBoundary label="Channel assignment">
+                <MarketChannelAssignment recordKind="research_channel" recordId={c.channelId} />
+              </FeatureErrorBoundary>
+            </div>
             <div className="flex items-start justify-between gap-2">
               <button
                 onClick={() => handleSelectChannel(c.channelId)}

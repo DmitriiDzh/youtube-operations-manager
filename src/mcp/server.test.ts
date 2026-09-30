@@ -345,15 +345,56 @@ test("MCP agent session: identity/selection-switching tools are never registered
 // tool names PLANNED_FUTURE_CAPABILITIES reserved are actually wired into createMcpServer's real
 // registration, using the real default createMarketIntelligenceCore() (an empty local watchlist,
 // so both calls succeed with an empty/not-found result rather than needing a fixture).
-// Phase 12: global market-intelligence tools are operator-only until records are owned by/assigned
-// to channels (PHASE_12_PLAN.md slice 12.4, owner decision D1). Previously asserted registered.
-test("MCP agent session: global market-intelligence tools are not registered", () => {
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION });
-  const tools = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {};
+// Phase 12 slice 12.4 (owner decision D1): market tools exist in an agent session, but every result is
+// narrowed to records assigned to the agent's channel. This test previously asserted (Phase 9 slice 4)
+// that the full global watchlist was returned; the owner's D1 decision changed that requirement.
+test("MCP market tools narrow results to the agent channel's assignments and record request ownership", async () => {
+  const assigned: Record<string, string[]> = { research_channel: ["UCresearchA"], topic: ["topic-a"], trend_candidate: [], discovery_candidate: ["UCdiscA"] };
+  const owned: Array<[string, string]> = [];
+  const marketAssignmentCore = {
+    async filterForAgent<T>(kind: string, items: T[], idOf: (item: T) => string) {
+      return items.filter((item) => (assigned[kind] ?? []).includes(idOf(item)));
+    },
+    async assertAvailableToAgent(kind: string, id: string) {
+      if (!(assigned[kind] ?? []).includes(id)) throw new DomainError({ code: "RESEARCH_CHANNEL_NOT_AVAILABLE", message: "no" });
+    },
+    async recordAgentOwnership(kind: string, id: string) {
+      owned.push([kind, id]);
+    },
+  };
+  const marketIntelligenceCore = {
+    async listWatchlist() {
+      return { channels: [{ channelId: "UCresearchA" }, { channelId: "UCresearchB" }] };
+    },
+    async getWatchlistEntryContext() {
+      return { channel: { channelId: "UCresearchA" } };
+    },
+    async listTopics() {
+      return { topics: [{ topicId: "topic-a" }, { topicId: "topic-b" }] };
+    },
+    async listTrendCandidates() {
+      return { trendCandidates: [{ trendCandidateId: "trend-a" }] };
+    },
+    async listDiscoveryCandidates() {
+      return { candidates: [{ channelId: "UCdiscA" }, { channelId: "UCdiscB" }] };
+    },
+    async createMarketResearchRequest() {
+      return { requestId: "req-1" };
+    },
+  } as never;
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(), makeAuthStub(), makeOperationsCoreStub(), undefined, makeChannelAccessCoreStub(),
+    undefined, undefined, undefined, marketIntelligenceCore, undefined, undefined, marketAssignmentCore
+  );
+  const parse = (r: { content: Array<{ text?: string }> }) => JSON.parse(r.content[0]?.text ?? "{}");
 
-  for (const name of ["query_competitors", "query_market_intelligence", "agent_list_market_records", "agent_create_market_research_request"]) {
-    assert.equal(Boolean(tools[name]), false, `${name} must not be registered`);
-  }
+  assert.deepEqual(parse(await handlers.queryCompetitors({})).channels, [{ channelId: "UCresearchA" }]);
+  assert.equal(parse(await handlers.queryMarketIntelligence({ channelId: "UCresearchB" })).error.code, "RESEARCH_CHANNEL_NOT_AVAILABLE");
+  assert.deepEqual(parse(await handlers.agentListMarketRecords({ kind: "topics" })).topics, [{ topicId: "topic-a" }]);
+  assert.deepEqual(parse(await handlers.agentListMarketRecords({ kind: "trend_candidates" })).trendCandidates, []);
+  assert.deepEqual(parse(await handlers.agentListMarketRecords({ kind: "discovery_candidates" })).candidates, [{ channelId: "UCdiscA" }]);
+  await handlers.agentCreateMarketResearchRequest({ query: "q", rationale: "r" });
+  assert.deepEqual(owned, [["research_request", "req-1"]]);
 });
 
 // The SDK validates an incoming tool call against the REGISTERED inputSchema, using its OWN

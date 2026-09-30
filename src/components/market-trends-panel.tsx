@@ -1,5 +1,7 @@
 "use client";
 
+import { FeatureErrorBoundary } from "./feature-error-boundary";
+import { MarketChannelAssignment } from "./market-channel-assignment";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
@@ -272,6 +274,11 @@ export function MarketTrendsPanel() {
       <div className="space-y-2">
         {trendCandidates.map((trendCandidate) => (
           <div key={trendCandidate.trendCandidateId} className="rounded-lg border border-zinc-800 p-3">
+            <div className="mb-2">
+              <FeatureErrorBoundary label="Channel assignment">
+                <MarketChannelAssignment recordKind="trend_candidate" recordId={trendCandidate.trendCandidateId} />
+              </FeatureErrorBoundary>
+            </div>
             <button
               onClick={() => handleToggleExpand(trendCandidate)}
               className="flex w-full flex-wrap items-center justify-between gap-2 text-left"
