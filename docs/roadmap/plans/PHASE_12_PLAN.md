@@ -1,6 +1,7 @@
 # Phase 12: Channel-bound agent isolation ("Chinese wall") — plan
 
-**Status: DRAFT plan for owner approval. Implementation has not started.**
+**Status: decisions D0–D3 and D5 answered by the owner (Telegram, msg 1051, 2026-09-30); D4 needs
+one clarification. See §7. Core slices 12.1–12.3 are unblocked.**
 
 **Owner direction (Telegram, 2026-09-30):**
 - msg 1044: the problem is "a Chinese wall between agents", so that the agent for channel A
@@ -189,3 +190,43 @@ it at the HTTP endpoint). The release notes carry a migration note.
 - **AC-P12-08.** The CLI without a token refuses when "Operator CLI access" is off.
 - **AC-P12-09.** Tokens are stored only as hashes, shown once, never logged, and never in the
   snapshot or sync.
+
+## 7. Owner decisions (Telegram, msg 1051, 2026-09-30)
+
+- **D0 → (b): keep the stdio transport, in-app wall.** Verbatim: *"мне нужно иметь возможность быстро
+  сменять каналы. Если будет 10 каналов я не могу заводить 10 учеток на компьютере."* Separate OS
+  users per agent are rejected, so the wall protects against agent mistakes and accidental access.
+  It does not protect against an agent that deliberately reads `data.db` or another agent's launch
+  config. This limit is documented (§4), and D5 adds built-in hardening against accidental reads.
+- **D1 → (B): shared collection plus per-channel assignment.** Verbatim: *"общий сбор и потом выдаем
+  каждому каналу что нужно ему."* Market records are collected once. The operator assigns them to
+  channels, and an agent sees only what is assigned to its channel. Channel-own conclusions stay
+  private to the channel.
+- **D2 → per-channel folders only.** Verbatim: *"попробуем только папки каналов."* The global
+  operations-workspace tools (`agent_list_operations_files`/`agent_get_operations_file`) are removed
+  from agent sessions. Each agent's instructions live in its own channel folder (Phase 11), which it
+  reads with its own tools. The Settings field itself stays for now, as operator-only data, pending
+  a later cleanup.
+- **D3 → one agent does everything on its channel, translation included.** Verbatim: *"за перевод
+  должен отвечать тот же агент что и за все остальное на канале."* `ai_localization_*` stay available
+  to the bound agent for its own channel only. There is no per-channel assignment of AI provider
+  connections.
+- **D4 → "нет" — ambiguous, to be confirmed.** The question proposed *removing* capability zones.
+  Given D3 (one agent owns all tasks of its channel), the working assumption is that zones become
+  redundant and are retired in 12.6 via an ADR. 12.6 is not started until the owner confirms.
+- **D5 → yes: build in protection against accidental reads; instructions alone are not enough.**
+  Concrete measures, in slice 12.7:
+  1. **Workspace anchoring.** An agent-mode MCP/CLI session refuses to start unless the process's
+     working directory is inside its bound channel's workspace folder (Phase 11 path, this device).
+     The agent is thereby launched "in its own folder", and its own sandbox/workspace roots
+     naturally follow.
+  2. **Nothing sensitive leaks through the interface.** Agent-mode responses never contain
+     app-data paths, other channels' workspace paths, or `local_path` asset references of other
+     channels (already channel-scoped after 12.3).
+  3. **Other agents' tokens are never stored in plaintext by the app** (hash only, 12.1). A startup
+     warning is logged if the agent's launch configuration file sits inside another channel's
+     workspace.
+  4. **Accidentally opening the database yields no usable secrets.** Encrypt stored OAuth
+     tokens at rest, reusing the existing `ai_connection_credentials` encryption pattern
+     (closes RISK-07's plaintext part). This is scoped as its own slice, 12.8, because it touches
+     OAuth storage (§F) and needs its own acceptance tests.
