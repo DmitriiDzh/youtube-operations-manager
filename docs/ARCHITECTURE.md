@@ -2001,7 +2001,11 @@ surface on this side to secure. Validation of the path itself happens once, at s
   touches anything at or under the workspace path (no path-validation or directory dependency is
   injected into it). The only other file it touches is this app's own `bootstrap-config.json`,
   read for the `deviceId`, and only ever read: with no config yet the answer is
-  `{ configured: false }`. Only the operator write may create it (review round 1). No agent surface receives
+  `{ configured: false }`. Only the operator write may create it (review round 1).
+  Creating the file is now exclusive: `bootstrap-config`'s `ensureExists` writes a temp file and
+  hard-links it into place, and if another caller wins the race it reads the winner's file
+  instead (review round 2). Before this, two concurrent first calls could produce two different
+  `deviceId`s, which would orphan a just-saved workspace row. No agent surface receives
   `setWorkspace`: the MCP and CLI factories take a `Pick<…, "getWorkspace">`.
 
 **Storage and device-locality.** `channel_workspaces(device_id, channel_id, path, updated_at)`,

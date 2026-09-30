@@ -1,4 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
+import { link, readFile, rm, stat } from "node:fs/promises";
+import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { BootstrapConfigError, bootstrapConfigSchema, type BootstrapConfig } from "./contracts";
 import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
@@ -49,19 +50,46 @@ export function createBootstrapConfigStore(configPath: string) {
     return parsed.data;
   }
 
-  /** Creates the config on first run if it doesn't exist yet; never overwrites silently. */
+  /**
+   * Creates the config on first run if it doesn't exist yet; never overwrites silently.
+   *
+   * First-time creation is EXCLUSIVE (Phase 11 review round 2): the fresh config is written
+   * atomically to a private temp path, then hard-linked into place, and `link` fails with EEXIST
+   * if another caller created the file first. The loser then reads and returns the winner's
+   * config. Previously this was read-then-write, so two concurrent first calls could each
+   * generate a different `deviceId`, with the last rename winning. That silently orphaned any
+   * data already keyed on the losing id (e.g. a `channel_workspaces` row).
+   */
   async function ensureExists(): Promise<BootstrapConfig> {
     const existing = await read();
     if (existing) return existing;
 
     const now = new Date().toISOString();
-    return write({
+    const candidate = bootstrapConfigSchema.parse({
       version: 1,
       deviceId: randomUUID(),
       syncthingRootPath: null,
       createdAt: now,
       updatedAt: now,
     });
+    const tmpPath = path.join(path.dirname(configPath), `.${path.basename(configPath)}.${randomUUID()}.create`);
+    try {
+      await writeJsonFileAtomic(tmpPath, candidate);
+      try {
+        await link(tmpPath, configPath);
+        return candidate;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+    } finally {
+      await rm(tmpPath, { force: true });
+    }
+
+    const winner = await read();
+    if (!winner) {
+      throw new BootstrapConfigError("Bootstrap config disappeared during concurrent creation");
+    }
+    return winner;
   }
 
   async function setSyncthingRootPath(

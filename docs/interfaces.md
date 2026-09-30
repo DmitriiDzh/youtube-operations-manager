@@ -710,8 +710,9 @@ Key MCP tools:
   - `agent_get_channel_workspace` (Phase 11, `docs/AGENT_OPERATIONS_INTERFACE.md` §4m) —
     `{ channelId }` (`.strict()`) → `{ configured: false } | { configured: true, path: string }`.
     `READ`, channel-scoped (`assertActiveChannel`, like `agent_get_channel_context`), and unzoned.
-    It returns the operator-set absolute path for this device exactly as stored and makes no
-    filesystem call. No MCP tool can set or clear it: `PUT /api/channel-workspaces` (Web UI
+    It returns the operator-set absolute path for this device exactly as stored and never touches
+    anything at or under that path. It only reads the app's own bootstrap config, for the
+    `deviceId`, and never creates it. No MCP tool can set or clear it: `PUT /api/channel-workspaces` (Web UI
     only) is the sole setter. Device-local, never synced or handed off. Error codes
     (setter only): `CHANNEL_WORKSPACE_PATH_INVALID` (400) and
     `CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED` (404).

@@ -128,7 +128,7 @@ test("AC-P11-04/05: clearing with null or blank removes only that channel's valu
     assert.deepEqual(await services.getWorkspace({ channelId: "UC_A" }), { configured: false });
   }));
 
-test("AC-P11-09: the read never touches the filesystem -- a deleted directory still reads back as stored", () =>
+test("AC-P11-09: the read never touches the workspace path -- a deleted directory still reads back as stored", () =>
   withDirs(async ({ workspace, appData }) => {
     const { services } = createServices(appData);
     await services.setWorkspace({ channelId: "UC_A", path: workspace });
