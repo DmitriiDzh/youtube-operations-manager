@@ -445,7 +445,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
   - Агент читает через MCP `agent_get_channel_workspace` и CLI `agent channel-workspace`: только чтение, `assertActiveChannel`, без зонирования. Задать путь через MCP/CLI невозможно, это проверено механически.
   - `AGENT_API_VERSION` → `0.15.0`. Подробности — `docs/AGENT_OPERATIONS_INTERFACE.md` §4m.
 
-### 2.9y Изоляция агентов по каналам (Phase 12, `docs/roadmap/plans/PHASE_12_PLAN.md`) — **IMPLEMENTED на `feature/phase-12-agent-channel-isolation`, ещё не в `dev`**
+### 2.9y Изоляция агентов по каналам (Phase 12, `docs/roadmap/plans/PHASE_12_PLAN.md`) — **IMPLEMENTED, в `dev`** (`7a57a48`)
 
 - **Токены.** `src/lib/agent-tokens`, таблица `agent_channel_tokens` (v34): хранится только хеш, данные только на этом устройстве, у канала не больше одного активного токена. Оператор управляет токенами в Settings → Channels через `/api/agent-tokens`.
 - **Сессия агента.** `src/lib/agent-session`: неизменяемая привязка процесса к каналу, задаётся на входе MCP или CLI по `YTOM_AGENT_TOKEN`. Работает через две точки: в `db.ts` (`get/setSelectedChannelId`) и в `cli-auth` (`resolveEffectiveCredentialRef`). Живые чтения ограничены через `channel-access/agent-scope.ts`.
