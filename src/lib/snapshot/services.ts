@@ -1,3 +1,10 @@
+// Moved to the standalone gate module (architecture audit M5); re-exported unchanged.
+export { scanForUnresolvedExecutionState, UNRESOLVED_EXECUTION_STATUSES, type UnresolvedExecutionRow };
+import {
+  scanForUnresolvedExecutionState,
+  UNRESOLVED_EXECUTION_STATUSES,
+  type UnresolvedExecutionRow,
+} from "@/lib/device-mutation-gate";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
@@ -24,7 +31,6 @@ import { readLineageState, writeLineageState, type LineageState } from "./adapte
 /** Execution-ledger statuses where a real YouTube write may have been sent but the outcome is
  * not yet certain -- the only ones a device-handoff import must never silently resolve
  * (`PENDING`/`AWAITING_EXECUTION` are always safe: no write was ever attempted for them). */
-export const UNRESOLVED_EXECUTION_STATUSES = ["APPLYING", "UNKNOWN"] as const;
 
 export async function exportSnapshot(params: {
   client: SqlExecutor;
@@ -163,34 +169,6 @@ export async function migrateStagedCopy(stagedDbPath: string): Promise<void> {
   } finally {
     client.close();
   }
-}
-
-export type UnresolvedExecutionRow = {
-  batchId: string;
-  ledgerRowId: string;
-  videoId: string;
-  status: string;
-};
-
-/** Read-only: batch_ledger_rows whose execution status is genuinely uncertain (decision 3 --
- * never mutated, never resolved, by this module). Takes an already-open connection so callers
- * checking the *live* database (the device-handoff recovery-mode gate, src/proxy.ts, CLI/MCP
- * choke points) don't open a redundant extra connection to it; a staged/standalone copy is
- * checked by passing a client opened against that file instead. */
-export async function scanForUnresolvedExecutionState(
-  client: SqlExecutor
-): Promise<UnresolvedExecutionRow[]> {
-  const placeholders = UNRESOLVED_EXECUTION_STATUSES.map(() => "?").join(", ");
-  const result = (await client.execute({
-    sql: `SELECT id, batch_id, video_id, status FROM batch_ledger_rows WHERE status IN (${placeholders})`,
-    args: [...UNRESOLVED_EXECUTION_STATUSES],
-  })) as { rows: Array<Record<string, unknown>> };
-  return result.rows.map((row) => ({
-    batchId: String(row.batch_id),
-    ledgerRowId: String(row.id),
-    videoId: String(row.video_id),
-    status: String(row.status),
-  }));
 }
 
 /** Convenience wrapper for a standalone database file (staged copies) -- opens and closes its

@@ -13,7 +13,7 @@ import { getMcpConnectionEnabled, recordGatewayCallOutcome } from "@/lib/db";
 import type { CredentialRef } from "@/lib/video-metadata/contracts";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
 import { OperationLockError } from "@/lib/operation-lock";
-import { RecoveryModeError } from "@/lib/device-handoff";
+import { RecoveryModeError } from "@/lib/device-mutation-gate";
 import {
   playlistAddVideosInputSchema,
   playlistCreateInputSchema,
@@ -1727,7 +1727,7 @@ export function createMcpToolHandlers(
 async function assertMcpDeviceAvailable(): Promise<ToolResponse | null> {
   try {
     const { rawSqlClient } = await import("@/lib/db");
-    const { assertDeviceAvailableForMutation } = await import("@/lib/device-handoff");
+    const { assertDeviceAvailableForMutation } = await import("@/lib/device-mutation-gate");
     await assertDeviceAvailableForMutation(rawSqlClient);
     return null;
   } catch (error) {

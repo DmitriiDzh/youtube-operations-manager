@@ -1,7 +1,7 @@
 import { getAgentSession } from "@/lib/agent-session";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createAiConnectionCore } from "@/lib/ai-connections";
-import { assertDeviceAvailableForMutation } from "@/lib/device-handoff";
+import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { rawSqlClient } from "@/lib/db";
 import { createMockHypothesisDraftProvider } from "./adapters/mock-provider";
 import { createDecisionEngineStoreAdapter } from "./adapters/store";

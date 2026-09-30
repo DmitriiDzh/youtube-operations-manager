@@ -6,7 +6,7 @@ import { DomainError } from "@/lib/ai-localization/contracts";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 import { OperationLockError } from "@/lib/operation-lock";
-import { RecoveryModeError } from "@/lib/device-handoff";
+import { RecoveryModeError } from "@/lib/device-mutation-gate";
 
 const core = createAiLocalizationCore();
 const channelAccess = createChannelAccessCore();

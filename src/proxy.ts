@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { rawSqlClient } from "@/lib/db";
-import { assertDeviceAvailableForMutation } from "@/lib/device-handoff";
+import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { OperationLockError } from "@/lib/operation-lock";
-import { RecoveryModeError } from "@/lib/device-handoff";
+import { RecoveryModeError } from "@/lib/device-mutation-gate";
 import { recordActivity } from "@/lib/idle-shutdown";
 
 // Next.js 16 renamed `middleware.ts` to `proxy.ts` (functionally identical) --

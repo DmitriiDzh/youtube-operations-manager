@@ -12,7 +12,7 @@ import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib
 import { createCliAuthService } from "@/lib/cli-auth";
 import type { CredentialRef } from "@/lib/video-metadata/contracts";
 import { getMcpConnectionEnabled, getOperatorCliEnabled, rawSqlClient } from "@/lib/db";
-import { assertDeviceAvailableForMutation, RecoveryModeError } from "@/lib/device-handoff";
+import { assertDeviceAvailableForMutation, RecoveryModeError } from "@/lib/device-mutation-gate";
 import { OperationLockError } from "@/lib/operation-lock";
 import { createChangeSetCore, type ChangeSetCore } from "@/lib/changesets";
 import { createBatchCore, type BatchCore } from "@/lib/batches";

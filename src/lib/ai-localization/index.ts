@@ -6,7 +6,7 @@ import { createEditorialProfileStoreAdapter, createGenerationProvenanceStoreAdap
 import { resolveLocalizationProvider } from "./provider-registry";
 import { createAiLocalizationServices } from "./services";
 import { rawSqlClient } from "@/lib/db";
-import { assertDeviceAvailableForMutation } from "@/lib/device-handoff";
+import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 
 export function createAiLocalizationCore() {
   const changeSetCore = createChangeSetCore();

@@ -27,7 +27,7 @@ import {
   type StoredVideoRecord,
 } from "./contracts";
 import { OperationLockError } from "@/lib/operation-lock";
-import { RecoveryModeError } from "@/lib/device-handoff";
+import { RecoveryModeError } from "@/lib/device-mutation-gate";
 import {
   createChangeSetFromGenerationInputSchema,
   generateProposalsInputSchema,
