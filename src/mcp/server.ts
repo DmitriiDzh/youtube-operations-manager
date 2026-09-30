@@ -1566,7 +1566,9 @@ export function createMcpToolHandlers(
         // Phase 12 (AC-P12-09): not assigned to the agent's channel = same error as not watchlisted.
         await marketAssignmentCore.assertAvailableToAgent("research_channel", parsedInput.data.channelId);
         const result = await marketIntelligenceCore.getWatchlistEntryContext(parsedInput.data);
-        return toolSuccessResult(result as unknown as Record<string, unknown>);
+        // Nested data too (review round 1): only topic tags whose topic is assigned to the agent's channel.
+        const topicAssignments = await marketAssignmentCore.filterForAgent("topic", result.topicAssignments, (a) => a.topicId);
+        return toolSuccessResult({ ...result, topicAssignments } as unknown as Record<string, unknown>);
       } catch (error) {
         return toolErrorResult(error);
       }

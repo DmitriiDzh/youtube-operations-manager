@@ -101,6 +101,32 @@ test("AC-P12-04: identity/session-switching cli-auth operations refuse in a sess
   });
 });
 
+// Review round 1 finding 1: whoami/write_context must report the token's identity and never read
+// auth-context.json (which may name the operator's OTHER Google identity).
+test("AC-P12-03/05: whoami in a session reports the bound identity without reading auth-context.json", async () => {
+  await seedUser("user-bound", null);
+  await seedUser("user-other", "UC_OTHER");
+  const service = createCliAuthService({
+    storage: {
+      async read() {
+        throw new Error("auth-context.json must never be read in an agent session");
+      },
+      async write() {
+        throw new Error("must not be written");
+      },
+      async clear() {
+        throw new Error("must not be cleared");
+      },
+    } as never,
+  });
+  await withAgentSessionForTests(BOUND, async () => {
+    const result = await service.whoami();
+    assert.equal(result.userId, "user-bound");
+    assert.deepEqual(result.effectiveCredentialRef, { userId: "user-bound" });
+    assert.equal(JSON.stringify(result).includes("user-other"), false);
+  });
+});
+
 test("enterAgentSession can be entered once and never replaced", () => {
   enterAgentSession(BOUND);
   assert.throws(() => enterAgentSession({ ...BOUND, channelId: "UC_OTHER" }));

@@ -927,7 +927,9 @@ export async function runCliCommand(args: {
         const requestedChannelId = requiredStringFlag(parsedArgs.flags, "channelId");
         await marketAssignmentCore.assertAvailableToAgent("research_channel", requestedChannelId);
         const result = await marketIntelligenceCore.getWatchlistEntryContext({ channelId: requestedChannelId });
-        writeStdout(serializeSuccess(result));
+        // Nested data too: only topic tags whose topic is assigned to the agent's channel.
+        const topicAssignments = await marketAssignmentCore.filterForAgent("topic", result.topicAssignments, (a) => a.topicId);
+        writeStdout(serializeSuccess({ ...result, topicAssignments }));
         return 0;
       }
 
@@ -1564,12 +1566,19 @@ const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
  * freezes this process into its channel's scope (`src/lib/agent-session`); an invalid one is a
  * refusal, never a silent fall-back to operator mode.
  */
-async function runCliProcess(argv: string[]): Promise<number> {
+export async function runCliProcess(argv: string[]): Promise<number> {
   const tokenFlagIndex = argv.indexOf("--agentToken");
-  const flagToken = tokenFlagIndex >= 0 ? argv[tokenFlagIndex + 1] : undefined;
   const remainingArgv = tokenFlagIndex >= 0 ? [...argv.slice(0, tokenFlagIndex), ...argv.slice(tokenFlagIndex + 2)] : argv;
-  const token = flagToken ?? process.env.YTOM_AGENT_TOKEN;
-  if (token === undefined || token === "") {
+  // An explicit --agentToken must carry a value; an empty or missing one is a refusal (review round
+  // 1), never a silent fall-back to operator mode. An empty env var counts as unset.
+  let token: string | undefined;
+  if (tokenFlagIndex >= 0) {
+    token = argv[tokenFlagIndex + 1];
+    if (!token || token.startsWith("--")) token = "";
+  } else {
+    token = process.env.YTOM_AGENT_TOKEN || undefined;
+  }
+  if (token === undefined) {
     return runCliCommand({ argv: remainingArgv });
   }
   let binding: AgentTokenBinding;

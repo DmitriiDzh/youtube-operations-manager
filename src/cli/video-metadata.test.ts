@@ -22,7 +22,7 @@ import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { parseWithSchema, registerExternalArtifactInputSchema } from "@/lib/content-proposals/schemas";
 import { listAssetPerformanceInputSchema } from "@/lib/agent-operations/schemas";
-import { runCliCommand, getCredentialRef, parseArgs } from "./video-metadata";
+import { runCliCommand, runCliProcess, getCredentialRef, parseArgs } from "./video-metadata";
 import { CLI_COMMAND_CLASSIFICATION } from "./command-classification";
 import { withAgentSessionForTests } from "@/lib/agent-session";
 
@@ -6157,4 +6157,24 @@ test("AC-P12-08: the CLI classification covers exactly the real command table", 
     }
   }
   assert.deepEqual(real.sort(), Object.keys(CLI_COMMAND_CLASSIFICATION).sort());
+});
+
+// Review round 1 finding 3: an explicit but empty/missing --agentToken is a refusal, never a silent
+// fall-back to operator mode (which could otherwise run if "Operator CLI access" were on).
+test("runCliProcess: --agentToken with an empty or missing value is refused before any command runs", async () => {
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  const stderr: string[] = [];
+  process.stderr.write = ((chunk: string) => {
+    stderr.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken", ""]), 1);
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken"]), 1);
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken", "--userId"]), 1);
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  assert.equal(stderr.length, 3);
+  for (const line of stderr) assert.equal(JSON.parse(line).error.code, "AGENT_TOKEN_INVALID");
 });

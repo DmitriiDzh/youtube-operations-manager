@@ -370,17 +370,27 @@ export function createCliAuthService(
     },
 
     async whoami() {
-      const context = await resolvedDeps.storage.read();
-      if (!context) {
-        throw authUserNotFound("No active auth context. Run `auth login` first.", {
-          reason: "active_user_missing",
-        });
+      // Phase 12 (PHASE_12_PLAN.md §6, AC-P12-03/05; review round 1): in a channel-bound agent session
+      // "who am I" is the token's recorded identity -- auth-context.json (the operator's device-global
+      // active user, possibly a different Google identity) is never read.
+      const agentSession = getAgentSession();
+      let activeUserId: string;
+      if (agentSession) {
+        activeUserId = agentSession.userId;
+      } else {
+        const context = await resolvedDeps.storage.read();
+        if (!context) {
+          throw authUserNotFound("No active auth context. Run `auth login` first.", {
+            reason: "active_user_missing",
+          });
+        }
+        activeUserId = context.activeUserId;
       }
 
-      const user = await resolvedDeps.db.getUserSummary(context.activeUserId);
+      const user = await resolvedDeps.db.getUserSummary(activeUserId);
       if (!user) {
         throw authUserNotFound("Active auth user does not exist in local storage", {
-          userId: context.activeUserId,
+          userId: activeUserId,
         });
       }
 
@@ -390,7 +400,7 @@ export function createCliAuthService(
       });
 
       return {
-        ...toAuthUserSummary(user, context.activeUserId),
+        ...toAuthUserSummary(user, activeUserId),
         activeWriteChannel: writeChannel.activeWriteChannel,
         selectedChannelId: writeChannel.selectedChannelId,
         alignment: writeChannel.alignment,

@@ -366,7 +366,13 @@ test("MCP market tools narrow results to the agent channel's assignments and rec
       return { channels: [{ channelId: "UCresearchA" }, { channelId: "UCresearchB" }] };
     },
     async getWatchlistEntryContext() {
-      return { channel: { channelId: "UCresearchA" } };
+      return {
+        channel: { channelId: "UCresearchA" },
+        topicAssignments: [
+          { assignmentId: "as-1", topicId: "topic-a" },
+          { assignmentId: "as-2", topicId: "topic-b" },
+        ],
+      };
     },
     async listTopics() {
       return { topics: [{ topicId: "topic-a" }, { topicId: "topic-b" }] };
@@ -389,6 +395,11 @@ test("MCP market tools narrow results to the agent channel's assignments and rec
 
   assert.deepEqual(parse(await handlers.queryCompetitors({})).channels, [{ channelId: "UCresearchA" }]);
   assert.equal(parse(await handlers.queryMarketIntelligence({ channelId: "UCresearchB" })).error.code, "RESEARCH_CHANNEL_NOT_AVAILABLE");
+  // Nested topic tags are narrowed too: topic-b is not assigned to the agent's channel.
+  assert.deepEqual(
+    parse(await handlers.queryMarketIntelligence({ channelId: "UCresearchA" })).topicAssignments.map((a: { topicId: string }) => a.topicId),
+    ["topic-a"]
+  );
   assert.deepEqual(parse(await handlers.agentListMarketRecords({ kind: "topics" })).topics, [{ topicId: "topic-a" }]);
   assert.deepEqual(parse(await handlers.agentListMarketRecords({ kind: "trend_candidates" })).trendCandidates, []);
   assert.deepEqual(parse(await handlers.agentListMarketRecords({ kind: "discovery_candidates" })).candidates, [{ channelId: "UCdiscA" }]);
