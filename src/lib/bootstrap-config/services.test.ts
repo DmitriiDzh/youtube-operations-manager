@@ -62,3 +62,19 @@ test("ensureExists(): concurrent first-time calls all return the one deviceId th
     }
     assert.deepEqual(await readdir(dir), ["bootstrap-config.json"]);
   }));
+
+// Phase 11 review round 3: a filesystem without hard-link support must not become a permanent
+// failure -- ensureExists falls back to the previous rename-based creation.
+test("ensureExists(): falls back to rename-based creation when hard links are unsupported", () =>
+  withTempDir("bootstrap-config-test-", async (dir) => {
+    const configPath = path.join(dir, "bootstrap-config.json");
+    const noLinks = {
+      link: async () => {
+        throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+      },
+    };
+    const created = await createBootstrapConfigStore(configPath, noLinks).ensureExists();
+    const onDisk = await createBootstrapConfigStore(configPath).read();
+    assert.equal(onDisk?.deviceId, created.deviceId);
+    assert.deepEqual(await readdir(dir), ["bootstrap-config.json"]);
+  }));

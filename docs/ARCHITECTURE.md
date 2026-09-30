@@ -2005,7 +2005,9 @@ surface on this side to secure. Validation of the path itself happens once, at s
   Creating the file is now exclusive: `bootstrap-config`'s `ensureExists` writes a temp file and
   hard-links it into place, and if another caller wins the race it reads the winner's file
   instead (review round 2). Before this, two concurrent first calls could produce two different
-  `deviceId`s, which would orphan a just-saved workspace row. No agent surface receives
+  `deviceId`s, which would orphan a just-saved workspace row. On a filesystem without hard-link support it
+  falls back to the previous rename-based creation. Temp-file cleanup is best-effort (review
+  round 3). No agent surface receives
   `setWorkspace`: the MCP and CLI factories take a `Pick<…, "getWorkspace">`.
 
 **Storage and device-locality.** `channel_workspaces(device_id, channel_id, path, updated_at)`,

@@ -10,7 +10,11 @@ import { writeJsonFileAtomic } from "@/lib/atomic-json-file";
  * implementation as `src/lib/cli-auth/adapters/active-auth-storage.ts` (`writeJsonFileAtomic`) rather than a
  * copy-pasted duplicate (found by independent review; AGENTS.md §D).
  */
-export function createBootstrapConfigStore(configPath: string) {
+export function createBootstrapConfigStore(
+  configPath: string,
+  // Injectable only for tests (review round 3: exercising the no-hard-link fallback).
+  fsDeps: { link: (existingPath: string, newPath: string) => Promise<void> } = { link }
+) {
   async function write(next: BootstrapConfig): Promise<BootstrapConfig> {
     // Defense in depth: validate against the same schema `read()` enforces before persisting,
     // rather than trusting every caller (e.g. an API route) to have already done so -- found by
@@ -73,16 +77,28 @@ export function createBootstrapConfigStore(configPath: string) {
       updatedAt: now,
     });
     const tmpPath = path.join(path.dirname(configPath), `.${path.basename(configPath)}.${randomUUID()}.create`);
+    let linkUnsupported = false;
     try {
       await writeJsonFileAtomic(tmpPath, candidate);
       try {
-        await link(tmpPath, configPath);
+        await fsDeps.link(tmpPath, configPath);
         return candidate;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+          // Hard links unavailable here (e.g. FAT/exFAT or some redirected network AppData --
+          // review round 3). Fall back to the previous, non-exclusive atomic-rename creation
+          // rather than introducing a permanent failure mode on such filesystems.
+          linkUnsupported = true;
+        }
       }
     } finally {
-      await rm(tmpPath, { force: true });
+      // Best-effort, like atomic-json-file's own tmp cleanup: a transient Windows EBUSY/EPERM
+      // (RISK-22) on removing the temp name must never turn a successful create into an error.
+      await rm(tmpPath, { force: true }).catch(() => {});
+    }
+    if (linkUnsupported) {
+      const raced = await read();
+      return raced ?? write(candidate);
     }
 
     const winner = await read();
