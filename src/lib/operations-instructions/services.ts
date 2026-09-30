@@ -1,4 +1,10 @@
 import path from "node:path";
+import {
+  isPathInsideOrEqual,
+  overlapsAppDataDir,
+  validateWorkspacePath,
+  type WorkspacePathValidationResult,
+} from "@/lib/local-path-validation/services";
 import { DomainError } from "./contracts";
 import type { OperationsWorkspaceFileEntry, OperationsWorkspaceFileResult, OperationsWorkspaceListResult } from "./contracts";
 import {
@@ -26,70 +32,12 @@ function isDotEntry(name: string): boolean {
   return name.startsWith(".");
 }
 
-/** True when `child` is `parent` itself or a descendant of it. Both arguments MUST already be
- * fully resolved (`realpath`'d) absolute paths -- this function does no resolution of its own.
- * Uses `path.relative`, never a naive `startsWith` prefix check: `/x/instr-evil` would pass a
- * prefix check against `/x/instr` despite not actually being inside it. */
-export function isPathInsideOrEqual(parent: string, child: string): boolean {
-  if (parent === child) {
-    return true;
-  }
-  const rel = path.relative(parent, child);
-  return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
-}
-
-function overlapsAppDataDir(realCandidateBase: string, appDataDir: string): boolean {
-  return isPathInsideOrEqual(appDataDir, realCandidateBase) || isPathInsideOrEqual(realCandidateBase, appDataDir);
-}
-
-export type WorkspacePathValidationResult = { ok: true } | { ok: false; reason: string };
-
-/**
- * Set-time validation for the Settings API (`POST /api/settings`) -- the ONLY place the
- * operations-workspace path can ever be set (never an agent-callable MCP tool or CLI command,
- * per this module's own threat model). Reuses the identical `isPathInsideOrEqual`/appDataDir
- * check the read path (`resolveRealConfiguredBase` above) re-runs on every single request --
- * this is deliberately not the only enforcement point (a directory valid at set time could be
- * re-symlinked to something unsafe later), just the earliest, most helpful place to reject an
- * obviously bad value with a clear reason before it is ever saved.
- */
-export async function validateWorkspacePath(
-  candidatePath: string,
-  deps: Pick<ServiceDependencies, "realpath" | "stat" | "appDataDir">
-): Promise<WorkspacePathValidationResult> {
-  if (!path.isAbsolute(candidatePath)) {
-    return { ok: false, reason: "path must be absolute" };
-  }
-
-  let realCandidate: string;
-  try {
-    realCandidate = await deps.realpath(candidatePath);
-  } catch {
-    return { ok: false, reason: "path does not exist or is not accessible" };
-  }
-
-  let candidateStat: { isDirectory: boolean };
-  try {
-    candidateStat = await deps.stat(realCandidate);
-  } catch {
-    return { ok: false, reason: "path does not exist or is not accessible" };
-  }
-  if (!candidateStat.isDirectory) {
-    return { ok: false, reason: "path is not a directory" };
-  }
-
-  let realAppDataDir: string;
-  try {
-    realAppDataDir = await deps.realpath(deps.appDataDir);
-  } catch {
-    realAppDataDir = path.resolve(deps.appDataDir);
-  }
-  if (overlapsAppDataDir(realCandidate, realAppDataDir)) {
-    return { ok: false, reason: "path overlaps this application's own app-data directory" };
-  }
-
-  return { ok: true };
-}
+// `isPathInsideOrEqual`/`overlapsAppDataDir`/`validateWorkspacePath` moved verbatim to the
+// shared `src/lib/local-path-validation/` module (Phase 11, `AGENTS.md` §M -- a second feature
+// module now needs the same set-time check). Re-exported here unchanged so every existing caller
+// and test of this module keeps importing them from the same place.
+export { isPathInsideOrEqual, validateWorkspacePath };
+export type { WorkspacePathValidationResult };
 
 /** Rejects anything that isn't a plain, single-level-or-deeper relative path with no way to
  * escape its own segments syntactically -- checked BEFORE any filesystem call, as a first,
