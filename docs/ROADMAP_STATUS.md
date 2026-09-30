@@ -120,7 +120,13 @@ record of what has actually been implemented.
 
 ## Next assignment
 
-**Latest, 2026-09-29 (later the same day):** Phase 10 (all 5 slices) merged into `dev` in `dbd9bc1` (owner approval, Telegram, "Ok") -- see the phase-level row above. Nothing further is currently assigned. Deliberately not yet assigned within Phase 10's own scope: agent-created hypotheses from scratch, execution of any non-localization experiment type, MCP/CLI exposure of Change Set attach/execute. See `docs/SYSTEM_MAP.md` §2.9w / `docs/ARCHITECTURE.md` §19 for current state.
+**Latest, 2026-09-30:** Phase 11 (Channel Workspaces) was assigned by the owner (Telegram,
+msg 1036). It is being built on `feature/phase-11-channel-workspaces` (BL-108,
+`docs/roadmap/plans/PHASE_11_PLAN.md`) and is not merged. The owner approves the final merge
+into `dev`. Incident: a validation build on the branch migrated the real app-data database to
+v33 (`docs/TECHNICAL_DEBT.md` RISK-86). The owner chose to keep it as is.
+
+**Previous, 2026-09-29 (later the same day):** Phase 10 (all 5 slices) merged into `dev` in `dbd9bc1` (owner approval, Telegram, "Ok") -- see the phase-level row above. Nothing further is currently assigned. Deliberately not yet assigned within Phase 10's own scope: agent-created hypotheses from scratch, execution of any non-localization experiment type, MCP/CLI exposure of Change Set attach/execute. See `docs/SYSTEM_MAP.md` §2.9w / `docs/ARCHITECTURE.md` §19 for current state.
 
 **Earlier, 2026-09-29:** Phase 9 Part II merged into `dev` in `73d4f25` (owner approval, Telegram, "да, мердж") -- see the phase-level row above. This also resolves `docs/TECHNICAL_DEBT.md` RISK-63's local schema-version gap (`dev` now carries this branch's own v28 schema). Two backlog items remain, both blocked on the same precondition -- real, multi-day accumulated watchlist history, not a pending decision: `docs/roadmap/BACKLOG.md` BL-105 (live-verify 9D/9F/9E's real-data acceptance criteria) and BL-106 (build 9F's own UI/service caller, the Opportunities tab). The project owner is now running the real application locally to start that accumulation.
 

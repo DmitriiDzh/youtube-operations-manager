@@ -962,6 +962,39 @@ records only how it plugs into this interface.
 - `AGENT_CAPABILITY_DOMAINS` gained `decision_engine`; `AGENT_DATA_DOMAINS` gained
   `experiment_history` (the literal name already reserved for it). `AGENT_API_VERSION` → `0.14.0`.
 
+## 4m. Channel workspace path (Phase 11, `docs/roadmap/plans/PHASE_11_PLAN.md`) -- IMPLEMENTED
+
+This implements `docs/roadmap/FUTURE_PHASES.md` §11's narrowed scope: one local
+production-workspace path per linked channel, per device. This product's own responsibility
+ends at the path string.
+
+- **`agent_get_channel_workspace {channelId}`** (MCP)/`agent channel-workspace --channelId
+  <UC...>` (CLI, `READ`, capability `channel_workspace.get_channel_workspace`). It uses the
+  same active-channel scoping as `agent_get_channel_context`.
+  - It returns `{ configured: true, path }` exactly as stored, or `{ configured: false }`, never
+    an empty-string path.
+  - It makes no filesystem call of any kind: no listing, no reading, no re-validation. A folder
+    moved or deleted since it was set still reads back as stored. The agent checks it with its
+    own tools.
+- **Set only by the operator:** Settings → Channels → the per-row "Production workspace folder"
+  field (`PUT /api/channel-workspaces`).
+  - At set time the path must be absolute, exist, be a directory, and not overlap the app-data
+    directory. This reuses slice I's check, now shared as `src/lib/local-path-validation/`.
+  - No MCP tool or CLI command can set or clear the path. This is mechanically tested: the read
+    schema is `.strict()`, the registry holds exactly one `*workspace*` tool, and `parseArgs`
+    rejects any setter command.
+- **Device-local:** the table is `channel_workspaces`, keyed `(device_id, channel_id)` on the
+  bootstrap `deviceId`. It is excluded from `SNAPSHOT_TRANSFERRED_TABLES` and from
+  `sync-gateway` on purpose. It is not a RISK-52-style omission.
+- **Deliberate posture difference from slice I (§4j):** `operations-instructions` never
+  exposes its absolute base path, because that leaks host layout and the username. This
+  capability's whole deliverable *is* the absolute path, handed to an agent authorized for
+  that channel. The owner asked for this explicitly (FUTURE_PHASES §11), and the exposure is
+  limited by active-channel scoping.
+- `AGENT_CAPABILITY_DOMAINS` gained `channel_workspace`, and `AGENT_DATA_DOMAINS` gained
+  `channel_workspace_path`. `AGENT_API_VERSION` → `0.15.0`.
+- The global operations workspace (§4j) is unchanged.
+
 ## 8. Safety invariants this interface must never violate
 
 - Never expose Google OAuth tokens, AI-provider API keys, encryption keys, raw credential records,

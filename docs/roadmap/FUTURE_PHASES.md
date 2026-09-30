@@ -564,6 +564,9 @@ CHANNEL_WORKSPACES_WORKFLOW_RUNTIME_ANALYSIS.md`) — "Согласен, мож�
 11." Recording only; not assigned, not sequenced relative to Phase 9/10, and not authorized for
 implementation (`AGENTS.md` §C — recording a phase here is planning only).**
 
+**Assigned 2026-09-30** (owner, Telegram, msg 1036). It is being implemented to the resolved
+scope below. See `docs/roadmap/plans/PHASE_11_PLAN.md` and `docs/roadmap/BACKLOG.md` BL-108.
+
 **Scope resolved the same day, in follow-up discussion of the analysis document's two flagged
 conflicts — both are now closed, and the phase is substantially narrower than the original
 26-section proposal.** The two follow-up discussions are summarized here; the analysis document
@@ -665,10 +668,11 @@ market snapshot model + repeatable refresh, `docs/roadmap/BACKLOG.md` BL-102) is
 
 **POST-PHASE-10 DIRECTIONS:** Publishing Pipeline (§6a) and Media Production Automation (§6b).
 
-**ALSO RECORDED, NOT YET SEQUENCED:** Phase 11 — Channel Workspaces & Production Orchestration
-(§11) — recorded 2026-09-26; whether it runs before, after, or alongside Phase 9/10 has not been
-decided, and its own file-access scope is still under discussion with the owner (see §11's "Open,
-owner-level decision").
+**IN PROGRESS:** Phase 11 — Channel Workspaces (§11). The owner assigned it on 2026-09-30
+(Telegram, msg 1036). Its file-access scope was already resolved on 2026-09-26 (§11): the path
+string only, never the folder's contents. The work is on `feature/phase-11-channel-workspaces`;
+the plan is `docs/roadmap/plans/PHASE_11_PLAN.md`. The merge into `dev` still needs the owner's
+explicit approval.
 
 **DEFERRED:** simultaneous multi-device operation, application-managed synchronization,
 localization transport modernization, and other infrastructure improvements without immediate
