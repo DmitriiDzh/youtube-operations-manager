@@ -266,6 +266,17 @@ Not every issue in this register must be fixed immediately. It must, however, al
 
 ## RISK-09 — Phase 5 write-safety infrastructure does not exist yet
 
+- **Update 2026-10-01 (architecture audit H1 and its review).** "Live writes off by default each
+  session" is now enforced by the web server: `src/instrumentation.ts` resets the flag at server
+  start and on its graceful end (idle auto-shutdown, SIGINT/SIGTERM).
+  - It is no longer reset on every process's database initialization. Doing so let every MCP/CLI
+    process switch the operator's toggle off mid-session and could strand a Batch in APPLYING.
+  - **Residual:** if the web server crashes (no graceful end) while Live writes is on, the flag
+    stays on for any MCP/CLI activity until the next web boot. The flag is still re-checked
+    before every real write, and an agent session also needs the MCP connection toggle and a
+    valid channel token.
+  - Older progress notes below that say "reset on every process boot" describe the previous
+    mechanism.
 - **Affected components:** none yet — this documents an absence, not a defect in existing code. Relevant future modules: a `write-context`-reusing localization-write path, plus new `backup/`, `audit/`, `batches/` domain modules (per `docs/PROJECT_SPEC.md` §47).
 - **Current behavior:** Phase 4 ends at `Change.approvalStatus === "approved"` — a purely local database state. None of the following exist for **bulk localization writes** specifically: immutable pre-write backups, a fresh remote conflict check (RISK-03), a durable audit log, a per-item execution ledger, resumable/idempotent batch processing, or post-write remote verification. (Note: single-item `video-metadata/services.ts` `applyMetadata` already has identity check + diff + dry-run, but not backup/audit/ledger either, and it is not the bulk-localization path.)
 - **Actual risk:** Without this infrastructure, enabling real bulk localization writes would have no recovery information preserved before a destructive change, no tamper-evident record of what was changed and by whom, and no safe way to resume an interrupted batch without risking duplicate or inconsistent writes.

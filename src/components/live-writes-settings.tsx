@@ -16,8 +16,8 @@ type Settings = {
 
 /**
  * "Live writes" is the Gate B toggle (docs/TECHNICAL_DEBT.md RISK-09) -- off by default every
- * session (the server forces it back to false on every process boot, `src/lib/db.ts`'s
- * `initializeDatabase`), and turning it on here is layer 1 of the two-layer live-write barrier,
+ * session (the web server resets it to false when it starts and when it shuts down,
+ * `src/instrumentation.ts`), and turning it on here is layer 1 of the two-layer live-write barrier,
  * never the write itself. The "MCP connection" toggle used to live in this same component --
  * split out into `McpConnectionSettings` 2026-09-23 when Settings gained sub-tabs (owner
  * instruction: 4 categories, MCP connection moved to "AI Agent"). `/api/settings` already applies

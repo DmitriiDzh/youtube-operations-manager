@@ -31,8 +31,9 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
 
 /**
  * App-wide settings (Settings tab, owner instruction 2026-09-21). Two flags today:
- * - `liveWritesEnabled` -- Gate B toggle (docs/TECHNICAL_DEBT.md RISK-09). Defaults off every
- *   process boot (`src/lib/db.ts`'s `initializeDatabase`), regardless of what was last saved;
+ * - `liveWritesEnabled` -- Gate B toggle (docs/TECHNICAL_DEBT.md RISK-09). Reset to off when the
+ *   web server starts and when it shuts down (`src/instrumentation.ts`), regardless of what was
+ *   last saved;
  *   turning this on is layer 1 of the two-layer live-write barrier, not the write itself.
  * - `operatorCliEnabled` -- Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md 12.5): whether the CLI
  *   may run without an agent token (as the operator). Off by default, persistent.
