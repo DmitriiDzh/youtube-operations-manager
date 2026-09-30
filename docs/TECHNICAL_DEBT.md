@@ -278,7 +278,11 @@ Not every issue in this register must be fixed immediately. It must, however, al
     APPLYING.
   - **Residual:** after an ungraceful stop on any platform (a crash, Windows `stop.bat`'s
     `taskkill /F`, a closed console window), the toggle is still honored for at most the lease
-    TTL. After that it lapses.
+    TTL.
+    - A lapse is persisted as OFF, so it never silently comes back on after a later renewal
+      (e.g. after the laptop wakes). Re-enabling is always an explicit operator action.
+    - A lease dated more than 60 s in the future does not count as fresh (a clock that ran
+      ahead).
   - A lease renewal made during an in-process snapshot import joins the import's transaction.
     If the import fails, that renewal rolls back, and the lease may briefly lapse. This fails
     closed.

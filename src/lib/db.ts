@@ -3055,6 +3055,8 @@ const LIVE_WRITES_SESSION_LEASE_SETTING_KEY = "live_writes_session_lease_at";
  */
 export const LIVE_WRITES_SESSION_LEASE_TTL_MS = 3 * 60 * 1000;
 export const LIVE_WRITES_SESSION_LEASE_RENEW_MS = 30 * 1000;
+/** Tolerated clock skew for a lease stamped slightly "in the future" (e.g. two processes' clocks). */
+export const LIVE_WRITES_SESSION_LEASE_MAX_SKEW_MS = 60 * 1000;
 
 /**
  * Gate B: Live writes are honored only while a web-server session is alive (owner rule "off by
@@ -3066,7 +3068,21 @@ export const LIVE_WRITES_SESSION_LEASE_RENEW_MS = 30 * 1000;
 export async function getLiveWritesEnabled(now: Date = new Date()): Promise<boolean> {
   if ((await getAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY)) !== "true") return false;
   const leaseAt = Number(await getAppSetting(LIVE_WRITES_SESSION_LEASE_SETTING_KEY));
-  return Number.isFinite(leaseAt) && now.getTime() - leaseAt < LIVE_WRITES_SESSION_LEASE_TTL_MS;
+  const age = now.getTime() - leaseAt;
+  // Fresh = stamped within the TTL AND not meaningfully in the future (a lease stamped while the
+  // clock ran ahead must not stay "fresh" for hours after the clock is corrected -- review round 4).
+  if (Number.isFinite(leaseAt) && age < LIVE_WRITES_SESSION_LEASE_TTL_MS && age > -LIVE_WRITES_SESSION_LEASE_MAX_SKEW_MS) {
+    return true;
+  }
+  // A lapsed lease is a real OFF, persisted: the toggle must not silently come back on when a later
+  // renewal happens (e.g. after the laptop wakes), and the Settings UI must show exactly what is
+  // enforced. Re-enabling is always an explicit operator action (review round 4).
+  try {
+    await setAppSetting(LIVE_WRITES_ENABLED_SETTING_KEY, "false");
+  } catch {
+    // Still reported as off below.
+  }
+  return false;
 }
 
 /** Called only by the operator-facing web settings route -- turning the toggle on happens inside a
