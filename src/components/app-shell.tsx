@@ -7,6 +7,8 @@
 import type { ComponentType, ReactNode, SVGProps } from "react";
 import type { ChannelInfo } from "@/app/dashboard/page";
 import { ChannelSwitcher } from "./channel-switcher";
+import { DeviceSyncBell } from "./device-sync-bell";
+import { FeatureErrorBoundary } from "./feature-error-boundary";
 
 export type NavItem<T extends string> = {
   value: T;
@@ -85,6 +87,9 @@ export function AppShell<T extends string>(props: {
             <ChannelSwitcher />
           </div>
           <div className="flex items-center gap-3">
+            <FeatureErrorBoundary label="Device sync">
+              <DeviceSyncBell />
+            </FeatureErrorBoundary>
             <button
               onClick={props.onSignOut}
               className="rounded-full border border-border px-4 py-1.5 text-xs font-medium text-muted transition-colors hover:border-accent hover:text-white"

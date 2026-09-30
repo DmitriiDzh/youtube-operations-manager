@@ -17,6 +17,7 @@ type Readers = {
   operationsWorkspacePath: () => Promise<string | null>;
   marketIntelligenceDailyQuotaBudgetUnits: () => Promise<number | null>;
   operatorCliEnabled: () => Promise<boolean>;
+  deviceAutoSyncEnabled: () => Promise<boolean>;
 };
 
 export async function buildSettingsSnapshot(readers: Readers) {
@@ -48,6 +49,7 @@ export async function buildSettingsSnapshot(readers: Readers) {
     operationsWorkspacePath: values.operationsWorkspacePath as string | null,
     marketIntelligenceDailyQuotaBudgetUnits: values.marketIntelligenceDailyQuotaBudgetUnits as number | null,
     operatorCliEnabled: values.operatorCliEnabled as boolean | null,
+    deviceAutoSyncEnabled: values.deviceAutoSyncEnabled as boolean | null,
     /** Names of the reads that failed this time (their fields are `null`). Empty when all succeeded. */
     unavailable,
   };
