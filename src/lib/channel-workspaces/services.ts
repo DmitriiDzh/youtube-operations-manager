@@ -11,13 +11,18 @@ export type ChannelWorkspaceStore = {
 };
 
 export type ServiceDependencies = {
-  /** This installation's bootstrap `deviceId` -- every read/write is scoped to it. */
-  getDeviceId(): Promise<string>;
+  /** This installation's bootstrap `deviceId`, or `null` if none exists yet. Used by every READ:
+   * a read must never create the device identity as a side effect (the agent-facing read is
+   * deliberately outside the MCP mutation gate). No deviceId means no row can exist for this
+   * device yet, so reads answer "not configured". */
+  readDeviceId(): Promise<string | null>;
+  /** Same `deviceId`, created on first use -- used ONLY by the operator-facing write. */
+  ensureDeviceId(): Promise<string>;
   store: ChannelWorkspaceStore;
   /** Every channel currently connected on this installation (`src/lib/channel-connections`). */
   listConnectedChannelIds(): Promise<string[]>;
   /** Set-time only (`src/lib/local-path-validation`). Deliberately NOT used by any read below:
-   * a read returns the stored string and never touches the filesystem (AC-P11-09). */
+   * a read returns the stored string and never touches the workspace path (AC-P11-09). */
   validatePath(candidatePath: string): Promise<WorkspacePathValidationResult>;
 };
 
@@ -35,14 +40,15 @@ export function createChannelWorkspacesServices(deps: ServiceDependencies) {
 
   return {
     /**
-     * Agent-facing read (also used by the operator UI). Pure store lookup -- no filesystem call of
-     * any kind. Channel scoping (active channel) is the MCP/CLI caller's job, same convention as
+     * Agent-facing read (also used by the operator UI). A store lookup that never touches anything
+     * at or under the workspace path (the only file involved is reading this app's own bootstrap
+     * config for the `deviceId`, never creating it). Channel scoping (active channel) is the MCP/CLI caller's job, same convention as
      * `agent-operations`' `getChannelContext`.
      */
     async getWorkspace(input: unknown): Promise<ChannelWorkspaceResult> {
       const { channelId } = parseWithSchema(getChannelWorkspaceInputSchema, input, "get channel workspace input");
-      const deviceId = await deps.getDeviceId();
-      const path = await deps.store.get(deviceId, channelId);
+      const deviceId = await deps.readDeviceId();
+      const path = deviceId ? await deps.store.get(deviceId, channelId) : null;
       return path ? { configured: true, path } : { configured: false };
     },
 
@@ -50,8 +56,11 @@ export function createChannelWorkspacesServices(deps: ServiceDependencies) {
      * channels no longer connected are not listed (they stay stored, harmlessly, and reappear if
      * the channel is reconnected). */
     async listWorkspaces(): Promise<ChannelWorkspaceListEntry[]> {
-      const deviceId = await deps.getDeviceId();
-      const [connected, stored] = await Promise.all([deps.listConnectedChannelIds(), deps.store.list(deviceId)]);
+      const deviceId = await deps.readDeviceId();
+      const [connected, stored] = await Promise.all([
+        deps.listConnectedChannelIds(),
+        deviceId ? deps.store.list(deviceId) : Promise.resolve([]),
+      ]);
       const byChannel = new Map(stored.map((row) => [row.channelId, row]));
       return connected.map((channelId) => {
         const row = byChannel.get(channelId);
@@ -67,7 +76,7 @@ export function createChannelWorkspacesServices(deps: ServiceDependencies) {
     async setWorkspace(input: unknown): Promise<ChannelWorkspaceResult> {
       const parsed = parseWithSchema(setChannelWorkspaceInputSchema, input, "set channel workspace input");
       await requireConnectedChannel(parsed.channelId);
-      const deviceId = await deps.getDeviceId();
+      const deviceId = await deps.ensureDeviceId();
 
       const candidate = parsed.path?.trim() ?? "";
       if (candidate === "") {

@@ -465,7 +465,7 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   "list-operations-files",
   "get-operations-file",
   // agent channel-workspace (Phase 11, docs/roadmap/plans/PHASE_11_PLAN.md): a local read of one
-  // stored path string -- never touches the filesystem, never mutates. Like the operations-workspace
+  // stored path string -- never touches the workspace path itself, never mutates. Like the operations-workspace
   // path above, there is no CLI command in any namespace that can SET a channel workspace path --
   // only the Web UI's Settings -> Channels card can (AC-P11-10).
   "channel-workspace",

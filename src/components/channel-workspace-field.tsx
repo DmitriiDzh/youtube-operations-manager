@@ -5,6 +5,24 @@ import { InfoTooltip } from "./info-tooltip";
 
 type WorkspaceListEntry = { channelId: string; path: string | null; updatedAt: string | null };
 
+// Every channel row mounts its own field at the same time -- share one in-flight GET between them
+// instead of issuing N identical requests (review round 1). Cleared once settled, so a later
+// retry or remount always fetches fresh data.
+let inflightList: Promise<WorkspaceListEntry[]> | null = null;
+
+function fetchWorkspaceList(): Promise<WorkspaceListEntry[]> {
+  if (!inflightList) {
+    inflightList = (async () => {
+      const res = await fetch("/api/channel-workspaces");
+      if (!res.ok) throw new Error("load failed");
+      return ((await res.json()) as { workspaces: WorkspaceListEntry[] }).workspaces;
+    })().finally(() => {
+      inflightList = null;
+    });
+  }
+  return inflightList;
+}
+
 /**
  * Phase 11 (`docs/roadmap/plans/PHASE_11_PLAN.md`) -- the per-channel "production workspace" path
  * field, rendered inside each row of `channel-connections-settings.tsx`. Self-contained on
@@ -19,18 +37,18 @@ export function ChannelWorkspaceField({ channelId }: { channelId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const [loadFailed, setLoadFailed] = useState(false);
+
   const load = useCallback(async () => {
+    setLoadFailed(false);
+    setError(null);
     try {
-      const res = await fetch("/api/channel-workspaces");
-      if (!res.ok) {
-        setError("Could not load the workspace path.");
-        return;
-      }
-      const data = (await res.json()) as { workspaces: WorkspaceListEntry[] };
-      const current = data.workspaces.find((entry) => entry.channelId === channelId)?.path ?? null;
+      const workspaces = await fetchWorkspaceList();
+      const current = workspaces.find((entry) => entry.channelId === channelId)?.path ?? null;
       setSavedPath(current);
       setDraft(current ?? "");
     } catch {
+      setLoadFailed(true);
       setError("Could not load the workspace path.");
     }
   }, [channelId]);
@@ -112,7 +130,16 @@ export function ChannelWorkspaceField({ channelId }: { channelId: string }) {
         )}
       </div>
       {notice && <p className="text-xs text-green-500">{notice}</p>}
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      {error && (
+        <p className="flex items-center gap-2 text-xs text-red-400">
+          {error}
+          {loadFailed && (
+            <button onClick={() => load()} className="underline hover:text-red-300">
+              Retry
+            </button>
+          )}
+        </p>
+      )}
     </div>
   );
 }

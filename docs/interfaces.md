@@ -240,7 +240,8 @@ silently drops a link whose asset is somehow missing rather than fabricating one
 `agent channel-workspace --channelId <UC...>` (Phase 11, `docs/AGENT_OPERATIONS_INTERFACE.md`
 §4m) prints the local production-workspace folder path the operator set for that channel on this
 device: `{ configured: true, path }` exactly as stored, or `{ configured: false }`. It performs the
-same `assertActiveChannel` check as `agent channel-context`, and it never touches the filesystem.
+same `assertActiveChannel` check as `agent channel-context`, and it never touches anything at or under
+the workspace path.
 **No command in this CLI can set or clear the path.** Only the Web UI's Settings → Channels card
 can.
 

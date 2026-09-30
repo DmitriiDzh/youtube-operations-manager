@@ -6512,14 +6512,26 @@ test("CLI agent channel-workspace rejects a non-active channel before the core i
   assert.equal(JSON.parse(stdout[0] ?? stderr[0] ?? "{}").error.code, "CHANNEL_NOT_ACTIVE");
 });
 
-test("CLI: no command in any namespace can set a channel workspace path", async () => {
-  for (const argv of [
-    ["agent", "set-channel-workspace", "--channelId", "UC_1", "--path", "/tmp/x"],
-    ["channel", "set-workspace", "--channelId", "UC_1", "--path", "/tmp/x"],
-  ]) {
-    assert.throws(
-      () => parseArgs(argv),
-      (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
-    );
+test("CLI: the real command table contains exactly one workspace command, the read-only agent channel-workspace", () => {
+  // Enumerates the ACTUAL command table (via parseArgs' own "must be one of" validation message
+  // for each namespace) rather than guessing setter names (review round 1, finding 6). The type-
+  // level guard is runCliCommand's `channelWorkspacesCore: Pick<..., "getWorkspace">`; this test
+  // catches a future workspace command under any name.
+  const namespaces = ["auth", "playlist", "changeset", "batch", "channel", "analytics", "ai-localization", "agent", "asset"];
+  const workspaceCommands: string[] = [];
+  for (const namespace of namespaces) {
+    let message = "";
+    try {
+      parseArgs([namespace, "__not_a_command__"]);
+    } catch (error) {
+      assert.ok(error instanceof DomainError && error.code === "validation_failed");
+      message = error.message;
+    }
+    const commands = message.split("must be one of: ")[1]?.split(", ") ?? [];
+    assert.ok(commands.length > 0, `expected a command list for namespace ${namespace}`);
+    for (const command of commands) {
+      if (/workspace/i.test(command)) workspaceCommands.push(`${namespace} ${command}`);
+    }
   }
+  assert.deepEqual(workspaceCommands, ["agent channel-workspace"]);
 });

@@ -973,7 +973,9 @@ ends at the path string.
   same active-channel scoping as `agent_get_channel_context`.
   - It returns `{ configured: true, path }` exactly as stored, or `{ configured: false }`, never
     an empty-string path.
-  - It makes no filesystem call of any kind: no listing, no reading, no re-validation. A folder
+  - It never touches anything at or under the path: no listing, no reading, no re-validation. The
+    only file it reads is this app's own bootstrap config, for the `deviceId`, and it never
+    creates that file. A folder
     moved or deleted since it was set still reads back as stored. The agent checks it with its
     own tools.
 - **Set only by the operator:** Settings → Channels → the per-row "Production workspace folder"

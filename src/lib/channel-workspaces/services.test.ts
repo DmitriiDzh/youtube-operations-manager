@@ -50,7 +50,8 @@ async function withDirs(run: (dirs: { root: string; workspace: string; appData: 
 function createServices(appDataDir: string, connected = ["UC_A", "UC_B"]) {
   const memory = createMemoryStore();
   const services = createChannelWorkspacesServices({
-    getDeviceId: async () => DEVICE,
+    readDeviceId: async () => DEVICE,
+    ensureDeviceId: async () => DEVICE,
     store: memory.store,
     listConnectedChannelIds: async () => connected,
     validatePath: (candidate) => validateWorkspacePath(candidate, { appDataDir, ...createPathValidationFsAdapter() }),
@@ -153,4 +154,33 @@ test("listWorkspaces: one entry per connected channel, unset ones as null, disco
       { channelId: "UC_A", path: workspace, updatedAt: "2026-09-30T00:00:00.000Z" },
       { channelId: "UC_B", path: null, updatedAt: null },
     ]);
+  }));
+
+// Review round 1, finding 1: a read must never create the device identity as a side effect (the
+// agent read sits outside the MCP mutation gate). With no deviceId yet, reads answer "not
+// configured" and only the operator write creates it.
+test("reads never create the device identity; only the operator write does", () =>
+  withDirs(async ({ workspace, appData }) => {
+    const memory = createMemoryStore();
+    let deviceId: string | null = null;
+    let ensureCalls = 0;
+    const services = createChannelWorkspacesServices({
+      readDeviceId: async () => deviceId,
+      ensureDeviceId: async () => {
+        ensureCalls++;
+        deviceId ??= "device-created";
+        return deviceId;
+      },
+      store: memory.store,
+      listConnectedChannelIds: async () => ["UC_A"],
+      validatePath: (candidate) => validateWorkspacePath(candidate, { appDataDir: appData, ...createPathValidationFsAdapter() }),
+    });
+
+    assert.deepEqual(await services.getWorkspace({ channelId: "UC_A" }), { configured: false });
+    assert.deepEqual(await services.listWorkspaces(), [{ channelId: "UC_A", path: null, updatedAt: null }]);
+    assert.equal(ensureCalls, 0);
+
+    await services.setWorkspace({ channelId: "UC_A", path: workspace });
+    assert.equal(ensureCalls, 1);
+    assert.deepEqual(await services.getWorkspace({ channelId: "UC_A" }), { configured: true, path: workspace });
   }));

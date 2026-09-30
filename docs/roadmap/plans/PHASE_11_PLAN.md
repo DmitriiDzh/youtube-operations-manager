@@ -28,11 +28,11 @@ reading inside a workspace path, and any change to the Global Operations Workspa
     another machine) is invisible, never silently reused.
 - **Domain module `src/lib/channel-workspaces/`** (§6.2 layering):
   - `getWorkspace(channelId)`: returns `{configured:false}` or `{configured:true, path}`.
-  - `setWorkspace(userId, channelId, path|null)`: an operator-only write. It validates the
-    path through the shared helper and requires `channelId` to be one of this user's connected
+  - `setWorkspace(channelId, path|null)`: an operator-only write. It validates the
+    path through the shared helper and requires `channelId` to be one of this installation's connected
     channels. `null` or `""` clears the value.
-  - `listWorkspaces(userId)`: lists workspaces for the user's connected channels.
-- **Read path touches no filesystem.** The agent-facing read returns the stored string only.
+  - `listWorkspaces()`: lists workspaces for this installation's connected channels. (Aligned in review round 1. There is no per-user ownership boundary in this app: this is an already-accepted tradeoff, `docs/TECHNICAL_DEBT.md`. The route still requires a session.)
+- **Read path never touches the workspace path.** The agent-facing read returns the stored string only.
   There is no `realpath`, `stat` or enumeration call, because "this product's own
   responsibility ends at the path string" (§11). There is deliberately no read-time
   re-validation: this product never opens anything under the path, so a later re-symlink
@@ -74,13 +74,13 @@ implementation's output.
 |---|---|
 | AC-P11-01 | Setting an absolute, existing directory path for a connected channel persists it. A subsequent read returns exactly that string. |
 | AC-P11-02 | Set-time rejection, with nothing saved: a relative path, a nonexistent path, a regular file, a path equal to the app-data directory, a path inside it, or an ancestor of it. |
-| AC-P11-03 | Setting a path for a `channelId` that is not one of the caller's connected channels is rejected (not-found class). Nothing is saved. |
+| AC-P11-03 | Setting a path for a `channelId` that is not one of this installation's connected channels is rejected (not-found class). Nothing is saved. |
 | AC-P11-04 | Clearing (`null` or `""`) removes the value. The read then returns `{configured:false}`. |
 | AC-P11-05 | Per-channel isolation: setting or clearing channel A never changes channel B's value. |
 | AC-P11-06 | Device-local: a row stored under another `deviceId` is invisible to reads and to listing. `channel_workspaces` is not in `SNAPSHOT_TRANSFERRED_TABLES`. |
 | AC-P11-07 | Agent read for the active channel returns `{configured:true, path}` with the stored string unchanged. For an unconfigured channel it returns `{configured:false}`, never an empty-string path. |
 | AC-P11-08 | Agent read for a channel that is not the caller's active channel fails with the same active-channel error as `agent_get_channel_context`. No path is returned. |
-| AC-P11-09 | The agent read performs no filesystem access. After the directory is deleted, the read still returns the stored string (the service has no filesystem dependency at all). |
+| AC-P11-09 | The agent read performs no access at or under the workspace path. After the directory is deleted, the read still returns the stored string, because the service has no path-validation or directory dependency. The read also never creates the bootstrap `deviceId` (added in review round 1). |
 | AC-P11-10 | No agent surface can set or clear the path. The MCP tool list contains only the get tool for this feature, the get tool's input schema is `.strict()` (an extra `path` field is rejected), and no `agent` CLI command writes it. |
 | AC-P11-11 | `agent_get_capabilities` lists `channel_workspace.get_channel_workspace` with READ permission. `AGENT_API_VERSION` is `0.15.0`. |
 | AC-P11-12 | The Global Operations Workspace is unchanged: the existing `operations-instructions` tests pass without modification. |

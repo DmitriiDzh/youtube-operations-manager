@@ -1163,7 +1163,8 @@ export function createMcpToolHandlers(
      * Phase 11 -- the per-channel production-workspace path this device's operator set in Settings.
      * Same active-channel scoping as `agentGetChannelContext` (resolve identity, then
      * `assertActiveChannel`, before the core is ever reached). Returns the stored string only --
-     * the core makes no filesystem call of any kind, and nothing here can set or clear the path.
+     * the core never touches anything at or under the workspace path, never creates the device
+     * identity (review round 1), and nothing here can set or clear the path.
      */
     async agentGetChannelWorkspace(input: unknown): Promise<ToolResponse> {
       const parsedInput = getChannelWorkspaceInputSchema.safeParse(input);
@@ -2450,12 +2451,8 @@ export function createMcpServer(
     (args) => handlers.agentListAssetPerformance(args)
   );
 
-  // Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md) -- fulfils the two capability
-  // names PLANNED_FUTURE_CAPABILITIES reserved since Phase 7 (src/lib/agent-operations/contracts.ts),
-  // using these exact literal tool names rather than an `agent_`-prefixed pair. Both are pure local
-  // reads over the market-intelligence module's own watchlist/evidence storage, never a live
-  // YouTube call, never channel-scoped (this data is global, about channels the operator does not
-  // necessarily own).
+  // Phase 11 (docs/roadmap/plans/PHASE_11_PLAN.md) -- active-channel-scoped read, unlike the
+  // global market-intelligence tools registered below.
   registerTool(
     "agent_get_channel_workspace",
     {
@@ -2466,6 +2463,12 @@ export function createMcpServer(
     (args) => handlers.agentGetChannelWorkspace(args)
   );
 
+  // Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md) -- fulfils the two capability
+  // names PLANNED_FUTURE_CAPABILITIES reserved since Phase 7 (src/lib/agent-operations/contracts.ts),
+  // using these exact literal tool names rather than an `agent_`-prefixed pair. Both are pure local
+  // reads over the market-intelligence module's own watchlist/evidence storage, never a live
+  // YouTube call, never channel-scoped (this data is global, about channels the operator does not
+  // necessarily own).
   registerTool(
     "query_competitors",
     {

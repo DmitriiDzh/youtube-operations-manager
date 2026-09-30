@@ -6,14 +6,16 @@ import { createChannelWorkspaceStore } from "./adapters/store";
 import { createChannelWorkspacesServices } from "./services";
 
 /**
- * Phase 11 -- see `./contracts.ts`. `getDeviceId` uses the same bootstrap config the device-
- * handoff routes use (`ensureExists` creates it with a fresh `deviceId` on first use).
+ * Phase 11 -- see `./contracts.ts`. Both deviceId accessors use the same bootstrap config the
+ * device-handoff routes use. Reads only `read()` it (never creating it); the operator write
+ * `ensureExists()`es it.
  */
 export function createChannelWorkspacesCore() {
   const bootstrapConfigStore = createBootstrapConfigStore(appDataPaths.bootstrapConfigPath);
   const channelConnectionsCore = createChannelConnectionsCore();
   return createChannelWorkspacesServices({
-    getDeviceId: async () => (await bootstrapConfigStore.ensureExists()).deviceId,
+    readDeviceId: async () => (await bootstrapConfigStore.read())?.deviceId ?? null,
+    ensureDeviceId: async () => (await bootstrapConfigStore.ensureExists()).deviceId,
     store: createChannelWorkspaceStore(),
     listConnectedChannelIds: async () =>
       (await channelConnectionsCore.listConnectedChannels()).map((channel) => channel.channelId),

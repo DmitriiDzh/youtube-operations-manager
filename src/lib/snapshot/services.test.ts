@@ -750,6 +750,14 @@ test("applySnapshotToDatabase: Phase 11 channel_workspaces is device-local -- ne
     });
     const snapshotDir = path.join(dir, "snapshots", manifest.snapshotId);
 
+    // The published copy itself must not contain the table (not merely "apply ignores it").
+    const published = createClient({ url: `file:${path.join(snapshotDir, "data.db")}` });
+    const tableRows = await published.execute(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'channel_workspaces'"
+    );
+    assert.equal(tableRows.rows.length, 0, "channel_workspaces must not exist in the published snapshot");
+    published.close();
+
     const receiving = await makeClient(dir, "receiving.db");
     await receiving.execute({
       sql: "INSERT INTO channel_workspaces (device_id, channel_id, path) VALUES (?, ?, ?)",

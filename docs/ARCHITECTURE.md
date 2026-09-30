@@ -1997,8 +1997,11 @@ surface on this side to secure. Validation of the path itself happens once, at s
      overlap app-data in either direction (the RISK-07 reasoning from slice I).
   3. Only then does it upsert `channel_workspaces`.
 - *Agent reads.* MCP `agent_get_channel_workspace` or CLI `agent channel-workspace` → identity
-  resolution + `assertActiveChannel` → `getWorkspace`. The read is a pure store lookup with no
-  filesystem dependency injected at all, so it cannot touch the disk. No agent surface receives
+  resolution + `assertActiveChannel` → `getWorkspace`. The read is a store lookup that never
+  touches anything at or under the workspace path (no path-validation or directory dependency is
+  injected into it). The only other file it touches is this app's own `bootstrap-config.json`,
+  read for the `deviceId`, and only ever read: with no config yet the answer is
+  `{ configured: false }`. Only the operator write may create it (review round 1). No agent surface receives
   `setWorkspace`: the MCP and CLI factories take a `Pick<…, "getWorkspace">`.
 
 **Storage and device-locality.** `channel_workspaces(device_id, channel_id, path, updated_at)`,
