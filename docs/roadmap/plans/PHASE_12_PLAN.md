@@ -237,9 +237,12 @@ it at the HTTP endpoint). The release notes carry a migration note.
   2. **Nothing sensitive leaks through the interface.** Agent-mode responses never contain
      app-data paths, other channels' workspace paths, or `local_path` asset references of other
      channels (already channel-scoped after 12.3).
-  3. **Other agents' tokens are never stored in plaintext by the app** (hash only, 12.1). A startup
-     warning is logged if the agent's launch configuration file sits inside another channel's
-     workspace.
+  3. **Other agents' tokens are never stored in plaintext by the app** (hash only, 12.1).
+     ~~Startup warning if the launch configuration sits inside another channel's workspace~~:
+     **withdrawn** (review round 1). The MCP server never learns where the client's launch
+     configuration file lives: the client passes only environment variables. So such a check
+     cannot be implemented truthfully. The recommendation stays in `docs/AGENT_ISOLATION_SETUP.md`
+     §5 as setup advice.
   4. **Accidentally opening the database yields no usable secrets.** Encrypt stored OAuth
      tokens at rest, reusing the existing `ai_connection_credentials` encryption pattern
      (closes RISK-07's plaintext part). This is scoped as its own slice, 12.8, because it touches
