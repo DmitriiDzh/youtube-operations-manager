@@ -230,8 +230,9 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
 
   assert.equal(result.productVersion, "9.9.9");
   // Bumped 0.13.0 -> 0.14.0, Phase 10 slice 2 (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md):
-  // new decision_engine capabilities added.
-  assert.equal(result.agentApiVersion, "0.14.0");
+  // new decision_engine capabilities added. Bumped 0.14.0 -> 0.15.0, Phase 11
+  // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11): new channel_workspace capability.
+  assert.equal(result.agentApiVersion, "0.15.0");
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -577,6 +578,19 @@ test("agent capabilities list registers the two slice I operations-workspace cap
   assert.equal(getCap!.permission, "READ");
 
   assert.ok(result.dataDomains.includes("operations_workspace_files"));
+});
+
+// Phase 11 (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11): READ, in its own domain, with its own
+// data domain (the path string only -- never anything inside the folder).
+test("agent capabilities list registers the Phase 11 channel-workspace capability as READ, with its data domain", async () => {
+  const { services } = createFixture();
+  const result = await services.getSystemCapabilities({});
+
+  const cap = result.capabilities.find((c) => c.id === "channel_workspace.get_channel_workspace");
+  assert.ok(cap);
+  assert.equal(cap!.domain, "channel_workspace");
+  assert.equal(cap!.permission, "READ");
+  assert.ok(result.dataDomains.includes("channel_workspace_path"));
 });
 
 // Phase 7 slice K (owner spec §10): READ-only, reuses the existing video_metadata/video_analytics

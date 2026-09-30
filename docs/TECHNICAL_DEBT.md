@@ -1324,4 +1324,28 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Approval required from:** none beyond the normal small/low-risk change bar (`AGENTS.md` §K.2) -- an internal deduplication with no intended behavior change.
 - **Status:** OPEN, tracked.
 
+## RISK-86 — `npm run build` migrates the developer's real app-data database — OPEN, 2026-09-30
+
+- **Affected components:** `src/lib/db.ts` (boot-time `initializeDatabaseSchema` on the
+  singleton client) and `src/lib/platform-paths/runtime.ts`.
+- **Found during:** Phase 11. A validation `npm run build` on `feature/phase-11-channel-workspaces`
+  migrated the owner's real `~/Library/Application Support/YouTubeOperationsManager/playlist-manager.db`
+  from v32 to v33 (2026-09-30 15:29; the pre-migration backup was taken automatically).
+- **Actual risk:** `next build` imports `db.ts` while collecting page data. Only the test runner
+  is redirected to a temp app-data directory (`NODE_TEST_CONTEXT`); a build is not. Building any
+  branch with a newer schema therefore migrates the real database. `dev`/`main` servers then
+  refuse to start ("newer than supported") until that branch merges. A separate git worktree
+  does not help, because it shares the same app-data directory. The owner chose to keep the v33
+  database (Telegram, 2026-09-30, "Оставь как есть"): Phase 11's migration is additive, with one
+  empty table.
+- **Why not fixed now:** out of Phase 11's scope. The fix touches app-data resolution for every
+  entry point.
+- **Required remediation (not yet scheduled):** either skip database initialization during
+  `next build` (for example, gate on `NEXT_PHASE === "phase-production-build"`), or add an
+  explicit app-data override for developer builds. Until then, build a schema-changing branch
+  only with `HOME` pointed at a scratch directory.
+- **Gate(s):** none.
+- **Approval required from:** project owner, for scheduling.
+- **Status:** OPEN, tracked.
+
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

@@ -23,7 +23,7 @@ import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { parseWithSchema, registerExternalArtifactInputSchema } from "@/lib/content-proposals/schemas";
 import { listAssetPerformanceInputSchema } from "@/lib/agent-operations/schemas";
-import { runCliCommand, getCredentialRef } from "./video-metadata";
+import { runCliCommand, getCredentialRef, parseArgs } from "./video-metadata";
 
 function makeCoreStub(): Pick<
   VideoMetadataCore & PlaylistManagementCore,
@@ -6459,4 +6459,79 @@ test("CLI resolves callerConnectionId to null when AGENT_CONNECTION_ID is set to
     if (previous === undefined) delete process.env.AGENT_CONNECTION_ID;
     else process.env.AGENT_CONNECTION_ID = previous;
   }
+});
+
+// Phase 11 (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-07/08/10) -- agent channel-workspace.
+test("CLI agent channel-workspace returns the stored path for the active channel, forwarding only channelId", async () => {
+  let captured: unknown;
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "channel-workspace", "--channelId", "UC_1", "--userId", "u1"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: makeChannelAccessCoreStub(),
+    channelWorkspacesCore: {
+      getWorkspace: async (input: unknown) => {
+        captured = input;
+        return { configured: true, path: "/Users/op/channels/one" };
+      },
+    },
+    writeStdout: (line) => stdout.push(line),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, { channelId: "UC_1" });
+  assert.deepEqual(JSON.parse(stdout[0] ?? "{}").data, { configured: true, path: "/Users/op/channels/one" });
+});
+
+test("CLI agent channel-workspace rejects a non-active channel before the core is ever reached", async () => {
+  const stderr: string[] = [];
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    argv: ["agent", "channel-workspace", "--channelId", "UC_OTHER"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    channelAccessCore: {
+      assertActiveChannel: async () => {
+        throw new DomainError({ code: "CHANNEL_NOT_ACTIVE", message: "not active" });
+      },
+      getActiveChannelId: async () => null,
+      filterToActiveChannel: () => [],
+      activateChannel: async () => undefined,
+    },
+    channelWorkspacesCore: {
+      getWorkspace: async () => {
+        throw new Error("must not be called");
+      },
+    },
+    writeStdout: (line) => stdout.push(line),
+    writeStderr: (line) => stderr.push(line),
+  });
+
+  assert.notEqual(exitCode, 0);
+  assert.equal(JSON.parse(stdout[0] ?? stderr[0] ?? "{}").error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("CLI: the real command table contains exactly one workspace command, the read-only agent channel-workspace", () => {
+  // Enumerates the ACTUAL command table (via parseArgs' own "must be one of" validation message
+  // for each namespace) rather than guessing setter names (review round 1, finding 6). The type-
+  // level guard is runCliCommand's `channelWorkspacesCore: Pick<..., "getWorkspace">`; this test
+  // catches a future workspace command under any name.
+  const namespaces = ["auth", "playlist", "changeset", "batch", "channel", "analytics", "ai-localization", "agent", "asset"];
+  const workspaceCommands: string[] = [];
+  for (const namespace of namespaces) {
+    let message = "";
+    try {
+      parseArgs([namespace, "__not_a_command__"]);
+    } catch (error) {
+      assert.ok(error instanceof DomainError && error.code === "validation_failed");
+      message = error.message;
+    }
+    const commands = message.split("must be one of: ")[1]?.split(", ") ?? [];
+    assert.ok(commands.length > 0, `expected a command list for namespace ${namespace}`);
+    for (const command of commands) {
+      if (/workspace/i.test(command)) workspaceCommands.push(`${namespace} ${command}`);
+    }
+  }
+  assert.deepEqual(workspaceCommands, ["agent channel-workspace"]);
 });

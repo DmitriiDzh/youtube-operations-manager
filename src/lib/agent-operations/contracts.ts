@@ -58,7 +58,7 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts`) for the current, authoritative
  * list of capabilities.
  */
-export const AGENT_API_VERSION = "0.14.0";
+export const AGENT_API_VERSION = "0.15.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
@@ -82,6 +82,7 @@ export const AGENT_CAPABILITY_DOMAINS = [
   "asset_performance",
   "market_intelligence",
   "decision_engine",
+  "channel_workspace",
 ] as const;
 export type AgentCapabilityDomain = (typeof AGENT_CAPABILITY_DOMAINS)[number];
 
@@ -110,6 +111,8 @@ export const AGENT_DATA_DOMAINS = [
   "operations_workspace_files",
   "competitor_intelligence",
   "experiment_history",
+  // Phase 11 -- the one path string per channel/device, never anything inside that folder.
+  "channel_workspace_path",
 ] as const;
 export type AgentDataDomain = (typeof AGENT_DATA_DOMAINS)[number];
 

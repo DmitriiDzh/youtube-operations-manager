@@ -13,6 +13,9 @@ import {
   contentProposals,
   copyLegacyDatabaseInto,
   createIsolatedDb,
+  getChannelWorkspacePath,
+  listChannelWorkspacePaths,
+  setChannelWorkspacePath,
   gatewayCallEvents,
   getAnalyticsReadsEnabled,
   getAnalyticsSyncSettings,
@@ -2912,4 +2915,35 @@ test("finalizeExperimentExecution: returns false (not an exception) when the gua
     assert.equal(row?.status, "approved", "the mismatched finalize call must not have changed anything");
     assert.equal(row?.executionBatchId, null);
     assert.ok(row?.executionClaimedAt, "the claim stays held -- a failed finalize self-heals via expiry, never silently releases");
+  }));
+
+// Phase 11 (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-05/AC-P11-06): channel_workspaces rows are
+// scoped per (device, channel). A row stored under another deviceId is invisible to this device's
+// get/list, and setting or clearing one channel never touches another channel's row.
+test("channel_workspaces: per-device, per-channel isolation for get/list/set/clear", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    assert.equal(await tableExists(client, "channel_workspaces"), true);
+    const isolatedDb = createIsolatedDb(client);
+
+    await setChannelWorkspacePath("device-a", "UC_A", "/work/a", isolatedDb);
+    await setChannelWorkspacePath("device-a", "UC_B", "/work/b", isolatedDb);
+    await setChannelWorkspacePath("device-other", "UC_A", "/elsewhere/a", isolatedDb);
+
+    assert.equal(await getChannelWorkspacePath("device-a", "UC_A", isolatedDb), "/work/a");
+    assert.equal(await getChannelWorkspacePath("device-other", "UC_A", isolatedDb), "/elsewhere/a");
+    assert.equal(await getChannelWorkspacePath("device-a", "UC_C", isolatedDb), null);
+    assert.deepEqual(
+      (await listChannelWorkspacePaths("device-a", isolatedDb)).map((r) => [r.channelId, r.path]).sort(),
+      [["UC_A", "/work/a"], ["UC_B", "/work/b"]]
+    );
+
+    await setChannelWorkspacePath("device-a", "UC_A", "/work/a2", isolatedDb);
+    assert.equal(await getChannelWorkspacePath("device-a", "UC_A", isolatedDb), "/work/a2");
+    assert.equal(await getChannelWorkspacePath("device-a", "UC_B", isolatedDb), "/work/b");
+
+    await setChannelWorkspacePath("device-a", "UC_A", null, isolatedDb);
+    assert.equal(await getChannelWorkspacePath("device-a", "UC_A", isolatedDb), null);
+    assert.equal(await getChannelWorkspacePath("device-a", "UC_B", isolatedDb), "/work/b");
+    assert.equal(await getChannelWorkspacePath("device-other", "UC_A", isolatedDb), "/elsewhere/a");
   }));

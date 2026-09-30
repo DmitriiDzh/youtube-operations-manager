@@ -23,6 +23,7 @@ import { createAiLocalizationCore, type AiLocalizationCore } from "@/lib/ai-loca
 import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent-operations";
 import { createAssetCatalogCore, type AssetCatalogCore } from "@/lib/asset-catalog";
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
+import { createChannelWorkspacesCore, type ChannelWorkspacesCore } from "@/lib/channel-workspaces";
 import { createDecisionEngineCore, type DecisionEngineCore } from "@/lib/decision-engine";
 import {
   createAgentConnectionsCore,
@@ -176,7 +177,8 @@ export type ParsedArgs = {
     | "create-research-request"
     | "list-hypotheses"
     | "get-hypothesis-trail"
-    | "create-experiment-proposal";
+    | "create-experiment-proposal"
+    | "channel-workspace";
   flags: Record<string, string | boolean>;
 };
 
@@ -227,6 +229,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       "list-hypotheses",
       "get-hypothesis-trail",
       "create-experiment-proposal",
+      "channel-workspace",
     ],
     asset: ["register"],
   };
@@ -461,6 +464,11 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
   // filesystem access).
   "list-operations-files",
   "get-operations-file",
+  // agent channel-workspace (Phase 11, docs/roadmap/plans/PHASE_11_PLAN.md): a local read of one
+  // stored path string -- never touches the workspace path itself, never mutates. Like the operations-workspace
+  // path above, there is no CLI command in any namespace that can SET a channel workspace path --
+  // only the Web UI's Settings -> Channels card can (AC-P11-10).
+  "channel-workspace",
   // agent find-comparable-videos (slice K, owner spec §10): local reads only (sync mirror +
   // local analytics rows), never a live YouTube call, never mutates anything.
   "find-comparable-videos",
@@ -564,6 +572,8 @@ export async function runCliCommand(args: {
   agentConnectionsCore?: AgentConnectionsCoreSubset;
   marketIntelligenceCore?: MarketIntelligenceCliCoreSubset;
   decisionEngineCore?: DecisionEngineCliCoreSubset;
+  // Phase 11 -- read-only subset on purpose; `setWorkspace` is operator-only (Web UI).
+  channelWorkspacesCore?: Pick<ChannelWorkspacesCore, "getWorkspace">;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
 }): Promise<number> {
@@ -582,6 +592,7 @@ export async function runCliCommand(args: {
   const agentConnectionsCore = args.agentConnectionsCore ?? createAgentConnectionsCore();
   const marketIntelligenceCore = args.marketIntelligenceCore ?? createMarketIntelligenceCore();
   const decisionEngineCore = args.decisionEngineCore ?? createDecisionEngineCore();
+  const channelWorkspacesCore = args.channelWorkspacesCore ?? createChannelWorkspacesCore();
   const writeStdout =
     args.writeStdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const writeStderr =
@@ -1049,6 +1060,15 @@ export async function runCliCommand(args: {
 
       if (parsedArgs.command === "channel-context") {
         const result = await agentOperationsCore.getChannelContext({ channelId });
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Phase 11 -- same active-channel check as "channel-context" (done just above), then the
+      // stored path string only (channelWorkspacesCore, not agentOperationsCore -- same module-
+      // independence reasoning as marketIntelligenceCore).
+      if (parsedArgs.command === "channel-workspace") {
+        const result = await channelWorkspacesCore.getWorkspace({ channelId });
         writeStdout(serializeSuccess(result));
         return 0;
       }

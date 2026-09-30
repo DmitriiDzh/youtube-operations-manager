@@ -84,6 +84,11 @@ export type DomainErrorCode =
   // "configured, but something about the actual request/directory is wrong" cases.
   | "OPERATIONS_WORKSPACE_UNAVAILABLE"
   | "OPERATIONS_FILE_NOT_AVAILABLE"
+  // Phase 11 (docs/roadmap/plans/PHASE_11_PLAN.md) -- per-channel workspace path. INVALID: the
+  // operator-supplied path failed set-time validation. CHANNEL_NOT_CONNECTED: the channelId is not
+  // one of this installation's connected channels (never "does not exist" vs. "not connected").
+  | "CHANNEL_WORKSPACE_PATH_INVALID"
+  | "CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED"
   // BL-091 (docs/roadmap/plans/AGENT_ZONES_PLAN.md) -- multi-agent responsibility zones.
   | "AGENT_CONNECTION_NOT_AVAILABLE"
   | "AGENT_CONNECTION_ID_CONFLICT"

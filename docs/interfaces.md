@@ -159,6 +159,7 @@ npm run cli:video-metadata -- agent register-external-artifact --channelId <UC..
 npm run cli:video-metadata -- agent list-proposal-artifacts --channelId <UC...> --proposalId <PROPOSAL_ID>
 npm run cli:video-metadata -- agent list-operations-files
 npm run cli:video-metadata -- agent get-operations-file --path <RELATIVE_PATH>
+npm run cli:video-metadata -- agent channel-workspace --channelId <UC...>
 npm run cli:video-metadata -- agent find-comparable-videos --channelId <UC...> --anchorVideoId <VIDEO_ID> --sort publicationProximity|durationProximity|performanceMetric|titleTokenOverlap [--publicationWindowDays <N>] [--durationToleranceSeconds <N>] [--performanceMetric <name>] [--performanceThresholdOperator '>='|'<='] [--performanceThresholdValue <N>] [--limit <N>]
 npm run cli:video-metadata -- agent list-asset-performance --channelId <UC...> [--assetType thumbnail|source_image|...] [--performanceMetric <name> --performanceDayOffset <N>] [--sort linkedVideoPublicationDate|lifetimeViewCount|performanceMetric] [--limit <N>]
 ```
@@ -235,6 +236,14 @@ list-proposal-artifacts` is the same `assertActiveChannel`-checked, read-only pa
 get-asset-context`/`agent list-assets` -- it hydrates each link with its full `CreativeAsset` and
 silently drops a link whose asset is somehow missing rather than fabricating one. See
 `docs/AGENT_OPERATIONS_INTERFACE.md` §4f for the full design.
+
+`agent channel-workspace --channelId <UC...>` (Phase 11, `docs/AGENT_OPERATIONS_INTERFACE.md`
+§4m) prints the local production-workspace folder path the operator set for that channel on this
+device: `{ configured: true, path }` exactly as stored, or `{ configured: false }`. It performs the
+same `assertActiveChannel` check as `agent channel-context`, and it never touches anything at or under
+the workspace path.
+**No command in this CLI can set or clear the path.** Only the Web UI's Settings → Channels card
+can.
 
 `agent list-operations-files`/`agent get-operations-file` (Phase 7 slice I, owner spec §3/§30)
 surface the contents of an operator-configured, out-of-repository folder holding Codex's own
@@ -698,6 +707,15 @@ Key MCP tools:
     `createExperiment`/`insertExperiment` never actually persist `createdBy` anywhere -- the
     `Experiment` type has no such field, only `responsible` (a caller-supplied input value, not an
     identity stamp).
+  - `agent_get_channel_workspace` (Phase 11, `docs/AGENT_OPERATIONS_INTERFACE.md` §4m) —
+    `{ channelId }` (`.strict()`) → `{ configured: false } | { configured: true, path: string }`.
+    `READ`, channel-scoped (`assertActiveChannel`, like `agent_get_channel_context`), and unzoned.
+    It returns the operator-set absolute path for this device exactly as stored and never touches
+    anything at or under that path. It only reads the app's own bootstrap config, for the
+    `deviceId`, and never creates it. No MCP tool can set or clear it: `PUT /api/channel-workspaces` (Web UI
+    only) is the sole setter. Device-local, never synced or handed off. Error codes
+    (setter only): `CHANNEL_WORKSPACE_PATH_INVALID` (400) and
+    `CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED` (404).
   - **There is no MCP tool or CLI command to create a hypothesis from scratch, transition an
     experiment's status, or record an outcome** — all Web-UI-only, verified mechanically by
     `decision-engine-agent-approval-inventory.test.ts` (`PHASE10-INV-02`, same scan technique as
@@ -823,6 +841,19 @@ All routes are App Router handlers and require authenticated session user.
 - `GET /api/agent-operations/capabilities` — same shape/underlying function as the MCP tool
   `agent_get_capabilities` above (see `docs/AGENT_OPERATIONS_INTERFACE.md`). Read-only, gated by
   the same NextAuth session check as every other route in this app; not channel-scoped.
+
+### Channel Workspaces API (Phase 11, `docs/roadmap/plans/PHASE_11_PLAN.md`)
+
+- `GET /api/channel-workspaces` → `{ workspaces: [{ channelId, path | null, updatedAt | null }] }`.
+  Returns one entry per connected channel, for this device only.
+- `PUT /api/channel-workspaces` with `{ channelId, path | null }` → `{ workspace: { configured,
+  path? } }`. This is the only setter anywhere. `null` or blank clears the value.
+  - The channel must be connected (`CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED`, 404).
+  - The path must be absolute, exist, be a directory, and not overlap app-data
+    (`CHANNEL_WORKSPACE_PATH_INVALID`, 400).
+  - Gated by the `proxy.ts` mutation gate.
+- Both require a NextAuth session. They are not active-channel-scoped: the Settings → Channels
+  card manages every connected channel.
 
 ### Market Intelligence API (Phase 9 slices 1-4/9A-9E/9G — previously undocumented here, per `AGENTS.md` §H)
 
