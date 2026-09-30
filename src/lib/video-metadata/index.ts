@@ -2,7 +2,7 @@ import { getStoredVideo, setSelectedChannelId } from "@/lib/db";
 import { assertAgentScopeChannel, assertAgentScopeVideo, readStringField } from "@/lib/channel-access/agent-scope";
 import { createWriteContextCore } from "@/lib/write-context";
 import { createMetadataGenerator } from "./adapters/metadata-generator";
-import { createDefaultLogger } from "./adapters/logger";
+import { createDefaultLogger } from "@/lib/shared-logger";
 import { createTranscriptProvider } from "./adapters/transcript-provider";
 import { createYoutubeApiAdapter } from "./adapters/youtube-api";
 import { resolveGoogleCredentials } from "./adapters/google-auth";

@@ -1,4 +1,4 @@
-import { createDefaultLogger } from "@/lib/channel-sync/adapters/logger";
+import { createDefaultLogger } from "@/lib/shared-logger";
 import { createChangeSetChannelStoreAdapter, createIdGenerator } from "@/lib/changesets/adapters/store";
 import { createChangeSetCore } from "@/lib/changesets";
 import { createAiConnectionCore } from "@/lib/ai-connections";
