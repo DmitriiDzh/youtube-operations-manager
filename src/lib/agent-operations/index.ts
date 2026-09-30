@@ -1,3 +1,4 @@
+import { getAgentSession } from "@/lib/agent-session";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { getChannelTargetLanguages, SCHEMA_CURRENT_VERSION } from "@/lib/db";
@@ -44,6 +45,7 @@ export function createAgentOperationsCore() {
   const assetPerformanceCore = createAssetPerformanceCore();
 
   return createAgentOperationsServices({
+    isAgentSession: () => getAgentSession() !== null,
     getProductVersion: readProductVersion,
     getSchemaVersion: () => SCHEMA_CURRENT_VERSION,
     channelStore,

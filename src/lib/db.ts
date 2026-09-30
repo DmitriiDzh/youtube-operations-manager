@@ -15,6 +15,8 @@ import {
   type SchemaMigration,
 } from "@/lib/schema-versioning";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
+import { getAgentSession } from "@/lib/agent-session";
+import { decodeStoredOAuthToken, encodeStoredOAuthToken } from "@/lib/oauth-token-crypto";
 
 // Platform-aware app-data location (docs/decisions/0002-additive-schema-versioning.md's
 // companion task, "Pre-Release Cross-Platform Persistence"). getProductionAppPaths() is the
@@ -594,6 +596,54 @@ export const cloudConnection = sqliteTable("cloud_connection", {
 });
 
 /**
+ * Phase 12 (`docs/roadmap/plans/PHASE_12_PLAN.md` slice 12.4, owner decision D1: "общий сбор и потом
+ * выдаем каждому каналу что нужно ему"), SCHEMA_MIGRATIONS version 35. Market records are collected
+ * once, globally (Phase 9); the operator then assigns individual records to channels, and a
+ * channel-bound agent sees only what is assigned to its own channel. `record_kind` names which
+ * Phase 9 record `record_id` refers to (no FK -- five different parent tables; validated in the
+ * service). A research request an agent creates is recorded here as owned by its channel.
+ *
+ * Unlike `agent_channel_tokens`, this IS business data and travels with a device handoff
+ * (`SNAPSHOT_TRANSFERRED_TABLES`), exactly like the Phase 9 tables it annotates.
+ */
+export const channelRecordAssignments = sqliteTable(
+  "channel_record_assignments",
+  {
+    channelId: text("channel_id").notNull(),
+    recordKind: text("record_kind").notNull(),
+    recordId: text("record_id").notNull(),
+    assignedAt: integer("assigned_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.recordKind, table.recordId] })]
+);
+
+/**
+ * Phase 12 (channel-bound agent isolation, `docs/roadmap/plans/PHASE_12_PLAN.md` slice 12.1),
+ * SCHEMA_MIGRATIONS version 34. One row per issued agent channel token. Only a SHA-256 hash of the
+ * token is ever stored (AC-P12-11); the plaintext is shown to the operator once at issue time.
+ * `user_id` is the Google identity recorded AT ISSUE TIME (verified then to own the channel live) --
+ * an agent session's credentials always come from here, never from `channels.connected_user_id`
+ * (which an explicit-id `channel_sync` can overwrite). At most one non-revoked row per channel
+ * (one agent = one channel, owner decision): issuing a new token revokes the previous one.
+ *
+ * Device-local: NOT in `SNAPSHOT_TRANSFERRED_TABLES` and not in `sync-gateway` -- an agent is
+ * configured per machine, the same reasoning as `agent_connections`.
+ */
+export const agentChannelTokens = sqliteTable("agent_channel_tokens", {
+  id: text("id").primaryKey(),
+  channelId: text("channel_id").notNull(),
+  userId: text("user_id").notNull(),
+  tokenHash: text("token_hash").notNull().unique(),
+  label: text("label"),
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+  revokedAt: integer("revoked_at", { mode: "timestamp" }),
+});
+
+/**
  * Phase 11 (Channel Workspaces, `docs/roadmap/plans/PHASE_11_PLAN.md` §1), SCHEMA_MIGRATIONS
  * version 33. One operator-set local filesystem path per (device, channel) -- the channel's
  * production-workspace folder on THIS machine. This product stores and returns the string only;
@@ -859,46 +909,11 @@ export const contentProposalArtifacts = sqliteTable(
   (table) => [index("content_proposal_artifacts_proposal_id_idx").on(table.proposalId)]
 );
 
-/**
- * BL-091 (`docs/roadmap/plans/AGENT_ZONES_PLAN.md`) -- registry of distinct agent connections
- * (e.g. "claude"/"codex"), identified by an operator-chosen slug `id`. **No secret/token field**
- * -- this is a coordination guardrail between agent clients the project owner already controls
- * both ends of, never an authentication boundary (`AGENTS.md` §F only governs real credentials).
- * Read by `assertAgentAllowedForCapability` (`src/lib/agent-connections/services.ts`) -- the
- * enabled-connection count and identity this table holds directly drives the fail-closed policy.
- *
- * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`) -- deliberately
- * per-device, same reasoning as `creative_assets`/`content_proposals` (RISK-52): an MCP client's
- * own launch config (and the `AGENT_CONNECTION_ID` it sets) is inherently per-machine.
- */
-export const agentConnections = sqliteTable("agent_connections", {
-  id: text("id").primaryKey(),
-  label: text("label").notNull(),
-  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
-  createdAt: integer("created_at", { mode: "timestamp" })
-    .notNull()
-    .$defaultFn(() => new Date()),
-});
-
-/**
- * BL-091 -- which `agent_connections.id` (if any) exclusively owns a given capability id (e.g.
- * `"content_proposal.create_content_proposal"`). Zoned per capability, not per domain, so two
- * DRAFT actions in the same domain can go to different connections if the owner ever wants that
- * split; the Web UI groups capabilities visually by domain but assigns each one individually (no
- * domain-level bulk-assign control). `assignedConnectionId IS NULL` means "unassigned" -- read by
- * `assertAgentAllowedForCapability` (`src/lib/agent-connections/services.ts`), which rejects it
- * for EVERY connection once one or more are enabled, with no exception for exactly one enabled
- * connection (the owner's exclusivity rule -- an unassigned zone must never be silently granted
- * to anyone, even the only connection that exists; see
- * `docs/roadmap/plans/AGENT_ZONES_PLAN.md` §5 for the full policy).
- *
- * **Not in `SNAPSHOT_TRANSFERRED_TABLES`** -- same per-device reasoning as `agent_connections`
- * above (a zone assignment is only meaningful together with the connection ids it references).
- */
-export const agentCapabilityZones = sqliteTable("agent_capability_zones", {
-  capabilityId: text("capability_id").primaryKey(),
-  assignedConnectionId: text("assigned_connection_id").references(() => agentConnections.id),
-});
+// BL-091's `agent_connections`/`agent_capability_zones` tables (SCHEMA_MIGRATIONS v20) were retired
+// in Phase 12 (owner decision D4, `docs/decisions/0011-retire-agent-capability-zones.md`): no code
+// reads or writes them any more. The migration and the (now inert) tables are deliberately kept --
+// dropping a table is a subtractive schema change this project's additive policy
+// (`docs/decisions/0001-additive-idempotent-schema-strategy.md`) does not do incidentally.
 
 /**
  * Phase 9 slice 1 (`src/lib/market-intelligence/`) -- a manually-seeded market-research
@@ -2151,6 +2166,44 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 34,
+    description:
+      "agent_channel_tokens -- Phase 12, channel-bound agent tokens (docs/roadmap/plans/PHASE_12_PLAN.md slice 12.1). SHA-256 hash only; device-local (excluded from SNAPSHOT_TRANSFERRED_TABLES and sync-gateway).",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS agent_channel_tokens (" +
+          "id TEXT PRIMARY KEY, " +
+          "channel_id TEXT NOT NULL, " +
+          "user_id TEXT NOT NULL, " +
+          "token_hash TEXT NOT NULL UNIQUE, " +
+          "label TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "revoked_at INTEGER)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS agent_channel_tokens_channel_id_idx ON agent_channel_tokens(channel_id)"
+      );
+    },
+  },
+  {
+    version: 35,
+    description:
+      "channel_record_assignments -- Phase 12 slice 12.4 (owner decision D1): per-channel assignment of globally collected market records (docs/roadmap/plans/PHASE_12_PLAN.md). Travels with device handoff.",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS channel_record_assignments (" +
+          "channel_id TEXT NOT NULL, " +
+          "record_kind TEXT NOT NULL, " +
+          "record_id TEXT NOT NULL, " +
+          "assigned_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "PRIMARY KEY (channel_id, record_kind, record_id))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS channel_record_assignments_record_idx ON channel_record_assignments(record_kind, record_id)"
+      );
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -2575,10 +2628,21 @@ export async function getUserOAuthTokens(
   const [row] = await db.select().from(users).where(eq(users.id, userId));
   if (!row) return null;
 
+  // Phase 12 slice 12.8 -- decrypt at rest (src/lib/oauth-token-crypto). A legacy plaintext row
+  // is re-encrypted the first time it is read while a key is configured.
+  const access = decodeStoredOAuthToken(row.accessToken);
+  const refresh = decodeStoredOAuthToken(row.refreshToken);
+  if (access.needsReencrypt || refresh.needsReencrypt) {
+    await db
+      .update(users)
+      .set({ accessToken: encodeStoredOAuthToken(access.value), refreshToken: encodeStoredOAuthToken(refresh.value) })
+      .where(eq(users.id, userId));
+  }
+
   return {
     userId: row.id,
-    accessToken: row.accessToken,
-    refreshToken: row.refreshToken,
+    accessToken: access.value,
+    refreshToken: refresh.value,
     tokenExpiry: row.tokenExpiry,
     scope: row.oauthScope,
   };
@@ -2591,8 +2655,8 @@ export async function saveUserOAuthTokens(
   await db
     .update(users)
     .set({
-      accessToken: patch.accessToken,
-      refreshToken: patch.refreshToken,
+      accessToken: encodeStoredOAuthToken(patch.accessToken),
+      refreshToken: encodeStoredOAuthToken(patch.refreshToken),
       tokenExpiry: patch.tokenExpiry,
       oauthScope: patch.scope,
     })
@@ -2622,8 +2686,8 @@ export async function upsertUserOAuthOnSignIn(
         name: input.name,
         email: input.email,
         image: input.image,
-        accessToken: input.accessToken ?? existing.accessToken,
-        refreshToken: input.refreshToken ?? existing.refreshToken,
+        accessToken: encodeStoredOAuthToken(input.accessToken ?? existing.accessToken),
+        refreshToken: encodeStoredOAuthToken(input.refreshToken ?? existing.refreshToken),
         tokenExpiry: input.tokenExpiry,
         oauthScope: input.scope ?? existing.scope,
       })
@@ -2636,8 +2700,8 @@ export async function upsertUserOAuthOnSignIn(
     name: input.name,
     email: input.email,
     image: input.image,
-    accessToken: input.accessToken,
-    refreshToken: input.refreshToken,
+    accessToken: encodeStoredOAuthToken(input.accessToken),
+    refreshToken: encodeStoredOAuthToken(input.refreshToken),
     tokenExpiry: input.tokenExpiry,
     oauthScope: input.scope,
   });
@@ -2672,8 +2736,10 @@ export async function upsertOAuthUserFromCli(input: UpsertOAuthUserFromCliInput)
         email: input.email,
         name: input.name,
         image: input.image,
-        accessToken: input.accessToken,
-        refreshToken: input.refreshToken ?? existing.refreshToken,
+        accessToken: encodeStoredOAuthToken(input.accessToken),
+        // `existing.refreshToken` is the raw stored value (already encoded, or legacy plaintext that
+        // the next read re-encrypts) -- kept as-is, never double-encoded.
+        refreshToken: input.refreshToken != null ? encodeStoredOAuthToken(input.refreshToken) : existing.refreshToken,
         tokenExpiry: input.tokenExpiry,
         oauthScope: input.scope ?? existing.oauthScope,
       })
@@ -2687,8 +2753,8 @@ export async function upsertOAuthUserFromCli(input: UpsertOAuthUserFromCliInput)
     email: input.email,
     name: input.name,
     image: input.image,
-    accessToken: input.accessToken,
-    refreshToken: input.refreshToken,
+    accessToken: encodeStoredOAuthToken(input.accessToken),
+    refreshToken: encodeStoredOAuthToken(input.refreshToken),
     tokenExpiry: input.tokenExpiry,
     oauthScope: input.scope,
   });
@@ -2703,7 +2769,7 @@ export async function listOAuthUsers(): Promise<OAuthUserSummary[]> {
       email: row.email,
       name: row.name,
       tokenExpiry: row.tokenExpiry,
-      hasRefreshToken: !!row.refreshToken,
+      hasRefreshToken: decodeStoredOAuthToken(row.refreshToken).value !== null,
     }))
     .sort((a, b) => a.email.localeCompare(b.email));
 }
@@ -2719,7 +2785,7 @@ export async function getOAuthUserSummary(
     email: row.email,
     name: row.name,
     tokenExpiry: row.tokenExpiry,
-    hasRefreshToken: !!row.refreshToken,
+    hasRefreshToken: decodeStoredOAuthToken(row.refreshToken).value !== null,
   };
 }
 
@@ -2745,7 +2811,7 @@ export async function getUserProfileForActivation(
     email: row.email,
     name: row.name,
     image: row.image,
-    hasAccessToken: !!row.accessToken,
+    hasAccessToken: decodeStoredOAuthToken(row.accessToken).value !== null,
   };
 }
 
@@ -2762,6 +2828,13 @@ export async function clearUserOAuthTokens(userId: string) {
 }
 
 export async function getSelectedChannelId(userId: string): Promise<string | null> {
+  // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md §6): in a channel-bound agent process the
+  // "selected channel" IS the bound channel, never the operator's stored selection -- and only for
+  // the bound identity (anyone else: null, which every active-channel check treats as fail-closed).
+  const agentSession = getAgentSession();
+  if (agentSession) {
+    return userId === agentSession.userId ? agentSession.channelId : null;
+  }
   const [row] = await db
     .select({ selectedChannelId: users.selectedChannelId })
     .from(users)
@@ -2771,6 +2844,13 @@ export async function getSelectedChannelId(userId: string): Promise<string | nul
 }
 
 export async function setSelectedChannelId(userId: string, channelId: string): Promise<void> {
+  // Phase 12: a silent no-op in a channel-bound agent process. Deliberately not an error -- `apply`
+  // and every playlist write persist the selection AFTER a real YouTube write already succeeded,
+  // and failing there would misreport that write. The operator's selection is never touched by an
+  // agent (AC-P12-04/06).
+  if (getAgentSession()) {
+    return;
+  }
   await db
     .update(users)
     .set({ selectedChannelId: channelId })
@@ -3004,6 +3084,22 @@ export async function setMcpConnectionEnabled(enabled: boolean): Promise<void> {
   await setAppSetting(MCP_CONNECTION_ENABLED_SETTING_KEY, enabled ? "true" : "false");
 }
 
+const OPERATOR_CLI_ENABLED_SETTING_KEY = "operator_cli_enabled";
+
+/**
+ * Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md slice 12.5, AC-P12-10) -- whether the CLI may run
+ * WITHOUT an agent token, as the operator. Off by default and persistent (like MCP connection):
+ * otherwise a shell-capable agent could bypass its channel binding simply by omitting its token.
+ * Settable only through the Web Settings tab (`POST /api/settings`), never from the CLI itself.
+ */
+export async function getOperatorCliEnabled(): Promise<boolean> {
+  return (await getAppSetting(OPERATOR_CLI_ENABLED_SETTING_KEY)) === "true";
+}
+
+export async function setOperatorCliEnabled(enabled: boolean): Promise<void> {
+  await setAppSetting(OPERATOR_CLI_ENABLED_SETTING_KEY, enabled ? "true" : "false");
+}
+
 const DATA_API_READS_ENABLED_SETTING_KEY = "data_api_reads_enabled";
 const ANALYTICS_READS_ENABLED_SETTING_KEY = "analytics_reads_enabled";
 
@@ -3063,6 +3159,124 @@ export async function getOperationsWorkspacePath(database: AppDb = db): Promise<
 
 export async function setOperationsWorkspacePath(path: string | null, database: AppDb = db): Promise<void> {
   await setAppSetting(OPERATIONS_WORKSPACE_PATH_SETTING_KEY, path ?? "", database);
+}
+
+/** Phase 12 slice 12.4. Record ids of one kind assigned to a channel. */
+export async function listChannelAssignedRecordIds(channelId: string, recordKind: string, database: AppDb = db): Promise<string[]> {
+  const rows = await database
+    .select({ recordId: channelRecordAssignments.recordId })
+    .from(channelRecordAssignments)
+    .where(and(eq(channelRecordAssignments.channelId, channelId), eq(channelRecordAssignments.recordKind, recordKind)));
+  return rows.map((row) => row.recordId);
+}
+
+/** Channels one record is assigned to. */
+export async function listRecordAssignmentChannels(recordKind: string, recordId: string, database: AppDb = db): Promise<string[]> {
+  const rows = await database
+    .select({ channelId: channelRecordAssignments.channelId })
+    .from(channelRecordAssignments)
+    .where(and(eq(channelRecordAssignments.recordKind, recordKind), eq(channelRecordAssignments.recordId, recordId)));
+  return rows.map((row) => row.channelId);
+}
+
+/** Every assignment of one kind -- the operator UI's bulk view. */
+export async function listRecordAssignmentsByKind(
+  recordKind: string,
+  database: AppDb = db
+): Promise<Array<{ channelId: string; recordId: string }>> {
+  return database
+    .select({ channelId: channelRecordAssignments.channelId, recordId: channelRecordAssignments.recordId })
+    .from(channelRecordAssignments)
+    .where(eq(channelRecordAssignments.recordKind, recordKind));
+}
+
+/** Replaces the full set of channels a record is assigned to, in one transaction. */
+export async function setRecordAssignmentChannels(
+  recordKind: string,
+  recordId: string,
+  channelIds: string[],
+  database: AppDb = db
+): Promise<void> {
+  await database.transaction(async (tx) => {
+    await tx
+      .delete(channelRecordAssignments)
+      .where(and(eq(channelRecordAssignments.recordKind, recordKind), eq(channelRecordAssignments.recordId, recordId)));
+    if (channelIds.length > 0) {
+      const assignedAt = new Date();
+      await tx
+        .insert(channelRecordAssignments)
+        .values(channelIds.map((channelId) => ({ channelId, recordKind, recordId, assignedAt })));
+    }
+  });
+}
+
+/** Adds one assignment (idempotent) -- used when an agent creates a record owned by its channel. */
+export async function addChannelRecordAssignment(channelId: string, recordKind: string, recordId: string, database: AppDb = db): Promise<void> {
+  await database
+    .insert(channelRecordAssignments)
+    .values({ channelId, recordKind, recordId, assignedAt: new Date() })
+    .onConflictDoNothing();
+}
+
+export type StoredAgentChannelToken = {
+  id: string;
+  channelId: string;
+  userId: string;
+  label: string | null;
+  createdAt: Date;
+  revokedAt: Date | null;
+};
+
+const agentChannelTokenColumns = {
+  id: agentChannelTokens.id,
+  channelId: agentChannelTokens.channelId,
+  userId: agentChannelTokens.userId,
+  label: agentChannelTokens.label,
+  createdAt: agentChannelTokens.createdAt,
+  revokedAt: agentChannelTokens.revokedAt,
+};
+
+/** Phase 12. Revokes any active token of the channel and inserts the new one in ONE transaction,
+ * so "at most one active token per channel" can never be observed violated. */
+export async function replaceAgentChannelToken(
+  input: { id: string; channelId: string; userId: string; tokenHash: string; label: string | null },
+  database: AppDb = db
+): Promise<void> {
+  const now = new Date();
+  await database.transaction(async (tx) => {
+    await tx
+      .update(agentChannelTokens)
+      .set({ revokedAt: now })
+      .where(and(eq(agentChannelTokens.channelId, input.channelId), isNull(agentChannelTokens.revokedAt)));
+    await tx.insert(agentChannelTokens).values({ ...input, createdAt: now, revokedAt: null });
+  });
+}
+
+/** Returns the number of tokens revoked (0 when the channel had no active token). */
+export async function revokeAgentChannelTokens(channelId: string, database: AppDb = db): Promise<number> {
+  const revoked = await database
+    .update(agentChannelTokens)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(agentChannelTokens.channelId, channelId), isNull(agentChannelTokens.revokedAt)))
+    .returning({ id: agentChannelTokens.id });
+  return revoked.length;
+}
+
+/** Active (non-revoked) token by hash, or null. */
+export async function findActiveAgentChannelTokenByHash(
+  tokenHash: string,
+  database: AppDb = db
+): Promise<StoredAgentChannelToken | null> {
+  const rows = await database
+    .select(agentChannelTokenColumns)
+    .from(agentChannelTokens)
+    .where(and(eq(agentChannelTokens.tokenHash, tokenHash), isNull(agentChannelTokens.revokedAt)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function listActiveAgentChannelTokens(database: AppDb = db): Promise<StoredAgentChannelToken[]> {
+  return database.select(agentChannelTokenColumns).from(agentChannelTokens).where(isNull(agentChannelTokens.revokedAt));
 }
 
 /** Phase 11. Every read/write is filtered on `deviceId` -- see `channelWorkspaces` above. */
@@ -5026,82 +5240,6 @@ export async function upsertStoredCloudConnection(
 
 export async function clearStoredCloudConnection(database: AppDb = db): Promise<void> {
   await database.delete(cloudConnection).where(eq(cloudConnection.id, CLOUD_CONNECTION_SINGLETON_ID));
-}
-
-// ---------------------------------------------------------------------------
-// BL-091 (`docs/roadmap/plans/AGENT_ZONES_PLAN.md`) -- agent connections + capability zones.
-// Read by `assertAgentAllowedForCapability` (`src/lib/agent-connections/services.ts`).
-// ---------------------------------------------------------------------------
-
-export type StoredAgentConnection = {
-  id: string;
-  label: string;
-  enabled: boolean;
-  createdAt: Date;
-};
-
-export async function insertAgentConnection(
-  input: { id: string; label: string; enabled: boolean },
-  database: AppDb = db
-): Promise<void> {
-  await database.insert(agentConnections).values({
-    id: input.id,
-    label: input.label,
-    enabled: input.enabled,
-  });
-}
-
-export async function listAgentConnections(database: AppDb = db): Promise<StoredAgentConnection[]> {
-  return database.select().from(agentConnections).orderBy(agentConnections.id);
-}
-
-export async function getAgentConnectionById(
-  id: string,
-  database: AppDb = db
-): Promise<StoredAgentConnection | null> {
-  const [row] = await database.select().from(agentConnections).where(eq(agentConnections.id, id));
-  return row ?? null;
-}
-
-export async function updateAgentConnectionEnabled(
-  id: string,
-  enabled: boolean,
-  database: AppDb = db
-): Promise<void> {
-  await database.update(agentConnections).set({ enabled }).where(eq(agentConnections.id, id));
-}
-
-export type StoredAgentCapabilityZone = {
-  capabilityId: string;
-  assignedConnectionId: string | null;
-};
-
-export async function upsertAgentCapabilityZone(
-  input: { capabilityId: string; assignedConnectionId: string | null },
-  database: AppDb = db
-): Promise<void> {
-  await database
-    .insert(agentCapabilityZones)
-    .values({ capabilityId: input.capabilityId, assignedConnectionId: input.assignedConnectionId })
-    .onConflictDoUpdate({
-      target: agentCapabilityZones.capabilityId,
-      set: { assignedConnectionId: input.assignedConnectionId },
-    });
-}
-
-export async function listAgentCapabilityZones(database: AppDb = db): Promise<StoredAgentCapabilityZone[]> {
-  return database.select().from(agentCapabilityZones).orderBy(agentCapabilityZones.capabilityId);
-}
-
-export async function getAgentCapabilityZoneById(
-  capabilityId: string,
-  database: AppDb = db
-): Promise<StoredAgentCapabilityZone | null> {
-  const [row] = await database
-    .select()
-    .from(agentCapabilityZones)
-    .where(eq(agentCapabilityZones.capabilityId, capabilityId));
-  return row ?? null;
 }
 
 // ---------------------------------------------------------------------------

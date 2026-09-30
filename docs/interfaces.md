@@ -40,6 +40,12 @@ Use this as the operational reference after setup: covers channel workflows acro
 
 ## CLI (`npm run cli:video-metadata -- ...`)
 
+**Phase 12:** every CLI invocation runs either as a channel-bound agent (`--agentToken <token>` or
+`YTOM_AGENT_TOKEN`: only `bound` commands, only that channel) or as the operator (no token, and
+only while Settings → AI Agent → "Operator CLI access" is on; refused otherwise). The `auth`
+namespace and `asset register` are operator-only. See "Channel-bound agent sessions" under the
+MCP section.
+
 CLI prints JSON envelopes on stdout (`{ ok: true|false, ... }`) and uses non-zero exit on failure.
 
 ### Auth commands
@@ -748,10 +754,12 @@ capabilities whatsoever until the project owner explicitly turns "MCP connection
 app's Settings tab. There is no environment-variable override — the Settings-tab toggle is the
 one and only way to grant a connection any access.
 
-Once enabled, every tool is registered — including `apply` and every `playlist_*` tool, which
-remain separately gated by the unrelated "Live writes" toggle (`docs/decisions/
-0005-youtube-write-gateway.md`) before any of them can reach a real YouTube write. Turning on
-"MCP connection" alone never sends anything to YouTube by itself.
+**Since Phase 12 this toggle is the master switch only** (`docs/roadmap/plans/PHASE_12_PLAN.md`).
+With it on, a server still registers **zero tools unless it was started with a valid channel token**:
+`YTOM_AGENT_TOKEN` in that client's MCP launch config, issued in Settings → Channels. A valid token
+binds the whole server process to that one channel (see "Channel-bound agent sessions" below). Write
+tools remain separately gated by the unrelated "Live writes" toggle (`docs/decisions/
+0005-youtube-write-gateway.md`). Turning on "MCP connection" alone never sends anything to YouTube.
 
 Persisted across process boots once turned on — unlike "Live writes" (which resets to off every
 session by design), this is a one-time setup step, per explicit project-owner instruction.
@@ -764,55 +772,48 @@ access to application data" (`docs/roadmap/FUTURE_PHASES.md` §3) taken to its s
 conclusion — no MCP client, including a future Codex operations connection, gets any access
 until the project owner deliberately opts in.
 
-### Multi-agent responsibility zones (BL-091, `docs/roadmap/plans/AGENT_ZONES_PLAN.md`)
+### Channel-bound agent sessions (Phase 12, `docs/roadmap/plans/PHASE_12_PLAN.md`)
 
-Independent of the connection-level toggle above, six specific actions can additionally be
-restricted to exactly one *named* agent connection once one or more connections are enabled (e.g.
-Claude and Codex connected at once): `channel_sync`, `changeset_create_from_import`,
-`ai_localization_generate` (persists nothing itself, but zoned for cost/coordination — a real,
-non-mock call makes a genuine outbound request to a configured AI provider),
-`ai_localization_create_change_set`, `agent_create_content_proposal` (capability id
-`content_proposal.create_content_proposal`), and `agent_register_external_artifact`
-(`content_proposal.register_external_artifact`). Every other tool, including every READ-only one,
-is never affected by this — the point is a shared information field with exclusive write zones,
-not a second permission tier.
+Owner direction, 2026-09-30: *one agent = one channel*; an agent without a token receives
+nothing. This replaces BL-091's per-capability zones, which are retired in
+`docs/decisions/0011-retire-agent-capability-zones.md`.
 
-- **Identity**: each MCP server process resolves its own agent-connection id once at startup from
-  the `AGENT_CONNECTION_ID` environment variable (set in that client's own MCP launch config); the
-  CLI resolves the same identity per invocation from `--agentConnectionId` (priority) or the same
-  env var. Either way, an empty value never becomes a real identity: the env var resolves an empty
-  value to `null`, while an empty `--agentConnectionId` flag value is rejected outright as
-  `validation_failed`.
-- **Management UI**: Settings → AI Agent → "Agent connections & responsibility zones"
-  (`src/components/agent-connections-manager.tsx`) — register a connection (id + label, no
-  secret), enable/disable it, and assign each of the 6 actions above to exactly one connection (or
-  leave it unassigned). Backed by `GET/POST /api/agent-connections`,
-  `PUT /api/agent-connections/[connectionId]`, `GET/PUT /api/agent-connections/zones`.
-- **Fail-closed policy, keyed on ENABLED connections** (a disabled one does not count):
-  - **Zero enabled connections**: entirely a no-op — identical to today's single-agent behavior.
-  - **One or more enabled connections**: every one of the 6 actions requires a resolvable,
-    enabled, registered connection id; an unknown or missing one is rejected with
-    `AGENT_ZONE_VIOLATION`, never silently allowed.
-  - **A capability with an explicit zone assignment** always rejects every connection except the
-    assigned one, regardless of how many are enabled.
-  - **A capability with NO explicit zone assignment is rejected for every connection**, once one or
-    more are enabled — including when only one connection exists. Assignment is always an explicit
-    act; there is no implicit "the only connection gets it by default" grant, and registration
-    order never matters (owner, Telegram 2026-09-25: "нельзя одну и ту же зону ответственности
-    дать обоим... добавление одного агента не должно автоматом давать ему авторство над всеми
-    модулями").
-- **Not the same as the "MCP connection" toggle above** — that toggle is the all-or-nothing gate
-  deciding whether an MCP client sees any tool at all; this mechanism only matters once the toggle
-  is already on and coordinates *which* connected agent may perform *which* of these 6 actions.
-- **Resolved, not a gap**: the operator-only `asset register` CLI command (creative-asset catalog,
-  `docs/AGENT_OPERATIONS_INTERFACE.md` §4c) is intentionally never gated by this mechanism —
-  raised as an open question and explicitly resolved by the project owner (Telegram, 2026-09-25):
-  "Если она не доступна агентам, то не вижу проблемы. Это интерфейс пользователя и пользователь
-  может дополнять работу агентов по своему усмотрению" (if it isn't available to agents, there's
-  no problem — this is a human-operator interface, and the operator may supplement the agents'
-  work at their own discretion, e.g. adding assets directly or proposing test hypotheses). Zoning
-  governs *agent* actions; a human operator directly using this application was never meant to be
-  constrained by it.
+- **Token.** In Settings → Channels, each channel row has "Agent token" (Issue / Rotate / Revoke).
+  - Backed by `GET/POST/DELETE /api/agent-tokens`.
+  - The token is shown once, and only its SHA-256 hash is stored, on this device only.
+  - Issuing requires the channel's recorded Google identity to own the channel live. Issuing
+    again revokes the previous token.
+- **Session.** MCP reads `YTOM_AGENT_TOKEN` at spawn. The CLI takes `--agentToken <token>` or the
+  same env var. A valid token freezes the process into that channel:
+  - every channel-scoped check uses the bound channel;
+  - credentials are always the token's recorded identity, and a caller `credentialRef` /
+    `--userId` / `--accessToken` is rejected (`AGENT_SESSION_CREDENTIAL_OVERRIDE`);
+  - the operator's selected channel is neither read nor changed.
+
+  The token is re-verified on every MCP call, so revocation takes effect immediately
+  (`AGENT_TOKEN_INVALID`). A token is also invalid once its channel is disconnected or reconnected
+  under another Google identity, and disconnecting revokes it. The "MCP connection" master switch
+  gates token-bound CLI use too.
+- **What an agent session can reach.**
+  - Only tools and commands classified `bound` (`src/mcp/tool-classification.ts`,
+    `src/cli/command-classification.ts`, both enforced by inventory tests).
+  - Operator-only, and never available to an agent: `write_channel_select`, `write_channel_list`,
+    `auth_user_select`, every `auth *` CLI command, `asset register`, and the global
+    operations-workspace tools (owner decision D2: channel folders only).
+  - `list` / `transcript` / `preview` / `channel_sync` are confined to the bound channel.
+  - Market tools return only records the operator assigned to that channel (below).
+  - Channel-less hypotheses are invisible.
+- **Market record assignment (owner decision D1).**
+  - Market data is collected once. The operator assigns individual watchlist entries, topics,
+    trend candidates, discovery candidates and research requests to channels, using the
+    "Visible to agents of:" chips on the Research panels (`GET/PUT /api/market-assignments`).
+  - A research request an agent creates is owned by its channel automatically.
+- **CLI without a token.** It runs only while Settings → AI Agent → "Operator CLI access" is on
+  (default off). Otherwise it is refused, so a shell-capable agent cannot bypass its binding by
+  omitting its token.
+- **Limit (owner decision D0(b)).** This is an in-app wall. It stops agent mistakes, not an agent
+  that deliberately reads `data.db` or another agent's launch config as the same OS user. See
+  `docs/AGENT_ISOLATION_SETUP.md`.
 
 ---
 
@@ -841,6 +842,22 @@ All routes are App Router handlers and require authenticated session user.
 - `GET /api/agent-operations/capabilities` — same shape/underlying function as the MCP tool
   `agent_get_capabilities` above (see `docs/AGENT_OPERATIONS_INTERFACE.md`). Read-only, gated by
   the same NextAuth session check as every other route in this app; not channel-scoped.
+
+### Agent tokens and market assignments API (Phase 12, `docs/roadmap/plans/PHASE_12_PLAN.md`)
+
+Both are operator-only and require a NextAuth session. The mutating methods are gated by
+`src/proxy.ts`.
+
+- `GET /api/agent-tokens` → `{ tokens: [{ tokenId, channelId, label, createdAt }] }` (metadata only).
+- `POST /api/agent-tokens` with `{ channelId, label? }` → `201 { token: { ..., token } }`, with
+  `cache-control: no-store`. The plaintext is returned exactly once. It revokes the channel's
+  previous token. Errors: `AGENT_TOKEN_CHANNEL_NOT_CONNECTED` (404),
+  `AGENT_TOKEN_IDENTITY_MISMATCH` (409).
+- `DELETE /api/agent-tokens` with `{ channelId }` → `{ revoked: n }`. Idempotent.
+- `GET /api/market-assignments?recordKind=<research_channel|topic|trend_candidate|discovery_candidate|research_request>`
+  → `{ assignments: [{ recordKind, recordId, channelIds }] }`.
+- `PUT /api/market-assignments` with `{ recordKind, recordId, channelIds }` replaces that record's
+  channel set. Every channel must be connected and the record must exist.
 
 ### Channel Workspaces API (Phase 11, `docs/roadmap/plans/PHASE_11_PLAN.md`)
 

@@ -1,3 +1,5 @@
+> **RETIRED 2026-09-30 (Phase 12, owner decision D4)** -- see `docs/decisions/0011-retire-agent-capability-zones.md`. Kept as a historical record.
+
 # AGENT_ZONES_PLAN.md — Multi-Agent Responsibility Zones
 
 **Status, 2026-09-25: all three slices (data model, enforcement, Settings UI) implemented on

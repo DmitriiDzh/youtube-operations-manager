@@ -78,9 +78,11 @@ export function McpConnectionSettings() {
           MCP connection
           <InfoTooltip>
             Off by default. While off, an MCP client (e.g. Codex, Claude) sees NO tools at all --
-            not registered at all, not merely rejected at call time. Turning this on registers
-            the full tool set (read/propose/create plus write-capable tools like playlists/apply
-            -- the separate Live writes toggle, under API, still gates any real YouTube write).
+            not registered at all, not merely rejected at call time. Turning this on is the master
+            switch only: an agent also needs its channel&apos;s agent token (Settings &rarr; Channels,
+            YTOM_AGENT_TOKEN in its MCP launch config). With a valid token it sees only that
+            channel&apos;s tools and data. Without one it still sees nothing. The separate Live writes
+            toggle, under API, still gates any real YouTube write.
             Unlike Live writes, this persists across sessions once enabled -- a one-time setup
             step, not reset every restart. Known limitation: this takes effect the next time an
             MCP client spawns or reconnects the server process, not instantly for a connection

@@ -1,3 +1,4 @@
+import { getAgentSession } from "@/lib/agent-session";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createAiConnectionCore } from "@/lib/ai-connections";
 import { assertDeviceAvailableForMutation } from "@/lib/device-handoff";
@@ -16,6 +17,7 @@ export function createDecisionEngineCore() {
     idGenerator: store.idGenerator,
     clock: { now: () => new Date() },
     channelAccess: createChannelAccessCore(),
+    isAgentSession: () => getAgentSession() !== null,
     insertHypothesis: store.insertHypothesis,
     getHypothesisById: store.getHypothesisById,
     listHypotheses: store.listHypotheses,

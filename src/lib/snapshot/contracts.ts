@@ -31,6 +31,9 @@ export type { SqlExecutor };
  *     never synced"), NOT a RISK-52-style omission -- do not "fix" it by adding it here the way
  *     the Phase 9/10 tables were. Rows are also keyed on the bootstrap `deviceId`, so a row from
  *     another device is invisible even if it arrived some other way.
+ *   - `agent_channel_tokens` (Phase 12, `docs/roadmap/plans/PHASE_12_PLAN.md` 12.1) -- per-machine
+ *     agent credentials (hashes), device-local by design like `agent_connections`; never a
+ *     RISK-52-style omission.
  *   - `rules` (auto-add-to-playlist rules, from the project's original pre-rewrite baseline) -- this feature's own
  *     Drizzle definition/UI/API routes were already removed 2026-09-20 (see `src/lib/db.ts`'s
  *     `initializeDatabase` comment); the `CREATE TABLE IF NOT EXISTS rules` statement is
@@ -118,6 +121,10 @@ export const SNAPSHOT_TRANSFERRED_TABLES = [
   // Phase 10 slice 4 (docs/roadmap/plans/PHASE_10_SLICE_4_PLAN.md §4) -- AI-generation provenance,
   // same RISK-52-avoidance reason, same FK order rule (after its own parent, hypotheses).
   "hypothesis_generation_provenance",
+  // Phase 12 slice 12.4 (docs/roadmap/plans/PHASE_12_PLAN.md, owner decision D1) -- per-channel
+  // assignment of the Phase 9 market records above. Business data, added from its own first commit
+  // (the RISK-52 lesson); no FK, so order is irrelevant.
+  "channel_record_assignments",
 ] as const;
 
 /**

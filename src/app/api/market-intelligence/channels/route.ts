@@ -8,7 +8,7 @@ import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-stat
 const core = createMarketIntelligenceCore();
 
 // Phase 9 slice 2 (docs/roadmap/plans/PHASE_9_PLAN.md) -- global (not channel-scoped) market
-// research watchlist, same non-channel-scoped shape as /api/agent-connections: a watchlist entry
+// research watchlist, non-channel-scoped (Phase 12 narrows it per channel for agents only): a watchlist entry
 // is a property of the operator's research, not of any one owned channel.
 export async function GET() {
   const session = await getServerSession(authOptions);

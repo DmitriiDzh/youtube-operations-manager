@@ -15,11 +15,16 @@ import type { AiLocalizationCore } from "@/lib/ai-localization";
 import type { AgentOperationsCore } from "@/lib/agent-operations";
 import type { MarketIntelligenceCore } from "@/lib/market-intelligence";
 import type { DecisionEngineCore } from "@/lib/decision-engine";
-import type { AgentConnectionsCoreSubset } from "@/lib/agent-connections";
 import { AGENT_API_VERSION } from "@/lib/agent-operations";
+import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { createMcpServer, createMcpToolHandlers } from "./server";
+
+// Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-01): tools are registered only for a
+// channel-bound agent session. Tests that exercise registered tools inject one explicitly (a test
+// seam, never a relaxed production rule); its token is treated as always valid.
+const TEST_AGENT_SESSION = { channelId: "UC_1", reverify: async () => {} };
 
 function makeCoreStub(): Pick<
   VideoMetadataCore & PlaylistManagementCore,
@@ -322,11 +327,16 @@ test("MCP whoami returns active local user", async () => {
   assert.equal(payload.email, "active-user@example.com");
 });
 
-test("MCP server registers auth_user_select tool", () => {
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
-  const tools = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools;
+// Requirement changed by the owner's Phase 12 decision (Telegram, msg 1048; PHASE_12_PLAN.md
+// AC-P12-04): identity/selection-switching tools are operator-only and never exist in an agent
+// session. This test previously asserted auth_user_select WAS registered.
+test("MCP agent session: identity/selection-switching tools are never registered", () => {
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION });
+  const tools = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {};
 
-  assert.equal(Boolean(tools?.auth_user_select), true);
+  for (const name of ["auth_user_select", "write_channel_select", "write_channel_list"]) {
+    assert.equal(Boolean(tools[name]), false, `${name} must not be registered`);
+  }
 });
 
 // Phase 9 slice 4 -- the handler tests above only prove createMcpToolHandlers().queryCompetitors/
@@ -334,16 +344,67 @@ test("MCP server registers auth_user_select tool", () => {
 // tool names PLANNED_FUTURE_CAPABILITIES reserved are actually wired into createMcpServer's real
 // registration, using the real default createMarketIntelligenceCore() (an empty local watchlist,
 // so both calls succeed with an empty/not-found result rather than needing a fixture).
-test("MCP server registers query_competitors and query_market_intelligence tools", async () => {
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
-  const tools = (server as unknown as { _registeredTools?: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean }> }> })
-    ._registeredTools;
+// Phase 12 slice 12.4 (owner decision D1): market tools exist in an agent session, but every result is
+// narrowed to records assigned to the agent's channel. This test previously asserted (Phase 9 slice 4)
+// that the full global watchlist was returned; the owner's D1 decision changed that requirement.
+test("MCP market tools narrow results to the agent channel's assignments and record request ownership", async () => {
+  const assigned: Record<string, string[]> = { research_channel: ["UCresearchA"], topic: ["topic-a"], trend_candidate: [], discovery_candidate: ["UCdiscA"] };
+  const owned: Array<[string, string]> = [];
+  const marketAssignmentCore = {
+    async filterForAgent<T>(kind: string, items: T[], idOf: (item: T) => string) {
+      return items.filter((item) => (assigned[kind] ?? []).includes(idOf(item)));
+    },
+    async assertAvailableToAgent(kind: string, id: string) {
+      if (!(assigned[kind] ?? []).includes(id)) throw new DomainError({ code: "RESEARCH_CHANNEL_NOT_AVAILABLE", message: "no" });
+    },
+    async recordAgentOwnership(kind: string, id: string) {
+      owned.push([kind, id]);
+    },
+  };
+  const marketIntelligenceCore = {
+    async listWatchlist() {
+      return { channels: [{ channelId: "UCresearchA" }, { channelId: "UCresearchB" }] };
+    },
+    async getWatchlistEntryContext() {
+      return {
+        channel: { channelId: "UCresearchA" },
+        topicAssignments: [
+          { assignmentId: "as-1", topicId: "topic-a" },
+          { assignmentId: "as-2", topicId: "topic-b" },
+        ],
+      };
+    },
+    async listTopics() {
+      return { topics: [{ topicId: "topic-a" }, { topicId: "topic-b" }] };
+    },
+    async listTrendCandidates() {
+      return { trendCandidates: [{ trendCandidateId: "trend-a" }] };
+    },
+    async listDiscoveryCandidates() {
+      return { candidates: [{ channelId: "UCdiscA" }, { channelId: "UCdiscB" }] };
+    },
+    async createMarketResearchRequest() {
+      return { requestId: "req-1" };
+    },
+  } as never;
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(), makeAuthStub(), makeOperationsCoreStub(), undefined, makeChannelAccessCoreStub(),
+    undefined, undefined, undefined, marketIntelligenceCore, undefined, undefined, marketAssignmentCore
+  );
+  const parse = (r: { content: Array<{ text?: string }> }) => JSON.parse(r.content[0]?.text ?? "{}");
 
-  assert.ok(tools?.query_competitors, "query_competitors must be registered");
-  assert.ok(tools?.query_market_intelligence, "query_market_intelligence must be registered");
-
-  const competitorsResult = await tools!.query_competitors.handler({});
-  assert.equal(competitorsResult.isError, undefined);
+  assert.deepEqual(parse(await handlers.queryCompetitors({})).channels, [{ channelId: "UCresearchA" }]);
+  assert.equal(parse(await handlers.queryMarketIntelligence({ channelId: "UCresearchB" })).error.code, "RESEARCH_CHANNEL_NOT_AVAILABLE");
+  // Nested topic tags are narrowed too: topic-b is not assigned to the agent's channel.
+  assert.deepEqual(
+    parse(await handlers.queryMarketIntelligence({ channelId: "UCresearchA" })).topicAssignments.map((a: { topicId: string }) => a.topicId),
+    ["topic-a"]
+  );
+  assert.deepEqual(parse(await handlers.agentListMarketRecords({ kind: "topics" })).topics, [{ topicId: "topic-a" }]);
+  assert.deepEqual(parse(await handlers.agentListMarketRecords({ kind: "trend_candidates" })).trendCandidates, []);
+  assert.deepEqual(parse(await handlers.agentListMarketRecords({ kind: "discovery_candidates" })).candidates, [{ channelId: "UCdiscA" }]);
+  await handlers.agentCreateMarketResearchRequest({ query: "q", rationale: "r" });
+  assert.deepEqual(owned, [["research_request", "req-1"]]);
 });
 
 // The SDK validates an incoming tool call against the REGISTERED inputSchema, using its OWN
@@ -355,7 +416,7 @@ test("MCP server registers query_competitors and query_market_intelligence tools
 // handler directly, which bypasses the SDK) ever gets a chance to run. This test exercises the
 // REAL registered schema object, not the handler, to prove that specific gap is actually closed.
 test("MCP server registers agent_find_comparable_videos with an SDK-facing schema that does not itself require credentialRef when performanceMetric is set", () => {
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION });
   const tools = (server as unknown as { _registeredTools?: Record<string, { inputSchema?: { safeParse: (input: unknown) => { success: boolean } } }> })
     ._registeredTools;
   const tool = tools?.agent_find_comparable_videos;
@@ -371,7 +432,7 @@ test("MCP server registers agent_find_comparable_videos with an SDK-facing schem
 });
 
 test("MCP server registers agent_list_asset_performance with an SDK-facing schema that does not itself require credentialRef when performanceMetric is set", () => {
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION });
   const tools = (server as unknown as { _registeredTools?: Record<string, { inputSchema?: { safeParse: (input: unknown) => { success: boolean } } }> })
     ._registeredTools;
   const tool = tools?.agent_list_asset_performance;
@@ -428,8 +489,8 @@ test("MCP server (connectionEnabled: false) registers zero tools, including ever
   }
 });
 
-test("MCP server (connectionEnabled: true) registers every tool, including write/identity-switching ones", () => {
-  const names = registeredToolNames(createMcpServer(makeCoreStub(), { connectionEnabled: true }));
+test("MCP server (connectionEnabled: true, agent session) registers every bound tool, including writes", () => {
+  const names = registeredToolNames(createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION }));
 
   for (const tool of [
     "whoami",
@@ -455,8 +516,6 @@ test("MCP server (connectionEnabled: true) registers every tool, including write
     "playlist_delete",
     "playlist_add_videos",
     "playlist_remove_videos",
-    "write_channel_select",
-    "auth_user_select",
     "write_context",
     // Slice K: proves the real MCP SDK's own server.registerTool() accepts
     // findComparableVideosInputSchema (a ZodEffects, via .refine()) without throwing --
@@ -2807,7 +2866,8 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
   // Bumped 0.13.0 -> 0.14.0, Phase 10 slice 2: new decision_engine capabilities added.
   // Bumped 0.14.0 -> 0.15.0, Phase 11: new channel_workspace.get_channel_workspace capability
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11).
-  assert.equal(payload.agentApiVersion, "0.15.0");
+  // Bumped 0.15.0 -> 1.0.0, Phase 12 (AC-P12-13): breaking agent-contract change -> MAJOR.
+  assert.equal(payload.agentApiVersion, "1.0.0");
   assert.ok(
     payload.capabilities.some(
       (c: { id: string; permission: string }) => c.id === "channel_workspace.get_channel_workspace" && c.permission === "READ"
@@ -4631,108 +4691,6 @@ test("MCP agent_list_asset_performance is never blocked by the operation lock (r
   }
 });
 
-// BL-091 slice 2 (docs/roadmap/plans/AGENT_ZONES_PLAN.md) -- proves the zone-enforcement wiring
-// itself (does the tool actually call assertAgentAllowedForCapability at all), not the zone
-// matching logic (exhaustively covered by src/lib/agent-connections/services.test.ts). Uses a
-// fake AgentConnectionsCoreSubset that unconditionally rejects, isolated from the real DB.
-function makeAlwaysDenyingAgentConnectionsCoreStub(): AgentConnectionsCoreSubset {
-  return {
-    async assertAgentAllowedForCapability() {
-      throw new DomainError({ code: "AGENT_ZONE_VIOLATION", message: "denied by test stub" });
-    },
-  };
-}
-
-// Expected `capabilityId` per tool name -- deliberately hand-verified once here against the real
-// call sites in src/mcp/server.ts (which import the same shared constants from
-// src/lib/agent-connections), rather than importing those constants into this map, so a typo'd
-// literal at a call site cannot silently match a typo'd literal here.
-const EXPECTED_ZONE_CAPABILITY_IDS: Record<string, string> = {
-  channel_sync: "channel_sync",
-  changeset_create_from_import: "changeset_create_from_import",
-  ai_localization_generate: "ai_localization_generate",
-  ai_localization_create_change_set: "ai_localization_create_change_set",
-  agent_create_content_proposal: "content_proposal.create_content_proposal",
-  agent_register_external_artifact: "content_proposal.register_external_artifact",
-  agent_create_market_research_request: "market_intelligence.agent_create_market_research_request",
-  create_experiment_proposal: "decision_engine.create_experiment_proposal",
-};
-
-const ZONED_MCP_TOOL_NAMES = Object.keys(EXPECTED_ZONE_CAPABILITY_IDS) as (keyof typeof EXPECTED_ZONE_CAPABILITY_IDS)[];
-
-function makeCapturingAgentConnectionsCoreStub(): AgentConnectionsCoreSubset & {
-  calls: { capabilityId: string; callerConnectionId: string | null }[];
-} {
-  const calls: { capabilityId: string; callerConnectionId: string | null }[] = [];
-  return {
-    calls,
-    async assertAgentAllowedForCapability(args) {
-      calls.push(args);
-    },
-  };
-}
-
-for (const toolName of ZONED_MCP_TOOL_NAMES) {
-  test(`MCP ${toolName} is actually wired through agent-zone enforcement (rejected when the stub always denies)`, async () => {
-    const server = createMcpServer(makeCoreStub(), { connectionEnabled: true }, makeAlwaysDenyingAgentConnectionsCoreStub());
-    const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: { text: string }[] }> }> })
-      ._registeredTools;
-
-    const result = await tools[toolName].handler({});
-
-    assert.equal(result.isError, true);
-    const payload = JSON.parse(result.content[0]?.text ?? "{}");
-    assert.equal(payload.error.code, "AGENT_ZONE_VIOLATION");
-  });
-
-  test(`MCP ${toolName} passes exactly its own capabilityId ("${EXPECTED_ZONE_CAPABILITY_IDS[toolName]}") and this server's callerConnectionId to assertAgentAllowedForCapability`, async () => {
-    const capturing = makeCapturingAgentConnectionsCoreStub();
-    const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, callerConnectionId: "test-caller" }, capturing);
-    const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<unknown> }> })._registeredTools;
-
-    await tools[toolName].handler({});
-
-    assert.equal(capturing.calls.length, 1);
-    assert.deepEqual(capturing.calls[0], { capabilityId: EXPECTED_ZONE_CAPABILITY_IDS[toolName], callerConnectionId: "test-caller" });
-  });
-}
-
-test("MCP createMcpServer forwards options.callerConnectionId: null (the default) when not explicitly set", async () => {
-  const capturing = makeCapturingAgentConnectionsCoreStub();
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true }, capturing);
-  const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<unknown> }> })._registeredTools;
-
-  await tools.channel_sync.handler({});
-
-  assert.equal(capturing.calls[0]?.callerConnectionId, null);
-});
-
-test("MCP whoami (an unzoned tool) is never affected by agent-zone enforcement, even when the stub always denies", async () => {
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true }, makeAlwaysDenyingAgentConnectionsCoreStub());
-  const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: { text: string }[] }> }> })
-    ._registeredTools;
-
-  const result = await tools.whoami.handler({});
-
-  const payload = JSON.parse(result.content[0]?.text ?? "{}");
-  assert.notEqual(payload?.error?.code, "AGENT_ZONE_VIOLATION");
-});
-
-test("MCP channel_sync passes through to the real handler when zoning allows the call (zero connections registered, real default agent-connections core)", async () => {
-  // No 3rd arg -- uses createMcpServer's own real default (createAgentConnectionsCore()), which
-  // is a no-op while zero connections are registered (this test's actual DB state).
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
-  const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: { text: string }[] }> }> })
-    ._registeredTools;
-
-  const result = await tools.channel_sync.handler({ channelId: "UC_does_not_exist" });
-
-  // Reaches the real channelSync handler and fails for an UNRELATED reason (no such channel) --
-  // proving the zone check did not block it, not that the whole call succeeded.
-  const payload = JSON.parse(result.content[0]?.text ?? "{}");
-  assert.notEqual(payload?.error?.code, "AGENT_ZONE_VIOLATION");
-});
-
 // Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md) -- query_competitors/
 // query_market_intelligence, registered directly against marketIntelligenceCore (9th positional
 // arg), not agentOperationsCore. See MarketIntelligenceCoreSubset's own doc comment in server.ts
@@ -5491,10 +5449,59 @@ test("MCP agent_get_channel_workspace rejects an extra `path` field -- it can ne
 });
 
 test("MCP server registers agent_get_channel_workspace and no tool that can set or clear a channel workspace", () => {
-  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true });
+  const server = createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION });
   const tools = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {};
 
   assert.ok(tools.agent_get_channel_workspace, "agent_get_channel_workspace must be registered");
   const workspaceTools = Object.keys(tools).filter((name) => name.includes("workspace"));
   assert.deepEqual(workspaceTools.sort(), ["agent_get_channel_workspace"]);
+});
+
+// Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-01/02/08).
+test("AC-P12-01: connection enabled but no agent session (no/invalid token) registers zero tools", () => {
+  assert.deepEqual(registeredToolNames(createMcpServer(makeCoreStub(), { connectionEnabled: true })), []);
+  assert.deepEqual(registeredToolNames(createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: null })), []);
+});
+
+test("AC-P12-01: the master connection toggle off still registers zero tools even with a valid session", () => {
+  assert.deepEqual(registeredToolNames(createMcpServer(makeCoreStub(), { connectionEnabled: false, agentSession: TEST_AGENT_SESSION })), []);
+});
+
+test("AC-P12-08: an agent session registers exactly the tools classified bound -- nothing unclassified, nothing operator-only", () => {
+  const names = registeredToolNames(createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION })).sort();
+  const bound = Object.entries(MCP_TOOL_CLASSIFICATION)
+    .filter(([, toolClass]) => toolClass === "bound")
+    .map(([name]) => name)
+    .sort();
+  assert.deepEqual(names, bound);
+});
+
+test("AC-P12-08: the classification table covers every tool the server source registers", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("./server.ts", import.meta.url), "utf8");
+  const registered = [...source.matchAll(/registerTool\(\s*"([a-z_]+)"/g)].map((match) => match[1]).sort();
+  assert.ok(registered.length > 40, "sanity: expected to find the registered tool names in server.ts");
+  assert.deepEqual(registered, Object.keys(MCP_TOOL_CLASSIFICATION).sort());
+});
+
+test("AC-P12-02: a revoked token fails the very next call of a running session, before any handler runs", async () => {
+  let revoked = false;
+  const server = createMcpServer(makeCoreStub(), {
+    connectionEnabled: true,
+    agentSession: {
+      channelId: "UC_1",
+      async reverify() {
+        if (revoked) throw new DomainError({ code: "AGENT_TOKEN_INVALID", message: "revoked" });
+      },
+    },
+  });
+  const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: Array<{ text: string }> }> }> })
+    ._registeredTools;
+
+  const before = await tools.agent_get_capabilities.handler({});
+  assert.notEqual(before.isError, true);
+  revoked = true;
+  const after = await tools.agent_get_capabilities.handler({});
+  assert.equal(after.isError, true);
+  assert.equal(JSON.parse(after.content[0].text).error.code, "AGENT_TOKEN_INVALID");
 });

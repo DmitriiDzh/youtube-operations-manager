@@ -11,12 +11,14 @@ import {
   getGatewayTrafficLast24h,
   getLiveWritesEnabled,
   getMcpConnectionEnabled,
+  getOperatorCliEnabled,
   getOperationsWorkspacePath,
   setAnalyticsReadsEnabled,
   setAnalyticsSyncSettings,
   setDataApiReadsEnabled,
   setLiveWritesEnabled,
   setMcpConnectionEnabled,
+  setOperatorCliEnabled,
   setOperationsWorkspacePath,
 } from "@/lib/db";
 import { validateOperationsWorkspacePath } from "@/lib/operations-instructions";
@@ -31,6 +33,8 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
  * - `liveWritesEnabled` -- Gate B toggle (docs/TECHNICAL_DEBT.md RISK-09). Defaults off every
  *   process boot (`src/lib/db.ts`'s `initializeDatabase`), regardless of what was last saved;
  *   turning this on is layer 1 of the two-layer live-write barrier, not the write itself.
+ * - `operatorCliEnabled` -- Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md 12.5): whether the CLI
+ *   may run without an agent token (as the operator). Off by default, persistent.
  * - `mcpConnectionEnabled` -- the single gate for whether an MCP client sees ANY tool at all
  *   (renamed and inverted from the earlier "MCP restricted mode", owner instruction 2026-09-21:
  *   "по началу MCP / агент от всего отключен"). Unlike `liveWritesEnabled`, this persists across
@@ -101,6 +105,7 @@ async function getSettingsSnapshot() {
     cloudQuotaStatus,
     operationsWorkspacePath,
     marketIntelligenceDailyQuotaBudgetUnits,
+    operatorCliEnabled,
   ] = await Promise.all([
     getLiveWritesEnabled(),
     getMcpConnectionEnabled(),
@@ -111,6 +116,7 @@ async function getSettingsSnapshot() {
     createCloudQuotasCore().getQuotaStatus(),
     getOperationsWorkspacePath(),
     marketIntelligenceCore.getDailyQuotaBudgetUnits(),
+    getOperatorCliEnabled(),
   ]);
 
   return {
@@ -124,6 +130,7 @@ async function getSettingsSnapshot() {
     cloudQuotaStatus,
     operationsWorkspacePath,
     marketIntelligenceDailyQuotaBudgetUnits,
+    operatorCliEnabled,
   };
 }
 
@@ -235,6 +242,9 @@ export async function POST(request: Request) {
   }
   if (typeof body.mcpConnectionEnabled === "boolean") {
     await setMcpConnectionEnabled(body.mcpConnectionEnabled);
+  }
+  if (typeof body.operatorCliEnabled === "boolean") {
+    await setOperatorCliEnabled(body.operatorCliEnabled);
   }
   if (typeof body.dataApiReadsEnabled === "boolean") {
     await setDataApiReadsEnabled(body.dataApiReadsEnabled);

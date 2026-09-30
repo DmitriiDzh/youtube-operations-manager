@@ -11,7 +11,7 @@ import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
 import { createCliAuthService } from "@/lib/cli-auth";
 import type { CredentialRef } from "@/lib/video-metadata/contracts";
-import { rawSqlClient } from "@/lib/db";
+import { getMcpConnectionEnabled, getOperatorCliEnabled, rawSqlClient } from "@/lib/db";
 import { assertDeviceAvailableForMutation, RecoveryModeError } from "@/lib/device-handoff";
 import { OperationLockError } from "@/lib/operation-lock";
 import { createChangeSetCore, type ChangeSetCore } from "@/lib/changesets";
@@ -24,20 +24,11 @@ import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent
 import { createAssetCatalogCore, type AssetCatalogCore } from "@/lib/asset-catalog";
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
 import { createChannelWorkspacesCore, type ChannelWorkspacesCore } from "@/lib/channel-workspaces";
+import { createAgentTokenCore, type AgentTokenBinding } from "@/lib/agent-tokens";
+import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
+import { enterAgentSession } from "@/lib/agent-session";
+import { CLI_COMMAND_CLASSIFICATION } from "./command-classification";
 import { createDecisionEngineCore, type DecisionEngineCore } from "@/lib/decision-engine";
-import {
-  createAgentConnectionsCore,
-  type AgentConnectionsCoreSubset,
-  CAPABILITY_CHANNEL_SYNC,
-  CAPABILITY_CHANGESET_CREATE_FROM_IMPORT,
-  CAPABILITY_AI_LOCALIZATION_GENERATE,
-  CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET,
-  CAPABILITY_CONTENT_PROPOSAL_CREATE,
-  CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT,
-  CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE,
-  CAPABILITY_DECISION_ENGINE_CREATE_EXPERIMENT_PROPOSAL,
-  resolveAgentConnectionIdFromEnv,
-} from "@/lib/agent-connections";
 
 // CLI parity for the read/propose/create MCP tools (docs/roadmap/plans/PHASE_7_PLAN.md,
 // docs/TECHNICAL_DEBT.md RISK-04) -- same core factories, same "smallest safe slice" as
@@ -569,13 +560,24 @@ export async function runCliCommand(args: {
   aiLocalizationCore?: AiLocalizationCliCoreSubset;
   agentOperationsCore?: AgentOperationsCliCoreSubset;
   assetCatalogCore?: AssetCatalogCliCoreSubset;
-  agentConnectionsCore?: AgentConnectionsCoreSubset;
   marketIntelligenceCore?: MarketIntelligenceCliCoreSubset;
   decisionEngineCore?: DecisionEngineCliCoreSubset;
   // Phase 11 -- read-only subset on purpose; `setWorkspace` is operator-only (Web UI).
   channelWorkspacesCore?: Pick<ChannelWorkspacesCore, "getWorkspace">;
+  // Phase 12 slice 12.4 -- agent-confinement subset of the per-channel market assignments.
+  marketAssignmentCore?: Pick<MarketAssignmentCore, "filterForAgent" | "assertAvailableToAgent" | "recordAgentOwnership">;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
+  // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md §6) -- the channel-bound agent session this
+  // invocation runs as, established by the entrypoint below from `--agentToken`/`YTOM_AGENT_TOKEN`
+  // (which also enters the process-wide scope, `src/lib/agent-session`). Absent = operator mode.
+  agentSession?: { channelId: string } | null;
+  // Phase 12 slice 12.5 -- whether operator mode (no token) is allowed at all. Injectable for tests;
+  // defaults to the persisted "Operator CLI access" setting (off unless the operator turned it on).
+  operatorCliEnabled?: () => Promise<boolean>;
+  // Review round 2 -- the "MCP connection" master switch governs agent CLI use too (owner rule,
+  // 2026-09-21: every MCP/agent interaction goes through it). Injectable for tests.
+  agentConnectionEnabled?: () => Promise<boolean>;
 }): Promise<number> {
   const core = args.core ?? {
     ...createVideoMetadataCore(),
@@ -589,10 +591,10 @@ export async function runCliCommand(args: {
   const aiLocalizationCore = args.aiLocalizationCore ?? createAiLocalizationCore();
   const agentOperationsCore = args.agentOperationsCore ?? createAgentOperationsCore();
   const assetCatalogCore = args.assetCatalogCore ?? createAssetCatalogCore();
-  const agentConnectionsCore = args.agentConnectionsCore ?? createAgentConnectionsCore();
   const marketIntelligenceCore = args.marketIntelligenceCore ?? createMarketIntelligenceCore();
   const decisionEngineCore = args.decisionEngineCore ?? createDecisionEngineCore();
   const channelWorkspacesCore = args.channelWorkspacesCore ?? createChannelWorkspacesCore();
+  const marketAssignmentCore = args.marketAssignmentCore ?? createMarketAssignmentCore();
   const writeStdout =
     args.writeStdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const writeStderr =
@@ -600,6 +602,34 @@ export async function runCliCommand(args: {
 
   try {
     const parsedArgs = parseArgs(args.argv);
+
+    // Phase 12 (AC-P12-04/08/10): an agent session may run only commands classified `bound`; with no
+    // agent session the CLI is the operator's tool and runs only while "Operator CLI access" is on.
+    // Checked before anything else touches state.
+    const commandKey = `${parsedArgs.namespace} ${parsedArgs.command}`;
+    if (args.agentSession) {
+      if (!(await (args.agentConnectionEnabled ?? getMcpConnectionEnabled)())) {
+        throw new DomainError({
+          code: "AGENT_TOKEN_INVALID",
+          message: "agent access is switched off (Settings -> AI Agent -> MCP connection)",
+        });
+      }
+      const commandClass = CLI_COMMAND_CLASSIFICATION[commandKey];
+      if (commandClass !== "bound") {
+        throw new DomainError({
+          code: "AGENT_SESSION_OPERATOR_ONLY",
+          message: commandClass
+            ? `"${commandKey}" is operator-only and unavailable to a channel-bound agent`
+            : `"${commandKey}" is not classified for agent sessions`,
+        });
+      }
+    } else if (!(await (args.operatorCliEnabled ?? getOperatorCliEnabled)())) {
+      throw new DomainError({
+        code: "AGENT_TOKEN_INVALID",
+        message:
+          "no agent token: set YTOM_AGENT_TOKEN (or --agentToken) to this channel's token, or enable \"Operator CLI access\" in Settings to use the CLI as the operator",
+      });
+    }
 
     // Decision 7 (docs/decisions/0002-additive-schema-versioning.md's companion plan): a
     // single choke point, mirroring src/proxy.ts's and MCP's, gating every mutating command
@@ -611,19 +641,6 @@ export async function runCliCommand(args: {
     ) {
       await assertDeviceAvailableForMutation(rawSqlClient);
     }
-
-    // BL-091 slice 2 (docs/roadmap/plans/AGENT_ZONES_PLAN.md §6) -- this CLI invocation's own
-    // agent-connection identity: --agentConnectionId flag takes priority, falling back to the
-    // same AGENT_CONNECTION_ID env var MCP resolves at spawn time, so a script that already sets
-    // the env var for its MCP client needs no CLI-specific change. Deliberately resolved here,
-    // once, rather than inside each of the (few) zoned command blocks below -- keeps every zoned
-    // call site's own check a single, uniform one-liner, even though it is not literally the same
-    // blanket `command`-only gate as the device-availability check above (a bare `command` string
-    // is ambiguous across namespaces here -- e.g. "create" is both `changeset create` and
-    // `playlist create` -- so each zoned call site names its own capability id explicitly).
-    const callerConnectionId =
-      optionalStringFlag(parsedArgs.flags, "agentConnectionId") ??
-      resolveAgentConnectionIdFromEnv(process.env.AGENT_CONNECTION_ID);
 
     if (parsedArgs.namespace === "auth") {
       if (parsedArgs.command === "login") {
@@ -729,10 +746,6 @@ export async function runCliCommand(args: {
 
       // "import" -- persists a new Change Set. Never writes to YouTube; gated above like
       // playlist_create/apply (mutates the local database).
-      await agentConnectionsCore.assertAgentAllowedForCapability({
-        capabilityId: CAPABILITY_CHANGESET_CREATE_FROM_IMPORT,
-        callerConnectionId,
-      });
       const result = await operationsCore.createChangeSetFromImport({ channelId, filename, buffer });
       writeStdout(serializeSuccess(result));
       return 0;
@@ -777,10 +790,6 @@ export async function runCliCommand(args: {
       });
 
       if (parsedArgs.command === "generate") {
-        await agentConnectionsCore.assertAgentAllowedForCapability({
-          capabilityId: CAPABILITY_AI_LOCALIZATION_GENERATE,
-          callerConnectionId,
-        });
         const videoIds = requiredStringFlag(parsedArgs.flags, "videoIds")
           .split(",")
           .map((entry) => entry.trim())
@@ -807,10 +816,6 @@ export async function runCliCommand(args: {
       // for --evidenceJson, owner spec §13's EvidenceReference[] shape) -- there is no
       // reasonable flat-flag equivalent for either. --rationale is plain free text (Phase 7
       // slice F, owner spec §12).
-      await agentConnectionsCore.assertAgentAllowedForCapability({
-        capabilityId: CAPABILITY_AI_LOCALIZATION_CREATE_CHANGE_SET,
-        callerConnectionId,
-      });
       const proposalsJson = requiredStringFlag(parsedArgs.flags, "proposalsJson");
       const provenanceJsonFlag = optionalStringFlag(parsedArgs.flags, "provenanceJson");
       const evidenceJsonFlag = optionalStringFlag(parsedArgs.flags, "evidenceJson");
@@ -921,14 +926,19 @@ export async function runCliCommand(args: {
       // "list-operations-files"/"get-operations-file" above.
       if (parsedArgs.command === "competitors") {
         const result = await marketIntelligenceCore.listWatchlist();
-        writeStdout(serializeSuccess(result));
+        // Phase 12 (AC-P12-09): an agent sees only entries assigned to its channel.
+        const channels = await marketAssignmentCore.filterForAgent("research_channel", result.channels, (c) => c.channelId);
+        writeStdout(serializeSuccess({ ...result, channels }));
         return 0;
       }
 
       if (parsedArgs.command === "market-intelligence") {
         const requestedChannelId = requiredStringFlag(parsedArgs.flags, "channelId");
+        await marketAssignmentCore.assertAvailableToAgent("research_channel", requestedChannelId);
         const result = await marketIntelligenceCore.getWatchlistEntryContext({ channelId: requestedChannelId });
-        writeStdout(serializeSuccess(result));
+        // Nested data too: only topic tags whose topic is assigned to the agent's channel.
+        const topicAssignments = await marketAssignmentCore.filterForAgent("topic", result.topicAssignments, (a) => a.topicId);
+        writeStdout(serializeSuccess({ ...result, topicAssignments }));
         return 0;
       }
 
@@ -936,19 +946,23 @@ export async function runCliCommand(args: {
       // agent_list_market_records tool's own "kind discriminator, not three tools" shape.
       if (parsedArgs.command === "market-records") {
         const kind = requiredStringFlag(parsedArgs.flags, "kind");
+        // Phase 12 (AC-P12-09): each kind narrowed to what is assigned to the agent's channel.
         if (kind === "topics") {
           const result = await marketIntelligenceCore.listTopics();
-          writeStdout(serializeSuccess({ kind, ...result }));
+          const topics = await marketAssignmentCore.filterForAgent("topic", result.topics, (t) => t.topicId);
+          writeStdout(serializeSuccess({ kind, ...result, topics }));
           return 0;
         }
         if (kind === "trend_candidates") {
           const result = await marketIntelligenceCore.listTrendCandidates();
-          writeStdout(serializeSuccess({ kind, ...result }));
+          const trendCandidates = await marketAssignmentCore.filterForAgent("trend_candidate", result.trendCandidates, (t) => t.trendCandidateId);
+          writeStdout(serializeSuccess({ kind, ...result, trendCandidates }));
           return 0;
         }
         if (kind === "discovery_candidates") {
           const result = await marketIntelligenceCore.listDiscoveryCandidates();
-          writeStdout(serializeSuccess({ kind, ...result }));
+          const candidates = await marketAssignmentCore.filterForAgent("discovery_candidate", result.candidates, (c) => c.channelId);
+          writeStdout(serializeSuccess({ kind, ...result, candidates }));
           return 0;
         }
         throw new DomainError({
@@ -958,14 +972,9 @@ export async function runCliCommand(args: {
       }
 
       // Phase 9 slice 9G, part B (owner spec §29) -- an agent-created DRAFT, never self-approving.
-      // Zoned the same way every other zoned CLI command already is (mirrors
-      // "create-content-proposal"'s own inline check below) -- global data, so no channelId/
-      // assertActiveChannel is needed, unlike every other zoned command in this file.
+      // Market data is not channel-scoped itself; in an agent session the created request is
+      // recorded as owned by the agent's channel (Phase 12 slice 12.4).
       if (parsedArgs.command === "create-research-request") {
-        await agentConnectionsCore.assertAgentAllowedForCapability({
-          capabilityId: CAPABILITY_MARKET_RESEARCH_REQUEST_CREATE,
-          callerConnectionId,
-        });
         const monitorDurationDaysFlag = optionalStringFlag(parsedArgs.flags, "monitorDurationDays");
         const result = await marketIntelligenceCore.createMarketResearchRequest(
           {
@@ -979,6 +988,7 @@ export async function runCliCommand(args: {
           // value.
           { createdVia: "cli", agentApiVersion: null }
         );
+        await marketAssignmentCore.recordAgentOwnership("research_request", result.requestId);
         writeStdout(serializeSuccess(result));
         return 0;
       }
@@ -1012,12 +1022,8 @@ export async function runCliCommand(args: {
         return 0;
       }
 
-      // The one reserved capability, zoned exactly like create-research-request above.
+      // The one reserved capability (Phase 10 slice 2).
       if (parsedArgs.command === "create-experiment-proposal") {
-        await agentConnectionsCore.assertAgentAllowedForCapability({
-          capabilityId: CAPABILITY_DECISION_ENGINE_CREATE_EXPERIMENT_PROPOSAL,
-          callerConnectionId,
-        });
         const hypothesisId = requiredStringFlag(parsedArgs.flags, "hypothesisId");
         const agentCredentialRef = await auth.resolveEffectiveCredentialRef({
           explicit: getCredentialRef(parsedArgs.flags) ?? undefined,
@@ -1107,10 +1113,6 @@ export async function runCliCommand(args: {
       // flat-flag equivalent for either shape. --referenceVideoIds/--referenceAssetIds take a
       // comma-separated list of ids, same convention as --metricNames above.
       if (parsedArgs.command === "create-content-proposal") {
-        await agentConnectionsCore.assertAgentAllowedForCapability({
-          capabilityId: CAPABILITY_CONTENT_PROPOSAL_CREATE,
-          callerConnectionId,
-        });
         const evidenceJsonFlag = optionalStringFlag(parsedArgs.flags, "evidenceJson");
         const briefJsonFlag = optionalStringFlag(parsedArgs.flags, "briefJson");
         const referenceVideoIdsFlag = optionalStringFlag(parsedArgs.flags, "referenceVideoIds");
@@ -1168,10 +1170,6 @@ export async function runCliCommand(args: {
       // url/external_artifact_id by the schema itself -- local_path stays available only via the
       // operator-facing "asset register" command.
       if (parsedArgs.command === "register-external-artifact") {
-        await agentConnectionsCore.assertAgentAllowedForCapability({
-          capabilityId: CAPABILITY_CONTENT_PROPOSAL_REGISTER_ARTIFACT,
-          callerConnectionId,
-        });
         const provenanceJsonFlag = optionalStringFlag(parsedArgs.flags, "provenanceJson");
         let provenance: unknown;
         try {
@@ -1343,7 +1341,6 @@ export async function runCliCommand(args: {
 
     if (parsedArgs.namespace === "channel") {
       if (parsedArgs.command === "sync") {
-        await agentConnectionsCore.assertAgentAllowedForCapability({ capabilityId: CAPABILITY_CHANNEL_SYNC, callerConnectionId });
         const channelId = optionalStringFlag(parsedArgs.flags, "channelId");
         const result = await channelSyncCore.syncChannel({
           credentialRef,
@@ -1572,8 +1569,45 @@ export async function runCliCommand(args: {
 
 const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
 
+/**
+ * Phase 12 -- the CLI process entrypoint resolves its agent token ONCE, before any command runs:
+ * `--agentToken <token>` (removed from argv before parsing) or `YTOM_AGENT_TOKEN`. A valid token
+ * freezes this process into its channel's scope (`src/lib/agent-session`); an invalid one is a
+ * refusal, never a silent fall-back to operator mode.
+ */
+export async function runCliProcess(argv: string[]): Promise<number> {
+  // Accepts `--agentToken <token>` and `--agentToken=<token>` (review round 2: the `=` form must
+  // never be mistaken for "no token"). An explicit flag must carry a value; an empty or missing one
+  // is a refusal (review round 1), never a silent fall-back to operator mode. An empty env var
+  // counts as unset.
+  const tokenFlagIndex = argv.findIndex((arg) => arg === "--agentToken" || arg.startsWith("--agentToken="));
+  let token: string | undefined;
+  let remainingArgv = argv;
+  if (tokenFlagIndex >= 0) {
+    const flag = argv[tokenFlagIndex];
+    const inline = flag.startsWith("--agentToken=");
+    token = inline ? flag.slice("--agentToken=".length) : argv[tokenFlagIndex + 1];
+    if (!token || token.startsWith("--")) token = "";
+    remainingArgv = [...argv.slice(0, tokenFlagIndex), ...argv.slice(tokenFlagIndex + (inline ? 1 : 2))];
+  } else {
+    token = process.env.YTOM_AGENT_TOKEN || undefined;
+  }
+  if (token === undefined) {
+    return runCliCommand({ argv: remainingArgv });
+  }
+  let binding: AgentTokenBinding;
+  try {
+    binding = await createAgentTokenCore().verifyToken(token);
+  } catch (error) {
+    process.stderr.write(`${serializeError(error)}\n`);
+    return 1;
+  }
+  enterAgentSession(binding);
+  return runCliCommand({ argv: remainingArgv, agentSession: { channelId: binding.channelId } });
+}
+
 if (isMainModule) {
-  runCliCommand({ argv: process.argv.slice(2) })
+  runCliProcess(process.argv.slice(2))
     .then((exitCode) => {
       process.exitCode = exitCode;
     })

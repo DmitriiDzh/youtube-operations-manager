@@ -1,5 +1,7 @@
 "use client";
 
+import { FeatureErrorBoundary } from "./feature-error-boundary";
+import { MarketChannelAssignment } from "./market-channel-assignment";
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { ConfirmDialog } from "./confirm-dialog";
@@ -165,6 +167,11 @@ export function MarketDiscoveryPanel() {
       <div className="space-y-2">
         {candidates.map((candidate) => (
           <div key={candidate.channelId} className="rounded-lg border border-zinc-800 p-3">
+            <div className="mb-2">
+              <FeatureErrorBoundary label="Channel assignment">
+                <MarketChannelAssignment recordKind="discovery_candidate" recordId={candidate.channelId} />
+              </FeatureErrorBoundary>
+            </div>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <p className="text-sm font-medium text-zinc-100">{candidate.title || candidate.channelId}</p>

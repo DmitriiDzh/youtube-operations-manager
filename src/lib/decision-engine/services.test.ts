@@ -324,9 +324,10 @@ function createFakeChannelAccess(activeChannelId: string | null, calls: string[]
   };
 }
 
-function createServices(activeChannelId: string | null, calls: string[] = []) {
+function createServices(activeChannelId: string | null, calls: string[] = [], options: { agentSession?: boolean } = {}) {
   const store = createFakeStore();
   const services = createDecisionEngineServices({
+    isAgentSession: () => options.agentSession === true,
     idGenerator: store.idGenerator,
     clock: { now: () => new Date("2026-09-29T12:00:00Z") },
     channelAccess: createFakeChannelAccess(activeChannelId, calls),
@@ -1452,4 +1453,41 @@ test("executeExperiment: a finalize failure (real Batch created, but the finaliz
     (error: unknown) => isDomainError(error) && error.code === "EXPERIMENT_INVALID_TRANSITION"
   );
   assert.equal(secondResolver.createCalls.length, 0, "the claim is still held -- the resolver must never be reached again");
+});
+
+// Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-09): inside a channel-bound agent session a
+// channel-less hypothesis is invisible -- not listed, not readable, not usable for an experiment --
+// with the same error as a nonexistent id. Operator semantics (AC-10-05f above) are unchanged.
+test("AC-P12-09: an agent session never sees or touches channel-less hypotheses", async () => {
+  const operator = createServices("UCactive0000000000000001");
+  const channelless = await operator.services.createHypothesis(
+    { statement: "channel-less", evidenceNotes: "e" },
+    { userId: "u1", createdBy: "u1", createdVia: "web_ui" }
+  );
+
+  const agent = createServices("UCactive0000000000000001", [], { agentSession: true });
+  await agent.store.insertHypothesis({
+    id: channelless.hypothesisId,
+    channelId: null,
+    statement: "channel-less",
+    evidenceNotes: "e",
+    createdBy: "u1",
+    createdVia: "web_ui",
+  });
+  await agent.store.insertHypothesis({
+    id: "hyp-own",
+    channelId: "UCactive0000000000000001",
+    statement: "own channel",
+    evidenceNotes: "e",
+    createdBy: "u1",
+    createdVia: "web_ui",
+  });
+
+  assert.deepEqual((await agent.services.listHypotheses({ userId: "u1" })).map((h) => h.statement), ["own channel"]);
+  const notFound = (e: unknown) => e instanceof DomainError && e.code === "HYPOTHESIS_NOT_FOUND";
+  await assert.rejects(agent.services.getHypothesis(channelless.hypothesisId, { userId: "u1" }), notFound);
+  await assert.rejects(
+    agent.services.createExperiment(channelless.hypothesisId, VALID_EXPERIMENT_INPUT, { userId: "u1", createdBy: "agent", createdVia: "mcp" }),
+    notFound
+  );
 });

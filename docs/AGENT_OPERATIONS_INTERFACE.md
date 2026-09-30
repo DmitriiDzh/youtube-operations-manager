@@ -997,6 +997,37 @@ ends at the path string.
   `channel_workspace_path`. `AGENT_API_VERSION` → `0.15.0`.
 - The global operations workspace (§4j) is unchanged.
 
+## 4n. Channel-bound agent sessions (Phase 12, `docs/roadmap/plans/PHASE_12_PLAN.md`) -- IMPLEMENTED
+
+This is a breaking change to this interface, so `AGENT_API_VERSION` → `1.0.0`. Every agent
+session is bound to exactly one channel by an operator-issued channel token (`YTOM_AGENT_TOKEN`
+for MCP, `--agentToken` or the env var for the CLI).
+
+- **Enforcement at two choke points** (`src/lib/agent-session`), not in each handler. In a bound
+  process:
+  - the "selected channel" is the bound channel, and writes to it are no-ops;
+  - credentials are always the token's recorded identity, and caller `credentialRef` /
+    `--userId` / `--accessToken` are rejected.
+
+  Every existing `assertActiveChannel` / write-context check therefore enforces the binding
+  unchanged. `list` / `transcript` / `preview` / `channel_sync`, which bypass
+  `assertActiveChannel`, are confined in their core wiring.
+- **Surface.** Only tools and commands classified `bound` are registered or accepted. The
+  classification tables are checked against the real registries by inventory tests.
+  Operator-only: identity/selection switching, `auth *`, `asset register`, and the
+  operations-workspace tools (§4j; owner decision D2: channel folders only). The
+  `operations_workspace` capabilities are therefore hidden from `agent_get_capabilities` in an
+  agent session.
+- **Market intelligence (§4k)** returns only records the operator assigned to the agent's channel.
+  A record not assigned to it behaves as nonexistent. An agent-created research request is owned
+  by its channel.
+- **Decision engine (§4l):** channel-less hypotheses are invisible to agents.
+- **Capability zones (BL-091) are retired** (`docs/decisions/0011-retire-agent-capability-zones.md`).
+  There is no `AGENT_CONNECTION_ID` any more.
+- **Migration for an existing client:** issue a token in Settings → Channels, put it in the
+  client's MCP launch config as `YTOM_AGENT_TOKEN`, drop `AGENT_CONNECTION_ID`, and stop passing
+  `credentialRef`. Setup: `docs/AGENT_ISOLATION_SETUP.md`.
+
 ## 8. Safety invariants this interface must never violate
 
 - Never expose Google OAuth tokens, AI-provider API keys, encryption keys, raw credential records,

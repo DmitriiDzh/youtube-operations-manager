@@ -630,6 +630,19 @@ Original 26-section proposal, initial reusable-vs-new inventory, and the two con
 follow-up discussion resolved: `docs/roadmap/plans/CHANNEL_WORKSPACES_WORKFLOW_RUNTIME_ANALYSIS.md`
 (left as a historical snapshot — read this section for the phase's actual, current scope).
 
+## 13. Phase 12 — Channel-bound agent isolation ("Chinese wall")
+
+**Recorded 2026-09-30, owner direction (Telegram, msgs 1044/1046/1048).** Every external agent is
+bound to exactly one channel by an operator-issued channel token ("один агент — один канал"). It
+receives only that channel's data through the product's interface, keeps its working copy in its
+own channel folder (Phase 11), and never reads the database directly. An agent without a token
+receives nothing. The phase covers the whole architecture at once: MCP, CLI, identity/credential
+resolution, and per-channel ownership of market/decision data.
+
+Plan, inventory of today's holes, slices and open decisions:
+`docs/roadmap/plans/PHASE_12_PLAN.md`. The owner asked for the plan; implementation needs the
+open decisions (D0–D5) answered first. Backlog: BL-109.
+
 ## 12. Current next-action marker
 
 Recorded 2026-09-26, owner instruction ("Strategic Roadmap Update — Post Phase 8") — kept short

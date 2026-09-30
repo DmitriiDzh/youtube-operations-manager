@@ -173,9 +173,11 @@ function createFixture(
     operationsWorkspaceGetFile: (input: unknown) => Promise<FakeOperationsWorkspaceFileResult>;
     findComparableVideos: (input: unknown) => Promise<FakeFindComparableVideosResult>;
     listAssetPerformance: (input: unknown) => Promise<FakeListAssetPerformanceResult>;
+    isAgentSession: () => boolean;
   }> = {}
 ) {
   const services = createAgentOperationsServices({
+    isAgentSession: overrides.isAgentSession,
     getProductVersion: () => overrides.productVersion ?? "9.9.9",
     getSchemaVersion: () => overrides.schemaVersion ?? 14,
     channelStore: {
@@ -232,7 +234,9 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   // Bumped 0.13.0 -> 0.14.0, Phase 10 slice 2 (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md):
   // new decision_engine capabilities added. Bumped 0.14.0 -> 0.15.0, Phase 11
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11): new channel_workspace capability.
-  assert.equal(result.agentApiVersion, "0.15.0");
+  // Bumped 0.15.0 -> 1.0.0, Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-13): a breaking
+  // agent-contract change (token required, identity/credential overrides removed) -> MAJOR.
+  assert.equal(result.agentApiVersion, "1.0.0");
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -1137,4 +1141,15 @@ test("listProposalArtifacts forwards its input unchanged to contentProposalListP
   const result = await services.listProposalArtifacts({ channelId: "UC_A", proposalId: "proposal-1" });
   assert.deepEqual(captured, { channelId: "UC_A", proposalId: "proposal-1" });
   assert.deepEqual(result.artifacts, []);
+});
+
+// Phase 12 (owner decision D2): in a channel-bound agent session the global operations-workspace
+// capabilities are never listed; the operator still sees them.
+test("getSystemCapabilities hides operations_workspace capabilities inside an agent session only", async () => {
+  const operator = createFixture();
+  assert.ok((await operator.services.getSystemCapabilities({})).capabilities.some((c) => c.domain === "operations_workspace"));
+  const agent = createFixture({ isAgentSession: () => true });
+  const capabilities = (await agent.services.getSystemCapabilities({})).capabilities;
+  assert.equal(capabilities.some((c) => c.domain === "operations_workspace"), false);
+  assert.ok(capabilities.some((c) => c.id === "channel_workspace.get_channel_workspace"));
 });

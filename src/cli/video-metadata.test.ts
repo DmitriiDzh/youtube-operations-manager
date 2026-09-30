@@ -18,12 +18,18 @@ import type { AssetCatalogCore } from "@/lib/asset-catalog";
 import type { MarketIntelligenceCore } from "@/lib/market-intelligence";
 import type { DecisionEngineCore } from "@/lib/decision-engine";
 import type { VideoContextSection } from "@/lib/agent-operations";
-import type { AgentConnectionsCoreSubset } from "@/lib/agent-connections";
 import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { parseWithSchema, registerExternalArtifactInputSchema } from "@/lib/content-proposals/schemas";
 import { listAssetPerformanceInputSchema } from "@/lib/agent-operations/schemas";
-import { runCliCommand, getCredentialRef, parseArgs } from "./video-metadata";
+import { runCliCommand, runCliProcess, getCredentialRef, parseArgs } from "./video-metadata";
+import { CLI_COMMAND_CLASSIFICATION } from "./command-classification";
+import { withAgentSessionForTests } from "@/lib/agent-session";
+
+// Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-10): without an agent token the CLI runs only
+// in operator mode, which the persisted "Operator CLI access" setting gates (off by default). These
+// tests exercise operator-mode behavior, so they state that mode explicitly via the injectable seam.
+const OPERATOR_MODE = async () => true;
 
 function makeCoreStub(): Pick<
   VideoMetadataCore & PlaylistManagementCore,
@@ -375,6 +381,7 @@ test("CLI list command calls core listVideos and returns structured JSON", async
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["list", "--userId", "user-1", "--maxResults", "5"],
     core,
     auth: makeAuthStub(),
@@ -405,6 +412,7 @@ test("CLI list forwards explicit channelId when provided", async () => {
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "list",
       "--channelId",
@@ -437,6 +445,7 @@ test("CLI list rejects a --channelId flag with no value instead of silently list
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["list", "--channelId", "--maxResults", "5"],
     core,
     auth: makeAuthStub(),
@@ -459,6 +468,7 @@ test("CLI metadata commands fallback to active auth context when --userId is omi
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["list"],
     core,
     auth: makeAuthStub(),
@@ -487,6 +497,7 @@ test("CLI rejects a --userId flag with no value instead of silently falling back
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["list", "--userId", "--maxResults", "5"],
     core,
     auth: makeAuthStub(),
@@ -546,6 +557,7 @@ test("CLI auth select-channel requires --channelId (missing entirely, not just a
   const auth = { ...makeAuthStub(), selectWriteChannel: async () => { called = true; return {}; } };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "select-channel"],
     core: makeCoreStub(),
     auth,
@@ -562,6 +574,7 @@ test("CLI returns validation error and non-zero exit for missing required flags"
   const stderr: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["transcript", "--userId", "user-1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -596,6 +609,7 @@ test("CLI transcript keeps stable envelope and propagates diagnostic unchanged",
   });
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["transcript", "--videoId", "v1"],
     core,
     auth: makeAuthStub(),
@@ -653,6 +667,7 @@ test("CLI apply dry-run forwards dryRun=true and returns proposal", async () => 
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "apply",
       "--userId",
@@ -698,6 +713,7 @@ test("RISK-12 (2026-09-18): CLI apply omits dryRun from the request entirely whe
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["apply", "--videoId", "v1", "--finalTitle", "Draft", "--description", "Draft desc", "--expectedChannelId", "UC_ACTIVE"],
     core,
     auth: makeAuthStub(),
@@ -719,6 +735,7 @@ test("CLI apply keeps payload parity between dryRun and apply", async () => {
   const applyStdout: string[] = [];
 
   const dryRunExit = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "apply",
       "--videoId",
@@ -739,6 +756,7 @@ test("CLI apply keeps payload parity between dryRun and apply", async () => {
   // RISK-12 (2026-09-18): a live write now requires an explicit `--dryRun false` --
   // omitting the flag entirely means dry-run, not live (see resolveDryRunFlag).
   const applyExit = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "apply",
       "--videoId",
@@ -789,6 +807,7 @@ test("CLI auth command login calls device flow with --device and stable envelope
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "login", "--device"],
     core: makeCoreStub(),
     auth,
@@ -820,6 +839,7 @@ test("CLI auth login default uses loopback flow and returns stable success envel
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "login"],
     core: makeCoreStub(),
     auth,
@@ -847,6 +867,7 @@ test("CLI auth supports whoami/list-users/logout/revoke with stable envelopes", 
     ["auth", "revoke"],
   ]) {
     const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv,
       core: makeCoreStub(),
       auth,
@@ -871,6 +892,7 @@ test("CLI auth revoke rejects a --userId flag with no value instead of silently 
   const auth = { ...makeAuthStub(), revoke: async () => { called = true; return {}; } };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "revoke", "--userId", "--foo"],
     core: makeCoreStub(),
     auth,
@@ -886,6 +908,7 @@ test("CLI auth list-channels returns minimal-safe known channel list", async () 
   const stdout: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "list-channels"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -903,6 +926,7 @@ test("CLI auth select-channel persists expected channel and returns mismatch gui
   const stdout: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "select-channel", "--channelId", "UC1111111111111111111111"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -922,6 +946,7 @@ test("CLI auth select-user switches local fallback identity only", async () => {
   const stdout: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "select-user", "--userId", "u2"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -940,6 +965,7 @@ test("CLI auth select-user rejects missing --userId", async () => {
   const stderr: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "select-user"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -965,6 +991,7 @@ test("CLI auth select-user surfaces AUTH_USER_NOT_FOUND with stable envelope", a
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "select-user", "--userId", "missing-user"],
     core: makeCoreStub(),
     auth,
@@ -985,6 +1012,7 @@ test("CLI auth rejects unknown auth subcommand", async () => {
   const stderr: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "invalid-command"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -1009,6 +1037,7 @@ test("CLI auth login surfaces AUTH_CALLBACK_INVALID in error envelope", async ()
 
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "login"],
     core: makeCoreStub(),
     auth,
@@ -1033,6 +1062,7 @@ test("CLI auth returns AUTH_REFRESH_TOKEN_MISSING as stable JSON error envelope"
 
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "whoami"],
     core: makeCoreStub(),
     auth,
@@ -1066,6 +1096,7 @@ test("CLI auth login --device emits pending verification details to stderr befor
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["auth", "login", "--device"],
     core: makeCoreStub(),
     auth,
@@ -1155,6 +1186,7 @@ test("CLI transcript/preview/apply fallback to active auth context when --userId
     ],
   ]) {
     const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv,
       core,
       auth,
@@ -1199,6 +1231,7 @@ test("CLI apply surfaces target-language resolution error as typed envelope", as
 
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "apply",
       "--videoId",
@@ -1237,6 +1270,7 @@ test("CLI apply returns guardrail mismatch details with non-zero exit", async ()
 
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "apply",
       "--videoId",
@@ -1277,6 +1311,7 @@ test("CLI apply returns unresolved guardrail details with non-zero exit", async 
 
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "apply",
       "--videoId",
@@ -1335,6 +1370,7 @@ test("CLI playlist list/create commands use shared core and stable JSON envelope
   };
 
   const listExitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["playlist", "list", "--userId", "user-1"],
     core,
     auth: makeAuthStub(),
@@ -1342,6 +1378,7 @@ test("CLI playlist list/create commands use shared core and stable JSON envelope
   });
 
   const createExitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "create",
@@ -1404,6 +1441,7 @@ test("CLI playlist update validates and forwards patch payload", async () => {
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "update",
@@ -1452,6 +1490,7 @@ test("CLI playlist delete forwards expectedChannelId and returns stable envelope
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "delete",
@@ -1498,6 +1537,7 @@ test("CLI playlist create fails closed on guardrail mismatch with stable error d
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "create",
@@ -1537,6 +1577,7 @@ test("CLI playlist update fails closed on guardrail mismatch with stable error d
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "update",
@@ -1578,6 +1619,7 @@ test("CLI playlist update fails closed on invalid ownership with structured erro
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "update",
@@ -1619,6 +1661,7 @@ test("CLI playlist delete fails closed on unresolved channel with stable error d
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "delete",
@@ -1646,6 +1689,7 @@ test("CLI playlist add/remove commands return stable partial-result envelopes", 
   const stdout: string[] = [];
 
   const addExitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["playlist", "add", "--playlistId", "p1", "--expectedChannelId", "UC_ACTIVE", "--videoIds", "v1,v2"],
     core,
     auth: makeAuthStub(),
@@ -1653,6 +1697,7 @@ test("CLI playlist add/remove commands return stable partial-result envelopes", 
   });
 
   const removeExitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["playlist", "remove", "--playlistId", "p1", "--expectedChannelId", "UC_ACTIVE", "--videoIds", "v1,v2"],
     core,
     auth: makeAuthStub(),
@@ -1690,6 +1735,7 @@ test("CLI playlist commands fail with non-zero exit on missing required flags", 
   const stderr: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["playlist", "add", "--playlistId", "p1", "--expectedChannelId", "UC_ACTIVE"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -1710,6 +1756,7 @@ test("CLI playlist add/remove commands fail with non-zero exit when --expectedCh
   const stderr: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["playlist", "add", "--playlistId", "p1", "--videoIds", "v1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -1727,6 +1774,7 @@ test("CLI playlist update fails with actionable validation error for empty patch
   const stderr: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "update",
@@ -1761,6 +1809,7 @@ test("CLI playlist update rejects a --title flag with no value instead of silent
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "playlist",
       "update",
@@ -1786,6 +1835,7 @@ test("CLI playlist fails with typed auth error when no credential source is avai
   const stderr: string[] = [];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["playlist", "list"],
     core: makeCoreStub(),
     auth: {
@@ -1921,6 +1971,7 @@ test("CLI changeset list forwards channelId and returns structured JSON", async 
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["changeset", "list", "--channelId", "UC_1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -1945,6 +1996,7 @@ test("CLI changeset get forwards optional filters", async () => {
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["changeset", "get", "--channelId", "UC_1", "--changeSetId", "cs-1", "--language", "es"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -1990,6 +2042,7 @@ test("CLI changeset preview and changeset import read --file from disk and forwa
 
     const previewStdout: string[] = [];
     const previewExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["changeset", "preview", "--channelId", "UC_1", "--file", filePath],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -2005,6 +2058,7 @@ test("CLI changeset preview and changeset import read --file from disk and forwa
 
     const importStdout: string[] = [];
     const importExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["changeset", "import", "--channelId", "UC_1", "--file", filePath],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -2023,6 +2077,7 @@ test("CLI changeset preview and changeset import read --file from disk and forwa
 test("CLI changeset import fails cleanly when --file does not exist", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["changeset", "import", "--channelId", "UC_1", "--file", "/no/such/file.xlsx"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2047,6 +2102,7 @@ test("CLI batch list and batch get use requireBatchForChannel, not a bare batchI
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["batch", "get", "--channelId", "UC_1", "--batchId", "batch-1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2064,6 +2120,7 @@ test("CLI batch list and batch get use requireBatchForChannel, not a bare batchI
 test("CLI changeset list rejects a channelId that is not the caller's active channel", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["changeset", "list", "--channelId", "UC_1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2110,6 +2167,7 @@ test("CLI channel sync forwards resolved credentialRef and optional channelId", 
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["channel", "sync", "--channelId", "UC_1", "--userId", "u1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2136,6 +2194,7 @@ test("CLI channel sync rejects a --channelId flag with no value instead of silen
 
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["channel", "sync", "--channelId", "--userId", "u1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2153,6 +2212,7 @@ test("CLI channel sync rejects a --channelId flag with no value instead of silen
 test("CLI channel video-list requires channelId", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["channel", "video-list"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2223,6 +2283,7 @@ test("CLI analytics list forwards resolved credentialRef and optional filters", 
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "analytics",
       "list",
@@ -2259,6 +2320,7 @@ test("CLI analytics list forwards resolved credentialRef and optional filters", 
 test("CLI analytics list requires channelId", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["analytics", "list"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2291,6 +2353,7 @@ test("CLI analytics overview forwards resolved credentialRef and requires startD
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "analytics",
       "overview",
@@ -2321,6 +2384,7 @@ test("CLI analytics overview forwards resolved credentialRef and requires startD
 test("CLI analytics overview requires startDate and endDate", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["analytics", "overview", "--channelId", "UC_1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2339,6 +2403,7 @@ test("CLI analytics list/overview are never blocked by the operation lock (read-
   try {
     const stdout: string[] = [];
     const listExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["analytics", "list", "--channelId", "UC_1", "--userId", "u1"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -2348,6 +2413,7 @@ test("CLI analytics list/overview are never blocked by the operation lock (read-
     assert.equal(listExit, 0);
 
     const overviewExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: [
         "analytics",
         "overview",
@@ -2368,6 +2434,7 @@ test("CLI analytics list/overview are never blocked by the operation lock (read-
     assert.equal(overviewExit, 0);
 
     const dataQualityExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: [
         "analytics",
         "data-quality",
@@ -2388,6 +2455,7 @@ test("CLI analytics list/overview are never blocked by the operation lock (read-
     assert.equal(dataQualityExit, 0);
 
     const comparableAgeExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["analytics", "comparable-age", "--channelId", "UC_1", "--userId", "u1", "--videoIds", "v1,v2"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -2397,6 +2465,7 @@ test("CLI analytics list/overview are never blocked by the operation lock (read-
     assert.equal(comparableAgeExit, 0);
 
     const weeklyReportsExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["analytics", "weekly-reports", "--channelId", "UC_1", "--userId", "u1"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -2406,6 +2475,7 @@ test("CLI analytics list/overview are never blocked by the operation lock (read-
     assert.equal(weeklyReportsExit, 0);
 
     const weeklyReportGetExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["analytics", "weekly-report-get", "--channelId", "UC_1", "--userId", "u1", "--weekStartDate", "2026-09-14"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -2436,6 +2506,7 @@ test("CLI analytics data-quality forwards resolved credentialRef and requires st
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "analytics",
       "data-quality",
@@ -2466,6 +2537,7 @@ test("CLI analytics data-quality forwards resolved credentialRef and requires st
 test("CLI analytics data-quality requires startDate and endDate", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["analytics", "data-quality", "--channelId", "UC_1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2489,6 +2561,7 @@ test("CLI analytics comparable-age forwards resolved credentialRef, parsed --vid
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "analytics",
       "comparable-age",
@@ -2522,6 +2595,7 @@ test("CLI analytics comparable-age forwards resolved credentialRef, parsed --vid
 test("CLI analytics comparable-age requires --videoIds", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["analytics", "comparable-age", "--channelId", "UC_1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2545,6 +2619,7 @@ test("CLI analytics weekly-reports forwards resolved credentialRef and channelId
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["analytics", "weekly-reports", "--channelId", "UC_1", "--userId", "u1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2566,6 +2641,7 @@ test("CLI analytics weekly-report-get forwards resolved credentialRef and --week
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["analytics", "weekly-report-get", "--channelId", "UC_1", "--userId", "u1", "--weekStartDate", "2026-09-14"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2580,6 +2656,7 @@ test("CLI analytics weekly-report-get forwards resolved credentialRef and --week
 test("CLI analytics weekly-report-get requires --weekStartDate", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["analytics", "weekly-report-get", "--channelId", "UC_1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2646,6 +2723,7 @@ test("CLI ai-localization generate forwards channelId, parsed --videoIds/--targe
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "ai-localization",
       "generate",
@@ -2680,6 +2758,7 @@ test("CLI ai-localization generate forwards channelId, parsed --videoIds/--targe
 test("CLI ai-localization generate rejects a channelId that is not the caller's active channel", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["ai-localization", "generate", "--channelId", "UC_1", "--videoIds", "v1", "--targetLanguages", "es"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2716,6 +2795,7 @@ test("CLI ai-localization create-change-set parses --proposalsJson/--provenanceJ
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "ai-localization",
       "create-change-set",
@@ -2770,6 +2850,7 @@ test("CLI ai-localization create-change-set parses --evidenceJson/--rationale an
   ];
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "ai-localization",
       "create-change-set",
@@ -2799,6 +2880,7 @@ test("CLI ai-localization create-change-set parses --evidenceJson/--rationale an
 test("CLI ai-localization create-change-set rejects malformed --proposalsJson", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["ai-localization", "create-change-set", "--channelId", "UC_1", "--proposalsJson", "{not valid json"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2816,6 +2898,7 @@ test("CLI ai-localization generate is never blocked by the operation lock (read-
   await acquireOperationLock(rawSqlClient, "import");
   try {
     const generateExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["ai-localization", "generate", "--channelId", "UC_1", "--userId", "u1", "--videoIds", "v1", "--targetLanguages", "es"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -2827,6 +2910,7 @@ test("CLI ai-localization generate is never blocked by the operation lock (read-
 
     const stderr: string[] = [];
     const createExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: [
         "ai-localization",
         "create-change-set",
@@ -2885,6 +2969,7 @@ test("CLI agent capabilities returns version/capabilities with no auth/channel r
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "capabilities"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2931,6 +3016,7 @@ test("CLI agent capabilities is never blocked by the operation lock (read-only)"
     };
 
     const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "capabilities"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -2977,6 +3063,7 @@ test("CLI agent channel-context forwards channelId after checking it against the
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "channel-context", "--channelId", "UC_1", "--userId", "u1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -2994,6 +3081,7 @@ test("CLI agent channel-context forwards channelId after checking it against the
 test("CLI agent channel-context rejects a channelId that is not the caller's active channel", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "channel-context", "--channelId", "UC_1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -3039,6 +3127,7 @@ test("CLI agent channel-context rejects a channelId that is not the caller's act
 test("CLI agent video-context rejects a channelId that is not the caller's active channel", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "video-context", "--channelId", "UC_1", "--videoId", "v1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -3123,6 +3212,7 @@ test("CLI agent video-context forwards channelId/videoId and parses --include in
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "video-context", "--channelId", "UC_1", "--userId", "u1", "--videoId", "v1", "--include", "metadata"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -3163,6 +3253,7 @@ test("CLI agent video-context omits `include` entirely when --include is not pas
   };
 
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "video-context", "--channelId", "UC_1", "--userId", "u1", "--videoId", "v1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -3206,6 +3297,7 @@ test("CLI agent channel-context/video-context are never blocked by the operation
     };
 
     const channelContextExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "channel-context", "--channelId", "UC_1", "--userId", "u1"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -3216,6 +3308,7 @@ test("CLI agent channel-context/video-context are never blocked by the operation
     assert.equal(channelContextExit, 0);
 
     const videoContextExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "video-context", "--channelId", "UC_1", "--userId", "u1", "--videoId", "v1"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -3265,6 +3358,7 @@ test("CLI agent channel-analytics forwards resolved credentialRef, channelId, st
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "channel-analytics", "--channelId", "UC_1", "--userId", "u1", "--startDate", "2026-09-01", "--endDate", "2026-09-07"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -3286,6 +3380,7 @@ test("CLI agent channel-analytics forwards resolved credentialRef, channelId, st
 test("CLI agent channel-analytics requires --startDate/--endDate", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "channel-analytics", "--channelId", "UC_1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -3350,6 +3445,7 @@ test("CLI agent video-analytics forwards resolved credentialRef, channelId, and 
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "video-analytics", "--channelId", "UC_1", "--userId", "u1", "--videoId", "v1", "--metricNames", "views, likes"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -3410,6 +3506,7 @@ test("CLI agent channel-analytics/video-analytics are never blocked by the opera
     };
 
     const channelAnalyticsExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "channel-analytics", "--channelId", "UC_1", "--userId", "u1", "--startDate", "2026-09-01", "--endDate", "2026-09-07"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -3419,6 +3516,7 @@ test("CLI agent channel-analytics/video-analytics are never blocked by the opera
     assert.equal(channelAnalyticsExit, 0);
 
     const videoAnalyticsExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "video-analytics", "--channelId", "UC_1", "--userId", "u1"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -3468,6 +3566,7 @@ test("CLI agent competitors returns the watchlist with no channelId/auth resolut
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "competitors"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -3500,6 +3599,7 @@ test("CLI agent market-intelligence requires --channelId and returns the channel
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "market-intelligence", "--channelId", "UC_1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -3517,6 +3617,7 @@ test("CLI agent market-intelligence requires --channelId and returns the channel
 test("CLI agent market-intelligence rejects a missing --channelId as validation_failed", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "market-intelligence"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -3539,6 +3640,7 @@ test("CLI agent market-records --kind topics returns the same JSON envelope shap
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "market-records", "--kind", "topics"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -3556,6 +3658,7 @@ test("CLI agent market-records --kind topics returns the same JSON envelope shap
 test("CLI agent market-records rejects an unknown --kind value as validation_failed", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "market-records", "--kind", "not_a_real_kind"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -3600,6 +3703,7 @@ test("CLI agent create-research-request server-stamps createdVia:\"cli\"/agentAp
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "agent",
       "create-research-request",
@@ -3626,6 +3730,7 @@ test("CLI agent create-research-request server-stamps createdVia:\"cli\"/agentAp
 test("CLI agent create-research-request rejects a missing --query as validation_failed", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "create-research-request", "--rationale", "worth watching"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -3639,68 +3744,6 @@ test("CLI agent create-research-request rejects a missing --query as validation_
   assert.equal(envelope.error.code, "validation_failed");
 });
 
-test("CLI agent create-research-request is actually wired through agent-zone enforcement (rejected when the stub always denies)", async () => {
-  const stderr: string[] = [];
-  const exitCode = await runCliCommand({
-    argv: ["agent", "create-research-request", "--query", "night jazz", "--rationale", "worth watching"],
-    core: makeCoreStub(),
-    auth: makeAuthStub(),
-    marketIntelligenceCore: makeMarketIntelligenceCliCoreStub(),
-    agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
-    writeStdout: () => {},
-    writeStderr: (line) => stderr.push(line),
-  });
-
-  assert.equal(exitCode, 1);
-  const envelope = JSON.parse(stderr[0] ?? "{}");
-  assert.equal(envelope.error.code, "AGENT_ZONE_VIOLATION");
-});
-
-test("CLI agent create-research-request passes exactly capabilityId \"market_intelligence.agent_create_market_research_request\" and --agentConnectionId to assertAgentAllowedForCapability", async () => {
-  const capturing = makeCapturingAgentConnectionsCoreStub();
-  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
-  marketIntelligenceCore.createMarketResearchRequest = async () => ({
-    requestId: "req-1",
-    query: "night jazz",
-    rationale: "worth watching",
-    monitorDurationDays: null,
-    status: "pending",
-    createdVia: "cli",
-    agentApiVersion: null,
-    createdAt: "2026-09-27T00:00:00.000Z",
-    resolvedAt: null,
-    resolvedReason: null,
-    candidatesFound: null,
-    candidatesNew: null,
-    executionError: null,
-  });
-
-  const exitCode = await runCliCommand({
-    argv: [
-      "agent",
-      "create-research-request",
-      "--query",
-      "night jazz",
-      "--rationale",
-      "worth watching",
-      "--agentConnectionId",
-      "test-caller",
-    ],
-    core: makeCoreStub(),
-    auth: makeAuthStub(),
-    marketIntelligenceCore,
-    agentConnectionsCore: capturing,
-    writeStdout: () => {},
-  });
-
-  assert.equal(exitCode, 0);
-  assert.equal(capturing.calls.length, 1);
-  assert.deepEqual(capturing.calls[0], {
-    capabilityId: "market_intelligence.agent_create_market_research_request",
-    callerConnectionId: "test-caller",
-  });
-});
-
 test("CLI agent create-research-request is rejected while the operation lock is held", async () => {
   await acquireOperationLock(rawSqlClient, "import");
   try {
@@ -3711,6 +3754,7 @@ test("CLI agent create-research-request is rejected while the operation lock is 
 
     const stderr: string[] = [];
     const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "create-research-request", "--query", "night jazz", "--rationale", "worth watching"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -3742,6 +3786,7 @@ test("CLI agent competitors/market-intelligence/market-records are never blocked
     });
 
     const competitorsExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "competitors"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -3751,6 +3796,7 @@ test("CLI agent competitors/market-intelligence/market-records are never blocked
     assert.equal(competitorsExit, 0);
 
     const marketIntelligenceExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "market-intelligence", "--channelId", "UC_1"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -3760,6 +3806,7 @@ test("CLI agent competitors/market-intelligence/market-records are never blocked
     assert.equal(marketIntelligenceExit, 0);
 
     const marketRecordsExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "market-records", "--kind", "topics"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -3825,6 +3872,7 @@ test("CLI agent list-hypotheses/get-hypothesis-trail are never blocked by the op
     });
 
     const listExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "list-hypotheses"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -3834,6 +3882,7 @@ test("CLI agent list-hypotheses/get-hypothesis-trail are never blocked by the op
     assert.equal(listExit, 0);
 
     const trailExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "get-hypothesis-trail", "--hypothesisId", "hyp-1"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -3856,6 +3905,7 @@ test("CLI agent create-experiment-proposal server-stamps createdBy:\"agent\"/cre
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "agent",
       "create-experiment-proposal",
@@ -3895,6 +3945,7 @@ test("CLI agent create-experiment-proposal server-stamps createdBy:\"agent\"/cre
 test("CLI agent create-experiment-proposal rejects a missing --hypothesisId as validation_failed", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "agent",
       "create-experiment-proposal",
@@ -3921,77 +3972,6 @@ test("CLI agent create-experiment-proposal rejects a missing --hypothesisId as v
   assert.equal(envelope.error.code, "validation_failed");
 });
 
-test("CLI agent create-experiment-proposal is actually wired through agent-zone enforcement (rejected when the stub always denies)", async () => {
-  const stderr: string[] = [];
-  const exitCode = await runCliCommand({
-    argv: [
-      "agent",
-      "create-experiment-proposal",
-      "--hypothesisId",
-      "hyp-1",
-      "--treatment",
-      "t",
-      "--controlBaseline",
-      "c",
-      "--successCriteria",
-      "s",
-      "--stoppingCriteria",
-      "st",
-      "--responsible",
-      "r",
-    ],
-    core: makeCoreStub(),
-    auth: makeAuthStub(),
-    decisionEngineCore: makeDecisionEngineCliCoreStub(),
-    agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
-    writeStdout: () => {},
-    writeStderr: (line) => stderr.push(line),
-  });
-
-  assert.equal(exitCode, 1);
-  const envelope = JSON.parse(stderr[0] ?? "{}");
-  assert.equal(envelope.error.code, "AGENT_ZONE_VIOLATION");
-});
-
-test("CLI agent create-experiment-proposal passes exactly capabilityId \"decision_engine.create_experiment_proposal\" and --agentConnectionId to assertAgentAllowedForCapability", async () => {
-  const capturing = makeCapturingAgentConnectionsCoreStub();
-  const decisionEngineCore = makeDecisionEngineCliCoreStub();
-  decisionEngineCore.createExperiment = async () => fakeExperimentForCli;
-
-  const exitCode = await runCliCommand({
-    argv: [
-      "agent",
-      "create-experiment-proposal",
-      "--hypothesisId",
-      "hyp-1",
-      "--treatment",
-      "t",
-      "--controlBaseline",
-      "c",
-      "--successCriteria",
-      "s",
-      "--stoppingCriteria",
-      "st",
-      "--responsible",
-      "r",
-      "--agentConnectionId",
-      "test-caller",
-    ],
-    core: makeCoreStub(),
-    auth: makeAuthStub(),
-    decisionEngineCore,
-    agentConnectionsCore: capturing,
-    writeStdout: () => {},
-  });
-
-  assert.equal(exitCode, 0);
-  assert.equal(capturing.calls.length, 1);
-  assert.deepEqual(capturing.calls[0], {
-    capabilityId: "decision_engine.create_experiment_proposal",
-    callerConnectionId: "test-caller",
-  });
-});
-
 test("CLI agent create-experiment-proposal is rejected while the operation lock is held", async () => {
   await acquireOperationLock(rawSqlClient, "import");
   try {
@@ -4002,6 +3982,7 @@ test("CLI agent create-experiment-proposal is rejected while the operation lock 
 
     const stderr: string[] = [];
     const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: [
         "agent",
         "create-experiment-proposal",
@@ -4060,6 +4041,7 @@ test("CLI agent list-assets forwards channelId/videoId/assetType after checking 
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "list-assets", "--channelId", "UC_1", "--userId", "u1", "--assetType", "thumbnail"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -4077,6 +4059,7 @@ test("CLI agent list-assets forwards channelId/videoId/assetType after checking 
 test("CLI agent list-assets rejects a channelId that is not the caller's active channel", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "list-assets", "--channelId", "UC_1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -4157,6 +4140,7 @@ test("CLI agent get-asset-context forwards channelId/assetId after checking it a
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "get-asset-context", "--channelId", "UC_1", "--userId", "u1", "--assetId", "asset-1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -4199,6 +4183,7 @@ test("CLI asset register forwards channelId + fields, and parses --provenanceJso
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "asset",
       "register",
@@ -4242,6 +4227,7 @@ test("CLI asset register forwards channelId + fields, and parses --provenanceJso
 test("CLI asset register rejects malformed --provenanceJson", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "asset",
       "register",
@@ -4271,6 +4257,7 @@ test("CLI asset register rejects malformed --provenanceJson", async () => {
 test("CLI asset register rejects a channelId that is not the caller's active channel", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["asset", "register", "--channelId", "UC_1", "--assetType", "thumbnail", "--referenceKind", "url", "--referenceValue", "https://example.com/a.png"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -4332,6 +4319,7 @@ test("CLI agent list-assets/get-asset-context are never blocked by the operation
     };
 
     const listExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "list-assets", "--channelId", "UC_1", "--userId", "u1"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -4342,6 +4330,7 @@ test("CLI agent list-assets/get-asset-context are never blocked by the operation
     assert.equal(listExit, 0);
 
     const getExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "get-asset-context", "--channelId", "UC_1", "--userId", "u1", "--assetId", "asset-1"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -4353,6 +4342,7 @@ test("CLI agent list-assets/get-asset-context are never blocked by the operation
 
     const stderr: string[] = [];
     const registerExit = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: [
         "asset",
         "register",
@@ -4418,6 +4408,7 @@ test("CLI agent get-generation-provenance forwards channelId/changeSetId after c
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "get-generation-provenance", "--channelId", "UC_1", "--userId", "u1", "--changeSetId", "cs-1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -4455,6 +4446,7 @@ test("CLI agent get-generation-provenance reports { provenance: null } when the 
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "get-generation-provenance", "--channelId", "UC_1", "--userId", "u1", "--changeSetId", "cs-none"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -4471,6 +4463,7 @@ test("CLI agent get-generation-provenance reports { provenance: null } when the 
 test("CLI agent get-generation-provenance rejects a channelId that is not the caller's active channel", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "get-generation-provenance", "--channelId", "UC_1", "--changeSetId", "cs-1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -4537,6 +4530,7 @@ test("CLI agent get-generation-provenance is never blocked by the operation lock
     };
 
     const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "get-generation-provenance", "--channelId", "UC_1", "--userId", "u1", "--changeSetId", "cs-1"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -4592,6 +4586,7 @@ test("CLI agent create-content-proposal forwards channelId/objective/evidenceJso
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "agent",
       "create-content-proposal",
@@ -4636,6 +4631,7 @@ test("CLI agent create-content-proposal forwards channelId/objective/evidenceJso
 test("CLI agent create-content-proposal rejects malformed --evidenceJson/--briefJson", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "create-content-proposal", "--channelId", "UC_1", "--userId", "u1", "--evidenceJson", "{not valid json"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -4670,6 +4666,7 @@ test("CLI agent create-content-proposal rejects malformed --evidenceJson/--brief
 test("CLI agent create-content-proposal rejects a channelId that is not the caller's active channel", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "create-content-proposal", "--channelId", "UC_1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -4749,6 +4746,7 @@ test("CLI agent create-content-proposal is rejected while the operation lock is 
     };
 
     const createExitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "create-content-proposal", "--channelId", "UC_1", "--userId", "u1"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -4760,6 +4758,7 @@ test("CLI agent create-content-proposal is rejected while the operation lock is 
     assert.equal(createExitCode, 1);
 
     const getExitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "get-content-proposal", "--channelId", "UC_1", "--userId", "u1", "--proposalId", "proposal-1"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -4770,6 +4769,7 @@ test("CLI agent create-content-proposal is rejected while the operation lock is 
     assert.equal(getExitCode, 0);
 
     const listExitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "list-content-proposals", "--channelId", "UC_1", "--userId", "u1"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -4823,6 +4823,7 @@ test("CLI agent get-content-proposal forwards channelId/proposalId after checkin
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "get-content-proposal", "--channelId", "UC_1", "--userId", "u1", "--proposalId", "proposal-1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -4864,6 +4865,7 @@ test("CLI agent list-content-proposals forwards channelId after checking active 
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "list-content-proposals", "--channelId", "UC_1", "--userId", "u1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -4926,6 +4928,7 @@ test("CLI agent register-external-artifact forwards channelId/proposalId/assetTy
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "agent",
       "register-external-artifact",
@@ -4973,6 +4976,7 @@ test("CLI agent register-external-artifact forwards channelId/proposalId/assetTy
 test("CLI agent register-external-artifact rejects malformed --provenanceJson", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "agent",
       "register-external-artifact",
@@ -5029,6 +5033,7 @@ test("CLI agent register-external-artifact rejects malformed --provenanceJson", 
 test("CLI agent register-external-artifact rejects referenceKind local_path (real schema validation) as validation_failed", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "agent",
       "register-external-artifact",
@@ -5083,6 +5088,7 @@ test("CLI agent register-external-artifact rejects referenceKind local_path (rea
 test("CLI agent register-external-artifact rejects a channelId that is not the caller's active channel", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "agent",
       "register-external-artifact",
@@ -5165,6 +5171,7 @@ test("CLI agent list-proposal-artifacts forwards channelId/proposalId after chec
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "list-proposal-artifacts", "--channelId", "UC_1", "--userId", "u1", "--proposalId", "proposal-1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -5203,6 +5210,7 @@ test("CLI agent register-external-artifact is rejected while the operation lock 
     };
 
     const registerExitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: [
         "agent",
         "register-external-artifact",
@@ -5229,6 +5237,7 @@ test("CLI agent register-external-artifact is rejected while the operation lock 
     assert.equal(registerExitCode, 1);
 
     const listExitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "list-proposal-artifacts", "--channelId", "UC_1", "--userId", "u1", "--proposalId", "proposal-1"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -5268,6 +5277,7 @@ test("CLI agent list-operations-files returns the result with no auth/channel re
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "list-operations-files"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -5303,6 +5313,7 @@ test("CLI agent list-operations-files forwards { configured: false } unchanged w
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "list-operations-files"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -5341,6 +5352,7 @@ test("CLI agent get-operations-file forwards --path and returns the result, no a
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "get-operations-file", "--path", "AGENTS.md"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -5377,6 +5389,7 @@ test("CLI agent list-operations-files/get-operations-file are never blocked by t
     };
 
     const listExitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "list-operations-files"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -5386,6 +5399,7 @@ test("CLI agent list-operations-files/get-operations-file are never blocked by t
     assert.equal(listExitCode, 0);
 
     const getExitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "get-operations-file", "--path", "AGENTS.md"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -5434,6 +5448,7 @@ test("CLI agent find-comparable-videos forwards channelId/anchorVideoId/sort aft
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "v1", "--sort", "publicationProximity"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -5494,6 +5509,7 @@ test("CLI agent find-comparable-videos converts numeric flags (publicationWindow
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "agent", "find-comparable-videos",
       "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "v1", "--sort", "performanceMetric",
@@ -5525,6 +5541,7 @@ test("CLI agent find-comparable-videos converts numeric flags (publicationWindow
 test("CLI agent find-comparable-videos rejects --performanceThresholdOperator given without --performanceThresholdValue (never a silently ignored threshold)", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "v1", "--sort", "publicationProximity", "--performanceThresholdOperator", ">="],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -5559,6 +5576,7 @@ test("CLI agent find-comparable-videos rejects --performanceThresholdOperator gi
 test("CLI agent find-comparable-videos rejects --performanceThresholdValue given without --performanceThresholdOperator (the reverse direction of the same XOR check)", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "v1", "--sort", "publicationProximity", "--performanceThresholdValue", "500"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -5593,6 +5611,7 @@ test("CLI agent find-comparable-videos rejects --performanceThresholdValue given
 test("CLI agent find-comparable-videos rejects a channelId that is not the caller's active channel", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--anchorVideoId", "v1", "--sort", "publicationProximity"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -5638,6 +5657,7 @@ test("CLI agent find-comparable-videos rejects a channelId that is not the calle
 test("CLI agent find-comparable-videos propagates a real domain error thrown by the underlying service (e.g. DATA_NOT_SYNCED for an unknown anchor)", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "nonexistent", "--sort", "publicationProximity"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -5708,6 +5728,7 @@ test("CLI agent find-comparable-videos is never blocked by the operation lock (r
     };
 
     const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "find-comparable-videos", "--channelId", "UC_1", "--userId", "u1", "--anchorVideoId", "v1", "--sort", "publicationProximity"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -5755,6 +5776,7 @@ test("CLI agent list-asset-performance forwards channelId/assetType after checki
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "list-asset-performance", "--channelId", "UC_1", "--userId", "u1", "--assetType", "thumbnail"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -5811,6 +5833,7 @@ test("CLI agent list-asset-performance converts performanceDayOffset/limit to re
 
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: [
       "agent", "list-asset-performance",
       "--channelId", "UC_1", "--userId", "u1",
@@ -5839,6 +5862,7 @@ test("CLI agent list-asset-performance converts performanceDayOffset/limit to re
 test("CLI agent list-asset-performance rejects performanceMetric given without performanceDayOffset (real schema validation)", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "list-asset-performance", "--channelId", "UC_1", "--userId", "u1", "--performanceMetric", "views"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -5878,6 +5902,7 @@ test("CLI agent list-asset-performance rejects performanceMetric given without p
 test("CLI agent list-asset-performance rejects a channelId that is not the caller's active channel", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "list-asset-performance", "--channelId", "UC_1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -5923,6 +5948,7 @@ test("CLI agent list-asset-performance rejects a channelId that is not the calle
 test("CLI agent list-asset-performance propagates a real domain error thrown by the underlying service", async () => {
   const stderr: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "list-asset-performance", "--channelId", "UC_1", "--userId", "u1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -5987,6 +6013,7 @@ test("CLI agent list-asset-performance is never blocked by the operation lock (r
     };
 
     const exitCode = await runCliCommand({
+      operatorCliEnabled: OPERATOR_MODE,
       argv: ["agent", "list-asset-performance", "--channelId", "UC_1", "--userId", "u1"],
       core: makeCoreStub(),
       auth: makeAuthStub(),
@@ -6000,472 +6027,13 @@ test("CLI agent list-asset-performance is never blocked by the operation lock (r
   }
 });
 
-// --- END OF PRE-EXISTING TESTS -- BL-091 slice 2 tests follow ---
-
-// BL-091 slice 2 (docs/roadmap/plans/AGENT_ZONES_PLAN.md) -- proves the zone-enforcement wiring
-// itself (does the CLI command actually call assertAgentAllowedForCapability at all), not the
-// zone matching logic (exhaustively covered by src/lib/agent-connections/services.test.ts).
-function makeAlwaysDenyingAgentConnectionsCoreStub(): AgentConnectionsCoreSubset {
-  return {
-    async assertAgentAllowedForCapability() {
-      throw new DomainError({ code: "AGENT_ZONE_VIOLATION", message: "denied by test stub" });
-    },
-  };
-}
-
-function makeCapturingAgentConnectionsCoreStub(): AgentConnectionsCoreSubset & {
-  calls: { capabilityId: string; callerConnectionId: string | null }[];
-} {
-  const calls: { capabilityId: string; callerConnectionId: string | null }[] = [];
-  return {
-    calls,
-    async assertAgentAllowedForCapability(args) {
-      calls.push(args);
-    },
-  };
-}
-
-function makeUnusedAgentOperationsCoreStub() {
-  return {
-    getSystemCapabilities: async () => { throw new Error("not used"); },
-    getChannelContext: async () => { throw new Error("not used"); },
-    getVideoContext: async () => { throw new Error("not used"); },
-    queryChannelAnalytics: async () => { throw new Error("not used"); },
-    queryVideoAnalytics: async () => { throw new Error("not used"); },
-    listAssets: async () => { throw new Error("not used"); },
-    getAssetContext: async () => { throw new Error("not used"); },
-    getGenerationProvenance: async () => { throw new Error("not used"); },
-    createContentProposal: async () => { throw new Error("must not be called: zone check should fire first"); },
-    getContentProposal: async () => { throw new Error("not used"); },
-    listContentProposals: async () => { throw new Error("not used"); },
-    registerExternalArtifact: async () => { throw new Error("must not be called: zone check should fire first"); },
-    listProposalArtifacts: async () => { throw new Error("not used"); },
-    operationsWorkspaceListFiles: async () => { throw new Error("not used"); },
-    operationsWorkspaceGetFile: async () => { throw new Error("not used"); },
-    findComparableVideos: async () => { throw new Error("not used"); },
-    listAssetPerformance: async () => { throw new Error("not used"); },
-  };
-}
-
-test("CLI channel sync is actually wired through agent-zone enforcement (rejected when the stub always denies)", async () => {
-  const stderr: string[] = [];
-  const exitCode = await runCliCommand({
-    argv: ["channel", "sync", "--channelId", "UC_1"],
-    core: makeCoreStub(),
-    auth: makeAuthStub(),
-    channelSyncCore: {
-      syncChannel: async () => { throw new Error("must not be called: zone check should fire first"); },
-      listChannels: async () => { throw new Error("not used"); },
-      listSyncedVideos: async () => { throw new Error("not used"); },
-    },
-    agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
-    writeStderr: (line) => stderr.push(line),
-  });
-
-  assert.equal(exitCode, 1);
-  const envelope = JSON.parse(stderr[0] ?? "{}");
-  assert.equal(envelope.error.code, "AGENT_ZONE_VIOLATION");
-});
-
-test("CLI channel sync passes exactly capabilityId \"channel_sync\" and --agentConnectionId to assertAgentAllowedForCapability", async () => {
-  const capturing = makeCapturingAgentConnectionsCoreStub();
-  const exitCode = await runCliCommand({
-    argv: ["channel", "sync", "--channelId", "UC_1", "--agentConnectionId", "test-caller"],
-    core: makeCoreStub(),
-    auth: makeAuthStub(),
-    channelSyncCore: makeChannelSyncCoreStub(),
-    agentConnectionsCore: capturing,
-    writeStdout: () => {},
-  });
-
-  assert.equal(exitCode, 0);
-  assert.equal(capturing.calls.length, 1);
-  assert.deepEqual(capturing.calls[0], { capabilityId: "channel_sync", callerConnectionId: "test-caller" });
-});
-
-test("CLI changeset import is actually wired through agent-zone enforcement (rejected when the stub always denies)", async () => {
-  const stderr: string[] = [];
-  const tempDir = await mkdtemp(join(tmpdir(), "agent-zones-changeset-"));
-  try {
-    const filePath = join(tempDir, "workbook.xlsx");
-    await writeFile(filePath, Buffer.from("fake"));
-
-    const exitCode = await runCliCommand({
-      argv: ["changeset", "import", "--channelId", "UC_1", "--file", filePath],
-      core: makeCoreStub(),
-      auth: makeAuthStub(),
-      channelAccessCore: makeChannelAccessCoreStub(),
-      operationsCore: {
-        ...makeOperationsCoreStub(),
-        createChangeSetFromImport: async () => { throw new Error("must not be called: zone check should fire first"); },
-      },
-      agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
-      writeStderr: (line) => stderr.push(line),
-    });
-
-    assert.equal(exitCode, 1);
-    const envelope = JSON.parse(stderr[0] ?? "{}");
-    assert.equal(envelope.error.code, "AGENT_ZONE_VIOLATION");
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
-});
-
-test("CLI changeset import passes exactly capabilityId \"changeset_create_from_import\" and --agentConnectionId to assertAgentAllowedForCapability", async () => {
-  const tempDir = await mkdtemp(join(tmpdir(), "agent-zones-changeset-capture-"));
-  try {
-    const filePath = join(tempDir, "workbook.xlsx");
-    await writeFile(filePath, Buffer.from("fake"));
-    const capturing = makeCapturingAgentConnectionsCoreStub();
-
-    const exitCode = await runCliCommand({
-      argv: ["changeset", "import", "--channelId", "UC_1", "--file", filePath, "--agentConnectionId", "test-caller"],
-      core: makeCoreStub(),
-      auth: makeAuthStub(),
-      channelAccessCore: makeChannelAccessCoreStub(),
-      operationsCore: makeOperationsCoreStub(),
-      agentConnectionsCore: capturing,
-      writeStdout: () => {},
-    });
-
-    assert.equal(exitCode, 0);
-    assert.equal(capturing.calls.length, 1);
-    assert.deepEqual(capturing.calls[0], { capabilityId: "changeset_create_from_import", callerConnectionId: "test-caller" });
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
-});
-
-test("CLI ai-localization generate is actually wired through agent-zone enforcement (rejected when the stub always denies)", async () => {
-  const stderr: string[] = [];
-  const exitCode = await runCliCommand({
-    argv: [
-      "ai-localization",
-      "generate",
-      "--channelId",
-      "UC_1",
-      "--videoIds",
-      "v1",
-      "--targetLanguages",
-      "es",
-    ],
-    core: makeCoreStub(),
-    auth: makeAuthStub(),
-    channelAccessCore: makeChannelAccessCoreStub(),
-    aiLocalizationCore: {
-      ...makeAiLocalizationCliCoreStub(),
-      generateProposals: async () => { throw new Error("must not be called: zone check should fire first"); },
-    },
-    agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
-    writeStderr: (line) => stderr.push(line),
-  });
-
-  assert.equal(exitCode, 1);
-  const envelope = JSON.parse(stderr[0] ?? "{}");
-  assert.equal(envelope.error.code, "AGENT_ZONE_VIOLATION");
-});
-
-test("CLI ai-localization generate passes exactly capabilityId \"ai_localization_generate\" and --agentConnectionId to assertAgentAllowedForCapability", async () => {
-  const capturing = makeCapturingAgentConnectionsCoreStub();
-  const exitCode = await runCliCommand({
-    argv: [
-      "ai-localization",
-      "generate",
-      "--channelId",
-      "UC_1",
-      "--videoIds",
-      "v1",
-      "--targetLanguages",
-      "es",
-      "--agentConnectionId",
-      "test-caller",
-    ],
-    core: makeCoreStub(),
-    auth: makeAuthStub(),
-    channelAccessCore: makeChannelAccessCoreStub(),
-    aiLocalizationCore: makeAiLocalizationCliCoreStub(),
-    agentConnectionsCore: capturing,
-    writeStdout: () => {},
-  });
-
-  assert.equal(exitCode, 0);
-  assert.equal(capturing.calls.length, 1);
-  assert.deepEqual(capturing.calls[0], { capabilityId: "ai_localization_generate", callerConnectionId: "test-caller" });
-});
-
-test("CLI ai-localization create-change-set is actually wired through agent-zone enforcement (rejected when the stub always denies)", async () => {
-  const stderr: string[] = [];
-  const exitCode = await runCliCommand({
-    argv: ["ai-localization", "create-change-set", "--channelId", "UC_1", "--proposalsJson", "[]"],
-    core: makeCoreStub(),
-    auth: makeAuthStub(),
-    channelAccessCore: makeChannelAccessCoreStub(),
-    aiLocalizationCore: {
-      ...makeAiLocalizationCliCoreStub(),
-      createChangeSetFromGeneration: async () => { throw new Error("must not be called: zone check should fire first"); },
-    },
-    agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
-    writeStderr: (line) => stderr.push(line),
-  });
-
-  assert.equal(exitCode, 1);
-  const envelope = JSON.parse(stderr[0] ?? "{}");
-  assert.equal(envelope.error.code, "AGENT_ZONE_VIOLATION");
-});
-
-test("CLI ai-localization create-change-set passes exactly capabilityId \"ai_localization_create_change_set\" and --agentConnectionId to assertAgentAllowedForCapability", async () => {
-  const capturing = makeCapturingAgentConnectionsCoreStub();
-  const exitCode = await runCliCommand({
-    argv: ["ai-localization", "create-change-set", "--channelId", "UC_1", "--proposalsJson", "[]", "--agentConnectionId", "test-caller"],
-    core: makeCoreStub(),
-    auth: makeAuthStub(),
-    channelAccessCore: makeChannelAccessCoreStub(),
-    aiLocalizationCore: makeAiLocalizationCliCoreStub(),
-    agentConnectionsCore: capturing,
-    writeStdout: () => {},
-  });
-
-  assert.equal(exitCode, 0);
-  assert.equal(capturing.calls.length, 1);
-  assert.deepEqual(capturing.calls[0], { capabilityId: "ai_localization_create_change_set", callerConnectionId: "test-caller" });
-});
-
-test("CLI agent create-content-proposal is actually wired through agent-zone enforcement (rejected when the stub always denies)", async () => {
-  const stderr: string[] = [];
-  const exitCode = await runCliCommand({
-    argv: ["agent", "create-content-proposal", "--channelId", "UC_1"],
-    core: makeCoreStub(),
-    auth: makeAuthStub(),
-    channelAccessCore: makeChannelAccessCoreStub(),
-    agentOperationsCore: makeUnusedAgentOperationsCoreStub(),
-    agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
-    writeStderr: (line) => stderr.push(line),
-  });
-
-  assert.equal(exitCode, 1);
-  const envelope = JSON.parse(stderr[0] ?? "{}");
-  assert.equal(envelope.error.code, "AGENT_ZONE_VIOLATION");
-});
-
-test("CLI agent create-content-proposal passes exactly capabilityId \"content_proposal.create_content_proposal\" and --agentConnectionId to assertAgentAllowedForCapability", async () => {
-  const capturing = makeCapturingAgentConnectionsCoreStub();
-  const exitCode = await runCliCommand({
-    argv: ["agent", "create-content-proposal", "--channelId", "UC_1", "--agentConnectionId", "test-caller"],
-    core: makeCoreStub(),
-    auth: makeAuthStub(),
-    channelAccessCore: makeChannelAccessCoreStub(),
-    agentOperationsCore: {
-      ...makeUnusedAgentOperationsCoreStub(),
-      createContentProposal: async () => ({
-        proposalId: "proposal-1",
-        channelId: "UC_1",
-        objective: null,
-        topicConcept: null,
-        rationale: null,
-        evidence: null,
-        brief: null,
-        referenceVideoIds: null,
-        referenceAssetIds: null,
-        createdAt: "2026-09-01T00:00:00.000Z",
-        createdVia: "cli" as const,
-        agentApiVersion: null,
-      }),
-    },
-    agentConnectionsCore: capturing,
-    writeStdout: () => {},
-  });
-
-  assert.equal(exitCode, 0);
-  assert.equal(capturing.calls.length, 1);
-  assert.deepEqual(capturing.calls[0], { capabilityId: "content_proposal.create_content_proposal", callerConnectionId: "test-caller" });
-});
-
-test("CLI agent register-external-artifact is actually wired through agent-zone enforcement (rejected when the stub always denies)", async () => {
-  const stderr: string[] = [];
-  const exitCode = await runCliCommand({
-    argv: [
-      "agent",
-      "register-external-artifact",
-      "--channelId",
-      "UC_1",
-      "--proposalId",
-      "proposal-1",
-      "--assetType",
-      "thumbnail",
-      "--referenceKind",
-      "url",
-      "--referenceValue",
-      "https://example.com/a.png",
-    ],
-    core: makeCoreStub(),
-    auth: makeAuthStub(),
-    channelAccessCore: makeChannelAccessCoreStub(),
-    agentOperationsCore: makeUnusedAgentOperationsCoreStub(),
-    agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
-    writeStderr: (line) => stderr.push(line),
-  });
-
-  assert.equal(exitCode, 1);
-  const envelope = JSON.parse(stderr[0] ?? "{}");
-  assert.equal(envelope.error.code, "AGENT_ZONE_VIOLATION");
-});
-
-test("CLI agent register-external-artifact passes exactly capabilityId \"content_proposal.register_external_artifact\" and --agentConnectionId to assertAgentAllowedForCapability", async () => {
-  const capturing = makeCapturingAgentConnectionsCoreStub();
-  const exitCode = await runCliCommand({
-    argv: [
-      "agent",
-      "register-external-artifact",
-      "--channelId",
-      "UC_1",
-      "--proposalId",
-      "proposal-1",
-      "--assetType",
-      "thumbnail",
-      "--referenceKind",
-      "url",
-      "--referenceValue",
-      "https://example.com/a.png",
-      "--agentConnectionId",
-      "test-caller",
-    ],
-    core: makeCoreStub(),
-    auth: makeAuthStub(),
-    channelAccessCore: makeChannelAccessCoreStub(),
-    agentOperationsCore: {
-      ...makeUnusedAgentOperationsCoreStub(),
-      registerExternalArtifact: async () => ({
-        linkId: "link-1",
-        proposalId: "proposal-1",
-        channelId: "UC_1",
-        asset: {
-          assetId: "asset-1",
-          channelId: "UC_1",
-          assetType: "thumbnail" as const,
-          referenceKind: "url" as const,
-          referenceValue: "https://example.com/a.png",
-          title: null,
-          description: null,
-          linkedVideoId: null,
-          provenance: null,
-          createdAt: "2026-09-01T00:00:00.000Z",
-        },
-        createdAt: "2026-09-01T00:00:00.000Z",
-        createdVia: "cli" as const,
-        agentApiVersion: null,
-      }),
-    },
-    agentConnectionsCore: capturing,
-    writeStdout: () => {},
-  });
-
-  assert.equal(exitCode, 0);
-  assert.equal(capturing.calls.length, 1);
-  assert.deepEqual(capturing.calls[0], { capabilityId: "content_proposal.register_external_artifact", callerConnectionId: "test-caller" });
-});
-
-test("CLI agent get-content-proposal (an unzoned command) is never affected by agent-zone enforcement, even when the stub always denies", async () => {
-  const stdout: string[] = [];
-  const exitCode = await runCliCommand({
-    argv: ["agent", "get-content-proposal", "--channelId", "UC_1", "--proposalId", "proposal-1"],
-    core: makeCoreStub(),
-    auth: makeAuthStub(),
-    channelAccessCore: makeChannelAccessCoreStub(),
-    agentOperationsCore: {
-      ...makeUnusedAgentOperationsCoreStub(),
-      getContentProposal: async () => ({
-        proposalId: "proposal-1",
-        channelId: "UC_1",
-        objective: null,
-        topicConcept: null,
-        rationale: null,
-        evidence: null,
-        brief: null,
-        referenceVideoIds: null,
-        referenceAssetIds: null,
-        createdAt: "2026-09-01T00:00:00.000Z",
-        createdVia: "cli" as const,
-        agentApiVersion: null,
-      }),
-    },
-    agentConnectionsCore: makeAlwaysDenyingAgentConnectionsCoreStub(),
-    writeStdout: (line) => stdout.push(line),
-  });
-
-  assert.equal(exitCode, 0);
-});
-
-test("CLI resolves callerConnectionId from the AGENT_CONNECTION_ID env var when --agentConnectionId is not given", async () => {
-  const previous = process.env.AGENT_CONNECTION_ID;
-  process.env.AGENT_CONNECTION_ID = "env-caller";
-  try {
-    const capturing = makeCapturingAgentConnectionsCoreStub();
-    const exitCode = await runCliCommand({
-      argv: ["channel", "sync", "--channelId", "UC_1"],
-      core: makeCoreStub(),
-      auth: makeAuthStub(),
-      channelSyncCore: makeChannelSyncCoreStub(),
-      agentConnectionsCore: capturing,
-      writeStdout: () => {},
-    });
-
-    assert.equal(exitCode, 0);
-    assert.equal(capturing.calls[0]?.callerConnectionId, "env-caller");
-  } finally {
-    if (previous === undefined) delete process.env.AGENT_CONNECTION_ID;
-    else process.env.AGENT_CONNECTION_ID = previous;
-  }
-});
-
-test("CLI --agentConnectionId flag takes priority over the AGENT_CONNECTION_ID env var when both are set", async () => {
-  const previous = process.env.AGENT_CONNECTION_ID;
-  process.env.AGENT_CONNECTION_ID = "env-caller";
-  try {
-    const capturing = makeCapturingAgentConnectionsCoreStub();
-    const exitCode = await runCliCommand({
-      argv: ["channel", "sync", "--channelId", "UC_1", "--agentConnectionId", "flag-caller"],
-      core: makeCoreStub(),
-      auth: makeAuthStub(),
-      channelSyncCore: makeChannelSyncCoreStub(),
-      agentConnectionsCore: capturing,
-      writeStdout: () => {},
-    });
-
-    assert.equal(exitCode, 0);
-    assert.equal(capturing.calls[0]?.callerConnectionId, "flag-caller");
-  } finally {
-    if (previous === undefined) delete process.env.AGENT_CONNECTION_ID;
-    else process.env.AGENT_CONNECTION_ID = previous;
-  }
-});
-
-test("CLI resolves callerConnectionId to null when AGENT_CONNECTION_ID is set to an empty string (never a literal empty-string identity)", async () => {
-  const previous = process.env.AGENT_CONNECTION_ID;
-  process.env.AGENT_CONNECTION_ID = "";
-  try {
-    const capturing = makeCapturingAgentConnectionsCoreStub();
-    const exitCode = await runCliCommand({
-      argv: ["channel", "sync", "--channelId", "UC_1"],
-      core: makeCoreStub(),
-      auth: makeAuthStub(),
-      channelSyncCore: makeChannelSyncCoreStub(),
-      agentConnectionsCore: capturing,
-      writeStdout: () => {},
-    });
-
-    assert.equal(exitCode, 0);
-    assert.equal(capturing.calls[0]?.callerConnectionId, null);
-  } finally {
-    if (previous === undefined) delete process.env.AGENT_CONNECTION_ID;
-    else process.env.AGENT_CONNECTION_ID = previous;
-  }
-});
 
 // Phase 11 (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-07/08/10) -- agent channel-workspace.
 test("CLI agent channel-workspace returns the stored path for the active channel, forwarding only channelId", async () => {
   let captured: unknown;
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "channel-workspace", "--channelId", "UC_1", "--userId", "u1"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -6488,6 +6056,7 @@ test("CLI agent channel-workspace rejects a non-active channel before the core i
   const stderr: string[] = [];
   const stdout: string[] = [];
   const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
     argv: ["agent", "channel-workspace", "--channelId", "UC_OTHER"],
     core: makeCoreStub(),
     auth: makeAuthStub(),
@@ -6534,4 +6103,94 @@ test("CLI: the real command table contains exactly one workspace command, the re
     }
   }
   assert.deepEqual(workspaceCommands, ["agent channel-workspace"]);
+});
+
+// Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-04/05/08/10).
+async function runForError(args: Parameters<typeof runCliCommand>[0]): Promise<{ exitCode: number; code: string | undefined }> {
+  const stderr: string[] = [];
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({ ...args, writeStdout: (l) => stdout.push(l), writeStderr: (l) => stderr.push(l) });
+  const envelope = JSON.parse(stderr[0] ?? stdout[0] ?? "{}");
+  return { exitCode, code: envelope.error?.code };
+}
+
+test("AC-P12-10: without an agent token and with Operator CLI access off, every command is refused before running", async () => {
+  for (const argv of [["auth", "whoami"], ["agent", "capabilities"], ["list", "--channelId", "UC_1"]]) {
+    const result = await runForError({ argv, core: makeCoreStub(), auth: makeAuthStub(), operatorCliEnabled: async () => false });
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.code, "AGENT_TOKEN_INVALID");
+  }
+});
+
+test("AC-P12-04: an agent session refuses every operator-only command", async () => {
+  const operatorOnly = Object.entries(CLI_COMMAND_CLASSIFICATION)
+    .filter(([, commandClass]) => commandClass === "operator-only")
+    .map(([key]) => key);
+  assert.ok(operatorOnly.includes("auth select-channel") && operatorOnly.includes("asset register"));
+  for (const key of operatorOnly) {
+    const [namespace, command] = key.split(" ");
+    const argv = namespace === "metadata" ? [command] : [namespace, command];
+    const result = await runForError({ argv, core: makeCoreStub(), auth: makeAuthStub(), agentSession: { channelId: "UC_1" }, agentConnectionEnabled: async () => true });
+    assert.equal(result.code, "AGENT_SESSION_OPERATOR_ONLY", key);
+  }
+});
+
+test("AC-P12-05: an agent session rejects a caller-supplied --userId before any core is reached", async () => {
+  await withAgentSessionForTests({ tokenId: "t", channelId: "UC_1", userId: "bound-user" }, async () => {
+    const result = await runForError({
+      argv: ["changeset", "list", "--channelId", "UC_1", "--userId", "someone-else"],
+      core: makeCoreStub(),
+      agentSession: { channelId: "UC_1" },
+      agentConnectionEnabled: async () => true,
+    });
+    assert.equal(result.code, "AGENT_SESSION_CREDENTIAL_OVERRIDE");
+  });
+});
+
+test("AC-P12-08: the CLI classification covers exactly the real command table", () => {
+  const namespaces = ["auth", "playlist", "changeset", "batch", "channel", "analytics", "ai-localization", "agent", "asset"];
+  const real: string[] = ["metadata list", "metadata transcript", "metadata preview", "metadata apply"];
+  for (const namespace of namespaces) {
+    try {
+      parseArgs([namespace, "__not_a_command__"]);
+    } catch (error) {
+      for (const command of (error as Error).message.split("must be one of: ")[1].split(", ")) real.push(`${namespace} ${command}`);
+    }
+  }
+  assert.deepEqual(real.sort(), Object.keys(CLI_COMMAND_CLASSIFICATION).sort());
+});
+
+// Review round 1 finding 3: an explicit but empty/missing --agentToken is a refusal, never a silent
+// fall-back to operator mode (which could otherwise run if "Operator CLI access" were on).
+test("runCliProcess: --agentToken with an empty or missing value is refused before any command runs", async () => {
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  const stderr: string[] = [];
+  process.stderr.write = ((chunk: string) => {
+    stderr.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken", ""]), 1);
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken"]), 1);
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken", "--userId"]), 1);
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken="]), 1);
+    // The `=` form is read as a token (here an unknown one -> refused), never ignored as "no token".
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken=ytom_ch_unknown"]), 1);
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  assert.equal(stderr.length, 5);
+  for (const line of stderr) assert.equal(JSON.parse(line).error.code, "AGENT_TOKEN_INVALID");
+});
+
+// Review round 2: the "MCP connection" master switch also stops agent use of the CLI.
+test("AC-P12-01 (CLI): with the MCP connection switched off, a token-bound CLI session is refused", async () => {
+  const result = await runForError({
+    argv: ["agent", "capabilities"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    agentSession: { channelId: "UC_1" },
+    agentConnectionEnabled: async () => false,
+  });
+  assert.equal(result.code, "AGENT_TOKEN_INVALID");
 });

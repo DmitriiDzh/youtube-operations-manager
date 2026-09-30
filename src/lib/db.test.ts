@@ -14,6 +14,14 @@ import {
   copyLegacyDatabaseInto,
   createIsolatedDb,
   getChannelWorkspacePath,
+  addChannelRecordAssignment,
+  listChannelAssignedRecordIds,
+  listRecordAssignmentsByKind,
+  setRecordAssignmentChannels,
+  findActiveAgentChannelTokenByHash,
+  listActiveAgentChannelTokens,
+  replaceAgentChannelToken,
+  revokeAgentChannelTokens,
   listChannelWorkspacePaths,
   setChannelWorkspacePath,
   gatewayCallEvents,
@@ -2946,4 +2954,46 @@ test("channel_workspaces: per-device, per-channel isolation for get/list/set/cle
     assert.equal(await getChannelWorkspacePath("device-a", "UC_A", isolatedDb), null);
     assert.equal(await getChannelWorkspacePath("device-a", "UC_B", isolatedDb), "/work/b");
     assert.equal(await getChannelWorkspacePath("device-other", "UC_A", isolatedDb), "/elsewhere/a");
+  }));
+
+// Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-11): at most one active token per channel,
+// replaced atomically; revoked tokens are never found by hash.
+test("agent_channel_tokens: replace keeps one active token per channel; revoke hides it from lookup", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    assert.equal(await tableExists(client, "agent_channel_tokens"), true);
+    const isolatedDb = createIsolatedDb(client);
+
+    await replaceAgentChannelToken({ id: "t1", channelId: "UC_A", userId: "u-a", tokenHash: "h1", label: null }, isolatedDb);
+    await replaceAgentChannelToken({ id: "t2", channelId: "UC_B", userId: "u-b", tokenHash: "h2", label: "b" }, isolatedDb);
+    await replaceAgentChannelToken({ id: "t3", channelId: "UC_A", userId: "u-a", tokenHash: "h3", label: null }, isolatedDb);
+
+    assert.equal(await findActiveAgentChannelTokenByHash("h1", isolatedDb), null);
+    assert.equal((await findActiveAgentChannelTokenByHash("h3", isolatedDb))?.id, "t3");
+    assert.deepEqual((await listActiveAgentChannelTokens(isolatedDb)).map((t) => t.id).sort(), ["t2", "t3"]);
+
+    assert.equal(await revokeAgentChannelTokens("UC_A", isolatedDb), 1);
+    assert.equal(await revokeAgentChannelTokens("UC_A", isolatedDb), 0);
+    assert.equal(await findActiveAgentChannelTokenByHash("h3", isolatedDb), null);
+    assert.equal((await findActiveAgentChannelTokenByHash("h2", isolatedDb))?.channelId, "UC_B");
+  }));
+
+// Phase 12 slice 12.4: channel_record_assignments -- set replaces a record's channel set atomically;
+// add is idempotent; reads are per (channel, kind).
+test("channel_record_assignments: set replaces, add is idempotent, reads scoped by channel and kind", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await setRecordAssignmentChannels("research_channel", "UCx", ["UC_A", "UC_B"], isolatedDb);
+    await setRecordAssignmentChannels("topic", "t1", ["UC_A"], isolatedDb);
+    await addChannelRecordAssignment("UC_A", "research_request", "r1", isolatedDb);
+    await addChannelRecordAssignment("UC_A", "research_request", "r1", isolatedDb);
+
+    assert.deepEqual((await listChannelAssignedRecordIds("UC_A", "research_channel", isolatedDb)).sort(), ["UCx"]);
+    assert.deepEqual(await listChannelAssignedRecordIds("UC_B", "topic", isolatedDb), []);
+    assert.deepEqual(await listChannelAssignedRecordIds("UC_A", "research_request", isolatedDb), ["r1"]);
+
+    await setRecordAssignmentChannels("research_channel", "UCx", ["UC_B"], isolatedDb);
+    assert.deepEqual(await listChannelAssignedRecordIds("UC_A", "research_channel", isolatedDb), []);
+    assert.deepEqual(await listRecordAssignmentsByKind("research_channel", isolatedDb), [{ channelId: "UC_B", recordId: "UCx" }]);
   }));
