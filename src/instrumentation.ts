@@ -1,5 +1,8 @@
 import { startIdleShutdownWatcher } from "@/lib/idle-shutdown";
 
+const DEVICE_SYNC_BOOT_DELAY_MS = 5_000;
+const DRAFT_SYNC_INTERVAL_MS = 60_000;
+
 /**
  * Next.js's own `register()` hook -- called once when a new server instance starts, before it
  * accepts requests (node_modules/next/dist/docs/.../instrumentation.md).
@@ -52,10 +55,56 @@ export async function register() {
   process.once("SIGINT", () => void resetQuietly());
   process.once("SIGTERM", () => void resetQuietly());
 
+  // Automatic device sync (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §3.5): the snapshot tick
+  // (export when changed / import a fast-forward / otherwise notify) and the draft sync-gateway
+  // cycle both run here, server-side, so neither needs an open browser tab. Every step is gated
+  // inside the runner (toggle, configured folder, operation lock, recovery mode, running Batch);
+  // nothing here ever throws into the server. There is deliberately NO export in the SIGINT/SIGTERM
+  // handlers: a process killed mid-export would leave an operation lock that is never auto-released.
+  const { getDeviceSyncRunner, DEVICE_SYNC_TICK_MS } = await import("@/lib/device-sync");
+  const deviceSync = getDeviceSyncRunner();
+  let ticking: Promise<unknown> | null = null;
+  const tickQuietly = (options: { force?: boolean; exportOnly?: boolean } = {}) => {
+    if (!ticking) {
+      ticking = deviceSync
+        .tick(options)
+        .catch(() => undefined)
+        .finally(() => {
+          ticking = null;
+        });
+    }
+    return ticking;
+  };
+  // First tick shortly after boot: this is the "load the latest data at startup" moment.
+  setTimeout(() => void tickQuietly(), DEVICE_SYNC_BOOT_DELAY_MS).unref();
+  setInterval(() => void tickQuietly(), DEVICE_SYNC_TICK_MS).unref();
+
+  const { rawSqlClient, getDeviceAutoSyncEnabled } = await import("@/lib/db");
+  const { runAllSyncFamiliesOnce } = await import("@/lib/sync-gateway");
+  const { assertDeviceAvailableForMutation } = await import("@/lib/device-mutation-gate");
+  setInterval(() => {
+    void (async () => {
+      try {
+        if (!(await getDeviceAutoSyncEnabled())) return;
+        // Same gate the "Sync now" route gets from src/proxy.ts.
+        await assertDeviceAvailableForMutation(rawSqlClient);
+        await runAllSyncFamiliesOnce();
+      } catch {
+        // Paused (lock/recovery) or failed -- each family records its own outcome; retry next time.
+      }
+    })();
+  }, DRAFT_SYNC_INTERVAL_MS).unref();
+
   if (process.env.NODE_ENV !== "production") return;
-  // Idle auto-shutdown: no request is in flight by definition, so reset, then exit.
+  // Idle auto-shutdown: no request is in flight by definition, so reset, publish any unexported
+  // local changes, then exit. Deliberately NOT raced against a timeout: exiting while the export
+  // holds the operation lock would leave that lock stale (never auto-released) -- a few-MB export
+  // finishes in about a second anyway.
   startIdleShutdownWatcher({
     onIdle: () =>
-      void resetQuietly().then(() => process.exit(0)),
+      void resetQuietly()
+        .then(() => ticking ?? undefined)
+        .then(() => tickQuietly({ force: true, exportOnly: true }))
+        .finally(() => process.exit(0)),
   });
 }

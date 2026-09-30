@@ -436,3 +436,19 @@ test("an automatic import records the new head and leaves the device clean", () 
     a.client.close();
     b.client.close();
   }));
+
+test("exportOnly (idle-shutdown flush) exports pending changes but never imports", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    await addResearchChannel(b.client, "UC-b");
+    await b.runner.tick();
+    await a.runner.tick({ force: true, exportOnly: true });
+    assert.deepEqual(await researchIds(a.client), []);
+
+    await addResearchChannel(b.client, "UC-b2");
+    b.clock.t += 10_000; // inside the minimum interval: the flush is forced anyway
+    assert.equal((await b.runner.tick({ force: true, exportOnly: true })).state, "exported");
+    a.client.close();
+    b.client.close();
+  }));

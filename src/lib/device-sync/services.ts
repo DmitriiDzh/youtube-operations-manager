@@ -322,9 +322,10 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
 
   /**
    * One scheduler tick (§3.2-§3.4). Never throws: every outcome is recorded in the status.
-   * `force` skips only the minimum export interval ("Sync now").
+   * `force` skips only the minimum export interval ("Sync now"); `exportOnly` (the flush before an
+   * idle shutdown) acts only if the decision is an export.
    */
-  async function tick(options: { force?: boolean } = {}): Promise<DeviceSyncStatus> {
+  async function tick(options: { force?: boolean; exportOnly?: boolean } = {}): Promise<DeviceSyncStatus> {
     let status = await loadStatusSafe();
     const previousPending = status.pendingSince ?? {};
     status = { ...status, lastTickAt: new Date(now()).toISOString(), busyReason: null };
@@ -369,6 +370,10 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         localDirty,
         snapshots,
       });
+
+      if (options.exportOnly && decision.kind !== "export") {
+        return finish({ ...status, notices: status.notices });
+      }
 
       switch (decision.kind) {
         case "idle":
