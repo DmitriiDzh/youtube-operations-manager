@@ -594,6 +594,30 @@ export const cloudConnection = sqliteTable("cloud_connection", {
 });
 
 /**
+ * Phase 11 (Channel Workspaces, `docs/roadmap/plans/PHASE_11_PLAN.md` §1), SCHEMA_MIGRATIONS
+ * version 33. One operator-set local filesystem path per (device, channel) -- the channel's
+ * production-workspace folder on THIS machine. This product stores and returns the string only;
+ * it never enumerates, reads, writes, or validates anything inside the path after set time.
+ *
+ * **Device-local, deliberately NOT in `SNAPSHOT_TRANSFERRED_TABLES`** (`src/lib/snapshot/contracts.ts`)
+ * and not in `sync-gateway` -- a local path is meaningless on another machine. Rows are keyed on
+ * this installation's bootstrap `deviceId` and every read filters on it, so a row that arrives some
+ * other way (e.g. a `data.db` copied from another machine) is invisible, never silently reused.
+ */
+export const channelWorkspaces = sqliteTable(
+  "channel_workspaces",
+  {
+    deviceId: text("device_id").notNull(),
+    channelId: text("channel_id").notNull(),
+    path: text("path").notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [primaryKey({ columns: [table.deviceId, table.channelId] })]
+);
+
+/**
  * Phase 8 (Intelligence Foundation, `docs/roadmap/plans/PHASE_8_PLAN.md` §5/§6 slice 2),
  * SCHEMA_MIGRATIONS version 8. Historical time-series metrics, additive alongside `videos`
  * (a "current snapshot" table, never a history) -- `docs/PROJECT_SPEC.md` §33's canonical
@@ -2112,6 +2136,21 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 33,
+    description:
+      "channel_workspaces -- Phase 11, per-device per-channel local production-workspace path (docs/roadmap/plans/PHASE_11_PLAN.md). Device-local: excluded from SNAPSHOT_TRANSFERRED_TABLES and sync-gateway, keyed on the bootstrap deviceId.",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS channel_workspaces (" +
+          "device_id TEXT NOT NULL, " +
+          "channel_id TEXT NOT NULL, " +
+          "path TEXT NOT NULL, " +
+          "updated_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "PRIMARY KEY (device_id, channel_id))"
+      );
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -3024,6 +3063,53 @@ export async function getOperationsWorkspacePath(database: AppDb = db): Promise<
 
 export async function setOperationsWorkspacePath(path: string | null, database: AppDb = db): Promise<void> {
   await setAppSetting(OPERATIONS_WORKSPACE_PATH_SETTING_KEY, path ?? "", database);
+}
+
+/** Phase 11. Every read/write is filtered on `deviceId` -- see `channelWorkspaces` above. */
+export async function getChannelWorkspacePath(
+  deviceId: string,
+  channelId: string,
+  database: AppDb = db
+): Promise<string | null> {
+  const rows = await database
+    .select({ path: channelWorkspaces.path })
+    .from(channelWorkspaces)
+    .where(and(eq(channelWorkspaces.deviceId, deviceId), eq(channelWorkspaces.channelId, channelId)))
+    .limit(1);
+  return rows[0]?.path ?? null;
+}
+
+export async function listChannelWorkspacePaths(
+  deviceId: string,
+  database: AppDb = db
+): Promise<Array<{ channelId: string; path: string; updatedAt: Date }>> {
+  return database
+    .select({ channelId: channelWorkspaces.channelId, path: channelWorkspaces.path, updatedAt: channelWorkspaces.updatedAt })
+    .from(channelWorkspaces)
+    .where(eq(channelWorkspaces.deviceId, deviceId));
+}
+
+/** `null` deletes this device's row for the channel. */
+export async function setChannelWorkspacePath(
+  deviceId: string,
+  channelId: string,
+  path: string | null,
+  database: AppDb = db
+): Promise<void> {
+  if (path === null) {
+    await database
+      .delete(channelWorkspaces)
+      .where(and(eq(channelWorkspaces.deviceId, deviceId), eq(channelWorkspaces.channelId, channelId)));
+    return;
+  }
+  const updatedAt = new Date();
+  await database
+    .insert(channelWorkspaces)
+    .values({ deviceId, channelId, path, updatedAt })
+    .onConflictDoUpdate({
+      target: [channelWorkspaces.deviceId, channelWorkspaces.channelId],
+      set: { path, updatedAt },
+    });
 }
 
 export type GatewayTrafficCategory =

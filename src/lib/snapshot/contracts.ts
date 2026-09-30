@@ -25,6 +25,12 @@ export type { SqlExecutor };
  *   - `cloud_connection` (`docs/decisions/0008-cloud-connection.md`) -- device-local encrypted
  *     Google Cloud OAuth grant, same reasoning as `users`/`ai_connection_credentials`: never
  *     handed off, re-established per device via its own Connect flow.
+ *   - `channel_workspaces` (Phase 11, `docs/roadmap/plans/PHASE_11_PLAN.md` §1) -- a per-device,
+ *     per-channel LOCAL filesystem path, meaningless on any other machine. Deliberately
+ *     device-local by owner-approved design (`docs/roadmap/FUTURE_PHASES.md` §11: "device-local,
+ *     never synced"), NOT a RISK-52-style omission -- do not "fix" it by adding it here the way
+ *     the Phase 9/10 tables were. Rows are also keyed on the bootstrap `deviceId`, so a row from
+ *     another device is invisible even if it arrived some other way.
  *   - `rules` (auto-add-to-playlist rules, from the project's original pre-rewrite baseline) -- this feature's own
  *     Drizzle definition/UI/API routes were already removed 2026-09-20 (see `src/lib/db.ts`'s
  *     `initializeDatabase` comment); the `CREATE TABLE IF NOT EXISTS rules` statement is

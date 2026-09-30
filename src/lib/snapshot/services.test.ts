@@ -14,7 +14,7 @@ import {
 } from "./services";
 import { listPublishedSnapshotIds, createStagingDir, writeManifest } from "./adapters/filesystem";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
-import { SnapshotError } from "./contracts";
+import { SnapshotError, SNAPSHOT_TRANSFERRED_TABLES } from "./contracts";
 import { withTempDir } from "@/test-support/temp-dir";
 
 async function makeClient(dir: string, name: string): Promise<Client> {
@@ -727,4 +727,48 @@ test("exportSnapshot advances this device's own lineage state", () =>
     assert.equal(second.parentSnapshotId, first.snapshotId);
     assert.equal(second.generation, 2);
     client.close();
+  }));
+
+// Phase 11 (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-06) -- `channel_workspaces` is the opposite
+// case from the Phase 9/10 tables above: a per-device local filesystem path must NEVER travel with a
+// handoff. Proves it against the real export/apply mechanism: the source device's row does not
+// arrive, and the receiving device's own row survives the import untouched.
+test("applySnapshotToDatabase: Phase 11 channel_workspaces is device-local -- never exported, and the receiving device's own rows survive an import", () =>
+  withTempDir("snapshot-test-", async (dir) => {
+    assert.equal((SNAPSHOT_TRANSFERRED_TABLES as readonly string[]).includes("channel_workspaces"), false);
+
+    const source = await makeClient(dir, "source.db");
+    await source.execute({
+      sql: "INSERT INTO channel_workspaces (device_id, channel_id, path) VALUES (?, ?, ?)",
+      args: ["device-a", "UCsource0000000000000001", "/Users/a/work/source"],
+    });
+    const manifest = await exportSnapshot({
+      client: source,
+      snapshotsDir: path.join(dir, "snapshots"),
+      deviceId: "device-a",
+      schemaVersion: 3,
+    });
+    const snapshotDir = path.join(dir, "snapshots", manifest.snapshotId);
+
+    const receiving = await makeClient(dir, "receiving.db");
+    await receiving.execute({
+      sql: "INSERT INTO channel_workspaces (device_id, channel_id, path) VALUES (?, ?, ?)",
+      args: ["device-b", "UCreceiving000000000001", "/Users/b/work/receiving"],
+    });
+
+    const workingCopyPath = path.join(dir, "working-copy.db");
+    await copyDatabaseConsistently(
+      createClient({ url: `file:${path.join(snapshotDir, "data.db")}` }),
+      workingCopyPath
+    );
+    await migrateStagedCopy(workingCopyPath);
+    await applySnapshotToDatabase(receiving, workingCopyPath);
+
+    const rows = await receiving.execute("SELECT device_id, channel_id, path FROM channel_workspaces");
+    assert.deepEqual(rows.rows, [
+      { device_id: "device-b", channel_id: "UCreceiving000000000001", path: "/Users/b/work/receiving" },
+    ]);
+
+    source.close();
+    receiving.close();
   }));
