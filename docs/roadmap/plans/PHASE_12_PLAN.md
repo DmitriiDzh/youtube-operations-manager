@@ -1,7 +1,7 @@
 # Phase 12: Channel-bound agent isolation ("Chinese wall") — plan
 
-**Status: decisions D0–D3 and D5 answered by the owner (Telegram, msg 1051, 2026-09-30); D4 needs
-one clarification. See §7. Core slices 12.1–12.3 are unblocked.**
+**Status: IN PROGRESS. Decisions D0–D5 answered by the owner (msgs 1051/1053); only the 12.8
+key-storage variant is pending (msg 1054). See §7.**
 
 **Owner direction (Telegram, 2026-09-30):**
 - msg 1044: the problem is "a Chinese wall between agents", so that the agent for channel A
@@ -169,27 +169,43 @@ it at the HTTP endpoint). The release notes carry a migration note.
 - **D5.** Should the app actively refuse agent mode when it detects the agent can read app-data
   (same OS user), or only document the requirement?
 
-## 6. Acceptance criteria (draft; finalized after D0–D5)
+## 6. Acceptance criteria (final for D0(b), written before implementation, `AGENTS.md` §L)
 
-- **AC-P12-01.** An agent session without a valid token gets no tools, and the MCP connection
-  toggle, when off, still disables everything. A revoked token behaves the
-  same, including on the next call of an already-running session.
-- **AC-P12-02.** With a token bound to channel A, every tool called with channel B's id, or with any
-  resource id belonging to B, fails with the same error as a nonexistent id. No data from B appears
-  in any response.
-- **AC-P12-03.** No tool reachable in an agent session can change `users.selected_channel_id`,
-  `auth-context.json`, `channels.connected_user_id` of another channel, or a token.
-- **AC-P12-04.** A caller-supplied `credentialRef` is rejected in agent sessions. Credentials always
-  come from the bound channel.
-- **AC-P12-05.** Two concurrent sessions bound to A and B never observe each other's data. The
-  operator's Web UI active-channel switch changes nothing for either session.
-- **AC-P12-06.** Inventory test: every MCP tool and CLI command is classified. An unclassified or
-  misclassified one fails the suite.
-- **AC-P12-07.** Global rows (NULL-channel hypotheses, unassigned market records) are invisible to
-  agents.
-- **AC-P12-08.** The CLI without a token refuses when "Operator CLI access" is off.
-- **AC-P12-09.** Tokens are stored only as hashes, shown once, never logged, and never in the
-  snapshot or sync.
+**Enforcement design.** Enforcement happens at choke points, not per handler.
+- **One immutable agent scope per process.** An MCP stdio server started with `YTOM_AGENT_TOKEN`,
+  or a CLI call with `--agentToken`/`YTOM_AGENT_TOKEN`, validates the token once at the entrypoint
+  and freezes a process-wide scope `{ channelId, userId, tokenId }` (new leaf module
+  `src/lib/agent-session/`). The Next.js web process never enters agent scope.
+- **In agent scope:**
+  - reading the "selected channel" (`db.ts` `getSelectedChannelId`) returns the bound channel for
+    any user;
+  - writing it (`setSelectedChannelId`) is a silent no-op. It must not error, because `apply` and
+    playlist writes save the selection *after* a real YouTube write succeeded;
+  - `resolveEffectiveCredentialRef` returns the token's `userId` and rejects an explicit ref;
+  - `auth-context.json` is never read or written.
+
+  The existing `assertActiveChannel` checks (in handlers and in cores) and `write-context` then
+  enforce the bound channel unchanged.
+- **Tool registration.** The `registerTool` wrapper applies a classification table
+  (`bound` / `operator-only`). In agent scope, operator-only tools are not registered. Every call
+  re-verifies the token hash, so revocation takes effect mid-session.
+
+| ID | Criterion |
+|---|---|
+| AC-P12-01 | The MCP connection toggle off → zero tools, with or without a token (unchanged owner rule). Toggle on without a valid token → zero tools. With a valid token → only `bound`-classified tools. |
+| AC-P12-02 | Revoking a token makes the very next call of an already-running session fail (`AGENT_TOKEN_INVALID`), with no data returned. |
+| AC-P12-03 | Session bound to channel A: any tool given channel B's id, or a resource id (video, change set, batch, proposal, asset, hypothesis, experiment, market record) belonging to B, fails. It never returns B's data. |
+| AC-P12-04 | In agent scope, `write_channel_select`, `auth_user_select`, `write_channel_list`, the operations-workspace tools and all `auth *` CLI commands are unavailable. `setSelectedChannelId` via `apply`/playlist/`channel_sync` side effects changes nothing in the database. |
+| AC-P12-05 | In agent scope, an explicit `credentialRef` / `--userId` / `--accessToken` is rejected. The credential used is always the token's recorded identity. |
+| AC-P12-06 | The operator switching the active channel in the Web UI does not change what an agent session is bound to, and the reverse. |
+| AC-P12-07 | `channel_sync` in agent scope syncs only the bound channel, and never overwrites another channel's `connected_user_id`. |
+| AC-P12-08 | Inventory test: every registered MCP tool and every CLI command is classified. An unclassified one fails the suite. |
+| AC-P12-09 | Market records: an agent sees only records assigned to its channel. NULL-channel hypotheses are invisible to agents. Research requests are owned by the channel that created them. |
+| AC-P12-10 | CLI without a token: refuses unless the "Operator CLI access" toggle is on (default off). |
+| AC-P12-11 | Tokens: stored only as a SHA-256 hash, shown once at issue, never logged, device-local (not in the snapshot or sync). Issuing requires that the channel's recorded identity has a live OAuth channel equal to the bound channel. Issuing again revokes the previous token (one agent = one channel). |
+| AC-P12-12 | Capability zones are retired (owner D4, msg 1053): no tool consults them. An ADR records the subtractive change. |
+| AC-P12-13 | `AGENT_API_VERSION` = `1.0.0`, and the release notes carry a migration note. |
+| AC-P12-14 | OAuth tokens at rest are encrypted (12.8, key variant per the owner's D5 answer). Existing plaintext rows are migrated. Sign-in, refresh and revoke keep working. |
 
 ## 7. Owner decisions (Telegram, msg 1051, 2026-09-30)
 
@@ -211,15 +227,13 @@ it at the HTTP endpoint). The release notes carry a migration note.
   должен отвечать тот же агент что и за все остальное на канале."* `ai_localization_*` stay available
   to the bound agent for its own channel only. There is no per-channel assignment of AI provider
   connections.
-- **D4 → "нет" — ambiguous, to be confirmed.** The question proposed *removing* capability zones.
-  Given D3 (one agent owns all tasks of its channel), the working assumption is that zones become
-  redundant and are retired in 12.6 via an ADR. 12.6 is not started until the owner confirms.
+- **D4 → retire zones.** Clarified by the owner (msg 1053): *"один агент отвечает за все на одном
+  канале"*. Capability zones are redundant and are retired in 12.6 via an ADR.
 - **D5 → yes: build in protection against accidental reads; instructions alone are not enough.**
   Concrete measures, in slice 12.7:
-  1. **Workspace anchoring.** An agent-mode MCP/CLI session refuses to start unless the process's
-     working directory is inside its bound channel's workspace folder (Phase 11 path, this device).
-     The agent is thereby launched "in its own folder", and its own sandbox/workspace roots
-     naturally follow.
+  1. ~~Workspace anchoring~~. **Withdrawn** (msg 1054). The MCP server is launched via `npm run`
+     from the app directory, so a working-directory check would test the server's directory, not
+     the agent's. It would break legitimate setups without constraining the agent.
   2. **Nothing sensitive leaks through the interface.** Agent-mode responses never contain
      app-data paths, other channels' workspace paths, or `local_path` asset references of other
      channels (already channel-scoped after 12.3).
