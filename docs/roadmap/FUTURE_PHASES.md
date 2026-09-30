@@ -668,11 +668,8 @@ market snapshot model + repeatable refresh, `docs/roadmap/BACKLOG.md` BL-102) is
 
 **POST-PHASE-10 DIRECTIONS:** Publishing Pipeline (§6a) and Media Production Automation (§6b).
 
-**IN PROGRESS:** Phase 11 — Channel Workspaces (§11). The owner assigned it on 2026-09-30
-(Telegram, msg 1036). Its file-access scope was already resolved on 2026-09-26 (§11): the path
-string only, never the folder's contents. The work is on `feature/phase-11-channel-workspaces`;
-the plan is `docs/roadmap/plans/PHASE_11_PLAN.md`. The merge into `dev` still needs the owner's
-explicit approval.
+**DONE:** Phase 11 — Channel Workspaces (§11). Merged into `dev` in `f15a8c3` on 2026-09-30,
+with owner approval. See `docs/roadmap/plans/PHASE_11_PLAN.md`.
 
 **DEFERRED:** simultaneous multi-device operation, application-managed synchronization,
 localization transport modernization, and other infrastructure improvements without immediate
