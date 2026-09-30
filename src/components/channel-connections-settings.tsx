@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { ChannelWorkspaceField } from "./channel-workspace-field";
+import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { InfoTooltip } from "./info-tooltip";
 import { activateStoredChannel, useConnectedChannels, type ConnectedChannel } from "./use-connected-channels";
 
@@ -86,43 +88,45 @@ export function ChannelConnectionsSettings() {
           {channels.map((c) => {
             const isActive = c.isActive;
             return (
-              <li
-                key={c.channelId}
-                className="flex items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3"
-              >
-                <div className="flex min-w-0 items-center gap-3">
-                  {c.thumbnailUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={c.thumbnailUrl} alt="" className="h-8 w-8 shrink-0 rounded-full" />
-                  ) : (
-                    <div className="h-8 w-8 shrink-0 rounded-full bg-zinc-700" />
-                  )}
-                  <div className="min-w-0">
-                    <p className="truncate text-sm text-zinc-200">{c.title}</p>
-                    <p className="truncate text-xs text-zinc-500">{c.connectedEmail}</p>
+              <li key={c.channelId} className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    {c.thumbnailUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={c.thumbnailUrl} alt="" className="h-8 w-8 shrink-0 rounded-full" />
+                    ) : (
+                      <div className="h-8 w-8 shrink-0 rounded-full bg-zinc-700" />
+                    )}
+                    <div className="min-w-0">
+                      <p className="truncate text-sm text-zinc-200">{c.title}</p>
+                      <p className="truncate text-xs text-zinc-500">{c.connectedEmail}</p>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {isActive ? (
+                      <span className="rounded-full bg-emerald-950/60 px-2.5 py-1 text-xs font-medium text-emerald-400">
+                        Active now
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => handleActivate(c.channelId)}
+                        disabled={activatingChannelId === c.channelId}
+                        className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+                      >
+                        {activatingChannelId === c.channelId ? "Activating..." : "Activate"}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setPendingDisconnect(c)}
+                      className="rounded-md border border-red-900 bg-red-950/50 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-950"
+                    >
+                      Disconnect
+                    </button>
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  {isActive ? (
-                    <span className="rounded-full bg-emerald-950/60 px-2.5 py-1 text-xs font-medium text-emerald-400">
-                      Active now
-                    </span>
-                  ) : (
-                    <button
-                      onClick={() => handleActivate(c.channelId)}
-                      disabled={activatingChannelId === c.channelId}
-                      className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
-                    >
-                      {activatingChannelId === c.channelId ? "Activating..." : "Activate"}
-                    </button>
-                  )}
-                  <button
-                    onClick={() => setPendingDisconnect(c)}
-                    className="rounded-md border border-red-900 bg-red-950/50 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-950"
-                  >
-                    Disconnect
-                  </button>
-                </div>
+                <FeatureErrorBoundary label="Channel workspace path">
+                  <ChannelWorkspaceField channelId={c.channelId} />
+                </FeatureErrorBoundary>
               </li>
             );
           })}
