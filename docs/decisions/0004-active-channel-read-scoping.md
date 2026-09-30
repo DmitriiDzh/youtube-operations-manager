@@ -54,6 +54,12 @@ Two things needed deciding that RISK-02 itself left open:
   own channel" / `channels.list({mine:true})` path). No new "select active channel" UI step was
   added — the existing dashboard load flow already resolves this data; persisting it is the only
   change.
+  - *Addendum 2026-10-01 (architecture audit, doc accuracy):* two more places also persist the
+    selection: a successful `apply` and every successful playlist write store their verified
+    `expectedChannelId`. The operator can also set it explicitly (`write_channel_select` / CLI
+    `auth select-channel`). Since Phase 12, none of these has any effect inside a channel-bound
+    agent session, where the "selected channel" is always the bound channel
+    (`docs/roadmap/plans/PHASE_12_PLAN.md` §6).
 - `syncChannel` called **with** an explicit `channelId` (the "re-sync a previously-known channel"
   picker action) never activates that channel. `getChannelForSync` does an unauthenticated-scope
   public `channels.list(id=...)` lookup in that case (not cross-checked against the OAuth session

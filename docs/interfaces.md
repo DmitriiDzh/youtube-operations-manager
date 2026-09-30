@@ -75,7 +75,7 @@ npm run cli:video-metadata -- apply --videoId <VIDEO_ID> --finalTitle "..." --de
 
 ```bash
 npm run cli:video-metadata -- playlist list [--userId <USER_ID>]
-npm run cli:video-metadata -- playlist create --title "..." --expectedChannelId <UC...> [--description "..."] [--privacyStatus private|public|unlisted] [--userId <USER_ID>]
+npm run cli:video-metadata -- playlist create --title "..." [--expectedChannelId <UC...>] [--description "..."] [--privacyStatus private|public|unlisted] [--userId <USER_ID>]
 npm run cli:video-metadata -- playlist update --playlistId <PLAYLIST_ID> --expectedChannelId <UC...> [--title "..."] [--description "..."] [--privacyStatus private|public|unlisted] [--userId <USER_ID>]
 npm run cli:video-metadata -- playlist delete --playlistId <PLAYLIST_ID> --expectedChannelId <UC...> [--userId <USER_ID>]
 npm run cli:video-metadata -- playlist add --playlistId <PLAYLIST_ID> --expectedChannelId <UC...> --videoIds <VIDEO1,VIDEO2,...> [--userId <USER_ID>]
@@ -347,18 +347,23 @@ below.
 
 ## MCP server (`npm run mcp:video-metadata`)
 
-Starts stdio MCP server with tools for auth context + metadata + playlists.
+Starts the stdio MCP server. **Since Phase 12 it exposes tools only to a channel-bound agent
+session.** The "MCP connection" toggle must be on, and the process must be started with a valid
+`YTOM_AGENT_TOKEN`; otherwise zero tools are registered. The server never exposes a login flow:
+channel identities are connected by the operator in the Web UI (Settings → Channels).
 
-Important: MCP server does **not** expose login flow. Authenticate first using CLI (`auth login`).
+The list below is the full tool inventory. Tools marked *(operator-only)* are classified
+`operator-only` in `src/mcp/tool-classification.ts`, so they are **never registered for an agent**.
+They remain listed only for completeness.
 
 Key MCP tools:
 
 - Context/auth tools:
   - `write_context`
-  - `write_channel_list`
-  - `write_channel_select`
+  - `write_channel_list` *(operator-only)*
+  - `write_channel_select` *(operator-only)*
   - `whoami`
-  - `auth_user_select`
+  - `auth_user_select` *(operator-only)*
 - Metadata tools:
   - `list`, `transcript`, `preview`, `apply`
 - Playlist tools:
@@ -506,14 +511,14 @@ Key MCP tools:
     ProposalArtifactLink[] }`. Same channel-scoping as `agent_get_content_proposal`; local read
     only, hydrates each link with its full `CreativeAsset` and silently drops a link whose asset is
     somehow missing rather than fabricating one.
-  - `agent_list_operations_files` (Phase 7 slice I, owner spec §3/§30) — `{}` →
+  - `agent_list_operations_files` *(operator-only since Phase 12, D2)* (Phase 7 slice I, owner spec §3/§30) — `{}` →
     `{ configured: false } | { configured: true, files: OperationsWorkspaceFileEntry[], truncated:
     boolean }`. NOT channel-scoped (one global, operator-configured path) — no `channelId`, no
     `assertActiveChannel` check, like `agent_get_capabilities`. Lists files/folders under the
     operator-configured operations-workspace directory; `.md`/`.txt`/`.json`/`.yaml`/`.yml` files
     only, dotfiles/dot-directories always excluded, depth/file-count capped. The path itself can
     only be set through the Web UI's Settings tab — no MCP tool or CLI command can set it.
-  - `agent_get_operations_file` — `{ path }` → `{ configured: false } | { configured: true, path,
+  - `agent_get_operations_file` *(operator-only since Phase 12, D2)* — `{ path }` → `{ configured: false } | { configured: true, path,
     content: string, truncated: boolean }`. Same non-channel-scoped note as
     `agent_list_operations_files`. A `path` that escapes the configured directory (`..` segments,
     an absolute path, or a symlink resolving outside it, including into this app's own app-data
@@ -664,8 +669,8 @@ Key MCP tools:
     `listTopics`/`listTrendCandidates`/`listDiscoveryCandidates` — no new service logic.
   - `agent_create_market_research_request` (Phase 9 slice 9G, part B, owner spec §29) — `{ query,
     rationale, monitorDurationDays? }` → the created request, `status: "pending"`. This domain's
-    first DRAFT-class capability and its first zoned MCP tool
-    (`market_intelligence.agent_create_market_research_request`) — gated by the same
+    first DRAFT-class capability (`market_intelligence.agent_create_market_research_request`) —
+    gated by the same
     device-availability check as `agent_create_content_proposal`. `createdVia`/`agentApiVersion`
     (owner spec §22) are SERVER-STAMPED — `"mcp"` + the real `AGENT_API_VERSION` for this transport,
     `"cli"` + `null` for the CLI command (mirrors `agent_create_content_proposal`'s own convention:
@@ -705,8 +710,8 @@ Key MCP tools:
     stoppingCriteria, responsible, startConditions?, plannedDuration?, sampleCoverageConstraints?,
     budgetEstimate? }` → the created experiment, always `status: "proposed"` (schema is `.strict()`,
     no `status` field accepted at all). The one reserved capability name
-    (`PLANNED_FUTURE_CAPABILITIES` since Phase 7), zoned
-    (`decision_engine.create_experiment_proposal`) and gated the same way as
+    (`PLANNED_FUTURE_CAPABILITIES` since Phase 7, `decision_engine.create_experiment_proposal`),
+    gated the same way as
     `agent_create_market_research_request`. `createdVia`: `"mcp"`/`"cli"` (persisted, matches
     `Experiment.createdVia`). The MCP/CLI handler also passes `createdBy: "agent"` in the
     service-layer call's `ctx` (never a real user id, since MCP/CLI callers have no session), but
@@ -715,7 +720,7 @@ Key MCP tools:
     identity stamp).
   - `agent_get_channel_workspace` (Phase 11, `docs/AGENT_OPERATIONS_INTERFACE.md` §4m) —
     `{ channelId }` (`.strict()`) → `{ configured: false } | { configured: true, path: string }`.
-    `READ`, channel-scoped (`assertActiveChannel`, like `agent_get_channel_context`), and unzoned.
+    `READ`, channel-scoped (`assertActiveChannel`, like `agent_get_channel_context`).
     It returns the operator-set absolute path for this device exactly as stored and never touches
     anything at or under that path. It only reads the app's own bootstrap config, for the
     `deviceId`, and never creates it. No MCP tool can set or clear it: `PUT /api/channel-workspaces` (Web UI

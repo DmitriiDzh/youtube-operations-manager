@@ -1355,9 +1355,9 @@ attempt, mirroring `assertDataApiReadsAuthorized`'s own pattern
 (`src/lib/db.ts`) means it renders through the exact same `GatewayTrafficStats` component the
 other three gateways already use -- shown in the "Google Cloud connection" Settings card. It never
 records a `blocked` outcome: there is no enable/disable toggle for this category, so every
-attempt is allowed by definition (unlike `mcp_tool_calls`, which since BL-091 does record
-`blocked` for an agent-zone rejection -- see `src/lib/db.ts`'s own doc comment on
-`gatewayCallEvents`).
+attempt is allowed by definition (unlike `mcp_tool_calls`, which records `blocked` for a call
+rejected because its agent token is no longer valid -- Phase 12; BL-091's zone rejections were
+retired with the zones -- see `src/lib/db.ts`'s own doc comment on `gatewayCallEvents`).
 
 **Mechanical enforcement is a literal-string check, not an import check**, unlike
 `read-gateway-inventory.test.ts`: this module never imports `googleapis` at all (§16.2), so there
@@ -2103,3 +2103,32 @@ through `src/lib/oauth-token-crypto`:
 
 This protects against reading the database file alone. It does not protect against an agent that
 also reads the key from the environment file.
+
+## 22. Architecture audit, 2026-10-01: documented rules that were implicit
+
+This section comes from the independent architecture audit. The fixes are in
+`docs/roadmap/plans/HARDENING_AUDIT_2026-10_PLAN.md`. The points below are the audit's
+low-severity divergences, recorded here as the actual rules rather than changed.
+
+- **`expectedChannelId` optionality (A7).**
+  - Required: `playlist_update/delete/add_videos/remove_videos` and the video-details writes.
+  - Optional: `apply` and `playlist_create`. When omitted, it falls back to the stored selected
+    channel (in an agent session, the bound channel).
+  - Every write still passes `write-context.assertWriteChannel`: the live OAuth channel must equal
+    the expected one, so the fallback fails closed rather than writing blindly.
+- **"Analytics day" (A8).** YouTube Analytics reports days in Pacific time; `metricDate` is a
+  Pacific calendar day.
+  - `comparable-age` aligns on Pacific days.
+  - The staleness / daily-collection boundary uses the operator's configured timezone
+    (`analyticsSyncTimezone`).
+  - The data-quality "too recent" cutoff (`ANALYTICS_REPORTING_LAG_DAYS`) is computed in UTC. It
+    can therefore differ from a Pacific-day boundary by one day at the edges. This is acceptable
+    for a "probably not yet reported" hint, but it is not an exact reporting-day computation.
+- **GET routes with a local side effect (A6).**
+  - `GET /api/youtube/channel-info` persists the resolved channel as the session user's selected
+    channel (ADR 0004).
+  - `GET /api/cloud-connection/callback` stores the Google Cloud grant: an OAuth redirect must be
+    a GET.
+  - Both write device-local state only, which is never part of a snapshot. They are therefore not
+    behind the method-based mutation gate. The equivalent MCP/CLI selection actions are
+    operator-only and gated.

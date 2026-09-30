@@ -496,11 +496,10 @@ export const videoEditAuditEvents = sqliteTable("video_edit_audit_events", {
     .$defaultFn(() => new Date()),
 });
 
-// Generic key/value app settings (SCHEMA_MIGRATIONS version 7) -- currently backs the Gate B
-// "live writes" toggle and the MCP restricted-mode toggle (owner instruction, 2026-09-21,
-// Settings tab). Deliberately a plain key/value table rather than one dedicated column per
-// setting, since these two toggles are the first of what is expected to be several small,
-// independent app-wide flags -- see `getAppSetting`/`setAppSetting` below.
+// Generic key/value app settings (SCHEMA_MIGRATIONS version 7) -- backs the per-device Settings-tab
+// toggles and values (Live writes, MCP connection, Operator CLI access, read toggles, analytics
+// sync time, operations workspace path, market-intelligence quota budget, ...). A plain key/value
+// table rather than one column per setting -- see `getAppSetting`/`setAppSetting` below.
 export const appSettings = sqliteTable("app_settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
@@ -517,9 +516,9 @@ export const appSettings = sqliteTable("app_settings", {
  * `pruneOldGatewayCallEvents` for why this table does not grow unboundedly forever.
  * `mcp_tool_calls` never records a `blocked` outcome for the "MCP connection off" case: a tool is
  * never registered at all then, so there is no failed call to log, only an absent one. It DOES
- * record `blocked` for a BL-091 agent-zone rejection (`src/mcp/server.ts`'s `registerTool`
- * wrapper) -- that is a real, counted call attempt through an actually-registered tool, unlike the
- * "connection off" case.
+ * record `blocked` for a call whose agent token fails re-verification (Phase 12, `src/mcp/server.ts`'s
+ * `registerTool` wrapper; BL-091's zone rejections were retired with the zones, ADR 0011) -- a real,
+ * counted call attempt through an actually-registered tool, unlike the "connection off" case.
  *
  * `cloud_monitoring_reads` (added 2026-09-22, owner instruction, Telegram, after being told
  * checking Google Cloud's own quota numbers is itself a real API call: "в таком случае на него

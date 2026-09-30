@@ -1617,10 +1617,9 @@ export function createMcpToolHandlers(
      * `createdVia: "mcp"`/`agentApiVersion` are SERVER-STAMPED (owner spec §22), mirrors
      * `agentCreateContentProposal` above exactly. A real local-state mutation (writes a pending row
      * to local SQLite) even though it never touches YouTube, so this tool is gated by
-     * `assertMcpDeviceAvailable` (via `wrapMcpHandlersWithMutationGate` below) and by agent-zone
-     * enforcement (`registerTool`'s zoning argument, at the bottom of this file), same as
-     * `agentCreateContentProposal`. Global, no `assertActiveChannel` check -- this data is not
-     * scoped to any owned channel, same as `queryCompetitors`/`queryMarketIntelligence` above.
+     * `assertMcpDeviceAvailable` (via `wrapMcpHandlersWithMutationGate` below), same as
+     * `agentCreateContentProposal`. Market data is not scoped to an owned channel; in an agent
+     * session the created request is recorded as owned by the agent's channel (Phase 12).
      */
     async agentCreateMarketResearchRequest(input: unknown): Promise<ToolResponse> {
       const parsedInput = createMarketResearchRequestInputSchema.safeParse(input);

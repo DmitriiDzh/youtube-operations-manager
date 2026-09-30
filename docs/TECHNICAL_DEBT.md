@@ -1387,4 +1387,26 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Approval required from:** project owner, to change the threat model.
 - **Status:** OPEN, accepted by the owner.
 
+## RISK-88 — `db.ts` is a single persistence module for every feature; one migration failure blocks all — OPEN, accepted, 2026-10-01
+
+- **Affected components:** `src/lib/db.ts`: about 6,700 lines, 50+ tables, one linear
+  `SCHEMA_MIGRATIONS` chain, and a boot-time `databaseInitialization` that every client awaits.
+- **Found during:** the independent architecture audit, 2026-10-01 (modularity, finding 6).
+- **Actual risk (`AGENTS.md` §M in practice):**
+  - Any failing migration makes the database client reject for every feature: sign-in, settings,
+    translations, and the proxy mutation gate (503).
+  - Every feature's schema and queries live in one file.
+  - This follows ADR 0001/0002 (one database, additive linear migrations). It is a design limit,
+    not an implementer's mistake.
+- **Related, low:** `cli-auth/services.ts` and `snapshot/services.ts` import `db.ts` at runtime
+  from a services layer (DEVELOPMENT_PLAYBOOK §6.2 layering). Also, small duplications remain:
+  `requireChannel` ×3, `formatCount` ×2, and a local date formatter ×2. Fold these when the code
+  is touched.
+- **Why not fixed now:** a per-feature split of `db.ts` (`src/lib/db/<feature>.ts` sharing one
+  client and one migration list) is a large mechanical refactor with no bug behind it. It would
+  also not remove the linear-migration coupling itself. Out of scope of the audit fixes, by plan.
+- **Trigger to revisit:** a migration failure in the field, or a feature that must be deployable
+  or disableable independently.
+- **Status:** OPEN, accepted.
+
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
