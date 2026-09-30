@@ -770,10 +770,12 @@ export const analyticsCollectionRuns = sqliteTable(
  * layer (`runWeeklyReportIfDue`), not this table, enforces that a `status: "final"` row is never
  * overwritten by a later `upsertWeeklyReport` call for the same week.
  *
- * **Deliberately NOT added to `SNAPSHOT_TRANSFERRED_TABLES`** -- derived, re-computable data, the
- * same reasoning as `video_metrics_daily`/`analytics_collection_runs` above (docs/ARCHITECTURE.md
- * §14.7/§14.9): a snapshot report can always be regenerated locally from the data that IS
- * transferred, so it does not need to travel with a device handoff.
+ * **Deliberately NOT added to `SNAPSHOT_TRANSFERRED_TABLES`** -- device-local together with the
+ * data it is computed from: `video_metrics_daily` does not travel either (RISK-52's accepted
+ * limitation, docs/ARCHITECTURE.md §14.7), so on a new device weekly reports are rebuilt from that
+ * device's own collected metrics, never copied. (Corrected 2026-10-01, architecture audit M6: this
+ * comment previously claimed the reports could be regenerated "from the data that IS transferred",
+ * which was false.)
  */
 export const analyticsWeeklyReports = sqliteTable(
   "analytics_weekly_reports",

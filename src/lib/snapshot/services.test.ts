@@ -14,7 +14,7 @@ import {
 } from "./services";
 import { listPublishedSnapshotIds, createStagingDir, writeManifest } from "./adapters/filesystem";
 import { copyDatabaseConsistently } from "@/lib/db-backup";
-import { SnapshotError, SNAPSHOT_TRANSFERRED_TABLES } from "./contracts";
+import { SnapshotError, SNAPSHOT_DEVICE_LOCAL_TABLES, SNAPSHOT_TRANSFERRED_TABLES } from "./contracts";
 import { withTempDir } from "@/test-support/temp-dir";
 
 async function makeClient(dir: string, name: string): Promise<Client> {
@@ -783,3 +783,17 @@ test("applySnapshotToDatabase: Phase 11 channel_workspaces is device-local -- ne
     source.close();
     receiving.close();
   }));
+
+// Architecture audit 2026-10-01 (M6): every table the schema creates is classified exactly once --
+// transferred with a handoff, or deliberately device-local with a reason.
+test("every schema table is classified as either transferred or device-local, never both, never neither", async () => {
+  const source = await readFile(path.resolve(process.cwd(), "src/lib/db.ts"), "utf8");
+  const created = new Set([...source.matchAll(/CREATE TABLE IF NOT EXISTS ([a-z_]+)/g)].map((m) => m[1]));
+  created.add("schema_meta");
+  const transferred = new Set<string>(SNAPSHOT_TRANSFERRED_TABLES);
+  const local = new Set(Object.keys(SNAPSHOT_DEVICE_LOCAL_TABLES));
+  const unclassified = [...created].filter((t) => !transferred.has(t) && !local.has(t));
+  const both = [...created].filter((t) => transferred.has(t) && local.has(t));
+  const unknown = [...transferred, ...local].filter((t) => !created.has(t));
+  assert.deepEqual({ unclassified, both, unknown }, { unclassified: [], both: [], unknown: [] });
+});
