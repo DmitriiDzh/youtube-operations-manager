@@ -5,8 +5,24 @@
 implementation plan and register it as a new phase"). It follows the sources research the owner asked for in
 msg 1121 (full report with links: `PHASE_13_SOURCES_RESEARCH.md`).
 
-**Status: planned, not started.** Implementation begins only when the owner assigns it (`AGENTS.md` §C).
-Before slice 13.2 the owner has to make decision **D1** (§3).
+**Status: assigned.** The owner assigned it (msg 1127): *"приступай к реализации фазы 13. Автономный режим. Я одобряю
+только финальный мердж ветки в дев"* ("start implementing phase 13; autonomous mode; I only approve the final
+merge of the branch into dev"). Branch `feature/phase-13-data-sources`.
+
+**Decisions made:**
+- **D1 = (a)** (msg 1129, verbatim *"(а) ок, храним не более 30 дней"*, "(a) ok, we keep it no more than 30 days").
+  Competitor data that came from the API is kept for at most 30 days. Re-fetching fresh data via the API starts a
+  new 30-day period for the new record (my reply, msg 1130).
+- **D2** has no answer yet, so 13.10 is not being done.
+
+**Facts checked against the official sources (2026-10-01) before implementation:**
+- [revision history](https://developers.google.com/youtube/v3/revision_history), 2026-06-01:
+  `search.list`/`videos.insert` moved to separate buckets.
+- Same page, 2026-06-03: `videos.batchGetStats` costs "1 unit in its own granular quota bucket … default quota is
+  10,000 units per day". The maximum number of IDs is not documented.
+- Same page, 2026-08-27: "YouTube will count public views the moment a video begins to play".
+- The daily quota resets at midnight Pacific Time. This comes from third-party sources: the official quota page
+  doesn't state it.
 
 ## 1. Why
 
