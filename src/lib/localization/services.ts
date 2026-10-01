@@ -47,6 +47,8 @@ function computeOverviewRow(video: StoredVideoRecord, languages: string[]): Loca
     title: video.title,
     thumbnailUrl: video.thumbnails.default?.url ?? Object.values(video.thumbnails)[0]?.url ?? null,
     publishedAt: video.publishedAt,
+    privacyStatus: video.privacyStatus,
+    publishAt: video.publishAt,
     defaultLanguage: video.defaultLanguage,
     presentLanguages,
     missingLanguages,

@@ -23,6 +23,10 @@ export type LocalizationOverviewRow = {
   title: string;
   thumbnailUrl: string | null;
   publishedAt: string;
+  // Additive (2026-10-01): lets a client show the same "Publish" date as the Content tab does --
+  // the real `publishedAt` only once public, else the scheduled `publishAt`.
+  privacyStatus: string;
+  publishAt: string | null;
   defaultLanguage: string | null;
   presentLanguages: string[];
   missingLanguages: string[];
@@ -88,6 +92,7 @@ export type StoredVideoRecord = {
   description: string;
   publishedAt: string;
   privacyStatus: string;
+  publishAt: string | null;
   defaultLanguage: string | null;
   defaultAudioLanguage: string | null;
   thumbnails: Record<string, { url: string; width: number | null; height: number | null }>;
