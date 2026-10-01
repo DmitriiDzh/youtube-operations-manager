@@ -523,7 +523,7 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 
 ---
 
-### 2.16a Automatic device sync (`src/lib/device-sync/`) — **IMPLEMENTED** (feature branch `feature/device-auto-sync`, until merged)
+### 2.16a Automatic device sync (`src/lib/device-sync/`) — **IMPLEMENTED**, в `dev` (`21bb583`)
 
 - **Ответственность:** серверный планировщик поверх §2.16. Раз в 30 с:
   - экспорт при локальных изменениях (не чаще раза в минуту);
