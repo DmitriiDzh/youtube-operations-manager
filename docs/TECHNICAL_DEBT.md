@@ -1489,6 +1489,8 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   - "Run dry-run preview" on a LIVE batch calls Prepare, which leaves the batch `RUNNING` with
     `AWAITING_EXECUTION` rows. The UI shows Execute only for `PENDING` batches.
   - `recoverBatch` would clean up, but nothing in the app calls it.
+  - A live write with an ambiguous outcome leaves a row `UNKNOWN`. That is recovery mode
+    (RISK-16), and `resolveUnknownLedgerRow` is not reachable from the app either.
 - **Found during:** reviews of automatic device sync (BL-111), 2026-10-01. All of this predates
   that feature.
 - **Actual risk:**
