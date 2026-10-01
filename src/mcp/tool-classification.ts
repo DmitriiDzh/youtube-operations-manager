@@ -4,7 +4,7 @@
  * tool that is missing from this table (fails at construction, and the inventory test fails the
  * suite), so a new tool can never silently appear in agent sessions unclassified.
  *
- * - `bound`: available to a channel-bound agent; the process-wide agent scope
+ * - `bound`: available to a channel-bound agent; the per-request agent scope
  *   (`src/lib/agent-session`) plus the tool's own checks confine it to the bound channel.
  * - `operator-only`: never registered in an agent session. Identity/selection switching (hole #1/#2),
  *   and the global operations workspace (owner decision D2: channel folders only). Market tools are

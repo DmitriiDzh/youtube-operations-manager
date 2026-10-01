@@ -11,6 +11,7 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { runInAgentSession } from "@/lib/agent-session";
+import { isDomainError } from "@/lib/shared-domain";
 import type { AgentTokenBinding } from "@/lib/agent-tokens";
 import { isLoopbackRequest } from "./loopback";
 
@@ -30,7 +31,8 @@ export type AgentMcpErrorCode =
   | "AGENT_ENDPOINT_METHOD_NOT_ALLOWED"
   | "MCP_CONNECTION_DISABLED"
   | "AGENT_TOKEN_REQUIRED"
-  | "AGENT_TOKEN_INVALID";
+  | "AGENT_TOKEN_INVALID"
+  | "AGENT_ENDPOINT_UNAVAILABLE";
 
 function errorResponse(status: number, code: AgentMcpErrorCode, message: string, headers?: Record<string, string>): Response {
   return new Response(JSON.stringify({ error: { code, message } }), {
@@ -64,7 +66,12 @@ export function createAgentMcpEndpoint(deps: AgentMcpEndpointDeps) {
     let binding: AgentTokenBinding;
     try {
       binding = await deps.verifyToken(token);
-    } catch {
+    } catch (error) {
+      // Only a real "token not accepted" is a 401. A database/initialization failure must not tell an agent
+      // its (perfectly good) token was revoked -- that would send the operator chasing the wrong problem.
+      if (!isDomainError(error) || error.code !== "AGENT_TOKEN_INVALID") {
+        return errorResponse(503, "AGENT_ENDPOINT_UNAVAILABLE", "The app could not verify the token right now (database unavailable). Open the app and check /recovery, then retry.");
+      }
       return errorResponse(401, "AGENT_TOKEN_INVALID", "The agent token is unknown or has been revoked. Issue a new one in Settings → Channels.");
     }
 

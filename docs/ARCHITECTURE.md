@@ -2055,8 +2055,8 @@ Plan, the inventory of holes it closes, the owner decisions (D0–D5) and the ac
 **Why choke points.** Before this phase, channel scoping rested on one mutable column,
 `users.selected_channel_id`, shared by the Web UI and every agent. Agents could repoint it
 (`write_channel_select`) or sidestep it with a caller-supplied `credentialRef`. Instead of adding a
-check to each of 57 MCP tools and roughly 70 CLI commands, a process-wide immutable scope
-(`src/lib/agent-session`, a zero-import leaf) is consulted at the two functions every path already
+check to each of 57 MCP tools and roughly 70 CLI commands, a per-request immutable scope
+(`src/lib/agent-session`, an AsyncLocalStorage leaf; process-wide before ADR 0013) is consulted at the two functions every path already
 funnels through:
 - `db.ts`'s `getSelectedChannelId` / `setSelectedChannelId`: the bound channel, and a no-op
   write. The no-op is not an error, because `apply` and playlist writes persist the selection

@@ -65,7 +65,7 @@ test("AC-HM-01: loopback Host values are accepted, with or without a port", () =
 });
 
 test("AC-HM-01: a non-loopback, missing or malformed Host is rejected", () => {
-  for (const host of ["evil.example", "evil.example:3000", "127.0.0.1.evil.example", "localhost.evil.example", "192.168.1.5:3000", "0.0.0.0:3000", "localhost:99999999", "local host"]) {
+  for (const host of ["localhost.", "a@localhost", "localhost,evil.example", "localhost:3000@evil.example", "evil.example:3000", "127.0.0.1.evil.example", "localhost.evil.example", "192.168.1.5:3000", "0.0.0.0:3000", "localhost:99999999", "local host"]) {
     assert.equal(isLoopbackRequest(new Headers({ host })), false, JSON.stringify(host));
   }
   assert.equal(isLoopbackRequest(new Headers()), false);
@@ -133,6 +133,21 @@ test("AC-HM-03: missing / non-Bearer / empty / unknown token -> 401 with an expl
   assert.equal(state.createdServers, 0);
 });
 
+test("a non-token verification failure (database down) is a 503, never a false 'token revoked' 401", async () => {
+  const endpoint = createAgentMcpEndpoint({
+    isConnectionEnabled: async () => true,
+    verifyToken: async () => {
+      throw new Error("SQLITE_BUSY");
+    },
+    createServer: (options) => createMcpServer(undefined, options),
+  });
+  const response = await endpoint.handle(rpc(LIST_TOOLS, withToken("token-a")));
+  assert.equal(response.status, 503);
+  const error = await errorOf(response);
+  assert.equal(error.code, "AGENT_ENDPOINT_UNAVAILABLE");
+  assert.equal(JSON.stringify(error).includes("SQLITE_BUSY"), false);
+});
+
 // ---- AC-HM-04: tool list --------------------------------------------------------------------
 
 test("AC-HM-04: a valid token lists exactly the bound tools; no operator-only tool appears", async () => {
@@ -186,22 +201,22 @@ test("AC-HM-07: interleaved requests for A, B and an operator path each run in t
     verifyToken: async (token) => (token === "token-a" ? BINDING_A : BINDING_B),
     createServer: (options) => {
       const server = createMcpServer(undefined, options);
-      // Probe tool: records the ambient scope before and after an await that lets other requests run.
-      (server as unknown as { registerTool: (...args: unknown[]) => void }).registerTool(
-        "scope_probe",
-        { description: "test probe" },
-        async () => {
-          seen.push([options.agentSession.channelId, getAgentSession()?.channelId ?? null]);
-          await gate(options.agentSession.channelId === "UC_A" ? 40 : 5);
-          seen.push([options.agentSession.channelId, getAgentSession()?.channelId ?? null]);
-          return { content: [{ type: "text" as const, text: "ok" }] };
-        }
-      );
+      // Probe: wraps a REAL production tool ("whoami") so the real registerTool wrapper (classification,
+      // assertAgentSession, reverify) runs, and records the ambient scope before and after an await that
+      // lets the other requests run.
+      const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown, extra: unknown) => Promise<unknown> }> })._registeredTools;
+      const real = tools.agent_get_capabilities.handler;
+      tools.agent_get_capabilities.handler = async (args, extra) => {
+        seen.push([options.agentSession.channelId, getAgentSession()?.channelId ?? null]);
+        await gate(options.agentSession.channelId === "UC_A" ? 40 : 5);
+        seen.push([options.agentSession.channelId, getAgentSession()?.channelId ?? null]);
+        return real(args, extra);
+      };
       return server;
     },
   });
   const probe = (token: string) =>
-    endpoint.handle(rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "scope_probe", arguments: {} } }, withToken(token)));
+    endpoint.handle(rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "agent_get_capabilities", arguments: {} } }, withToken(token)));
 
   const operatorSamples: Array<string | null> = [];
   await Promise.all([
