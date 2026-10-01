@@ -190,3 +190,31 @@ test("AC-10-23: resolve() returns false immediately when ctx.userId is missing, 
   assert.equal(resolved, false);
   assert.equal(called, false);
 });
+
+// Phase 13 (review round 5/6): III.E.4.h -- another channel's YouTube API values are never handed to
+// the AI as evidence text; only that an observation exists, and when.
+test("P13: describe() for API-sourced competitor snapshots carries no counts and no video title; manual ones keep theirs", async () => {
+  const resolver = createRealEvidenceReferenceResolver({
+    analyticsCore: createFakeAnalyticsCore([]),
+    marketIntelligenceCore: {
+      async listChannelSnapshots() {
+        return { snapshots: [{ snapshotId: "c1", source: "youtube.channels.list", observedAt: "2026-09-30T00:00:00.000Z", subscriberCount: 123457, viewCount: 9876543, videoCount: 321 }, { snapshotId: "c2", source: "manual observation", observedAt: "2026-09-29T00:00:00.000Z", subscriberCount: 777001, viewCount: null, videoCount: null }] as never };
+      },
+      async listVideoSnapshots() {
+        return { snapshots: [{ snapshotId: "v1", videoId: "vidAAA", source: "youtube.videos.list", title: "Secret Competitor Title", observedAt: "2026-09-30T00:00:00.000Z", viewCount: 55555, likeCount: 4444 }] as never };
+      },
+      async listTrendCandidates() {
+        return { trendCandidates: [] };
+      },
+    },
+  } as never);
+  const channel = await resolver.describe({ sourceType: "phase9_channel_snapshot", researchChannelId: "UCr1", snapshotId: "c1" } as never, { userId: "u1" });
+  const video = await resolver.describe({ sourceType: "phase9_video_snapshot", researchChannelId: "UCr1", snapshotId: "v1" } as never, { userId: "u1" });
+  for (const leaked of ["123457", "9876543", "321", "55555", "4444", "Secret Competitor Title"]) {
+    assert.ok(!channel.includes(leaked) && !video.includes(leaked), `leaked ${leaked}`);
+  }
+  assert.match(channel, /2026-09-30/);
+  assert.match(video, /2026-09-30/);  // Review round 7: the operator's own manual observation is not API data and keeps its values.
+  const manual = await resolver.describe({ sourceType: "phase9_channel_snapshot", researchChannelId: "UCr1", snapshotId: "c2" } as never, { userId: "u1" });
+  assert.match(manual, /777001/);
+});

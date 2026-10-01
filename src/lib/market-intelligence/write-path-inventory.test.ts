@@ -95,7 +95,16 @@ const ALLOWED_IMPORTER_DIRS = [path.join(SRC_ROOT, "lib", "market-intelligence")
 // intelligence entries would need deleting too, a visible, understood coordination point, not a
 // hidden coupling. Scoped to ONLY the raw snake_case table-name strings, never the camelCase
 // TypeScript symbols above -- this file must still fail if it ever imports actual business logic.
-const SNAKE_CASE_TABLE_NAME_EXEMPT_FILES = [path.join(SRC_ROOT, "lib", "snapshot", "contracts.ts")];
+// Phase 13 slice 13.1/13.2: the YouTube API data-policy classification must name every table (its
+// own completeness test enforces that), and its purge test seeds those tables -- same narrow,
+// snake_case-only exemption as the snapshot allowlist.
+const SNAKE_CASE_TABLE_NAME_EXEMPT_FILES = [
+  path.join(SRC_ROOT, "lib", "snapshot", "contracts.ts"),
+  path.join(SRC_ROOT, "lib", "youtube-data-policy", "contracts.ts"),
+  path.join(SRC_ROOT, "lib", "youtube-data-policy", "services.test.ts"),
+  // Phase 13 slice 13.8: the Wikipedia-signals test seeds a topic row by raw SQL (its links' FK target).
+  path.join(SRC_ROOT, "lib", "wikipedia-signals", "services.test.ts"),
+];
 
 function isSnakeCaseTableName(symbol: string): boolean {
   return /^[a-z]+(?:_[a-z]+)+$/.test(symbol);

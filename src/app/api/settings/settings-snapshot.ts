@@ -12,6 +12,8 @@ type Readers = {
   analyticsSync: () => Promise<{ localTime: string; timezone: string }>;
   dataApiReadsEnabled: () => Promise<boolean>;
   analyticsReadsEnabled: () => Promise<boolean>;
+  youtubeFeedReadsEnabled: () => Promise<boolean>;
+  wikipediaReadsEnabled: () => Promise<boolean>;
   gatewayTraffic: () => Promise<unknown>;
   cloudQuotaStatus: () => Promise<unknown>;
   operationsWorkspacePath: () => Promise<string | null>;
@@ -44,6 +46,8 @@ export async function buildSettingsSnapshot(readers: Readers) {
     analyticsSyncTimezone: analyticsSync?.timezone ?? null,
     dataApiReadsEnabled: values.dataApiReadsEnabled as boolean | null,
     analyticsReadsEnabled: values.analyticsReadsEnabled as boolean | null,
+    youtubeFeedReadsEnabled: values.youtubeFeedReadsEnabled as boolean | null,
+    wikipediaReadsEnabled: values.wikipediaReadsEnabled as boolean | null,
     gatewayTraffic: values.gatewayTraffic ?? null,
     cloudQuotaStatus: values.cloudQuotaStatus ?? null,
     operationsWorkspacePath: values.operationsWorkspacePath as string | null,

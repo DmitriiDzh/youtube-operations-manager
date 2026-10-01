@@ -1,21 +1,19 @@
+import type { MusicChartEntry } from "@/lib/youtube-read-gateway";
+import { SEARCH_LIST_DAILY_CALL_LIMIT, SEARCH_LIST_UNIT_COST, startOfYoutubeQuotaDay } from "@/lib/youtube-quota";
+import { API_DATA_RETENTION_DAYS } from "@/lib/youtube-data-policy/contracts";
+import { MUSIC_CHART_REGIONS } from "./contracts";
 import { YOUTUBE_READ_SCOPE } from "@/lib/auth";
 import {
   assessObservationFreshness,
   assessSnapshotCompleteness,
   toHiddenSubscriberCountFlag,
 } from "./data-quality";
-import { computeSnapshotVelocity, type FieldVelocity, type SnapshotWithTime } from "./derived-metrics";
+import { type FieldVelocity } from "./derived-metrics";
 import {
   BREAKOUT_MIN_BASELINE_SAMPLE_SIZE,
   ageNormalizedTolerance,
-  assessBreakout,
-  assessEmergingChannel,
-  computeAgeNormalizedViews,
-  computeChannelVideoBaseline,
-  type AgeNormalizedBasis,
   type BreakoutAssessment,
   type EmergingChannelAssessment,
-  type VideoSnapshotWithTime,
 } from "./historical-intelligence";
 import {
   DomainError,
@@ -262,14 +260,23 @@ type StoredMarketDiscoveryCandidateForService = {
   createdVia: string;
 };
 
-function toMarketDiscoveryCandidate(row: StoredMarketDiscoveryCandidateForService): MarketDiscoveryCandidate {
+/** Phase 13 (review round 6): a candidate's title/reason come from `search.list` (another channel's
+ * API data, III.E.4.d). Past 30 days since it was last seen they are never served, even before the
+ * purge has run -- an undecided candidate is hidden, a decided one keeps only its id and decision
+ * (owner msg 1139), the same rule the purge applies. */
+function candidateExpired(row: StoredMarketDiscoveryCandidateForService, now: Date): boolean {
+  return now.getTime() - row.lastSeenAt.getTime() > API_DATA_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+}
+
+function toMarketDiscoveryCandidate(row: StoredMarketDiscoveryCandidateForService, now: Date): MarketDiscoveryCandidate {
+  const expired = candidateExpired(row, now);
   return {
     channelId: row.id,
-    title: row.title,
+    title: expired ? "" : row.title,
     status: row.status,
     discoverySource: row.discoverySource,
     discoveryQuery: row.discoveryQuery,
-    reasonDiscovered: row.reasonDiscovered,
+    reasonDiscovered: expired ? null : row.reasonDiscovered,
     firstSeenAt: row.firstSeenAt.toISOString(),
     lastSeenAt: row.lastSeenAt.toISOString(),
   };
@@ -422,15 +429,23 @@ type ServiceDependencies = {
       credentials: ResolvedCredentials;
       channelId: string;
     }): Promise<PublicChannelSnapshot | null>;
-    // Phase 9 slice 9B.
-    listUploadsPlaylistFirstPageVideoIds(args: {
+    // Phase 9 slice 9B; Phase 13: with each item's title and publish time (same 1 unit).
+    listUploadsPlaylistFirstPage(args: {
       credentials: ResolvedCredentials;
       uploadsPlaylistId: string;
-    }): Promise<string[]>;
+    }): Promise<{ videoId: string; title: string; publishedAt: string | null }[]>;
     getPublicVideoSnapshots(args: {
       credentials: ResolvedCredentials;
       videoIds: string[];
     }): Promise<PublicVideoSnapshot[]>;
+    /** Phase 13 slice 13.9: YouTube's Trending Music chart for a region (1 unit). */
+    getMostPopularMusicVideos(args: { credentials: ResolvedCredentials; regionCode: string }): Promise<MusicChartEntry[]>;
+    // Phase 13 slices 13.5/13.6 -- the RSS feed is the zero-quota FALLBACK for the uploads list;
+    // batchGetStats (own bucket) is the primary source of statistics, videos.list its fallback.
+    /** The channel's RSS feed (newest ~15 uploads): no quota at all. */
+    listChannelFeedVideoIds(args: { channelId: string }): Promise<{ videoId: string; title: string; publishedAt: string | null }[]>;
+    /** `videos.batchGetStats`: 1 unit of its own bucket, not the shared pool. */
+    getPublicVideoStatsBatch(args: { credentials: ResolvedCredentials; videoIds: string[] }): Promise<PublicVideoSnapshot[]>;
     // Phase 9 slice 9C.
     searchPublicChannels(args: {
       credentials: ResolvedCredentials;
@@ -473,10 +488,14 @@ type ServiceDependencies = {
   getMarketIntelligenceDailyQuotaBudgetUnits(): Promise<number | null>;
   setMarketIntelligenceDailyQuotaBudgetUnits(units: number | null): Promise<void>;
   getMarketIntelligenceUnitsSpentSince(since: Date): Promise<number>;
+  /** Phase 13 slice 13.4: `search.list` calls since `since` (their own quota bucket). */
+  countMarketDiscoverySearchesSince(since: Date): Promise<number>;
   // Phase 9 slice 9G, part A (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md).
   getLatestMarketIntelligenceCollectionRunForChannel(
     researchChannelId: string
   ): Promise<StoredMarketIntelligenceCollectionRunForService | null>;
+  /** Phase 13 (review round 9): any `success` collection run ever, for `neverObserved`. */
+  hasSuccessfulMarketIntelligenceCollectionRun(researchChannelId: string): Promise<boolean>;
   claimStaleResearchChannelsForCollection(args: {
     now: Date;
     staleCutoff: Date;
@@ -506,7 +525,7 @@ type ServiceDependencies = {
     reasonDiscovered?: string | null;
     createdVia: string;
   }): Promise<void>;
-  touchMarketDiscoveryCandidateLastSeen(channelId: string, at: Date): Promise<void>;
+  touchMarketDiscoveryCandidateLastSeen(channelId: string, at: Date, title: string, reasonDiscovered: string | null): Promise<void>;
   setMarketDiscoveryCandidateStatus(channelId: string, status: DiscoveryCandidateStatus): Promise<void>;
   insertMarketDiscoveryRun(input: {
     query: string;
@@ -644,80 +663,43 @@ export const TREND_EVIDENCE_FRESH_WINDOW_DAYS = 30;
  * `RECENT_VIDEO_WINDOW_DAYS` of `now` -- absent from the returned map for every other video (too
  * old, or no publish date on record at all), never a fabricated non-breakout entry for those.
  */
-function computeRecentVideoBreakouts(
-  videoSnapshotsByVideoId: Map<string, MarketVideoSnapshot[]>,
-  now: Date
-): Map<string, BreakoutAssessment> {
-  // Recent-video age-normalized points at CHANNEL_BASELINE_DAY_OFFSET, one per video that has a
-  // publishedAt within RECENT_VIDEO_WINDOW_DAYS -- see the plan's own §2/§4 for why 180 days and
-  // why a video with no publishedAt is excluded entirely rather than guessed. `basis` is kept
-  // alongside `viewCount` (found necessary by advisor review: collapsing "not yet old enough",
-  // "no snapshot close enough to day 7", and "no baseline data" into assessBreakout's own single
-  // generic "no view count available" reason is exactly the ambiguity 9D's own basis vocabulary
-  // exists to avoid).
-  const recentVideoPoints: { videoId: string; viewCount: number | null; basis: AgeNormalizedBasis }[] = [];
-  for (const [videoId, snapshots] of videoSnapshotsByVideoId) {
-    const publishedAtRaw = snapshots.find((s) => s.publishedAt !== null)?.publishedAt ?? null;
-    if (publishedAtRaw === null) continue;
-    const publishedAt = new Date(publishedAtRaw);
-    const ageDays = (now.getTime() - publishedAt.getTime()) / MS_PER_DAY;
-    if (ageDays > RECENT_VIDEO_WINDOW_DAYS) continue;
+// ---------------------------------------------------------------------------
+// Phase 13 slice 13.3 (docs/roadmap/plans/PHASE_13_PLAN.md, owner decision D1 = a, msg 1129): YouTube
+// API Developer Policies III.E.4.h -- API Clients "must not ... access or use API Data to create new or
+// derived data or metrics". Every watchlist channel is someone else's channel (Non-Authorized Data), so
+// velocity, breakout and emerging-channel assessments built from their snapshots are WITHHELD: the
+// fields stay in the response shape (agent contract), but carry no computed value and say why. The
+// raw observations themselves (each with its time, III.E.4.f) are still returned, for at most 30 days
+// (13.2). The pure functions in derived-metrics.ts/historical-intelligence.ts are kept for our own
+// channels' (Authorized) data.
+// ---------------------------------------------------------------------------
+export const DERIVED_METRICS_POLICY_REASON =
+  "Not computed: YouTube API Developer Policies III.E.4.h prohibit metrics derived from other channels' API data.";
 
-    const snapshotsWithTime: VideoSnapshotWithTime[] = snapshots.map((s) => ({
-      viewCount: s.viewCount,
-      observedAt: new Date(s.observedAt),
-    }));
-    const [point] = computeAgeNormalizedViews(snapshotsWithTime, publishedAt, [CHANNEL_BASELINE_DAY_OFFSET], now);
-    recentVideoPoints.push({ videoId, viewCount: point.viewCount, basis: point.basis });
-  }
+const WITHHELD_FIELD_VELOCITY: FieldVelocity = { value: null, basis: "withheld_by_policy" };
 
-  // LEAVE-ONE-OUT baseline, computed separately per video from every OTHER recent video's own
-  // point -- never including the video being assessed in its own baseline (plan §4's own
-  // hand-computed disagreement fixture explains why this, not "include-self", was chosen).
-  // `computeChannelVideoBaseline` already filters out null viewCounts on its own, so a video
-  // with no usable day-offset point (insufficient_history/not_yet_reached) is automatically
-  // excluded from every OTHER video's baseline sample, with no extra filtering needed here.
-  const result = new Map<string, BreakoutAssessment>();
-  for (const { videoId, viewCount, basis } of recentVideoPoints) {
-    const others = recentVideoPoints.filter((p) => p.videoId !== videoId).map((p) => ({ viewCount: p.viewCount }));
-    const baseline = computeChannelVideoBaseline(others, CHANNEL_BASELINE_DAY_OFFSET);
-    if (basis !== "observed") {
-      // An honest, specific reason instead of assessBreakout's own generic "no view count
-      // available for this video or the channel baseline" -- that single generic reason cannot
-      // distinguish "too young to measure yet" from "old enough, but never observed close enough
-      // to day 7", the exact distinction spec §10's own "no data is inherently ambiguous" finding
-      // (9I's own DataQualityFlag vocabulary) was built to preserve.
-      const reason =
-        basis === "not_yet_reached"
-          ? `this video is not yet ${CHANNEL_BASELINE_DAY_OFFSET} days old`
-          : `no snapshot observed within ${ageNormalizedTolerance(CHANNEL_BASELINE_DAY_OFFSET)} days of this video's own day ${CHANNEL_BASELINE_DAY_OFFSET} mark`;
-      result.set(videoId, {
-        videoId,
-        dayOffset: CHANNEL_BASELINE_DAY_OFFSET,
-        videoViewCount: null,
-        channelBaselineMedianViewCount: baseline.medianViewCount,
-        ratio: null,
-        isBreakout: false,
-        reason,
-      });
-      continue;
-    }
-    result.set(videoId, assessBreakout(videoId, { viewCount, dayOffset: CHANNEL_BASELINE_DAY_OFFSET }, baseline));
-  }
-  return result;
+function withheldEmergingChannel(researchChannelId: string): EmergingChannelAssessment {
+  return {
+    researchChannelId,
+    recentBreakoutVideoCount: 0,
+    subscriberVelocityPerDay: null,
+    isEmerging: false,
+    reasons: [DERIVED_METRICS_POLICY_REASON],
+  };
 }
+
 
 // Phase 9 slice 9B -- real YouTube Data API v3 quota costs (`channels.list`/`playlistItems.list`/
 // `videos.list` are each a flat 1 unit regardless of requested parts, per the API's own published
 // quota table); a channel is attempted for at most these 3 real calls (enumeration is capped to a
 // single page, `getPublicVideoSnapshots` to a single ≤50-id batch -- see the read gateway's own
-// `listUploadsPlaylistFirstPageVideoIds` doc comment for why cost stays exactly 1 unit per call,
+// `listUploadsPlaylistFirstPage` doc comment for why cost stays exactly 1 unit per call,
 // deterministically, never dependent on how many ids happen to come back).
 const CHANNELS_LIST_UNIT_COST = 1;
 const PLAYLIST_ITEMS_LIST_UNIT_COST = 1;
 // This flat charge is only correct because `getPublicVideoSnapshots` is fed at most
 // `YOUTUBE_VIDEOS_LIST_BATCH_SIZE` (50) ids -- itself only true because
-// `listUploadsPlaylistFirstPageVideoIds` (the sole source of the ids passed here) caps its own
+// `listUploadsPlaylistFirstPage` (the sole source of the ids passed here) caps its own
 // single-page result to that same limit. If either constant ever changes independently of the
 // other, this flat 1-unit charge would silently under-count a real `videos.list` call that had to
 // batch into 2+ requests (found by independent review -- not currently reachable, since both call
@@ -732,9 +714,8 @@ const VIDEOS_LIST_UNIT_COST = 1;
 // partial channel.
 const PER_CHANNEL_WORST_CASE_UNIT_COST = CHANNELS_LIST_UNIT_COST + PLAYLIST_ITEMS_LIST_UNIT_COST + VIDEOS_LIST_UNIT_COST;
 
-// Phase 9 slice 9C -- YouTube's own published quota cost for `search.list`, two orders of
-// magnitude above any `.list` read (docs/roadmap/plans/PHASE_9_PLAN.md §11).
-const SEARCH_LIST_UNIT_COST = 100;
+// Phase 13 slice 13.4: `search.list` now costs 1 unit of its OWN bucket (100 calls per quota day),
+// not 100 units of the shared pool (official quota page, revision history 2026-06-01).
 
 // A channel is stale after 24h with no successful collection -- deliberately a plain elapsed-time
 // check, not Phase 8's own local-wall-clock-boundary rule (`AGENTS.md` §M: no cross-feature-module
@@ -745,9 +726,8 @@ const SEARCH_LIST_UNIT_COST = 100;
 // generous relative to a single channel's real work (at most 3 outbound HTTP calls).
 const MARKET_INTELLIGENCE_CLAIM_EXPIRY_MS = 15 * 60 * 1000;
 
-function startOfUtcDay(date: Date): Date {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-}
+// Phase 13 slice 13.4: the YouTube quota day starts at midnight PACIFIC time, not UTC.
+const startOfQuotaDay = startOfYoutubeQuotaDay;
 
 /**
  * The upfront, zero-cost preconditions a real `search.list` call needs -- extracted so
@@ -769,13 +749,15 @@ async function assertDiscoveryPreconditions(deps: ServiceDependencies, now: Date
     });
   }
 
-  const spentToday = await deps.getMarketIntelligenceUnitsSpentSince(startOfUtcDay(now));
-  const remaining = budget - spentToday;
-  if (remaining < SEARCH_LIST_UNIT_COST) {
+  // The operator's budget still has to be set (it is the switch that enables discovery at all), but
+  // a search no longer spends it: searches have their own bucket of SEARCH_LIST_DAILY_CALL_LIMIT.
+  const searchesToday = await deps.countMarketDiscoverySearchesSince(startOfQuotaDay(now));
+  const remaining = SEARCH_LIST_DAILY_CALL_LIMIT - searchesToday;
+  if (remaining < 1) {
     throw new DomainError({
       code: "MARKET_INTELLIGENCE_QUOTA_EXCEEDED",
-      message: `This search costs ${SEARCH_LIST_UNIT_COST} units; only ${Math.max(remaining, 0)} remain today`,
-      details: { remaining: Math.max(remaining, 0), required: SEARCH_LIST_UNIT_COST },
+      message: `YouTube allows ${SEARCH_LIST_DAILY_CALL_LIMIT} searches per day; all are used. The limit resets at midnight Pacific time.`,
+      details: { remaining: 0, required: 1 },
     });
   }
 
@@ -784,7 +766,12 @@ async function assertDiscoveryPreconditions(deps: ServiceDependencies, now: Date
   await deps.youtubeApi.assertReadsAvailable();
 }
 
+export const MUSIC_CHART_CACHE_MS = 30 * 60 * 1000;
+
 export function createMarketIntelligenceServices(deps: ServiceDependencies) {
+  // Per services instance (one per process in production); current-only, never persisted (13.9).
+  const musicChartCache = new Map<string, { fetchedAt: Date; entries: MusicChartEntry[] }>();
+
   // Captured in a local `const` (rather than returned directly) so `approveMarketResearchRequest`
   // (Phase 9 slice 9G, part B) can call `services.discoverChannels(...)` directly, reusing its
   // entire existing pipeline (precondition check, credential resolution, search/dedup/insert,
@@ -1044,7 +1031,14 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         | StoredMarketChannelSnapshotForService
         | undefined;
       const dataQualityFlags: DataQualityFlag[] = [];
-      const freshnessFlag = assessObservationFreshness(latestChannelSnapshot?.observedAt ?? null, deps.clock.now());
+      // Phase 13 (review rounds 9/11): API snapshots expire after 30 days, so an empty visible series can
+      // mean "collected long ago, since expired" rather than "never collected". The latter is
+      // `neverObserved`; the former is stale by definition (the policy window is shorter than the stale window).
+      const everCollectedSuccessfully =
+        channelSnapshotRows.length === 0 && (await deps.hasSuccessfulMarketIntelligenceCollectionRun(parsedInput.channelId));
+      const freshnessFlag = everCollectedSuccessfully
+        ? "stale_observation"
+        : assessObservationFreshness(latestChannelSnapshot?.observedAt ?? null, deps.clock.now());
       if (freshnessFlag) dataQualityFlags.push(freshnessFlag);
       if (latestChannelSnapshot) {
         const hiddenFlag = toHiddenSubscriberCountFlag(latestChannelSnapshot.hiddenSubscriberCount);
@@ -1069,7 +1063,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           // `assessSnapshotCompleteness` both deliberately leave "never observed at all" to their
           // caller (see their own doc comments) -- this is that check, matching the one
           // `getMarketOverview` below already reinvented independently rather than reading from here.
-          neverObserved: channelSnapshotRows.length === 0,
+          // Phase 13 (review round 9): API snapshots expire after 30 days (III.E.4.d), so an empty
+          // visible series alone no longer means "never observed" -- a past successful collection does.
+          neverObserved: channelSnapshotRows.length === 0 && !everCollectedSuccessfully,
         },
         "get watchlist entry context output"
       );
@@ -1120,18 +1116,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         "get channel intelligence summary input"
       );
       const context = await services.getWatchlistEntryContext(parsedInput);
-      const now = deps.clock.now();
 
-      // Converted once, here, from getWatchlistEntryContext's own ISO-string contract to the `Date`
-      // shape derived-metrics.ts/historical-intelligence.ts's pure functions take -- never repeated
-      // ad hoc at each call site below (found necessary by advisor review).
-      const channelSnapshotsWithTime: SnapshotWithTime[] = context.channelSnapshots.map((s) => ({
-        subscriberCount: s.subscriberCount,
-        viewCount: s.viewCount,
-        videoCount: s.videoCount,
-        observedAt: new Date(s.observedAt),
-      }));
-      const velocity = computeSnapshotVelocity(channelSnapshotsWithTime, CHANNEL_VELOCITY_WINDOW_DAYS, now);
+      // 13.3: no velocity from other channels' API data (III.E.4.h).
+      const velocity = { subscriberCount: WITHHELD_FIELD_VELOCITY, viewCount: WITHHELD_FIELD_VELOCITY, videoCount: WITHHELD_FIELD_VELOCITY };
 
       const videoSnapshotsByVideoId = new Map<string, MarketVideoSnapshot[]>();
       for (const snapshot of context.videoSnapshots) {
@@ -1157,12 +1144,10 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       // Phase 9 slice 9H part C -- extracted into computeRecentVideoBreakouts (a shared helper also
       // used by getMarketVideosOverview), verbatim in logic; a video absent from the returned map
       // (too old, or no publishedAt at all) is simply excluded from this array, exactly as before.
-      const recentBreakoutVideos: BreakoutAssessment[] = [
-        ...computeRecentVideoBreakouts(videoSnapshotsByVideoId, now).values(),
-      ];
-
-      const recentBreakoutVideoCount = recentBreakoutVideos.filter((v) => v.isBreakout).length;
-      const emergingChannel = assessEmergingChannel(context.channel.channelId, recentBreakoutVideoCount, velocity.subscriberCount);
+      // 13.3: breakouts and the emerging-channel assessment are metrics derived from other channels'
+      // API data (III.E.4.h) -- withheld, with the reason.
+      const recentBreakoutVideos: BreakoutAssessment[] = [];
+      const emergingChannel = withheldEmergingChannel(context.channel.channelId);
 
       return parseWithSchema(
         getChannelIntelligenceSummaryOutputSchema,
@@ -1333,6 +1318,49 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * `videoSnapshots` array (RISK-78), and this action genuinely needs each video's own full
      * snapshot series (for `velocity`), not just its already-summarized latest point.
      */
+    /**
+     * Phase 13 slice 13.9 -- YouTube's Trending Music chart for one region, as of now. Current-only:
+     * held in memory for `MUSIC_CHART_CACHE_MS` (so repeated views cost nothing) and never written to
+     * the database, so no retention applies (III.E.4.d) and nothing is derived from it (III.E.4.h).
+     */
+    async getMusicChart(input: { regionCode: string; credentialRef: unknown }): Promise<{
+      regionCode: string;
+      fetchedAt: string;
+      entries: MusicChartEntry[];
+    }> {
+      const regionCode = String(input.regionCode ?? "").toUpperCase();
+      if (!(MUSIC_CHART_REGIONS as readonly string[]).includes(regionCode)) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: `regionCode must be one of ${MUSIC_CHART_REGIONS.join(", ")}`,
+          details: {},
+        });
+      }
+      const now = deps.clock.now();
+      const cached = musicChartCache.get(regionCode);
+      if (cached && now.getTime() - cached.fetchedAt.getTime() < MUSIC_CHART_CACHE_MS) {
+        return { regionCode, fetchedAt: cached.fetchedAt.toISOString(), entries: cached.entries };
+      }
+      await deps.youtubeApi.assertReadsAvailable();
+      const credentials = await deps.authResolver.resolve({
+        credentialRef: input.credentialRef,
+        requiredScopes: [YOUTUBE_READ_SCOPE],
+      });
+      const entries = await deps.youtubeApi.getMostPopularMusicVideos({ credentials, regionCode });
+      musicChartCache.set(regionCode, { fetchedAt: now, entries });
+      return { regionCode, fetchedAt: now.toISOString(), entries };
+    },
+
+    /** Phase 13 slice 13.4: today's use of YouTube's separate search bucket (quota day = Pacific). */
+    async getSearchUsage(): Promise<{ searchesUsedToday: number; dailyLimit: number; quotaDayStartedAt: string }> {
+      const since = startOfQuotaDay(deps.clock.now());
+      return {
+        searchesUsedToday: await deps.countMarketDiscoverySearchesSince(since),
+        dailyLimit: SEARCH_LIST_DAILY_CALL_LIMIT,
+        quotaDayStartedAt: since.toISOString(),
+      };
+    },
+
     async getMarketVideosOverview(): Promise<{
       videos: {
         videoId: string;
@@ -1357,7 +1385,6 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       };
     }> {
       const { channels } = await services.listWatchlist();
-      const now = deps.clock.now();
 
       const { topics } = await services.listTopics();
       const topicNameById = new Map(topics.map((t) => [t.topicId, t.name]));
@@ -1402,17 +1429,13 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           else videoSnapshotsByVideoId.set(snapshot.videoId, [snapshot]);
         }
 
-        const breakoutsByVideoId = computeRecentVideoBreakouts(videoSnapshotsByVideoId, now);
+        // 13.3: no breakouts derived from other channels' API data (III.E.4.h).
+        const breakoutsByVideoId = new Map<string, BreakoutAssessment>();
 
         for (const [videoId, snapshots] of videoSnapshotsByVideoId) {
           const latest = snapshots[snapshots.length - 1];
-          const snapshotsWithTime: SnapshotWithTime[] = snapshots.map((s) => ({
-            subscriberCount: null,
-            videoCount: null,
-            viewCount: s.viewCount,
-            observedAt: new Date(s.observedAt),
-          }));
-          const velocity = computeSnapshotVelocity(snapshotsWithTime, CHANNEL_VELOCITY_WINDOW_DAYS, now);
+          // 13.3: no per-video velocity from other channels' API data (III.E.4.h).
+          const velocity = { viewCount: WITHHELD_FIELD_VELOCITY };
 
           videos.push({
             videoId,
@@ -1725,7 +1748,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       }
 
       const now = deps.clock.now();
-      const spentToday = await deps.getMarketIntelligenceUnitsSpentSince(startOfUtcDay(now));
+      const spentToday = await deps.getMarketIntelligenceUnitsSpentSince(startOfQuotaDay(now));
       let remaining = budget - spentToday;
       if (remaining <= 0) {
         return parseWithSchema(runCollectionIfStaleOutputSchema, zeroed, "run collection if stale output");
@@ -1763,7 +1786,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       // eliminate -- see this function's own top-level doc comment) the race window a second
       // concurrent caller's own stale pre-claim `spentToday` read would otherwise leave open
       // (advisor review, before implementation).
-      const spentAfterClaim = await deps.getMarketIntelligenceUnitsSpentSince(startOfUtcDay(now));
+      const spentAfterClaim = await deps.getMarketIntelligenceUnitsSpentSince(startOfQuotaDay(now));
       remaining = budget - spentAfterClaim;
       if (remaining <= 0) {
         for (const claimedId of claimedIds) {
@@ -1839,22 +1862,53 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
             createdVia: "web_ui",
           });
 
+          // Phase 13 slices 13.5/13.6, as revised by review round 1: the uploads list (ids, titles,
+          // publish times) comes from the uploads playlist's first page -- 1 pool unit, up to 50 videos;
+          // the RSS feed (newest ~15, no quota) is its FALLBACK, so collection still finds uploads when
+          // that call fails (e.g. the pool is exhausted). Statistics come from videos.batchGetStats (its
+          // own bucket) with videos.list (1 pool unit) as the fallback. Worst case unchanged (3).
+          type ListedVideo = { videoId: string; title: string; publishedAt: string | null };
+          let listed: ListedVideo[] | null = null;
+          let playlistError: unknown = null;
           if (snapshot.uploadsPlaylistId) {
             unitsSpentThisChannel += PLAYLIST_ITEMS_LIST_UNIT_COST;
             remaining -= PLAYLIST_ITEMS_LIST_UNIT_COST;
-            const videoIds = await deps.youtubeApi.listUploadsPlaylistFirstPageVideoIds({
-              credentials,
-              uploadsPlaylistId: snapshot.uploadsPlaylistId,
-            });
+            try {
+              listed = await deps.youtubeApi.listUploadsPlaylistFirstPage({ credentials, uploadsPlaylistId: snapshot.uploadsPlaylistId });
+            } catch (error) {
+              playlistError = error;
+            }
+          }
+          if (listed === null) {
+            try {
+              listed = await deps.youtubeApi.listChannelFeedVideoIds({ channelId: researchChannelId });
+            } catch (feedError) {
+              // Review round 2: fail closed. When the playlist call failed and the RSS fallback failed
+              // too, this channel's collection FAILED (recorded as such, retried on the failure
+              // backoff) -- never a "success" with no video data. Without an uploads playlist at all,
+              // the feed is the only source, so its failure is the failure.
+              throw playlistError ?? feedError;
+            }
+          }
+          const videoIds: string[] | null = listed ? listed.map((v) => v.videoId) : null;
+          const metaById = new Map<string, { title: string; publishedAt: string | null }>(
+            (listed ?? []).map((v) => [v.videoId, { title: v.title, publishedAt: v.publishedAt }])
+          );
+
+          if (videoIds !== null) {
             videosRequested = videoIds.length;
 
             if (videoIds.length > 0) {
-              unitsSpentThisChannel += VIDEOS_LIST_UNIT_COST;
-              remaining -= VIDEOS_LIST_UNIT_COST;
-              const videoSnapshots: PublicVideoSnapshot[] = await deps.youtubeApi.getPublicVideoSnapshots({
-                credentials,
-                videoIds,
-              });
+              let videoSnapshots: PublicVideoSnapshot[];
+              let statsSource = "youtube.videos.batchGetStats";
+              try {
+                videoSnapshots = await deps.youtubeApi.getPublicVideoStatsBatch({ credentials, videoIds });
+              } catch {
+                statsSource = "youtube.videos.list";
+                unitsSpentThisChannel += VIDEOS_LIST_UNIT_COST;
+                remaining -= VIDEOS_LIST_UNIT_COST;
+                videoSnapshots = await deps.youtubeApi.getPublicVideoSnapshots({ credentials, videoIds });
+              }
 
               // Counts only what was ACTUALLY persisted, not the raw API response length (found by
               // independent review: the previous version set videosReturned from the response
@@ -1863,6 +1917,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
               // accurate even if a later iteration throws, since it only counts completed inserts.
               videosReturned = 0;
               for (const videoSnapshot of videoSnapshots) {
+                const meta = metaById.get(videoSnapshot.videoId);
+                const title = videoSnapshot.title.length > 0 ? videoSnapshot.title : (meta?.title ?? "");
+                const publishedAt = videoSnapshot.publishedAt ?? meta?.publishedAt ?? null;
                 await deps.insertMarketVideoSnapshot({
                   id: deps.idGenerator(),
                   researchChannelId,
@@ -1870,20 +1927,18 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
                   viewCount: videoSnapshot.viewCount,
                   likeCount: videoSnapshot.likeCount,
                   commentCount: videoSnapshot.commentCount,
-                  publishedAt: videoSnapshot.publishedAt ? new Date(videoSnapshot.publishedAt) : null,
-                  // Phase 9 slice 9H part C -- costs zero additional quota, getPublicVideoSnapshots
-                  // already fetches this. Normalized to null (never "") -- data-api.ts's own `?? ""`
-                  // fallback for a response that omits snippet.title must not be stored as a
-                  // different-looking "known, empty" title from a genuinely uncaptured one.
-                  title: videoSnapshot.title.length > 0 ? videoSnapshot.title : null,
-                  source: "youtube.videos.list",
+                  publishedAt: publishedAt ? new Date(publishedAt) : null,
+                  // Phase 9 slice 9H part C -- costs zero additional quota. Normalized to null (never
+                  // "") so a genuinely uncaptured title is never stored as a "known, empty" one.
+                  title: title.length > 0 ? title : null,
+                  source: statsSource,
                   createdVia: "web_ui",
                 });
                 videosReturned += 1;
               }
             } else {
-              // The playlist WAS enumerated and genuinely has no videos -- a real, known fact
-              // (distinct from "the videos.list step was never attempted", which stays null).
+              // The uploads WERE enumerated and genuinely have no videos -- a real, known fact
+              // (distinct from "the stats step was never attempted", which stays null).
               videosReturned = 0;
             }
           }
@@ -1949,20 +2004,19 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
     /**
      * The one `search.list`-based discovery action (Phase 9 slice 9C) -- never automatic, only
-     * ever called from an explicit operator UI action (owner decision 4). Shares 9B's exact same
-     * daily unit budget/ledger (owner decision 2 set ONE budget, not one per sub-feature) --
-     * `getMarketIntelligenceUnitsSpentSince` sums both this slice's `market_discovery_runs` and
-     * 9B's `market_intelligence_collection_runs`. `null`/unset budget refuses outright
+     * ever called from an explicit operator UI action (owner decision 4). Since Phase 13 slice 13.4
+     * `search.list` has its own bucket (100 calls a day at 1 unit), counted from `market_discovery_runs`
+     * by `countMarketDiscoverySearchesSince` -- separate from collection's pool budget. `null`/unset budget refuses outright
      * (`MARKET_INTELLIGENCE_QUOTA_DISABLED`) rather than silently no-op'ing like 9B's own
      * background trigger does -- an operator who just clicked "Discover" needs to know why nothing
      * happened, not have it silently swallowed. Charged before the call resolves, same as every 9B
      * call (a thrown request still costs a real unit per YouTube's own quota accounting).
      *
      * A result already on the watchlist is never turned into a candidate; a result matching an
-     * existing candidate only touches `lastSeenAt`, never duplicates the row or resets an
+     * existing candidate only refreshes `lastSeenAt`/`title`/`reasonDiscovered`, never duplicates the row or resets an
      * operator-set `status`.
      *
-     * **The 100-unit spend is recorded on every exit path, not just when the `search.list` call
+     * **The search's spend is recorded on every exit path, not just when the `search.list` call
      * itself throws** (found by independent/advisor review: an earlier version only wrapped the
      * `search.list` call itself in try/catch -- a throw from the dedup loop afterward, e.g. a
      * `insertMarketDiscoveryCandidate` primary-key violation from an overlapping concurrent
@@ -2001,7 +2055,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
           const existingCandidate = await deps.getMarketDiscoveryCandidateById(result.channelId);
           if (existingCandidate) {
-            await deps.touchMarketDiscoveryCandidateLastSeen(result.channelId, now);
+            await deps.touchMarketDiscoveryCandidateLastSeen(result.channelId, now, result.title, result.description);
             continue;
           }
 
@@ -2019,7 +2073,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         await deps.insertMarketDiscoveryRun({
           query: parsedInput.query,
           status: "success",
-          unitsSpent: SEARCH_LIST_UNIT_COST,
+          unitsSpent: SEARCH_LIST_UNIT_COST, // 1 unit of the search bucket
           candidatesFound,
           candidatesNew: candidatesNewCount,
           ranAt: now,
@@ -2034,7 +2088,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         await deps.insertMarketDiscoveryRun({
           query: parsedInput.query,
           status: "failed",
-          unitsSpent: SEARCH_LIST_UNIT_COST,
+          unitsSpent: SEARCH_LIST_UNIT_COST, // 1 unit of the search bucket
           candidatesFound,
           candidatesNew: candidatesNewCount,
           errorMessage: error instanceof Error ? error.message : String(error),
@@ -2048,7 +2102,11 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       const rows = await deps.listMarketDiscoveryCandidates();
       return parseWithSchema(
         listDiscoveryCandidatesOutputSchema,
-        { candidates: rows.map(toMarketDiscoveryCandidate) },
+        {
+          candidates: rows
+            .filter((row) => !(row.status === "new" && candidateExpired(row, deps.clock.now())))
+            .map((row) => toMarketDiscoveryCandidate(row, deps.clock.now())),
+        },
         "list discovery candidates output"
       );
     },
@@ -2084,7 +2142,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
       await deps.setMarketDiscoveryCandidateStatus(parsedInput.channelId, parsedInput.status);
       const updated = (await deps.getMarketDiscoveryCandidateById(parsedInput.channelId))!;
-      return parseWithSchema(marketDiscoveryCandidateSchema, toMarketDiscoveryCandidate(updated), "update discovery candidate status output");
+      return parseWithSchema(marketDiscoveryCandidateSchema, toMarketDiscoveryCandidate(updated, deps.clock.now()), "update discovery candidate status output");
     },
 
     /**
@@ -2130,7 +2188,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       const candidateRow = (await deps.getMarketDiscoveryCandidateById(parsedInput.channelId))!;
       return parseWithSchema(
         promoteDiscoveryCandidateOutputSchema,
-        { channel: toResearchChannel(channelRow), candidate: toMarketDiscoveryCandidate(candidateRow) },
+        { channel: toResearchChannel(channelRow), candidate: toMarketDiscoveryCandidate(candidateRow, deps.clock.now()) },
         "promote discovery candidate output"
       );
     },

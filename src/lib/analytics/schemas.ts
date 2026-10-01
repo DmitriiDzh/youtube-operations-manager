@@ -136,6 +136,7 @@ export const getChannelOverviewOutputSchema = z
     daily: z.array(channelOverviewDailyRowSchema),
     currentTotals: channelOverviewTotalsSchema,
     previousTotals: channelOverviewTotalsSchema,
+    viewCountingChangeInComparison: z.boolean(),
   })
   .strict();
 
@@ -338,6 +339,7 @@ export const weeklyReportContentSchema = z
     syncedVideoTotals: weeklyReportMetricTotalsSchema,
     previousWeekTotals: weeklyReportMetricTotalsSchema,
     percentChange: weeklyReportPercentChangeSchema.nullable(),
+    viewCountingChangeInComparison: z.boolean().optional(),
     currentWeekDataQuality: dataQualityReportShapeSchema,
     previousWeekDataQuality: dataQualityReportShapeSchema,
     topContent: z.array(weeklyReportTopContentEntrySchema),

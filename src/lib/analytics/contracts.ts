@@ -217,6 +217,9 @@ export type GetChannelOverviewResult = {
   daily: ChannelOverviewDailyRow[];
   currentTotals: ChannelOverviewTotals;
   previousTotals: ChannelOverviewTotals;
+  /** Phase 13 slice 13.7: the "vs previous period" view comparison mixes YouTube's old and new view
+   * counting (changed 2026-08-27) -- the percent change is not like-for-like. */
+  viewCountingChangeInComparison: boolean;
 };
 
 export type DataQualityVideoSkip = {

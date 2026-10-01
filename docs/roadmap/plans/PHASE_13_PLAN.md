@@ -5,8 +5,30 @@
 implementation plan and register it as a new phase"). It follows the sources research the owner asked for in
 msg 1121 (full report with links: `PHASE_13_SOURCES_RESEARCH.md`).
 
-**Status: planned, not started.** Implementation begins only when the owner assigns it (`AGENTS.md` §C).
-Before slice 13.2 the owner has to make decision **D1** (§3).
+**Status: assigned.** The owner assigned it (msg 1127): *"приступай к реализации фазы 13. Автономный режим. Я одобряю
+только финальный мердж ветки в дев"* ("start implementing phase 13; autonomous mode; I only approve the final
+merge of the branch into dev"). Branch `feature/phase-13-data-sources`.
+
+**Decisions made:**
+- **D1 = (a)** (msg 1129, verbatim *"(а) ок, храним не более 30 дней"*, "(a) ok, we keep it no more than 30 days").
+- **Follow-up decisions (msg 1139):**
+  - keep the channel ids of discovery candidates the operator has decided on;
+  - backups follow the 30-day rule too: they are scrubbed, not deleted;
+  - expired data must not circulate back through sync: an import drops it in its own transaction.
+
+  See RISK-92.
+  Competitor data that came from the API is kept for at most 30 days. Re-fetching fresh data via the API starts a
+  new 30-day period for the new record (my reply, msg 1130).
+- **D2** has no answer yet, so 13.10 is not being done.
+
+**Facts checked against the official sources (2026-10-01) before implementation:**
+- [revision history](https://developers.google.com/youtube/v3/revision_history), 2026-06-01:
+  `search.list`/`videos.insert` moved to separate buckets.
+- Same page, 2026-06-03: `videos.batchGetStats` costs "1 unit in its own granular quota bucket … default quota is
+  10,000 units per day". The maximum number of IDs is not documented.
+- Same page, 2026-08-27: "YouTube will count public views the moment a video begins to play".
+- The daily quota resets at midnight Pacific Time. This comes from third-party sources: the official quota page
+  doesn't state it.
 
 ## 1. Why
 
@@ -75,11 +97,11 @@ in §K.1.
 | Slice | What | Depends on |
 |---|---|---|
 | 13.1 | **Inventory and compliance map.** Every stored kind of data that came from the API, classified as Authorized (own channels) or Non-Authorized (others), with storage location, age and derived values. Maps to III.E.4.b/c/d/f/h. Documentation and a test that every Phase 9 table is classified. | — |
-| 13.2 | **Retention per D1.** Delete or refresh Non-Authorized data at 30 days. This applies to `market_channel_snapshots`, `market_video_snapshots`, discovery candidates and evidence. Removal is visible: the UI shows "kept for 30 days per YouTube policy". The deletion runs as a scheduled server job, with a backup taken before the first one. | D1, 13.1 |
+| 13.2 | **Retention per D1.** Delete or refresh Non-Authorized data at 30 days. This applies to `market_channel_snapshots`, `market_video_snapshots`, discovery candidates and evidence. Removal is visible: the UI shows "kept for 30 days per YouTube policy". The deletion runs as a scheduled server job, with a backup taken before the first one. *(Owner msg 1139: backups follow the 30-day rule too, so that backup is scrubbed as well. It keeps everything except the expired API rows.)* | D1, 13.1 |
 | 13.3 | **Derived metrics per D1.** Remove or hide velocity, breakout and spike scores built from competitor statistics. Keep everything for our own channels. Agent tools return only what is allowed. | D1, 13.1 |
-| 13.4 | **The new quota model.** Search counts against its own 100-calls bucket at 1 unit. Gateway counters and Settings show the buckets separately. Fixes `SEARCH_LIST_UNIT_COST`. | — |
-| 13.5 | **RSS feeds for new uploads.** Watchlist channels and our own channels are polled via RSS: no quota, no key. This is a new read-gateway category (single-gateway rule, `AGENTS.md` §G). | 13.2 (data is stored under the same rules) |
-| 13.6 | **`videos.batchGetStats`** for video statistics snapshots. A separate bucket, in the read gateway. | 13.4 |
+| 13.4 | **The new quota model.** Search counts against its own 100-calls bucket at 1 unit. Gateway counters and Settings show the buckets separately. Fixes `SEARCH_LIST_UNIT_COST`. *(Delivered scope, review round 8:)*<br>• The search bucket is shown in the Discovery panel, not in Settings.<br>• `batchGetStats` is counted under `data_api_reads`.<br>• A separate Settings display is deferred. | — |
+| 13.5 | *(Revised by review round 1: the RSS feed is the zero-quota FALLBACK of the uploads-playlist call. As the primary source it cut coverage from 50 videos to 15. Polling our own channels via RSS was dropped as unnecessary.)* **RSS feeds for new uploads.** Watchlist channels and our own channels are polled via RSS: no quota, no key. This is a new read-gateway category (single-gateway rule, `AGENTS.md` §G). | 13.2 (data is stored under the same rules) |
+| 13.6 | *(Revised: a channel normally costs 2 pool units instead of 3: uploads playlist + `channels.list`. Statistics come from `batchGetStats`, whose documented response has no title, so titles come from the playlist.)* **`videos.batchGetStats`** for video statistics snapshots. A separate bucket, in the read gateway. | 13.4 |
 | 13.7 | **Break in the view-count series at 2026-08-27.** Comparisons across that date are marked, and our-channel analytics treat it as a discontinuity. | — |
 | 13.8 | **Wikipedia Pageviews as a topic signal.** Each topic can be linked to Wikipedia articles, with a daily series of article views. This is our own data, not YouTube data, so long history is allowed. A new gateway category with a descriptive User-Agent. | — |
 | 13.9 | **The YouTube Music chart** (`chart=mostPopular`, `videoCategoryId=10`, by region): 1 unit. A current-only view, stored under the 13.2 rules. | 13.2 |
@@ -97,11 +119,16 @@ suggestions (research report §5).
 - **AC-P13-03:** a search uses 1 unit of the separate search bucket and leaves the 10k pool alone. Once 100 calls
   are used, discovery refuses with a clear message.
 - **AC-P13-04:** RSS detects a new upload with no YouTube API call at all.
+  - *Revised at review round 8, following the 13.5 revision from review round 1:* RSS returns only the newest
+    ~15 videos, so making it the primary source cut collection coverage from 50 videos to 15.
+  - RSS is therefore the zero-quota fallback. When the uploads-playlist call fails, the newest uploads are still
+    found through the feed, with no further quota spent on the listing.
+  - A test pins this path (`unitsSpent: 2`): `channels.list` plus the failed playlist call.
 - **AC-P13-05:** every new external source goes through its own gateway category. The inventory tests forbid a
   bypass.
 - **AC-P13-06:** a comparison across 2026-08-27 is marked as a break in the series.
 - **AC-P13-07:** the 13.2 deletion runs only after a backup, and only on Non-Authorized data. A test proves our
-  own channels' data survives.
+  own channels' data survives. *(Owner msg 1139: backups, including this one, are scrubbed by the same rule.)*
 
 ## 6. Not in scope
 

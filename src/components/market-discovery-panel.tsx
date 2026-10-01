@@ -20,7 +20,7 @@ type DiscoveryCandidate = {
   lastSeenAt: string;
 };
 
-const SEARCH_LIST_UNIT_COST = 100;
+// Phase 13 slice 13.4: one search.list call = 1 of YouTube's 100 daily searches (its own quota bucket).
 
 // Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md §7) -- minimal Discovery UI: a
 // query box, a styled (never `window.confirm`) cost confirmation, and a candidate list with
@@ -38,6 +38,19 @@ export function MarketDiscoveryPanel() {
   const [promotingChannelId, setPromotingChannelId] = useState<string | null>(null);
   const [promoteReason, setPromoteReason] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  // Phase 13 slice 13.4: today's use of YouTube's separate 100-searches-per-day bucket.
+  const [searchUsage, setSearchUsage] = useState<{ searchesUsedToday: number; dailyLimit: number } | null>(null);
+  const refreshSearchUsage = useCallback(async () => {
+    try {
+      const res = await fetch("/api/market-intelligence/discover");
+      if (res.ok) setSearchUsage(await res.json());
+    } catch {
+      // Non-fatal: the counter just stays hidden.
+    }
+  }, []);
+  useEffect(() => {
+    void refreshSearchUsage();
+  }, [refreshSearchUsage]);
 
   const fetchCandidates = useCallback(async () => {
     setLoading(true);
@@ -74,6 +87,7 @@ export function MarketDiscoveryPanel() {
       }
       setLastResult(data);
       await fetchCandidates();
+      void refreshSearchUsage();
     } catch {
       setSearchError("Discovery failed");
     } finally {
@@ -150,9 +164,15 @@ export function MarketDiscoveryPanel() {
           disabled={searching || query.trim().length === 0}
           className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
         >
-          {searching ? "Searching..." : `Search (${SEARCH_LIST_UNIT_COST} units)`}
+          {searching ? "Searching..." : "Search (1 of 100 daily searches)"}
         </button>
       </div>
+
+      {searchUsage && (
+        <p className="text-xs text-zinc-500">
+          {searchUsage.searchesUsedToday} of {searchUsage.dailyLimit} YouTube searches used today (resets at midnight Pacific time)
+        </p>
+      )}
 
       {lastResult && (
         <p className="text-xs text-zinc-400">
@@ -174,7 +194,14 @@ export function MarketDiscoveryPanel() {
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="text-sm font-medium text-zinc-100">{candidate.title || candidate.channelId}</p>
+                <p className="text-sm font-medium text-zinc-100">
+                  {candidate.title || candidate.channelId}
+                  {!candidate.title && (
+                    <span className="ml-2 text-xs font-normal text-zinc-500">
+                      (title expired under YouTube&rsquo;s 30-day rule; refreshes when a search finds it again)
+                    </span>
+                  )}
+                </p>
                 <p className="text-xs text-zinc-500">
                   {candidate.channelId} &middot; status: {candidate.status} &middot; query: &ldquo;{candidate.discoveryQuery}&rdquo;
                 </p>
@@ -254,8 +281,8 @@ export function MarketDiscoveryPanel() {
 
       {confirmingSearch && (
         <ConfirmDialog
-          title={`Run this search for ${SEARCH_LIST_UNIT_COST} units?`}
-          description={`This spends ${SEARCH_LIST_UNIT_COST} real YouTube API units from today's shared market-intelligence budget for the query "${query}".`}
+          title="Run this search?"
+          description={`This uses 1 of YouTube's 100 searches per day (a separate quota; it resets at midnight Pacific time) for the query "${query}".`}
           confirmLabel="Search"
           onCancel={() => setConfirmingSearch(false)}
           onConfirm={handleConfirmSearch}

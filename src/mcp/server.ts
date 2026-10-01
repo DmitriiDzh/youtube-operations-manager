@@ -2475,7 +2475,7 @@ export function createMcpServer(
     "query_market_intelligence",
     {
       description:
-        "Single-channel deep dive into the research watchlist: one watchlisted channel's own record (channelId, handleOrUrl, reason, addedAt), its full evidence history (each row's observation, source, confidence, collectedAt), channel/video snapshots (9A), topic assignments (9E), and a derived dataQualityFlags array (9I -- e.g. stale_observation, missing_snapshot, quota_limited, hidden_subscriber_count; never a fabricated flag when there's simply no data yet). Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. A local read only, never a live YouTube call. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (docs/roadmap/plans/PHASE_9_PLAN.md §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (this vocabulary is a known, still-open design question, docs/roadmap/plans/PHASE_9_PLAN.md §8).",
+        "Single-channel deep dive into the research watchlist: one watchlisted channel's own record (channelId, handleOrUrl, reason, addedAt), its evidence history (each row's observation, source, confidence, collectedAt), channel/video snapshots (9A) -- another channel's API-sourced snapshots/evidence only within the last 30 days (YouTube API Developer Policies III.E.4.d), operator-entered rows at any age, topic assignments (9E), and a derived dataQualityFlags array (9I -- e.g. stale_observation, missing_snapshot, quota_limited, hidden_subscriber_count; never a fabricated flag when there's simply no data yet). Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. A local read only, never a live YouTube call. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (docs/roadmap/plans/PHASE_9_PLAN.md §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (this vocabulary is a known, still-open design question, docs/roadmap/plans/PHASE_9_PLAN.md §8).",
       inputSchema: getWatchlistEntryInputSchema,
     },
     (args) => handlers.queryMarketIntelligence(args)
@@ -2570,6 +2570,10 @@ export async function startMcpServer() {
   const server = createMcpServer(undefined, { connectionEnabled, agentSession });
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // Phase 13 (review round 5): the YouTube API 30-day purge also runs when an agent starts this
+  // process, not only while the web server is up -- an MCP-only period must not keep expired data.
+  // Best effort, silent (stdout is the MCP protocol channel), behind the same mutation gate.
+  void import("@/lib/youtube-data-policy").then((m) => m.runApiDataRetention()).catch(() => undefined);
 }
 
 const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);

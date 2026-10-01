@@ -274,7 +274,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "market_intelligence",
     permission: "READ",
     description:
-      "Single-channel deep dive into the research watchlist: one watchlisted channel's own record plus its full evidence history, channel/video snapshots, topic assignments, and a derived dataQualityFlags array, by channelId. Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. Implemented as the pre-existing `query_market_intelligence` MCP tool/`agent market-intelligence` CLI command (`src/lib/market-intelligence/`), not a new function. Local read only, never a live YouTube call. Global, not scoped to any owned channel -- see market_intelligence.query_competitors above for the same caveat. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (`docs/roadmap/plans/PHASE_9_PLAN.md` §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (a known, still-open vocabulary question, `docs/roadmap/plans/PHASE_9_PLAN.md` §8). Phase 12 (channel-bound agent session): results are narrowed to records the operator assigned to the agent's own channel; a record not assigned to it behaves exactly like one that does not exist.",
+      "Single-channel deep dive into the research watchlist: one watchlisted channel's own record plus its evidence history, channel/video snapshots, topic assignments, and a derived dataQualityFlags array, by channelId. Another channel's YouTube-API-sourced snapshots and evidence are returned only for the last 30 days (YouTube API Developer Policies III.E.4.d); operator-entered rows at any age. Velocity, breakout and emerging-channel values for other channels are withheld (III.E.4.h). Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. Implemented as the pre-existing `query_market_intelligence` MCP tool/`agent market-intelligence` CLI command (`src/lib/market-intelligence/`), not a new function. Local read only, never a live YouTube call. Global, not scoped to any owned channel -- see market_intelligence.query_competitors above for the same caveat. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (`docs/roadmap/plans/PHASE_9_PLAN.md` §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (a known, still-open vocabulary question, `docs/roadmap/plans/PHASE_9_PLAN.md` §8). Phase 12 (channel-bound agent session): results are narrowed to records the operator assigned to the agent's own channel; a record not assigned to it behaves exactly like one that does not exist.",
   },
   // Phase 9 slice 9G, part A (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md) -- one list tool with a
   // `kind` discriminator (owner spec §28: "prefer a small number of powerful composable MCP tools"),
@@ -453,6 +453,8 @@ type ServiceDependencies = {
     daily: Array<{ date: string; views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number }>;
     currentTotals: { views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number };
     previousTotals: { views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number };
+    /** Phase 13 slice 13.7: the two compared periods straddle YouTube's 2026-08-27 view-counting change. */
+    viewCountingChangeInComparison?: boolean;
   }>;
   listMetrics(input: unknown): Promise<{
     channelId: string;
@@ -652,6 +654,7 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
         daily: overview.daily,
         currentTotals: overview.currentTotals,
         previousTotals: overview.previousTotals,
+        viewCountingChangeInComparison: overview.viewCountingChangeInComparison ?? false,
       };
 
       return parseWithSchema(channelAnalyticsContextOutputSchema, output, "query channel analytics output");

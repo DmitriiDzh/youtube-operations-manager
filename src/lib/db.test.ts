@@ -69,6 +69,7 @@ import {
   marketIntelligenceCollectionRuns,
   insertMarketChannelSnapshot,
   listMarketChannelSnapshotsByChannel,
+  listResearchEvidenceByChannel,
   insertMarketVideoSnapshot,
   claimStaleResearchChannelsForCollection,
   releaseResearchChannelCollectionClaim,
@@ -76,6 +77,7 @@ import {
   markResearchChannelAutoCollected,
   insertMarketIntelligenceCollectionRun,
   getMarketIntelligenceUnitsSpentSince,
+  countMarketDiscoverySearchesSince,
   marketDiscoveryCandidates,
   marketDiscoveryRuns,
   getMarketDiscoveryCandidateById,
@@ -860,7 +862,8 @@ test("setDataApiReadsEnabled/setAnalyticsReadsEnabled: an explicit false persist
 // zeroed row (not absent), a category's counts are independent of the others, concurrent writes
 // are never lost, and -- the core behavior a rolling window actually exists to provide -- an
 // event outside the window is excluded from the count even though it is still in the table.
-test("getGatewayTrafficLast24h: all five categories report a zeroed row before any call is recorded", () =>
+// Phase 13 slices 13.5/13.8 add the RSS feed and Wikipedia read categories (seven in all).
+test("getGatewayTrafficLast24h: every category reports a zeroed row before any call is recorded", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
@@ -869,7 +872,15 @@ test("getGatewayTrafficLast24h: all five categories report a zeroed row before a
 
     assert.deepEqual(
       windows.map((w) => w.category).sort(),
-      ["analytics_reads", "cloud_monitoring_reads", "data_api_reads", "live_writes", "mcp_tool_calls"]
+      [
+        "analytics_reads",
+        "cloud_monitoring_reads",
+        "data_api_reads",
+        "live_writes",
+        "mcp_tool_calls",
+        "wikipedia_reads",
+        "youtube_feed_reads",
+      ]
     );
     for (const w of windows) {
       assert.equal(w.totalAttempts, 0);
@@ -1677,11 +1688,14 @@ test("market_discovery_candidates round-trips through the real Drizzle schema; r
     // A fixed, whole-second timestamp -- integer-mode columns truncate sub-second precision, so a
     // Date.now()-derived value would flakily mismatch on round-trip depending on the current millisecond.
     const laterSeenAt = new Date("2026-09-28T00:00:00.000Z");
-    await touchMarketDiscoveryCandidateLastSeen("UC_CANDIDATE00000000000", laterSeenAt, isolatedDb);
+    await touchMarketDiscoveryCandidateLastSeen("UC_CANDIDATE00000000000", laterSeenAt, "Fresh title", "Fresh description", isolatedDb);
 
     const afterRediscovery = await getMarketDiscoveryCandidateById("UC_CANDIDATE00000000000", isolatedDb);
     assert.equal(afterRediscovery?.status, "ignored", "rediscovery must never reset an operator-set status back to new");
     assert.equal(afterRediscovery?.lastSeenAt.getTime(), laterSeenAt.getTime());
+    // Phase 13 (review round 1): restarting the 30-day clock must come with refreshed API data.
+    assert.equal(afterRediscovery?.title, "Fresh title");
+    assert.equal(afterRediscovery?.reasonDiscovered, "Fresh description", "the description (API data) is refreshed too");
 
     const allRows = await isolatedDb.select().from(marketDiscoveryCandidates);
     assert.equal(allRows.length, 1, "rediscovery must never insert a duplicate row for the same channel");
@@ -1690,7 +1704,9 @@ test("market_discovery_candidates round-trips through the real Drizzle schema; r
     assert.equal(listed.length, 1);
   }));
 
-test("getMarketIntelligenceUnitsSpentSince sums market_intelligence_collection_runs AND market_discovery_runs -- one shared budget, not two independent ones", () =>
+// Phase 13 slice 13.4 -- REVISED: since 2026-06-01 `search.list` has its own quota bucket, so the shared
+// unit budget sums collection runs only, and searches are counted separately (one row = one call).
+test("getMarketIntelligenceUnitsSpentSince counts collection runs only; countMarketDiscoverySearchesSince counts searches", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
@@ -1698,12 +1714,12 @@ test("getMarketIntelligenceUnitsSpentSince sums market_intelligence_collection_r
 
     const now = new Date("2026-09-27T12:00:00.000Z");
     await insertMarketIntelligenceCollectionRun({ researchChannelId: "UC_SHARED_BUDGET000000", status: "success", unitsSpent: 3, ranAt: now }, isolatedDb);
-    await insertMarketDiscoveryRun({ query: "cooking", status: "success", unitsSpent: 100, candidatesFound: 5, candidatesNew: 2, ranAt: now }, isolatedDb);
-    await insertMarketDiscoveryRun({ query: "gaming", status: "failed", unitsSpent: 100, errorMessage: "boom", ranAt: now }, isolatedDb);
+    await insertMarketDiscoveryRun({ query: "cooking", status: "success", unitsSpent: 1, candidatesFound: 5, candidatesNew: 2, ranAt: now }, isolatedDb);
+    await insertMarketDiscoveryRun({ query: "gaming", status: "failed", unitsSpent: 1, errorMessage: "boom", ranAt: now }, isolatedDb);
 
     const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    const totalSpent = await getMarketIntelligenceUnitsSpentSince(since, isolatedDb);
-    assert.equal(totalSpent, 203, "must sum both tables (3 + 100 + 100), including a failed discovery run's own real spend");
+    assert.equal(await getMarketIntelligenceUnitsSpentSince(since, isolatedDb), 3);
+    assert.equal(await countMarketDiscoverySearchesSince(since, isolatedDb), 2, "a failed search still used a call");
 
     const [discoveryRunRow] = await isolatedDb.select().from(marketDiscoveryRuns).where(eq(marketDiscoveryRuns.status, "success"));
     assert.equal(discoveryRunRow.candidatesFound, 5, "candidatesFound must round-trip, never fabricated");
@@ -2996,4 +3012,27 @@ test("channel_record_assignments: set replaces, add is idempotent, reads scoped 
     await setRecordAssignmentChannels("research_channel", "UCx", ["UC_B"], isolatedDb);
     assert.deepEqual(await listChannelAssignedRecordIds("UC_A", "research_channel", isolatedDb), []);
     assert.deepEqual(await listRecordAssignmentsByKind("research_channel", isolatedDb), [{ channelId: "UC_B", recordId: "UCx" }]);
+  }));
+
+// Phase 13 (review round 5): reads never return another channel's API-sourced rows older than 30 days,
+// even before the purge has run; operator-entered rows are unaffected.
+test("13.2: snapshot and evidence reads hide expired API-sourced rows but keep manual ones", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await client.execute("INSERT INTO research_channels (id, reason, created_via) VALUES ('UC_READ_FILTER00000000', 'r', 'web_ui')");
+    const old = Math.floor(Date.now() / 1000) - 40 * 24 * 60 * 60;
+    const fresh = Math.floor(Date.now() / 1000) - 2 * 24 * 60 * 60;
+    await client.execute({
+      sql: "INSERT INTO market_channel_snapshots (id, research_channel_id, observed_at, hidden_subscriber_count, source, created_via) VALUES ('old-api', 'UC_READ_FILTER00000000', ?, 0, 'youtube.channels.list', 'web_ui'), ('fresh-api', 'UC_READ_FILTER00000000', ?, 0, 'youtube.channels.list', 'web_ui'), ('old-manual', 'UC_READ_FILTER00000000', ?, 0, 'manual observation', 'web_ui')",
+      args: [old, fresh, old],
+    });
+    await client.execute({
+      sql: "INSERT INTO research_evidence (id, research_channel_id, observation, source, created_via, collected_at) VALUES ('ev-old-api', 'UC_READ_FILTER00000000', 'counts', 'youtube.channels.list', 'web_ui', ?), ('ev-old-manual', 'UC_READ_FILTER00000000', 'note', 'manual', 'web_ui', ?)",
+      args: [old, old],
+    });
+    const snaps = (await listMarketChannelSnapshotsByChannel("UC_READ_FILTER00000000", isolatedDb)).map((s) => s.id).sort();
+    assert.deepEqual(snaps, ["fresh-api", "old-manual"]);
+    const evidence = (await listResearchEvidenceByChannel("UC_READ_FILTER00000000", isolatedDb)).map((e) => e.id);
+    assert.deepEqual(evidence, ["ev-old-manual"]);
   }));

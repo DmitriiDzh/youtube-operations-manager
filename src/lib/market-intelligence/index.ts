@@ -31,6 +31,7 @@ export function createMarketIntelligenceCore() {
     getMarketIntelligenceDailyQuotaBudgetUnits: store.getMarketIntelligenceDailyQuotaBudgetUnits,
     setMarketIntelligenceDailyQuotaBudgetUnits: store.setMarketIntelligenceDailyQuotaBudgetUnits,
     getMarketIntelligenceUnitsSpentSince: store.getMarketIntelligenceUnitsSpentSince,
+    countMarketDiscoverySearchesSince: store.countMarketDiscoverySearchesSince,
     claimStaleResearchChannelsForCollection: store.claimStaleResearchChannelsForCollection,
     releaseResearchChannelCollectionClaim: store.releaseResearchChannelCollectionClaim,
     listRecentlyFailedResearchChannelIds: store.listRecentlyFailedResearchChannelIds,
@@ -65,6 +66,7 @@ export function createMarketIntelligenceCore() {
     insertMarketTrendEvidence: store.insertMarketTrendEvidence,
     // Phase 9 slice 9G, part A (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md).
     getLatestMarketIntelligenceCollectionRunForChannel: store.getLatestMarketIntelligenceCollectionRunForChannel,
+    hasSuccessfulMarketIntelligenceCollectionRun: store.hasSuccessfulMarketIntelligenceCollectionRun,
     // Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md).
     insertMarketResearchRequest: store.insertMarketResearchRequest,
     getMarketResearchRequestById: store.getMarketResearchRequestById,

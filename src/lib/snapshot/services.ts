@@ -426,3 +426,4 @@ export async function listSnapshots(snapshotsDir: string): Promise<string[]> {
 }
 
 export { readLineageState, writeLineageState, type LineageState };
+export { rebaselineLineageFingerprintIfUnchanged } from "./adapters/lineage-store";

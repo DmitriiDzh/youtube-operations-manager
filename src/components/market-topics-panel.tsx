@@ -3,6 +3,7 @@
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MarketChannelAssignment } from "./market-channel-assignment";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { TopicWikipediaSignals } from "./topic-wikipedia-signals";
 import { InfoTooltip } from "./info-tooltip";
 import { ConfirmDialog } from "./confirm-dialog";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
@@ -219,6 +220,9 @@ export function MarketTopicsPanel() {
 
             {expandedTopicId === topic.topicId && (
               <div className="mt-3 space-y-2 border-t border-zinc-800 pt-3">
+                <FeatureErrorBoundary label="Research — Wikipedia interest">
+                  <TopicWikipediaSignals topicId={topic.topicId} />
+                </FeatureErrorBoundary>
                 {assignmentsLoading && <p className="text-xs text-zinc-500">Loading...</p>}
                 {!assignmentsLoading && assignments.length === 0 && <p className="text-xs text-zinc-500">No assignments yet.</p>}
                 {assignments.map((assignment) => (

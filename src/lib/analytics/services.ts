@@ -1,3 +1,4 @@
+import { rangesStraddleViewCountingChange } from "@/lib/youtube-quota";
 import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import type { ChannelAccessService } from "@/lib/channel-access";
 import { computeDefaultAutoCollectionRange, computeNextRefreshAt, isAnalyticsCollectionStale } from "./staleness";
@@ -715,6 +716,10 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           ),
           currentTotals: sumTotals(currentRows),
           previousTotals: sumTotals(previousRows),
+          viewCountingChangeInComparison: rangesStraddleViewCountingChange(
+            { startDate: parsedInput.startDate, endDate: parsedInput.endDate },
+            { startDate: previousStartDate, endDate: previousEndDate }
+          ),
         };
 
         return parseWithSchema(getChannelOverviewOutputSchema, output, "get channel overview output");

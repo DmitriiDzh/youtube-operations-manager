@@ -16,6 +16,7 @@ export {
   listSnapshots,
   migrateStagedCopy,
   readLineageState,
+  rebaselineLineageFingerprintIfUnchanged,
   scanForUnresolvedExecutionState,
   scanFileForUnresolvedExecutionState,
   UNRESOLVED_EXECUTION_STATUSES,

@@ -963,7 +963,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 | RISK-65 | Slice 9A's manual `captureChannelSnapshot` never marks `last_auto_collected_at`, so slice 9B's automatic trigger can immediately re-fetch (spending real units) a channel just manually refreshed | none blocking, wasted-quota only | OPEN |
 | RISK-66 | `deleteResearchChannel` cascade-deletes `market_intelligence_collection_runs` (required by its own `NOT NULL` FK) -- removing then re-adding a channel the same UTC day silently drops that channel's already-recorded spend from the shared daily ledger sum | none blocking, narrow/bounded (≤3 units per incident, requires a specific same-day remove-then-reuse) | OPEN |
 | RISK-67 | `runCollectionIfStale`'s per-channel snapshot inserts, its own collection-run audit row, and `markResearchChannelAutoCollected` are 3+ separate non-transactional writes -- a throw partway through can leave orphaned snapshot rows and forces a real quota re-spend on retry, not a free one | none blocking, no data-integrity risk (append-only tables tolerate an orphan row; worst case is wasted quota) | OPEN |
-| RISK-68 | `discoverChannels` has no atomic claim/lock guarding its own budget check (unlike `runCollectionIfStale`'s `claimStaleResearchChannelsForCollection`) -- two concurrent Discover clicks can each pass the same `remaining >= 100` check and together overspend the shared budget | none blocking, narrow (requires two near-simultaneous manual UI actions, not an automatic/background path) | OPEN |
+| RISK-68 | `discoverChannels` has no atomic claim/lock guarding its own budget check (unlike `runCollectionIfStale`'s `claimStaleResearchChannelsForCollection`) -- two concurrent Discover clicks can each pass the same check and together overspend (since Phase 13 slice 13.4: the 100-calls-a-day `search.list` bucket by one call; the collection budget is no longer involved) | none blocking, narrow (requires two near-simultaneous manual UI actions, not an automatic/background path) | OPEN |
 | RISK-69 | `promoteDiscoveryCandidate`'s not-yet-promoted check and its `research_channels` insert are not wrapped in a transaction -- a double-click/double-tab race surfaces a raw constraint error as a generic 500 instead of the intended `DISCOVERY_CANDIDATE_ALREADY_PROMOTED` | none blocking, cosmetic (no incorrect end state; the first request's promotion still succeeds) | OPEN |
 | RISK-70 | `createTrendCandidate`/`updateTrendCandidateStatus`'s writes were not wrapped in a transaction -- fixed via `insertTrendCandidateWithInitialEvidence`/`updateTrendCandidateStatusWithEvidence` (real `database.transaction()`, rollback proven against real libsql) | none, fixed | RESOLVED |
 | RISK-71 | `createTopic`'s normalized-duplicate check has a TOCTOU race under real concurrency -- two near-simultaneous requests for near-identical names (e.g. "Jazz"/"jazz") can both pass the check and both insert | none blocking, narrow (requires two genuinely concurrent requests for near-identical names) | OPEN |
@@ -1157,7 +1157,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
 - **Affected components:** `src/lib/market-intelligence/services.ts`'s `discoverChannels` (Phase 9 slice 9C) -- unlike `runCollectionIfStale`'s `claimStaleResearchChannelsForCollection`, there is no server-side single-flight guard around this action's own `remaining >= 100` budget check.
 - **Found during:** independent code review of Phase 9 slice 9C.
-- **Actual risk:** two concurrent `discoverChannels` calls (e.g. two open browser tabs) can each read the same `spentToday`, both pass the budget check, and both spend a real 100 units -- together overspending the operator's configured daily budget by up to 100 units. Narrower than 9B's own equivalent concern: discovery is always an explicit, one-at-a-time manual UI click (never an automatic/background trigger the way collection is), so the realistic likelihood of two truly simultaneous attempts is low.
+- **Actual risk:** two concurrent `discoverChannels` calls (e.g. two open browser tabs) can each read the same `spentToday`, both pass the budget check, and both spend a real 100 units -- together overspending the operator's configured daily budget by up to 100 units. *(Phase 13 slice 13.4 update: `search.list` now has its own bucket of 100 calls a day at 1 unit, and discovery no longer draws on that budget. The same race now over-calls that bucket by one search, so the risk is smaller.)* Narrower than 9B's own equivalent concern: discovery is always an explicit, one-at-a-time manual UI click (never an automatic/background trigger the way collection is), so the realistic likelihood of two truly simultaneous attempts is low.
 - **Why not fixed immediately:** a proper fix needs a claim/lock mechanism shaped like 9B's own channel-claim, but keyed on "a discovery run is in progress" rather than a specific channel id -- a real addition, not proportionate to add speculatively without a concrete report of it happening in practice.
 - **Required remediation (not yet scheduled):** a single-row "discovery in progress" claim (mirroring `research_channels.collection_claimed_at`'s own shape) checked/set atomically before the `search.list` call.
 - **Gate(s):** none.
@@ -1514,7 +1514,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   (`AGENTS.md` §L). It needs its own task and acceptance criteria.
 - **Status:** OPEN.
 
-## RISK-92 — Research keeps competitor data longer than the YouTube API policies allow, and derives metrics from it — OPEN, 2026-10-01
+## RISK-92 — Research keeps competitor data longer than the YouTube API policies allow, and derives metrics from it — MOSTLY RESOLVED on branch `feature/phase-13-data-sources`, 2026-10-01
 
 - **Affected components:** `src/lib/market-intelligence/` (Phase 9). Tables `market_channel_snapshots`,
   `market_video_snapshots`, `research_evidence`, `market_discovery_candidates`. Derived metrics:
@@ -1531,6 +1531,54 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Plan:** Phase 13, slices 13.1–13.3 (`docs/roadmap/plans/PHASE_13_PLAN.md`). The strictness level is the owner's
   decision D1.
 - **Gate:** none formally. It should be resolved before the operational release (§2a).
-- **Status:** OPEN.
+- **Resolved by Phase 13 (D1 = a):**
+  - 13.1 classification;
+  - 13.2 30-day purge, with a backup first;
+  - 13.3 derived metrics withheld.
+- **Residual:** III.E.4.c also caps our own channels' non-statistics metadata (titles/descriptions in `videos`,
+  `changes.baseline_value`) at 30 days unless refreshed.
+  - It is refreshed by channel sync, but sync is operator-triggered, not scheduled.
+  - A channel nobody syncs for 30 days keeps stale metadata.
+  - Trigger to revisit: add a scheduled own-channel refresh, or a staleness notice.
+- **Owner decisions (msg 1139, 2026-10-01) on the judgment calls from review round 1:**
+  - **Channel ids of decided discovery candidates are kept** after 30 days, as the key of the operator's own
+    decision. Their title and reason are blanked.
+  - **Backups follow the 30-day rule too.** Every run of the retention job scrubs `backups/migrations/*.db` the same
+    way as the live database (`scrubBackupFile`): files are not deleted, they also hold the operator's own data,
+    and VACUUM runs after the scrub.
+    - Consequence: the one-time `pre-api-retention-*` backup gets the same scrub. It therefore no longer protects
+      against a purge that deletes the wrong rows. The classification tests carry that protection instead.
+  - **Expired rows never circulate back through sync.** An import drops them inside its own merge transaction,
+    before it records the fingerprint (`purgeExpiredApiDataWithinTransaction`).
+    - Sync-folder snapshots. Each auto-sync tick removes this device's own snapshots created more than 30 days
+      ago (`pruneOwnSnapshots` with `olderThan`).
+    - Remaining copies:
+      - **The lineage head**, which is kept even when it is older than 30 days. A quiet device's head is replaced
+        only at its next export. It is only ever read by an import, which drops the expired rows. It is
+        deliberately not republished after each purge, because that would bring back false cross-device
+        conflicts.
+      - **Manual handoff exports** (`appDataPaths.snapshotsDir`, used when no sync folder is set). These are
+        operator-made transfer files and are not pruned.
+      - **A device that has stopped ticking keeps its own snapshots.** This covers a device that is switched
+        off, has sync disabled, has its folder unreachable, or is busy (recovery mode or an unfinished Batch).
+        Its last up to 5 own snapshots stay in the shared folder until it ticks again. Pruning another device's
+        snapshots is never allowed, because Syncthing would propagate the deletion.
+    - Trigger to revisit: if either copy must also be bound by the 30 days.
+- **Further residuals:**
+  - Review rounds 5–6 found that reads were not filtered. Now reads hide expired API rows even before the purge
+    runs:
+    - snapshots and evidence in `db.ts`;
+    - discovery candidates in `market-intelligence` (an undecided one is hidden, a decided one is redacted).
+
+    Backups are scrubbed with `secure_delete`, so a failed VACUUM leaves no remnants.
+    This covers an MCP/CLI process without the web server, and an MCP start also runs the purge.
+  - **The Music chart is not in the unit ledger.** Its cost is bounded by a fixed region list
+    (`MUSIC_CHART_REGIONS`, enforced by the service) and a 30-minute cache: at most 14 units per 30 minutes.
+  - **A snapshot holds data up to about 60 days old.** A snapshot created on day c contains rows observed as
+    early as day c−30, and it stays in the sync folder until c+30. It is only read by an import, which drops
+    whatever has expired.
+    - Trigger to revisit: if the owner wants the shared folder itself bound to 30 days. That would mean
+      re-exporting after each purge, with the false-conflict risk described above.
+- **Status:** MOSTLY RESOLVED (residual above).
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

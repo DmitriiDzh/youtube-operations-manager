@@ -5,6 +5,7 @@ import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import path from "path";
+import { API_DATA_RETENTION_DAYS, YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
 import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
@@ -1126,8 +1127,8 @@ export const marketDiscoveryCandidates = sqliteTable("market_discovery_candidate
 
 /**
  * Phase 9 slice 9C -- this slice's own `market_intelligence_collection_runs` counterpart: append-
- * only audit trail AND (jointly with that table, via `getMarketIntelligenceUnitsSpentSince`) the
- * shared quota ledger's source of truth. Not scoped to any one `researchChannelId` -- a discovery
+ * only audit trail and, since Phase 13 slice 13.4, the ledger of the separate `search.list` bucket
+ * (one row = one call, `countMarketDiscoverySearchesSince`). Not scoped to any one `researchChannelId` -- a discovery
  * run is a search, not a per-channel refresh -- so it cannot reuse that other table's own
  * NOT-NULL-FK'd shape.
  */
@@ -1164,6 +1165,37 @@ export const marketTopics = sqliteTable("market_topics", {
     .notNull()
     .$defaultFn(() => new Date()),
 });
+
+// Phase 13 slice 13.8 (docs/roadmap/plans/PHASE_13_PLAN.md) -- Wikipedia articles linked to a topic,
+// and their daily page views (Wikimedia Pageviews API; CC0 data, not YouTube API data). Owned by
+// `src/lib/wikipedia-signals`; deleting a topic cascades its links at the database level (FK), so the
+// market-intelligence module needs no knowledge of this one (AGENTS.md §M).
+export const topicWikipediaArticles = sqliteTable(
+  "topic_wikipedia_articles",
+  {
+    id: text("id").primaryKey(),
+    topicId: text("topic_id").notNull(),
+    project: text("project").notNull(),
+    article: text("article").notNull(),
+    createdVia: text("created_via").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [uniqueIndex("topic_wikipedia_articles_unique").on(table.topicId, table.project, table.article)]
+);
+
+export const wikipediaPageviewsDaily = sqliteTable(
+  "wikipedia_pageviews_daily",
+  {
+    project: text("project").notNull(),
+    article: text("article").notNull(),
+    /** YYYY-MM-DD (UTC day, as Wikimedia reports it). */
+    date: text("date").notNull(),
+    views: integer("views").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.project, table.article, table.date] })]
+);
 
 /**
  * Links a topic to a watchlisted channel or a video (owner spec §13's "manual associations").
@@ -2221,6 +2253,33 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 37,
+    description:
+      "topic_wikipedia_articles + wikipedia_pageviews_daily -- Phase 13 slice 13.8 (docs/roadmap/plans/PHASE_13_PLAN.md): Wikipedia articles linked to Research topics and their daily page views (Wikimedia, not YouTube data).",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS topic_wikipedia_articles (" +
+          "id TEXT PRIMARY KEY, " +
+          "topic_id TEXT NOT NULL REFERENCES market_topics(id) ON DELETE CASCADE, " +
+          "project TEXT NOT NULL, " +
+          "article TEXT NOT NULL, " +
+          "created_via TEXT NOT NULL, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS topic_wikipedia_articles_unique ON topic_wikipedia_articles(topic_id, project, article)"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS wikipedia_pageviews_daily (" +
+          "project TEXT NOT NULL, " +
+          "article TEXT NOT NULL, " +
+          "date TEXT NOT NULL, " +
+          "views INTEGER NOT NULL, " +
+          "PRIMARY KEY (project, article, date))"
+      );
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -3260,6 +3319,93 @@ export async function setDeviceSyncStatusJson(value: string): Promise<void> {
   await setAppSetting(DEVICE_SYNC_STATUS_SETTING_KEY, value);
 }
 
+// --- Phase 13 slice 13.8: Wikipedia topic signals (owned by src/lib/wikipedia-signals) -------------
+
+export type StoredTopicWikipediaArticle = {
+  id: string;
+  topicId: string;
+  project: string;
+  article: string;
+  createdVia: string;
+  createdAt: Date;
+};
+
+export async function insertTopicWikipediaArticle(
+  input: { id: string; topicId: string; project: string; article: string; createdVia: string },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(topicWikipediaArticles).values(input);
+}
+
+export async function deleteTopicWikipediaArticle(id: string, database: AppDb = db): Promise<boolean> {
+  const deleted = await database.delete(topicWikipediaArticles).where(eq(topicWikipediaArticles.id, id)).returning();
+  return deleted.length > 0;
+}
+
+export async function listTopicWikipediaArticles(
+  topicId: string | null,
+  database: AppDb = db
+): Promise<StoredTopicWikipediaArticle[]> {
+  const query = database.select().from(topicWikipediaArticles);
+  const rows = topicId === null ? await query : await query.where(eq(topicWikipediaArticles.topicId, topicId));
+  return rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+}
+
+export async function upsertWikipediaPageviews(
+  rows: { project: string; article: string; date: string; views: number }[],
+  database: AppDb = db
+): Promise<void> {
+  for (const row of rows) {
+    await database
+      .insert(wikipediaPageviewsDaily)
+      .values(row)
+      .onConflictDoUpdate({
+        target: [wikipediaPageviewsDaily.project, wikipediaPageviewsDaily.article, wikipediaPageviewsDaily.date],
+        set: { views: row.views },
+      });
+  }
+}
+
+export async function listWikipediaPageviews(
+  args: { project: string; article: string; sinceDate: string },
+  database: AppDb = db
+): Promise<{ date: string; views: number }[]> {
+  return database
+    .select({ date: wikipediaPageviewsDaily.date, views: wikipediaPageviewsDaily.views })
+    .from(wikipediaPageviewsDaily)
+    .where(
+      and(
+        eq(wikipediaPageviewsDaily.project, args.project),
+        eq(wikipediaPageviewsDaily.article, args.article),
+        gte(wikipediaPageviewsDaily.date, args.sinceDate)
+      )
+    )
+    .orderBy(asc(wikipediaPageviewsDaily.date));
+}
+
+export async function getLatestWikipediaPageviewDate(
+  args: { project: string; article: string },
+  database: AppDb = db
+): Promise<string | null> {
+  const [row] = await database
+    .select({ date: sql<string | null>`MAX(${wikipediaPageviewsDaily.date})` })
+    .from(wikipediaPageviewsDaily)
+    .where(and(eq(wikipediaPageviewsDaily.project, args.project), eq(wikipediaPageviewsDaily.article, args.article)));
+  return row?.date ?? null;
+}
+
+const API_DATA_RETENTION_STATE_SETTING_KEY = "api_data_retention_state";
+
+/** Phase 13 slice 13.2: the YouTube API data retention job's own state (JSON, owned by
+ * `src/lib/youtube-data-policy`): whether the one-time pre-purge backup was taken, last run, counts. */
+export async function getApiDataRetentionStateJson(): Promise<string | null> {
+  return getAppSetting(API_DATA_RETENTION_STATE_SETTING_KEY);
+}
+
+export async function setApiDataRetentionStateJson(value: string): Promise<void> {
+  await setAppSetting(API_DATA_RETENTION_STATE_SETTING_KEY, value);
+}
+
 const DATA_API_READS_ENABLED_SETTING_KEY = "data_api_reads_enabled";
 const ANALYTICS_READS_ENABLED_SETTING_KEY = "analytics_reads_enabled";
 
@@ -3296,6 +3442,28 @@ export async function getAnalyticsReadsEnabled(database: AppDb = db): Promise<bo
 
 export async function setAnalyticsReadsEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
   await setAppSetting(ANALYTICS_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
+}
+
+const YOUTUBE_FEED_READS_ENABLED_SETTING_KEY = "youtube_feed_reads_enabled";
+const WIKIPEDIA_READS_ENABLED_SETTING_KEY = "wikipedia_reads_enabled";
+
+/** Phase 13 slice 13.5: the YouTube RSS feed read category (no quota). Same semantics as the other
+ * read toggles: on unless the operator turned it off, persistent. */
+export async function getYoutubeFeedReadsEnabled(database: AppDb = db): Promise<boolean> {
+  return (await getAppSetting(YOUTUBE_FEED_READS_ENABLED_SETTING_KEY, database)) !== "false";
+}
+
+export async function setYoutubeFeedReadsEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
+  await setAppSetting(YOUTUBE_FEED_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
+}
+
+/** Phase 13 slice 13.8: the Wikipedia Pageviews read category. On unless turned off, persistent. */
+export async function getWikipediaReadsEnabled(database: AppDb = db): Promise<boolean> {
+  return (await getAppSetting(WIKIPEDIA_READS_ENABLED_SETTING_KEY, database)) !== "false";
+}
+
+export async function setWikipediaReadsEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
+  await setAppSetting(WIKIPEDIA_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
 }
 
 const OPERATIONS_WORKSPACE_PATH_SETTING_KEY = "operations_workspace_path";
@@ -3491,7 +3659,9 @@ export type GatewayTrafficCategory =
   | "analytics_reads"
   | "live_writes"
   | "mcp_tool_calls"
-  | "cloud_monitoring_reads";
+  | "cloud_monitoring_reads"
+  | "youtube_feed_reads"
+  | "wikipedia_reads";
 
 export type GatewayTrafficWindow = {
   category: GatewayTrafficCategory;
@@ -3507,6 +3677,8 @@ const GATEWAY_TRAFFIC_CATEGORIES: readonly GatewayTrafficCategory[] = [
   "live_writes",
   "mcp_tool_calls",
   "cloud_monitoring_reads",
+  "youtube_feed_reads",
+  "wikipedia_reads",
 ];
 
 // Kept well past the 24h window this table exists to answer (owner instruction, 2026-09-22:
@@ -5479,7 +5651,16 @@ export async function listResearchEvidenceByChannel(
   return database
     .select()
     .from(researchEvidence)
-    .where(eq(researchEvidence.researchChannelId, researchChannelId))
+    .where(
+      and(
+        eq(researchEvidence.researchChannelId, researchChannelId),
+        // Phase 13 (review round 5): see listMarketChannelSnapshotsByChannel.
+        or(
+          gte(researchEvidence.collectedAt, apiRetentionCutoff()),
+          notInArray(researchEvidence.source, API_SNAPSHOT_SOURCES)
+        )
+      )
+    )
     .orderBy(desc(researchEvidence.collectedAt));
 }
 
@@ -5572,6 +5753,16 @@ export async function insertMarketChannelSnapshot(
 // functions expect once a future slice wires them up to a real read path (not yet done as of
 // slice 9A -- corrected 2026-09-26, independent review round 2, after an earlier version of this
 // comment claimed derived-metrics.ts already consumes this list, which no production code does).
+/**
+ * Phase 13 (review round 5): reads never return another channel's API-sourced rows older than the
+ * policy window, even if the purge has not run yet (it runs only while the web server is up, and an
+ * MCP/CLI process may read the database for days without it). Operator-entered rows are unaffected.
+ */
+function apiRetentionCutoff(): Date {
+  return new Date(Date.now() - API_DATA_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+}
+const API_SNAPSHOT_SOURCES: string[] = [...YOUTUBE_API_SNAPSHOT_SOURCES];
+
 export async function listMarketChannelSnapshotsByChannel(
   researchChannelId: string,
   database: AppDb = db
@@ -5579,7 +5770,12 @@ export async function listMarketChannelSnapshotsByChannel(
   return database
     .select()
     .from(marketChannelSnapshots)
-    .where(eq(marketChannelSnapshots.researchChannelId, researchChannelId))
+    .where(
+      and(
+        eq(marketChannelSnapshots.researchChannelId, researchChannelId),
+        or(gte(marketChannelSnapshots.observedAt, apiRetentionCutoff()), notInArray(marketChannelSnapshots.source, API_SNAPSHOT_SOURCES))
+      )
+    )
     .orderBy(asc(marketChannelSnapshots.observedAt));
 }
 
@@ -5634,7 +5830,13 @@ export async function listMarketVideoSnapshotsByChannel(
   return database
     .select()
     .from(marketVideoSnapshots)
-    .where(eq(marketVideoSnapshots.researchChannelId, researchChannelId))
+    .where(
+      and(
+        eq(marketVideoSnapshots.researchChannelId, researchChannelId),
+        // Phase 13 (review round 5): see listMarketChannelSnapshotsByChannel.
+        or(gte(marketVideoSnapshots.observedAt, apiRetentionCutoff()), notInArray(marketVideoSnapshots.source, API_SNAPSHOT_SOURCES))
+      )
+    )
     .orderBy(asc(marketVideoSnapshots.observedAt));
 }
 
@@ -5783,6 +5985,17 @@ export type StoredMarketIntelligenceCollectionRun = {
  * `dataQualityFlags` (`missing_snapshot`/`quota_limited`) in `getWatchlistEntryContext`. `null` when
  * this channel has never been collected at all -- a plain, unremarkable fact, not itself a flag.
  */
+/** Phase 13 (review round 9): whether this channel was ever collected successfully -- since API
+ * snapshots expire after 30 days, "no snapshot visible" no longer implies "never observed". */
+export async function hasSuccessfulMarketIntelligenceCollectionRun(researchChannelId: string, database: AppDb = db): Promise<boolean> {
+  const [row] = await database
+    .select({ id: marketIntelligenceCollectionRuns.id })
+    .from(marketIntelligenceCollectionRuns)
+    .where(and(eq(marketIntelligenceCollectionRuns.researchChannelId, researchChannelId), eq(marketIntelligenceCollectionRuns.status, "success")))
+    .limit(1);
+  return row !== undefined;
+}
+
 export async function getLatestMarketIntelligenceCollectionRunForChannel(
   researchChannelId: string,
   database: AppDb = db
@@ -5797,27 +6010,31 @@ export async function getLatestMarketIntelligenceCollectionRunForChannel(
 }
 
 /**
- * The quota ledger's own read side: total real YouTube API units spent by market-intelligence
- * -- collection (`market_intelligence_collection_runs`) AND, as of Phase 9 slice 9C, discovery
- * (`market_discovery_runs`) -- since `since` (the caller passes the start of "today," a plain UTC
- * calendar day boundary -- deliberately NOT Pacific-Time-aligned like `cloud-quotas`' own display,
- * per this slice's own `AGENTS.md` §M module-independence constraint; the Settings UI labels this
- * window explicitly so it is never confused with that other, differently-windowed number). Sums
- * every row regardless of `status` -- a `skipped_quota_limited`/`failed` collection row, or a
- * `failed` discovery row, still has a real, already-spent `unitsSpent` that must count against the
- * budget. Both tables are summed here (not one call site adding them itself) because both slices
- * share ONE operator-set daily budget (owner decision 2) -- there is no per-feature sub-budget.
+ * The quota ledger's read side for the general pool: real YouTube API units spent by collection
+ * (`market_intelligence_collection_runs`) since `since` -- the caller passes the start of the YouTube
+ * quota day (midnight Pacific, `startOfYoutubeQuotaDay`, Phase 13 slice 13.4). Sums every row
+ * regardless of `status`: a `skipped_quota_limited`/`failed` row still spent real units. Discovery
+ * (`search.list`) has its own bucket since 13.4 and is counted by `countMarketDiscoverySearchesSince`.
  */
 export async function getMarketIntelligenceUnitsSpentSince(since: Date, database: AppDb = db): Promise<number> {
+  // Phase 13 slice 13.4: since 2026-06-01 `search.list` has its own quota bucket, so discovery runs
+  // no longer count against the shared 10k-unit pool this budget guards -- collection runs only.
+  // Searches are counted by `countMarketDiscoverySearchesSince` against their own daily limit.
   const [collectionRow] = await database
     .select({ total: sql<number | null>`SUM(${marketIntelligenceCollectionRuns.unitsSpent})` })
     .from(marketIntelligenceCollectionRuns)
     .where(gte(marketIntelligenceCollectionRuns.ranAt, since));
-  const [discoveryRow] = await database
-    .select({ total: sql<number | null>`SUM(${marketDiscoveryRuns.unitsSpent})` })
+  return collectionRow?.total ?? 0;
+}
+
+/** Phase 13 slice 13.4: `search.list` calls made since `since` -- each `market_discovery_runs` row is
+ * exactly one call (a row is only written once the call was attempted). */
+export async function countMarketDiscoverySearchesSince(since: Date, database: AppDb = db): Promise<number> {
+  const [row] = await database
+    .select({ total: sql<number>`COUNT(*)` })
     .from(marketDiscoveryRuns)
     .where(gte(marketDiscoveryRuns.ranAt, since));
-  return (collectionRow?.total ?? 0) + (discoveryRow?.total ?? 0);
+  return Number(row?.total ?? 0);
 }
 
 const MARKET_INTELLIGENCE_DAILY_QUOTA_BUDGET_SETTING_KEY = "market_intelligence_daily_quota_budget_units";
@@ -5900,13 +6117,22 @@ export async function insertMarketDiscoveryCandidate(
   });
 }
 
-/** Rediscovery never duplicates the row or touches `status` -- only `lastSeenAt` moves. */
+/** Rediscovery never duplicates the row or touches `status` -- `lastSeenAt` moves, and (Phase 13) the
+ * API-sourced `title`/`reasonDiscovered` are refreshed with it, restarting their 30-day clock. */
 export async function touchMarketDiscoveryCandidateLastSeen(
   channelId: string,
   at: Date,
+  /** Phase 13 (review round 1): the fresh title from the same search -- the 30-day clock may only be
+   * restarted by a real refresh of the API-sourced data, never by a timestamp bump alone. */
+  title: string,
+  /** The fresh channel description from the same search (stored as `reason_discovered`). */
+  reasonDiscovered: string | null,
   database: AppDb = db
 ): Promise<void> {
-  await database.update(marketDiscoveryCandidates).set({ lastSeenAt: at }).where(eq(marketDiscoveryCandidates.id, channelId));
+  await database
+    .update(marketDiscoveryCandidates)
+    .set({ lastSeenAt: at, title, reasonDiscovered })
+    .where(eq(marketDiscoveryCandidates.id, channelId));
 }
 
 export async function setMarketDiscoveryCandidateStatus(

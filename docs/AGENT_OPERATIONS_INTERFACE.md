@@ -146,7 +146,9 @@ day reporting lag; `queryVideoAnalytics` states this is a local snapshot and poi
 the existing `analytics_data_quality` capability for exact per-date coverage, rather than
 recomputing that same report inline on every call). Raw rows/daily series are `FACT`; `currentTotals`/
 `previousTotals` (sums over `daily`) are the first real `DERIVED METRIC` values this interface
-returns -- see §5 below.
+returns -- see §5 below. From Phase 13 `queryChannelAnalytics` also returns `viewCountingChangeInComparison`
+(boolean, an additive field): true when the current and previous periods straddle YouTube's 2026-08-27
+view-counting change, so the two totals are not like-for-like.
 
 **Credential-threading design:** unlike `getChannelContext`/`getVideoContext` above (slice B's own
 no-`credentialRef`, MCP/CLI-does-`assertActiveChannel` convention), these two schemas require a
@@ -934,7 +936,8 @@ plugs into this interface.
 - **`query_competitors`** (MCP)/`agent competitors` (CLI) -- every channel on the research
   watchlist (`channelId`, `handleOrUrl`, `reason`, `addedAt`), no evidence attached.
 - **`query_market_intelligence`** (MCP)/`agent market-intelligence --channelId <UC...>` (CLI) -- one
-  watchlisted channel's own record plus its full evidence history; `RESEARCH_CHANNEL_NOT_AVAILABLE`
+  watchlisted channel's own record plus its evidence history (Phase 13: another channel's API-sourced rows
+  only within the last 30 days, operator-entered rows at any age); `RESEARCH_CHANNEL_NOT_AVAILABLE`
   if the given `channelId` isn't on the watchlist.
 - Both registered directly in `src/mcp/server.ts`/`src/cli/video-metadata.ts` against
   `createMarketIntelligenceCore()` -- **not** a new function in this module's own service layer,
@@ -950,6 +953,19 @@ plugs into this interface.
   makes a live YouTube call.
 - `AGENT_DATA_DOMAINS` gained `competitor_intelligence` (the literal name this module's own
   contracts already reserved for it). `AGENT_API_VERSION` → `0.11.0`.
+
+
+**Phase 13 (2026-10-01, YouTube API Developer Policies III.E.4.d/h, owner decision D1 = a):**
+- Watchlist channels are someone else's (Non-Authorized) data.
+- `subscriberVelocity`, `uploadCadence` and per-video `velocity` now return `{ value: null, basis:
+  "withheld_by_policy" }`.
+- `recentBreakoutVideos`, `breakoutVideos` and `emergingChannels` are always empty, and
+  `emergingChannel.reasons` states the policy.
+- Raw snapshots are still returned, each with its time.
+  - API-sourced snapshots and "Fetch public snapshot" evidence are returned only for the last 30 days, and older
+    ones are deleted.
+  - Operator-entered snapshots and evidence are returned at any age and never deleted.
+- The response shapes are unchanged, so `AGENT_API_VERSION` is unchanged.
 
 ## 4l. Decision-engine agent surface (Phase 10 slice 2, `docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md`) -- IMPLEMENTED
 

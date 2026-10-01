@@ -1,3 +1,4 @@
+import { purgeExpiredApiDataWithinTransaction } from "@/lib/youtube-data-policy";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
@@ -187,6 +188,9 @@ export async function importHandoff(params: {
           if (params.assertStillSafe) await params.assertStillSafe({ liveFingerprint: backupFingerprint });
         },
         afterMerge: async () => {
+          // Owner msg 1139, item 3: rows that already expired under the YouTube API 30-day rule never
+          // come back through an import -- dropped here, inside the merge, before the fingerprint.
+          await purgeExpiredApiDataWithinTransaction(params.liveClient);
           await writeLineageState(params.liveClient, {
             lastSnapshotId: manifest.snapshotId,
             lastGeneration: manifest.generation,

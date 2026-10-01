@@ -283,35 +283,34 @@ export async function listUploadsPlaylistVideoIds(youtube: youtube_v3.Youtube, u
   return videoIds;
 }
 
+
 /**
- * Phase 9 slice 9B -- exactly ONE `playlistItems.list` call (never paginates), for a
- * budget-conscious, repeatable competitor-video refresh capped to the newest ≤50 uploads (the
- * playlist is newest-first). Deliberately a separate function from `listUploadsPlaylistVideoIds`
- * above rather than an options-based variant of it (advisor review, before implementation): a
- * "collect up to N ids, possibly crossing a page boundary" option would leave its real YouTube
- * quota cost (1 or 2 `playlistItems.list` units, depending on how many of the first page's items
- * are valid) unobservable to the caller, silently under-counting real spend against the operator's
- * budget. Capping by PAGE instead makes the cost exactly and always 1 unit, deterministically.
+ * Phase 13 (review round 1): the uploads playlist's first page WITH each item's title and publish
+ * time -- `playlistItems.list` costs 1 unit whatever parts are requested, and `videos.batchGetStats`
+ * (which supplies the statistics) returns no title. Up to 50 newest uploads.
  */
-export async function listUploadsPlaylistFirstPageVideoIds(
+export async function listUploadsPlaylistFirstPage(
   youtube: youtube_v3.Youtube,
   uploadsPlaylistId: string
-): Promise<string[]> {
+): Promise<{ videoId: string; title: string; publishedAt: string | null }[]> {
   const res = await youtube.playlistItems.list({
-    part: ["contentDetails"],
+    part: ["snippet", "contentDetails"],
     playlistId: uploadsPlaylistId,
     maxResults: 50,
   });
-
   const seen = new Set<string>();
-  const videoIds: string[] = [];
+  const out: { videoId: string; title: string; publishedAt: string | null }[] = [];
   for (const item of res.data.items ?? []) {
     const videoId = item.contentDetails?.videoId;
     if (!videoId || seen.has(videoId)) continue;
     seen.add(videoId);
-    videoIds.push(videoId);
+    out.push({
+      videoId,
+      title: item.snippet?.title ?? "",
+      publishedAt: item.contentDetails?.videoPublishedAt ?? null,
+    });
   }
-  return videoIds;
+  return out;
 }
 
 export type PublicVideoSnapshot = {
@@ -367,10 +366,11 @@ export type PublicChannelSearchResult = {
 
 /**
  * Phase 9 slice 9C -- `search.list` (channel-type only), exactly ONE call, never paginates
- * (mirrors `listUploadsPlaylistFirstPageVideoIds`'s own precedent: capping by page keeps the real
- * unit cost -- 100 units, YouTube's own published rate for this method, two orders of magnitude
- * above any `.list` read -- exactly and always 1 call, deterministically, never silently doubling
- * to 200 units for a query whose first page alone doesn't satisfy the caller). A result missing
+ * (mirrors `listUploadsPlaylistFirstPage`'s own precedent: capping by page keeps the real
+ * cost exactly and always 1 call, deterministically, never silently doubling for a query whose
+ * first page alone doesn't satisfy the caller). Since 2026-06-01 that call is 1 of the method's own
+ * 100-calls-per-day bucket (Phase 13 slice 13.4; it used to cost 100 units of the shared pool), so
+ * every call is a scarce daily resource. A result missing
  * its own channel id (a malformed/unexpected API response) is simply omitted, never fabricated.
  */
 export async function searchPublicChannels(
@@ -790,4 +790,94 @@ export async function listSupportedLanguages(youtube: youtube_v3.Youtube): Promi
     }))
     .filter((lang) => lang.code.length > 0)
     .sort((a, b) => a.code.localeCompare(b.code));
+}
+
+/**
+ * Phase 13 slice 13.6 -- `videos.batchGetStats` (YouTube Data API revision history, 2026-06-03): 1
+ * unit of its OWN quota bucket (10,000 per day), so watchlist video statistics stop spending the
+ * shared 10k pool. Not yet in the installed `googleapis` client, so it is a raw authorized request
+ * made with the SAME client's own auth (still created by `createYoutubeClient`, so the Data API
+ * reads toggle applies). The response shape is parsed defensively; the maximum ids per call is not
+ * documented, so it is called with at most 50 (the `videos.list` limit). A caller treats any error
+ * as "unavailable" and falls back to `getPublicVideoSnapshots` (`videos.list`).
+ */
+export async function getPublicVideoStatsBatch(youtube: youtube_v3.Youtube, videoIds: string[]): Promise<PublicVideoSnapshot[]> {
+  if (videoIds.length === 0) return [];
+  const auth = (youtube as unknown as { context?: { _options?: { auth?: { request?: unknown } } } }).context?._options?.auth;
+  if (!auth || typeof auth.request !== "function") {
+    throw new DomainError({ code: "validation_failed", message: "videos.batchGetStats needs an authorized client" });
+  }
+  const request = auth.request as (opts: { url: string; params: Record<string, string> }) => Promise<{ data: unknown }>;
+  const results: PublicVideoSnapshot[] = [];
+  for (const batch of chunk(videoIds, YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
+    const res = await request.call(auth, {
+      url: "https://www.googleapis.com/youtube/v3/videos:batchGetStats",
+      params: { id: batch.join(","), part: "id,snippet,statistics" },
+    });
+    const items = (res.data as { items?: unknown[] } | null)?.items ?? [];
+    for (const raw of items) {
+      // Documented response (videos/batchGetStats reference): `snippet` carries ONLY `publishTime` --
+      // no title. Statistics counts are numbers or numeric strings.
+      const item = raw as {
+        id?: string;
+        snippet?: { publishTime?: string };
+        statistics?: { viewCount?: string | number; likeCount?: string | number; commentCount?: string | number };
+      };
+      if (!item.id) continue;
+      const stat = (v: string | number | undefined) => (v === undefined ? null : parseStatCount(String(v)));
+      results.push({
+        videoId: item.id,
+        title: "",
+        publishedAt: item.snippet?.publishTime ?? null,
+        viewCount: stat(item.statistics?.viewCount),
+        likeCount: stat(item.statistics?.likeCount),
+        commentCount: stat(item.statistics?.commentCount),
+      });
+    }
+  }
+  return results;
+}
+
+export type MusicChartEntry = {
+  rank: number;
+  videoId: string;
+  title: string;
+  channelId: string | null;
+  channelTitle: string | null;
+  viewCount: number | null;
+  publishedAt: string | null;
+};
+
+/**
+ * Phase 13 slice 13.9 -- YouTube's Trending Music chart for one region (`videos.list`,
+ * `chart=mostPopular`, `videoCategoryId=10`): 1 unit. Since July 2025 YouTube keeps only the Music,
+ * Movies and Gaming charts. Current-only data: callers show it as of now and never persist it.
+ */
+export async function getMostPopularMusicVideos(
+  youtube: youtube_v3.Youtube,
+  regionCode: string,
+  maxResults = 25
+): Promise<MusicChartEntry[]> {
+  const res = await youtube.videos.list({
+    part: ["snippet", "statistics"],
+    chart: "mostPopular",
+    videoCategoryId: "10",
+    regionCode,
+    maxResults,
+  });
+  return (res.data.items ?? []).flatMap((item, index) =>
+    item.id
+      ? [
+          {
+            rank: index + 1,
+            videoId: item.id,
+            title: item.snippet?.title ?? "",
+            channelId: item.snippet?.channelId ?? null,
+            channelTitle: item.snippet?.channelTitle ?? null,
+            viewCount: parseStatCount(item.statistics?.viewCount),
+            publishedAt: item.snippet?.publishedAt ?? null,
+          },
+        ]
+      : []
+  );
 }

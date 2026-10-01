@@ -53,7 +53,14 @@ export function computeSnapshotDelta(earlier: SnapshotNumericFields, later: Snap
  * - `full_window` — the latest snapshot is current, and a real snapshot exists at or before the
  *   requested window's start.
  */
-export type VelocityBasis = "insufficient_history" | "stale_latest" | "partial_window" | "full_window";
+export type VelocityBasis =
+  | "insufficient_history"
+  | "stale_latest"
+  | "partial_window"
+  | "full_window"
+  /** Phase 13 slice 13.3: not computed -- a metric derived from other channels' API data is
+   * prohibited (YouTube API Developer Policies III.E.4.h). */
+  | "withheld_by_policy";
 
 export type FieldVelocity = {
   /** Per-day rate of change, or `null` when either endpoint snapshot lacks this field. */

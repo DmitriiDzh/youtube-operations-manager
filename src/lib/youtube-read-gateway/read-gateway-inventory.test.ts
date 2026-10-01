@@ -201,3 +201,19 @@ test("read-gateway inventory: the widened patterns catch static/side-effect/dyna
     );
   }
 });
+
+// Phase 13 slices 13.5/13.6: the RSS feed and `videos.batchGetStats` are plain HTTP calls, not
+// `googleapis` imports, so the import check above cannot see them. Any literal YouTube API/feed URL
+// outside this gateway is a bypass of the single read funnel (AGENTS.md §G).
+test("read-gateway inventory: no production file outside youtube-read-gateway/ calls a YouTube API or feed URL directly", async () => {
+  const allFiles = await listAllScannedFiles();
+  const offenders: string[] = [];
+  const directUrl = /https?:\/\/[^"'`\s]*(youtube\.com\/feeds\/|googleapis\.com\/youtube)/;
+  for (const file of allFiles) {
+    if (file.endsWith(".test.ts")) continue;
+    if (isInsideDir(file, READ_GATEWAY_DIR) || isInsideDir(file, WRITE_GATEWAY_DIR)) continue;
+    const content = await readFile(file, "utf8");
+    if (directUrl.test(content)) offenders.push(path.relative(REPO_ROOT, file));
+  }
+  assert.deepEqual(offenders, []);
+});

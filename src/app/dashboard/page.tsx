@@ -21,6 +21,7 @@ import { MarketResearchPanel } from "@/components/market-research-panel";
 import { MarketVideosPanel } from "@/components/market-videos-panel";
 import { MarketDiscoveryPanel } from "@/components/market-discovery-panel";
 import { MarketTopicsPanel } from "@/components/market-topics-panel";
+import { MusicChartPanel } from "@/components/music-chart-panel";
 import { MarketTrendsPanel } from "@/components/market-trends-panel";
 import { MarketResearchRequestsPanel } from "@/components/market-research-requests-panel";
 import { DecisionsManager } from "@/components/decisions-manager";
@@ -359,6 +360,9 @@ export default function Dashboard() {
             </FeatureErrorBoundary>
             <FeatureErrorBoundary label="Research — Trends">
               <MarketTrendsPanel />
+            </FeatureErrorBoundary>
+            <FeatureErrorBoundary label="Research — Music chart">
+              <MusicChartPanel />
             </FeatureErrorBoundary>
             <FeatureErrorBoundary label="Research — Requests">
               <MarketResearchRequestsPanel />

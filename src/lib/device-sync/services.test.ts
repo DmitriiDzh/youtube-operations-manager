@@ -1079,3 +1079,81 @@ test("review: 'take theirs' is refused while a Batch is being claimed here (RUNN
     a.client.close();
     b.client.close();
   }));
+
+// Phase 13 review round 1 (#2): the YouTube-API 30-day purge runs on every computer by the same
+// rule, so it must not turn an in-sync device into one with "unpublished changes" (which would make
+// the next snapshot from the other computer a divergence instead of an import).
+async function purgeLikeProduction(client: Client, now: Date) {
+  // The exact hooks `runApiDataRetention` uses in production (review round 2).
+  const { purgeExpiredApiData, createSyncPreservingPurgeHooks } = await import("@/lib/youtube-data-policy");
+  await purgeExpiredApiData(client, now, createSyncPreservingPurgeHooks(client));
+}
+
+async function addOldApiSnapshot(client: Client, id: string, observedAt: Date) {
+  await client.execute({
+    sql: "INSERT INTO market_channel_snapshots (id, research_channel_id, observed_at, hidden_subscriber_count, source, created_via) VALUES (?, 'UC1', ?, 0, 'youtube.channels.list', 'web_ui')",
+    args: [id, Math.floor(observedAt.getTime() / 1000)],
+  });
+}
+
+test("13.2 x device sync: an in-sync device stays clean after the purge and still imports the other computer's next snapshot", () =>
+  withTempDir("device-sync-", async (root) => {
+    const { hasUnpublishedLocalChanges } = await import("@/lib/snapshot");
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    await addResearchChannel(a.client, "UC1");
+    await addOldApiSnapshot(a.client, "old-snap", new Date("2026-08-01T00:00:00Z"));
+    await a.runner.tick();
+    await b.runner.tick(); // b imports, including the soon-expired row
+    assert.equal(await hasUnpublishedLocalChanges(b.client), false);
+
+    await purgeLikeProduction(b.client, new Date("2026-10-01T12:00:00Z"));
+    assert.equal(await hasUnpublishedLocalChanges(b.client), false, "the purge alone is not a local change");
+
+    await addResearchChannel(a.client, "UC2");
+    later(a);
+    await a.runner.tick();
+    later(b);
+    assert.equal((await b.runner.tick()).state, "imported");
+    assert.deepEqual(await researchIds(b.client), ["UC1", "UC2"]);
+    a.client.close();
+    b.client.close();
+  }));
+
+test("13.2 x device sync: a device with real unpublished changes stays dirty through the purge", () =>
+  withTempDir("device-sync-", async (root) => {
+    const { hasUnpublishedLocalChanges } = await import("@/lib/snapshot");
+    const a = await makeDevice(root, "a");
+    await addResearchChannel(a.client, "UC1");
+    await addOldApiSnapshot(a.client, "old-snap", new Date("2026-08-01T00:00:00Z"));
+    await a.runner.tick();
+    await addResearchChannel(a.client, "UC-local");
+    await purgeLikeProduction(a.client, new Date("2026-10-01T12:00:00Z"));
+    assert.equal(await hasUnpublishedLocalChanges(a.client), true);
+    a.client.close();
+  }));
+
+// Phase 13 (owner msg 1139): own snapshots older than 30 days leave the sync folder even within the
+// keep count; the head and other devices' snapshots never do.
+test("P13: own snapshots created before the cutoff are pruned, except the head", () =>
+  withTempDir("device-sync-", async (root) => {
+    const folder = path.join(root, "sync");
+    const mk = async (id: string, device: string, generation: number, createdAt: string) => {
+      await mkdir(path.join(folder, id), { recursive: true });
+      return { ...entry(id, null, device, generation), createdAt };
+    };
+    const oldHead = await mk("00000001-0000-4000-8000-000000000000", "A", 1, "2026-08-01T00:00:00.000Z");
+    const oldOwn = await mk("00000002-0000-4000-8000-000000000000", "A", 2, "2026-08-02T00:00:00.000Z");
+    const freshOwn = await mk("00000003-0000-4000-8000-000000000000", "A", 3, "2026-09-25T00:00:00.000Z");
+    const oldPeer = await mk("00000004-0000-4000-8000-000000000000", "B", 1, "2026-08-01T00:00:00.000Z");
+    const removed = await pruneOwnSnapshots({
+      folder,
+      deviceId: "A",
+      headSnapshotId: oldHead.snapshotId,
+      snapshots: [oldHead, oldOwn, freshOwn, oldPeer],
+      olderThan: new Date("2026-09-01T00:00:00.000Z"),
+    });
+    assert.deepEqual(removed, [oldOwn.snapshotId]);
+    const left = new Set(await readdir(folder));
+    for (const kept of [oldHead, freshOwn, oldPeer]) assert.ok(left.has(kept.snapshotId));
+  }));

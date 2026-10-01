@@ -12,6 +12,8 @@ function readers(overrides: Partial<Parameters<typeof buildSettingsSnapshot>[0]>
     analyticsSync: async () => ({ localTime: "12:05", timezone: "Europe/Helsinki" }),
     dataApiReadsEnabled: async () => true,
     analyticsReadsEnabled: async () => true,
+    youtubeFeedReadsEnabled: async () => true,
+    wikipediaReadsEnabled: async () => true,
     gatewayTraffic: async () => [{ category: "live_writes" }],
     cloudQuotaStatus: async () => ({ connected: true }),
     operationsWorkspacePath: async () => null,

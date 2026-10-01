@@ -2,7 +2,10 @@
 // matching the convention the two panels below already used before this extraction (client
 // components in this codebase read API response shapes structurally rather than importing
 // server-side types across the boundary).
-type FieldVelocity = { value: number | null; basis: "insufficient_history" | "stale_latest" | "partial_window" | "full_window" };
+type FieldVelocity = {
+  value: number | null;
+  basis: "insufficient_history" | "stale_latest" | "partial_window" | "full_window" | "withheld_by_policy";
+};
 
 // Extracted from market-research-panel.tsx (found by independent review, 2026-09-29): market-
 // videos-panel.tsx (9H part C) had its own inline copy of this, citing RISK-77 as already tracking
@@ -18,6 +21,7 @@ type FieldVelocity = { value: number | null; basis: "insufficient_history" | "st
 // independent code review: an earlier version of this label always printed "(N-day window)"
 // regardless of basis, contradicting the function it was displaying.
 export function formatFieldVelocity(field: FieldVelocity, unit: string, windowDays: number): string {
+  if (field.basis === "withheld_by_policy") return "not shown (YouTube API policy: no metrics derived from other channels' data)";
   if (field.value === null) return `no data (${field.basis})`;
   const perDay = field.value >= 0 ? `+${field.value.toFixed(2)}` : field.value.toFixed(2);
   const rate = `${perDay} ${unit}/day`;

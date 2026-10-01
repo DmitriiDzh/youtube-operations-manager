@@ -12,7 +12,8 @@ import {
   getVideoDetailsContext,
   getVideosMetadataContextBatch,
   listSupportedLanguages,
-  listUploadsPlaylistFirstPageVideoIds,
+  listUploadsPlaylistFirstPage,
+  getPublicVideoStatsBatch,
   listUploadsPlaylistVideoIds,
   parseIso8601DurationToSeconds,
   searchPublicChannels,
@@ -555,8 +556,8 @@ test("getPublicChannelSnapshot reads uploadsPlaylistId from contentDetails, and 
   assert.equal(snapshot?.uploadsPlaylistId, "UU_COMPETITOR");
 });
 
-// Phase 9 slice 9B -- listUploadsPlaylistFirstPageVideoIds, exactly one playlistItems.list call.
-test("listUploadsPlaylistFirstPageVideoIds issues exactly one playlistItems.list call, even when a nextPageToken is present", async () => {
+// Phase 9 slice 9B -- listUploadsPlaylistFirstPage, exactly one playlistItems.list call.
+test("listUploadsPlaylistFirstPage issues exactly one playlistItems.list call, even when a nextPageToken is present", async () => {
   let callCount = 0;
   const youtube = fakeYoutubeClient({
     playlistItemsList: (async () => {
@@ -570,26 +571,26 @@ test("listUploadsPlaylistFirstPageVideoIds issues exactly one playlistItems.list
     }) as unknown as youtube_v3.Youtube["playlistItems"]["list"],
   });
 
-  const videoIds = await listUploadsPlaylistFirstPageVideoIds(youtube, "UU_TEST");
+  const videoIds = (await listUploadsPlaylistFirstPage(youtube, "UU_TEST")).map((v) => v.videoId);
 
   assert.deepEqual(videoIds, ["v1", "v2"]);
   assert.equal(callCount, 1, "must never fetch a second page, regardless of nextPageToken -- its own real YouTube quota cost must stay exactly 1 unit");
 });
 
-test("listUploadsPlaylistFirstPageVideoIds dedupes ids within the single page and returns an empty array for an empty playlist", async () => {
+test("listUploadsPlaylistFirstPage dedupes ids within the single page and returns an empty array for an empty playlist", async () => {
   const youtube = fakeYoutubeClient({
     playlistItemsList: (async () => ({
       data: { items: [{ contentDetails: { videoId: "v1" } }, { contentDetails: { videoId: "v1" } }] },
     })) as unknown as youtube_v3.Youtube["playlistItems"]["list"],
   });
 
-  const videoIds = await listUploadsPlaylistFirstPageVideoIds(youtube, "UU_TEST");
+  const videoIds = (await listUploadsPlaylistFirstPage(youtube, "UU_TEST")).map((v) => v.videoId);
   assert.deepEqual(videoIds, ["v1"]);
 
   const emptyYoutube = fakeYoutubeClient({
     playlistItemsList: (async () => ({ data: { items: [] } })) as unknown as youtube_v3.Youtube["playlistItems"]["list"],
   });
-  assert.deepEqual(await listUploadsPlaylistFirstPageVideoIds(emptyYoutube, "UU_EMPTY"), []);
+  assert.deepEqual(await listUploadsPlaylistFirstPage(emptyYoutube, "UU_EMPTY"), []);
 });
 
 // Phase 9 slice 9B -- getPublicVideoSnapshots, a lean public batch video-stats fetch.
@@ -722,4 +723,46 @@ test("searchPublicChannels issues exactly one call, never paginates, even with a
 
   await searchPublicChannels(youtube, "query");
   assert.equal(callCount, 1, "must never fetch a second page -- its real cost (100 units) must stay exactly and always 1 call");
+});
+
+// Phase 13 (review round 1): fields per the official references, not assumed shapes.
+test("listUploadsPlaylistFirstPage returns each item's title (snippet.title) and publish time (contentDetails.videoPublishedAt)", async () => {
+  const youtube = fakeYoutubeClient({
+    playlistItemsList: (async () => ({
+      data: { items: [{ snippet: { title: "Night Rain" }, contentDetails: { videoId: "v1", videoPublishedAt: "2026-09-01T10:00:00Z" } }] },
+    })) as unknown as youtube_v3.Youtube["playlistItems"]["list"],
+  });
+  assert.deepEqual(await listUploadsPlaylistFirstPage(youtube, "UU_TEST"), [
+    { videoId: "v1", title: "Night Rain", publishedAt: "2026-09-01T10:00:00Z" },
+  ]);
+});
+
+test("getPublicVideoStatsBatch parses the documented batchGetStats response (snippet.publishTime only, no title)", async () => {
+  let requested: { url: string; params: Record<string, string> } | null = null;
+  const auth = {
+    async request(opts: { url: string; params: Record<string, string> }) {
+      requested = opts;
+      return {
+        data: {
+          kind: "youtube#batchGetStatsResponse",
+          items: [
+            {
+              kind: "youtube#videoStats",
+              id: "v1",
+              snippet: { publishTime: "2026-09-02T00:00:00Z" },
+              statistics: { viewCount: "1234", likeCount: 5, commentCount: "6" },
+              contentDetails: { duration: "PT3M", durationMillis: 180000 },
+            },
+          ],
+          summary: { requestedVideoCount: 1, succeededVideoCount: 1, failedVideoCount: 0, failedVideoIds: [] },
+        },
+      };
+    },
+  };
+  const youtube = { context: { _options: { auth } } } as unknown as youtube_v3.Youtube;
+  const result = await getPublicVideoStatsBatch(youtube, ["v1"]);
+  assert.deepEqual(result, [
+    { videoId: "v1", title: "", publishedAt: "2026-09-02T00:00:00Z", viewCount: 1234, likeCount: 5, commentCount: 6 },
+  ]);
+  assert.equal(requested!.url, "https://www.googleapis.com/youtube/v3/videos:batchGetStats");
 });
