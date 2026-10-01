@@ -65,8 +65,8 @@ async function seed(client: Client) {
   await cand("UC-old-ignored", 31);
   await client.execute("UPDATE market_discovery_candidates SET status = 'ignored', reason_discovered = 'r' WHERE id = 'UC-old-ignored'");
   await client.execute({
-    sql: "INSERT INTO research_evidence (id, research_channel_id, observation, source, confidence, created_via, collected_at) VALUES ('ev-ai', 'UCx', 'AI summary of views', 'ai_assisted', 'low', 'web_ui', ?), ('ev-manual', 'UCx', 'my note', 'manual', 'low', 'web_ui', ?)",
-    args: [nowS - 40 * DAY, nowS - 400 * DAY],
+    sql: "INSERT INTO research_evidence (id, research_channel_id, observation, source, confidence, created_via, collected_at) VALUES ('ev-ai', 'UCx', 'AI summary of views', 'ai_assisted', 'low', 'web_ui', ?), ('ev-manual', 'UCx', 'my note', 'manual', 'low', 'web_ui', ?), ('ev-api', 'UCx', 'Subscribers: 1000, views: 5000', 'youtube.channels.list', 'high', 'web_ui', ?)",
+    args: [nowS - 40 * DAY, nowS - 400 * DAY, nowS - 31 * DAY],
   });
   // An operator's free-text source that merely starts with "youtube." is NOT API data.
   await snap("old-manual-yt", 400, "youtube.com channel page");
@@ -90,7 +90,8 @@ test("AC-P13-01/07: API-sourced competitor rows older than 30 days are deleted; 
     const kept = (await client.execute("SELECT status, title, reason_discovered FROM market_discovery_candidates WHERE id = 'UC-old-ignored'")).rows[0];
     assert.deepEqual([kept.status, kept.title, kept.reason_discovered], ["ignored", "", null]);
     assert.deepEqual(await ids("SELECT record_id FROM channel_record_assignments"), ["UC-fresh-cand"]);
-    // AI-assisted evidence (summarizing API values) expires; the operator's own note does not.
+    // Evidence written by "Fetch public snapshot" (source youtube.channels.list, the real writer) and
+    // AI-assisted evidence expire; the operator's own note does not.
     assert.deepEqual(await ids("SELECT id FROM research_evidence"), ["ev-manual"]);
     assert.deepEqual(await ids("SELECT id FROM channels"), ["UCmine"]);
     assert.deepEqual(await ids("SELECT id FROM research_channels"), ["UCx"]);
@@ -100,7 +101,7 @@ test("AC-P13-01/07: API-sourced competitor rows older than 30 days are deleted; 
         ["market_channel_snapshots", 1, 0],
         ["market_video_snapshots", 1, 0],
         ["market_discovery_candidates", 1, 1],
-        ["research_evidence", 1, 0],
+        ["research_evidence", 2, 0],
       ]
     );
     // A second run blanks nothing again (already blank) and deletes nothing.

@@ -2271,12 +2271,12 @@ data from the API is kept at most 30 days, and no metrics are derived from it.
   unclassified table. The classes:
   - `authorized`: our own channels (III.E.4.b/c);
   - `non_authorized`: other people's channels (III.E.4.d), with its clock column and the condition that selects
-    API-sourced rows (`source LIKE 'youtube.%'`);
+    API-sourced rows (an exact list of the sources collection writes);
   - `not_api_data`: anything that is not YouTube API data.
 - **Retention, 13.2** (`purgeExpiredApiData`, `runRetentionOnce`). Revised by review round 1:
   - It runs on a dedicated connection.
   - Snapshot rows are selected by the exact API sources, not a prefix.
-  - AI-assisted research evidence also expires.
+  - Research evidence written from the API ("Fetch public snapshot") or AI-assisted also expires.
   - For a discovery candidate the operator has decided on, the title and reason are blanked instead of the row
     being deleted. A re-seen candidate refreshes its title along with its clock.
   - In the same transaction, a device that was in sync has its sync fingerprint re-baselined by
