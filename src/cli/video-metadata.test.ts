@@ -6116,7 +6116,7 @@ async function runForError(args: Parameters<typeof runCliCommand>[0]): Promise<{
   return { exitCode, code: envelope.error?.code };
 }
 
-test("AC-P12-10: without an agent token and with Operator CLI access off, every command is refused before running", async () => {
+test("AC-P12-10: with Operator CLI access off, every command is refused before running", async () => {
   for (const argv of [["auth", "whoami"], ["agent", "capabilities"], ["list", "--channelId", "UC_1"]]) {
     const result = await runForError({ argv, core: makeCoreStub(), auth: makeAuthStub(), operatorCliEnabled: async () => false });
     assert.equal(result.exitCode, 1);

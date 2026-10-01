@@ -814,12 +814,12 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
     trend candidates, discovery candidates and research requests to channels, using the
     "Visible to agents of:" chips on the Research panels (`GET/PUT /api/market-assignments`).
   - A research request an agent creates is owned by its channel automatically.
-- **CLI without a token.** It runs only while Settings → AI Agent → "Operator CLI access" is on
-  (default off). Otherwise it is refused, so a shell-capable agent cannot bypass its binding by
-  omitting its token.
-- **Limit (owner decision D0(b)).** This is an in-app wall. It stops agent mistakes, not an agent
-  that deliberately reads `data.db` or another agent's launch config as the same OS user. See
-  `docs/AGENT_ISOLATION_SETUP.md`.
+- **CLI.** It is the operator's tool and runs only while Settings → AI Agent → "Operator CLI access"
+  is on (default off). Otherwise it is refused, so a shell-capable agent cannot run it from the
+  project folder.
+- **Limit (RISK-87).** This is an in-app wall. It stops agent mistakes, not an agent that
+  deliberately finds and reads `data.db` or another agent's client configuration as the same OS user.
+  See `docs/AGENT_ISOLATION_SETUP.md`.
 
 ---
 

@@ -37,13 +37,20 @@ launchers), on this computer only (the web server binds `127.0.0.1`; requests wh
 not loopback are refused). The token is sent as `Authorization: Bearer ytom_ch_…`. Settings → AI Agent
 shows the exact URL and ready-to-copy commands.
 
-Codex (`~/.codex/config.toml`, or `codex mcp add ytom --url … --bearer-token-env-var YTOM_AGENT_TOKEN`):
+Codex. Use **one server entry and one environment variable per channel**: Codex reads
+`bearer_token_env_var` from its own process environment, so a single shared variable (for example one
+set globally) would give every Codex instance the same token, hence the same channel. Put the entry in
+a **project-level `.codex/config.toml` inside that channel's own folder** (Codex gives the closest project
+file precedence) and set the variable only in that agent's launch environment:
 
 ```toml
-[mcp_servers.ytom_channel_a]
+[mcp_servers.ytom]
 url = "http://127.0.0.1:3000/api/mcp"
-bearer_token_env_var = "YTOM_AGENT_TOKEN"
+bearer_token_env_var = "YTOM_TOKEN_CHANNEL_A"
 ```
+
+Codex also supports static `http_headers` and `env_http_headers` for a server entry, which are
+alternatives to `bearer_token_env_var` (the endpoint only needs `Authorization: Bearer <token>`).
 
 Claude Code: `claude mcp add --transport http ytom-channel-a http://127.0.0.1:3000/api/mcp --header "Authorization: Bearer ytom_ch_…"`.
 
@@ -52,8 +59,8 @@ Each agent (and therefore each channel) gets its own server entry and its own to
 
 **Migrating from the stdio setup (`AGENT_API_VERSION` 2.0.0).** Remove the old `npm run
 mcp:video-metadata` entry and its `cwd`, and add the URL entry above. `YTOM_AGENT_TOKEN` is only the
-name of an environment variable of the agent's own client. The CLI rejects `--agentToken` and does not
-read that variable.
+name of an environment variable of the agent's own client, and the examples now use one per channel.
+The CLI rejects `--agentToken` and does not read that variable.
 
 ## 4. The channel's working folder
 

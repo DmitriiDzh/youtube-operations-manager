@@ -8,7 +8,7 @@ import { ToggleSwitch } from "./toggle-switch";
 
 /**
  * Phase 12 (`docs/roadmap/plans/PHASE_12_PLAN.md` slice 12.5, AC-P12-10) -- "Operator CLI access":
- * whether the CLI may run WITHOUT an agent token, as the operator. Off by default and persistent.
+ * whether the CLI may run at all, as the operator (the agent mode was removed, ADR 0013). Off by default and persistent.
  * While it is off, a shell-capable agent cannot bypass its channel binding by simply omitting its
  * token. Same fetch/save shape as `mcp-connection-settings.tsx` (`/api/settings` applies only the
  * fields present in a POST body).
@@ -66,19 +66,19 @@ export function OperatorCliSettings() {
         <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
           Operator CLI access
           <InfoTooltip>
-            Off by default. While it is off, the command-line tool only works with a channel&apos;s agent token
-            (YTOM_AGENT_TOKEN), and then only for that channel. Turn it on only while you use the CLI
+            Off by default. While it is off, the command-line tool refuses every command. AI agents do not use it:
+            they connect through the app&apos;s MCP endpoint with a channel token. Turn it on only while you use the CLI
             yourself, for example `auth login` or `asset register`. While it is on, anything on this computer that
-            can run the CLI without a token has full operator access to every channel.
+            can run the CLI has full operator access to every channel.
           </InfoTooltip>
         </h3>
         <div className="mt-2 flex items-center gap-2">
           <ToggleSwitch
-            label="Allow the CLI without an agent token"
+            label="Allow the operator CLI"
             checked={draft}
             onChange={(checked) => (checked ? setConfirming(true) : setDraft(false))}
           />
-          <span className="text-sm text-zinc-300">Allow the CLI without an agent token</span>
+          <span className="text-sm text-zinc-300">Allow the operator CLI</span>
         </div>
       </div>
 
@@ -101,8 +101,8 @@ export function OperatorCliSettings() {
 
       {confirming && (
         <ConfirmDialog
-          title="Allow the CLI without an agent token?"
-          description="Any process on this computer that runs the CLI without a token will act as the operator, across every channel. The channel wall between agents does not apply to it. Turn this back off when you are done."
+          title="Allow the operator CLI?"
+          description="Any process on this computer that runs the CLI will act as the operator, across every channel. The channel wall between agents does not apply to it. Turn this back off when you are done."
           confirmLabel="Allow"
           confirmVariant="danger"
           onCancel={() => setConfirming(false)}

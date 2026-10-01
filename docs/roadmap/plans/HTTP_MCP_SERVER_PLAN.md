@@ -76,6 +76,23 @@ module (`src/lib/agent-mcp-endpoint/`), the route is a thin adapter.
 | AC-HM-14 | Parity: every MCP tool classified `bound` is reachable through the HTTP endpoint (the same registration path), and `AGENT_API_VERSION` is `2.0.0`. |
 | AC-HM-15 | Existing Phase 12 acceptance (AC-P12-01..13) still hold through the new transport, except AC-P12-01's "zero tools" for toggle-off/invalid-token, which becomes the explicit errors of AC-HM-02/03 (owner instruction, 2026-10-01). |
 
+### 3a. Phase 12 acceptance tests changed or removed (AGENTS.md §L justification)
+
+The requirement each one verified was removed by ADR 0013 (owner instruction), not worked around:
+- `src/cli/video-metadata.test.ts`: "an agent session refuses every operator-only command" (AC-P12-04, CLI),
+  "an agent session rejects a caller-supplied --userId" (AC-P12-05, CLI), "the CLI classification covers
+  exactly the real command table" (AC-P12-08, CLI half), the `--agentToken` empty/missing-value test and
+  "with the MCP connection switched off, a token-bound CLI session is refused" (AC-P12-01, CLI half).
+  The CLI has no agent mode, so there is no agent session to refuse. Replaced by AC-HM-12 tests
+  (`--agentToken` rejected in every form, `YTOM_AGENT_TOKEN` not read). The MCP halves of all of these
+  remain and now run through the real endpoint (AC-HM-04/06).
+- `src/lib/agent-session/agent-session.test.ts`: "enterAgentSession can be entered once and never
+  replaced" (the process-wide scope no longer exists). Replaced by AC-HM-07/08/09.
+- `src/mcp/server.test.ts`: the revoked-token test now runs inside a request scope (same assertion), and
+  one test was added (AC-HM-08). `AGENT_API_VERSION` assertions changed 1.0.0 → 2.0.0 (AC-HM-14).
+- AC-P12-01's "zero tools" for a disabled toggle / invalid token became explicit 403/401 (owner
+  instruction, AC-HM-02/03). AC-P12-10 is unchanged and still tested.
+
 ## 4. Slices (one branch, one merge)
 
 1. **S1** — `agent-session` → ALS-only; fail-open guard; interleaving test.

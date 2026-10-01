@@ -162,13 +162,13 @@ function AgentConnectionGuide() {
     {
       id: "codex",
       title: "Codex",
-      text: `codex mcp add ytom --url ${url} --bearer-token-env-var YTOM_AGENT_TOKEN`,
-      note: "Then set the YTOM_AGENT_TOKEN environment variable to the channel's agent token.",
+      text: `codex mcp add ytom-<channel> --url ${url} --bearer-token-env-var YTOM_TOKEN_<CHANNEL>`,
+      note: "One entry and one environment variable per channel (a single shared variable would hand every Codex the same channel). Prefer a project-level .codex/config.toml inside the channel's own folder, with the variable set only for that agent's launch.",
     },
     {
       id: "claude",
       title: "Claude Code",
-      text: `claude mcp add --transport http ytom ${url} --header "Authorization: Bearer <channel agent token>"`,
+      text: `claude mcp add --transport http ytom ${url} --header "Authorization: Bearer <this channel's agent token>"`,
       note: null,
     },
   ];

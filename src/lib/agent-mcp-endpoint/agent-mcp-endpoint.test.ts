@@ -252,3 +252,14 @@ test("AC-HM-13: the dev and start scripts bind the loopback interface only", asy
   assert.match(pkg.scripts.dev, /-H 127\.0\.0\.1/);
   assert.match(pkg.scripts.start, /-H 127\.0\.0\.1/);
 });
+
+test("AC-HM-16: the proxy body limit covers the largest agent request the tool schema allows", async () => {
+  // fileBase64 may be 34,000,000 characters (localizationImportPreviewInputSchema); Next truncates a
+  // proxied body above proxyClientMaxBodySize, which the route then sees as invalid JSON (found live).
+  const config = await readFile("next.config.ts", "utf8");
+  const match = /proxyClientMaxBodySize:\s*"(\d+)mb"/.exec(config);
+  assert.ok(match, "next.config.ts must set experimental.proxyClientMaxBodySize");
+  assert.ok(Number(match[1]) * 1024 * 1024 >= 34_000_000 + 64 * 1024);
+  const server = await readFile("src/mcp/server.ts", "utf8");
+  assert.match(server, /fileBase64: z\.string\(\)\.min\(1\)\.max\(34_000_000\)/);
+});
