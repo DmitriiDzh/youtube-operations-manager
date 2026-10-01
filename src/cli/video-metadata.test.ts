@@ -23,8 +23,6 @@ import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock
 import { parseWithSchema, registerExternalArtifactInputSchema } from "@/lib/content-proposals/schemas";
 import { listAssetPerformanceInputSchema } from "@/lib/agent-operations/schemas";
 import { runCliCommand, runCliProcess, getCredentialRef, parseArgs } from "./video-metadata";
-import { CLI_COMMAND_CLASSIFICATION } from "./command-classification";
-import { withAgentSessionForTests } from "@/lib/agent-session";
 
 // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-10): without an agent token the CLI runs only
 // in operator mode, which the persisted "Operator CLI access" setting gates (off by default). These
@@ -6126,75 +6124,51 @@ test("AC-P12-10: without an agent token and with Operator CLI access off, every 
   }
 });
 
-test("AC-P12-04: an agent session refuses every operator-only command", async () => {
-  const operatorOnly = Object.entries(CLI_COMMAND_CLASSIFICATION)
-    .filter(([, commandClass]) => commandClass === "operator-only")
-    .map(([key]) => key);
-  assert.ok(operatorOnly.includes("auth select-channel") && operatorOnly.includes("asset register"));
-  for (const key of operatorOnly) {
-    const [namespace, command] = key.split(" ");
-    const argv = namespace === "metadata" ? [command] : [namespace, command];
-    const result = await runForError({ argv, core: makeCoreStub(), auth: makeAuthStub(), agentSession: { channelId: "UC_1" }, agentConnectionEnabled: async () => true });
-    assert.equal(result.code, "AGENT_SESSION_OPERATOR_ONLY", key);
-  }
-});
-
-test("AC-P12-05: an agent session rejects a caller-supplied --userId before any core is reached", async () => {
-  await withAgentSessionForTests({ tokenId: "t", channelId: "UC_1", userId: "bound-user" }, async () => {
-    const result = await runForError({
-      argv: ["changeset", "list", "--channelId", "UC_1", "--userId", "someone-else"],
-      core: makeCoreStub(),
-      agentSession: { channelId: "UC_1" },
-      agentConnectionEnabled: async () => true,
-    });
-    assert.equal(result.code, "AGENT_SESSION_CREDENTIAL_OVERRIDE");
-  });
-});
-
-test("AC-P12-08: the CLI classification covers exactly the real command table", () => {
-  const namespaces = ["auth", "playlist", "changeset", "batch", "channel", "analytics", "ai-localization", "agent", "asset"];
-  const real: string[] = ["metadata list", "metadata transcript", "metadata preview", "metadata apply"];
-  for (const namespace of namespaces) {
-    try {
-      parseArgs([namespace, "__not_a_command__"]);
-    } catch (error) {
-      for (const command of (error as Error).message.split("must be one of: ")[1].split(", ")) real.push(`${namespace} ${command}`);
-    }
-  }
-  assert.deepEqual(real.sort(), Object.keys(CLI_COMMAND_CLASSIFICATION).sort());
-});
-
-// Review round 1 finding 3: an explicit but empty/missing --agentToken is a refusal, never a silent
-// fall-back to operator mode (which could otherwise run if "Operator CLI access" were on).
-test("runCliProcess: --agentToken with an empty or missing value is refused before any command runs", async () => {
+// docs/decisions/0013-in-app-http-mcp-transport.md (AC-HM-12): the CLI has no agent mode any more.
+test("AC-HM-12: --agentToken (any form) is refused before any command runs; the env var is not read", async () => {
   const originalWrite = process.stderr.write.bind(process.stderr);
+  const originalEnv = process.env.YTOM_AGENT_TOKEN;
   const stderr: string[] = [];
   process.stderr.write = ((chunk: string) => {
     stderr.push(String(chunk));
     return true;
   }) as typeof process.stderr.write;
   try {
-    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken", ""]), 1);
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken", "ytom_ch_x"]), 1);
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken=ytom_ch_x"]), 1);
     assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken"]), 1);
-    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken", "--userId"]), 1);
-    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken="]), 1);
-    // The `=` form is read as a token (here an unknown one -> refused), never ignored as "no token".
-    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken=ytom_ch_unknown"]), 1);
+    assert.equal(await runCliProcess(["agent", "capabilities", "--agentToken", ""]), 1);
   } finally {
     process.stderr.write = originalWrite;
+    if (originalEnv === undefined) delete process.env.YTOM_AGENT_TOKEN;
+    else process.env.YTOM_AGENT_TOKEN = originalEnv;
   }
-  assert.equal(stderr.length, 5);
-  for (const line of stderr) assert.equal(JSON.parse(line).error.code, "AGENT_TOKEN_INVALID");
+  assert.equal(stderr.length, 4);
+  for (const line of stderr) {
+    const error = JSON.parse(line).error;
+    assert.equal(error.code, "AGENT_TOKEN_INVALID");
+    assert.match(error.message, /no longer supported/);
+  }
 });
 
-// Review round 2: the "MCP connection" master switch also stops agent use of the CLI.
-test("AC-P12-01 (CLI): with the MCP connection switched off, a token-bound CLI session is refused", async () => {
-  const result = await runForError({
-    argv: ["agent", "capabilities"],
-    core: makeCoreStub(),
-    auth: makeAuthStub(),
-    agentSession: { channelId: "UC_1" },
-    agentConnectionEnabled: async () => false,
-  });
-  assert.equal(result.code, "AGENT_TOKEN_INVALID");
+test("AC-HM-12: YTOM_AGENT_TOKEN in the environment does not turn the CLI into an agent session", async () => {
+  const original = process.env.YTOM_AGENT_TOKEN;
+  process.env.YTOM_AGENT_TOKEN = "ytom_ch_whatever";
+  try {
+    // With Operator CLI access off the command is refused as an OPERATOR command -- the token is not
+    // consulted (a valid-looking token would otherwise have bound the process to a channel).
+    const result = await runForError({ argv: ["agent", "capabilities"], core: makeCoreStub(), auth: makeAuthStub(), operatorCliEnabled: async () => false });
+    assert.equal(result.code, "AGENT_TOKEN_INVALID");
+  } finally {
+    if (original === undefined) delete process.env.YTOM_AGENT_TOKEN;
+    else process.env.YTOM_AGENT_TOKEN = original;
+  }
+});
+
+test("AC-P12-10: the refusal message points the operator at the setting and agents at the MCP endpoint", async () => {
+  const stderr: string[] = [];
+  await runCliCommand({ argv: ["list", "--channelId", "UC_1"], core: makeCoreStub(), auth: makeAuthStub(), operatorCliEnabled: async () => false, writeStderr: (l) => stderr.push(l), writeStdout: () => {} });
+  const message = JSON.parse(stderr[0]).error.message as string;
+  assert.match(message, /Operator CLI access/);
+  assert.match(message, /MCP endpoint/);
 });

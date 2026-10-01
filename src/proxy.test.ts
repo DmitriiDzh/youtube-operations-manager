@@ -435,3 +435,18 @@ test("proxy gates the market-assignments PUT route like any other real mutation"
     await releaseOperationLock(rawSqlClient);
   }
 });
+
+// docs/roadmap/plans/HTTP_MCP_SERVER_PLAN.md AC-HM-11: every MCP call is a POST (reads included), so the
+// in-app agent endpoint must not be blocked by the device gate; other mutating routes still are.
+test("AC-HM-11: /api/mcp is not blocked by the operation lock, while another mutating route still is", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const mcp = await proxy(mutatingRequest("/api/mcp"));
+    assert.equal(mcp.status, 200);
+    assert.equal(mcp.headers.get("x-middleware-next"), "1");
+    const other = await proxy(mutatingRequest("/api/channels/sync"));
+    assert.equal(other.status, 409);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
