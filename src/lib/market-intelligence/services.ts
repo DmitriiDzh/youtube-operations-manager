@@ -1,3 +1,4 @@
+import type { MusicChartEntry } from "@/lib/youtube-read-gateway";
 import { SEARCH_LIST_DAILY_CALL_LIMIT, SEARCH_LIST_UNIT_COST, startOfYoutubeQuotaDay } from "@/lib/youtube-quota";
 import { YOUTUBE_READ_SCOPE } from "@/lib/auth";
 import {
@@ -426,6 +427,8 @@ type ServiceDependencies = {
       credentials: ResolvedCredentials;
       videoIds: string[];
     }): Promise<PublicVideoSnapshot[]>;
+    /** Phase 13 slice 13.9: YouTube's Trending Music chart for a region (1 unit). */
+    getMostPopularMusicVideos(args: { credentials: ResolvedCredentials; regionCode: string }): Promise<MusicChartEntry[]>;
     // Phase 13 slices 13.5/13.6 -- quota-free / own-bucket alternatives, each with a fallback.
     /** The channel's RSS feed (newest ~15 uploads): no quota at all. */
     listChannelFeedVideoIds(args: { channelId: string }): Promise<{ videoId: string; title: string; publishedAt: string | null }[]>;
@@ -749,7 +752,12 @@ async function assertDiscoveryPreconditions(deps: ServiceDependencies, now: Date
   await deps.youtubeApi.assertReadsAvailable();
 }
 
+export const MUSIC_CHART_CACHE_MS = 30 * 60 * 1000;
+
 export function createMarketIntelligenceServices(deps: ServiceDependencies) {
+  // Per services instance (one per process in production); current-only, never persisted (13.9).
+  const musicChartCache = new Map<string, { fetchedAt: Date; entries: MusicChartEntry[] }>();
+
   // Captured in a local `const` (rather than returned directly) so `approveMarketResearchRequest`
   // (Phase 9 slice 9G, part B) can call `services.discoverChannels(...)` directly, reusing its
   // entire existing pipeline (precondition check, credential resolution, search/dedup/insert,
@@ -1287,6 +1295,35 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * `videoSnapshots` array (RISK-78), and this action genuinely needs each video's own full
      * snapshot series (for `velocity`), not just its already-summarized latest point.
      */
+    /**
+     * Phase 13 slice 13.9 -- YouTube's Trending Music chart for one region, as of now. Current-only:
+     * held in memory for `MUSIC_CHART_CACHE_MS` (so repeated views cost nothing) and never written to
+     * the database, so no retention applies (III.E.4.d) and nothing is derived from it (III.E.4.h).
+     */
+    async getMusicChart(input: { regionCode: string; credentialRef: unknown }): Promise<{
+      regionCode: string;
+      fetchedAt: string;
+      entries: MusicChartEntry[];
+    }> {
+      const regionCode = String(input.regionCode ?? "").toUpperCase();
+      if (!/^[A-Z]{2}$/.test(regionCode)) {
+        throw new DomainError({ code: "validation_failed", message: "regionCode must be a two-letter country code", details: {} });
+      }
+      const now = deps.clock.now();
+      const cached = musicChartCache.get(regionCode);
+      if (cached && now.getTime() - cached.fetchedAt.getTime() < MUSIC_CHART_CACHE_MS) {
+        return { regionCode, fetchedAt: cached.fetchedAt.toISOString(), entries: cached.entries };
+      }
+      await deps.youtubeApi.assertReadsAvailable();
+      const credentials = await deps.authResolver.resolve({
+        credentialRef: input.credentialRef,
+        requiredScopes: [YOUTUBE_READ_SCOPE],
+      });
+      const entries = await deps.youtubeApi.getMostPopularMusicVideos({ credentials, regionCode });
+      musicChartCache.set(regionCode, { fetchedAt: now, entries });
+      return { regionCode, fetchedAt: now.toISOString(), entries };
+    },
+
     async getMarketVideosOverview(): Promise<{
       videos: {
         videoId: string;

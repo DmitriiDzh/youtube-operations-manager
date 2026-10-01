@@ -835,3 +835,47 @@ export async function getPublicVideoStatsBatch(youtube: youtube_v3.Youtube, vide
   }
   return results;
 }
+
+export type MusicChartEntry = {
+  rank: number;
+  videoId: string;
+  title: string;
+  channelId: string | null;
+  channelTitle: string | null;
+  viewCount: number | null;
+  publishedAt: string | null;
+};
+
+/**
+ * Phase 13 slice 13.9 -- YouTube's Trending Music chart for one region (`videos.list`,
+ * `chart=mostPopular`, `videoCategoryId=10`): 1 unit. Since July 2025 YouTube keeps only the Music,
+ * Movies and Gaming charts. Current-only data: callers show it as of now and never persist it.
+ */
+export async function getMostPopularMusicVideos(
+  youtube: youtube_v3.Youtube,
+  regionCode: string,
+  maxResults = 25
+): Promise<MusicChartEntry[]> {
+  const res = await youtube.videos.list({
+    part: ["snippet", "statistics"],
+    chart: "mostPopular",
+    videoCategoryId: "10",
+    regionCode,
+    maxResults,
+  });
+  return (res.data.items ?? []).flatMap((item, index) =>
+    item.id
+      ? [
+          {
+            rank: index + 1,
+            videoId: item.id,
+            title: item.snippet?.title ?? "",
+            channelId: item.snippet?.channelId ?? null,
+            channelTitle: item.snippet?.channelTitle ?? null,
+            viewCount: parseStatCount(item.statistics?.viewCount),
+            publishedAt: item.snippet?.publishedAt ?? null,
+          },
+        ]
+      : []
+  );
+}

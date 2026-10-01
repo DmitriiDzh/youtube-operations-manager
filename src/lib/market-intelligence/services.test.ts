@@ -737,6 +737,7 @@ function createFixture(overrides?: {
   const store = createFakeStore();
   const feedCalls: unknown[] = [];
   const batchStatsCalls: unknown[] = [];
+  const musicChartCalls: unknown[] = [];
   const resolveCalls: unknown[] = [];
   const snapshotCalls: unknown[] = [];
   const playlistCalls: unknown[] = [];
@@ -778,6 +779,12 @@ function createFixture(overrides?: {
         videoSnapshotCalls.push(args);
         return overrides?.publicVideoSnapshots ?? [];
       },
+      async getMostPopularMusicVideos(args: { credentials: ResolvedCredentials; regionCode: string }) {
+        musicChartCalls.push(args);
+        return [
+          { rank: 1, videoId: "m1", title: "Song", channelId: "UCx", channelTitle: "Artist", viewCount: 5, publishedAt: null },
+        ];
+      },
       async listChannelFeedVideoIds(args: { channelId: string }) {
         feedCalls.push(args);
         if (!overrides?.feedVideos) throw new Error("RSS feed unavailable (test default)");
@@ -812,6 +819,7 @@ function createFixture(overrides?: {
     assertReadsAvailableCalls,
     feedCalls,
     batchStatsCalls,
+    musicChartCalls,
     setNow(date: Date) {
       currentNow = date;
     },
@@ -3598,4 +3606,26 @@ test("13.6: if batchGetStats fails, the stats come from videos.list (1 pool unit
   assert.equal(result.unitsSpent, 2);
   assert.equal(videoSnapshotCalls.length, 1);
   assert.equal(store.videoSnapshots[0].source, "youtube.videos.list");
+});
+
+// Phase 13 slice 13.9 -- current-only Music chart (1 unit), cached in memory, never persisted.
+test("13.9: the Music chart is fetched once per region per 30 minutes and never written to the database", async () => {
+  const now = new Date("2026-10-01T12:00:00.000Z");
+  const { services, musicChartCalls, setNow, store } = createFixture({ now });
+  const first = await services.getMusicChart({ regionCode: "us", credentialRef: { userId: "u1" } });
+  assert.equal(first.regionCode, "US");
+  assert.equal(first.entries[0].title, "Song");
+  await services.getMusicChart({ regionCode: "US", credentialRef: { userId: "u1" } });
+  assert.equal(musicChartCalls.length, 1, "second view within 30 minutes is served from memory");
+  setNow(new Date(now.getTime() + 31 * 60 * 1000));
+  await services.getMusicChart({ regionCode: "US", credentialRef: { userId: "u1" } });
+  assert.equal(musicChartCalls.length, 2);
+  assert.equal(store.videoSnapshots.length, 0);
+  assert.equal(store.channelSnapshots.length, 0);
+});
+
+test("13.9: an invalid region code is refused before any call", async () => {
+  const { services, musicChartCalls } = createFixture();
+  await assert.rejects(() => services.getMusicChart({ regionCode: "USA", credentialRef: { userId: "u1" } }));
+  assert.equal(musicChartCalls.length, 0);
 });
