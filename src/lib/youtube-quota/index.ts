@@ -42,3 +42,23 @@ export function startOfYoutubeQuotaDay(now: Date): Date {
   const firstGuess = new Date(wallMidnightAsUtc - offset);
   return new Date(wallMidnightAsUtc - pacificOffsetMs(firstGuess));
 }
+
+/**
+ * Phase 13 slice 13.7: from this date YouTube counts a public view "the moment a video begins to
+ * play" (YouTube Data API revision history, 2026-08-27), for all formats. View numbers before and
+ * after it are measured differently, so a comparison across it is not like-for-like.
+ */
+export const YOUTUBE_VIEW_COUNTING_CHANGED_ON = "2026-08-27";
+
+/** True iff the two ISO-date ranges (inclusive) lie on different sides of the counting change, or
+ * either one contains it -- i.e. a comparison between them mixes the two methods. */
+export function rangesStraddleViewCountingChange(
+  a: { startDate: string; endDate: string },
+  b: { startDate: string; endDate: string }
+): boolean {
+  const d = YOUTUBE_VIEW_COUNTING_CHANGED_ON;
+  const contains = (r: { startDate: string; endDate: string }) => r.startDate < d && r.endDate >= d;
+  const before = (r: { startDate: string; endDate: string }) => r.endDate < d;
+  const after = (r: { startDate: string; endDate: string }) => r.startDate >= d;
+  return contains(a) || contains(b) || (before(a) && after(b)) || (after(a) && before(b));
+}

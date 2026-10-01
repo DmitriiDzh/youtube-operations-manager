@@ -2252,6 +2252,7 @@ function makeAnalyticsCliCoreStub(): Pick<
       daily: [],
       currentTotals: { views: 10, estimatedMinutesWatched: 20, subscribersGained: 1, subscribersLost: 0 },
       previousTotals: { views: 5, estimatedMinutesWatched: 10, subscribersGained: 0, subscribersLost: 0 },
+      viewCountingChangeInComparison: false,
     }),
     getDataQualityReport: async () => ({
       channelId: "UC_1",
@@ -2348,6 +2349,7 @@ test("CLI analytics overview forwards resolved credentialRef and requires startD
       daily: [],
       currentTotals: { views: 10, estimatedMinutesWatched: 20, subscribersGained: 1, subscribersLost: 0 },
       previousTotals: { views: 5, estimatedMinutesWatched: 10, subscribersGained: 0, subscribersLost: 0 },
+      viewCountingChangeInComparison: false,
     };
   };
 
@@ -3339,6 +3341,7 @@ test("CLI agent channel-analytics forwards resolved credentialRef, channelId, st
         daily: [],
         currentTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
         previousTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+        viewCountingChangeInComparison: false,
       };
     },
     queryVideoAnalytics: async () => { throw new Error("not used"); },
@@ -3482,6 +3485,7 @@ test("CLI agent channel-analytics/video-analytics are never blocked by the opera
         daily: [],
         currentTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
         previousTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+        viewCountingChangeInComparison: false,
       }),
       queryVideoAnalytics: async () => ({
         channelId: "UC_1",

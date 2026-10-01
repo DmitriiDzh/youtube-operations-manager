@@ -136,6 +136,7 @@ export const getChannelOverviewOutputSchema = z
     daily: z.array(channelOverviewDailyRowSchema),
     currentTotals: channelOverviewTotalsSchema,
     previousTotals: channelOverviewTotalsSchema,
+    viewCountingChangeInComparison: z.boolean(),
   })
   .strict();
 

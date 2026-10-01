@@ -2180,6 +2180,7 @@ function makeAnalyticsCoreStub(): Pick<
       daily: [{ date: "2026-08-26", views: 10, estimatedMinutesWatched: 20, subscribersGained: 1, subscribersLost: 0 }],
       currentTotals: { views: 10, estimatedMinutesWatched: 20, subscribersGained: 1, subscribersLost: 0 },
       previousTotals: { views: 5, estimatedMinutesWatched: 10, subscribersGained: 0, subscribersLost: 0 },
+      viewCountingChangeInComparison: false,
     }),
     getDataQualityReport: async () => ({
       channelId: "UC_1",
@@ -2319,6 +2320,7 @@ test("MCP analytics_overview forwards the resolved credentialRef when omitted", 
       daily: [],
       currentTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
       previousTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+      viewCountingChangeInComparison: false,
     };
   };
 
@@ -2980,6 +2982,7 @@ function makeAgentOperationsCoreStub(): Pick<
       daily: [],
       currentTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
       previousTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+      viewCountingChangeInComparison: false,
     }),
     queryVideoAnalytics: async () => ({
       channelId: "UC_1",
@@ -3303,6 +3306,7 @@ test("MCP agent_query_channel_analytics forwards the resolved credentialRef and 
       daily: [],
       currentTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
       previousTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+      viewCountingChangeInComparison: false,
     };
   };
 

@@ -60,6 +60,7 @@ type ChannelOverview = {
     subscribersGained: number;
     subscribersLost: number;
   };
+  viewCountingChangeInComparison?: boolean;
 };
 
 type DataQualityReport = {
@@ -334,6 +335,13 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
         <p className="text-sm text-zinc-400">Loading...</p>
       ) : overview ? (
         <>
+          {overview.viewCountingChangeInComparison && (
+            <p className="rounded-lg border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
+              YouTube changed how views are counted on 27 Aug 2026 (a view now counts as soon as playback starts).
+              This period and the one it is compared with use different methods, so the views change is not
+              like-for-like.
+            </p>
+          )}
           <div ref={metricCardsRef} className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-zinc-800 bg-zinc-800 sm:grid-cols-3">
             <button
               type="button"
