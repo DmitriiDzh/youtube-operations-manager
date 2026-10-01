@@ -15,6 +15,7 @@ import {
   runSchemaMigrations,
   type SchemaMigration,
 } from "@/lib/schema-versioning";
+import { createRecoverableInitializer } from "@/lib/recoverable-initializer";
 import { acquireOperationLock, OperationLockError, releaseOperationLock, releaseStaleExportLock } from "@/lib/operation-lock";
 import { getAgentSession } from "@/lib/agent-session";
 import { decodeStoredOAuthToken, encodeStoredOAuthToken } from "@/lib/oauth-token-crypto";
@@ -2529,6 +2530,11 @@ export async function acquireMigrationLockIfDue(
       if (isMissingTableError(error)) return false;
       if (!(error instanceof OperationLockError) || attempt >= attempts) throw error;
       if (await releaseStaleExportLock(client).catch(() => false)) continue;
+      // A holder process that is provably gone (an interrupted import/migration -- never
+      // auto-released, decision 2b) will never release this lock by itself, so waiting out the
+      // attempts only delays the same failure by `attempts * waitMs`. Fail at once; the operator
+      // clears it explicitly from the /recovery page or the `operation-lock` CLI.
+      if (error.details.stale) throw error;
       await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
   }
@@ -2581,10 +2587,38 @@ async function initializeDatabase() {
   // reasoning first.
 }
 
-export const databaseInitialization = initializeDatabase().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : "Unknown error";
-  throw new Error(`Database initialization failed: ${message}`);
+function startDatabaseInitialization(): Promise<void> {
+  return initializeDatabase().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    throw new Error(`Database initialization failed: ${message}`);
+  });
+}
+
+// Recoverable initialization (stuck-lock recovery, see `createRecoverableInitializer`): once an
+// attempt fails, the next call re-attempts (at most every INIT_RETRY_MIN_INTERVAL_MS), so a process
+// recovers after the operator clears a stale operation lock -- no restart needed. Each module
+// instance (Next may load db.ts separately for proxy/instrumentation/route bundles) recovers
+// independently.
+const INIT_RETRY_MIN_INTERVAL_MS = 3_000;
+const initializer = createRecoverableInitializer(startDatabaseInitialization, {
+  minRetryIntervalMs: INIT_RETRY_MIN_INTERVAL_MS,
 });
+
+/** The first initialization attempt, for callers/tests that await boot itself; request-time
+ * callers go through `ensureDatabaseInitialized`, which can recover. */
+export const databaseInitialization = initializer.first;
+
+export function ensureDatabaseInitialized(): Promise<void> {
+  return initializer.get();
+}
+
+/**
+ * Deliberately NOT gated on initialization -- the one client the /recovery page, its API route and
+ * the `operation-lock` CLI use to inspect/clear a stuck operation lock, which must work exactly
+ * when initialization is failing because of that lock. Use ONLY for `src/lib/operation-lock`
+ * calls; everything else goes through `rawSqlClient`/`db`.
+ */
+export const ungatedRecoveryClient: Client = rawClient;
 
 const client = new Proxy(rawClient, {
   get(target, property, receiver) {
@@ -2601,7 +2635,7 @@ const client = new Proxy(rawClient, {
       property === "executeMultiple"
     ) {
       return async (...args: unknown[]) => {
-        await databaseInitialization;
+        await ensureDatabaseInitialized();
         return Reflect.apply(value, target, args);
       };
     }

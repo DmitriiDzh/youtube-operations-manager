@@ -20,7 +20,9 @@ const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 // of the handoff/recovery-mode gate. (Recovery mode's own real protection against a device
 // re-importing over unresolved state lives inside `importHandoff` itself, not here -- see its
 // doc comment; found by independent review that this exemption alone was not sufficient.)
-const EXEMPT_PATH_PREFIXES = ["/api/device-handoff", "/api/auth"];
+// `/api/operation-lock` is the stuck-lock recovery route: it must work exactly while the operation
+// lock (or a failed database initialization) makes this gate refuse everything else.
+const EXEMPT_PATH_PREFIXES = ["/api/device-handoff", "/api/auth", "/api/operation-lock"];
 
 // These POST routes are read-only/preview with respect to both local persistence and YouTube --
 // per their own doc comments, none of them create a Change/ChangeSet, write a batch ledger row,

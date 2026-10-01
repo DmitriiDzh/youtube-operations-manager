@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { OperationLockControl } from "@/components/operation-lock-control";
 
 type UnresolvedRow = { batchId: string; ledgerRowId: string; videoId: string; status: string };
 
@@ -541,12 +542,7 @@ export function DeviceHandoffPanel({ channelId }: { channelId: string | null }) 
         </div>
       )}
 
-      {status?.lock && (
-        <div className="rounded-lg border border-blue-800 bg-blue-950/40 px-4 py-3 text-sm text-blue-200">
-          An {status.lock.operationType} operation is currently in progress on this device
-          (started {status.lock.acquiredAt}).
-        </div>
-      )}
+      {status?.lock && <OperationLockControl onChanged={() => void refreshStatus()} />}
 
       <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
         <div className="mb-3 flex items-center justify-between">
