@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
+import { MUSIC_CHART_REGIONS } from "@/lib/market-intelligence/music-chart-regions";
 
 type Entry = { rank: number; videoId: string; title: string; channelTitle: string | null; viewCount: number | null };
 type Chart = { regionCode: string; fetchedAt: string; entries: Entry[] };
 
-const REGIONS = ["US", "GB", "DE", "FR", "JP", "KR", "BR", "IN", "RU", "ES", "IT", "CA", "AU", "MX"];
+const REGIONS = MUSIC_CHART_REGIONS;
 
 /**
  * Phase 13 slice 13.9 (docs/roadmap/plans/PHASE_13_PLAN.md) -- YouTube's Trending Music chart for one

@@ -1,6 +1,7 @@
 import type { MusicChartEntry } from "@/lib/youtube-read-gateway";
 import { SEARCH_LIST_DAILY_CALL_LIMIT, SEARCH_LIST_UNIT_COST, startOfYoutubeQuotaDay } from "@/lib/youtube-quota";
 import { API_DATA_RETENTION_DAYS } from "@/lib/youtube-data-policy/contracts";
+import { MUSIC_CHART_REGIONS } from "./contracts";
 import { YOUTUBE_READ_SCOPE } from "@/lib/auth";
 import {
   assessObservationFreshness,
@@ -1317,8 +1318,12 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       entries: MusicChartEntry[];
     }> {
       const regionCode = String(input.regionCode ?? "").toUpperCase();
-      if (!/^[A-Z]{2}$/.test(regionCode)) {
-        throw new DomainError({ code: "validation_failed", message: "regionCode must be a two-letter country code", details: {} });
+      if (!(MUSIC_CHART_REGIONS as readonly string[]).includes(regionCode)) {
+        throw new DomainError({
+          code: "validation_failed",
+          message: `regionCode must be one of ${MUSIC_CHART_REGIONS.join(", ")}`,
+          details: {},
+        });
       }
       const now = deps.clock.now();
       const cached = musicChartCache.get(regionCode);
@@ -1988,10 +1993,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
     /**
      * The one `search.list`-based discovery action (Phase 9 slice 9C) -- never automatic, only
-     * ever called from an explicit operator UI action (owner decision 4). Shares 9B's exact same
-     * daily unit budget/ledger (owner decision 2 set ONE budget, not one per sub-feature) --
-     * `getMarketIntelligenceUnitsSpentSince` sums both this slice's `market_discovery_runs` and
-     * 9B's `market_intelligence_collection_runs`. `null`/unset budget refuses outright
+     * ever called from an explicit operator UI action (owner decision 4). Since Phase 13 slice 13.4
+     * `search.list` has its own bucket (100 calls a day at 1 unit), counted from `market_discovery_runs`
+     * by `countMarketDiscoverySearchesSince` -- separate from collection's pool budget. `null`/unset budget refuses outright
      * (`MARKET_INTELLIGENCE_QUOTA_DISABLED`) rather than silently no-op'ing like 9B's own
      * background trigger does -- an operator who just clicked "Discover" needs to know why nothing
      * happened, not have it silently swallowed. Charged before the call resolves, same as every 9B
@@ -2001,7 +2005,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * existing candidate only touches `lastSeenAt`, never duplicates the row or resets an
      * operator-set `status`.
      *
-     * **The 100-unit spend is recorded on every exit path, not just when the `search.list` call
+     * **The search's spend is recorded on every exit path, not just when the `search.list` call
      * itself throws** (found by independent/advisor review: an earlier version only wrapped the
      * `search.list` call itself in try/catch -- a throw from the dedup loop afterward, e.g. a
      * `insertMarketDiscoveryCandidate` primary-key violation from an overlapping concurrent

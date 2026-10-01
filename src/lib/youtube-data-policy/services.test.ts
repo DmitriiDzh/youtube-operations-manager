@@ -90,9 +90,10 @@ test("AC-P13-01/07: API-sourced competitor rows older than 30 days are deleted; 
     const kept = (await client.execute("SELECT status, title, reason_discovered FROM market_discovery_candidates WHERE id = 'UC-old-ignored'")).rows[0];
     assert.deepEqual([kept.status, kept.title, kept.reason_discovered], ["ignored", "", null]);
     assert.deepEqual(await ids("SELECT record_id FROM channel_record_assignments"), ["UC-fresh-cand"]);
-    // Evidence written by "Fetch public snapshot" (source youtube.channels.list, the real writer) and
-    // AI-assisted evidence expire; the operator's own note does not.
-    assert.deepEqual(await ids("SELECT id FROM research_evidence"), ["ev-manual"]);
+    // Evidence written by "Fetch public snapshot" (source youtube.channels.list, the real writer)
+    // expires. Every other source is operator-typed free text -- kept, even one that happens to read
+    // "ai_assisted" (review round 8: no code path writes that evidence source).
+    assert.deepEqual(await ids("SELECT id FROM research_evidence"), ["ev-ai", "ev-manual"]);
     assert.deepEqual(await ids("SELECT id FROM channels"), ["UCmine"]);
     assert.deepEqual(await ids("SELECT id FROM research_channels"), ["UCx"]);
     assert.deepEqual(
@@ -101,7 +102,7 @@ test("AC-P13-01/07: API-sourced competitor rows older than 30 days are deleted; 
         ["market_channel_snapshots", 1, 0],
         ["market_video_snapshots", 1, 0],
         ["market_discovery_candidates", 1, 1],
-        ["research_evidence", 2, 0],
+        ["research_evidence", 1, 0],
       ]
     );
     // A second run blanks nothing again (already blank) and deletes nothing.
@@ -162,7 +163,7 @@ test("P13: a backup file has its expired API rows scrubbed; the operator's own d
     const check = createClient({ url: `file:${backup}` });
     const ids = async (sql: string) => (await check.execute(sql)).rows.map((r) => String(Object.values(r)[0])).sort();
     assert.deepEqual(await ids("SELECT id FROM market_channel_snapshots"), ["fresh-api", "old-manual", "old-manual-yt"]);
-    assert.deepEqual(await ids("SELECT id FROM research_evidence"), ["ev-manual"]);
+    assert.deepEqual(await ids("SELECT id FROM research_evidence"), ["ev-ai", "ev-manual"]);
     assert.deepEqual(await ids("SELECT id FROM channels"), ["UCmine"]);
     check.close();
   }));

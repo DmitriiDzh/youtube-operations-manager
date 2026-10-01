@@ -246,3 +246,5 @@ export type MarketResearchRequest = {
   candidatesNew: number | null;
   executionError: string | null;
 };
+
+export { MUSIC_CHART_REGIONS } from "./music-chart-regions";

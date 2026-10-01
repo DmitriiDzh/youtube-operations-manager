@@ -94,3 +94,11 @@ test("13.8: collection fetches only missing days up to yesterday, and the 30-day
     assert.equal(signal.daily.length, 3);
     client.close();
   }));
+
+// Review round 8: a pasted link with a malformed %-escape is invalid input, not a server error.
+test("a Wikipedia link with a malformed %-escape is refused as validation_failed", () => {
+  assert.throws(
+    () => parseArticleReference({ article: "https://en.wikipedia.org/wiki/100%_Pure" }),
+    (error: unknown) => (error as { code?: string }).code === "validation_failed"
+  );
+});

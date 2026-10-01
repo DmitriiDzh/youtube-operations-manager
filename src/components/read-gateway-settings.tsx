@@ -167,7 +167,7 @@ export function ReadGatewaySettings() {
             <div>
               <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
                 RSS feed reads
-                <InfoTooltip>On by default. YouTube&apos;s public RSS feeds of channels&apos; newest uploads -- no quota at all. Research uses them to find watchlist channels&apos; latest videos; if this is off, it falls back to a quota-spending call.</InfoTooltip>
+                <InfoTooltip>On by default. YouTube&apos;s public RSS feeds of channels&apos; newest uploads -- no quota at all. Research lists watchlist channels&apos; latest videos from the uploads playlist (1 quota unit); the RSS feed is the fallback when that call fails, e.g. when quota is exhausted. If this is off, there is no fallback.</InfoTooltip>
               </h3>
               <div className="mt-2 flex items-center gap-2">
                 <ToggleSwitch

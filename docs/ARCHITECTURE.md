@@ -2276,7 +2276,8 @@ data from the API is kept at most 30 days, and no metrics are derived from it.
 - **Retention, 13.2** (`purgeExpiredApiData`, `runRetentionOnce`). Revised by review round 1:
   - It runs on a dedicated connection.
   - Snapshot rows are selected by the exact API sources, not a prefix.
-  - Research evidence written from the API ("Fetch public snapshot") or AI-assisted also expires.
+  - Research evidence written from the API ("Fetch public snapshot") also expires. Other evidence sources are
+    free text typed by the operator and are kept.
   - For a discovery candidate the operator has decided on, the title and reason are blanked instead of the row
     being deleted. A re-seen candidate refreshes its title along with its clock.
   - In the same transaction, a device that was in sync has its sync fingerprint re-baselined by
@@ -2294,7 +2295,8 @@ data from the API is kept at most 30 days, and no metrics are derived from it.
   - What is deleted: API-sourced rows of `non_authorized` tables older than 30 days, plus the market assignments
     pointing at deleted discovery candidates. Manual observations are kept. It runs in one transaction.
   - When: from `src/instrumentation.ts`, a minute after boot and then every 6 h. It is skipped under the operation
-    lock or in recovery mode.
+    lock or in recovery mode. The check is repeated inside the purge's own write transaction, so an
+    export/import/migration that started first pauses it.
   - Backup: a full backup (`backups/migrations/pre-api-retention-*.db`) is taken before the very first purge.
   - Refresh: re-fetching through the daily collection is what keeps current values (a new row starts a new 30
     days).

@@ -39,7 +39,14 @@ export function parseArticleReference(input: { project?: string; article: string
   const raw = input.article.trim();
   const url = /^https?:\/\/([a-z-]+)\.(?:m\.)?wikipedia\.org\/wiki\/([^?#]+)/i.exec(raw);
   const project = url ? `${url[1].toLowerCase()}.wikipedia` : (input.project ?? "en.wikipedia").trim().toLowerCase();
-  let article = url ? decodeURIComponent(url[2]) : raw;
+  let article = raw;
+  if (url) {
+    try {
+      article = decodeURIComponent(url[2]);
+    } catch {
+      throw new DomainError({ code: "validation_failed", message: "The Wikipedia link has a malformed %-escape" });
+    }
+  }
   article = article.replace(/ /g, "_");
   if (!PROJECT_RE.test(project)) {
     throw new DomainError({ code: "validation_failed", message: `Not a Wikipedia project: ${project} (e.g. en.wikipedia)` });

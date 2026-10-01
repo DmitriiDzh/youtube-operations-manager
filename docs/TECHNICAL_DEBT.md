@@ -1572,8 +1572,13 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 
     Backups are scrubbed with `secure_delete`, so a failed VACUUM leaves no remnants.
     This covers an MCP/CLI process without the web server, and an MCP start also runs the purge.
-  - **The Music chart is not in the unit ledger.** Its cost is bounded by a fixed region list and a 30-minute
-    cache.
+  - **The Music chart is not in the unit ledger.** Its cost is bounded by a fixed region list
+    (`MUSIC_CHART_REGIONS`, enforced by the service) and a 30-minute cache: at most 14 units per 30 minutes.
+  - **A snapshot holds data up to about 60 days old.** A snapshot created on day c contains rows observed as
+    early as day c−30, and it stays in the sync folder until c+30. It is only read by an import, which drops
+    whatever has expired.
+    - Trigger to revisit: if the owner wants the shared folder itself bound to 30 days. That would mean
+      re-exporting after each purge, with the false-conflict risk described above.
 - **Status:** MOSTLY RESOLVED (residual above).
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

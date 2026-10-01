@@ -1127,8 +1127,8 @@ export const marketDiscoveryCandidates = sqliteTable("market_discovery_candidate
 
 /**
  * Phase 9 slice 9C -- this slice's own `market_intelligence_collection_runs` counterpart: append-
- * only audit trail AND (jointly with that table, via `getMarketIntelligenceUnitsSpentSince`) the
- * shared quota ledger's source of truth. Not scoped to any one `researchChannelId` -- a discovery
+ * only audit trail and, since Phase 13 slice 13.4, the ledger of the separate `search.list` bucket
+ * (one row = one call, `countMarketDiscoverySearchesSince`). Not scoped to any one `researchChannelId` -- a discovery
  * run is a search, not a per-channel refresh -- so it cannot reuse that other table's own
  * NOT-NULL-FK'd shape.
  */
@@ -5657,7 +5657,7 @@ export async function listResearchEvidenceByChannel(
         // Phase 13 (review round 5): see listMarketChannelSnapshotsByChannel.
         or(
           gte(researchEvidence.collectedAt, apiRetentionCutoff()),
-          and(notInArray(researchEvidence.source, API_SNAPSHOT_SOURCES), ne(researchEvidence.source, "ai_assisted"))
+          notInArray(researchEvidence.source, API_SNAPSHOT_SOURCES)
         )
       )
     )
@@ -5999,16 +5999,11 @@ export async function getLatestMarketIntelligenceCollectionRunForChannel(
 }
 
 /**
- * The quota ledger's own read side: total real YouTube API units spent by market-intelligence
- * -- collection (`market_intelligence_collection_runs`) AND, as of Phase 9 slice 9C, discovery
- * (`market_discovery_runs`) -- since `since` (the caller passes the start of "today," a plain UTC
- * calendar day boundary -- deliberately NOT Pacific-Time-aligned like `cloud-quotas`' own display,
- * per this slice's own `AGENTS.md` §M module-independence constraint; the Settings UI labels this
- * window explicitly so it is never confused with that other, differently-windowed number). Sums
- * every row regardless of `status` -- a `skipped_quota_limited`/`failed` collection row, or a
- * `failed` discovery row, still has a real, already-spent `unitsSpent` that must count against the
- * budget. Both tables are summed here (not one call site adding them itself) because both slices
- * share ONE operator-set daily budget (owner decision 2) -- there is no per-feature sub-budget.
+ * The quota ledger's read side for the general pool: real YouTube API units spent by collection
+ * (`market_intelligence_collection_runs`) since `since` -- the caller passes the start of the YouTube
+ * quota day (midnight Pacific, `startOfYoutubeQuotaDay`, Phase 13 slice 13.4). Sums every row
+ * regardless of `status`: a `skipped_quota_limited`/`failed` row still spent real units. Discovery
+ * (`search.list`) has its own bucket since 13.4 and is counted by `countMarketDiscoverySearchesSince`.
  */
 export async function getMarketIntelligenceUnitsSpentSince(since: Date, database: AppDb = db): Promise<number> {
   // Phase 13 slice 13.4: since 2026-06-01 `search.list` has its own quota bucket, so discovery runs

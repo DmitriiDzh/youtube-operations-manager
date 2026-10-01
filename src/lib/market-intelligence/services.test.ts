@@ -3708,3 +3708,13 @@ test("P13: discovery candidates past 30 days -- an undecided one is hidden, a de
   const overview = await services.getMarketOverview();
   assert.deepEqual(overview.newDiscoveries.map((c) => c.channelId), ["UCnewfresh000000000000000"]);
 });
+
+// Review round 8: the chart's unledgered cost is bounded only if the server itself enforces the list.
+test("13.9: a well-formed region code outside the fixed list is refused before any call", async () => {
+  const { services, musicChartCalls } = createFixture();
+  await assert.rejects(
+    services.getMusicChart({ regionCode: "ZZ", credentialRef: { userId: "u1" } }),
+    (error: unknown) => (error as { code?: string }).code === "validation_failed"
+  );
+  assert.equal(musicChartCalls.length, 0);
+});

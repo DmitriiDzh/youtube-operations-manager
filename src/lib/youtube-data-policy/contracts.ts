@@ -120,10 +120,11 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   // --- Not YouTube API Data -----------------------------------------------------------------------
   research_channels: notApiData("the operator's own watchlist entries (handle/URL typed by the operator)"),
   // Evidence written from the API ("Fetch public snapshot": source youtube.channels.list, the
-  // competitor's counts in its text -- review round 4) or AI-assisted (summarizing API values) is that
-  // channel's API data (30 days). Manually written evidence is the operator's own note.
-  research_evidence: nonAuthorized("collected_at", "API-sourced or AI-assisted notes about watchlist channels", {
-    apiRowsWhere: `(${apiSourceWhere} OR source = 'ai_assisted')`,
+  // competitor's counts in its text -- review round 4) is that channel's API data (30 days). Every
+  // other evidence source is free text the operator typed -- their own note, kept (review round 8:
+  // no code writes an "ai_assisted" evidence source, so matching it would only purge operator notes).
+  research_evidence: nonAuthorized("collected_at", "API-sourced notes about watchlist channels", {
+    apiRowsWhere: apiSourceWhere,
   }),
   market_intelligence_collection_runs: notApiData("collection bookkeeping (status, units spent)"),
   market_discovery_runs: notApiData("discovery bookkeeping (the operator's query, units spent)"),

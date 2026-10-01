@@ -33,6 +33,8 @@ export type RetentionDeps = {
   purgeHooks?: PurgeHooks;
 };
 
+class RetentionPaused extends Error {}
+
 /**
  * One run of the retention job (Phase 13 slice 13.2). Never throws: the outcome is recorded. Skips
  * (without error) while the device may not mutate. Before the FIRST purge ever, a full backup is
@@ -59,7 +61,22 @@ export async function runRetentionOnce(deps: RetentionDeps, now: Date = new Date
       state = { ...state, firstBackupPath: backupPath };
       await deps.saveState(state);
     }
-    const result = await purgeExpiredApiData(deps.client, now, deps.purgeHooks ?? {});
+    // Review round 8: the may-mutate check is repeated INSIDE the purge's write transaction. An
+    // export/import/migration takes the operation lock with a write, so it cannot start while this
+    // transaction holds the write lock, and one that started first makes this run pause instead of
+    // changing data under it (e.g. between an import's backup fingerprint and its merge).
+    const hooks = deps.purgeHooks ?? {};
+    const result = await purgeExpiredApiData(deps.client, now, {
+      ...hooks,
+      beforePurge: async () => {
+        try {
+          await deps.assertMayMutate(deps.client);
+        } catch {
+          throw new RetentionPaused();
+        }
+        if (hooks.beforePurge) await hooks.beforePurge();
+      },
+    });
     // Owner msg 1139, item 2: the backups follow the 30-day rule too (scrubbed, not deleted).
     let scrubbed = 0;
     for (const name of (await readdir(deps.backupsDir).catch(() => [] as string[])).filter((n) => n.endsWith(".db"))) {
@@ -71,6 +88,7 @@ export async function runRetentionOnce(deps: RetentionDeps, now: Date = new Date
     }
     state = { ...state, lastRunAt: now.toISOString(), lastResult: result, lastError: null, lastBackupsScrubbed: scrubbed };
   } catch (error) {
+    if (error instanceof RetentionPaused) return state; // rolled back; the next run tries again
     state = { ...state, lastRunAt: now.toISOString(), lastError: error instanceof Error ? error.message : String(error) };
   }
   await deps.saveState(state).catch(() => undefined);
