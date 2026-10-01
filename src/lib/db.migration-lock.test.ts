@@ -80,3 +80,17 @@ test("a lock left by a dead export process is cleared; a dead importer's lock is
     assert.equal((await getOperationLock(client))?.operationType, "import");
     client.close();
   }));
+
+test("a dead migration/import holder fails the boot at once instead of waiting out every attempt", () =>
+  withTempDir("boot-lock-", async (dir) => {
+    const client = await freshClient(dir);
+    await holdLock(client, "migration", DEAD_PID);
+    const startedAt = Date.now();
+    // 30 attempts x 1s would take ~30s if it waited; a provably dead holder can never release it.
+    await assert.rejects(
+      () => acquireMigrationLockIfDue(client, { currentVersion: SCHEMA_CURRENT_VERSION + 1, attempts: 30, waitMs: 1_000 }),
+      (error: unknown) => error instanceof OperationLockError && error.details.stale === true
+    );
+    assert.ok(Date.now() - startedAt < 1_000, "must not wait for a holder that no longer exists");
+    client.close();
+  }));

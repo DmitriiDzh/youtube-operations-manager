@@ -35,6 +35,7 @@ import { DeviceHandoffPanel } from "@/components/device-handoff-panel";
 import { AppShell } from "@/components/app-shell";
 import { InfoTooltip } from "@/components/info-tooltip";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
+import { OperationLockControl } from "@/components/operation-lock-control";
 import {
   AnalyticsIcon,
   BatchesIcon,
@@ -250,6 +251,8 @@ export default function Dashboard() {
       channel={channel}
       onSignOut={() => signOut()}
     >
+      {/* Visible on every tab, only while a migration/import holds (or left behind) the device lock. */}
+      <OperationLockControl quiet />
       {tab === "home" && (
         // `key` forces a clean remount whenever the active channel changes (owner instruction,
         // 2026-09-23: switching channel -- via the topbar dropdown or Settings -- must signal

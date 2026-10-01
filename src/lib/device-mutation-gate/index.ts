@@ -1,5 +1,5 @@
 import type { SqlExecutor } from "@/lib/db-backup/contracts";
-import { OperationLockError, getOperationLock } from "@/lib/operation-lock";
+import { OperationLockError, describeOperationLock, getOperationLock } from "@/lib/operation-lock";
 
 /**
  * The app-wide pre-mutation gate (architecture audit 2026-10-01, M5): previously owned by the
@@ -93,6 +93,6 @@ export async function assertDeviceAvailableForMutation(client: SqlExecutor): Pro
 export async function assertNoOperationLock(client: SqlExecutor): Promise<void> {
   const lock = await getOperationLock(client);
   if (lock) {
-    throw new OperationLockError({ heldBy: lock, stale: false });
+    throw new OperationLockError({ heldBy: lock, stale: describeOperationLock(lock).stale });
   }
 }

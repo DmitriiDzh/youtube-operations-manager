@@ -2,6 +2,7 @@ import { startIdleShutdownWatcher } from "@/lib/idle-shutdown";
 
 const DEVICE_SYNC_BOOT_DELAY_MS = 5_000;
 const DRAFT_SYNC_INTERVAL_MS = 60_000;
+const DB_INIT_RETRY_POLL_MS = 5_000;
 
 /**
  * Next.js's own `register()` hook -- called once when a new server instance starts, before it
@@ -22,6 +23,35 @@ const DRAFT_SYNC_INTERVAL_MS = 60_000;
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
 
+  // Stuck-lock recovery: a failed database initialization (typically a stale operation lock left by
+  // a killed migration) must NOT stop the server from starting -- otherwise the operator has no
+  // interface to fix it with. Serve anyway (the /recovery page works without the database being
+  // initialized) and start the session work once a later attempt succeeds.
+  const { ensureDatabaseInitialized } = await import("@/lib/db");
+  try {
+    await ensureDatabaseInitialized();
+  } catch (error) {
+    console.error(
+      `[startup] Database initialization failed: ${error instanceof Error ? error.message : String(error)}
+` +
+        "[startup] The server is still running -- open /recovery in the browser to inspect or clear a stuck lock."
+    );
+    const retry = setInterval(() => {
+      ensureDatabaseInitialized().then(
+        () => {
+          clearInterval(retry);
+          void startServerSession();
+        },
+        () => undefined
+      );
+    }, DB_INIT_RETRY_POLL_MS);
+    retry.unref();
+    return;
+  }
+  await startServerSession();
+}
+
+async function startServerSession() {
   // Dynamic import keeps db.ts out of the edge/instrumentation bundle graph.
   const { LIVE_WRITES_SESSION_LEASE_RENEW_MS, renewLiveWritesSessionLease, resetLiveWritesForNewServerSession } =
     await import("@/lib/db");
