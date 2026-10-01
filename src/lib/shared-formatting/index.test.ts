@@ -181,3 +181,13 @@ test("parseDisplayDateTime rejects the wrong shape, including a date with no tim
   assert.equal(parseDisplayDateTime(""), null);
   assert.equal(parseDisplayDateTime("garbage"), null);
 });
+
+test("resolvePublishDate: public -> publishedAt; non-public -> scheduled publishAt; otherwise null", async () => {
+  const { resolvePublishDate } = await import("./index");
+  const pub = { privacyStatus: "public", publishedAt: "2026-01-05T14:30:00.000Z", publishAt: "2030-01-01T00:00:00.000Z" };
+  assert.equal(resolvePublishDate(pub), "2026-01-05T14:30:00.000Z");
+  assert.equal(resolvePublishDate({ ...pub, privacyStatus: "private" }), "2030-01-01T00:00:00.000Z");
+  assert.equal(resolvePublishDate({ ...pub, privacyStatus: "unlisted", publishAt: null }), null);
+  assert.equal(resolvePublishDate({ ...pub, publishedAt: "" }), null);
+  assert.equal(resolvePublishDate({ ...pub, publishedAt: "garbage" }), null);
+});

@@ -25,6 +25,7 @@ function makeVideo(overrides: Partial<StoredVideoRecord> = {}): StoredVideoRecor
     description: "Description 1",
     publishedAt: "2026-01-01T00:00:00.000Z",
     privacyStatus: "public",
+    publishAt: null,
     defaultLanguage: "en",
     defaultAudioLanguage: "en",
     thumbnails: { default: { url: "https://example.com/v1.jpg", width: 120, height: 90 } },
@@ -300,4 +301,21 @@ test("exportLocalizations rejects video ids that do not belong to the channel", 
       return true;
     }
   );
+});
+
+test("getLocalizationOverview passes privacyStatus and the scheduled publishAt through to each row", async () => {
+  const { services } = createFixture([
+    makeVideo({ videoId: "sched", privacyStatus: "private", publishAt: "2027-02-03T10:00:00.000Z" }),
+    makeVideo({ videoId: "pub" }),
+  ]);
+  const overview = await services.getLocalizationOverview({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_TEST",
+  });
+  const sched = overview.videos.find((v) => v.videoId === "sched");
+  assert.equal(sched?.privacyStatus, "private");
+  assert.equal(sched?.publishAt, "2027-02-03T10:00:00.000Z");
+  const pub = overview.videos.find((v) => v.videoId === "pub");
+  assert.equal(pub?.privacyStatus, "public");
+  assert.equal(pub?.publishAt, null);
 });
