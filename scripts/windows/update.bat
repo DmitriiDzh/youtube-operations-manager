@@ -17,6 +17,7 @@ if errorlevel 1 (
 
 echo Stopping any running instance first...
 call "%~dp0stop.bat" /noconfirm
+if errorlevel 1 goto :fail
 
 echo Installing dependencies for this version...
 call npm install

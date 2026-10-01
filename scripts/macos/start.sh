@@ -18,10 +18,17 @@ if [ ! -f ".env.local" ]; then
   exit 1
 fi
 
+# Already running? Stop the old instance first (same principle as scripts/windows/start.bat): a second
+# instance cannot bind the port, and the browser would otherwise open the OLD server -- possibly on
+# a stale build. stop.sh waits for any running export/import/migration before stopping, and refuses
+# (exit code 1) if one does not finish; then nothing is started or rebuilt over it.
+# Note: whatever listens on port 3000 is stopped, exactly as stop.sh has always done.
 if [ -n "$(lsof -ti tcp:3000 2>/dev/null)" ]; then
-  echo "[ERROR] Something is already listening on port 3000 -- the application may already be"
-  echo "running. Run stop.sh first if you want to restart it."
-  exit 1
+  echo "Port 3000 is already in use - stopping the running instance first..."
+  if ! "$(dirname "$0")/stop.sh"; then
+    echo "[ERROR] The running instance could not be stopped safely - not starting a second one."
+    exit 1
+  fi
 fi
 
 if [ ! -d "node_modules" ]; then

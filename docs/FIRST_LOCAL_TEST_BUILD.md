@@ -72,6 +72,15 @@ staleness check above; removed 2026-09-21 at the project owner's explicit reques
 актуальностью гита я буду следить сам" — keeping the checkout current is the operator's own job,
 not this script's).
 
+**Restart behavior (both platforms, same rules).** `start` no longer fails or opens the old server
+when the app is already running: it stops the running instance first (whatever listens on port 3000),
+then starts and rebuilds as usual. `stop` (also used by `start`/`update`) first waits up to 2 minutes
+for any running export/import/database migration to finish (`npm run operation-lock -- wait-idle`)
+and refuses to stop -- exit code 1, nothing started or rebuilt -- if one does not, so the server is
+never killed mid-operation (which is what leaves a stuck operation lock); it then confirms the port is
+free. A stale lock left by an earlier interrupted run is reported but never cleared by these scripts
+(see the app's `/recovery` page or `npm run operation-lock -- clear`).
+
 **To stop safely:** run `scripts\windows\stop.bat`, or just close the
 "YouTube Operations Manager" window.
 
