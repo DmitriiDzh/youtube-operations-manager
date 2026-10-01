@@ -14,6 +14,7 @@ type Readers = {
   analyticsReadsEnabled: () => Promise<boolean>;
   youtubeFeedReadsEnabled: () => Promise<boolean>;
   wikipediaReadsEnabled: () => Promise<boolean>;
+  reportingReadsEnabled: () => Promise<boolean>;
   gatewayTraffic: () => Promise<unknown>;
   cloudQuotaStatus: () => Promise<unknown>;
   operationsWorkspacePath: () => Promise<string | null>;
@@ -48,6 +49,7 @@ export async function buildSettingsSnapshot(readers: Readers) {
     analyticsReadsEnabled: values.analyticsReadsEnabled as boolean | null,
     youtubeFeedReadsEnabled: values.youtubeFeedReadsEnabled as boolean | null,
     wikipediaReadsEnabled: values.wikipediaReadsEnabled as boolean | null,
+    reportingReadsEnabled: values.reportingReadsEnabled as boolean | null,
     gatewayTraffic: values.gatewayTraffic ?? null,
     cloudQuotaStatus: values.cloudQuotaStatus ?? null,
     operationsWorkspacePath: values.operationsWorkspacePath as string | null,

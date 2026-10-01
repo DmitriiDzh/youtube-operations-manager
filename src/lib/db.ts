@@ -3443,6 +3443,7 @@ export async function setAnalyticsReadsEnabled(enabled: boolean, database: AppDb
 
 const YOUTUBE_FEED_READS_ENABLED_SETTING_KEY = "youtube_feed_reads_enabled";
 const WIKIPEDIA_READS_ENABLED_SETTING_KEY = "wikipedia_reads_enabled";
+const REPORTING_READS_ENABLED_SETTING_KEY = "reporting_reads_enabled";
 
 /** Phase 13 slice 13.5: the YouTube RSS feed read category (no quota). Same semantics as the other
  * read toggles: on unless the operator turned it off, persistent. */
@@ -3461,6 +3462,16 @@ export async function getWikipediaReadsEnabled(database: AppDb = db): Promise<bo
 
 export async function setWikipediaReadsEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
   await setAppSetting(WIKIPEDIA_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
+}
+
+/** BL-114: the YouTube Reporting API read category (bulk reports: impressions/CTR). Same semantics as
+ * the other read toggles: on unless the operator turned it off, persistent. */
+export async function getReportingReadsEnabled(database: AppDb = db): Promise<boolean> {
+  return (await getAppSetting(REPORTING_READS_ENABLED_SETTING_KEY, database)) !== "false";
+}
+
+export async function setReportingReadsEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
+  await setAppSetting(REPORTING_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
 }
 
 const OPERATIONS_WORKSPACE_PATH_SETTING_KEY = "operations_workspace_path";
@@ -3658,7 +3669,8 @@ export type GatewayTrafficCategory =
   | "mcp_tool_calls"
   | "cloud_monitoring_reads"
   | "youtube_feed_reads"
-  | "wikipedia_reads";
+  | "wikipedia_reads"
+  | "reporting_reads";
 
 export type GatewayTrafficWindow = {
   category: GatewayTrafficCategory;
@@ -3676,6 +3688,7 @@ const GATEWAY_TRAFFIC_CATEGORIES: readonly GatewayTrafficCategory[] = [
   "cloud_monitoring_reads",
   "youtube_feed_reads",
   "wikipedia_reads",
+  "reporting_reads",
 ];
 
 // Kept well past the 24h window this table exists to answer (owner instruction, 2026-09-22:

@@ -14,6 +14,7 @@ function readers(overrides: Partial<Parameters<typeof buildSettingsSnapshot>[0]>
     analyticsReadsEnabled: async () => true,
     youtubeFeedReadsEnabled: async () => true,
     wikipediaReadsEnabled: async () => true,
+    reportingReadsEnabled: async () => true,
     gatewayTraffic: async () => [{ category: "live_writes" }],
     cloudQuotaStatus: async () => ({ connected: true }),
     operationsWorkspacePath: async () => null,

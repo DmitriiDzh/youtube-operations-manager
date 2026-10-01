@@ -13,6 +13,7 @@ type Settings = {
   analyticsReadsEnabled: boolean;
   youtubeFeedReadsEnabled: boolean;
   wikipediaReadsEnabled: boolean;
+  reportingReadsEnabled: boolean;
   gatewayTraffic?: GatewayTrafficWindowView[];
   cloudQuotaStatus?: { dataApi: ServiceQuotaStatusView; analytics: ServiceQuotaStatusView };
 };
@@ -41,7 +42,7 @@ export function ReadGatewaySettings() {
     const res = await fetch("/api/settings");
     if (!res.ok) return;
     const data = (await res.json()) as Settings;
-    if (ownSettingsUnavailable(data, ["dataApiReadsEnabled", "analyticsReadsEnabled", "youtubeFeedReadsEnabled", "wikipediaReadsEnabled"])) return;
+    if (ownSettingsUnavailable(data, ["dataApiReadsEnabled", "analyticsReadsEnabled", "youtubeFeedReadsEnabled", "wikipediaReadsEnabled", "reportingReadsEnabled"])) return;
     setSettings(data);
     setDraft(data);
   }, []);
@@ -67,6 +68,7 @@ export function ReadGatewaySettings() {
           analyticsReadsEnabled: next.analyticsReadsEnabled,
           youtubeFeedReadsEnabled: next.youtubeFeedReadsEnabled,
           wikipediaReadsEnabled: next.wikipediaReadsEnabled,
+          reportingReadsEnabled: next.reportingReadsEnabled,
         }),
       });
       const data = await res.json();
@@ -91,7 +93,8 @@ export function ReadGatewaySettings() {
     (draft.dataApiReadsEnabled !== settings.dataApiReadsEnabled ||
       draft.analyticsReadsEnabled !== settings.analyticsReadsEnabled ||
       draft.youtubeFeedReadsEnabled !== settings.youtubeFeedReadsEnabled ||
-      draft.wikipediaReadsEnabled !== settings.wikipediaReadsEnabled);
+      draft.wikipediaReadsEnabled !== settings.wikipediaReadsEnabled ||
+      draft.reportingReadsEnabled !== settings.reportingReadsEnabled);
 
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -202,6 +205,28 @@ export function ReadGatewaySettings() {
             </div>
           }
           right={<GatewayTrafficStats size="lg" window={settings?.gatewayTraffic?.find((c) => c.category === "wikipedia_reads")} />}
+        />
+      </div>
+
+      <div className="border-t border-zinc-800 pt-4">
+        <SettingsSectionRow
+          left={
+            <div>
+              <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
+                Reporting reads
+                <InfoTooltip>On by default. Governs every real call to the YouTube Reporting API -- the bulk daily reports that carry thumbnail impressions and click-through rate, which the Analytics API does not return. Free; separate from the Analytics reads toggle.</InfoTooltip>
+              </h3>
+              <div className="mt-2 flex items-center gap-2">
+                <ToggleSwitch
+                  label="Enable Reporting reads"
+                  checked={draft.reportingReadsEnabled}
+                  onChange={(checked) => setDraft({ ...draft, reportingReadsEnabled: checked })}
+                />
+                <span className="text-sm text-zinc-300">Enable Reporting reads</span>
+              </div>
+            </div>
+          }
+          right={<GatewayTrafficStats size="lg" window={settings?.gatewayTraffic?.find((c) => c.category === "reporting_reads")} />}
         />
       </div>
 

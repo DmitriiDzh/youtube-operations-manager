@@ -66,3 +66,5 @@ A decision made before this policy existed (e.g. the Phase 2 choice to keep addi
 | [0009](0009-defer-write-pipeline-sync-gateway-migration.md) | Reaffirm ADR 0006's exclusion of the write pipeline from Automerge, with stronger evidence | Accepted |
 | [0010](0010-persistent-channel-connections.md) | Persistent, re-activatable channel connections without re-consenting to Google each switch | Accepted |
 | [0012](0012-automatic-device-sync.md) | Automatic device sync on top of the snapshot handoff (fingerprint, ancestry, human-resolved divergence) | Accepted |
+| [0013](0013-in-app-http-mcp-transport.md) | Serve MCP over HTTP from the app; remove stdio and CLI agent mode | Accepted |
+| [0014](0014-youtube-reporting-api-gateway-child.md) | YouTube Reporting API as a read-gateway child; a reporting job is not a YouTube write | Accepted |
