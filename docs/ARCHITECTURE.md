@@ -2149,9 +2149,9 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
    - no live operation lock (a dead export's lock is cleared first) and no recovery mode;
    - a Batch prepared or running on this computer (`video_execution_locks`) pauses sync both ways,
      with a `batch_in_progress` notice. An export would give the peer an executable copy without
-     the per-video locks. A `RUNNING` batch without local locks (imported) pauses nothing.
-     `refuseUnresolvedExecution` additionally keeps a copy that caught an `APPLYING` row from
-     being published.
+     the per-video locks. `refuseUnresolvedExecution` also refuses to publish any copy holding an
+     unfinished Batch (`RUNNING`, or `APPLYING`/`UNKNOWN` rows). `RUNNING` is set at claim time,
+     seconds before the first lock exists.
 2. The folder is scanned. Only UUID-named directories count, which excludes the sync-gateway
    folders. An unreadable or incomplete snapshot is "pending": it is retried silently and noticed
    after 10 minutes.

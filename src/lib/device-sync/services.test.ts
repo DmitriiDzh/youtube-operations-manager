@@ -337,11 +337,10 @@ test("AC-AS-08: toggle off or no folder -> a tick does nothing", () =>
     n.client.close();
   }));
 
-// AC-AS-08, as revised by the cross-system audit (2026-10-01): a Batch PREPARED here can wait
-// indefinitely for Execute, so pausing ALL sync on it stalled sync for good. Now: a local Batch
-// (video_execution_locks held) pauses IMPORTS only, with a notice; exports continue but never publish
-// a mid-write row; a RUNNING batch without local locks (another computer's imported state) pauses
-// nothing; recovery mode and a live operation lock still pause everything.
+// AC-AS-08, as revised by the cross-system audit (2026-10-01) and its review: a Batch prepared or
+// running here (video_execution_locks), or any unfinished (`RUNNING`) batch in this computer's data,
+// pauses automatic sync with a `batch_in_progress` notice -- never silently, never by publishing an
+// executable copy. Recovery mode and a live operation lock still pause everything.
 test("AC-AS-08: recovery mode or a live operation lock -> no import and no export", () =>
   withTempDir("device-sync-", async (root) => {
     const a = await makeDevice(root, "a");
@@ -407,12 +406,19 @@ test("AC-AS-08: a clean device with a prepared Batch never auto-imports; it says
     b.client.close();
   }));
 
-test("AC-AS-08: a RUNNING batch without local locks (imported from another computer) pauses nothing", () =>
+// Review of the audit fixes: `RUNNING` is set at claim time, seconds before Prepare takes the first
+// per-video lock -- so a RUNNING batch WITHOUT locks may be a Prepare in progress. Never exported.
+test("AC-AS-08: an unfinished (RUNNING) batch is never exported, even before any lock exists", () =>
   withTempDir("device-sync-", async (root) => {
     const a = await makeDevice(root, "a");
     await a.client.execute("INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('c', 't', 'u')");
     await a.client.execute("INSERT INTO batches (id, channel_id, status) VALUES ('b1', 'c', 'RUNNING')");
-    assert.equal((await a.runner.tick()).state, "exported");
+    const status = await a.runner.tick();
+    assert.equal(status.state, "busy");
+    assert.equal(status.notices[0]?.kind, "batch_in_progress");
+    assert.deepEqual(await readdir(path.join(root, "sync")), []);
+    await a.client.execute("UPDATE batches SET status = 'COMPLETED'");
+    assert.equal((await a.runner.tick({ force: true })).state, "exported");
     a.client.close();
   }));
 

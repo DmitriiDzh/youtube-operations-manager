@@ -209,8 +209,11 @@ what will be overwritten.
     (`video_execution_locks` held) pauses sync in BOTH directions, with a `batch_in_progress`
     notice. An export would hand the other computer an executable copy of the Batch without its
     per-video locks; an import would replace the batch tables under it. Finishing the Batch resumes
-    sync. A `RUNNING` batch without local locks (another computer's imported state) pauses nothing.
-    The original rule paused silently on any `RUNNING` batch, imported ones included.
+    sync.
+  - Nothing is ever exported while this computer's data holds an unfinished Batch (`RUNNING`, or a
+    row `APPLYING`/`UNKNOWN`). `RUNNING` is set at claim time, before any lock exists. It shows the
+    same notice. Local batch activity also makes the device dirty, so it is never auto-imported
+    over.
 - **AC-AS-09 (transient transfer).** A snapshot missing `data.db`, or with a checksum mismatch,
   produces no notice on the first tick and no data change. It produces a notice only after it has
   persisted past the grace period.

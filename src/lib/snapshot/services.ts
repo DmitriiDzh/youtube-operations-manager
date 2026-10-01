@@ -41,13 +41,21 @@ import { readLineageState, writeLineageState, type LineageState } from "./adapte
  * not yet certain -- the only ones a device-handoff import must never silently resolve
  * (`PENDING`/`AWAITING_EXECUTION` are always safe: no write was ever attempted for them). */
 
-/** Through `ATTACH` on the caller's connection, like the scrub/fingerprint steps (Windows EBUSY). */
+/**
+ * Whether the copy holds an UNFINISHED Batch: a row whose YouTube write is mid-flight
+ * (`APPLYING`/`UNKNOWN`), or a batch still `RUNNING` -- claimed/prepared but not finished, which the
+ * receiving computer's `executeBatch` would resume WITHOUT the per-video locks (device-local) that
+ * guard it here (review of the cross-system audit fixes: `RUNNING` is set at claim time, seconds
+ * before the first lock exists). Through `ATTACH` on the caller's connection (Windows EBUSY).
+ */
 async function fileHasUnresolvedExecution(client: SqlExecutor, dbPath: string): Promise<boolean> {
   await client.execute({ sql: "ATTACH DATABASE ? AS unresolved_check", args: [dbPath] });
   try {
     const placeholders = UNRESOLVED_EXECUTION_STATUSES.map(() => "?").join(", ");
     const result = (await client.execute({
-      sql: `SELECT 1 FROM unresolved_check.batch_ledger_rows WHERE status IN (${placeholders}) LIMIT 1`,
+      sql:
+        `SELECT 1 FROM unresolved_check.batch_ledger_rows WHERE status IN (${placeholders}) ` +
+        "UNION ALL SELECT 1 FROM unresolved_check.batches WHERE status = 'RUNNING' LIMIT 1",
       args: [...UNRESOLVED_EXECUTION_STATUSES],
     })) as { rows: unknown[] };
     return result.rows.length > 0;
@@ -87,9 +95,10 @@ export async function exportSnapshot(params: {
   /** `false`: never create `snapshotsDir` itself (automatic device sync). Default `true`. */
   createSnapshotsDir?: boolean;
   /**
-   * Automatic device sync: refuse to publish a copy that caught a YouTube write mid-flight
-   * (`APPLYING`/`UNKNOWN` rows) -- the receiving computer would enter recovery mode for a write
-   * that is about to finish here. Checked on the copy itself, after it is taken.
+   * Automatic device sync: refuse to publish a copy holding an unfinished Batch -- a write
+   * mid-flight (`APPLYING`/`UNKNOWN`: the receiver would enter recovery mode) or a `RUNNING` batch
+   * (the receiver could resume it without this computer's per-video locks). Checked on the copy
+   * itself, after it is taken.
    */
   refuseUnresolvedExecution?: boolean;
 }): Promise<SnapshotManifest> {
@@ -111,7 +120,7 @@ export async function exportSnapshot(params: {
     if (params.refuseUnresolvedExecution && (await fileHasUnresolvedExecution(params.client, dbDestPath))) {
       throw new SnapshotError(
         "snapshot_execution_in_flight",
-        "The copy caught a YouTube write in progress; not publishing it (the next export will)."
+        "The copy holds an unfinished Batch; not publishing it until the Batch finishes."
       );
     }
     // The fingerprint of the EXPORTED FILE, not of the live DB after the copy: a change that raced

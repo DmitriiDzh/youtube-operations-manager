@@ -588,7 +588,12 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         });
       }
       if (error instanceof SnapshotError && error.code === "snapshot_execution_in_flight") {
-        return finish({ ...status, state: "busy", busyReason: "a YouTube write was in flight; retrying" });
+        return finish({
+          ...status,
+          state: "busy",
+          busyReason: "this computer's data holds an unfinished Batch",
+          notices: [{ kind: "batch_in_progress", message: BATCH_PAUSES_IMPORT_MESSAGE }],
+        });
       }
       if (error instanceof SyncAbort || error instanceof OperationLockError) {
         return finish({ ...status, state: "busy", busyReason: error.message });
@@ -711,7 +716,13 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     const busy = await busyReason();
     if (busy && !busy.recovery) throw new DeviceSyncError("device_sync_busy", `Cannot sync now: ${busy.reason}.`);
     if (await localBatchInProgress(deps.client)) throw new DeviceSyncError("device_sync_busy", BATCH_PAUSES_IMPORT_MESSAGE);
-    const result = await importNow(config.folder, snapshotId, { acceptDivergentLineage: true, requireClean: false });
+    let result: Awaited<ReturnType<typeof importNow>>;
+    try {
+      result = await importNow(config.folder, snapshotId, { acceptDivergentLineage: true, requireClean: false });
+    } catch (error) {
+      if (error instanceof SyncAbort) throw new DeviceSyncError("device_sync_busy", error.message);
+      throw error;
+    }
 
     const adoptedAncestry = ancestryOf(snapshotId, snapshots);
     const abandoned = snapshots
