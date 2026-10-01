@@ -3260,6 +3260,18 @@ export async function setDeviceSyncStatusJson(value: string): Promise<void> {
   await setAppSetting(DEVICE_SYNC_STATUS_SETTING_KEY, value);
 }
 
+const API_DATA_RETENTION_STATE_SETTING_KEY = "api_data_retention_state";
+
+/** Phase 13 slice 13.2: the YouTube API data retention job's own state (JSON, owned by
+ * `src/lib/youtube-data-policy`): whether the one-time pre-purge backup was taken, last run, counts. */
+export async function getApiDataRetentionStateJson(): Promise<string | null> {
+  return getAppSetting(API_DATA_RETENTION_STATE_SETTING_KEY);
+}
+
+export async function setApiDataRetentionStateJson(value: string): Promise<void> {
+  await setAppSetting(API_DATA_RETENTION_STATE_SETTING_KEY, value);
+}
+
 const DATA_API_READS_ENABLED_SETTING_KEY = "data_api_reads_enabled";
 const ANALYTICS_READS_ENABLED_SETTING_KEY = "analytics_reads_enabled";
 
