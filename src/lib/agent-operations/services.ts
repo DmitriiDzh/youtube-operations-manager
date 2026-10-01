@@ -563,7 +563,19 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
         title: channel.title,
         lastSyncedAt: channel.lastSyncedAt ? channel.lastSyncedAt.toISOString() : null,
         syncedVideoCount: videos.length,
-        editorialProfile: profile,
+        // Explicit projection: the stored profile also carries its own `channelId` (redundant
+        // with this context's top-level one), which the strict output schema rejects.
+        editorialProfile: profile
+          ? {
+              version: profile.version,
+              targetAudience: profile.targetAudience,
+              toneNotes: profile.toneNotes,
+              terminologyNotes: profile.terminologyNotes,
+              titleConstraints: profile.titleConstraints,
+              descriptionConstraints: profile.descriptionConstraints,
+              updatedAt: profile.updatedAt,
+            }
+          : null,
         trackedLanguages,
       };
 
