@@ -69,6 +69,7 @@ import {
   marketIntelligenceCollectionRuns,
   insertMarketChannelSnapshot,
   listMarketChannelSnapshotsByChannel,
+  listResearchEvidenceByChannel,
   insertMarketVideoSnapshot,
   claimStaleResearchChannelsForCollection,
   releaseResearchChannelCollectionClaim,
@@ -3011,4 +3012,27 @@ test("channel_record_assignments: set replaces, add is idempotent, reads scoped 
     await setRecordAssignmentChannels("research_channel", "UCx", ["UC_B"], isolatedDb);
     assert.deepEqual(await listChannelAssignedRecordIds("UC_A", "research_channel", isolatedDb), []);
     assert.deepEqual(await listRecordAssignmentsByKind("research_channel", isolatedDb), [{ channelId: "UC_B", recordId: "UCx" }]);
+  }));
+
+// Phase 13 (review round 5): reads never return another channel's API-sourced rows older than 30 days,
+// even before the purge has run; operator-entered rows are unaffected.
+test("13.2: snapshot and evidence reads hide expired API-sourced rows but keep manual ones", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await client.execute("INSERT INTO research_channels (id, reason, created_via) VALUES ('UC_READ_FILTER00000000', 'r', 'web_ui')");
+    const old = Math.floor(Date.now() / 1000) - 40 * 24 * 60 * 60;
+    const fresh = Math.floor(Date.now() / 1000) - 2 * 24 * 60 * 60;
+    await client.execute({
+      sql: "INSERT INTO market_channel_snapshots (id, research_channel_id, observed_at, hidden_subscriber_count, source, created_via) VALUES ('old-api', 'UC_READ_FILTER00000000', ?, 0, 'youtube.channels.list', 'web_ui'), ('fresh-api', 'UC_READ_FILTER00000000', ?, 0, 'youtube.channels.list', 'web_ui'), ('old-manual', 'UC_READ_FILTER00000000', ?, 0, 'manual observation', 'web_ui')",
+      args: [old, fresh, old],
+    });
+    await client.execute({
+      sql: "INSERT INTO research_evidence (id, research_channel_id, observation, source, created_via, collected_at) VALUES ('ev-old-api', 'UC_READ_FILTER00000000', 'counts', 'youtube.channels.list', 'web_ui', ?), ('ev-old-manual', 'UC_READ_FILTER00000000', 'note', 'manual', 'web_ui', ?)",
+      args: [old, old],
+    });
+    const snaps = (await listMarketChannelSnapshotsByChannel("UC_READ_FILTER00000000", isolatedDb)).map((s) => s.id).sort();
+    assert.deepEqual(snaps, ["fresh-api", "old-manual"]);
+    const evidence = (await listResearchEvidenceByChannel("UC_READ_FILTER00000000", isolatedDb)).map((e) => e.id);
+    assert.deepEqual(evidence, ["ev-old-manual"]);
   }));

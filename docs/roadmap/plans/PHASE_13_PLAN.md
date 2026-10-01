@@ -11,6 +11,12 @@ merge of the branch into dev"). Branch `feature/phase-13-data-sources`.
 
 **Decisions made:**
 - **D1 = (a)** (msg 1129, verbatim *"(а) ок, храним не более 30 дней"*, "(a) ok, we keep it no more than 30 days").
+- **Follow-up decisions (msg 1139):**
+  - keep the channel ids of discovery candidates the operator has decided on;
+  - backups follow the 30-day rule too: they are scrubbed, not deleted;
+  - expired data must not circulate back through sync: an import drops it in its own transaction.
+
+  See RISK-92.
   Competitor data that came from the API is kept for at most 30 days. Re-fetching fresh data via the API starts a
   new 30-day period for the new record (my reply, msg 1130).
 - **D2** has no answer yet, so 13.10 is not being done.

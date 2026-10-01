@@ -2281,7 +2281,14 @@ data from the API is kept at most 30 days, and no metrics are derived from it.
     being deleted. A re-seen candidate refreshes its title along with its clock.
   - In the same transaction, a device that was in sync has its sync fingerprint re-baselined by
     compare-and-set. Every computer applies the same expiry, so it is not a local change to publish.
-    Re-importing rows that expired elsewhere is transient: the next purge removes them.
+  - Owner decisions (msg 1139):
+    - **An import never brings expired rows back.** The import purges inside its own merge transaction, before
+      the lineage fingerprint (`purgeExpiredApiDataWithinTransaction`).
+    - **Backups are scrubbed by the same rule on every run** (`scrubBackupFile` over `backups/migrations/*.db`,
+      then VACUUM). Files are not deleted.
+  - Reads (`listMarket*SnapshotsByChannel`, `listResearchEvidenceByChannel`) hide expired API rows even before
+    the purge has run. An MCP start runs the purge once. The AI decision engine's evidence descriptions carry no
+    competitor values.
   - What is deleted: API-sourced rows of `non_authorized` tables older than 30 days, plus the market assignments
     pointing at deleted discovery candidates. Manual observations are kept. It runs in one transaction.
   - When: from `src/instrumentation.ts`, a minute after boot and then every 6 h. It is skipped under the operation

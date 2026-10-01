@@ -1540,18 +1540,22 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   - It is refreshed by channel sync, but sync is operator-triggered, not scheduled.
   - A channel nobody syncs for 30 days keeps stale metadata.
   - Trigger to revisit: add a scheduled own-channel refresh, or a staleness notice.
-- **Judgment calls and residuals recorded at review round 1, for the owner to confirm or overrule:**
-  - **Channel ids kept as the key of the operator's own decision.** A discovery candidate the operator marked
-    watching/ignored/promoted/archived keeps its channel id after 30 days, with its title blanked. The policy
-    page gives no explicit allowance for identifiers.
-  - **Backups keep competitor data older than 30 days.** This applies to the one-time `pre-api-retention-*`
-    backup, migration backups, and the `pre-import-*` / `pre-take-theirs-*` / `pre-superseded-*` backups. Two of
-    the owner's rules conflict here: data preservation and D1. Options:
-    - (a) age out `pre-api-retention-*` after 30 days;
-    - (b) keep all backups and accept the deviation;
-    - (c) prune the other backups too.
-  - **Rows already expired on one computer can be re-imported from the other** for at most a few hours, until
-    the next purge.
+- **Owner decisions (msg 1139, 2026-10-01) on the judgment calls from review round 1:**
+  - **Channel ids of decided discovery candidates are kept** after 30 days, as the key of the operator's own
+    decision. Their title and reason are blanked.
+  - **Backups follow the 30-day rule too.** Every run of the retention job scrubs `backups/migrations/*.db` the same
+    way as the live database (`scrubBackupFile`): files are not deleted, they also hold the operator's own data,
+    and VACUUM runs after the scrub.
+    - Consequence: the one-time `pre-api-retention-*` backup gets the same scrub. It therefore no longer protects
+      against a purge that deletes the wrong rows. The classification tests carry that protection instead.
+  - **Expired rows never circulate back through sync.** An import drops them inside its own merge transaction,
+    before it records the fingerprint (`purgeExpiredApiDataWithinTransaction`).
+    - The one remaining copy is the newest published snapshot in the sync folder. It is replaced on that
+      computer's next export and is only ever read by an import, which drops the expired rows. It is
+      deliberately not republished after each purge, because that would bring back false cross-device conflicts.
+- **Further residuals:**
+  - Review round 5 found that reads were not filtered. Now reads hide expired API rows even before the purge runs.
+    This covers an MCP/CLI process without the web server, and an MCP start also runs the purge.
   - **The Music chart is not in the unit ledger.** Its cost is bounded by a fixed region list and a 30-minute
     cache.
 - **Status:** MOSTLY RESOLVED (residual above).

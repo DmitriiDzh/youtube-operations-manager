@@ -2570,6 +2570,10 @@ export async function startMcpServer() {
   const server = createMcpServer(undefined, { connectionEnabled, agentSession });
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // Phase 13 (review round 5): the YouTube API 30-day purge also runs when an agent starts this
+  // process, not only while the web server is up -- an MCP-only period must not keep expired data.
+  // Best effort, silent (stdout is the MCP protocol channel), behind the same mutation gate.
+  void import("@/lib/youtube-data-policy").then((m) => m.runApiDataRetention()).catch(() => undefined);
 }
 
 const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);

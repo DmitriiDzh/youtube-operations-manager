@@ -87,14 +87,17 @@ export function createRealEvidenceReferenceResolver(deps: {
           const result = await deps.marketIntelligenceCore.listChannelSnapshots({ researchChannelId: reference.researchChannelId });
           const snapshot = result.snapshots.find((s) => s.snapshotId === reference.snapshotId);
           return snapshot
-            ? `Channel ${reference.researchChannelId} snapshot (${snapshot.observedAt}): ${snapshot.subscriberCount ?? "?"} subscribers, ${snapshot.viewCount ?? "?"} views, ${snapshot.videoCount ?? "?"} videos`
+            ? // Phase 13 (review round 5): a watchlist channel is someone else's -- its YouTube API values are
+              // not handed to an AI to generate new text from (Developer Policies III.E.4.h, owner D1 = a).
+              `Channel ${reference.researchChannelId} public snapshot observed ${snapshot.observedAt} (another channel's YouTube data: values are not passed to the AI)`
             : `Channel ${reference.researchChannelId} snapshot (no longer available)`;
         }
         case "phase9_video_snapshot": {
           const result = await deps.marketIntelligenceCore.listVideoSnapshots({ researchChannelId: reference.researchChannelId });
           const snapshot = result.snapshots.find((s) => s.snapshotId === reference.snapshotId);
           return snapshot
-            ? `Video "${snapshot.title ?? snapshot.videoId}" snapshot (${snapshot.observedAt}): ${snapshot.viewCount ?? "?"} views, ${snapshot.likeCount ?? "?"} likes`
+            ? // Phase 13 (review round 5): see the channel-snapshot case above.
+              `Video ${snapshot.videoId} public snapshot observed ${snapshot.observedAt} (another channel's YouTube data: values are not passed to the AI)`
             : `Video snapshot (no longer available)`;
         }
         case "phase9_trend_candidate": {

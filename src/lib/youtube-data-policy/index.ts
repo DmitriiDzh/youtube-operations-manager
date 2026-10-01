@@ -9,7 +9,7 @@ import type { PurgeHooks } from "./services";
 import type { SqlExecutor } from "@/lib/db-backup/contracts";
 
 export * from "./contracts";
-export { purgeExpiredApiData, type PurgeResult, type PurgeHooks } from "./services";
+export { purgeExpiredApiData, purgeExpiredApiDataWithinTransaction, scrubBackupFile, type PurgeResult, type PurgeHooks } from "./services";
 export { runRetentionOnce, EMPTY_RETENTION_STATE, type RetentionState, type RetentionDeps } from "./runner";
 
 /** Every 6 hours from the web server's scheduler (`src/instrumentation.ts`) -- so data never outlives 30 days by more than a few hours. */

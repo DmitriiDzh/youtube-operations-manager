@@ -5,6 +5,7 @@ import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import path from "path";
+import { API_DATA_RETENTION_DAYS, YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
 import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
@@ -5650,7 +5651,16 @@ export async function listResearchEvidenceByChannel(
   return database
     .select()
     .from(researchEvidence)
-    .where(eq(researchEvidence.researchChannelId, researchChannelId))
+    .where(
+      and(
+        eq(researchEvidence.researchChannelId, researchChannelId),
+        // Phase 13 (review round 5): see listMarketChannelSnapshotsByChannel.
+        or(
+          gte(researchEvidence.collectedAt, apiRetentionCutoff()),
+          and(notInArray(researchEvidence.source, API_SNAPSHOT_SOURCES), ne(researchEvidence.source, "ai_assisted"))
+        )
+      )
+    )
     .orderBy(desc(researchEvidence.collectedAt));
 }
 
@@ -5743,6 +5753,16 @@ export async function insertMarketChannelSnapshot(
 // functions expect once a future slice wires them up to a real read path (not yet done as of
 // slice 9A -- corrected 2026-09-26, independent review round 2, after an earlier version of this
 // comment claimed derived-metrics.ts already consumes this list, which no production code does).
+/**
+ * Phase 13 (review round 5): reads never return another channel's API-sourced rows older than the
+ * policy window, even if the purge has not run yet (it runs only while the web server is up, and an
+ * MCP/CLI process may read the database for days without it). Operator-entered rows are unaffected.
+ */
+function apiRetentionCutoff(): Date {
+  return new Date(Date.now() - API_DATA_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+}
+const API_SNAPSHOT_SOURCES: string[] = [...YOUTUBE_API_SNAPSHOT_SOURCES];
+
 export async function listMarketChannelSnapshotsByChannel(
   researchChannelId: string,
   database: AppDb = db
@@ -5750,7 +5770,12 @@ export async function listMarketChannelSnapshotsByChannel(
   return database
     .select()
     .from(marketChannelSnapshots)
-    .where(eq(marketChannelSnapshots.researchChannelId, researchChannelId))
+    .where(
+      and(
+        eq(marketChannelSnapshots.researchChannelId, researchChannelId),
+        or(gte(marketChannelSnapshots.observedAt, apiRetentionCutoff()), notInArray(marketChannelSnapshots.source, API_SNAPSHOT_SOURCES))
+      )
+    )
     .orderBy(asc(marketChannelSnapshots.observedAt));
 }
 
@@ -5805,7 +5830,13 @@ export async function listMarketVideoSnapshotsByChannel(
   return database
     .select()
     .from(marketVideoSnapshots)
-    .where(eq(marketVideoSnapshots.researchChannelId, researchChannelId))
+    .where(
+      and(
+        eq(marketVideoSnapshots.researchChannelId, researchChannelId),
+        // Phase 13 (review round 5): see listMarketChannelSnapshotsByChannel.
+        or(gte(marketVideoSnapshots.observedAt, apiRetentionCutoff()), notInArray(marketVideoSnapshots.source, API_SNAPSHOT_SOURCES))
+      )
+    )
     .orderBy(asc(marketVideoSnapshots.observedAt));
 }
 

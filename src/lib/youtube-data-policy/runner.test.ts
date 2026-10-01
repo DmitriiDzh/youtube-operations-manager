@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { createClient } from "@libsql/client";
 import { initializeDatabaseSchema } from "@/lib/db";
@@ -90,5 +91,30 @@ test("AC-P13-07: the backup is taken while the expiring data still exists (befor
     await runRetentionOnce(d.deps, new Date("2026-10-01T00:00:00Z"));
     assert.equal(rowsAtBackup, 1, "the expiring row was still there when the backup was taken");
     assert.equal(Number((await client.execute("SELECT COUNT(*) AS n FROM market_channel_snapshots")).rows[0].n), 0);
+    client.close();
+  }));
+
+// Owner instruction (msg 1139, item 2): every run also scrubs the backups directory.
+test("P13: a run scrubs expired API rows from the backup files too", () =>
+  withTempDir("retention-", async (dir) => {
+    const client = createClient({ url: `file:${path.join(dir, "r.db")}` });
+    await initializeDatabaseSchema(client);
+    const backups = path.join(dir, "backups");
+    await mkdir(backups);
+    const old = createClient({ url: `file:${path.join(backups, "pre-migration-x.db")}` });
+    await initializeDatabaseSchema(old);
+    await old.execute("INSERT INTO research_channels (id, reason, created_via) VALUES ('UCx', 'r', 'web_ui')");
+    await old.execute({
+      sql: "INSERT INTO market_channel_snapshots (id, research_channel_id, observed_at, hidden_subscriber_count, source, created_via) VALUES ('old', 'UCx', ?, 0, 'youtube.channels.list', 'web_ui')",
+      args: [Math.floor(Date.parse("2026-08-01T00:00:00Z") / 1000)],
+    });
+    old.close();
+    const d = deps(client, backups);
+    const state = await runRetentionOnce(d.deps, new Date("2026-10-01T00:00:00Z"));
+    assert.equal(state.lastBackupsScrubbed, 1);
+    const check = createClient({ url: `file:${path.join(backups, "pre-migration-x.db")}` });
+    assert.equal(Number((await check.execute("SELECT COUNT(*) AS n FROM market_channel_snapshots")).rows[0].n), 0);
+    assert.equal(Number((await check.execute("SELECT COUNT(*) AS n FROM research_channels")).rows[0].n), 1);
+    check.close();
     client.close();
   }));

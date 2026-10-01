@@ -1,7 +1,8 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { SqlExecutor } from "@/lib/db-backup/contracts";
-import { purgeExpiredApiData, type PurgeHooks, type PurgeResult } from "./services";
+import { readdir } from "node:fs/promises";
+import { purgeExpiredApiData, scrubBackupFile, type PurgeHooks, type PurgeResult } from "./services";
 
 export type RetentionState = {
   /** The one-time backup taken before the very first purge (AC-P13-07). */
@@ -9,6 +10,8 @@ export type RetentionState = {
   lastRunAt: string | null;
   lastResult: PurgeResult | null;
   lastError: string | null;
+  /** Backup files whose expired API rows were scrubbed on the last run (owner msg 1139, item 2). */
+  lastBackupsScrubbed?: number;
 };
 
 export const EMPTY_RETENTION_STATE: RetentionState = {
@@ -56,7 +59,16 @@ export async function runRetentionOnce(deps: RetentionDeps, now: Date = new Date
       await deps.saveState(state);
     }
     const result = await purgeExpiredApiData(deps.client, now, deps.purgeHooks ?? {});
-    state = { ...state, lastRunAt: now.toISOString(), lastResult: result, lastError: null };
+    // Owner msg 1139, item 2: the backups follow the 30-day rule too (scrubbed, not deleted).
+    let scrubbed = 0;
+    for (const name of (await readdir(deps.backupsDir).catch(() => [] as string[])).filter((n) => n.endsWith(".db"))) {
+      try {
+        if ((await scrubBackupFile(`${deps.backupsDir}/${name}`, now)).changed) scrubbed += 1;
+      } catch {
+        // One unreadable backup never stops the others; it is retried next run.
+      }
+    }
+    state = { ...state, lastRunAt: now.toISOString(), lastResult: result, lastError: null, lastBackupsScrubbed: scrubbed };
   } catch (error) {
     state = { ...state, lastRunAt: now.toISOString(), lastError: error instanceof Error ? error.message : String(error) };
   }

@@ -5,7 +5,7 @@ import path from "node:path";
 import { createClient, type Client } from "@libsql/client";
 import { initializeDatabaseSchema } from "@/lib/db";
 import { withTempDir } from "@/test-support/temp-dir";
-import { API_DATA_RETENTION_DAYS, YOUTUBE_DATA_CLASSIFICATION, purgeExpiredApiData } from "./index";
+import { API_DATA_RETENTION_DAYS, YOUTUBE_DATA_CLASSIFICATION, purgeExpiredApiData, scrubBackupFile } from "./index";
 
 // Acceptance criteria: docs/roadmap/plans/PHASE_13_PLAN.md §5, from the YouTube API Developer
 // Policies III.E.4.b/c/d (not from this implementation).
@@ -148,4 +148,29 @@ test("review round 2: with nothing expiring, the purge takes no write lock and r
     assert.equal(hooksRan, 0);
     assert.ok(result.every((r) => r.deleted === 0 && r.blanked === 0));
     client.close();
+  }));
+
+// Owner instruction (msg 1139, item 2): backups follow the 30-day rule too -- scrubbed, not deleted.
+test("P13: a backup file has its expired API rows scrubbed; the operator's own data in it survives", () =>
+  withTempDir("data-policy-", async (dir) => {
+    const client = await makeClient(dir);
+    await seed(client);
+    client.close();
+    const backup = path.join(dir, "p.db");
+    assert.deepEqual(await scrubBackupFile(backup, NOW), { changed: true });
+    assert.deepEqual(await scrubBackupFile(backup, NOW), { changed: false }, "a second pass finds nothing");
+    const check = createClient({ url: `file:${backup}` });
+    const ids = async (sql: string) => (await check.execute(sql)).rows.map((r) => String(Object.values(r)[0])).sort();
+    assert.deepEqual(await ids("SELECT id FROM market_channel_snapshots"), ["fresh-api", "old-manual", "old-manual-yt"]);
+    assert.deepEqual(await ids("SELECT id FROM research_evidence"), ["ev-manual"]);
+    assert.deepEqual(await ids("SELECT id FROM channels"), ["UCmine"]);
+    check.close();
+  }));
+
+test("P13: a backup that predates the market tables is left alone, not failed", () =>
+  withTempDir("data-policy-", async (dir) => {
+    const old = createClient({ url: `file:${path.join(dir, "old.db")}` });
+    await old.execute("CREATE TABLE channels (id TEXT PRIMARY KEY)");
+    old.close();
+    assert.deepEqual(await scrubBackupFile(path.join(dir, "old.db"), NOW), { changed: false });
   }));

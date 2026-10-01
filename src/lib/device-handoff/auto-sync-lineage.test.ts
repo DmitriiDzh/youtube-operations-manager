@@ -354,3 +354,29 @@ test("R4-1: a table that a newer build starts transferring (absent before, empty
     assert.equal(await hasUnpublishedLocalChanges(a), false);
     a.close();
   }));
+
+// Owner instruction (msg 1139, item 3): rows that expired under the YouTube API 30-day rule never come
+// back through an import, and the imported device is still clean afterwards.
+test("P13: an import drops another channel's API rows older than 30 days, keeps fresh and manual ones", () =>
+  withTempDir("auto-sync-", async (dir) => {
+    const a = await makeClient(dir, "a.db");
+    const b = await makeClient(dir, "b.db");
+    await addResearchChannel(a, "UCx");
+    const nowS = Math.floor(Date.now() / 1000);
+    const snap = (id: string, ageDays: number, source: string) =>
+      a.execute({
+        sql: "INSERT INTO market_channel_snapshots (id, research_channel_id, observed_at, hidden_subscriber_count, source, created_via) VALUES (?, 'UCx', ?, 0, ?, 'web_ui')",
+        args: [id, nowS - ageDays * 86400, source],
+      });
+    await snap("expired-api", 31, "youtube.channels.list");
+    await snap("fresh-api", 29, "youtube.channels.list");
+    await snap("old-manual", 400, "manual observation");
+    const s1 = await exportFrom(a, dir, "device-a");
+
+    assert.equal((await importInto(b, dir, s1.snapshotId)).status, "activated_normal");
+    const ids = (await b.execute("SELECT id FROM market_channel_snapshots ORDER BY id")).rows.map((r) => String(r.id));
+    assert.deepEqual(ids, ["fresh-api", "old-manual"]);
+    assert.equal(await hasUnpublishedLocalChanges(b), false, "the drop is part of the import, not a local change to publish");
+    a.close();
+    b.close();
+  }));
