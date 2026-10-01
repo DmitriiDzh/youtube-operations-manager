@@ -2147,11 +2147,12 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
      exists. Automatic sync never creates it, so an unplugged or renamed external drive gives
      `folder_unreachable`, never snapshots written to a local folder no peer sees;
    - no live operation lock (a dead export's lock is cleared first) and no recovery mode;
-   - a Batch prepared or running on this computer (`video_execution_locks`) pauses sync both ways,
-     with a `batch_in_progress` notice. An export would give the peer an executable copy without
-     the per-video locks. `refuseUnresolvedExecution` also refuses to publish any copy holding an
-     unfinished Batch (`RUNNING`, or `APPLYING`/`UNKNOWN` rows). `RUNNING` is set at claim time,
-     seconds before the first lock exists.
+   - an unfinished Batch in this computer's data pauses sync both ways, with a `batch_in_progress`
+     notice. `hasUnfinishedBatch` checks for a `RUNNING` batch or rows
+     `AWAITING_EXECUTION`/`APPLYING`/`UNKNOWN`. It is judged on transferred data, not on the
+     device-local locks, which some abort paths leak (RISK-90). The same predicate refuses an
+     unfinished copy (`refuseUnresolvedExecution`) and is re-checked inside the lock before every
+     import and export.
 2. The folder is scanned. Only UUID-named directories count, which excludes the sync-gateway
    folders. An unreadable or incomplete snapshot is "pending": it is retried silently and noticed
    after 10 minutes.

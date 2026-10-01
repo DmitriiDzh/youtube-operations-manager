@@ -42,25 +42,38 @@ import { readLineageState, writeLineageState, type LineageState } from "./adapte
  * (`PENDING`/`AWAITING_EXECUTION` are always safe: no write was ever attempted for them). */
 
 /**
- * Whether the copy holds an UNFINISHED Batch: a row whose YouTube write is mid-flight
- * (`APPLYING`/`UNKNOWN`), or a batch still `RUNNING` -- claimed/prepared but not finished, which the
- * receiving computer's `executeBatch` would resume WITHOUT the per-video locks (device-local) that
- * guard it here (review of the cross-system audit fixes: `RUNNING` is set at claim time, seconds
- * before the first lock exists). Through `ATTACH` on the caller's connection (Windows EBUSY).
+ * Row statuses of a Batch that is not finished: still executable (`AWAITING_EXECUTION` -- the execute
+ * route resumes such rows whatever the batch status) or mid-write (`APPLYING`/`UNKNOWN`).
  */
-async function fileHasUnresolvedExecution(client: SqlExecutor, dbPath: string): Promise<boolean> {
-  await client.execute({ sql: "ATTACH DATABASE ? AS unresolved_check", args: [dbPath] });
+const UNFINISHED_ROW_STATUSES = ["AWAITING_EXECUTION", "APPLYING", "UNKNOWN"] as const;
+
+/**
+ * Automatic device sync (cross-system audit and its reviews, 2026-10-01): whether `schema` ("main"
+ * = the live DB, or an attached copy) holds an UNFINISHED Batch -- a batch still `RUNNING` (set at
+ * claim time, before any per-video lock exists) or any row in `UNFINISHED_ROW_STATUSES` (e.g. an
+ * identity-aborted batch leaves its prepared rows `AWAITING_EXECUTION`). Judged from transferred
+ * data only, never from the device-local `video_execution_locks` (some abort paths leak them,
+ * RISK-90): such a Batch must never be handed to another computer, which could execute it without
+ * the locks, and must never be replaced under a Prepare/Execute running here.
+ */
+export async function hasUnfinishedBatch(client: SqlExecutor, schema = "main"): Promise<boolean> {
+  const placeholders = UNFINISHED_ROW_STATUSES.map(() => "?").join(", ");
+  const result = (await client.execute({
+    sql:
+      `SELECT 1 FROM "${schema}".batches WHERE status = 'RUNNING' ` +
+      `UNION ALL SELECT 1 FROM "${schema}".batch_ledger_rows WHERE status IN (${placeholders}) LIMIT 1`,
+    args: [...UNFINISHED_ROW_STATUSES],
+  })) as { rows: unknown[] };
+  return result.rows.length > 0;
+}
+
+/** Same check on a standalone copy, through `ATTACH` on the caller's connection (Windows EBUSY). */
+async function fileHasUnfinishedBatch(client: SqlExecutor, dbPath: string): Promise<boolean> {
+  await client.execute({ sql: "ATTACH DATABASE ? AS unfinished_check", args: [dbPath] });
   try {
-    const placeholders = UNRESOLVED_EXECUTION_STATUSES.map(() => "?").join(", ");
-    const result = (await client.execute({
-      sql:
-        `SELECT 1 FROM unresolved_check.batch_ledger_rows WHERE status IN (${placeholders}) ` +
-        "UNION ALL SELECT 1 FROM unresolved_check.batches WHERE status = 'RUNNING' LIMIT 1",
-      args: [...UNRESOLVED_EXECUTION_STATUSES],
-    })) as { rows: unknown[] };
-    return result.rows.length > 0;
+    return await hasUnfinishedBatch(client, "unfinished_check");
   } finally {
-    await client.execute("DETACH DATABASE unresolved_check");
+    await client.execute("DETACH DATABASE unfinished_check");
   }
 }
 
@@ -117,7 +130,7 @@ export async function exportSnapshot(params: {
     const dbDestPath = path.join(stagingDir, "data.db");
     await copyDatabaseConsistently(params.client, dbDestPath);
     await scrubDatabaseCopy(params.client, dbDestPath);
-    if (params.refuseUnresolvedExecution && (await fileHasUnresolvedExecution(params.client, dbDestPath))) {
+    if (params.refuseUnresolvedExecution && (await fileHasUnfinishedBatch(params.client, dbDestPath))) {
       throw new SnapshotError(
         "snapshot_execution_in_flight",
         "The copy holds an unfinished Batch; not publishing it until the Batch finishes."

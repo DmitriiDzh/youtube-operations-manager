@@ -1478,19 +1478,24 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Trigger to revisit:** a reported lost change after a stop, or a stale lock in the field.
 - **Status:** OPEN, accepted.
 
-## RISK-90 — Some Batch abort paths leave per-video execution locks held — OPEN, 2026-10-01
+## RISK-90 — Batch lifecycle leaves unfinished Batches that the UI cannot finish — OPEN, 2026-10-01
 
-- **Affected components:** `src/lib/batches/services.ts`. Two abort paths end a batch `ABORTED`
-  and mark its remaining rows `ABORTED_SYSTEMIC` without `releaseVideoLock`:
-  - a systemic failure such as 403 `quotaExceeded`, around line 1347;
-  - an identity-guardrail abort, around line 1337.
-
-  `recoverBatch` releases such locks, but nothing in the app calls it.
-- **Found during:** final review of automatic device sync (BL-111), 2026-10-01. The leak predates
+- **Affected components:** `src/lib/batches/services.ts`, `src/components/batch-manager.tsx`.
+- **What happens:**
+  - A systemic failure (e.g. 403 `quotaExceeded`) marks the remaining rows `ABORTED_SYSTEMIC`
+    without releasing their per-video locks.
+  - The identity-guardrail abort in `executeBatch` marks only the batch `ABORTED`. Its prepared rows
+    stay `AWAITING_EXECUTION` and keep their locks.
+  - "Run dry-run preview" on a LIVE batch calls Prepare, which leaves the batch `RUNNING` with
+    `AWAITING_EXECUTION` rows. The UI shows Execute only for `PENDING` batches.
+  - `recoverBatch` would clean up, but nothing in the app calls it.
+- **Found during:** reviews of automatic device sync (BL-111), 2026-10-01. All of this predates
   that feature.
-- **Actual risk:** a leaked lock keeps blocking a new Batch on the same video
-  (`acquireVideoExecutionLock`) until someone clears it by hand. Automatic device sync is NOT
-  affected: it only counts locks of a still-`RUNNING` batch.
+- **Actual risk:**
+  - Leaked locks block a new Batch on the same video.
+  - An unfinished Batch also pauses automatic device sync in both directions. The pause is
+    deliberate and fail-closed, with a notice; manual Merge-tab handoff still works.
+  - That pause has no in-app way out until the Batch can be finished.
 - **Why not fixed now:** this is a change to the Phase 5 write pipeline, which is safety-critical
   (`AGENTS.md` §L). It needs its own task and acceptance criteria.
 - **Status:** OPEN.

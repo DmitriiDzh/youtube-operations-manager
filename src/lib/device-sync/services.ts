@@ -3,6 +3,7 @@ import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { exportHandoff, importHandoff, isDeviceInRecoveryMode, RecoveryModeError } from "@/lib/device-handoff";
 import { getOperationLock, OperationLockError, releaseStaleExportLock } from "@/lib/operation-lock";
 import {
+  hasUnfinishedBatch,
   hasUnpublishedLocalChanges,
   isFastForwardOf,
   listSnapshotIdsStrict,
@@ -216,31 +217,15 @@ class SyncAbort extends Error {
 }
 
 /**
- * Whether THIS computer has a Batch prepared or executing (cross-system audit, 2026-10-01). Phase 5
- * holds `video_execution_locks` (device-local, never transferred) from Prepare until each row
- * finishes. While one exists, automatic sync pauses BOTH ways, with a notice saying so:
- *   - an import would replace the batch tables under it;
- *   - an export would hand the other computer a `RUNNING` batch with `AWAITING_EXECUTION` rows but
- *     none of the per-video locks -- an executable copy of writes this computer is about to make
- *     (review of the audit fixes). Pausing is the documented Phase 5 posture: a Batch is a short,
- *     operator-driven workflow; Execute (or finishing it) resumes sync.
- * A `RUNNING` batch WITHOUT local locks is another computer's imported state, not work here.
+ * While this computer's data holds an unfinished Batch (`hasUnfinishedBatch`: `RUNNING`, or rows
+ * `AWAITING_EXECUTION`/`APPLYING`/`UNKNOWN`), automatic sync pauses in BOTH directions with this
+ * notice: an export would hand another computer an executable copy without this computer's
+ * per-video locks; an import would replace the batch tables under a Prepare/Execute. The check uses
+ * transferred data, not the device-local locks, which some abort paths leak (RISK-90). It cannot
+ * tell where the Batch was started, so the notice gives no "execute it" advice.
  */
-async function localBatchInProgress(client: SqlExecutor): Promise<boolean> {
-  // Only locks of a batch that is still RUNNING count: some Phase 5 abort paths end a batch
-  // ABORTED without releasing its rows' locks (pre-existing, docs/TECHNICAL_DEBT.md RISK-90), and
-  // such leftovers must not pause sync forever (final review of this feature).
-  const locks = (await client.execute(
-    "SELECT 1 FROM video_execution_locks l JOIN batches b ON b.id = l.batch_id WHERE b.status = 'RUNNING' LIMIT 1"
-  )) as { rows: unknown[] };
-  return locks.rows.length > 0;
-}
-
-const FOREIGN_UNFINISHED_BATCH_MESSAGE =
-  "This computer's data holds a Batch that is unfinished but was not started here (it arrived through a manual handoff). Automatic sync will not publish it. Finish it on the computer that started it -- do not execute it here -- then sync again.";
-
 const BATCH_PAUSES_IMPORT_MESSAGE =
-  "A Batch is prepared or running on this computer, so automatic sync is paused in both directions until it finishes. Execute or finish the Batch to resume.";
+  "This computer's data holds an unfinished Batch (prepared, running, or interrupted), so automatic sync is paused in both directions until it is finished. If it was started on another computer, finish it there. Manual export/import in the Merge tab still works.";
 
 function transientSnapshotError(error: unknown): boolean {
   return (
@@ -283,7 +268,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     await releaseStaleExportLock(deps.client).catch(() => false);
     if (await getOperationLock(deps.client)) return { reason: "an export/import/migration is in progress", recovery: false };
     if (await isDeviceInRecoveryMode(deps.client)) return { reason: "this computer is in recovery mode", recovery: true };
-    if (await localBatchInProgress(deps.client)) return { reason: "a Batch on this computer is prepared or running", recovery: false, batch: true };
+    if (await hasUnfinishedBatch(deps.client)) return { reason: "an unfinished Batch is in this computer's data", recovery: false, batch: true };
     return null;
   }
 
@@ -336,7 +321,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         if (!(await isExistingDirectory(config.folder))) {
           throw new SyncAbort("the sync folder is not reachable", "folder_unreachable");
         }
-        if (await localBatchInProgress(deps.client)) throw new SyncAbort(BATCH_PAUSES_IMPORT_MESSAGE, "batch_in_progress");
+        if (await hasUnfinishedBatch(deps.client)) throw new SyncAbort(BATCH_PAUSES_IMPORT_MESSAGE, "batch_in_progress");
         if (requireDirty && !(await hasUnpublishedLocalChanges(deps.client))) {
           throw new SyncAbort("nothing to export", "nothing_to_export");
         }
@@ -371,7 +356,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       acceptDivergentLineage: mode.acceptDivergentLineage,
       backupPrefix: mode.acceptDivergentLineage ? TAKE_THEIRS_BACKUP_PREFIX : AUTO_IMPORT_BACKUP_PREFIX,
       assertStillSafe: async ({ liveFingerprint }) => {
-        if (await localBatchInProgress(deps.client)) throw new SyncAbort(BATCH_PAUSES_IMPORT_MESSAGE, "batch_in_progress");
+        if (await hasUnfinishedBatch(deps.client)) throw new SyncAbort(BATCH_PAUSES_IMPORT_MESSAGE, "batch_in_progress");
         // AC-AS-07: a local change that landed after the decision aborts the automatic import.
         if (mode.requireClean && (await hasUnpublishedLocalChanges(deps.client, liveFingerprint))) {
           throw new SyncAbort("local data changed", "local_changed");
@@ -505,11 +490,11 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         }
 
         case "import": {
-          if (await localBatchInProgress(deps.client)) {
+          if (await hasUnfinishedBatch(deps.client)) {
             return finish({
               ...status,
               state: "busy",
-              busyReason: "a Batch on this computer is prepared or running",
+              busyReason: "an unfinished Batch is in this computer's data",
               notices: [{ kind: "batch_in_progress", message: BATCH_PAUSES_IMPORT_MESSAGE }, ...stuckNotice(status)],
             });
           }
@@ -591,19 +576,16 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         return finish({
           ...status,
           state: "busy",
-          busyReason: "a Batch on this computer is prepared or running",
+          busyReason: "an unfinished Batch is in this computer's data",
           notices: [{ kind: "batch_in_progress", message: BATCH_PAUSES_IMPORT_MESSAGE }],
         });
       }
       if (error instanceof SnapshotError && error.code === "snapshot_execution_in_flight") {
-        // Locks here = a Prepare/Execute on THIS computer; none = an unfinished batch that arrived
-        // from elsewhere -- never tell the operator to execute that one here (final review).
-        const local = await localBatchInProgress(deps.client).catch(() => true);
         return finish({
           ...status,
           state: "busy",
           busyReason: "this computer's data holds an unfinished Batch",
-          notices: [{ kind: "batch_in_progress", message: local ? BATCH_PAUSES_IMPORT_MESSAGE : FOREIGN_UNFINISHED_BATCH_MESSAGE }],
+          notices: [{ kind: "batch_in_progress", message: BATCH_PAUSES_IMPORT_MESSAGE }],
         });
       }
       if (error instanceof SyncAbort || error instanceof OperationLockError) {
@@ -726,7 +708,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     const { config, snapshot, snapshots } = await requireCurrentPeerTip(snapshotId);
     const busy = await busyReason();
     if (busy && !busy.recovery) throw new DeviceSyncError("device_sync_busy", `Cannot sync now: ${busy.reason}.`);
-    if (await localBatchInProgress(deps.client)) throw new DeviceSyncError("device_sync_busy", BATCH_PAUSES_IMPORT_MESSAGE);
+    if (await hasUnfinishedBatch(deps.client)) throw new DeviceSyncError("device_sync_busy", BATCH_PAUSES_IMPORT_MESSAGE);
     let result: Awaited<ReturnType<typeof importNow>>;
     try {
       result = await importNow(config.folder, snapshotId, { acceptDivergentLineage: true, requireClean: false });

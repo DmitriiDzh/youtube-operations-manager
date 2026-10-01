@@ -1029,14 +1029,53 @@ test("final review: leftover locks of an ABORTED batch (pre-existing leak) do no
     a.client.close();
   }));
 
-test("final review: an unfinished batch that did NOT start here gets a notice that says so", () =>
+test("final review: the unfinished-Batch notice never advises executing it here", () =>
   withTempDir("device-sync-", async (root) => {
     const a = await makeDevice(root, "a");
     await a.client.execute("INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('c', 't', 'u')");
     await a.client.execute("INSERT INTO batches (id, channel_id, status) VALUES ('b1', 'c', 'RUNNING')");
     const status = await a.runner.tick({ force: true });
     assert.equal(status.notices[0]?.kind, "batch_in_progress");
-    assert.match(status.notices[0]!.message, /not started here/);
-    assert.doesNotMatch(status.notices[0]!.message, /^A Batch is prepared/);
+    // The origin of a Batch cannot be told from transferred data: the notice never advises executing it.
+    assert.match(status.notices[0]!.message, /started on another computer, finish it there/);
+    assert.doesNotMatch(status.notices[0]!.message, /Execute/);
     a.client.close();
+  }));
+
+test("review: an identity-aborted batch (ABORTED, rows still AWAITING_EXECUTION) is never exported", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    await addResearchChannel(a.client, "UC1");
+    await a.client.execute("INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('c', 't', 'u')");
+    await a.client.execute("INSERT INTO batches (id, channel_id, status) VALUES ('b1', 'c', 'ABORTED')");
+    await a.client.execute(
+      "INSERT INTO batch_ledger_rows (id, batch_id, video_id, change_ids_json, status) VALUES ('l1', 'b1', 'v', '[]', 'AWAITING_EXECUTION')"
+    );
+    const status = await a.runner.tick({ force: true });
+    assert.equal(status.state, "busy");
+    assert.equal(status.notices[0]?.kind, "batch_in_progress");
+    assert.deepEqual(await readdir(path.join(root, "sync")), []);
+    a.client.close();
+  }));
+
+test("review: 'take theirs' is refused while a Batch is being claimed here (RUNNING, no lock yet)", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    await addResearchChannel(a.client, "UC1");
+    await a.runner.tick();
+    await b.runner.tick();
+    await addResearchChannel(a.client, "UC-a");
+    await addResearchChannel(b.client, "UC-b");
+    later(a);
+    later(b);
+    await a.runner.tick();
+    const notice = (await b.runner.tick()).notices.find((n) => n.kind === "divergence");
+    assert.ok(notice, "precondition: b sees the conflict");
+    await b.client.execute("INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('c', 't', 'u')");
+    await b.client.execute("INSERT INTO batches (id, channel_id, status) VALUES ('b1', 'c', 'RUNNING')");
+    await assert.rejects(() => b.runner.takeTheirs(notice!.snapshotId!), (e: unknown) => (e as { code?: string }).code === "device_sync_busy");
+    assert.deepEqual(await researchIds(b.client), ["UC-b", "UC1"]);
+    a.client.close();
+    b.client.close();
   }));

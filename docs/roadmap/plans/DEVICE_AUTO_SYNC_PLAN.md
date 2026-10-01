@@ -205,15 +205,17 @@ what will be overwritten.
 - **AC-AS-08 (preconditions).**
   - With the toggle off, or no Syncthing folder, a tick does nothing.
   - With recovery mode or a live operation lock, a tick neither imports nor exports.
-  - *Revised by the cross-system audit (2026-10-01).* A Batch prepared or running on THIS computer
-    (`video_execution_locks` held) pauses sync in BOTH directions, with a `batch_in_progress`
-    notice. An export would hand the other computer an executable copy of the Batch without its
-    per-video locks; an import would replace the batch tables under it. Finishing the Batch resumes
-    sync.
-  - Nothing is ever exported while this computer's data holds an unfinished Batch (`RUNNING`, or a
-    row `APPLYING`/`UNKNOWN`). `RUNNING` is set at claim time, before any lock exists. It shows the
-    same notice. Local batch activity also makes the device dirty, so it is never auto-imported
-    over.
+  - *Revised by the cross-system audit (2026-10-01) and its reviews.* While this computer's data
+    holds an unfinished Batch, automatic sync pauses in BOTH directions with a `batch_in_progress`
+    notice. Unfinished means:
+    - a batch `RUNNING` (set at claim time, before any per-video lock exists);
+    - or any row `AWAITING_EXECUTION`, `APPLYING` or `UNKNOWN`.
+
+    An export would hand another computer an executable copy without this computer's device-local
+    per-video locks. An import would replace the batch tables under a Prepare/Execute. The check
+    reads transferred data, never the locks, which some abort paths leak (RISK-90). The notice gives
+    no "execute it" advice, because the Batch's origin cannot be told. Manual handoff stays
+    available.
 - **AC-AS-09 (transient transfer).** A snapshot missing `data.db`, or with a checksum mismatch,
   produces no notice on the first tick and no data change. It produces a notice only after it has
   persisted past the grace period.

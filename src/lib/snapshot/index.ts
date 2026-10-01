@@ -10,6 +10,7 @@ export { parseSnapshotManifest, snapshotManifestSchema } from "./schemas";
 export {
   applySnapshotToDatabase,
   exportSnapshot,
+  hasUnfinishedBatch,
   hasUnpublishedLocalChanges,
   isFastForwardOf,
   listSnapshots,
