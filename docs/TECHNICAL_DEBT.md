@@ -1502,4 +1502,23 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   (`AGENTS.md` §L). It needs its own task and acceptance criteria.
 - **Status:** OPEN.
 
+## RISK-91 — Research keeps competitor data longer than the YouTube API policies allow, and derives metrics from it — OPEN, 2026-10-01
+
+- **Affected components:** `src/lib/market-intelligence/` (Phase 9). Tables `market_channel_snapshots`,
+  `market_video_snapshots`, `research_evidence`, `market_discovery_candidates`. Derived metrics:
+  `derived-metrics.ts`, `historical-intelligence.ts`, trend and spike detection.
+- **Found during:** the sources research (owner, msg 1121), 2026-10-01. The wording was checked against the source:
+  [Developer Policies](https://developers.google.com/youtube/terms/developer-policies).
+- **What the policies say:**
+  - III.E.4.d: Non-Authorized Data (obtained without the user's credentials, i.e. other people's channels) may be
+    kept "not longer than 30 calendar days".
+  - III.E.4.b: long-term storage of statistics is allowed only for Authorized Data, i.e. our own channels.
+  - III.E.4.h: API Data may not be used to "create new or derived data or metrics".
+- **Actual risk:** a policy violation can lead to the Google project being restricted. Live YouTube writes and
+  analytics depend on that project too.
+- **Plan:** Phase 13, slices 13.1–13.3 (`docs/roadmap/plans/PHASE_13_PLAN.md`). The strictness level is the owner's
+  decision D1.
+- **Gate:** none formally. It should be resolved before the operational release (§2a).
+- **Status:** OPEN.
+
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
