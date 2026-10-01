@@ -1550,14 +1550,14 @@ requirement.
 **Slice 9C (`docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md`, 2026-09-27) -- search.list-based
 discovery, minimal by design.** Full detail lives in the plan doc and `docs/SYSTEM_MAP.md` §2.9v;
 the one architectural point worth recording here: `market_discovery_candidates` is a **lifecycle
-table** (rediscovery only touches `lastSeenAt`, never duplicates a row or resets an operator-set
-`status`), architecturally unlike 9A/9B's append-only snapshot/run tables -- it is closer in shape
+table** (rediscovery refreshes `lastSeenAt` -- since Phase 13 also `title`/`reasonDiscovered`, restarting
+their 30-day clock -- never duplicates a row or resets an operator-set `status`), architecturally unlike 9A/9B's append-only snapshot/run tables -- it is closer in shape
 to `research_channels` itself than to `market_channel_snapshots`. Its own run-log
 (`market_discovery_runs`) is a separate table from 9B's `market_intelligence_collection_runs`
 (that one's `research_channel_id` is `NOT NULL` and FK'd to the watchlist, which a discovery run
--- not about any one watchlisted channel -- cannot satisfy), but both feed the SAME
-`getMarketIntelligenceUnitsSpentSince` sum, since owner decision 2 set one shared daily budget, not
-one per sub-feature.
+-- not about any one watchlisted channel -- cannot satisfy). Originally both fed one shared daily
+budget (owner decision 2); since Phase 13 slice 13.4 `search.list` has its own bucket (100 calls a day,
+`countMarketDiscoverySearchesSince`) and `getMarketIntelligenceUnitsSpentSince` sums collection only.
 
 **Slice 9D (`docs/roadmap/plans/PHASE_9_SLICE_9D_PLAN.md`, 2026-09-27) -- historical intelligence,
 code-complete with no calling code yet (`historical-intelligence.ts`, mirroring 9A's own

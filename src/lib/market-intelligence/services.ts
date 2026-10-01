@@ -494,6 +494,8 @@ type ServiceDependencies = {
   getLatestMarketIntelligenceCollectionRunForChannel(
     researchChannelId: string
   ): Promise<StoredMarketIntelligenceCollectionRunForService | null>;
+  /** Phase 13 (review round 9): any `success` collection run ever, for `neverObserved`. */
+  hasSuccessfulMarketIntelligenceCollectionRun(researchChannelId: string): Promise<boolean>;
   claimStaleResearchChannelsForCollection(args: {
     now: Date;
     staleCutoff: Date;
@@ -1054,7 +1056,11 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           // `assessSnapshotCompleteness` both deliberately leave "never observed at all" to their
           // caller (see their own doc comments) -- this is that check, matching the one
           // `getMarketOverview` below already reinvented independently rather than reading from here.
-          neverObserved: channelSnapshotRows.length === 0,
+          // Phase 13 (review round 9): API snapshots expire after 30 days (III.E.4.d), so an empty
+          // visible series alone no longer means "never observed" -- a past successful collection does.
+          neverObserved:
+            channelSnapshotRows.length === 0 &&
+            !(await deps.hasSuccessfulMarketIntelligenceCollectionRun(parsedInput.channelId)),
         },
         "get watchlist entry context output"
       );
@@ -2002,7 +2008,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * call (a thrown request still costs a real unit per YouTube's own quota accounting).
      *
      * A result already on the watchlist is never turned into a candidate; a result matching an
-     * existing candidate only touches `lastSeenAt`, never duplicates the row or resets an
+     * existing candidate only refreshes `lastSeenAt`/`title`/`reasonDiscovered`, never duplicates the row or resets an
      * operator-set `status`.
      *
      * **The search's spend is recorded on every exit path, not just when the `search.list` call

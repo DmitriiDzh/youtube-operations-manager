@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createClient } from "@libsql/client";
 import { initializeDatabaseSchema } from "@/lib/db";
@@ -142,5 +142,21 @@ test("P13: the purge pauses, changing nothing, if the device stops being mutable
     assert.equal(state.lastError, null);
     assert.equal(state.lastRunAt, null, "a paused run is not recorded as a run");
     assert.equal(Number((await client.execute("SELECT COUNT(*) AS n FROM market_channel_snapshots")).rows[0].n), 1);
+    client.close();
+  }));
+
+// Review round 9: a backup that cannot be scrubbed keeps expired data -- that must be visible.
+test("P13: a backup file that cannot be scrubbed is recorded, and the others are still scrubbed", () =>
+  withTempDir("retention-", async (dir) => {
+    const client = createClient({ url: `file:${path.join(dir, "r.db")}` });
+    await initializeDatabaseSchema(client);
+    const backups = path.join(dir, "backups");
+    await mkdir(backups);
+    await writeFile(path.join(backups, "pre-migration-broken.db"), "this is not a sqlite database at all, just text padding".repeat(100));
+    const d = deps(client, backups);
+    const state = await runRetentionOnce(d.deps, new Date("2026-10-01T00:00:00Z"));
+    assert.equal(state.lastError, null);
+    assert.equal(state.lastBackupScrubFailures?.length, 1);
+    assert.match(String(state.lastBackupScrubFailures?.[0]), /^pre-migration-broken\.db: /);
     client.close();
   }));

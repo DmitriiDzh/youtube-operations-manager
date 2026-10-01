@@ -449,6 +449,9 @@ function createFakeStore() {
         .sort((a, b) => b.ranAt.getTime() - a.ranAt.getTime());
       return runsForChannel[0] ?? null;
     },
+    async hasSuccessfulMarketIntelligenceCollectionRun(researchChannelId: string) {
+      return collectionRuns.some((row) => row.researchChannelId === researchChannelId && row.status === "success");
+    },
     // Phase 9 slice 9C.
     async getMarketDiscoveryCandidateById(channelId: string) {
       return discoveryCandidates.get(channelId) ?? null;
@@ -3717,4 +3720,39 @@ test("13.9: a well-formed region code outside the fixed list is refused before a
     (error: unknown) => (error as { code?: string }).code === "validation_failed"
   );
   assert.equal(musicChartCalls.length, 0);
+});
+
+// Phase 13 (review round 9): neverObserved means "never observed at all" (AC-MI-17). A channel whose
+// API snapshots expired after 30 days (III.E.4.d) was observed -- it must not read as never collected.
+test("P13: a channel collected successfully long ago, whose snapshots have expired, is not neverObserved", async () => {
+  const { services, store } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Worth watching" }, { createdVia: "web_ui" });
+  store.collectionRuns.push({
+    researchChannelId: VALID_CHANNEL_ID,
+    status: "success",
+    unitsSpent: 2,
+    videosRequested: 10,
+    videosReturned: 10,
+    errorMessage: null,
+    ranAt: new Date(Date.now() - 45 * 24 * 60 * 60 * 1000),
+  });
+  const result = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  assert.deepEqual(result.channelSnapshots, []);
+  assert.equal(result.neverObserved, false);
+});
+
+test("P13: a channel whose only collection runs failed is still neverObserved", async () => {
+  const { services, store } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Worth watching" }, { createdVia: "web_ui" });
+  store.collectionRuns.push({
+    researchChannelId: VALID_CHANNEL_ID,
+    status: "failed",
+    unitsSpent: 1,
+    videosRequested: null,
+    videosReturned: null,
+    errorMessage: "boom",
+    ranAt: new Date(),
+  });
+  const result = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  assert.equal(result.neverObserved, true);
 });

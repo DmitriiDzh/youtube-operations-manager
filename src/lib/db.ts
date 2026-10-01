@@ -5985,6 +5985,17 @@ export type StoredMarketIntelligenceCollectionRun = {
  * `dataQualityFlags` (`missing_snapshot`/`quota_limited`) in `getWatchlistEntryContext`. `null` when
  * this channel has never been collected at all -- a plain, unremarkable fact, not itself a flag.
  */
+/** Phase 13 (review round 9): whether this channel was ever collected successfully -- since API
+ * snapshots expire after 30 days, "no snapshot visible" no longer implies "never observed". */
+export async function hasSuccessfulMarketIntelligenceCollectionRun(researchChannelId: string, database: AppDb = db): Promise<boolean> {
+  const [row] = await database
+    .select({ id: marketIntelligenceCollectionRuns.id })
+    .from(marketIntelligenceCollectionRuns)
+    .where(and(eq(marketIntelligenceCollectionRuns.researchChannelId, researchChannelId), eq(marketIntelligenceCollectionRuns.status, "success")))
+    .limit(1);
+  return row !== undefined;
+}
+
 export async function getLatestMarketIntelligenceCollectionRunForChannel(
   researchChannelId: string,
   database: AppDb = db
@@ -6106,7 +6117,8 @@ export async function insertMarketDiscoveryCandidate(
   });
 }
 
-/** Rediscovery never duplicates the row or touches `status` -- only `lastSeenAt` moves. */
+/** Rediscovery never duplicates the row or touches `status` -- `lastSeenAt` moves, and (Phase 13) the
+ * API-sourced `title`/`reasonDiscovered` are refreshed with it, restarting their 30-day clock. */
 export async function touchMarketDiscoveryCandidateLastSeen(
   channelId: string,
   at: Date,

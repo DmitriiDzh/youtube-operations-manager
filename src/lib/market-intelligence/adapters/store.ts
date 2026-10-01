@@ -5,6 +5,7 @@ import {
   deleteMarketTopicAssignment,
   deleteResearchChannel,
   getLatestMarketIntelligenceCollectionRunForChannel,
+  hasSuccessfulMarketIntelligenceCollectionRun,
   getMarketDiscoveryCandidateById,
   getMarketIntelligenceDailyQuotaBudgetUnits,
   getMarketIntelligenceUnitsSpentSince,
@@ -109,6 +110,7 @@ export function createMarketIntelligenceStoreAdapter() {
     insertMarketTrendEvidence,
     // Phase 9 slice 9G, part A (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md) -- agent read surface.
     getLatestMarketIntelligenceCollectionRunForChannel,
+    hasSuccessfulMarketIntelligenceCollectionRun,
     // Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md) -- agent-created
     // research requests. The two conditional-transition functions are the atomic approval-integrity
     // guard this slice's own design depends on -- see their own doc comments in db.ts.

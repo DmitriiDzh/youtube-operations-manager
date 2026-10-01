@@ -958,7 +958,10 @@ plugs into this interface.
   "withheld_by_policy" }`.
 - `recentBreakoutVideos`, `breakoutVideos` and `emergingChannels` are always empty, and
   `emergingChannel.reasons` states the policy.
-- Raw snapshots are still returned, each with its time, but only for the last 30 days (older ones are deleted).
+- Raw snapshots are still returned, each with its time.
+  - API-sourced snapshots and "Fetch public snapshot" evidence are returned only for the last 30 days, and older
+    ones are deleted.
+  - Operator-entered snapshots and evidence are returned at any age and never deleted.
 - The response shapes are unchanged, so `AGENT_API_VERSION` is unchanged.
 
 ## 4l. Decision-engine agent surface (Phase 10 slice 2, `docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md`) -- IMPLEMENTED

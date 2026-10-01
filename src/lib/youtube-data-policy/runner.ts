@@ -12,6 +12,8 @@ export type RetentionState = {
   lastError: string | null;
   /** Backup files whose expired API rows were scrubbed on the last run (owner msg 1139, item 2). */
   lastBackupsScrubbed?: number;
+  /** Backup files that could not be scrubbed on the last run (review round 9: never silent). */
+  lastBackupScrubFailures?: string[];
 };
 
 export const EMPTY_RETENTION_STATE: RetentionState = {
@@ -79,14 +81,23 @@ export async function runRetentionOnce(deps: RetentionDeps, now: Date = new Date
     });
     // Owner msg 1139, item 2: the backups follow the 30-day rule too (scrubbed, not deleted).
     let scrubbed = 0;
+    const failures: string[] = [];
     for (const name of (await readdir(deps.backupsDir).catch(() => [] as string[])).filter((n) => n.endsWith(".db"))) {
       try {
         if ((await scrubBackupFile(`${deps.backupsDir}/${name}`, now)).changed) scrubbed += 1;
-      } catch {
-        // One unreadable backup never stops the others; it is retried next run.
+      } catch (error) {
+        // One unreadable backup never stops the others; it is retried next run, and recorded.
+        failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    state = { ...state, lastRunAt: now.toISOString(), lastResult: result, lastError: null, lastBackupsScrubbed: scrubbed };
+    state = {
+      ...state,
+      lastRunAt: now.toISOString(),
+      lastResult: result,
+      lastError: null,
+      lastBackupsScrubbed: scrubbed,
+      lastBackupScrubFailures: failures,
+    };
   } catch (error) {
     if (error instanceof RetentionPaused) return state; // rolled back; the next run tries again
     state = { ...state, lastRunAt: now.toISOString(), lastError: error instanceof Error ? error.message : String(error) };
