@@ -1550,11 +1550,23 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
       against a purge that deletes the wrong rows. The classification tests carry that protection instead.
   - **Expired rows never circulate back through sync.** An import drops them inside its own merge transaction,
     before it records the fingerprint (`purgeExpiredApiDataWithinTransaction`).
-    - The one remaining copy is the newest published snapshot in the sync folder. It is replaced on that
-      computer's next export and is only ever read by an import, which drops the expired rows. It is
-      deliberately not republished after each purge, because that would bring back false cross-device conflicts.
+    - Sync-folder snapshots. Each auto-sync tick removes this device's own snapshots created more than 30 days
+      ago (`pruneOwnSnapshots` with `olderThan`).
+    - Remaining copies:
+      - **The lineage head**, which is kept even when it is older than 30 days. A quiet device's head is replaced
+        only at its next export. It is only ever read by an import, which drops the expired rows. It is
+        deliberately not republished after each purge, because that would bring back false cross-device
+        conflicts.
+      - **Manual handoff exports** (`appDataPaths.snapshotsDir`, used when no sync folder is set). These are
+        operator-made transfer files and are not pruned.
+    - Trigger to revisit: if either copy must also be bound by the 30 days.
 - **Further residuals:**
-  - Review round 5 found that reads were not filtered. Now reads hide expired API rows even before the purge runs.
+  - Review rounds 5–6 found that reads were not filtered. Now reads hide expired API rows even before the purge
+    runs:
+    - snapshots and evidence in `db.ts`;
+    - discovery candidates in `market-intelligence` (an undecided one is hidden, a decided one is redacted).
+
+    Backups are scrubbed with `secure_delete`, so a failed VACUUM leaves no remnants.
     This covers an MCP/CLI process without the web server, and an MCP start also runs the purge.
   - **The Music chart is not in the unit ledger.** Its cost is bounded by a fixed region list and a 30-minute
     cache.

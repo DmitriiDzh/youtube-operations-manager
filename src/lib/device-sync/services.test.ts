@@ -1132,3 +1132,28 @@ test("13.2 x device sync: a device with real unpublished changes stays dirty thr
     assert.equal(await hasUnpublishedLocalChanges(a.client), true);
     a.client.close();
   }));
+
+// Phase 13 (owner msg 1139): own snapshots older than 30 days leave the sync folder even within the
+// keep count; the head and other devices' snapshots never do.
+test("P13: own snapshots created before the cutoff are pruned, except the head", () =>
+  withTempDir("device-sync-", async (root) => {
+    const folder = path.join(root, "sync");
+    const mk = async (id: string, device: string, generation: number, createdAt: string) => {
+      await mkdir(path.join(folder, id), { recursive: true });
+      return { ...entry(id, null, device, generation), createdAt };
+    };
+    const oldHead = await mk("00000001-0000-4000-8000-000000000000", "A", 1, "2026-08-01T00:00:00.000Z");
+    const oldOwn = await mk("00000002-0000-4000-8000-000000000000", "A", 2, "2026-08-02T00:00:00.000Z");
+    const freshOwn = await mk("00000003-0000-4000-8000-000000000000", "A", 3, "2026-09-25T00:00:00.000Z");
+    const oldPeer = await mk("00000004-0000-4000-8000-000000000000", "B", 1, "2026-08-01T00:00:00.000Z");
+    const removed = await pruneOwnSnapshots({
+      folder,
+      deviceId: "A",
+      headSnapshotId: oldHead.snapshotId,
+      snapshots: [oldHead, oldOwn, freshOwn, oldPeer],
+      olderThan: new Date("2026-09-01T00:00:00.000Z"),
+    });
+    assert.deepEqual(removed, [oldOwn.snapshotId]);
+    const left = new Set(await readdir(folder));
+    for (const kept of [oldHead, freshOwn, oldPeer]) assert.ok(left.has(kept.snapshotId));
+  }));

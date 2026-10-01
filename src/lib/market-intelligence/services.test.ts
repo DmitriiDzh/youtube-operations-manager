@@ -3676,3 +3676,35 @@ test("13.5 (review round 2): if both the playlist call and the RSS fallback fail
   assert.equal(store.collectionRuns.at(-1)?.status, "failed");
   assert.equal(store.channels.get(VALID_CHANNEL_ID)?.lastAutoCollectedAt, null, "a failed channel is not marked fresh");
 });
+
+// Phase 13 (review round 6): III.E.4.d, owner D1 = (a) and msg 1139 -- a candidate's search.list
+// title/reason are never served past 30 days since it was last seen, even before the purge ran.
+test("P13: discovery candidates past 30 days -- an undecided one is hidden, a decided one keeps only id and status", async () => {
+  const now = new Date("2026-10-01T12:00:00Z");
+  const { services, store } = createFixture({ now });
+  const day = 24 * 60 * 60 * 1000;
+  const put = (id: string, status: DiscoveryCandidateStatus, ageDays: number) =>
+    store.discoveryCandidates.set(id, {
+      id,
+      title: `Title ${id}`,
+      status,
+      discoverySource: "youtube.search.list",
+      discoveryQuery: "jazz",
+      reasonDiscovered: `reason ${id}`,
+      firstSeenAt: new Date(now.getTime() - ageDays * day),
+      lastSeenAt: new Date(now.getTime() - ageDays * day),
+      createdVia: "web_ui",
+    });
+  put("UCnewexpired0000000000000", "new", 31);
+  put("UCnewfresh000000000000000", "new", 29);
+  put("UCignoredexpired000000000", "ignored", 31);
+
+  const { candidates } = await services.listDiscoveryCandidates();
+  const byId = new Map(candidates.map((c) => [c.channelId, c]));
+  assert.equal(byId.has("UCnewexpired0000000000000"), false);
+  assert.equal(byId.get("UCnewfresh000000000000000")?.title, "Title UCnewfresh000000000000000");
+  const decided = byId.get("UCignoredexpired000000000");
+  assert.deepEqual([decided?.status, decided?.title, decided?.reasonDiscovered], ["ignored", "", null]);
+  const overview = await services.getMarketOverview();
+  assert.deepEqual(overview.newDiscoveries.map((c) => c.channelId), ["UCnewfresh000000000000000"]);
+});

@@ -2285,9 +2285,11 @@ data from the API is kept at most 30 days, and no metrics are derived from it.
     - **An import never brings expired rows back.** The import purges inside its own merge transaction, before
       the lineage fingerprint (`purgeExpiredApiDataWithinTransaction`).
     - **Backups are scrubbed by the same rule on every run** (`scrubBackupFile` over `backups/migrations/*.db`,
-      then VACUUM). Files are not deleted.
-  - Reads (`listMarket*SnapshotsByChannel`, `listResearchEvidenceByChannel`) hide expired API rows even before
-    the purge has run. An MCP start runs the purge once. The AI decision engine's evidence descriptions carry no
+      with `secure_delete`, then a best-effort VACUUM). Files are not deleted.
+    - **Device sync removes this device's own sync-folder snapshots older than 30 days on every tick**, except
+      the lineage head.
+  - Reads (`listMarket*SnapshotsByChannel`, `listResearchEvidenceByChannel`, discovery candidates in
+    `market-intelligence`) hide or redact expired API rows even before the purge has run. An MCP start runs the purge once. The AI decision engine's evidence descriptions carry no
     competitor values.
   - What is deleted: API-sourced rows of `non_authorized` tables older than 30 days, plus the market assignments
     pointing at deleted discovery candidates. Manual observations are kept. It runs in one transaction.

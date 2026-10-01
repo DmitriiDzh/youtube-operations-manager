@@ -1,3 +1,4 @@
+import { API_DATA_RETENTION_DAYS } from "@/lib/youtube-data-policy/contracts";
 import path from "node:path";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { exportHandoff, importHandoff, isDeviceInRecoveryMode, RecoveryModeError } from "@/lib/device-handoff";
@@ -147,13 +148,18 @@ export async function pruneOwnSnapshots(params: {
   headSnapshotId: string | null;
   snapshots: SnapshotEntry[];
   keep?: number;
+  /** Phase 13 (owner msg 1139): own snapshots created before this are removed even within `keep`
+   * (except the head) -- they hold other channels' YouTube API data past its 30-day limit. */
+  olderThan?: Date;
 }): Promise<string[]> {
   const keep = params.keep ?? DEVICE_SYNC_KEEP_OWN_SNAPSHOTS;
   const own = params.snapshots
     .filter((s) => s.sourceDeviceId === params.deviceId)
     .sort((a, b) => b.generation - a.generation || b.createdAt.localeCompare(a.createdAt));
+  const tooOld = (s: SnapshotEntry) => params.olderThan !== undefined && Date.parse(s.createdAt) < params.olderThan.getTime();
   const removed: string[] = [];
-  for (const s of own.slice(keep)) {
+  for (const [index, s] of own.entries()) {
+    if (index < keep && !tooOld(s)) continue;
     if (s.snapshotId === params.headSnapshotId) continue;
     await rm(path.join(params.folder, s.snapshotId), { recursive: true, force: true });
     removed.push(s.snapshotId);
@@ -226,6 +232,8 @@ class SyncAbort extends Error {
  */
 const BATCH_PAUSES_IMPORT_MESSAGE =
   "This computer's data holds an unfinished Batch (prepared, running, or interrupted), so automatic sync is paused in both directions until it is finished. If it was started on another computer, finish it there. Manual export/import in the Merge tab still works.";
+
+const apiDataExpiryCutoff = (nowMs: number) => new Date(nowMs - API_DATA_RETENTION_DAYS * 24 * 60 * 60 * 1000);
 
 function transientSnapshotError(error: unknown): boolean {
   return (
@@ -334,6 +342,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         deviceId: config.deviceId,
         headSnapshotId: result.manifest.snapshotId,
         snapshots,
+        olderThan: apiDataExpiryCutoff(now()),
       });
     } catch {
       // Retention is housekeeping; a failure never fails the export.
@@ -416,9 +425,21 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         return finish({ ...status, state: "busy", busyReason: busy.reason, notices });
       }
 
-      const { snapshots, unreadable } = await scanSnapshotFolder(folder);
+      const scanned = await scanSnapshotFolder(folder);
+      const { unreadable } = scanned;
       status = withPending(status, previousPending, unreadable);
       const lineage = await readLineageState(deps.client);
+      // Phase 13 (owner msg 1139): a quiet device's own old snapshots must not keep expired YouTube
+      // API data in the sync folder until its next export. Housekeeping; never fails the tick.
+      const aged = await pruneOwnSnapshots({
+        folder,
+        deviceId: config.deviceId,
+        headSnapshotId: lineage.lastSnapshotId,
+        snapshots: scanned.snapshots,
+        keep: Number.MAX_SAFE_INTEGER,
+        olderThan: apiDataExpiryCutoff(now()),
+      }).catch(() => [] as string[]);
+      const snapshots = scanned.snapshots.filter((s) => !aged.includes(s.snapshotId));
       const localDirty = await hasUnpublishedLocalChanges(deps.client);
       const unsupported = new Set(
         status.unsupportedForSchemaVersion === deps.currentSchemaVersion ? (status.unsupportedSnapshotIds ?? []) : []

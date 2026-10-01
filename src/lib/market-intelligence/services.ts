@@ -1,5 +1,6 @@
 import type { MusicChartEntry } from "@/lib/youtube-read-gateway";
 import { SEARCH_LIST_DAILY_CALL_LIMIT, SEARCH_LIST_UNIT_COST, startOfYoutubeQuotaDay } from "@/lib/youtube-quota";
+import { API_DATA_RETENTION_DAYS } from "@/lib/youtube-data-policy/contracts";
 import { YOUTUBE_READ_SCOPE } from "@/lib/auth";
 import {
   assessObservationFreshness,
@@ -258,14 +259,23 @@ type StoredMarketDiscoveryCandidateForService = {
   createdVia: string;
 };
 
-function toMarketDiscoveryCandidate(row: StoredMarketDiscoveryCandidateForService): MarketDiscoveryCandidate {
+/** Phase 13 (review round 6): a candidate's title/reason come from `search.list` (another channel's
+ * API data, III.E.4.d). Past 30 days since it was last seen they are never served, even before the
+ * purge has run -- an undecided candidate is hidden, a decided one keeps only its id and decision
+ * (owner msg 1139), the same rule the purge applies. */
+function candidateExpired(row: StoredMarketDiscoveryCandidateForService, now: Date): boolean {
+  return now.getTime() - row.lastSeenAt.getTime() > API_DATA_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+}
+
+function toMarketDiscoveryCandidate(row: StoredMarketDiscoveryCandidateForService, now: Date): MarketDiscoveryCandidate {
+  const expired = candidateExpired(row, now);
   return {
     channelId: row.id,
-    title: row.title,
+    title: expired ? "" : row.title,
     status: row.status,
     discoverySource: row.discoverySource,
     discoveryQuery: row.discoveryQuery,
-    reasonDiscovered: row.reasonDiscovered,
+    reasonDiscovered: expired ? null : row.reasonDiscovered,
     firstSeenAt: row.firstSeenAt.toISOString(),
     lastSeenAt: row.lastSeenAt.toISOString(),
   };
@@ -2077,7 +2087,11 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       const rows = await deps.listMarketDiscoveryCandidates();
       return parseWithSchema(
         listDiscoveryCandidatesOutputSchema,
-        { candidates: rows.map(toMarketDiscoveryCandidate) },
+        {
+          candidates: rows
+            .filter((row) => !(row.status === "new" && candidateExpired(row, deps.clock.now())))
+            .map((row) => toMarketDiscoveryCandidate(row, deps.clock.now())),
+        },
         "list discovery candidates output"
       );
     },
@@ -2113,7 +2127,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
       await deps.setMarketDiscoveryCandidateStatus(parsedInput.channelId, parsedInput.status);
       const updated = (await deps.getMarketDiscoveryCandidateById(parsedInput.channelId))!;
-      return parseWithSchema(marketDiscoveryCandidateSchema, toMarketDiscoveryCandidate(updated), "update discovery candidate status output");
+      return parseWithSchema(marketDiscoveryCandidateSchema, toMarketDiscoveryCandidate(updated, deps.clock.now()), "update discovery candidate status output");
     },
 
     /**
@@ -2159,7 +2173,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       const candidateRow = (await deps.getMarketDiscoveryCandidateById(parsedInput.channelId))!;
       return parseWithSchema(
         promoteDiscoveryCandidateOutputSchema,
-        { channel: toResearchChannel(channelRow), candidate: toMarketDiscoveryCandidate(candidateRow) },
+        { channel: toResearchChannel(channelRow), candidate: toMarketDiscoveryCandidate(candidateRow, deps.clock.now()) },
         "promote discovery candidate output"
       );
     },

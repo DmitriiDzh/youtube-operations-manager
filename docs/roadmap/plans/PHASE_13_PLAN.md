@@ -97,7 +97,7 @@ in §K.1.
 | Slice | What | Depends on |
 |---|---|---|
 | 13.1 | **Inventory and compliance map.** Every stored kind of data that came from the API, classified as Authorized (own channels) or Non-Authorized (others), with storage location, age and derived values. Maps to III.E.4.b/c/d/f/h. Documentation and a test that every Phase 9 table is classified. | — |
-| 13.2 | **Retention per D1.** Delete or refresh Non-Authorized data at 30 days. This applies to `market_channel_snapshots`, `market_video_snapshots`, discovery candidates and evidence. Removal is visible: the UI shows "kept for 30 days per YouTube policy". The deletion runs as a scheduled server job, with a backup taken before the first one. | D1, 13.1 |
+| 13.2 | **Retention per D1.** Delete or refresh Non-Authorized data at 30 days. This applies to `market_channel_snapshots`, `market_video_snapshots`, discovery candidates and evidence. Removal is visible: the UI shows "kept for 30 days per YouTube policy". The deletion runs as a scheduled server job, with a backup taken before the first one. *(Owner msg 1139: backups follow the 30-day rule too, so that backup is scrubbed as well. It keeps everything except the expired API rows.)* | D1, 13.1 |
 | 13.3 | **Derived metrics per D1.** Remove or hide velocity, breakout and spike scores built from competitor statistics. Keep everything for our own channels. Agent tools return only what is allowed. | D1, 13.1 |
 | 13.4 | **The new quota model.** Search counts against its own 100-calls bucket at 1 unit. Gateway counters and Settings show the buckets separately. Fixes `SEARCH_LIST_UNIT_COST`. | — |
 | 13.5 | *(Revised by review round 1: the RSS feed is the zero-quota FALLBACK of the uploads-playlist call. As the primary source it cut coverage from 50 videos to 15. Polling our own channels via RSS was dropped as unnecessary.)* **RSS feeds for new uploads.** Watchlist channels and our own channels are polled via RSS: no quota, no key. This is a new read-gateway category (single-gateway rule, `AGENTS.md` §G). | 13.2 (data is stored under the same rules) |
@@ -123,7 +123,7 @@ suggestions (research report §5).
   bypass.
 - **AC-P13-06:** a comparison across 2026-08-27 is marked as a break in the series.
 - **AC-P13-07:** the 13.2 deletion runs only after a backup, and only on Non-Authorized data. A test proves our
-  own channels' data survives.
+  own channels' data survives. *(Owner msg 1139: backups, including this one, are scrubbed by the same rule.)*
 
 ## 6. Not in scope
 

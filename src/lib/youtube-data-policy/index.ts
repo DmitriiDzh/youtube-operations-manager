@@ -29,6 +29,8 @@ function dedicatedClient(): Client {
   if (!g[DEDICATED_KEY]) {
     const client = createClient({ url: `file:${appDataPaths.dbPath}` });
     void client.execute("PRAGMA busy_timeout = 5000").catch(() => undefined);
+    // Review round 6: purged rows are overwritten on disk, not left in free pages.
+    void client.execute("PRAGMA secure_delete = ON").catch(() => undefined);
     g[DEDICATED_KEY] = client;
   }
   return g[DEDICATED_KEY];

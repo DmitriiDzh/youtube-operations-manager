@@ -109,13 +109,16 @@ export async function purgeExpiredApiDataWithinTransaction(client: SqlExecutor, 
 /**
  * Owner instruction (msg 1139, item 2): backups follow the 30-day rule too. A backup file is not
  * deleted (it also holds the operator's own data) -- its expired other-channel API rows are purged
- * the same way as the live database's, and the file is VACUUMed so the deleted rows' pages are
- * really overwritten. A file that predates some tables is handled (missing tables are skipped).
+ * the same way as the live database's, with `secure_delete` so the deleted content is overwritten in
+ * the same commit; VACUUM then compacts the file (best effort). A file that predates some tables is handled (missing tables are skipped).
  */
 export async function scrubBackupFile(dbPath: string, now: Date = new Date()): Promise<{ changed: boolean }> {
   const client = createClient({ url: `file:${dbPath}` });
   try {
     await client.execute("PRAGMA busy_timeout = 5000");
+    // Review round 6: deleted content is zeroed as part of the same commit, so an interrupted or
+    // failed VACUUM below (never retried: the next pass finds nothing expiring) leaves nothing behind.
+    await client.execute("PRAGMA secure_delete = ON");
     const cutoffSeconds = cutoffFor(now);
     if (!(await anyExpiring(client, cutoffSeconds))) return { changed: false };
     await client.execute("BEGIN IMMEDIATE");
@@ -126,7 +129,7 @@ export async function scrubBackupFile(dbPath: string, now: Date = new Date()): P
       await client.execute("ROLLBACK");
       throw error;
     }
-    await client.execute("VACUUM");
+    await client.execute("VACUUM").catch(() => undefined);
     return { changed: true };
   } finally {
     client.close();

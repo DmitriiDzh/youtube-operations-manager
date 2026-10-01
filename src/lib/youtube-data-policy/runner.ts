@@ -36,8 +36,9 @@ export type RetentionDeps = {
 /**
  * One run of the retention job (Phase 13 slice 13.2). Never throws: the outcome is recorded. Skips
  * (without error) while the device may not mutate. Before the FIRST purge ever, a full backup is
- * taken -- the data this deletes was collected before the policy was applied, and the owner should
- * be able to look at it once more if needed.
+ * taken. Since the owner's decision that backups follow the 30-day rule too (msg 1139), the same run
+ * scrubs that backup's expired API rows as well: it preserves everything else as of that moment, not
+ * the expired competitor data.
  */
 export async function runRetentionOnce(deps: RetentionDeps, now: Date = new Date()): Promise<RetentionState> {
   let state: RetentionState;
