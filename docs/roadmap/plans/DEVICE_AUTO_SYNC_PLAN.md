@@ -206,11 +206,11 @@ what will be overwritten.
   - With the toggle off, or no Syncthing folder, a tick does nothing.
   - With recovery mode or a live operation lock, a tick neither imports nor exports.
   - *Revised by the cross-system audit (2026-10-01).* A Batch prepared or running on THIS computer
-    (`video_execution_locks` held) pauses imports only, with a `batch_in_progress` notice, because
-    a prepared live Batch may wait indefinitely for Execute. Exports continue, but a copy that
-    caught a row mid-write (`APPLYING`) is never published. A `RUNNING` batch without local locks
-    (another computer's imported state) pauses nothing. The original rule paused all sync
-    indefinitely on a prepared Batch.
+    (`video_execution_locks` held) pauses sync in BOTH directions, with a `batch_in_progress`
+    notice. An export would hand the other computer an executable copy of the Batch without its
+    per-video locks; an import would replace the batch tables under it. Finishing the Batch resumes
+    sync. A `RUNNING` batch without local locks (another computer's imported state) pauses nothing.
+    The original rule paused silently on any `RUNNING` batch, imported ones included.
 - **AC-AS-09 (transient transfer).** A snapshot missing `data.db`, or with a checksum mismatch,
   produces no notice on the first tick and no data change. It produces a notice only after it has
   persisted past the grace period.

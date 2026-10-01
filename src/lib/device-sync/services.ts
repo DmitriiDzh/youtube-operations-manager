@@ -218,9 +218,12 @@ class SyncAbort extends Error {
 /**
  * Whether THIS computer has a Batch prepared or executing (cross-system audit, 2026-10-01). Phase 5
  * holds `video_execution_locks` (device-local, never transferred) from Prepare until each row
- * finishes, and a prepared live Batch can wait indefinitely for Execute. While one exists, an
- * import would replace the batch tables under it, so imports wait. Exports do NOT wait -- the
- * snapshot is a consistent copy, and `refuseUnresolvedExecution` keeps a mid-write row out of it.
+ * finishes. While one exists, automatic sync pauses BOTH ways, with a notice saying so:
+ *   - an import would replace the batch tables under it;
+ *   - an export would hand the other computer a `RUNNING` batch with `AWAITING_EXECUTION` rows but
+ *     none of the per-video locks -- an executable copy of writes this computer is about to make
+ *     (review of the audit fixes). Pausing is the documented Phase 5 posture: a Batch is a short,
+ *     operator-driven workflow; Execute (or finishing it) resumes sync.
  * A `RUNNING` batch WITHOUT local locks is another computer's imported state, not work here.
  */
 async function localBatchInProgress(client: SqlExecutor): Promise<boolean> {
@@ -229,7 +232,7 @@ async function localBatchInProgress(client: SqlExecutor): Promise<boolean> {
 }
 
 const BATCH_PAUSES_IMPORT_MESSAGE =
-  "A Batch prepared or running on this computer pauses loading the other computer's data. This computer's own changes are still published. Execute or finish the Batch to resume.";
+  "A Batch is prepared or running on this computer, so automatic sync is paused in both directions until it finishes. Execute or finish the Batch to resume.";
 
 function transientSnapshotError(error: unknown): boolean {
   return (
@@ -267,11 +270,12 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
   }
 
   /** Reasons an automatic action must not run right now (§3.3), outside the lock. */
-  async function busyReason(): Promise<{ reason: string; recovery: boolean } | null> {
+  async function busyReason(): Promise<{ reason: string; recovery: boolean; batch?: boolean } | null> {
     // A lock left by a killed export would otherwise block every mutation until cleared by hand.
     await releaseStaleExportLock(deps.client).catch(() => false);
     if (await getOperationLock(deps.client)) return { reason: "an export/import/migration is in progress", recovery: false };
     if (await isDeviceInRecoveryMode(deps.client)) return { reason: "this computer is in recovery mode", recovery: true };
+    if (await localBatchInProgress(deps.client)) return { reason: "a Batch on this computer is prepared or running", recovery: false, batch: true };
     return null;
   }
 
@@ -324,6 +328,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         if (!(await isExistingDirectory(config.folder))) {
           throw new SyncAbort("the sync folder is not reachable", "folder_unreachable");
         }
+        if (await localBatchInProgress(deps.client)) throw new SyncAbort(BATCH_PAUSES_IMPORT_MESSAGE, "batch_in_progress");
         if (requireDirty && !(await hasUnpublishedLocalChanges(deps.client))) {
           throw new SyncAbort("nothing to export", "nothing_to_export");
         }
@@ -412,7 +417,9 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
                   "This computer is in recovery mode (a YouTube write's outcome is unknown). Automatic sync is paused until it is resolved.",
               },
             ]
-          : status.notices;
+          : busy.batch
+            ? [{ kind: "batch_in_progress", message: BATCH_PAUSES_IMPORT_MESSAGE }]
+            : status.notices;
         return finish({ ...status, state: "busy", busyReason: busy.reason, notices });
       }
 

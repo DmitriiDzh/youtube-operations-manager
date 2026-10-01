@@ -366,25 +366,28 @@ test("AC-AS-08: recovery mode or a live operation lock -> no import and no expor
     a.client.close();
   }));
 
-test("AC-AS-08: a Batch prepared on this computer pauses imports (with a notice) but not exports", () =>
+// Revised after review of the audit fixes: exporting a prepared Batch would hand the other computer
+// an executable copy (RUNNING + AWAITING_EXECUTION) without the per-video locks.
+test("AC-AS-08: a Batch prepared on this computer pauses exports too, with a notice", () =>
   withTempDir("device-sync-", async (root) => {
     const a = await makeDevice(root, "a");
-    const b = await makeDevice(root, "b");
-    await addResearchChannel(b.client, "UC-b");
-    await b.runner.tick();
+    await addResearchChannel(a.client, "UC1");
     await a.client.execute("INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('c', 't', 'u')");
     await a.client.execute("INSERT INTO batches (id, channel_id, status) VALUES ('b1', 'c', 'RUNNING')");
     await a.client.execute(
       "INSERT INTO batch_ledger_rows (id, batch_id, video_id, change_ids_json, status) VALUES ('l1', 'b1', 'v', '[]', 'AWAITING_EXECUTION')"
     );
     await a.client.execute("INSERT INTO video_execution_locks (video_id, batch_id, ledger_row_id) VALUES ('v', 'b1', 'l1')");
-
-    // a is dirty (it has a prepared batch), b published: a conflict -- a still publishes its own state.
-    const first = await a.runner.tick();
-    assert.ok(first.lastExportSnapshotId, "exports continue while a Batch is prepared");
-    assert.deepEqual(await researchIds(a.client), [], "nothing of b's was imported over the prepared Batch");
+    const status = await a.runner.tick({ force: true });
+    assert.equal(status.state, "busy");
+    assert.equal(status.notices[0]?.kind, "batch_in_progress");
+    assert.deepEqual(await readdir(path.join(root, "sync")), [], "nothing published while the Batch is prepared");
+    // Finishing the Batch (locks released) resumes sync.
+    await a.client.execute("DELETE FROM video_execution_locks");
+    await a.client.execute("UPDATE batch_ledger_rows SET status = 'SUCCESS'");
+    await a.client.execute("UPDATE batches SET status = 'COMPLETED'");
+    assert.equal((await a.runner.tick({ force: true })).state, "exported");
     a.client.close();
-    b.client.close();
   }));
 
 test("AC-AS-08: a clean device with a prepared Batch never auto-imports; it says why", () =>
