@@ -729,8 +729,14 @@ function createFixture(overrides?: {
   searchResults?: PublicChannelSearchResult[];
   searchImpl?: (args: { credentials: ResolvedCredentials; query: string }) => Promise<PublicChannelSearchResult[]>;
   dataApiReadsDisabled?: boolean;
+  /** Phase 13 slices 13.5/13.6. Unset = the RSS feed / batchGetStats are unavailable (they throw), so
+   * every pre-Phase-13 test exercises the original quota-spending path as the fallback. */
+  feedVideos?: { videoId: string; title: string; publishedAt: string | null }[];
+  batchStats?: PublicVideoSnapshot[];
 }) {
   const store = createFakeStore();
+  const feedCalls: unknown[] = [];
+  const batchStatsCalls: unknown[] = [];
   const resolveCalls: unknown[] = [];
   const snapshotCalls: unknown[] = [];
   const playlistCalls: unknown[] = [];
@@ -772,6 +778,16 @@ function createFixture(overrides?: {
         videoSnapshotCalls.push(args);
         return overrides?.publicVideoSnapshots ?? [];
       },
+      async listChannelFeedVideoIds(args: { channelId: string }) {
+        feedCalls.push(args);
+        if (!overrides?.feedVideos) throw new Error("RSS feed unavailable (test default)");
+        return overrides.feedVideos;
+      },
+      async getPublicVideoStatsBatch(args: { credentials: ResolvedCredentials; videoIds: string[] }) {
+        batchStatsCalls.push(args);
+        if (!overrides?.batchStats) throw new Error("batchGetStats unavailable (test default)");
+        return overrides.batchStats;
+      },
       async searchPublicChannels(args: { credentials: ResolvedCredentials; query: string }) {
         searchCalls.push(args);
         if (overrides?.searchImpl) return overrides.searchImpl(args);
@@ -794,6 +810,8 @@ function createFixture(overrides?: {
     videoSnapshotCalls,
     searchCalls,
     assertReadsAvailableCalls,
+    feedCalls,
+    batchStatsCalls,
     setNow(date: Date) {
       currentNow = date;
     },
@@ -3533,4 +3551,51 @@ test("13.3: the market overview lists no breakout videos and no emerging channel
   const result = await services.getMarketOverview();
   assert.deepEqual(result.breakoutVideos, []);
   assert.deepEqual(result.emergingChannels, []);
+});
+
+// ---------------------------------------------------------------------------
+// Phase 13 slices 13.5/13.6 (docs/roadmap/plans/PHASE_13_PLAN.md): video ids from the RSS feed (no
+// quota) and statistics from videos.batchGetStats (its own bucket) -- a watchlist channel then costs
+// exactly 1 unit of the shared pool (channels.list), instead of 3.
+// ---------------------------------------------------------------------------
+
+test("13.5/13.6: with the RSS feed and batchGetStats available, a channel costs 1 pool unit and never calls playlistItems/videos.list", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { store, services, playlistCalls, videoSnapshotCalls, feedCalls, batchStatsCalls } = createFixture({
+    now,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    uploadsPlaylistVideoIds: ["v1"],
+    feedVideos: [{ videoId: "v1", title: "From feed", publishedAt: "2026-09-20T00:00:00.000Z" }],
+    batchStats: [{ videoId: "v1", title: "", publishedAt: null, viewCount: 10, likeCount: 2, commentCount: 1 }],
+  });
+  store.setQuotaBudget(100);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+
+  const result = await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+  assert.deepEqual(result, { attempted: 1, succeeded: 1, failed: 0, quotaLimited: 0, unitsSpent: 1 });
+  assert.equal(feedCalls.length, 1);
+  assert.equal(batchStatsCalls.length, 1);
+  assert.equal(playlistCalls.length, 0);
+  assert.equal(videoSnapshotCalls.length, 0);
+  const [snap] = store.videoSnapshots;
+  assert.equal(snap.viewCount, 10);
+  assert.equal(snap.title, "From feed", "a title missing from batchGetStats comes from the feed");
+  assert.equal(snap.publishedAt?.toISOString(), "2026-09-20T00:00:00.000Z");
+  assert.equal(snap.source, "youtube.videos.batchGetStats");
+});
+
+test("13.6: if batchGetStats fails, the stats come from videos.list (1 pool unit) -- nothing is lost", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { store, services, videoSnapshotCalls } = createFixture({
+    now,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    feedVideos: [{ videoId: "v1", title: "From feed", publishedAt: null }],
+    publicVideoSnapshots: [{ videoId: "v1", title: "V1", publishedAt: null, viewCount: 7, likeCount: null, commentCount: null }],
+  });
+  store.setQuotaBudget(100);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  const result = await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+  assert.equal(result.unitsSpent, 2);
+  assert.equal(videoSnapshotCalls.length, 1);
+  assert.equal(store.videoSnapshots[0].source, "youtube.videos.list");
 });

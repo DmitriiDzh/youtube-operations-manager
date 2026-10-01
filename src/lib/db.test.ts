@@ -76,6 +76,7 @@ import {
   markResearchChannelAutoCollected,
   insertMarketIntelligenceCollectionRun,
   getMarketIntelligenceUnitsSpentSince,
+  countMarketDiscoverySearchesSince,
   marketDiscoveryCandidates,
   marketDiscoveryRuns,
   getMarketDiscoveryCandidateById,
@@ -860,7 +861,8 @@ test("setDataApiReadsEnabled/setAnalyticsReadsEnabled: an explicit false persist
 // zeroed row (not absent), a category's counts are independent of the others, concurrent writes
 // are never lost, and -- the core behavior a rolling window actually exists to provide -- an
 // event outside the window is excluded from the count even though it is still in the table.
-test("getGatewayTrafficLast24h: all five categories report a zeroed row before any call is recorded", () =>
+// Phase 13 slices 13.5/13.8 add the RSS feed and Wikipedia read categories (seven in all).
+test("getGatewayTrafficLast24h: every category reports a zeroed row before any call is recorded", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
@@ -869,7 +871,15 @@ test("getGatewayTrafficLast24h: all five categories report a zeroed row before a
 
     assert.deepEqual(
       windows.map((w) => w.category).sort(),
-      ["analytics_reads", "cloud_monitoring_reads", "data_api_reads", "live_writes", "mcp_tool_calls"]
+      [
+        "analytics_reads",
+        "cloud_monitoring_reads",
+        "data_api_reads",
+        "live_writes",
+        "mcp_tool_calls",
+        "wikipedia_reads",
+        "youtube_feed_reads",
+      ]
     );
     for (const w of windows) {
       assert.equal(w.totalAttempts, 0);
@@ -1690,7 +1700,9 @@ test("market_discovery_candidates round-trips through the real Drizzle schema; r
     assert.equal(listed.length, 1);
   }));
 
-test("getMarketIntelligenceUnitsSpentSince sums market_intelligence_collection_runs AND market_discovery_runs -- one shared budget, not two independent ones", () =>
+// Phase 13 slice 13.4 -- REVISED: since 2026-06-01 `search.list` has its own quota bucket, so the shared
+// unit budget sums collection runs only, and searches are counted separately (one row = one call).
+test("getMarketIntelligenceUnitsSpentSince counts collection runs only; countMarketDiscoverySearchesSince counts searches", () =>
   withTempClient(async (client) => {
     await initializeDatabaseSchema(client);
     const isolatedDb = createIsolatedDb(client);
@@ -1698,12 +1710,12 @@ test("getMarketIntelligenceUnitsSpentSince sums market_intelligence_collection_r
 
     const now = new Date("2026-09-27T12:00:00.000Z");
     await insertMarketIntelligenceCollectionRun({ researchChannelId: "UC_SHARED_BUDGET000000", status: "success", unitsSpent: 3, ranAt: now }, isolatedDb);
-    await insertMarketDiscoveryRun({ query: "cooking", status: "success", unitsSpent: 100, candidatesFound: 5, candidatesNew: 2, ranAt: now }, isolatedDb);
-    await insertMarketDiscoveryRun({ query: "gaming", status: "failed", unitsSpent: 100, errorMessage: "boom", ranAt: now }, isolatedDb);
+    await insertMarketDiscoveryRun({ query: "cooking", status: "success", unitsSpent: 1, candidatesFound: 5, candidatesNew: 2, ranAt: now }, isolatedDb);
+    await insertMarketDiscoveryRun({ query: "gaming", status: "failed", unitsSpent: 1, errorMessage: "boom", ranAt: now }, isolatedDb);
 
     const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    const totalSpent = await getMarketIntelligenceUnitsSpentSince(since, isolatedDb);
-    assert.equal(totalSpent, 203, "must sum both tables (3 + 100 + 100), including a failed discovery run's own real spend");
+    assert.equal(await getMarketIntelligenceUnitsSpentSince(since, isolatedDb), 3);
+    assert.equal(await countMarketDiscoverySearchesSince(since, isolatedDb), 2, "a failed search still used a call");
 
     const [discoveryRunRow] = await isolatedDb.select().from(marketDiscoveryRuns).where(eq(marketDiscoveryRuns.status, "success"));
     assert.equal(discoveryRunRow.candidatesFound, 5, "candidatesFound must round-trip, never fabricated");

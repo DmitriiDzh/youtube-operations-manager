@@ -11,6 +11,8 @@ import { ToggleSwitch } from "./toggle-switch";
 type Settings = {
   dataApiReadsEnabled: boolean;
   analyticsReadsEnabled: boolean;
+  youtubeFeedReadsEnabled: boolean;
+  wikipediaReadsEnabled: boolean;
   gatewayTraffic?: GatewayTrafficWindowView[];
   cloudQuotaStatus?: { dataApi: ServiceQuotaStatusView; analytics: ServiceQuotaStatusView };
 };
@@ -39,7 +41,7 @@ export function ReadGatewaySettings() {
     const res = await fetch("/api/settings");
     if (!res.ok) return;
     const data = (await res.json()) as Settings;
-    if (ownSettingsUnavailable(data, ["dataApiReadsEnabled", "analyticsReadsEnabled"])) return;
+    if (ownSettingsUnavailable(data, ["dataApiReadsEnabled", "analyticsReadsEnabled", "youtubeFeedReadsEnabled", "wikipediaReadsEnabled"])) return;
     setSettings(data);
     setDraft(data);
   }, []);
@@ -63,6 +65,8 @@ export function ReadGatewaySettings() {
         body: JSON.stringify({
           dataApiReadsEnabled: next.dataApiReadsEnabled,
           analyticsReadsEnabled: next.analyticsReadsEnabled,
+          youtubeFeedReadsEnabled: next.youtubeFeedReadsEnabled,
+          wikipediaReadsEnabled: next.wikipediaReadsEnabled,
         }),
       });
       const data = await res.json();
@@ -85,7 +89,9 @@ export function ReadGatewaySettings() {
   const dirty =
     settings &&
     (draft.dataApiReadsEnabled !== settings.dataApiReadsEnabled ||
-      draft.analyticsReadsEnabled !== settings.analyticsReadsEnabled);
+      draft.analyticsReadsEnabled !== settings.analyticsReadsEnabled ||
+      draft.youtubeFeedReadsEnabled !== settings.youtubeFeedReadsEnabled ||
+      draft.wikipediaReadsEnabled !== settings.wikipediaReadsEnabled);
 
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -152,6 +158,50 @@ export function ReadGatewaySettings() {
               <CloudQuotaProgress size="lg" status={settings?.cloudQuotaStatus?.analytics} />
             </>
           }
+        />
+      </div>
+
+      <div className="border-t border-zinc-800 pt-4">
+        <SettingsSectionRow
+          left={
+            <div>
+              <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
+                RSS feed reads
+                <InfoTooltip>On by default. YouTube&apos;s public RSS feeds of channels&apos; newest uploads -- no quota at all. Research uses them to find watchlist channels&apos; latest videos; if this is off, it falls back to a quota-spending call.</InfoTooltip>
+              </h3>
+              <div className="mt-2 flex items-center gap-2">
+                <ToggleSwitch
+                  label="Enable RSS feed reads"
+                  checked={draft.youtubeFeedReadsEnabled}
+                  onChange={(checked) => setDraft({ ...draft, youtubeFeedReadsEnabled: checked })}
+                />
+                <span className="text-sm text-zinc-300">Enable RSS feed reads</span>
+              </div>
+            </div>
+          }
+          right={<GatewayTrafficStats size="lg" window={settings?.gatewayTraffic?.find((c) => c.category === "youtube_feed_reads")} />}
+        />
+      </div>
+
+      <div className="border-t border-zinc-800 pt-4">
+        <SettingsSectionRow
+          left={
+            <div>
+              <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
+                Wikipedia reads
+                <InfoTooltip>On by default. Daily page views of Wikipedia articles linked to Research topics -- an interest signal from outside YouTube. Free, no key.</InfoTooltip>
+              </h3>
+              <div className="mt-2 flex items-center gap-2">
+                <ToggleSwitch
+                  label="Enable Wikipedia reads"
+                  checked={draft.wikipediaReadsEnabled}
+                  onChange={(checked) => setDraft({ ...draft, wikipediaReadsEnabled: checked })}
+                />
+                <span className="text-sm text-zinc-300">Enable Wikipedia reads</span>
+              </div>
+            </div>
+          }
+          right={<GatewayTrafficStats size="lg" window={settings?.gatewayTraffic?.find((c) => c.category === "wikipedia_reads")} />}
         />
       </div>
 

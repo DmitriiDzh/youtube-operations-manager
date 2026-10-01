@@ -3310,6 +3310,28 @@ export async function setAnalyticsReadsEnabled(enabled: boolean, database: AppDb
   await setAppSetting(ANALYTICS_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
 }
 
+const YOUTUBE_FEED_READS_ENABLED_SETTING_KEY = "youtube_feed_reads_enabled";
+const WIKIPEDIA_READS_ENABLED_SETTING_KEY = "wikipedia_reads_enabled";
+
+/** Phase 13 slice 13.5: the YouTube RSS feed read category (no quota). Same semantics as the other
+ * read toggles: on unless the operator turned it off, persistent. */
+export async function getYoutubeFeedReadsEnabled(database: AppDb = db): Promise<boolean> {
+  return (await getAppSetting(YOUTUBE_FEED_READS_ENABLED_SETTING_KEY, database)) !== "false";
+}
+
+export async function setYoutubeFeedReadsEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
+  await setAppSetting(YOUTUBE_FEED_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
+}
+
+/** Phase 13 slice 13.8: the Wikipedia Pageviews read category. On unless turned off, persistent. */
+export async function getWikipediaReadsEnabled(database: AppDb = db): Promise<boolean> {
+  return (await getAppSetting(WIKIPEDIA_READS_ENABLED_SETTING_KEY, database)) !== "false";
+}
+
+export async function setWikipediaReadsEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
+  await setAppSetting(WIKIPEDIA_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
+}
+
 const OPERATIONS_WORKSPACE_PATH_SETTING_KEY = "operations_workspace_path";
 
 /**
@@ -3503,7 +3525,9 @@ export type GatewayTrafficCategory =
   | "analytics_reads"
   | "live_writes"
   | "mcp_tool_calls"
-  | "cloud_monitoring_reads";
+  | "cloud_monitoring_reads"
+  | "youtube_feed_reads"
+  | "wikipedia_reads";
 
 export type GatewayTrafficWindow = {
   category: GatewayTrafficCategory;
@@ -3519,6 +3543,8 @@ const GATEWAY_TRAFFIC_CATEGORIES: readonly GatewayTrafficCategory[] = [
   "live_writes",
   "mcp_tool_calls",
   "cloud_monitoring_reads",
+  "youtube_feed_reads",
+  "wikipedia_reads",
 ];
 
 // Kept well past the 24h window this table exists to answer (owner instruction, 2026-09-22:

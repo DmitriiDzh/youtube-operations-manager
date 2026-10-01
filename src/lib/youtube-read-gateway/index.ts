@@ -27,3 +27,4 @@
 
 export * from "./data-api";
 export * from "./analytics-api";
+export * from "./feed";

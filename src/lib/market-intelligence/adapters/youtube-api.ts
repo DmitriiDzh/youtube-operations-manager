@@ -4,6 +4,8 @@ import {
   createYoutubeClient,
   getPublicChannelSnapshot,
   getPublicVideoSnapshots,
+  getPublicVideoStatsBatch,
+  listChannelFeedVideos,
   listUploadsPlaylistFirstPageVideoIds,
   searchPublicChannels,
 } from "@/lib/youtube-read-gateway";
@@ -35,6 +37,14 @@ export function createMarketIntelligenceYoutubeApiAdapter() {
     async getPublicVideoSnapshots(args: { credentials: ResolvedCredentials; videoIds: string[] }) {
       const youtube = await createAuthorizedClient(args.credentials);
       return getPublicVideoSnapshots(youtube, args.videoIds);
+    },
+    // Phase 13 slices 13.5/13.6.
+    async listChannelFeedVideoIds(args: { channelId: string }) {
+      return listChannelFeedVideos(args.channelId);
+    },
+    async getPublicVideoStatsBatch(args: { credentials: ResolvedCredentials; videoIds: string[] }) {
+      const youtube = await createAuthorizedClient(args.credentials);
+      return getPublicVideoStatsBatch(youtube, args.videoIds);
     },
     // Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md).
     async searchPublicChannels(args: { credentials: ResolvedCredentials; query: string }) {

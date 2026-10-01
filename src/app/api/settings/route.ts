@@ -6,6 +6,8 @@ import { createCloudQuotasCore } from "@/lib/cloud-quotas";
 import { createMarketIntelligenceCore } from "@/lib/market-intelligence";
 import {
   getAnalyticsReadsEnabled,
+  getWikipediaReadsEnabled,
+  getYoutubeFeedReadsEnabled,
   getAnalyticsSyncSettings,
   getDataApiReadsEnabled,
   getDeviceAutoSyncEnabled,
@@ -15,6 +17,8 @@ import {
   getOperatorCliEnabled,
   getOperationsWorkspacePath,
   setAnalyticsReadsEnabled,
+  setWikipediaReadsEnabled,
+  setYoutubeFeedReadsEnabled,
   setAnalyticsSyncSettings,
   setDataApiReadsEnabled,
   setDeviceAutoSyncEnabled,
@@ -52,6 +56,8 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
  *   validated before being persisted (`isValidLocalTimeOfDay`/`isValidIanaTimezone`) -- a bad
  *   timezone string would otherwise only surface as a thrown `RangeError` deep inside the
  *   staleness check on a later dashboard load, not at the point the owner actually typed it.
+ * - `youtubeFeedReadsEnabled`/`wikipediaReadsEnabled` -- Phase 13 read categories (RSS feeds, Wikipedia
+ *   Pageviews); same semantics as the two below: on by default, persistent.
  * - `dataApiReadsEnabled`/`analyticsReadsEnabled` -- per-category read-gateway toggles (owner
  *   instruction, 2026-09-22, `docs/decisions/0007-youtube-read-gateway.md`). Unlike the two
  *   booleans above, these default to **enabled** and persist across restarts (see
@@ -107,6 +113,8 @@ async function getSettingsSnapshot() {
     analyticsSync: () => getAnalyticsSyncSettings(),
     dataApiReadsEnabled: () => getDataApiReadsEnabled(),
     analyticsReadsEnabled: () => getAnalyticsReadsEnabled(),
+    youtubeFeedReadsEnabled: () => getYoutubeFeedReadsEnabled(),
+    wikipediaReadsEnabled: () => getWikipediaReadsEnabled(),
     gatewayTraffic: () => getGatewayTrafficLast24h(),
     cloudQuotaStatus: () => createCloudQuotasCore().getQuotaStatus(),
     operationsWorkspacePath: () => getOperationsWorkspacePath(),
@@ -236,6 +244,12 @@ export async function POST(request: Request) {
   }
   if (typeof body.analyticsReadsEnabled === "boolean") {
     await setAnalyticsReadsEnabled(body.analyticsReadsEnabled);
+  }
+  if (typeof body.youtubeFeedReadsEnabled === "boolean") {
+    await setYoutubeFeedReadsEnabled(body.youtubeFeedReadsEnabled);
+  }
+  if (typeof body.wikipediaReadsEnabled === "boolean") {
+    await setWikipediaReadsEnabled(body.wikipediaReadsEnabled);
   }
   if (analyticsSyncLocalTimeToSet !== undefined) {
     await setAnalyticsSyncSettings({ localTime: analyticsSyncLocalTimeToSet });

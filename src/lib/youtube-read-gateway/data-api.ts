@@ -792,3 +792,46 @@ export async function listSupportedLanguages(youtube: youtube_v3.Youtube): Promi
     .filter((lang) => lang.code.length > 0)
     .sort((a, b) => a.code.localeCompare(b.code));
 }
+
+/**
+ * Phase 13 slice 13.6 -- `videos.batchGetStats` (YouTube Data API revision history, 2026-06-03): 1
+ * unit of its OWN quota bucket (10,000 per day), so watchlist video statistics stop spending the
+ * shared 10k pool. Not yet in the installed `googleapis` client, so it is a raw authorized request
+ * made with the SAME client's own auth (still created by `createYoutubeClient`, so the Data API
+ * reads toggle applies). The response shape is parsed defensively; the maximum ids per call is not
+ * documented, so it is called with at most 50 (the `videos.list` limit). A caller treats any error
+ * as "unavailable" and falls back to `getPublicVideoSnapshots` (`videos.list`).
+ */
+export async function getPublicVideoStatsBatch(youtube: youtube_v3.Youtube, videoIds: string[]): Promise<PublicVideoSnapshot[]> {
+  if (videoIds.length === 0) return [];
+  const auth = (youtube as unknown as { context?: { _options?: { auth?: { request?: unknown } } } }).context?._options?.auth;
+  if (!auth || typeof auth.request !== "function") {
+    throw new DomainError({ code: "validation_failed", message: "videos.batchGetStats needs an authorized client" });
+  }
+  const request = auth.request as (opts: { url: string; params: Record<string, string> }) => Promise<{ data: unknown }>;
+  const results: PublicVideoSnapshot[] = [];
+  for (const batch of chunk(videoIds, YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
+    const res = await request.call(auth, {
+      url: "https://www.googleapis.com/youtube/v3/videos:batchGetStats",
+      params: { id: batch.join(","), part: "id,snippet,statistics" },
+    });
+    const items = (res.data as { items?: unknown[] } | null)?.items ?? [];
+    for (const raw of items) {
+      const item = raw as {
+        id?: string;
+        snippet?: { title?: string; publishedAt?: string };
+        statistics?: { viewCount?: string; likeCount?: string; commentCount?: string };
+      };
+      if (!item.id) continue;
+      results.push({
+        videoId: item.id,
+        title: item.snippet?.title ?? "",
+        publishedAt: item.snippet?.publishedAt ?? null,
+        viewCount: parseStatCount(item.statistics?.viewCount),
+        likeCount: parseStatCount(item.statistics?.likeCount),
+        commentCount: parseStatCount(item.statistics?.commentCount),
+      });
+    }
+  }
+  return results;
+}

@@ -426,6 +426,11 @@ type ServiceDependencies = {
       credentials: ResolvedCredentials;
       videoIds: string[];
     }): Promise<PublicVideoSnapshot[]>;
+    // Phase 13 slices 13.5/13.6 -- quota-free / own-bucket alternatives, each with a fallback.
+    /** The channel's RSS feed (newest ~15 uploads): no quota at all. */
+    listChannelFeedVideoIds(args: { channelId: string }): Promise<{ videoId: string; title: string; publishedAt: string | null }[]>;
+    /** `videos.batchGetStats`: 1 unit of its own bucket, not the shared pool. */
+    getPublicVideoStatsBatch(args: { credentials: ResolvedCredentials; videoIds: string[] }): Promise<PublicVideoSnapshot[]>;
     // Phase 9 slice 9C.
     searchPublicChannels(args: {
       credentials: ResolvedCredentials;
@@ -1783,22 +1788,41 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
             createdVia: "web_ui",
           });
 
-          if (snapshot.uploadsPlaylistId) {
-            unitsSpentThisChannel += PLAYLIST_ITEMS_LIST_UNIT_COST;
-            remaining -= PLAYLIST_ITEMS_LIST_UNIT_COST;
-            const videoIds = await deps.youtubeApi.listUploadsPlaylistFirstPageVideoIds({
-              credentials,
-              uploadsPlaylistId: snapshot.uploadsPlaylistId,
-            });
+          // Phase 13 slices 13.5/13.6: video ids from the channel's RSS feed (no quota), statistics
+          // from videos.batchGetStats (its own bucket). Each falls back to the original quota-spending
+          // call (playlistItems.list / videos.list, 1 pool unit each) only if it fails, so the
+          // worst case -- and therefore the budget pre-commit above -- is unchanged.
+          let videoIds: string[] | null = null;
+          const feedMetaById = new Map<string, { title: string; publishedAt: string | null }>();
+          try {
+            const feed = await deps.youtubeApi.listChannelFeedVideoIds({ channelId: researchChannelId });
+            videoIds = feed.map((v) => v.videoId);
+            for (const v of feed) feedMetaById.set(v.videoId, { title: v.title, publishedAt: v.publishedAt });
+          } catch {
+            if (snapshot.uploadsPlaylistId) {
+              unitsSpentThisChannel += PLAYLIST_ITEMS_LIST_UNIT_COST;
+              remaining -= PLAYLIST_ITEMS_LIST_UNIT_COST;
+              videoIds = await deps.youtubeApi.listUploadsPlaylistFirstPageVideoIds({
+                credentials,
+                uploadsPlaylistId: snapshot.uploadsPlaylistId,
+              });
+            }
+          }
+
+          if (videoIds !== null) {
             videosRequested = videoIds.length;
 
             if (videoIds.length > 0) {
-              unitsSpentThisChannel += VIDEOS_LIST_UNIT_COST;
-              remaining -= VIDEOS_LIST_UNIT_COST;
-              const videoSnapshots: PublicVideoSnapshot[] = await deps.youtubeApi.getPublicVideoSnapshots({
-                credentials,
-                videoIds,
-              });
+              let videoSnapshots: PublicVideoSnapshot[];
+              let statsSource = "youtube.videos.batchGetStats";
+              try {
+                videoSnapshots = await deps.youtubeApi.getPublicVideoStatsBatch({ credentials, videoIds });
+              } catch {
+                statsSource = "youtube.videos.list";
+                unitsSpentThisChannel += VIDEOS_LIST_UNIT_COST;
+                remaining -= VIDEOS_LIST_UNIT_COST;
+                videoSnapshots = await deps.youtubeApi.getPublicVideoSnapshots({ credentials, videoIds });
+              }
 
               // Counts only what was ACTUALLY persisted, not the raw API response length (found by
               // independent review: the previous version set videosReturned from the response
@@ -1807,6 +1831,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
               // accurate even if a later iteration throws, since it only counts completed inserts.
               videosReturned = 0;
               for (const videoSnapshot of videoSnapshots) {
+                const feedMeta = feedMetaById.get(videoSnapshot.videoId);
+                const title = videoSnapshot.title.length > 0 ? videoSnapshot.title : (feedMeta?.title ?? "");
+                const publishedAt = videoSnapshot.publishedAt ?? feedMeta?.publishedAt ?? null;
                 await deps.insertMarketVideoSnapshot({
                   id: deps.idGenerator(),
                   researchChannelId,
@@ -1814,20 +1841,18 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
                   viewCount: videoSnapshot.viewCount,
                   likeCount: videoSnapshot.likeCount,
                   commentCount: videoSnapshot.commentCount,
-                  publishedAt: videoSnapshot.publishedAt ? new Date(videoSnapshot.publishedAt) : null,
-                  // Phase 9 slice 9H part C -- costs zero additional quota, getPublicVideoSnapshots
-                  // already fetches this. Normalized to null (never "") -- data-api.ts's own `?? ""`
-                  // fallback for a response that omits snippet.title must not be stored as a
-                  // different-looking "known, empty" title from a genuinely uncaptured one.
-                  title: videoSnapshot.title.length > 0 ? videoSnapshot.title : null,
-                  source: "youtube.videos.list",
+                  publishedAt: publishedAt ? new Date(publishedAt) : null,
+                  // Phase 9 slice 9H part C -- costs zero additional quota. Normalized to null (never
+                  // "") so a genuinely uncaptured title is never stored as a "known, empty" one.
+                  title: title.length > 0 ? title : null,
+                  source: statsSource,
                   createdVia: "web_ui",
                 });
                 videosReturned += 1;
               }
             } else {
-              // The playlist WAS enumerated and genuinely has no videos -- a real, known fact
-              // (distinct from "the videos.list step was never attempted", which stays null).
+              // The uploads WERE enumerated and genuinely have no videos -- a real, known fact
+              // (distinct from "the stats step was never attempted", which stays null).
               videosReturned = 0;
             }
           }

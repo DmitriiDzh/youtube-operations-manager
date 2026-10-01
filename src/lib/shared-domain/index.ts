@@ -52,6 +52,12 @@ export type DomainErrorCode =
   | "backup_infrastructure_unavailable"
   | "live_writes_disabled"
   | "data_api_reads_disabled"
+  // Phase 13 (docs/roadmap/plans/PHASE_13_PLAN.md): the RSS feed and Wikipedia read categories.
+  | "youtube_feed_reads_disabled"
+  | "youtube_feed_invalid_channel"
+  | "youtube_feed_unavailable"
+  | "wikipedia_reads_disabled"
+  | "wikipedia_unavailable"
   | "analytics_reads_disabled"
   | "analytics_data_current"
   | "youtube_quota_exceeded"
