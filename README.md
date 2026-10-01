@@ -58,7 +58,7 @@ Full walkthrough:
 | --- | --- | --- |
 | Web UI | `http://localhost:3000` | Visual channel operations |
 | CLI | `npm run cli:video-metadata -- <command>` | Local automation and manual operations |
-| MCP Server (stdio) | `npm run mcp:video-metadata` | AI-agent/tool integrations |
+| MCP Server (HTTP, in-app) | `POST http://127.0.0.1:3000/api/mcp` while the app runs; Settings → AI Agent | AI-agent/tool integrations |
 | API Route Handlers | `/api/youtube/videos`, `/api/video-metadata/*` | App/backend integrations |
 
 Detailed usage:

@@ -1028,8 +1028,9 @@ ends at the path string.
 ## 4n. Channel-bound agent sessions (Phase 12, `docs/roadmap/plans/PHASE_12_PLAN.md`) -- IMPLEMENTED
 
 This is a breaking change to this interface, so `AGENT_API_VERSION` → `1.0.0`. Every agent
-session is bound to exactly one channel by an operator-issued channel token (`YTOM_AGENT_TOKEN`
-for MCP, `--agentToken` or the env var for the CLI).
+session is bound to exactly one channel by an operator-issued channel token. **Since
+`docs/decisions/0013-in-app-http-mcp-transport.md` (`AGENT_API_VERSION` → `2.0.0`) the token is a Bearer
+credential on the app's own MCP endpoint (`POST /api/mcp`); stdio MCP and the CLI agent mode are removed.**
 
 - **Enforcement at two choke points** (`src/lib/agent-session`), not in each handler. In a bound
   process:
@@ -1052,9 +1053,9 @@ for MCP, `--agentToken` or the env var for the CLI).
 - **Decision engine (§4l):** channel-less hypotheses are invisible to agents.
 - **Capability zones (BL-091) are retired** (`docs/decisions/0011-retire-agent-capability-zones.md`).
   There is no `AGENT_CONNECTION_ID` any more.
-- **Migration for an existing client:** issue a token in Settings → Channels, put it in the
-  client's MCP launch config as `YTOM_AGENT_TOKEN`, drop `AGENT_CONNECTION_ID`, and stop passing
-  `credentialRef`. Setup: `docs/AGENT_ISOLATION_SETUP.md`.
+- **Migration for an existing client:** issue a token in Settings → Channels, point the client at the
+  app's MCP URL with that token as a Bearer credential (no launch command, no project path), drop
+  `AGENT_CONNECTION_ID`, and stop passing `credentialRef`. Setup: `docs/AGENT_ISOLATION_SETUP.md`.
 
 ## 8. Safety invariants this interface must never violate
 

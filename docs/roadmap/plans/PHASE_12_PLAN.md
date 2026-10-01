@@ -209,6 +209,9 @@ it at the HTTP endpoint). The release notes carry a migration note.
 
 ## 7. Owner decisions (Telegram, msg 1051, 2026-09-30)
 
+> **Superseded 2026-10-01 for D0 only:** the owner later chose the in-app HTTP transport and removal of stdio
+> and CLI agent mode (`docs/decisions/0013-in-app-http-mcp-transport.md`). The text below is the historical record.
+
 - **D0 → (b): keep the stdio transport, in-app wall.** Verbatim: *"мне нужно иметь возможность быстро
   сменять каналы. Если будет 10 каналов я не могу заводить 10 учеток на компьютере."* Separate OS
   users per agent are rejected, so the wall protects against agent mistakes and accidental access.

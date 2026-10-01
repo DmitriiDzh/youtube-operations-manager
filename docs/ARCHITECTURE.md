@@ -2082,16 +2082,23 @@ MCP/CLI market handlers narrow results for agents. Its `db.ts` exports avoid the
 "market"/"research" so PHASE9-INV-02 continues to guarantee that no other module reaches into
 market-intelligence's own tables.
 
-**Surface.** `src/mcp/tool-classification.ts` and `src/cli/command-classification.ts` classify
-every tool and command as `bound` or `operator-only`. Inventory tests compare them with the real
-registries: `server.ts`'s `registerTool` names, and `parseArgs`' command lists. Without a token
-the MCP server registers nothing. The CLI runs as the operator only under the "Operator CLI
-access" setting (default off).
+**Surface.** `src/mcp/tool-classification.ts` classifies every MCP tool as `bound` or
+`operator-only`; an inventory test compares it with `server.ts`'s `registerTool` names. The CLI no
+longer has an agent mode: it is the operator's tool and runs only under the "Operator CLI access"
+setting (default off).
 
-**Accepted limit (owner decision D0(b)).** The server still runs as a stdio child in the agent's
-own OS user, so the wall is in-app. An agent that deliberately reads `data.db` or another agent's
-launch config can bypass it. This is recorded as RISK-87, with mitigations in
-`docs/AGENT_ISOLATION_SETUP.md`.
+**Transport (`docs/decisions/0013-in-app-http-mcp-transport.md`, reverses D0(b)).** The running app
+serves MCP at `POST /api/mcp` (`src/lib/agent-mcp-endpoint`, a thin route over it): stateless
+Streamable HTTP, a fresh `McpServer` per request, the "MCP connection" toggle and the channel token
+read on every request, a loopback `Host`/`Origin` guard, and the whole web server bound to
+`127.0.0.1`. The request runs inside an `AsyncLocalStorage` agent scope (`src/lib/agent-session`);
+because "no scope" means operator mode in the web process, every tool call first asserts the ambient
+scope equals the request's token. `src/proxy.ts` exempts `/api/mcp` from the device-mutation gate
+(every MCP call is a POST); mutating tools keep their own gate.
+
+**Accepted limit (RISK-87).** The agent still runs as the operator's OS user, so the wall is in-app:
+an agent that deliberately finds and opens `data.db` can bypass it. What changed is that the agent's
+own configuration no longer contains the project path. Mitigations: `docs/AGENT_ISOLATION_SETUP.md`.
 
 **OAuth tokens at rest (12.8, owner chose the "env" key variant).** `db.ts`'s OAuth-token
 functions are the only readers and writers of `users.access_token` / `refresh_token`. They route

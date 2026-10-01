@@ -1392,10 +1392,12 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   `src/lib/agent-tokens`, MCP/CLI).
 - **Found during:** Phase 12 design. The owner chose it knowingly: decision D0(b), Telegram
   msg 1051, *"мне нужно иметь возможность быстро сменять каналы... не могу заводить 10 учеток"*.
-- **Actual risk:** the MCP server is a stdio child running as the agent's OS user and opens
-  `data.db` itself. So an agent with its own filesystem tools, as the same OS user, can read
-  another channel's data from the database file directly, read another channel's workspace
-  folder, or read another agent's launch config, including its plaintext channel token.
+- **Actual risk:** the agent runs as the operator's OS user. So an agent with its own filesystem
+  tools can find and read another channel's data from the database file directly, read another
+  channel's workspace folder, or read another agent's client configuration, including its plaintext
+  channel token. **Updated 2026-10-01 (ADR 0013):** MCP is now served by the running app over
+  loopback HTTP and the CLI agent mode is gone, so no agent configuration contains the project path or
+  needs to open the database; the same-OS-user read remains possible, only no longer pointed at.
   - Within the product's interface the wall is complete (AC-P12-01..10).
   - The risk is a deliberate bypass, or a careless agent wandering the disk.
 - **Mitigations in place:**
@@ -1403,9 +1405,8 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   - OAuth tokens encrypted at rest when `OAUTH_TOKENS_ENCRYPTION_KEY` is set (PHASE_12_PLAN.md
     12.8), so reading the database file alone yields no usable Google credential. The key itself
     is in the environment file, which a determined same-user agent could also read.
-- **Required remediation (only if the threat model changes):** serve the agent interface from the
-  operator's own process (MCP over localhost HTTP with the token as bearer credential), plus one
-  OS user or sandbox per agent. This is PHASE_12_PLAN.md D0(a).
+- **Required remediation (only if the threat model changes):** one OS user or sandbox per agent, on
+  top of the in-app HTTP endpoint that is now in place (PHASE_12_PLAN.md D0(a), second half).
 - **Gate(s):** none.
 - **Approval required from:** project owner, to change the threat model.
 - **Status:** OPEN, accepted by the owner.

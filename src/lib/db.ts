@@ -3261,12 +3261,9 @@ export async function resetLiveWritesForNewServerSession(database: AppDb = db): 
  * the opposite of Gate B's "off by default every session" model. There is deliberately no
  * environment-variable fallback (the prior `MCP_RESTRICTED_MODE` env var is removed) -- the
  * Settings-tab toggle is now the one and only way to grant an MCP client any access at all.
- * **Known limitation, stated rather than solved (an MCP server's tool set is fixed at
- * `createMcpServer()` construction time, standard SDK behavior, not something this app can
- * hot-swap):** a currently-running, long-lived MCP connection keeps whatever tool set it started
- * with; this setting takes effect the next time an MCP client spawns/reconnects the server
- * process (`startMcpServer()` reads it fresh on each boot), not instantly for an already-open
- * session.
+ * Read fresh on EVERY request by the in-app MCP endpoint (`src/lib/agent-mcp-endpoint`, stateless,
+ * a new server per request -- docs/decisions/0013-in-app-http-mcp-transport.md), so flipping it
+ * takes effect on the very next agent call, with no client restart.
  */
 export async function getMcpConnectionEnabled(): Promise<boolean> {
   return (await getAppSetting(MCP_CONNECTION_ENABLED_SETTING_KEY)) === "true";
@@ -3280,8 +3277,8 @@ const OPERATOR_CLI_ENABLED_SETTING_KEY = "operator_cli_enabled";
 
 /**
  * Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md slice 12.5, AC-P12-10) -- whether the CLI may run
- * WITHOUT an agent token, as the operator. Off by default and persistent (like MCP connection):
- * otherwise a shell-capable agent could bypass its channel binding simply by omitting its token.
+ * as the operator -- the only way it runs now (the agent mode was removed, ADR 0013). Off by default and
+ * persistent (like MCP connection): otherwise a shell-capable agent could simply run it.
  * Settable only through the Web Settings tab (`POST /api/settings`), never from the CLI itself.
  */
 export async function getOperatorCliEnabled(): Promise<boolean> {
