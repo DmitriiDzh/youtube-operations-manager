@@ -38,6 +38,19 @@ export function MarketDiscoveryPanel() {
   const [promotingChannelId, setPromotingChannelId] = useState<string | null>(null);
   const [promoteReason, setPromoteReason] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  // Phase 13 slice 13.4: today's use of YouTube's separate 100-searches-per-day bucket.
+  const [searchUsage, setSearchUsage] = useState<{ searchesUsedToday: number; dailyLimit: number } | null>(null);
+  const refreshSearchUsage = useCallback(async () => {
+    try {
+      const res = await fetch("/api/market-intelligence/discover");
+      if (res.ok) setSearchUsage(await res.json());
+    } catch {
+      // Non-fatal: the counter just stays hidden.
+    }
+  }, []);
+  useEffect(() => {
+    void refreshSearchUsage();
+  }, [refreshSearchUsage]);
 
   const fetchCandidates = useCallback(async () => {
     setLoading(true);
@@ -74,6 +87,7 @@ export function MarketDiscoveryPanel() {
       }
       setLastResult(data);
       await fetchCandidates();
+      void refreshSearchUsage();
     } catch {
       setSearchError("Discovery failed");
     } finally {
@@ -154,6 +168,12 @@ export function MarketDiscoveryPanel() {
         </button>
       </div>
 
+      {searchUsage && (
+        <p className="text-xs text-zinc-500">
+          {searchUsage.searchesUsedToday} of {searchUsage.dailyLimit} YouTube searches used today (resets at midnight Pacific time)
+        </p>
+      )}
+
       {lastResult && (
         <p className="text-xs text-zinc-400">
           Found {lastResult.candidatesFound}, {lastResult.candidatesNew} new.
@@ -174,7 +194,14 @@ export function MarketDiscoveryPanel() {
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="text-sm font-medium text-zinc-100">{candidate.title || candidate.channelId}</p>
+                <p className="text-sm font-medium text-zinc-100">
+                  {candidate.title || candidate.channelId}
+                  {!candidate.title && (
+                    <span className="ml-2 text-xs font-normal text-zinc-500">
+                      (title expired under YouTube&rsquo;s 30-day rule; refreshes when a search finds it again)
+                    </span>
+                  )}
+                </p>
                 <p className="text-xs text-zinc-500">
                   {candidate.channelId} &middot; status: {candidate.status} &middot; query: &ldquo;{candidate.discoveryQuery}&rdquo;
                 </p>

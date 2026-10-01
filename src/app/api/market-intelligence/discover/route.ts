@@ -48,3 +48,12 @@ export async function POST(request: Request) {
     );
   }
 }
+
+// Phase 13 slice 13.4 -- read-only: how many of YouTube's daily searches (own bucket) are used today.
+export async function GET() {
+  const session = await getServerSession(authOptions);
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  return NextResponse.json(await core.getSearchUsage());
+}

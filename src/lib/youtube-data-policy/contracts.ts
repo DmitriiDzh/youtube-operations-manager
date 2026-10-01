@@ -19,6 +19,14 @@
 /** III.E.4.c/d. */
 export const API_DATA_RETENTION_DAYS = 30;
 
+/**
+ * The exact `source` values collection writes for API-sourced snapshot rows (review round 1: a
+ * prefix match would also catch an operator's free-text source such as "youtube.com page"). A test
+ * fails if collection writes a source missing from this list, so a new source cannot escape the purge.
+ */
+export const YOUTUBE_API_SNAPSHOT_SOURCES = ["youtube.channels.list", "youtube.videos.list", "youtube.videos.batchGetStats"] as const;
+const apiSourceWhere = `source IN (${YOUTUBE_API_SNAPSHOT_SOURCES.map((s) => `'${s}'`).join(", ")})`;
+
 export type YoutubeDataClassification =
   | {
       /** Other people's channels, fetched without their credentials. Kept at most 30 days. */
@@ -32,6 +40,14 @@ export type YoutubeDataClassification =
       apiRowsWhere?: string;
       /** When rows expire, also drop `channel_record_assignments` rows of this kind pointing at them. */
       assignmentRecordKind?: string;
+      /**
+       * Rows matching this are the OPERATOR's decision about the record (review round 1): on expiry
+       * they are not deleted -- their API-sourced columns are blanked instead (`blankSet`), so the
+       * decision survives while no API data outlives the window. Other expired rows are deleted.
+       */
+      keepDecisionWhere?: string;
+      blankSet?: string;
+      alreadyBlankWhere?: string;
       reason: string;
     }
   | {
@@ -48,7 +64,13 @@ export type YoutubeDataClassification =
 const nonAuthorized = (
   clockColumn: string,
   reason: string,
-  options: { apiRowsWhere?: string; assignmentRecordKind?: string } = {}
+  options: {
+    apiRowsWhere?: string;
+    assignmentRecordKind?: string;
+    keepDecisionWhere?: string;
+    blankSet?: string;
+    alreadyBlankWhere?: string;
+  } = {}
 ): YoutubeDataClassification => ({ kind: "non_authorized", clockColumn, reason, ...options });
 const authorized = (reason: string): YoutubeDataClassification => ({ kind: "authorized", reason });
 const notApiData = (reason: string): YoutubeDataClassification => ({ kind: "not_api_data", reason });
@@ -58,17 +80,25 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   market_channel_snapshots: nonAuthorized(
     "observed_at",
     "public statistics of watchlist channels from channels.list",
-    { apiRowsWhere: "source LIKE 'youtube.%'" }
+    { apiRowsWhere: apiSourceWhere }
   ),
   market_video_snapshots: nonAuthorized(
     "observed_at",
-    "public statistics of watchlist channels' videos from videos.list",
-    { apiRowsWhere: "source LIKE 'youtube.%'" }
+    "public statistics of watchlist channels' videos from videos.list / batchGetStats",
+    { apiRowsWhere: apiSourceWhere }
   ),
   market_discovery_candidates: nonAuthorized(
     "last_seen_at",
-    "channel ids/titles returned by search.list; refreshed when a later search returns them again",
-    { assignmentRecordKind: "discovery_candidate" }
+    "channel ids/titles returned by search.list; refreshed (title too) when a later search returns them again",
+    {
+      assignmentRecordKind: "discovery_candidate",
+      // The operator's decision (watching / ignored / promoted / archived) is kept with the channel
+      // id and the operator's own query; the API-sourced title/reason are blanked. Keeping the id as
+      // the key of that decision is a judgment call recorded in RISK-92.
+      keepDecisionWhere: "status <> 'new'",
+      blankSet: "title = '', reason_discovered = NULL",
+      alreadyBlankWhere: "title = '' AND reason_discovered IS NULL",
+    }
   ),
 
   // --- Our own channels (III.E.4.b statistics/analytics; III.E.4.c metadata, refreshed by sync) -----
@@ -89,7 +119,11 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
 
   // --- Not YouTube API Data -----------------------------------------------------------------------
   research_channels: notApiData("the operator's own watchlist entries (handle/URL typed by the operator)"),
-  research_evidence: notApiData("operator/AI-assisted notes ('manual' | 'ai_assisted'), not API Data"),
+  // Review round 1: AI-assisted evidence summarizes API values about another channel -- treated as
+  // that channel's API data (30 days). Manually written evidence is the operator's own note.
+  research_evidence: nonAuthorized("collected_at", "AI-assisted notes about watchlist channels", {
+    apiRowsWhere: "source = 'ai_assisted'",
+  }),
   market_intelligence_collection_runs: notApiData("collection bookkeeping (status, units spent)"),
   market_discovery_runs: notApiData("discovery bookkeeping (the operator's query, units spent)"),
   market_research_requests: notApiData("agent-drafted research requests (query text, status)"),
@@ -129,16 +163,11 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
 });
 
 /** The tables whose API-sourced rows expire after `API_DATA_RETENTION_DAYS`. */
-export function nonAuthorizedTables(): Array<{
-  table: string;
-  clockColumn: string;
-  apiRowsWhere?: string;
-  assignmentRecordKind?: string;
-}> {
+export type NonAuthorizedTable = Extract<YoutubeDataClassification, { kind: "non_authorized" }> & { table: string };
+
+export function nonAuthorizedTables(): NonAuthorizedTable[] {
   return Object.entries(YOUTUBE_DATA_CLASSIFICATION).flatMap(([table, c]) =>
-    c.kind === "non_authorized"
-      ? [{ table, clockColumn: c.clockColumn, apiRowsWhere: c.apiRowsWhere, assignmentRecordKind: c.assignmentRecordKind }]
-      : []
+    c.kind === "non_authorized" ? [{ ...c, table }] : []
   );
 }
 

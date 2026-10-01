@@ -1,3 +1,4 @@
+import { rangesStraddleViewCountingChange } from "@/lib/youtube-quota";
 import { computeDataQualityReport, type CollectionRunSummary, type DataQualityReport } from "./data-quality";
 import { computePercentChange } from "./period";
 import { formatZonedDateAndTime } from "./staleness";
@@ -143,6 +144,10 @@ export type WeeklyReportContent = {
    * "`null` when the previous value is exactly 0" rule.
    */
   percentChange: WeeklyReportPercentChange | null;
+  /** Phase 13 slice 13.7: the two weeks lie on different sides of YouTube's 2026-08-27 view-counting
+   * change, so `percentChange.views` is not like-for-like. Optional: reports stored before Phase 13
+   * do not carry it. */
+  viewCountingChangeInComparison?: boolean;
   currentWeekDataQuality: DataQualityReport;
   previousWeekDataQuality: DataQualityReport;
   topContent: WeeklyReportTopContentEntry[];
@@ -235,6 +240,10 @@ export function computeWeeklyReportContent(args: {
     syncedVideoTotals,
     previousWeekTotals,
     percentChange,
+    viewCountingChangeInComparison: rangesStraddleViewCountingChange(
+      { startDate: args.weekStartDate, endDate: args.weekEndDate },
+      { startDate: previousWeekStartDate, endDate: previousWeekEndDate }
+    ),
     currentWeekDataQuality,
     previousWeekDataQuality,
     topContent,

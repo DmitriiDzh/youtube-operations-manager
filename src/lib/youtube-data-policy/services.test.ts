@@ -62,6 +62,14 @@ async function seed(client: Client) {
     });
   await cand("UC-old-cand", 31);
   await cand("UC-fresh-cand", 2);
+  await cand("UC-old-ignored", 31);
+  await client.execute("UPDATE market_discovery_candidates SET status = 'ignored', reason_discovered = 'r' WHERE id = 'UC-old-ignored'");
+  await client.execute({
+    sql: "INSERT INTO research_evidence (id, research_channel_id, observation, source, confidence, created_via, collected_at) VALUES ('ev-ai', 'UCx', 'AI summary of views', 'ai_assisted', 'low', 'web_ui', ?), ('ev-manual', 'UCx', 'my note', 'manual', 'low', 'web_ui', ?)",
+    args: [nowS - 40 * DAY, nowS - 400 * DAY],
+  });
+  // An operator's free-text source that merely starts with "youtube." is NOT API data.
+  await snap("old-manual-yt", 400, "youtube.com channel page");
   await client.execute("INSERT INTO channel_record_assignments (channel_id, record_kind, record_id) VALUES ('UCmine', 'discovery_candidate', 'UC-old-cand')");
   await client.execute("INSERT INTO channel_record_assignments (channel_id, record_kind, record_id) VALUES ('UCmine', 'discovery_candidate', 'UC-fresh-cand')");
   // Our own channel's data (Authorized, III.E.4.b) -- must survive regardless of age.
@@ -75,20 +83,29 @@ test("AC-P13-01/07: API-sourced competitor rows older than 30 days are deleted; 
     const result = await purgeExpiredApiData(client, NOW);
 
     const ids = async (sql: string) => (await client.execute(sql)).rows.map((r) => String(Object.values(r)[0])).sort();
-    assert.deepEqual(await ids("SELECT id FROM market_channel_snapshots"), ["fresh-api", "old-manual"]);
+    assert.deepEqual(await ids("SELECT id FROM market_channel_snapshots"), ["fresh-api", "old-manual", "old-manual-yt"]);
     assert.deepEqual(await ids("SELECT id FROM market_video_snapshots"), []);
-    assert.deepEqual(await ids("SELECT id FROM market_discovery_candidates"), ["UC-fresh-cand"]);
+    // An undecided candidate is deleted; an operator's decision is kept, its API title/reason blanked.
+    assert.deepEqual(await ids("SELECT id FROM market_discovery_candidates"), ["UC-fresh-cand", "UC-old-ignored"]);
+    const kept = (await client.execute("SELECT status, title, reason_discovered FROM market_discovery_candidates WHERE id = 'UC-old-ignored'")).rows[0];
+    assert.deepEqual([kept.status, kept.title, kept.reason_discovered], ["ignored", "", null]);
     assert.deepEqual(await ids("SELECT record_id FROM channel_record_assignments"), ["UC-fresh-cand"]);
+    // AI-assisted evidence (summarizing API values) expires; the operator's own note does not.
+    assert.deepEqual(await ids("SELECT id FROM research_evidence"), ["ev-manual"]);
     assert.deepEqual(await ids("SELECT id FROM channels"), ["UCmine"]);
     assert.deepEqual(await ids("SELECT id FROM research_channels"), ["UCx"]);
     assert.deepEqual(
-      result.map((r) => [r.table, r.deleted]),
+      result.map((r) => [r.table, r.deleted, r.blanked]),
       [
-        ["market_channel_snapshots", 1],
-        ["market_video_snapshots", 1],
-        ["market_discovery_candidates", 1],
+        ["market_channel_snapshots", 1, 0],
+        ["market_video_snapshots", 1, 0],
+        ["market_discovery_candidates", 1, 1],
+        ["research_evidence", 1, 0],
       ]
     );
+    // A second run blanks nothing again (already blank) and deletes nothing.
+    const again = await purgeExpiredApiData(client, NOW);
+    assert.ok(again.every((r) => r.deleted === 0 && r.blanked === 0));
     client.close();
   }));
 
@@ -104,3 +121,13 @@ test("purge: exactly 30 days old is kept (the policy says 'not longer than 30 ca
     assert.equal((await client.execute("SELECT COUNT(*) AS n FROM market_channel_snapshots")).rows[0].n, 1);
     client.close();
   }));
+
+test("review round 1: every snapshot source collection writes is on the purge's API-source list", async () => {
+  const { YOUTUBE_API_SNAPSHOT_SOURCES } = await import("./contracts");
+  const code = await readFile(path.resolve(process.cwd(), "src/lib/market-intelligence/services.ts"), "utf8");
+  // Snapshot rows' `source` (not candidates' `discoverySource`, which expires by its clock regardless).
+  const written = new Set([...code.matchAll(/(?:\bsource:|statsSource\s*=)\s*"(youtube\.[a-zA-Z.]+)"/g)].map((m) => m[1]));
+  assert.ok(written.size >= 2, "test precondition: the scan finds the collection's source strings");
+  const allowed = new Set<string>(YOUTUBE_API_SNAPSHOT_SOURCES);
+  assert.deepEqual([...written].filter((src) => !allowed.has(src)), []);
+});

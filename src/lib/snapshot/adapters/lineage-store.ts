@@ -91,3 +91,16 @@ export async function writeLineageState(client: SqlExecutor, state: LineageState
     ],
   });
 }
+
+/**
+ * Phase 13 (review round 1): moves the recorded fingerprint from `before` to `after` ONLY if it is
+ * still `before` (compare-and-set). Used when a change every computer makes on its own (the YouTube
+ * API 30-day purge) must not make an in-sync device look like it has unpublished work.
+ */
+export async function rebaselineLineageFingerprintIfUnchanged(client: SqlExecutor, before: string, after: string): Promise<boolean> {
+  const result = (await client.execute({
+    sql: "UPDATE snapshot_lineage SET content_fingerprint = ? WHERE id = ? AND content_fingerprint = ?",
+    args: [after, ROW_ID, before],
+  })) as { rowsAffected?: number };
+  return Number(result.rowsAffected ?? 0) > 0;
+}

@@ -480,9 +480,12 @@ function createFakeStore() {
         createdVia: input.createdVia,
       });
     },
-    async touchMarketDiscoveryCandidateLastSeen(channelId: string, at: Date) {
+    async touchMarketDiscoveryCandidateLastSeen(channelId: string, at: Date, title: string) {
       const row = discoveryCandidates.get(channelId);
-      if (row) row.lastSeenAt = at;
+      if (row) {
+        row.lastSeenAt = at;
+        row.title = title;
+      }
     },
     async setMarketDiscoveryCandidateStatus(channelId: string, status: DiscoveryCandidateStatus) {
       const row = discoveryCandidates.get(channelId);
@@ -2597,7 +2600,11 @@ test("AC-9C-03/04/05: a result already watchlisted is skipped; a result matching
 
   const existing = store.discoveryCandidates.get(OTHER_VALID_CHANNEL_ID);
   assert.equal(existing?.status, "ignored", "rediscovery must never reset an operator-set status");
-  assert.equal(existing?.title, "Existing Candidate (old title)", "rediscovery must never overwrite the stored title either");
+  // REVISED in Phase 13 (review round 1): the title is YouTube API data about another channel. Bumping
+  // `lastSeenAt` restarts its 30-day retention clock (III.E.4.d "delete or refresh"), so the title must
+  // be refreshed with it -- the old "never overwrite the title" rule kept a stale API title forever.
+  // The operator's own decision (status, asserted above) is still never touched.
+  assert.equal(existing?.title, "Existing Candidate", "rediscovery refreshes the API-sourced title along with its clock");
   assert.equal(existing?.lastSeenAt.getTime(), now.getTime());
 
   const brandNew = store.discoveryCandidates.get("UC_BRAND_NEW00000000000");

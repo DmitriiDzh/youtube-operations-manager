@@ -6084,9 +6084,15 @@ export async function insertMarketDiscoveryCandidate(
 export async function touchMarketDiscoveryCandidateLastSeen(
   channelId: string,
   at: Date,
+  /** Phase 13 (review round 1): the fresh title from the same search -- the 30-day clock may only be
+   * restarted by a real refresh of the API-sourced data, never by a timestamp bump alone. */
+  title: string,
   database: AppDb = db
 ): Promise<void> {
-  await database.update(marketDiscoveryCandidates).set({ lastSeenAt: at }).where(eq(marketDiscoveryCandidates.id, channelId));
+  await database
+    .update(marketDiscoveryCandidates)
+    .set({ lastSeenAt: at, title })
+    .where(eq(marketDiscoveryCandidates.id, channelId));
 }
 
 export async function setMarketDiscoveryCandidateStatus(

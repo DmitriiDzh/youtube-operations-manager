@@ -72,3 +72,23 @@ test("a device that may not mutate (lock / recovery) is skipped without error", 
     assert.equal(state.lastRunAt, null);
     client.close();
   }));
+
+test("AC-P13-07: the backup is taken while the expiring data still exists (before the purge runs)", () =>
+  withTempDir("retention-", async (dir) => {
+    const client = createClient({ url: `file:${path.join(dir, "r.db")}` });
+    await initializeDatabaseSchema(client);
+    await client.execute("INSERT INTO research_channels (id, reason, created_via) VALUES ('UCx', 'r', 'web_ui')");
+    await client.execute({
+      sql: "INSERT INTO market_channel_snapshots (id, research_channel_id, observed_at, hidden_subscriber_count, source, created_via) VALUES ('old', 'UCx', ?, 0, 'youtube.channels.list', 'web_ui')",
+      args: [Math.floor(Date.parse("2026-08-01T00:00:00Z") / 1000)],
+    });
+    const d = deps(client, dir);
+    let rowsAtBackup = -1;
+    d.deps.copyDatabase = async () => {
+      rowsAtBackup = Number((await client.execute("SELECT COUNT(*) AS n FROM market_channel_snapshots")).rows[0].n);
+    };
+    await runRetentionOnce(d.deps, new Date("2026-10-01T00:00:00Z"));
+    assert.equal(rowsAtBackup, 1, "the expiring row was still there when the backup was taken");
+    assert.equal(Number((await client.execute("SELECT COUNT(*) AS n FROM market_channel_snapshots")).rows[0].n), 0);
+    client.close();
+  }));

@@ -1687,11 +1687,13 @@ test("market_discovery_candidates round-trips through the real Drizzle schema; r
     // A fixed, whole-second timestamp -- integer-mode columns truncate sub-second precision, so a
     // Date.now()-derived value would flakily mismatch on round-trip depending on the current millisecond.
     const laterSeenAt = new Date("2026-09-28T00:00:00.000Z");
-    await touchMarketDiscoveryCandidateLastSeen("UC_CANDIDATE00000000000", laterSeenAt, isolatedDb);
+    await touchMarketDiscoveryCandidateLastSeen("UC_CANDIDATE00000000000", laterSeenAt, "Fresh title", isolatedDb);
 
     const afterRediscovery = await getMarketDiscoveryCandidateById("UC_CANDIDATE00000000000", isolatedDb);
     assert.equal(afterRediscovery?.status, "ignored", "rediscovery must never reset an operator-set status back to new");
     assert.equal(afterRediscovery?.lastSeenAt.getTime(), laterSeenAt.getTime());
+    // Phase 13 (review round 1): restarting the 30-day clock must come with refreshed API data.
+    assert.equal(afterRediscovery?.title, "Fresh title");
 
     const allRows = await isolatedDb.select().from(marketDiscoveryCandidates);
     assert.equal(allRows.length, 1, "rediscovery must never insert a duplicate row for the same channel");

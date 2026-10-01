@@ -261,3 +261,20 @@ test("computeWeeklyReportContent: embeds provenance -- format version, generated
   assert.ok(content.metricDefinitions.views);
   assert.ok(content.metricDefinitions.subscribersGained);
 });
+
+// Phase 13 slice 13.7 (review round 1, AC-P13-06): the week-over-week comparison is flagged too.
+test("13.7: a weekly report whose previous week lies before 2026-08-27 is flagged as not like-for-like", async () => {
+  const { computeWeeklyReportContent } = await import("./weekly-report");
+  const base = {
+    channelId: "UCx",
+    now: new Date("2026-09-10T00:00:00Z"),
+    runs: [],
+    datesWithAnyMetricRow: new Set<string>(),
+    metricRecords: [],
+    videoTitlesById: new Map<string, string>(),
+  };
+  const straddling = computeWeeklyReportContent({ ...base, weekStartDate: "2026-08-31", weekEndDate: "2026-09-06" });
+  assert.equal(straddling.viewCountingChangeInComparison, true, "previous week Aug 24-30 contains the change day");
+  const after = computeWeeklyReportContent({ ...base, weekStartDate: "2026-09-14", weekEndDate: "2026-09-20" });
+  assert.equal(after.viewCountingChangeInComparison, false);
+});

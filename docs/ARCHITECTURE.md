@@ -2273,7 +2273,15 @@ data from the API is kept at most 30 days, and no metrics are derived from it.
   - `non_authorized`: other people's channels (III.E.4.d), with its clock column and the condition that selects
     API-sourced rows (`source LIKE 'youtube.%'`);
   - `not_api_data`: anything that is not YouTube API data.
-- **Retention, 13.2** (`purgeExpiredApiData`, `runRetentionOnce`).
+- **Retention, 13.2** (`purgeExpiredApiData`, `runRetentionOnce`). Revised by review round 1:
+  - It runs on a dedicated connection.
+  - Snapshot rows are selected by the exact API sources, not a prefix.
+  - AI-assisted research evidence also expires.
+  - For a discovery candidate the operator has decided on, the title and reason are blanked instead of the row
+    being deleted. A re-seen candidate refreshes its title along with its clock.
+  - In the same transaction, a device that was in sync has its sync fingerprint re-baselined by
+    compare-and-set. Every computer applies the same expiry, so it is not a local change to publish.
+    Re-importing rows that expired elsewhere is transient: the next purge removes them.
   - What is deleted: API-sourced rows of `non_authorized` tables older than 30 days, plus the market assignments
     pointing at deleted discovery candidates. Manual observations are kept. It runs in one transaction.
   - When: from `src/instrumentation.ts`, a minute after boot and then every 6 h. It is skipped under the operation
@@ -2291,14 +2299,14 @@ data from the API is kept at most 30 days, and no metrics are derived from it.
   - `search.list` has its own bucket of 100 calls a day at 1 unit, counted by `countMarketDiscoverySearchesSince`
     (one discovery-run row equals one call).
   - The shared unit budget (`getMarketIntelligenceUnitsSpentSince`) counts collection runs only.
-- **Collection sources, 13.5/13.6.**
-  - Video ids come from the channel's RSS feed: `youtube-read-gateway/feed.ts`, no quota, with its own toggle and
-    counter `youtube_feed_reads`.
-  - Statistics come from `videos.batchGetStats` (`getPublicVideoStatsBatch`), 1 unit of its own 10k bucket. It is
-    a raw request with the same authorized client, because `googleapis` doesn't have the method yet.
-  - Each falls back to the original call (`playlistItems.list` / `videos.list`). A channel normally costs 1 pool
-    unit instead of 3. The worst case, and so the budget pre-commit, is unchanged.
-  - A gateway inventory test forbids literal YouTube API or feed URLs outside the gateway.
+- **Collection sources, 13.5/13.6, as revised by review round 1.**
+  - Ids, titles and publish times come from the uploads playlist's first page: 1 pool unit, up to 50 videos.
+  - The RSS feed (`youtube-read-gateway/feed.ts`, the newest ~15, no quota, with its own toggle and counter) is
+    only the fallback when that call fails, for example when the pool is exhausted.
+  - Statistics come from `videos.batchGetStats`, 1 unit of its own bucket. Its documented response carries only
+    `snippet.publishTime`, no title. `videos.list` (1 pool unit) is the fallback.
+  - A channel normally costs 2 pool units. The worst case, 3, is unchanged, and so is the budget pre-commit.
+  - A test pins every snapshot `source` collection writes to the purge's exact API-source list.
 - **View-counting break, 13.7.** `YOUTUBE_VIEW_COUNTING_CHANGED_ON = "2026-08-27"` (Data API revision history).
   The channel overview returns `viewCountingChangeInComparison`, and the UI warns that the views delta is not
   like-for-like.

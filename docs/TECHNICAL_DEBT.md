@@ -1540,6 +1540,20 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   - It is refreshed by channel sync, but sync is operator-triggered, not scheduled.
   - A channel nobody syncs for 30 days keeps stale metadata.
   - Trigger to revisit: add a scheduled own-channel refresh, or a staleness notice.
+- **Judgment calls and residuals recorded at review round 1, for the owner to confirm or overrule:**
+  - **Channel ids kept as the key of the operator's own decision.** A discovery candidate the operator marked
+    watching/ignored/promoted/archived keeps its channel id after 30 days, with its title blanked. The policy
+    page gives no explicit allowance for identifiers.
+  - **Backups keep competitor data older than 30 days.** This applies to the one-time `pre-api-retention-*`
+    backup, migration backups, and the `pre-import-*` / `pre-take-theirs-*` / `pre-superseded-*` backups. Two of
+    the owner's rules conflict here: data preservation and D1. Options:
+    - (a) age out `pre-api-retention-*` after 30 days;
+    - (b) keep all backups and accept the deviation;
+    - (c) prune the other backups too.
+  - **Rows already expired on one computer can be re-imported from the other** for at most a few hours, until
+    the next purge.
+  - **The Music chart is not in the unit ledger.** Its cost is bounded by a fixed region list and a 30-minute
+    cache.
 - **Status:** MOSTLY RESOLVED (residual above).
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { SqlExecutor } from "@/lib/db-backup/contracts";
-import { purgeExpiredApiData, type PurgeResult } from "./services";
+import { purgeExpiredApiData, type PurgeHooks, type PurgeResult } from "./services";
 
 export type RetentionState = {
   /** The one-time backup taken before the very first purge (AC-P13-07). */
@@ -26,6 +26,8 @@ export type RetentionDeps = {
   assertMayMutate: (client: SqlExecutor) => Promise<void>;
   loadState: () => Promise<RetentionState>;
   saveState: (state: RetentionState) => Promise<void>;
+  /** Inside the purge transaction (production: keep a clean device clean for device sync). */
+  purgeHooks?: PurgeHooks;
 };
 
 /**
@@ -53,7 +55,7 @@ export async function runRetentionOnce(deps: RetentionDeps, now: Date = new Date
       state = { ...state, firstBackupPath: backupPath };
       await deps.saveState(state);
     }
-    const result = await purgeExpiredApiData(deps.client, now);
+    const result = await purgeExpiredApiData(deps.client, now, deps.purgeHooks ?? {});
     state = { ...state, lastRunAt: now.toISOString(), lastResult: result, lastError: null };
   } catch (error) {
     state = { ...state, lastRunAt: now.toISOString(), lastError: error instanceof Error ? error.message : String(error) };

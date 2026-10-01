@@ -512,7 +512,7 @@ type ServiceDependencies = {
     reasonDiscovered?: string | null;
     createdVia: string;
   }): Promise<void>;
-  touchMarketDiscoveryCandidateLastSeen(channelId: string, at: Date): Promise<void>;
+  touchMarketDiscoveryCandidateLastSeen(channelId: string, at: Date, title: string): Promise<void>;
   setMarketDiscoveryCandidateStatus(channelId: string, status: DiscoveryCandidateStatus): Promise<void>;
   insertMarketDiscoveryRun(input: {
     query: string;
@@ -1325,6 +1325,16 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       return { regionCode, fetchedAt: now.toISOString(), entries };
     },
 
+    /** Phase 13 slice 13.4: today's use of YouTube's separate search bucket (quota day = Pacific). */
+    async getSearchUsage(): Promise<{ searchesUsedToday: number; dailyLimit: number; quotaDayStartedAt: string }> {
+      const since = startOfQuotaDay(deps.clock.now());
+      return {
+        searchesUsedToday: await deps.countMarketDiscoverySearchesSince(since),
+        dailyLimit: SEARCH_LIST_DAILY_CALL_LIMIT,
+        quotaDayStartedAt: since.toISOString(),
+      };
+    },
+
     async getMarketVideosOverview(): Promise<{
       videos: {
         videoId: string;
@@ -2016,7 +2026,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
           const existingCandidate = await deps.getMarketDiscoveryCandidateById(result.channelId);
           if (existingCandidate) {
-            await deps.touchMarketDiscoveryCandidateLastSeen(result.channelId, now);
+            await deps.touchMarketDiscoveryCandidateLastSeen(result.channelId, now, result.title);
             continue;
           }
 

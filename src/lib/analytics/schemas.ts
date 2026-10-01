@@ -339,6 +339,7 @@ export const weeklyReportContentSchema = z
     syncedVideoTotals: weeklyReportMetricTotalsSchema,
     previousWeekTotals: weeklyReportMetricTotalsSchema,
     percentChange: weeklyReportPercentChangeSchema.nullable(),
+    viewCountingChangeInComparison: z.boolean().optional(),
     currentWeekDataQuality: dataQualityReportShapeSchema,
     previousWeekDataQuality: dataQualityReportShapeSchema,
     topContent: z.array(weeklyReportTopContentEntrySchema),
