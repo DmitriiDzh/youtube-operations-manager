@@ -395,9 +395,21 @@ test("AC-AS-08: a clean device with a prepared Batch never auto-imports; it says
     const b = await makeDevice(root, "b");
     await addResearchChannel(b.client, "UC-b");
     await b.runner.tick();
-    // a: only device-local state (the lock table is not transferred and not fingerprinted), so a is clean.
-    await a.client.execute("PRAGMA foreign_keys = OFF");
-    await a.client.execute("INSERT INTO video_execution_locks (video_id, batch_id, ledger_row_id) VALUES ('v', 'b-x', 'l-x')");
+    // a: a batch prepared here (RUNNING + its lock), with a's lineage recording exactly this content
+    // as clean -- the strongest case for an import: only the prepared Batch can stop it.
+    await a.client.execute("INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('c', 't', 'u')");
+    await a.client.execute("INSERT INTO batches (id, channel_id, status) VALUES ('b1', 'c', 'RUNNING')");
+    await a.client.execute(
+      "INSERT INTO batch_ledger_rows (id, batch_id, video_id, change_ids_json, status) VALUES ('l1', 'b1', 'v', '[]', 'AWAITING_EXECUTION')"
+    );
+    await a.client.execute("INSERT INTO video_execution_locks (video_id, batch_id, ledger_row_id) VALUES ('v', 'b1', 'l1')");
+    const { computeContentFingerprint, writeLineageState } = await import("@/lib/snapshot");
+    await writeLineageState(a.client, {
+      lastSnapshotId: "0b7f2c4e-1d2a-4c3b-9e8f-0123456789ab",
+      lastGeneration: 1,
+      contentFingerprint: await computeContentFingerprint(a.client),
+      ancestors: [],
+    });
     const status = await a.runner.tick();
     assert.equal(status.state, "busy");
     assert.equal(status.notices[0]?.kind, "batch_in_progress");
@@ -966,7 +978,9 @@ test("audit: an export whose copy catches a YouTube write mid-flight is not publ
     await initializeDatabaseSchema(aClient);
     await mkdir(path.join(root, "sync"), { recursive: true });
     await aClient.execute("INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('c', 't', 'u')");
-    await aClient.execute("INSERT INTO batches (id, channel_id, status) VALUES ('b1', 'c', 'RUNNING')");
+    // COMPLETED, so the injected APPLYING row is the ONLY reason to refuse (a RUNNING batch is refused
+    // on its own since 71a35b6).
+    await aClient.execute("INSERT INTO batches (id, channel_id, status) VALUES ('b1', 'c', 'COMPLETED')");
     await aClient.execute(
       "INSERT INTO batch_ledger_rows (id, batch_id, video_id, change_ids_json, status) VALUES ('l1', 'b1', 'v', '[]', 'PENDING')"
     );
@@ -999,4 +1013,30 @@ test("audit: an export whose copy catches a YouTube write mid-flight is not publ
     assert.equal(result.state, "busy");
     assert.deepEqual((await readdir(path.join(root, "sync"))).filter((n) => !n.startsWith(".")), []);
     aClient.close();
+  }));
+
+test("final review: leftover locks of an ABORTED batch (pre-existing leak) do not pause sync", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    await addResearchChannel(a.client, "UC1");
+    await a.client.execute("INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('c', 't', 'u')");
+    await a.client.execute("INSERT INTO batches (id, channel_id, status) VALUES ('b1', 'c', 'ABORTED')");
+    await a.client.execute(
+      "INSERT INTO batch_ledger_rows (id, batch_id, video_id, change_ids_json, status) VALUES ('l1', 'b1', 'v', '[]', 'ABORTED_SYSTEMIC')"
+    );
+    await a.client.execute("INSERT INTO video_execution_locks (video_id, batch_id, ledger_row_id) VALUES ('v', 'b1', 'l1')");
+    assert.equal((await a.runner.tick({ force: true })).state, "exported");
+    a.client.close();
+  }));
+
+test("final review: an unfinished batch that did NOT start here gets a notice that says so", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    await a.client.execute("INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('c', 't', 'u')");
+    await a.client.execute("INSERT INTO batches (id, channel_id, status) VALUES ('b1', 'c', 'RUNNING')");
+    const status = await a.runner.tick({ force: true });
+    assert.equal(status.notices[0]?.kind, "batch_in_progress");
+    assert.match(status.notices[0]!.message, /not started here/);
+    assert.doesNotMatch(status.notices[0]!.message, /^A Batch is prepared/);
+    a.client.close();
   }));

@@ -227,9 +227,17 @@ class SyncAbort extends Error {
  * A `RUNNING` batch WITHOUT local locks is another computer's imported state, not work here.
  */
 async function localBatchInProgress(client: SqlExecutor): Promise<boolean> {
-  const locks = (await client.execute("SELECT 1 FROM video_execution_locks LIMIT 1")) as { rows: unknown[] };
+  // Only locks of a batch that is still RUNNING count: some Phase 5 abort paths end a batch
+  // ABORTED without releasing its rows' locks (pre-existing, docs/TECHNICAL_DEBT.md RISK-90), and
+  // such leftovers must not pause sync forever (final review of this feature).
+  const locks = (await client.execute(
+    "SELECT 1 FROM video_execution_locks l JOIN batches b ON b.id = l.batch_id WHERE b.status = 'RUNNING' LIMIT 1"
+  )) as { rows: unknown[] };
   return locks.rows.length > 0;
 }
+
+const FOREIGN_UNFINISHED_BATCH_MESSAGE =
+  "This computer's data holds a Batch that is unfinished but was not started here (it arrived through a manual handoff). Automatic sync will not publish it. Finish it on the computer that started it -- do not execute it here -- then sync again.";
 
 const BATCH_PAUSES_IMPORT_MESSAGE =
   "A Batch is prepared or running on this computer, so automatic sync is paused in both directions until it finishes. Execute or finish the Batch to resume.";
@@ -588,11 +596,14 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         });
       }
       if (error instanceof SnapshotError && error.code === "snapshot_execution_in_flight") {
+        // Locks here = a Prepare/Execute on THIS computer; none = an unfinished batch that arrived
+        // from elsewhere -- never tell the operator to execute that one here (final review).
+        const local = await localBatchInProgress(deps.client).catch(() => true);
         return finish({
           ...status,
           state: "busy",
           busyReason: "this computer's data holds an unfinished Batch",
-          notices: [{ kind: "batch_in_progress", message: BATCH_PAUSES_IMPORT_MESSAGE }],
+          notices: [{ kind: "batch_in_progress", message: local ? BATCH_PAUSES_IMPORT_MESSAGE : FOREIGN_UNFINISHED_BATCH_MESSAGE }],
         });
       }
       if (error instanceof SyncAbort || error instanceof OperationLockError) {

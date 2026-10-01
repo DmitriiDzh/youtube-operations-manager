@@ -1478,4 +1478,21 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Trigger to revisit:** a reported lost change after a stop, or a stale lock in the field.
 - **Status:** OPEN, accepted.
 
+## RISK-90 — Some Batch abort paths leave per-video execution locks held — OPEN, 2026-10-01
+
+- **Affected components:** `src/lib/batches/services.ts`. Two abort paths end a batch `ABORTED`
+  and mark its remaining rows `ABORTED_SYSTEMIC` without `releaseVideoLock`:
+  - a systemic failure such as 403 `quotaExceeded`, around line 1347;
+  - an identity-guardrail abort, around line 1337.
+
+  `recoverBatch` releases such locks, but nothing in the app calls it.
+- **Found during:** final review of automatic device sync (BL-111), 2026-10-01. The leak predates
+  that feature.
+- **Actual risk:** a leaked lock keeps blocking a new Batch on the same video
+  (`acquireVideoExecutionLock`) until someone clears it by hand. Automatic device sync is NOT
+  affected: it only counts locks of a still-`RUNNING` batch.
+- **Why not fixed now:** this is a change to the Phase 5 write pipeline, which is safety-critical
+  (`AGENTS.md` §L). It needs its own task and acceptance criteria.
+- **Status:** OPEN.
+
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
