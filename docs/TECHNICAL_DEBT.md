@@ -1502,7 +1502,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   (`AGENTS.md` §L). It needs its own task and acceptance criteria.
 - **Status:** OPEN.
 
-## RISK-91 — Research keeps competitor data longer than the YouTube API policies allow, and derives metrics from it — OPEN, 2026-10-01
+## RISK-92 — Research keeps competitor data longer than the YouTube API policies allow, and derives metrics from it — OPEN, 2026-10-01
 
 - **Affected components:** `src/lib/market-intelligence/` (Phase 9). Tables `market_channel_snapshots`,
   `market_video_snapshots`, `research_evidence`, `market_discovery_candidates`. Derived metrics:

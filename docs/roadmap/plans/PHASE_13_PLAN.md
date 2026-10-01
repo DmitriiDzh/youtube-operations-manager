@@ -23,7 +23,7 @@ data. The first two I checked myself against the official pages on 2026-10-01.
    - III.E.2: aggregation only across channels of the same content owner. III.E.6: no scraping.
 
    Phase 9 keeps watchlist snapshots of other channels long term and computes velocity, age-normalized views,
-   breakouts and spikes from them. That conflicts with III.E.4.d and probably with III.E.4.h. Recorded as RISK-91.
+   breakouts and spikes from them. That conflicts with III.E.4.d and probably with III.E.4.h. Recorded as RISK-92.
    The whole Google project is at stake, including the live YouTube writes.
 2. **The quota model has changed.** [quota page](https://developers.google.com/youtube/v3/determine_quota_cost),
    updated 2026-09-15:

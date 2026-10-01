@@ -647,7 +647,7 @@ with owner approval. Backlog: BL-109.
 
 **Recorded 2026-10-01, at the owner's request (Telegram, msg 1125).** Based on the sources research (msg 1121):
 - bring Research in line with the YouTube API Developer Policies: Non-Authorized competitor data at most 30 days,
-  no derived metrics (RISK-91);
+  no derived metrics (RISK-92);
 - move to the new quota model, where search has its own 100-calls-a-day bucket;
 - add cheap and free sources: RSS, `videos.batchGetStats`, Wikipedia Pageviews, the YouTube Music chart, and
   optionally Social Blade.
