@@ -31,7 +31,8 @@ function createFixture(opts: {
   reports?: ReportingReport[];
   files?: Record<string, ReturnType<typeof parseReportingCsv> | Error>;
   seen?: string[];
-  storedJob?: { jobId: string; jobCreatedAt: string | null } | null;
+  storedJob?: { jobId: string; jobCreatedAt: string | null; lastCheckedAt?: Date | null } | null;
+  now?: Date;
   coverage?: { firstDate: string | null; lastDate: string | null; importedFiles: number };
   dailyRows?: ReachRow[];
   importOutcomes?: Record<string, { outcome: "imported"; replacedReports: number } | { outcome: "superseded_by_newer" }>;
@@ -79,7 +80,7 @@ function createFixture(opts: {
         calls.upsertJob.push(args);
       },
       async getJob() {
-        return opts.storedJob ?? null;
+        return opts.storedJob ? { lastCheckedAt: null, ...opts.storedJob } : null;
       },
       async listSeenReportIds() {
         return new Set(opts.seen ?? []);
@@ -104,6 +105,7 @@ function createFixture(opts: {
       },
     } as never,
     requiredScope: "https://www.googleapis.com/auth/yt-analytics.readonly",
+    clock: { now: () => opts.now ?? new Date("2026-10-03T12:00:00Z") },
   };
   return { services: createReachReportsServices(deps), calls };
 }
@@ -125,6 +127,7 @@ test("syncReachReports creates the job when none exists, records it, requests th
   const result = await services.syncReachReports(SYNC);
 
   assert.deepEqual(result, {
+    skipped: false,
     jobId: "job-1",
     jobCreated: true,
     filesListed: 2,
@@ -154,6 +157,7 @@ test("syncReachReports reports an existing job as not created, and skips files a
 
   const result = await services.syncReachReports(SYNC);
 
+  assert.ok(!result.skipped);
   assert.equal(result.jobCreated, false);
   assert.equal(result.filesListed, 2);
   assert.equal(result.filesImported, 1);
@@ -178,6 +182,7 @@ test("syncReachReports: one bad file is reported in failures and does not stop t
 
   const result = await services.syncReachReports(SYNC);
 
+  assert.ok(!result.skipped);
   assert.equal(result.filesImported, 2);
   assert.deepEqual(result.failures.map((f) => f.reportId).sort(), ["broken", "wrongchan"]);
   assert.deepEqual(calls.imports.map((i) => i.reportId), ["good1", "good2"], "a failed/foreign-channel file is never imported");
@@ -195,6 +200,7 @@ test("syncReachReports counts a file the store reports as superseded separately,
 
   const result = await services.syncReachReports(SYNC);
 
+  assert.ok(!result.skipped);
   assert.equal(result.filesSuperseded, 1);
   assert.equal(result.filesImported, 1);
   assert.equal(result.rowsImported, 2, "only the imported file's rows");
@@ -258,4 +264,42 @@ test("getChannelReach state: no job -> no_job; job but nothing imported -> waiti
   assert.equal(ready.totals.impressions, 4000);
   assert.ok(Math.abs(ready.totals.ctr! - 0.02) < 1e-12, "impressions-weighted, not the mean 0.03");
   assert.deepEqual(ready.coverage, { firstDate: "2026-10-01", lastDate: "2026-10-01", importedFiles: 1 });
+});
+
+// The automatic (dashboard-mount) trigger must not hammer Google: at most once per MIN_SYNC_INTERVAL_HOURS (6h).
+test("syncReachReports with onlyIfDue: skipped without ANY call when the job was checked within 6 hours", async () => {
+  const { services, calls } = createFixture({
+    now: new Date("2026-10-03T12:00:00Z"),
+    storedJob: { jobId: "j", jobCreatedAt: "2026-10-01T21:05:54Z", lastCheckedAt: new Date("2026-10-03T06:00:01Z") }, // 5h59m59s ago
+  });
+
+  const result = await services.syncReachReports({ ...SYNC, onlyIfDue: true });
+
+  assert.deepEqual(result, { skipped: true, reason: "checked_recently", lastCheckedAt: "2026-10-03T06:00:01.000Z" });
+  assert.equal(calls.resolve, 0);
+  assert.equal(calls.ensureJob, 0);
+  assert.equal(calls.listReports, 0);
+});
+
+test("syncReachReports with onlyIfDue: runs when the last check was exactly 6 hours ago, when never checked, and when no job is recorded", async () => {
+  for (const storedJob of [
+    { jobId: "j", jobCreatedAt: null, lastCheckedAt: new Date("2026-10-03T06:00:00Z") }, // exactly 6h
+    { jobId: "j", jobCreatedAt: null, lastCheckedAt: null },
+    null,
+  ]) {
+    const { services, calls } = createFixture({ now: new Date("2026-10-03T12:00:00Z"), storedJob });
+    const result = await services.syncReachReports({ ...SYNC, onlyIfDue: true });
+    assert.equal(result.skipped, false);
+    assert.equal(calls.ensureJob, 1);
+  }
+});
+
+test("a manual sync (no onlyIfDue) always runs, even right after a check", async () => {
+  const { services, calls } = createFixture({
+    now: new Date("2026-10-03T12:00:00Z"),
+    storedJob: { jobId: "j", jobCreatedAt: null, lastCheckedAt: new Date("2026-10-03T11:59:00Z") },
+  });
+  const result = await services.syncReachReports(SYNC);
+  assert.equal(result.skipped, false);
+  assert.equal(calls.ensureJob, 1);
 });

@@ -11,6 +11,8 @@ import {
   type ResolvedCredentials,
   type SyncReachFailure,
   type SyncReachReportsResult,
+  type SyncReachReportsSkipped,
+  MIN_SYNC_INTERVAL_HOURS,
 } from "./contracts";
 import { aggregateReach } from "./reach-aggregate";
 import { mapReachBasicRows } from "./reach-csv";
@@ -33,7 +35,7 @@ export type ReachReportsDependencies = {
   };
   store: {
     upsertJob(args: { channelId: string; reportTypeId: string; jobId: string; jobName: string; jobCreatedAt: string | null }): Promise<void>;
-    getJob(channelId: string, reportTypeId: string): Promise<{ jobId: string; jobCreatedAt: string | null } | null>;
+    getJob(channelId: string, reportTypeId: string): Promise<{ jobId: string; jobCreatedAt: string | null; lastCheckedAt: Date | null } | null>;
     listSeenReportIds(channelId: string, reportTypeId: string): Promise<Set<string>>;
     importReport(args: {
       channelId: string;
@@ -51,6 +53,7 @@ export type ReachReportsDependencies = {
   channelAccess: ChannelAccessService;
   /** The scope the Reporting API needs (`yt-analytics.readonly`). */
   requiredScope: string;
+  clock: { now(): Date };
 };
 
 function getCredentialUserId(credentialRef: unknown): string | null {
@@ -74,9 +77,19 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
      * seen before. Safe to call repeatedly: a file is downloaded and imported once. One bad file does not
      * stop the others; it is reported in `failures` and retried on the next call.
      */
-    async syncReachReports(input: unknown): Promise<SyncReachReportsResult> {
+    async syncReachReports(input: unknown): Promise<SyncReachReportsResult | SyncReachReportsSkipped> {
       const parsed = parseWithSchema(syncReachReportsInputSchema, input, "sync reach reports input");
       await assertChannel(parsed.credentialRef, parsed.channelId);
+
+      if (parsed.onlyIfDue) {
+        const known = await deps.store.getJob(parsed.channelId, REACH_BASIC_REPORT_TYPE_ID);
+        if (known?.lastCheckedAt) {
+          const dueAt = known.lastCheckedAt.getTime() + MIN_SYNC_INTERVAL_HOURS * 3_600_000;
+          if (deps.clock.now().getTime() < dueAt) {
+            return { skipped: true, reason: "checked_recently", lastCheckedAt: known.lastCheckedAt.toISOString() };
+          }
+        }
+      }
 
       const credentials = await deps.authResolver.resolve({
         credentialRef: parsed.credentialRef,
@@ -107,6 +120,7 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
         .slice(0, MAX_FILES_PER_SYNC);
 
       const result: SyncReachReportsResult = {
+        skipped: false,
         jobId: job.id,
         jobCreated: created,
         filesListed: listed.length,

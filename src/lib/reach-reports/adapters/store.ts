@@ -15,7 +15,7 @@ export function createReachReportsStoreAdapter(): ReachReportsDependencies["stor
     upsertJob: (args) => upsertReportingJob(args),
     async getJob(channelId, reportTypeId) {
       const job = await getReportingJob(channelId, reportTypeId);
-      return job ? { jobId: job.jobId, jobCreatedAt: job.jobCreatedAt } : null;
+      return job ? { jobId: job.jobId, jobCreatedAt: job.jobCreatedAt, lastCheckedAt: job.lastCheckedAt } : null;
     },
     listSeenReportIds: (channelId, reportTypeId) => listSeenReportingReportIds(channelId, reportTypeId),
     importReport: (args) => importReachReport(args),

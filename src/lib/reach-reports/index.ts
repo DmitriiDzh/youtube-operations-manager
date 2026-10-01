@@ -15,6 +15,7 @@ export function createReachReportsCore() {
     store: createReachReportsStoreAdapter(),
     channelAccess: createChannelAccessCore(),
     requiredScope: YOUTUBE_ANALYTICS_READ_SCOPE,
+    clock: { now: () => new Date() },
   });
 }
 
@@ -27,4 +28,5 @@ export type {
   ReachState,
   ReachVideoPoint,
   SyncReachReportsResult,
+  SyncReachReportsSkipped,
 } from "./contracts";

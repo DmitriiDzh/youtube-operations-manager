@@ -3332,6 +3332,86 @@ test("MCP agent_query_channel_analytics forwards the resolved credentialRef and 
   });
 });
 
+// BL-114 (ADR 0014): thumbnail impressions/CTR. A local read of already-imported Reporting API data.
+function makeReachCoreStub(capture: { input?: unknown }) {
+  return {
+    async getChannelReach(input: unknown) {
+      capture.input = input;
+      return {
+        channelId: "UC_1",
+        state: "waiting_for_first_report" as const,
+        jobCreatedAt: "2026-10-01T21:05:54Z",
+        coverage: { firstDate: null, lastDate: null, importedFiles: 0 },
+        startDate: "2026-09-01",
+        endDate: "2026-09-07",
+        daily: [],
+        videos: [],
+        totals: { impressions: 0, ctr: null },
+      };
+    },
+  };
+}
+
+test("MCP agent_query_channel_reach forwards the resolved credentialRef and the caller's input unchanged, and returns the explicit state", async () => {
+  const capture: { input?: unknown } = {};
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    makeReachCoreStub(capture)
+  );
+
+  const result = await handlers.agentQueryChannelReach({ channelId: "UC_1", startDate: "2026-09-01", endDate: "2026-09-07" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(capture.input, {
+    channelId: "UC_1",
+    startDate: "2026-09-01",
+    endDate: "2026-09-07",
+    credentialRef: { userId: "active-user" },
+  });
+  assert.equal((result.structuredContent as { state?: string } | undefined)?.state, "waiting_for_first_report");
+});
+
+test("MCP agent_query_channel_reach rejects a malformed or unknown-field input without calling the service", async () => {
+  const capture: { input?: unknown } = {};
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    makeReachCoreStub(capture)
+  );
+
+  for (const bad of [
+    { channelId: "UC_1", startDate: "yesterday", endDate: "2026-09-07" },
+    { channelId: "UC_1", startDate: "2026-09-01" },
+    { startDate: "2026-09-01", endDate: "2026-09-07" },
+    { channelId: "UC_1", startDate: "2026-09-01", endDate: "2026-09-07", extra: true },
+  ]) {
+    const result = await handlers.agentQueryChannelReach(bad);
+    assert.equal(result.isError, true, JSON.stringify(bad));
+  }
+  assert.equal(capture.input, undefined);
+});
+
 test("MCP agent_query_video_analytics forwards the resolved credentialRef and optional filters unchanged into queryVideoAnalytics", async () => {
   const agentOperationsCore = makeAgentOperationsCoreStub();
   let captured: unknown;

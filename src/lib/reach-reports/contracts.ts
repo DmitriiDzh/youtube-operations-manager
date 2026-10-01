@@ -32,6 +32,7 @@ export type ReachRow = {
 export type SyncReachFailure = { reportId: string; error: string };
 
 export type SyncReachReportsResult = {
+  skipped: false;
   jobId: string;
   /** True only if THIS call created the job on Google's side. */
   jobCreated: boolean;
@@ -43,6 +44,12 @@ export type SyncReachReportsResult = {
   /** Files that could not be downloaded/parsed; not recorded, so the next sync retries them. */
   failures: SyncReachFailure[];
 };
+
+/** `onlyIfDue` and the job was checked less than `MIN_SYNC_INTERVAL_HOURS` ago: nothing was called. */
+export type SyncReachReportsSkipped = { skipped: true; reason: "checked_recently"; lastCheckedAt: string };
+
+/** The automatic (dashboard-mount) sync calls Google at most this often per channel. */
+export const MIN_SYNC_INTERVAL_HOURS = 6;
 
 export type ReachState =
   /** No reporting job exists for this channel yet. */
