@@ -102,7 +102,12 @@ export const AUTO_IMPORT_BACKUP_PREFIX = "pre-auto-import";
 export const TAKE_THEIRS_BACKUP_PREFIX = "pre-take-theirs";
 
 export class DeviceSyncError extends Error {
-  code: "device_sync_not_configured" | "device_sync_busy" | "device_sync_snapshot_not_found" | "device_sync_invalid_request";
+  code:
+    | "device_sync_not_configured"
+    | "device_sync_folder_unreachable"
+    | "device_sync_busy"
+    | "device_sync_snapshot_not_found"
+    | "device_sync_invalid_request";
 
   constructor(code: DeviceSyncError["code"], message: string) {
     super(message);

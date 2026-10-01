@@ -309,7 +309,11 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       schemaVersion: deps.currentSchemaVersion,
       supersede,
       supersedes,
+      createSnapshotsDir: false,
       assertStillSafe: async () => {
+        // Re-checked inside the lock: the drive may have been ejected since the tick's own check
+        // (round 6) -- e.g. during a "take theirs" import, before its marker export.
+        if (!(await isExistingDirectory(config.folder))) throw new SyncAbort("the sync folder is not reachable");
         const active = await hasActiveExecution(deps.client);
         if (active) throw new SyncAbort(active);
         if (requireDirty && !(await hasUnpublishedLocalChanges(deps.client))) {
@@ -596,7 +600,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     const config = await deps.resolveConfig();
     if (!config.folder) throw new DeviceSyncError("device_sync_not_configured", "No sync folder is configured.");
     if (!(await isExistingDirectory(config.folder))) {
-      throw new DeviceSyncError("device_sync_not_configured", "The sync folder is not reachable (is the drive connected?).");
+      throw new DeviceSyncError("device_sync_folder_unreachable", "The sync folder is not reachable (is the drive connected?).");
     }
     const { snapshots } = await scanSnapshotFolder(config.folder);
     const tips = await peerTips(config.deviceId, snapshots);

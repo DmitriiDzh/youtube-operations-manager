@@ -69,6 +69,8 @@ export async function exportSnapshot(params: {
   supersede?: { snapshotId: string; generation: number; ancestors: string[] };
   /** Snapshots this one deliberately replaces by a human decision (see `SnapshotLineageFile`). */
   supersedes?: string[];
+  /** `false`: never create `snapshotsDir` itself (automatic device sync). Default `true`. */
+  createSnapshotsDir?: boolean;
 }): Promise<SnapshotManifest> {
   const lineage = await readLineageState(params.client);
   const snapshotId = randomUUID();
@@ -78,7 +80,7 @@ export async function exportSnapshot(params: {
     ? mergeAncestors([params.supersede.snapshotId], params.supersede.ancestors, [lineage.lastSnapshotId], lineage.ancestors ?? [])
     : mergeAncestors([lineage.lastSnapshotId], lineage.ancestors ?? []);
 
-  const { dir: stagingDir } = await createStagingDir(params.snapshotsDir);
+  const { dir: stagingDir } = await createStagingDir(params.snapshotsDir, params.createSnapshotsDir ?? true);
   let published: SnapshotManifest;
   let contentFingerprint: string;
   try {

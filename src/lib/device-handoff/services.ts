@@ -55,6 +55,8 @@ export async function exportHandoff(params: {
   supersede?: { snapshotId: string; generation: number; ancestors: string[] };
   /** Snapshots this export replaces by a human decision (written to `lineage.json`). */
   supersedes?: string[];
+  /** `false`: never create the snapshots folder itself (automatic device sync). */
+  createSnapshotsDir?: boolean;
   /** Automatic sync (§3.3): re-checked inside the operation lock before anything is written. */
   assertStillSafe?: () => Promise<void>;
 }): Promise<ExportHandoffResult> {
@@ -68,6 +70,7 @@ export async function exportHandoff(params: {
       schemaVersion: params.schemaVersion,
       supersede: params.supersede,
       supersedes: params.supersedes,
+      createSnapshotsDir: params.createSnapshotsDir,
     });
     await recordHandoffLog(params.client, {
       direction: "export",

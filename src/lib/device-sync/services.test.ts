@@ -828,3 +828,27 @@ test("R5 note: the in-lock re-check also stops an import on a device that alread
     aClient.close();
     b.client.close();
   }));
+
+test("round 6: with the drive gone, resolutions refuse with folder_unreachable and create nothing", () =>
+  withTempDir("device-sync-", async (root) => {
+    const missing = path.join(root, "Volumes", "Unplugged Drive", "Sync");
+    const a = await makeDevice(root, "a", { folder: missing });
+    const id = "0b7f2c4e-1d2a-4c3b-9e8f-0123456789ab";
+    await assert.rejects(() => a.runner.keepMine(id), (e: unknown) => (e as { code?: string }).code === "device_sync_folder_unreachable");
+    await assert.rejects(() => a.runner.takeTheirs(id), (e: unknown) => (e as { code?: string }).code === "device_sync_folder_unreachable");
+    await assert.rejects(() => readdir(path.join(root, "Volumes")));
+    a.client.close();
+  }));
+
+test("round 6: an automatic export into a folder that vanished fails instead of recreating it", () =>
+  withTempDir("device-sync-", async (root) => {
+    const { exportHandoff } = await import("@/lib/device-handoff");
+    const a = await makeDevice(root, "a");
+    await addResearchChannel(a.client, "UC1");
+    const gone = path.join(root, "Volumes", "Ejected", "Sync");
+    await assert.rejects(() =>
+      exportHandoff({ client: a.client, snapshotsDir: gone, deviceId: "device-a", schemaVersion: SCHEMA_CURRENT_VERSION, createSnapshotsDir: false })
+    );
+    await assert.rejects(() => readdir(path.join(root, "Volumes")));
+    a.client.close();
+  }));

@@ -18,10 +18,15 @@ async function pathExists(target: string): Promise<boolean> {
  * A fresh, never-yet-published staging directory -- publishSnapshot() below is the only way
  * its contents become visible under a final snapshot id (AC-SNAP-01/03).
  */
-export async function createStagingDir(snapshotsDir: string): Promise<{ dir: string; stagingId: string }> {
+export async function createStagingDir(
+  snapshotsDir: string,
+  /** `false` (automatic device sync): the snapshots folder must already exist -- a missing root
+   * (e.g. an unplugged external drive) fails with ENOENT instead of being silently recreated. */
+  createRoot = true
+): Promise<{ dir: string; stagingId: string }> {
   const stagingId = randomUUID();
   const dir = path.join(snapshotsDir, `.staging-${stagingId}`);
-  await mkdir(dir, { recursive: true });
+  await mkdir(dir, { recursive: createRoot });
   return { dir, stagingId };
 }
 
