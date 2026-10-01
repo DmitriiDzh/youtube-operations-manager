@@ -1165,6 +1165,37 @@ export const marketTopics = sqliteTable("market_topics", {
     .$defaultFn(() => new Date()),
 });
 
+// Phase 13 slice 13.8 (docs/roadmap/plans/PHASE_13_PLAN.md) -- Wikipedia articles linked to a topic,
+// and their daily page views (Wikimedia Pageviews API; CC0 data, not YouTube API data). Owned by
+// `src/lib/wikipedia-signals`; deleting a topic cascades its links at the database level (FK), so the
+// market-intelligence module needs no knowledge of this one (AGENTS.md §M).
+export const topicWikipediaArticles = sqliteTable(
+  "topic_wikipedia_articles",
+  {
+    id: text("id").primaryKey(),
+    topicId: text("topic_id").notNull(),
+    project: text("project").notNull(),
+    article: text("article").notNull(),
+    createdVia: text("created_via").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [uniqueIndex("topic_wikipedia_articles_unique").on(table.topicId, table.project, table.article)]
+);
+
+export const wikipediaPageviewsDaily = sqliteTable(
+  "wikipedia_pageviews_daily",
+  {
+    project: text("project").notNull(),
+    article: text("article").notNull(),
+    /** YYYY-MM-DD (UTC day, as Wikimedia reports it). */
+    date: text("date").notNull(),
+    views: integer("views").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.project, table.article, table.date] })]
+);
+
 /**
  * Links a topic to a watchlisted channel or a video (owner spec §13's "manual associations").
  * `subjectId` is NOT a foreign key -- a single column can't conditionally reference two different
@@ -2221,6 +2252,33 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 37,
+    description:
+      "topic_wikipedia_articles + wikipedia_pageviews_daily -- Phase 13 slice 13.8 (docs/roadmap/plans/PHASE_13_PLAN.md): Wikipedia articles linked to Research topics and their daily page views (Wikimedia, not YouTube data).",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS topic_wikipedia_articles (" +
+          "id TEXT PRIMARY KEY, " +
+          "topic_id TEXT NOT NULL REFERENCES market_topics(id) ON DELETE CASCADE, " +
+          "project TEXT NOT NULL, " +
+          "article TEXT NOT NULL, " +
+          "created_via TEXT NOT NULL, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS topic_wikipedia_articles_unique ON topic_wikipedia_articles(topic_id, project, article)"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS wikipedia_pageviews_daily (" +
+          "project TEXT NOT NULL, " +
+          "article TEXT NOT NULL, " +
+          "date TEXT NOT NULL, " +
+          "views INTEGER NOT NULL, " +
+          "PRIMARY KEY (project, article, date))"
+      );
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -3258,6 +3316,81 @@ export async function getDeviceSyncStatusJson(): Promise<string | null> {
 
 export async function setDeviceSyncStatusJson(value: string): Promise<void> {
   await setAppSetting(DEVICE_SYNC_STATUS_SETTING_KEY, value);
+}
+
+// --- Phase 13 slice 13.8: Wikipedia topic signals (owned by src/lib/wikipedia-signals) -------------
+
+export type StoredTopicWikipediaArticle = {
+  id: string;
+  topicId: string;
+  project: string;
+  article: string;
+  createdVia: string;
+  createdAt: Date;
+};
+
+export async function insertTopicWikipediaArticle(
+  input: { id: string; topicId: string; project: string; article: string; createdVia: string },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(topicWikipediaArticles).values(input);
+}
+
+export async function deleteTopicWikipediaArticle(id: string, database: AppDb = db): Promise<boolean> {
+  const deleted = await database.delete(topicWikipediaArticles).where(eq(topicWikipediaArticles.id, id)).returning();
+  return deleted.length > 0;
+}
+
+export async function listTopicWikipediaArticles(
+  topicId: string | null,
+  database: AppDb = db
+): Promise<StoredTopicWikipediaArticle[]> {
+  const query = database.select().from(topicWikipediaArticles);
+  const rows = topicId === null ? await query : await query.where(eq(topicWikipediaArticles.topicId, topicId));
+  return rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+}
+
+export async function upsertWikipediaPageviews(
+  rows: { project: string; article: string; date: string; views: number }[],
+  database: AppDb = db
+): Promise<void> {
+  for (const row of rows) {
+    await database
+      .insert(wikipediaPageviewsDaily)
+      .values(row)
+      .onConflictDoUpdate({
+        target: [wikipediaPageviewsDaily.project, wikipediaPageviewsDaily.article, wikipediaPageviewsDaily.date],
+        set: { views: row.views },
+      });
+  }
+}
+
+export async function listWikipediaPageviews(
+  args: { project: string; article: string; sinceDate: string },
+  database: AppDb = db
+): Promise<{ date: string; views: number }[]> {
+  return database
+    .select({ date: wikipediaPageviewsDaily.date, views: wikipediaPageviewsDaily.views })
+    .from(wikipediaPageviewsDaily)
+    .where(
+      and(
+        eq(wikipediaPageviewsDaily.project, args.project),
+        eq(wikipediaPageviewsDaily.article, args.article),
+        gte(wikipediaPageviewsDaily.date, args.sinceDate)
+      )
+    )
+    .orderBy(asc(wikipediaPageviewsDaily.date));
+}
+
+export async function getLatestWikipediaPageviewDate(
+  args: { project: string; article: string },
+  database: AppDb = db
+): Promise<string | null> {
+  const [row] = await database
+    .select({ date: sql<string | null>`MAX(${wikipediaPageviewsDaily.date})` })
+    .from(wikipediaPageviewsDaily)
+    .where(and(eq(wikipediaPageviewsDaily.project, args.project), eq(wikipediaPageviewsDaily.article, args.article)));
+  return row?.date ?? null;
 }
 
 const API_DATA_RETENTION_STATE_SETTING_KEY = "api_data_retention_state";

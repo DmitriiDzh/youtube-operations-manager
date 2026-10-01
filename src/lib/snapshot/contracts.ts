@@ -129,6 +129,9 @@ export const SNAPSHOT_TRANSFERRED_TABLES = [
   // Previously unclassified and therefore silently dropped on handoff, while the Batch write trail
   // (`audit_events`, above) travels -- the two write audit trails must be treated alike. No FK.
   "video_edit_audit_events",
+  // Phase 13 slice 13.8: which Wikipedia articles a topic follows is business data, like the topics
+  // themselves (its FK target, market_topics, is above). The page views are a re-fetchable cache.
+  "topic_wikipedia_articles",
 ] as const;
 
 /**
@@ -167,6 +170,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   app_settings: "per-device settings and toggles (Live writes, MCP, reads, ...)",
   gateway_call_events: "per-device traffic counters",
   sync_family_status: "this device's own sync-gateway status",
+  wikipedia_pageviews_daily: "re-fetchable cache of Wikimedia page views (Phase 13.8)",
 });
 
 /**

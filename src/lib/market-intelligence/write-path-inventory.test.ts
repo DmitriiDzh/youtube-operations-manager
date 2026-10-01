@@ -102,6 +102,8 @@ const SNAKE_CASE_TABLE_NAME_EXEMPT_FILES = [
   path.join(SRC_ROOT, "lib", "snapshot", "contracts.ts"),
   path.join(SRC_ROOT, "lib", "youtube-data-policy", "contracts.ts"),
   path.join(SRC_ROOT, "lib", "youtube-data-policy", "services.test.ts"),
+  // Phase 13 slice 13.8: the Wikipedia-signals test seeds a topic row by raw SQL (its links' FK target).
+  path.join(SRC_ROOT, "lib", "wikipedia-signals", "services.test.ts"),
 ];
 
 function isSnakeCaseTableName(symbol: string): boolean {

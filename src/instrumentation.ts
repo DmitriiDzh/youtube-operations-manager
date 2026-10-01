@@ -134,6 +134,14 @@ async function startServerSession() {
   setTimeout(retainQuietly, 60_000).unref();
   setInterval(retainQuietly, API_DATA_RETENTION_INTERVAL_MS).unref();
 
+  // Phase 13 slice 13.8: Wikipedia page views for topic-linked articles (free, no quota). Each run
+  // fetches only days not stored yet; off when Settings → Wikipedia reads is off (the gateway refuses).
+  const { WIKIPEDIA_COLLECTION_INTERVAL_MS, createWikipediaSignalsCore } = await import("@/lib/wikipedia-signals");
+  const wikipedia = createWikipediaSignalsCore();
+  const collectWikipediaQuietly = () => void wikipedia.collectAll().catch(() => undefined);
+  setTimeout(collectWikipediaQuietly, 90_000).unref();
+  setInterval(collectWikipediaQuietly, WIKIPEDIA_COLLECTION_INTERVAL_MS).unref();
+
   if (process.env.NODE_ENV !== "production") return;
   // Idle auto-shutdown: no request is in flight by definition, so reset, publish any unexported
   // local changes, then exit. Deliberately NOT raced against a timeout: exiting while the export
