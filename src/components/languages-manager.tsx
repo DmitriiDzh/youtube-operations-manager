@@ -1368,7 +1368,7 @@ export function LanguagesManager() {
                   </th>
                   <th className="w-24 px-4 py-2 font-medium">
                     <button onClick={() => handleSort("publishedAt")} className="hover:text-zinc-300">
-                      Published{sortIndicator("publishedAt", sort)}
+                      Publish{sortIndicator("publishedAt", sort)}
                     </button>
                   </th>
                   {languages.map((lang) => (
