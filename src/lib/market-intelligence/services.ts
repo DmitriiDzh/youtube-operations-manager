@@ -1843,21 +1843,25 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           // own bucket) with videos.list (1 pool unit) as the fallback. Worst case unchanged (3).
           type ListedVideo = { videoId: string; title: string; publishedAt: string | null };
           let listed: ListedVideo[] | null = null;
-          let playlistFailed = !snapshot.uploadsPlaylistId;
+          let playlistError: unknown = null;
           if (snapshot.uploadsPlaylistId) {
             unitsSpentThisChannel += PLAYLIST_ITEMS_LIST_UNIT_COST;
             remaining -= PLAYLIST_ITEMS_LIST_UNIT_COST;
             try {
               listed = await deps.youtubeApi.listUploadsPlaylistFirstPage({ credentials, uploadsPlaylistId: snapshot.uploadsPlaylistId });
-            } catch {
-              playlistFailed = true;
+            } catch (error) {
+              playlistError = error;
             }
           }
-          if (playlistFailed) {
+          if (listed === null) {
             try {
               listed = await deps.youtubeApi.listChannelFeedVideoIds({ channelId: researchChannelId });
-            } catch {
-              // Neither source answered: no video step this time (videosRequested stays null).
+            } catch (feedError) {
+              // Review round 2: fail closed. When the playlist call failed and the RSS fallback failed
+              // too, this channel's collection FAILED (recorded as such, retried on the failure
+              // backoff) -- never a "success" with no video data. Without an uploads playlist at all,
+              // the feed is the only source, so its failure is the failure.
+              throw playlistError ?? feedError;
             }
           }
           const videoIds: string[] | null = listed ? listed.map((v) => v.videoId) : null;

@@ -21,9 +21,27 @@ export type PurgeHooks = {
  * CALLER's connection -- which must be a dedicated one (review round 1: on the shared connection any
  * unrelated in-process write would join this transaction). The caller takes the backup first.
  */
+async function anyExpiring(client: SqlExecutor, cutoffSeconds: number): Promise<boolean> {
+  for (const t of nonAuthorizedTables()) {
+    const expired = `"${t.clockColumn}" < ?` + (t.apiRowsWhere ? ` AND (${t.apiRowsWhere})` : "");
+    const notAlreadyBlank =
+      t.keepDecisionWhere && t.alreadyBlankWhere ? ` AND NOT ((${t.keepDecisionWhere}) AND (${t.alreadyBlankWhere}))` : "";
+    const found = (await client.execute({
+      sql: `SELECT 1 FROM "${t.table}" WHERE ${expired}${notAlreadyBlank} LIMIT 1`,
+      args: [cutoffSeconds],
+    })) as ExecuteResult;
+    if (found.rows.length > 0) return true;
+  }
+  return false;
+}
+
 export async function purgeExpiredApiData(client: SqlExecutor, now: Date = new Date(), hooks: PurgeHooks = {}): Promise<PurgeResult> {
   const cutoffSeconds = Math.floor(now.getTime() / 1000) - API_DATA_RETENTION_DAYS * 24 * 60 * 60;
   const result: PurgeResult = [];
+  // Review round 2: nothing expiring -> no write lock and no fingerprint hashing at all.
+  if (!(await anyExpiring(client, cutoffSeconds))) {
+    return nonAuthorizedTables().map((t) => ({ table: t.table, deleted: 0, blanked: 0 }));
+  }
   await client.execute("BEGIN IMMEDIATE");
   try {
     if (hooks.beforePurge) await hooks.beforePurge();

@@ -131,3 +131,20 @@ test("review round 1: every snapshot source collection writes is on the purge's 
   const allowed = new Set<string>(YOUTUBE_API_SNAPSHOT_SOURCES);
   assert.deepEqual([...written].filter((src) => !allowed.has(src)), []);
 });
+
+test("review round 2: with nothing expiring, the purge takes no write lock and runs no hooks", () =>
+  withTempDir("data-policy-", async (dir) => {
+    const client = await makeClient(dir);
+    let hooksRan = 0;
+    const result = await purgeExpiredApiData(client, NOW, {
+      beforePurge: async () => {
+        hooksRan += 1;
+      },
+      afterPurge: async () => {
+        hooksRan += 1;
+      },
+    });
+    assert.equal(hooksRan, 0);
+    assert.ok(result.every((r) => r.deleted === 0 && r.blanked === 0));
+    client.close();
+  }));

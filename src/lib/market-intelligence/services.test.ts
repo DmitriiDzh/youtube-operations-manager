@@ -3663,3 +3663,15 @@ test("13.9: an invalid region code is refused before any call", async () => {
   await assert.rejects(() => services.getMusicChart({ regionCode: "USA", credentialRef: { userId: "u1" } }));
   assert.equal(musicChartCalls.length, 0);
 });
+
+test("13.5 (review round 2): if both the playlist call and the RSS fallback fail, the channel's collection FAILS -- never a silent success", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { store, services } = createFixture({ now, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO, playlistFails: true });
+  store.setQuotaBudget(100);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  const result = await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+  assert.equal(result.succeeded, 0);
+  assert.equal(result.failed, 1);
+  assert.equal(store.collectionRuns.at(-1)?.status, "failed");
+  assert.equal(store.channels.get(VALID_CHANNEL_ID)?.lastAutoCollectedAt, null, "a failed channel is not marked fresh");
+});

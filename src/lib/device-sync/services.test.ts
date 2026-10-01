@@ -1084,17 +1084,9 @@ test("review: 'take theirs' is refused while a Batch is being claimed here (RUNN
 // rule, so it must not turn an in-sync device into one with "unpublished changes" (which would make
 // the next snapshot from the other computer a divergence instead of an import).
 async function purgeLikeProduction(client: Client, now: Date) {
-  const { purgeExpiredApiData } = await import("@/lib/youtube-data-policy");
-  const { computeContentFingerprint, rebaselineLineageFingerprintIfUnchanged } = await import("@/lib/snapshot");
-  let before: string | null = null;
-  await purgeExpiredApiData(client, now, {
-    beforePurge: async () => {
-      before = await computeContentFingerprint(client);
-    },
-    afterPurge: async () => {
-      if (before) await rebaselineLineageFingerprintIfUnchanged(client, before, await computeContentFingerprint(client));
-    },
-  });
+  // The exact hooks `runApiDataRetention` uses in production (review round 2).
+  const { purgeExpiredApiData, createSyncPreservingPurgeHooks } = await import("@/lib/youtube-data-policy");
+  await purgeExpiredApiData(client, now, createSyncPreservingPurgeHooks(client));
 }
 
 async function addOldApiSnapshot(client: Client, id: string, observedAt: Date) {

@@ -5,6 +5,8 @@ import { copyDatabaseConsistently } from "@/lib/db-backup";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { computeContentFingerprint, rebaselineLineageFingerprintIfUnchanged } from "@/lib/snapshot";
 import { EMPTY_RETENTION_STATE, runRetentionOnce, type RetentionState } from "./runner";
+import type { PurgeHooks } from "./services";
+import type { SqlExecutor } from "@/lib/db-backup/contracts";
 
 export * from "./contracts";
 export { purgeExpiredApiData, type PurgeResult, type PurgeHooks } from "./services";
@@ -18,25 +20,43 @@ export async function getApiDataRetentionState(): Promise<RetentionState> {
   return raw ? { ...EMPTY_RETENTION_STATE, ...(JSON.parse(raw) as Partial<RetentionState>) } : { ...EMPTY_RETENTION_STATE };
 }
 
-let dedicated: Client | null = null;
-/** Review round 1: the purge's transaction runs on its own connection, never the shared one. */
+const DEDICATED_KEY = Symbol.for("ytom.youtubeDataPolicy.dedicatedClient");
+type GlobalWithClient = typeof globalThis & { [DEDICATED_KEY]?: Client };
+/** Review round 1: the purge's transaction runs on its own connection, never the shared one --
+ * held per process on `globalThis` (like device-sync's), so reloads/bundles share one handle. */
 function dedicatedClient(): Client {
-  if (!dedicated) {
-    dedicated = createClient({ url: `file:${appDataPaths.dbPath}` });
-    void dedicated.execute("PRAGMA busy_timeout = 5000").catch(() => undefined);
+  const g = globalThis as GlobalWithClient;
+  if (!g[DEDICATED_KEY]) {
+    const client = createClient({ url: `file:${appDataPaths.dbPath}` });
+    void client.execute("PRAGMA busy_timeout = 5000").catch(() => undefined);
+    g[DEDICATED_KEY] = client;
   }
-  return dedicated;
+  return g[DEDICATED_KEY];
+}
+
+/**
+ * Review round 1 (#2): every computer applies the same time-based expiry, so expiring rows are not
+ * a local change to publish. If the device was in sync before the purge (its content equalled the
+ * fingerprint recorded with its lineage head), it stays in sync after it -- inside the purge's own
+ * transaction, by compare-and-set, so a concurrent real change still reads as unpublished. Exported
+ * so tests exercise exactly the production hooks.
+ */
+export function createSyncPreservingPurgeHooks(client: SqlExecutor): PurgeHooks {
+  let before: string | null = null;
+  return {
+    beforePurge: async () => {
+      before = await computeContentFingerprint(client);
+    },
+    afterPurge: async () => {
+      if (before) await rebaselineLineageFingerprintIfUnchanged(client, before, await computeContentFingerprint(client));
+    },
+  };
 }
 
 /** Production wiring of one retention run. */
 export async function runApiDataRetention(now: Date = new Date()): Promise<RetentionState> {
   await mkdir(appDataPaths.migrationBackupsDir, { recursive: true });
   const client = dedicatedClient();
-  // Review round 1 (#2): every computer applies the same time-based expiry, so expiring rows are not
-  // a local change to publish. If the device was in sync before the purge (its content equalled the
-  // fingerprint recorded with its lineage head), it stays in sync after it -- inside the same
-  // transaction, by compare-and-set, so a concurrent real change still reads as unpublished.
-  let before: string | null = null;
   return runRetentionOnce(
     {
       client,
@@ -45,14 +65,7 @@ export async function runApiDataRetention(now: Date = new Date()): Promise<Reten
       assertMayMutate: assertDeviceAvailableForMutation,
       loadState: getApiDataRetentionState,
       saveState: (state) => setApiDataRetentionStateJson(JSON.stringify(state)),
-      purgeHooks: {
-        beforePurge: async () => {
-          before = await computeContentFingerprint(client);
-        },
-        afterPurge: async () => {
-          if (before) await rebaselineLineageFingerprintIfUnchanged(client, before, await computeContentFingerprint(client));
-        },
-      },
+      purgeHooks: createSyncPreservingPurgeHooks(client),
     },
     now
   );
