@@ -286,6 +286,9 @@ export type ChannelAnalyticsContext = {
   /** DERIVED METRIC, over the immediately-preceding period of equal length (see
    * `getChannelOverview`'s own `computePreviousPeriod`). */
   previousTotals: { views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number };
+  /** Phase 13 slice 13.7: true when the current and previous periods straddle YouTube's 2026-08-27
+   * view-counting change, so the two totals are not like-for-like (an additive field). */
+  viewCountingChangeInComparison: boolean;
 };
 
 export type VideoAnalyticsContext = {

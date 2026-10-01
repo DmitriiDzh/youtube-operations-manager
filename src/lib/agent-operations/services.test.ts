@@ -1153,3 +1153,29 @@ test("getSystemCapabilities hides operations_workspace capabilities inside an ag
   assert.equal(capabilities.some((c) => c.domain === "operations_workspace"), false);
   assert.ok(capabilities.some((c) => c.id === "channel_workspace.get_channel_workspace"));
 });
+
+// Phase 13 slice 13.7 / review round 10: the agent surface carries the view-counting discontinuity flag.
+test("queryChannelAnalytics passes through viewCountingChangeInComparison from the analytics overview", async () => {
+  for (const flag of [true, false]) {
+    const { services } = createFixture({
+      getChannelOverview: async () => ({
+        channelId: "UC_A",
+        startDate: "2026-08-31",
+        endDate: "2026-09-06",
+        previousStartDate: "2026-08-24",
+        previousEndDate: "2026-08-30",
+        daily: [],
+        currentTotals: { views: 1, estimatedMinutesWatched: 1, subscribersGained: 0, subscribersLost: 0 },
+        previousTotals: { views: 1, estimatedMinutesWatched: 1, subscribersGained: 0, subscribersLost: 0 },
+        viewCountingChangeInComparison: flag,
+      }),
+    } as never);
+    const result = await services.queryChannelAnalytics({
+      credentialRef: { userId: "u1" },
+      channelId: "UC_A",
+      startDate: "2026-08-31",
+      endDate: "2026-09-06",
+    });
+    assert.equal(result.viewCountingChangeInComparison, flag);
+  }
+});

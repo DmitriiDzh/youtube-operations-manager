@@ -3756,3 +3756,33 @@ test("P13: a channel whose only collection runs failed is still neverObserved", 
   const result = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
   assert.equal(result.neverObserved, true);
 });
+
+// Review round 10: the strings collection stamps itself mark a row as API data (purged after 30 days,
+// hidden, redacted for AI) -- an operator-typed entry must never carry one.
+test("P13: manual evidence/snapshot entries refuse a source reserved for API-collected data", async () => {
+  const { services } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "Worth watching" }, { createdVia: "web_ui" });
+  const refused = (error: unknown) => (error as { code?: string }).code === "validation_failed";
+  for (const source of ["youtube.channels.list", "youtube.videos.list", " youtube.videos.batchGetStats "]) {
+    await assert.rejects(
+      services.recordEvidence({ researchChannelId: VALID_CHANNEL_ID, observation: "n", source }, { createdVia: "web_ui" }),
+      refused
+    );
+    await assert.rejects(
+      services.recordChannelSnapshot(
+        { researchChannelId: VALID_CHANNEL_ID, observedAt: "2026-09-30T00:00:00.000Z", subscriberCount: 5, source },
+        { createdVia: "web_ui" }
+      ),
+      refused
+    );
+    await assert.rejects(
+      services.recordVideoSnapshot(
+        { researchChannelId: VALID_CHANNEL_ID, videoId: "abcdefghijk", observedAt: "2026-09-30T00:00:00.000Z", viewCount: 5, source },
+        { createdVia: "web_ui" }
+      ),
+      refused
+    );
+  }
+  // An ordinary free-text source is still accepted.
+  await services.recordEvidence({ researchChannelId: VALID_CHANNEL_ID, observation: "n", source: "manual observation" }, { createdVia: "web_ui" });
+});

@@ -146,7 +146,9 @@ day reporting lag; `queryVideoAnalytics` states this is a local snapshot and poi
 the existing `analytics_data_quality` capability for exact per-date coverage, rather than
 recomputing that same report inline on every call). Raw rows/daily series are `FACT`; `currentTotals`/
 `previousTotals` (sums over `daily`) are the first real `DERIVED METRIC` values this interface
-returns -- see §5 below.
+returns -- see §5 below. From Phase 13 `queryChannelAnalytics` also returns `viewCountingChangeInComparison`
+(boolean, an additive field): true when the current and previous periods straddle YouTube's 2026-08-27
+view-counting change, so the two totals are not like-for-like.
 
 **Credential-threading design:** unlike `getChannelContext`/`getVideoContext` above (slice B's own
 no-`credentialRef`, MCP/CLI-does-`assertActiveChannel` convention), these two schemas require a
@@ -934,7 +936,8 @@ plugs into this interface.
 - **`query_competitors`** (MCP)/`agent competitors` (CLI) -- every channel on the research
   watchlist (`channelId`, `handleOrUrl`, `reason`, `addedAt`), no evidence attached.
 - **`query_market_intelligence`** (MCP)/`agent market-intelligence --channelId <UC...>` (CLI) -- one
-  watchlisted channel's own record plus its full evidence history; `RESEARCH_CHANNEL_NOT_AVAILABLE`
+  watchlisted channel's own record plus its evidence history (Phase 13: another channel's API-sourced rows
+  only within the last 30 days, operator-entered rows at any age); `RESEARCH_CHANNEL_NOT_AVAILABLE`
   if the given `channelId` isn't on the watchlist.
 - Both registered directly in `src/mcp/server.ts`/`src/cli/video-metadata.ts` against
   `createMarketIntelligenceCore()` -- **not** a new function in this module's own service layer,

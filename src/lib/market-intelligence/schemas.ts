@@ -1,3 +1,4 @@
+import { YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
 import { z } from "zod";
 import { createdViaSchema } from "@/lib/shared-provenance";
 import { credentialRefSchema } from "@/lib/video-metadata/schemas";
@@ -64,11 +65,25 @@ export const removeFromWatchlistInputSchema = z
   })
   .strict();
 
+/**
+ * Phase 13 (review round 10): the purge, the read filters and the AI redaction all treat a row whose
+ * `source` equals one of the strings collection stamps itself as another channel's YouTube API data.
+ * A manual entry must therefore never carry one -- it would be hidden, purged and redacted although
+ * the operator typed it. Those strings are server-stamped only.
+ */
+const manualSourceSchema = z
+  .string()
+  .min(1, "source is required")
+  .max(500)
+  .refine((value) => !(YOUTUBE_API_SNAPSHOT_SOURCES as readonly string[]).includes(value.trim()), {
+    message: "source is reserved for data collected from the YouTube API; describe where your own observation came from",
+  });
+
 export const recordEvidenceInputSchema = z
   .object({
     researchChannelId: z.string().min(1),
     observation: z.string().min(1, "observation is required").max(2000),
-    source: z.string().min(1, "source is required").max(500),
+    source: manualSourceSchema,
     confidence: z.string().min(1).max(200).optional(),
   })
   .strict();
@@ -150,7 +165,7 @@ export const recordChannelSnapshotInputSchema = z
     viewCount: nonNegativeIntSchema.optional(),
     videoCount: nonNegativeIntSchema.optional(),
     hiddenSubscriberCount: z.boolean().optional(),
-    source: z.string().min(1, "source is required").max(500),
+    source: manualSourceSchema,
   })
   .strict()
   // Found by independent review, 2026-09-26: without this, a manual entry could claim
@@ -206,7 +221,7 @@ export const recordVideoSnapshotInputSchema = z
     // services.ts, producing an Invalid Date whose NaN epoch then crashed the libsql driver with
     // an opaque low-level exception instead of this module's normal clean validation_failed.
     publishedAt: z.string().datetime().optional(),
-    source: z.string().min(1, "source is required").max(500),
+    source: manualSourceSchema,
   })
   .strict();
 

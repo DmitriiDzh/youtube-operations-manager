@@ -253,6 +253,8 @@ export const channelAnalyticsContextOutputSchema = z
     ),
     currentTotals: channelAnalyticsTotalsSchema,
     previousTotals: channelAnalyticsTotalsSchema,
+    /** Phase 13 slice 13.7: true when the two periods straddle YouTube's 2026-08-27 view-counting change. */
+    viewCountingChangeInComparison: z.boolean(),
   })
   .strict();
 

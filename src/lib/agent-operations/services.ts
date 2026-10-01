@@ -453,6 +453,8 @@ type ServiceDependencies = {
     daily: Array<{ date: string; views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number }>;
     currentTotals: { views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number };
     previousTotals: { views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number };
+    /** Phase 13 slice 13.7: the two compared periods straddle YouTube's 2026-08-27 view-counting change. */
+    viewCountingChangeInComparison?: boolean;
   }>;
   listMetrics(input: unknown): Promise<{
     channelId: string;
@@ -652,6 +654,7 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
         daily: overview.daily,
         currentTotals: overview.currentTotals,
         previousTotals: overview.previousTotals,
+        viewCountingChangeInComparison: overview.viewCountingChangeInComparison ?? false,
       };
 
       return parseWithSchema(channelAnalyticsContextOutputSchema, output, "query channel analytics output");
