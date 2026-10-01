@@ -126,6 +126,10 @@ record of what has actually been implemented.
 
 ## Next assignment
 
+**Latest, 2026-10-01 (evening):** Phase 13 has been recorded: data sources and YouTube API policy compliance for
+Research (BL-112, `docs/roadmap/plans/PHASE_13_PLAN.md`). It is not assigned yet, and decision D1 is still open.
+RISK-92 records that today's long-term storage of competitor data does not comply with the policies.
+
 **Latest, 2026-10-01 (later):** Automatic device sync (BL-111) was merged into `dev` in `21bb583`
 (owner approval, msg 1102). Nothing further is assigned.
 

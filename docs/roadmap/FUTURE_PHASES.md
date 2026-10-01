@@ -643,6 +643,19 @@ Plan, inventory of today's holes, slices and open decisions:
 `docs/roadmap/plans/PHASE_12_PLAN.md`. **DONE:** merged into `dev` in `7a57a48` on 2026-09-30,
 with owner approval. Backlog: BL-109.
 
+## 14. Phase 13 — Data sources and API-policy compliance for Research
+
+**Recorded 2026-10-01, at the owner's request (Telegram, msg 1125).** Based on the sources research (msg 1121):
+- bring Research in line with the YouTube API Developer Policies: Non-Authorized competitor data at most 30 days,
+  no derived metrics (RISK-92);
+- move to the new quota model, where search has its own 100-calls-a-day bucket;
+- add cheap and free sources: RSS, `videos.batchGetStats`, Wikipedia Pageviews, the YouTube Music chart, and
+  optionally Social Blade.
+
+Plan, decisions D1–D3 and acceptance criteria: `docs/roadmap/plans/PHASE_13_PLAN.md`. Research:
+`docs/roadmap/plans/PHASE_13_SOURCES_RESEARCH.md`. **Status: planned, not assigned.** Implementation starts on the
+owner's assignment. D1 is needed before slices 13.2/13.3. Backlog: BL-112.
+
 ## 12. Current next-action marker
 
 Recorded 2026-09-26, owner instruction ("Strategic Roadmap Update — Post Phase 8") — kept short
