@@ -211,6 +211,16 @@ Reference: `src/lib/localization/adapters/xlsx.ts` (export) and `src/lib/changes
 
 ---
 
+## 6.11a New tables and the YouTube API data policy (Phase 13)
+
+Every new table goes into **two** lists:
+- `src/lib/snapshot/contracts.ts` (transferred or device-local);
+- `src/lib/youtube-data-policy/contracts.ts` (authorized / non_authorized with a clock column / not_api_data).
+
+Tests fail on a table missing from either. A table holding other channels' YouTube API data is `non_authorized`
+and is purged after 30 days. Never derive metrics from it (III.E.4.h). Every new external read API gets its own
+gateway module, with a toggle, a traffic counter and an inventory test (`AGENTS.md` §G).
+
 ## 6.12 Documentation maintenance
 
 | When this changes... | ...update these |

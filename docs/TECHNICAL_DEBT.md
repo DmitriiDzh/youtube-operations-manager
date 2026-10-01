@@ -1514,7 +1514,7 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   (`AGENTS.md` §L). It needs its own task and acceptance criteria.
 - **Status:** OPEN.
 
-## RISK-92 — Research keeps competitor data longer than the YouTube API policies allow, and derives metrics from it — OPEN, 2026-10-01
+## RISK-92 — Research keeps competitor data longer than the YouTube API policies allow, and derives metrics from it — MOSTLY RESOLVED on branch `feature/phase-13-data-sources`, 2026-10-01
 
 - **Affected components:** `src/lib/market-intelligence/` (Phase 9). Tables `market_channel_snapshots`,
   `market_video_snapshots`, `research_evidence`, `market_discovery_candidates`. Derived metrics:
@@ -1531,6 +1531,15 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Plan:** Phase 13, slices 13.1–13.3 (`docs/roadmap/plans/PHASE_13_PLAN.md`). The strictness level is the owner's
   decision D1.
 - **Gate:** none formally. It should be resolved before the operational release (§2a).
-- **Status:** OPEN.
+- **Resolved by Phase 13 (D1 = a):**
+  - 13.1 classification;
+  - 13.2 30-day purge, with a backup first;
+  - 13.3 derived metrics withheld.
+- **Residual:** III.E.4.c also caps our own channels' non-statistics metadata (titles/descriptions in `videos`,
+  `changes.baseline_value`) at 30 days unless refreshed.
+  - It is refreshed by channel sync, but sync is operator-triggered, not scheduled.
+  - A channel nobody syncs for 30 days keeps stale metadata.
+  - Trigger to revisit: add a scheduled own-channel refresh, or a staleness notice.
+- **Status:** MOSTLY RESOLVED (residual above).
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

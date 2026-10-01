@@ -951,6 +951,16 @@ plugs into this interface.
 - `AGENT_DATA_DOMAINS` gained `competitor_intelligence` (the literal name this module's own
   contracts already reserved for it). `AGENT_API_VERSION` → `0.11.0`.
 
+
+**Phase 13 (2026-10-01, YouTube API Developer Policies III.E.4.d/h, owner decision D1 = a):**
+- Watchlist channels are someone else's (Non-Authorized) data.
+- `subscriberVelocity`, `uploadCadence` and per-video `velocity` now return `{ value: null, basis:
+  "withheld_by_policy" }`.
+- `recentBreakoutVideos`, `breakoutVideos` and `emergingChannels` are always empty, and
+  `emergingChannel.reasons` states the policy.
+- Raw snapshots are still returned, each with its time, but only for the last 30 days (older ones are deleted).
+- The response shapes are unchanged, so `AGENT_API_VERSION` is unchanged.
+
 ## 4l. Decision-engine agent surface (Phase 10 slice 2, `docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md`) -- IMPLEMENTED
 
 Fulfils the `create_experiment_proposal` name this interface reserved since Phase 7 (§14, kept

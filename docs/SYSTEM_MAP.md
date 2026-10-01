@@ -453,6 +453,22 @@ YouTube Read Gateway (src/lib/youtube-read-gateway/, googleapis) + Write Gateway
 - **Рыночные данные.** `src/lib/market-assignments`, таблица `channel_record_assignments` (v35, передаётся при хэндоффе). Оператор назначает каналам записи фазы 9, агент видит только назначенное своему каналу.
 - **Прочее.** Гипотезы без канала агентам не видны. Зоны BL-091 удалены. `AGENT_API_VERSION` 1.0.0. Ограничение D0(b) и рекомендации по настройке — `docs/AGENT_ISOLATION_SETUP.md`.
 
+### 2.9w Phase 13 — источники данных и правила YouTube API для Research — **IMPLEMENTED** (ветка `feature/phase-13-data-sources`)
+
+- **Ответственность:** Research приведён к правилам YouTube API, решение D1=(a):
+  - чужие данные из API хранятся ≤30 дней;
+  - производные метрики по ним не вычисляются.
+
+  Новая модель квот: у поиска свой лимит 100/день, сутки считаются по Тихоокеанскому времени. Добавлены дешёвые и бесплатные источники: RSS, `videos.batchGetStats`, Wikipedia Pageviews, чарт Music.
+- **Модули:**
+  - `src/lib/youtube-data-policy` — классификация таблиц и очистка;
+  - `src/lib/youtube-quota` — квотные факты;
+  - `youtube-read-gateway/feed.ts` — RSS;
+  - `src/lib/wikipedia-gateway` и `src/lib/wikipedia-signals`.
+- **Схема:** v37 (Wikipedia).
+- **Настройки:** тумблеры «RSS feed reads» и «Wikipedia reads» в карточке чтения Settings → API.
+- **Подробно:** ARCHITECTURE §24, план `docs/roadmap/plans/PHASE_13_PLAN.md`.
+
 ### 2.10 Web UI — **IMPLEMENTED**
 
 - **Ответственность:** дашборд оператора (`/dashboard`) с вкладками **Home** (с 2026-09-20, editorial-profile панель; с 2026-09-23 также карточки последнего видео/списка видео/канальной аналитики — §2.9n) / **Content** (с 2026-09-20, ex-Sync, Slice S2) / **Analytics** (с 2026-09-20 заглушка, с 2026-09-22 реальный сбор — Phase 8, §2.9i; с 2026-09-23 также живая вкладка "Overview" — §2.9n; с 2026-09-26 внутри Analytics ещё два под-таба — "Content" и "Audience" — §2.9t) / **Languages** (с 2026-09-20, объединяет прежние отдельные вкладки Localizations и AI Localization — `docs/roadmap/plans/LANGUAGES_TAB_MERGE_PLAN.md`) / Batches / **Research** (с 2026-09-26, Phase 9 слайс 2 — глобальный, не привязанный к каналу watchlist для market intelligence, §2.9v) / **Decisions** (с 2026-09-29, Phase 10 слайс 1 — hypotheses/experiments/outcomes, §2.9w) / **Settings** (Phase 6 "AI Connections") / **Device**. Хром вокруг вкладок — постоянный левый sidebar (иконка + label на каждую вкладку, активная подсвечена акцентным цветом) и верхний бар (активный канал, переключение канала, sign out) в стилистике YouTube Studio (`src/components/app-shell.tsx`), заменивший прежний горизонтальный pill-tab-bar. **Manual и Rules удалены 2026-09-20** (решение владельца проекта: «давай удалим их, т.к. пока не вижу им применения») — обе были унаследованы от исходной кодовой базы проекта (Phase 0/1) и не связаны с локализацией/Change Sets/Batches этого проекта; Home теперь дефолтная вкладка вместо Manual.
