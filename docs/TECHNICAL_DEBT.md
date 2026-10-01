@@ -1559,6 +1559,10 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
         conflicts.
       - **Manual handoff exports** (`appDataPaths.snapshotsDir`, used when no sync folder is set). These are
         operator-made transfer files and are not pruned.
+      - **A device that has stopped ticking keeps its own snapshots.** This covers a device that is switched
+        off, has sync disabled, has its folder unreachable, or is busy (recovery mode or an unfinished Batch).
+        Its last up to 5 own snapshots stay in the shared folder until it ticks again. Pruning another device's
+        snapshots is never allowed, because Syncthing would propagate the deletion.
     - Trigger to revisit: if either copy must also be bound by the 30 days.
 - **Further residuals:**
   - Review rounds 5–6 found that reads were not filtered. Now reads hide expired API rows even before the purge

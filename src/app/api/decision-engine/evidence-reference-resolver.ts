@@ -1,3 +1,4 @@
+import { YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
 import type { AnalyticsCore } from "@/lib/analytics";
 import { isDomainError, type EvidenceReference, type EvidenceReferenceResolver } from "@/lib/decision-engine/contracts";
 import type { MarketIntelligenceCore } from "@/lib/market-intelligence";
@@ -18,6 +19,8 @@ import type { MarketIntelligenceCore } from "@/lib/market-intelligence";
 // module's own real existence-checking logic testable against fake cores, independent of the
 // real route file (which supplies the real `createAnalyticsCore()`/`createMarketIntelligenceCore()`
 // once, at module load, the same pattern already used by every other route in this app).
+const isApiSnapshotSource = (source: string) => (YOUTUBE_API_SNAPSHOT_SOURCES as readonly string[]).includes(source);
+
 export function createRealEvidenceReferenceResolver(deps: {
   analyticsCore: Pick<AnalyticsCore, "listMetrics">;
   marketIntelligenceCore: Pick<MarketIntelligenceCore, "listChannelSnapshots" | "listVideoSnapshots" | "listTrendCandidates">;
@@ -86,19 +89,22 @@ export function createRealEvidenceReferenceResolver(deps: {
         case "phase9_channel_snapshot": {
           const result = await deps.marketIntelligenceCore.listChannelSnapshots({ researchChannelId: reference.researchChannelId });
           const snapshot = result.snapshots.find((s) => s.snapshotId === reference.snapshotId);
-          return snapshot
-            ? // Phase 13 (review round 5): a watchlist channel is someone else's -- its YouTube API values are
-              // not handed to an AI to generate new text from (Developer Policies III.E.4.h, owner D1 = a).
-              `Channel ${reference.researchChannelId} public snapshot observed ${snapshot.observedAt} (another channel's YouTube data: values are not passed to the AI)`
-            : `Channel ${reference.researchChannelId} snapshot (no longer available)`;
+          if (!snapshot) return `Channel ${reference.researchChannelId} snapshot (no longer available)`;
+          // Phase 13 (review rounds 5/7): another channel's YouTube API values are not handed to an AI to
+          // generate new text from (Developer Policies III.E.4.h, owner D1 = a). The operator's own manual
+          // observations are not API data and keep their values.
+          return isApiSnapshotSource(snapshot.source)
+            ? `Channel ${reference.researchChannelId} public snapshot observed ${snapshot.observedAt} (another channel's YouTube data: values are not passed to the AI)`
+            : `Channel ${reference.researchChannelId} snapshot (${snapshot.observedAt}): ${snapshot.subscriberCount ?? "?"} subscribers, ${snapshot.viewCount ?? "?"} views, ${snapshot.videoCount ?? "?"} videos`;
         }
         case "phase9_video_snapshot": {
           const result = await deps.marketIntelligenceCore.listVideoSnapshots({ researchChannelId: reference.researchChannelId });
           const snapshot = result.snapshots.find((s) => s.snapshotId === reference.snapshotId);
-          return snapshot
-            ? // Phase 13 (review round 5): see the channel-snapshot case above.
-              `Video ${snapshot.videoId} public snapshot observed ${snapshot.observedAt} (another channel's YouTube data: values are not passed to the AI)`
-            : `Video snapshot (no longer available)`;
+          if (!snapshot) return `Video snapshot (no longer available)`;
+          // Phase 13 (review rounds 5/7): see the channel-snapshot case above.
+          return isApiSnapshotSource(snapshot.source)
+            ? `Video ${snapshot.videoId} public snapshot observed ${snapshot.observedAt} (another channel's YouTube data: values are not passed to the AI)`
+            : `Video "${snapshot.title ?? snapshot.videoId}" snapshot (${snapshot.observedAt}): ${snapshot.viewCount ?? "?"} views, ${snapshot.likeCount ?? "?"} likes`;
         }
         case "phase9_trend_candidate": {
           const result = await deps.marketIntelligenceCore.listTrendCandidates();

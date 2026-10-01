@@ -103,6 +103,8 @@ export async function purgeExpiredApiData(client: SqlExecutor, now: Date = new D
  * before it records the lineage fingerprint -- so the imported state never contains expired rows.
  */
 export async function purgeExpiredApiDataWithinTransaction(client: SqlExecutor, now: Date = new Date()): Promise<PurgeResult> {
+  // Review round 7: the dropped rows are overwritten on disk, not left in free pages.
+  await client.execute("PRAGMA secure_delete = ON");
   return applyPurge(client, cutoffFor(now));
 }
 
