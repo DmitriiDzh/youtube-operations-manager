@@ -2134,7 +2134,7 @@ low-severity divergences, recorded here as the actual rules rather than changed.
     behind the method-based mutation gate. The equivalent MCP/CLI selection actions are
     operator-only and gated.
 
-## 23. Automatic device sync (`src/lib/device-sync/`) — ADR 0012, branch `feature/device-auto-sync`
+## 23. Automatic device sync (`src/lib/device-sync/`) — ADR 0012, in `dev` (`21bb583`)
 
 **Purpose.** Removes the manual export/import from the §13 handoff without changing its
 single-writer, whole-copy semantics. Plan and acceptance criteria:
