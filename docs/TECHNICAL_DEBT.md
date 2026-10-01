@@ -1478,6 +1478,18 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Trigger to revisit:** a reported lost change after a stop, or a stale lock in the field.
 - **Status:** OPEN, accepted.
 
+## RISK-91 — Stuck-lock recovery route is unauthenticated (local, same-origin) — OPEN, accepted, 2026-10-01
+
+- **Affected components:** `src/app/api/operation-lock/route.ts`, `src/app/recovery/page.tsx`, `src/cli/operation-lock.ts`.
+- **What:** the recovery route must work when database initialization (and so any session lookup) is
+  failing, so it has no session check. Protection: same-origin required for `POST`; it only touches
+  the single operation-lock row; a lock whose holder process is alive needs `force` + typed `CLEAR`.
+- **Residual risk:** any local process/user able to reach the server's port can clear a lock. Force-
+  clearing a genuinely running import/migration could corrupt it. Consistent with the already-accepted
+  "no per-user ownership boundary" tradeoff (RISK-87).
+- **Re-evaluate when:** the server is ever reachable from another machine, or per-user auth is added.
+- **Status:** OPEN, accepted.
+
 ## RISK-90 — Batch lifecycle leaves unfinished Batches that the UI cannot finish — OPEN, 2026-10-01
 
 - **Affected components:** `src/lib/batches/services.ts`, `src/components/batch-manager.tsx`.

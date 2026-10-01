@@ -1,9 +1,17 @@
-import { OperationLockError, type OperationLock, type OperationType, type SqlExecutor } from "./contracts";
+import {
+  OperationLockError,
+  type ClearOperationLockOutcome,
+  type OperationLock,
+  type OperationLockIdentity,
+  type OperationLockStatus,
+  type OperationType,
+  type SqlExecutor,
+} from "./contracts";
 import { isMissingTableError } from "@/lib/db-backup";
 
 const LOCK_ID = "singleton";
 
-type ExecuteResult = { rows: Array<Record<string, unknown>> };
+type ExecuteResult = { rows: Array<Record<string, unknown>>; rowsAffected?: number };
 
 async function execute(client: SqlExecutor, query: string | { sql: string; args?: unknown[] }) {
   return (await client.execute(query)) as ExecuteResult;
@@ -24,7 +32,7 @@ function rowToLock(row: Record<string, unknown>): OperationLock {
  * Node's documented `process.kill(pid, 0)` liveness probe, which works cross-platform (it
  * does not actually send a signal on either POSIX or Windows when the second argument is 0).
  */
-function isProcessAlive(pid: number): boolean {
+export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -107,6 +115,53 @@ export async function releaseOperationLock(client: SqlExecutor): Promise<void> {
  */
 export async function forceClearOperationLock(client: SqlExecutor): Promise<void> {
   await execute(client, { sql: "DELETE FROM app_operation_locks WHERE id = ?", args: [LOCK_ID] });
+}
+
+/** Diagnostic view of a held lock for the UI/CLI/boot error -- pure apart from the PID probe. */
+export function describeOperationLock(
+  lock: OperationLock,
+  now: number = Date.now(),
+  probe: (pid: number) => boolean = isProcessAlive
+): OperationLockStatus {
+  const holderAlive = probe(lock.holderPid);
+  const acquiredMs = Date.parse(lock.acquiredAt);
+  return {
+    lock,
+    elapsedMs: Number.isFinite(acquiredMs) ? Math.max(0, now - acquiredMs) : 0,
+    holderAlive,
+    stale: !holderAlive,
+  };
+}
+
+/**
+ * Operator-triggered clear (UI button / CLI) -- never called from any automatic code path.
+ * Compare-and-delete against the exact lock the operator saw. Without `force`, a lock whose holder
+ * process still exists is refused (it may be a live import/migration). `force` is the explicit
+ * override for the case a dead holder's PID was reused by an unrelated process, which would
+ * otherwise leave the lock unclearable.
+ */
+export async function clearOperationLockIfUnchanged(
+  client: SqlExecutor,
+  expected: OperationLockIdentity,
+  options: { force?: boolean; probe?: (pid: number) => boolean } = {}
+): Promise<ClearOperationLockOutcome> {
+  const current = await getOperationLock(client);
+  if (!current) return { outcome: "not_held" };
+  if (
+    current.operationType !== expected.operationType ||
+    current.holderPid !== expected.holderPid ||
+    current.acquiredAt !== expected.acquiredAt
+  ) {
+    return { outcome: "changed", current };
+  }
+  if (!options.force && (options.probe ?? isProcessAlive)(current.holderPid)) {
+    return { outcome: "holder_alive", current };
+  }
+  const result = await execute(client, {
+    sql: "DELETE FROM app_operation_locks WHERE id = ? AND operation_type = ? AND holder_pid = ? AND acquired_at = ?",
+    args: [LOCK_ID, expected.operationType, expected.holderPid, expected.acquiredAt],
+  });
+  return result.rowsAffected === 0 ? { outcome: "not_held" } : { outcome: "cleared" };
 }
 
 export async function withOperationLock<T>(

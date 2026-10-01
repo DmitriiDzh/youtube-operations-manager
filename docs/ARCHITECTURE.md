@@ -2241,6 +2241,19 @@ state, so these are held per process via `globalThis`:
 **Boot.** `initializeDatabase` takes the migration lock only when a migration is due
 (`acquireMigrationLockIfDue`). It waits for a busy lock and clears a dead export's lock.
 
+**Stuck operation lock recovery (2026-10-01).** A migration/import killed mid-run leaves its
+`app_operation_locks` row; by decision 2b it is never auto-released (only a dead *export*'s is), so
+the next boot used to wait 30 s and then fail, with no UI to fix it. Now: (1) a boot whose holder
+process is provably dead fails at once instead of waiting; (2) `instrumentation.ts` keeps the server
+up when database initialization fails and starts the session work once a later attempt succeeds;
+(3) `db.ts` initialization is a `createRecoverableInitializer` -- after a failure the next call
+re-attempts (at most every 3 s), so clearing the lock needs no restart; (4) `/recovery`
+and `/api/operation-lock` (exempt in `src/proxy.ts`) use `ungatedRecoveryClient`, independent of
+initialization and session; (5) the same `OperationLockControl` is shown in the Merge tab and as a
+dashboard banner for non-export locks; (6) `npm run operation-lock -- status|clear` works with the
+app stopped. Clearing is always an explicit operator action, a compare-and-delete on the exact lock
+shown; a holder that looks alive needs `force` plus the typed word CLEAR. See RISK-91.
+
 **Not done, by design.**
 - No export in SIGINT/SIGTERM handlers, because a killed export leaves a never-auto-released
   operation lock. The idle shutdown does flush, since nothing is in flight.
