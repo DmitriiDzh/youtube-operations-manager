@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatDisplayDate } from "@/lib/shared-formatting";
+import { DEFAULT_SORT, nextSortState, sortVideos, type SortKey, type SortState } from "./content-sort";
 import { VideoDetailModal } from "./video-detail-modal";
 import { VideoDetailsPanel } from "./video-details-panel";
 
@@ -63,6 +64,41 @@ function formatCount(value: number | null): string {
   return value === null ? "—" : value.toLocaleString();
 }
 
+function SortableHeader({
+  label,
+  sortKey,
+  sort,
+  onSort,
+  align = "left",
+}: {
+  label: string;
+  sortKey: SortKey;
+  sort: SortState;
+  onSort: (key: SortKey) => void;
+  align?: "left" | "right";
+}) {
+  const active = sort.key === sortKey;
+  return (
+    <th
+      className="px-4 py-2 font-medium"
+      aria-sort={active ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={`flex w-full items-center gap-1 uppercase transition-colors hover:text-zinc-300 ${
+          align === "right" ? "justify-end" : "justify-start"
+        } ${active ? "text-zinc-200" : ""}`}
+      >
+        {label}
+        <span aria-hidden className={active ? "" : "invisible"}>
+          {active && sort.direction === "asc" ? "▲" : "▼"}
+        </span>
+      </button>
+    </th>
+  );
+}
+
 /**
  * The "Content" tab -- Studio-parity video table (docs/roadmap/plans/STUDIO_PARITY_PLAN.md
  * Slice S2). Formerly "Sync"; renamed since the underlying data (a synced video list) is the
@@ -80,6 +116,7 @@ export function ContentManager() {
 
   const [search, setSearch] = useState("");
   const [privacyFilter, setPrivacyFilter] = useState<PrivacyFilter>("all");
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
   const [page, setPage] = useState(1);
   const [expandedVideoId, setExpandedVideoId] = useState<string | null>(null);
   const [detailsDirty, setDetailsDirty] = useState(false);
@@ -173,12 +210,18 @@ export function ContentManager() {
 
   const filteredVideos = useMemo(() => {
     const query = search.trim().toLowerCase();
-    return videos.filter((video) => {
+    const matching = videos.filter((video) => {
       if (privacyFilter !== "all" && video.privacyStatus !== privacyFilter) return false;
       if (query && !video.title.toLowerCase().includes(query)) return false;
       return true;
     });
-  }, [videos, search, privacyFilter]);
+    return sortVideos(matching, sort);
+  }, [videos, search, privacyFilter, sort]);
+
+  const handleSort = (key: SortKey) => {
+    setSort((current) => nextSortState(current, key));
+    setPage(1);
+  };
 
   const pageCount = Math.max(1, Math.ceil(filteredVideos.length / PAGE_SIZE));
   const clampedPage = Math.min(page, pageCount);
@@ -278,11 +321,11 @@ export function ContentManager() {
             </colgroup>
             <thead>
               <tr className="border-b border-zinc-800 text-left text-xs uppercase text-zinc-500">
-                <th className="px-4 py-2 font-medium">Video</th>
-                <th className="px-4 py-2 font-medium">Access</th>
-                <th className="px-4 py-2 font-medium">Publish</th>
-                <th className="px-4 py-2 text-right font-medium">Views</th>
-                <th className="px-4 py-2 text-right font-medium">Comments</th>
+                <SortableHeader label="Video" sortKey="title" sort={sort} onSort={handleSort} />
+                <SortableHeader label="Access" sortKey="privacy" sort={sort} onSort={handleSort} />
+                <SortableHeader label="Publish" sortKey="publish" sort={sort} onSort={handleSort} />
+                <SortableHeader label="Views" sortKey="views" sort={sort} onSort={handleSort} align="right" />
+                <SortableHeader label="Comments" sortKey="comments" sort={sort} onSort={handleSort} align="right" />
               </tr>
             </thead>
             <tbody>
