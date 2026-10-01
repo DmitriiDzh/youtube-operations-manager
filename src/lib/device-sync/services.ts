@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, readdir, rm } from "node:fs/promises";
+import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { exportHandoff, importHandoff, isDeviceInRecoveryMode, RecoveryModeError } from "@/lib/device-handoff";
 import { getOperationLock, OperationLockError } from "@/lib/operation-lock";
 import {
@@ -198,6 +198,14 @@ export type DeviceSyncDeps = {
   now?: () => number;
 };
 
+async function isExistingDirectory(dir: string): Promise<boolean> {
+  try {
+    return (await stat(dir)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 class SyncAbort extends Error {
   constructor(
     message: string,
@@ -376,6 +384,12 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       const config = await deps.resolveConfig();
       if (!config.folder) return finish({ ...status, state: "not_configured", notices: [] });
       const folder = config.folder;
+      // An automatic action never CREATES the sync folder (pre-merge check): with an external drive
+      // unplugged, or mounted under another name, creating the configured path would publish
+      // snapshots to a local folder no other computer sees. Wait until it exists again.
+      if (!(await isExistingDirectory(folder))) {
+        return finish({ ...status, state: "folder_unreachable", notices: [] });
+      }
 
       const busy = await busyReason();
       if (busy) {
@@ -581,6 +595,9 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
   async function requireCurrentPeerTip(snapshotId: string) {
     const config = await deps.resolveConfig();
     if (!config.folder) throw new DeviceSyncError("device_sync_not_configured", "No sync folder is configured.");
+    if (!(await isExistingDirectory(config.folder))) {
+      throw new DeviceSyncError("device_sync_not_configured", "The sync folder is not reachable (is the drive connected?).");
+    }
     const { snapshots } = await scanSnapshotFolder(config.folder);
     const tips = await peerTips(config.deviceId, snapshots);
     const snapshot = tips.find((s) => s.snapshotId === snapshotId);

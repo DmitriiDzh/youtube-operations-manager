@@ -49,6 +49,7 @@ export type DeviceSyncNotice = {
 export type DeviceSyncState =
   | "disabled"
   | "not_configured"
+  | "folder_unreachable"
   | "busy"
   | "synced"
   | "exported"

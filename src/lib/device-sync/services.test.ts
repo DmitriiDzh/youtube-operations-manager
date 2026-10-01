@@ -43,6 +43,8 @@ async function makeDevice(root: string, name: string, opts: { folder?: string | 
   let enabled = true;
   const clock = { t: Date.parse("2026-10-01T10:00:00Z") };
   const folder = opts.folder === undefined ? path.join(root, "sync") : opts.folder;
+  // The configured sync folder exists (Syncthing created it); automatic sync never creates it.
+  if (opts.folder === undefined && folder) await mkdir(folder, { recursive: true });
   const runner = createDeviceSyncRunner({
     client,
     currentSchemaVersion: SCHEMA_CURRENT_VERSION,
@@ -761,5 +763,68 @@ test("R4-3 (AC-AS-09): a checksum mismatch (Syncthing mid-transfer) is silently 
     assert.equal(status.notices[0]?.kind, "transfer_stuck");
     assert.deepEqual(await researchIds(a.client), []);
     a.client.close();
+    b.client.close();
+  }));
+
+// Pre-merge check: the owner's sync folder lives on an external drive.
+test("an unplugged drive: a tick never creates the sync folder and does nothing", () =>
+  withTempDir("device-sync-", async (root) => {
+    const missing = path.join(root, "Volumes", "Unplugged Drive", "Sync");
+    const a = await makeDevice(root, "a", { folder: missing });
+    await addResearchChannel(a.client, "UC1");
+    const status = await a.runner.tick({ force: true });
+    assert.equal(status.state, "folder_unreachable");
+    assert.deepEqual(status.notices, []);
+    await assert.rejects(() => readdir(path.join(root, "Volumes")));
+    a.client.close();
+  }));
+
+test("R5 note: the in-lock re-check also stops an import on a device that already has a recorded fingerprint", () =>
+  withTempDir("device-sync-", async (root) => {
+    await mkdir(path.join(root, "sync"), { recursive: true });
+    const aClient = createClient({ url: `file:${path.join(root, "a.db")}` });
+    await initializeDatabaseSchema(aClient);
+    let armed = false;
+    let injected = false;
+    const racing = {
+      execute: async (query: unknown) => {
+        const sql = typeof query === "string" ? query : (query as { sql: string }).sql;
+        if (armed && !injected && /^VACUUM INTO/i.test(sql)) {
+          injected = true;
+          await addResearchChannel(aClient, "UC-local-late");
+        }
+        return aClient.execute(query as never);
+      },
+    };
+    let status: DeviceSyncStatus = { ...EMPTY_DEVICE_SYNC_STATUS };
+    const clock = { t: Date.parse("2026-10-01T10:00:00Z") };
+    const a = createDeviceSyncRunner({
+      client: racing as never,
+      currentSchemaVersion: SCHEMA_CURRENT_VERSION,
+      resolveConfig: async () => ({ deviceId: "device-a", folder: path.join(root, "sync") }),
+      migrationBackupsDir: path.join(root, "a-backups"),
+      workingDir: path.join(root, "a-work"),
+      isEnabled: async () => true,
+      loadStatus: async () => status,
+      saveStatus: async (s) => {
+        status = s;
+      },
+      now: () => clock.t,
+    });
+    await addResearchChannel(aClient, "UC1");
+    assert.equal((await a.tick()).state, "exported"); // a now has a recorded fingerprint
+    const b = await makeDevice(root, "b");
+    await b.runner.tick(); // b imports a's snapshot
+    await addResearchChannel(b.client, "UC-b");
+    later(b);
+    await b.runner.tick(); // b publishes a direct child
+
+    armed = true;
+    clock.t += 5 * 60_000;
+    const result = await a.tick();
+    assert.equal(injected, true, "precondition: the write raced the import");
+    assert.deepEqual(await researchIds(aClient), ["UC-local-late", "UC1"]);
+    assert.equal(result.notices[0]?.kind, "divergence");
+    aClient.close();
     b.client.close();
   }));

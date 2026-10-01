@@ -20,7 +20,7 @@ type Notice = {
 
 type SyncStatus = {
   enabled: boolean;
-  state: "disabled" | "not_configured" | "busy" | "synced" | "exported" | "imported" | "waiting" | "attention";
+  state: "disabled" | "not_configured" | "folder_unreachable" | "busy" | "synced" | "exported" | "imported" | "waiting" | "attention";
   lastTickAt: string | null;
   lastExportAt: string | null;
   lastImportAt: string | null;
@@ -33,6 +33,7 @@ const POLL_MS = 30_000;
 const STATE_LABEL: Record<SyncStatus["state"], string> = {
   disabled: "Automatic sync is off (Settings → Sync)",
   not_configured: "No sync folder is configured (Settings → Sync)",
+  folder_unreachable: "The sync folder is not reachable — is the drive connected? Paused until it is.",
   busy: "Paused while another operation runs",
   synced: "Up to date",
   exported: "Published this computer's changes",
@@ -113,7 +114,11 @@ export function DeviceSyncBell() {
 
   const notices = status?.notices ?? [];
   const attention = notices.length > 0;
-  const dotClass = attention ? "bg-red-500" : status?.state === "waiting" || status?.state === "busy" ? "bg-amber-400" : null;
+  const dotClass = attention
+    ? "bg-red-500"
+    : status?.state === "waiting" || status?.state === "busy" || status?.state === "folder_unreachable"
+      ? "bg-amber-400"
+      : null;
 
   return (
     <div className="relative" ref={panelRef}>

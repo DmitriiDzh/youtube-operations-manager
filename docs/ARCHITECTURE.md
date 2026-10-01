@@ -2143,7 +2143,9 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
 **Data flow (one tick, every 30 s, from `src/instrumentation.ts`):**
 
 1. Gates:
-   - the toggle (`device_auto_sync_enabled`) and a configured Syncthing folder;
+   - the toggle (`device_auto_sync_enabled`) and a configured Syncthing folder that already
+     exists. Automatic sync never creates it, so an unplugged or renamed external drive gives
+     `folder_unreachable`, never snapshots written to a local folder no peer sees;
    - no operation lock, no recovery mode, no `RUNNING` batch, no `video_execution_locks` row.
 2. The folder is scanned. Only UUID-named directories count, which excludes the sync-gateway
    folders. An unreadable or incomplete snapshot is "pending": it is retried silently and noticed
