@@ -76,7 +76,7 @@ export function toAgeNormalizedBasisFlag(
  * might carry a signal either way. No real caller in this slice.
  *
  * IMPORTANT for 9H's future caller (corrected 2026-09-27, advisor review): never feed this two
- * successive raw first-page enumerations from `listUploadsPlaylistFirstPageVideoIds` (9B's own
+ * successive raw first-page enumerations from `listUploadsPlaylistFirstPage` (9B's own
  * uploads-playlist read, capped to the ≤50 newest videos by design) -- that would falsely flag a
  * channel's own Nth-newest video as "disappeared" every time a newer upload pushes it off the page
  * boundary, when nothing actually happened to it. The real caller must either (a) re-check each

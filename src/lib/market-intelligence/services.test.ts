@@ -733,6 +733,8 @@ function createFixture(overrides?: {
    * every pre-Phase-13 test exercises the original quota-spending path as the fallback. */
   feedVideos?: { videoId: string; title: string; publishedAt: string | null }[];
   batchStats?: PublicVideoSnapshot[];
+  playlistFails?: boolean;
+  playlistTitles?: Record<string, string>;
 }) {
   const store = createFakeStore();
   const feedCalls: unknown[] = [];
@@ -771,9 +773,14 @@ function createFixture(overrides?: {
               uploadsPlaylistId: null,
             };
       },
-      async listUploadsPlaylistFirstPageVideoIds(args: { credentials: ResolvedCredentials; uploadsPlaylistId: string }) {
+      async listUploadsPlaylistFirstPage(args: { credentials: ResolvedCredentials; uploadsPlaylistId: string }) {
         playlistCalls.push(args);
-        return overrides?.uploadsPlaylistVideoIds ?? [];
+        if (overrides?.playlistFails) throw new Error("playlistItems failed (test)");
+        return (overrides?.uploadsPlaylistVideoIds ?? []).map((videoId) => ({
+          videoId,
+          title: overrides?.playlistTitles?.[videoId] ?? "",
+          publishedAt: null,
+        }));
       },
       async getPublicVideoSnapshots(args: { credentials: ResolvedCredentials; videoIds: string[] }) {
         videoSnapshotCalls.push(args);
@@ -3562,50 +3569,70 @@ test("13.3: the market overview lists no breakout videos and no emerging channel
 });
 
 // ---------------------------------------------------------------------------
-// Phase 13 slices 13.5/13.6 (docs/roadmap/plans/PHASE_13_PLAN.md): video ids from the RSS feed (no
-// quota) and statistics from videos.batchGetStats (its own bucket) -- a watchlist channel then costs
-// exactly 1 unit of the shared pool (channels.list), instead of 3.
+// Phase 13 slices 13.5/13.6, as revised by review round 1: uploads list (with titles and publish
+// times) from the uploads playlist (1 unit, up to 50 -- full coverage), statistics from
+// videos.batchGetStats (own bucket). RSS (newest ~15, no quota) only when the playlist call fails;
+// videos.list only when batchGetStats fails. A channel normally costs 2 pool units, worst case 3.
 // ---------------------------------------------------------------------------
 
-test("13.5/13.6: with the RSS feed and batchGetStats available, a channel costs 1 pool unit and never calls playlistItems/videos.list", async () => {
+test("13.6: playlist + batchGetStats: 2 pool units, no videos.list; title/publish time from the playlist and batchGetStats", async () => {
   const now = new Date("2026-09-27T12:00:00.000Z");
-  const { store, services, playlistCalls, videoSnapshotCalls, feedCalls, batchStatsCalls } = createFixture({
+  const { store, services, videoSnapshotCalls, feedCalls, batchStatsCalls } = createFixture({
     now,
     publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
     uploadsPlaylistVideoIds: ["v1"],
-    feedVideos: [{ videoId: "v1", title: "From feed", publishedAt: "2026-09-20T00:00:00.000Z" }],
-    batchStats: [{ videoId: "v1", title: "", publishedAt: null, viewCount: 10, likeCount: 2, commentCount: 1 }],
+    playlistTitles: { v1: "From playlist" },
+    batchStats: [{ videoId: "v1", title: "", publishedAt: "2026-09-20T00:00:00.000Z", viewCount: 10, likeCount: 2, commentCount: 1 }],
   });
   store.setQuotaBudget(100);
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
 
   const result = await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
-  assert.deepEqual(result, { attempted: 1, succeeded: 1, failed: 0, quotaLimited: 0, unitsSpent: 1 });
-  assert.equal(feedCalls.length, 1);
+  assert.deepEqual(result, { attempted: 1, succeeded: 1, failed: 0, quotaLimited: 0, unitsSpent: 2 });
   assert.equal(batchStatsCalls.length, 1);
-  assert.equal(playlistCalls.length, 0);
   assert.equal(videoSnapshotCalls.length, 0);
+  assert.equal(feedCalls.length, 0, "RSS is only a fallback");
   const [snap] = store.videoSnapshots;
   assert.equal(snap.viewCount, 10);
-  assert.equal(snap.title, "From feed", "a title missing from batchGetStats comes from the feed");
+  assert.equal(snap.title, "From playlist", "batchGetStats returns no title (documented shape) -- it comes from the playlist");
   assert.equal(snap.publishedAt?.toISOString(), "2026-09-20T00:00:00.000Z");
   assert.equal(snap.source, "youtube.videos.batchGetStats");
 });
 
-test("13.6: if batchGetStats fails, the stats come from videos.list (1 pool unit) -- nothing is lost", async () => {
+test("13.6: if batchGetStats fails, statistics come from videos.list (1 more unit) -- nothing is lost", async () => {
   const now = new Date("2026-09-27T12:00:00.000Z");
   const { store, services, videoSnapshotCalls } = createFixture({
     now,
     publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
-    feedVideos: [{ videoId: "v1", title: "From feed", publishedAt: null }],
+    uploadsPlaylistVideoIds: ["v1"],
     publicVideoSnapshots: [{ videoId: "v1", title: "V1", publishedAt: null, viewCount: 7, likeCount: null, commentCount: null }],
   });
   store.setQuotaBudget(100);
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
   const result = await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
-  assert.equal(result.unitsSpent, 2);
+  assert.equal(result.unitsSpent, 3);
   assert.equal(videoSnapshotCalls.length, 1);
   assert.equal(store.videoSnapshots[0].source, "youtube.videos.list");
+  assert.equal(store.videoSnapshots[0].title, "V1");
+});
+
+test("13.5: if the uploads playlist call fails, the RSS feed (no quota) still supplies the newest uploads with titles", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { store, services, feedCalls } = createFixture({
+    now,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    playlistFails: true,
+    feedVideos: [{ videoId: "v1", title: "From feed", publishedAt: "2026-09-21T00:00:00.000Z" }],
+    batchStats: [{ videoId: "v1", title: "", publishedAt: null, viewCount: 4, likeCount: null, commentCount: null }],
+  });
+  store.setQuotaBudget(100);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  const result = await services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+  assert.equal(result.succeeded, 1);
+  assert.equal(result.unitsSpent, 2, "channels.list + the failed playlist call (charged); RSS and batchGetStats are free of the pool");
+  assert.equal(feedCalls.length, 1);
+  assert.equal(store.videoSnapshots[0].title, "From feed");
+  assert.equal(store.videoSnapshots[0].publishedAt?.toISOString(), "2026-09-21T00:00:00.000Z");
 });
 
 // Phase 13 slice 13.9 -- current-only Music chart (1 unit), cached in memory, never persisted.

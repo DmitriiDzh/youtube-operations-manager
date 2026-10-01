@@ -201,7 +201,7 @@ export type MarketTrendEvidence = {
  * discrepancy report (AGENTS.md §A) -- corrected 2026-09-27: whether the real YouTube Data API v3
  * can distinguish the two is actually UNDOCUMENTED and unverified (an earlier version of this
  * comment overstated it as "confirmed"), and this codebase's own real call
- * (`listUploadsPlaylistFirstPageVideoIds`) doesn't even request the API part that might carry a
+ * (`listUploadsPlaylistFirstPage`) doesn't even request the API part that might carry a
  * distinguishing signal. Auto-detecting a split with no confirmed evidence it exists would be
  * dishonest, not a "more complete" implementation of the spec's list.
  */

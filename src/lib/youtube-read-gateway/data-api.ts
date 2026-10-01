@@ -283,35 +283,34 @@ export async function listUploadsPlaylistVideoIds(youtube: youtube_v3.Youtube, u
   return videoIds;
 }
 
+
 /**
- * Phase 9 slice 9B -- exactly ONE `playlistItems.list` call (never paginates), for a
- * budget-conscious, repeatable competitor-video refresh capped to the newest ≤50 uploads (the
- * playlist is newest-first). Deliberately a separate function from `listUploadsPlaylistVideoIds`
- * above rather than an options-based variant of it (advisor review, before implementation): a
- * "collect up to N ids, possibly crossing a page boundary" option would leave its real YouTube
- * quota cost (1 or 2 `playlistItems.list` units, depending on how many of the first page's items
- * are valid) unobservable to the caller, silently under-counting real spend against the operator's
- * budget. Capping by PAGE instead makes the cost exactly and always 1 unit, deterministically.
+ * Phase 13 (review round 1): the uploads playlist's first page WITH each item's title and publish
+ * time -- `playlistItems.list` costs 1 unit whatever parts are requested, and `videos.batchGetStats`
+ * (which supplies the statistics) returns no title. Up to 50 newest uploads.
  */
-export async function listUploadsPlaylistFirstPageVideoIds(
+export async function listUploadsPlaylistFirstPage(
   youtube: youtube_v3.Youtube,
   uploadsPlaylistId: string
-): Promise<string[]> {
+): Promise<{ videoId: string; title: string; publishedAt: string | null }[]> {
   const res = await youtube.playlistItems.list({
-    part: ["contentDetails"],
+    part: ["snippet", "contentDetails"],
     playlistId: uploadsPlaylistId,
     maxResults: 50,
   });
-
   const seen = new Set<string>();
-  const videoIds: string[] = [];
+  const out: { videoId: string; title: string; publishedAt: string | null }[] = [];
   for (const item of res.data.items ?? []) {
     const videoId = item.contentDetails?.videoId;
     if (!videoId || seen.has(videoId)) continue;
     seen.add(videoId);
-    videoIds.push(videoId);
+    out.push({
+      videoId,
+      title: item.snippet?.title ?? "",
+      publishedAt: item.contentDetails?.videoPublishedAt ?? null,
+    });
   }
-  return videoIds;
+  return out;
 }
 
 export type PublicVideoSnapshot = {
@@ -367,7 +366,7 @@ export type PublicChannelSearchResult = {
 
 /**
  * Phase 9 slice 9C -- `search.list` (channel-type only), exactly ONE call, never paginates
- * (mirrors `listUploadsPlaylistFirstPageVideoIds`'s own precedent: capping by page keeps the real
+ * (mirrors `listUploadsPlaylistFirstPage`'s own precedent: capping by page keeps the real
  * cost exactly and always 1 call, deterministically, never silently doubling for a query whose
  * first page alone doesn't satisfy the caller). Since 2026-06-01 that call is 1 of the method's own
  * 100-calls-per-day bucket (Phase 13 slice 13.4; it used to cost 100 units of the shared pool), so
@@ -817,19 +816,22 @@ export async function getPublicVideoStatsBatch(youtube: youtube_v3.Youtube, vide
     });
     const items = (res.data as { items?: unknown[] } | null)?.items ?? [];
     for (const raw of items) {
+      // Documented response (videos/batchGetStats reference): `snippet` carries ONLY `publishTime` --
+      // no title. Statistics counts are numbers or numeric strings.
       const item = raw as {
         id?: string;
-        snippet?: { title?: string; publishedAt?: string };
-        statistics?: { viewCount?: string; likeCount?: string; commentCount?: string };
+        snippet?: { publishTime?: string };
+        statistics?: { viewCount?: string | number; likeCount?: string | number; commentCount?: string | number };
       };
       if (!item.id) continue;
+      const stat = (v: string | number | undefined) => (v === undefined ? null : parseStatCount(String(v)));
       results.push({
         videoId: item.id,
-        title: item.snippet?.title ?? "",
-        publishedAt: item.snippet?.publishedAt ?? null,
-        viewCount: parseStatCount(item.statistics?.viewCount),
-        likeCount: parseStatCount(item.statistics?.likeCount),
-        commentCount: parseStatCount(item.statistics?.commentCount),
+        title: "",
+        publishedAt: item.snippet?.publishTime ?? null,
+        viewCount: stat(item.statistics?.viewCount),
+        likeCount: stat(item.statistics?.likeCount),
+        commentCount: stat(item.statistics?.commentCount),
       });
     }
   }

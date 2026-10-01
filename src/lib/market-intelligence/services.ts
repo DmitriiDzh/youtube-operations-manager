@@ -418,18 +418,19 @@ type ServiceDependencies = {
       credentials: ResolvedCredentials;
       channelId: string;
     }): Promise<PublicChannelSnapshot | null>;
-    // Phase 9 slice 9B.
-    listUploadsPlaylistFirstPageVideoIds(args: {
+    // Phase 9 slice 9B; Phase 13: with each item's title and publish time (same 1 unit).
+    listUploadsPlaylistFirstPage(args: {
       credentials: ResolvedCredentials;
       uploadsPlaylistId: string;
-    }): Promise<string[]>;
+    }): Promise<{ videoId: string; title: string; publishedAt: string | null }[]>;
     getPublicVideoSnapshots(args: {
       credentials: ResolvedCredentials;
       videoIds: string[];
     }): Promise<PublicVideoSnapshot[]>;
     /** Phase 13 slice 13.9: YouTube's Trending Music chart for a region (1 unit). */
     getMostPopularMusicVideos(args: { credentials: ResolvedCredentials; regionCode: string }): Promise<MusicChartEntry[]>;
-    // Phase 13 slices 13.5/13.6 -- quota-free / own-bucket alternatives, each with a fallback.
+    // Phase 13 slices 13.5/13.6 -- the RSS feed is the zero-quota FALLBACK for the uploads list;
+    // batchGetStats (own bucket) is the primary source of statistics, videos.list its fallback.
     /** The channel's RSS feed (newest ~15 uploads): no quota at all. */
     listChannelFeedVideoIds(args: { channelId: string }): Promise<{ videoId: string; title: string; publishedAt: string | null }[]>;
     /** `videos.batchGetStats`: 1 unit of its own bucket, not the shared pool. */
@@ -679,13 +680,13 @@ function withheldEmergingChannel(researchChannelId: string): EmergingChannelAsse
 // `videos.list` are each a flat 1 unit regardless of requested parts, per the API's own published
 // quota table); a channel is attempted for at most these 3 real calls (enumeration is capped to a
 // single page, `getPublicVideoSnapshots` to a single ≤50-id batch -- see the read gateway's own
-// `listUploadsPlaylistFirstPageVideoIds` doc comment for why cost stays exactly 1 unit per call,
+// `listUploadsPlaylistFirstPage` doc comment for why cost stays exactly 1 unit per call,
 // deterministically, never dependent on how many ids happen to come back).
 const CHANNELS_LIST_UNIT_COST = 1;
 const PLAYLIST_ITEMS_LIST_UNIT_COST = 1;
 // This flat charge is only correct because `getPublicVideoSnapshots` is fed at most
 // `YOUTUBE_VIDEOS_LIST_BATCH_SIZE` (50) ids -- itself only true because
-// `listUploadsPlaylistFirstPageVideoIds` (the sole source of the ids passed here) caps its own
+// `listUploadsPlaylistFirstPage` (the sole source of the ids passed here) caps its own
 // single-page result to that same limit. If either constant ever changes independently of the
 // other, this flat 1-unit charge would silently under-count a real `videos.list` call that had to
 // batch into 2+ requests (found by independent review -- not currently reachable, since both call
@@ -1825,26 +1826,34 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
             createdVia: "web_ui",
           });
 
-          // Phase 13 slices 13.5/13.6: video ids from the channel's RSS feed (no quota), statistics
-          // from videos.batchGetStats (its own bucket). Each falls back to the original quota-spending
-          // call (playlistItems.list / videos.list, 1 pool unit each) only if it fails, so the
-          // worst case -- and therefore the budget pre-commit above -- is unchanged.
-          let videoIds: string[] | null = null;
-          const feedMetaById = new Map<string, { title: string; publishedAt: string | null }>();
-          try {
-            const feed = await deps.youtubeApi.listChannelFeedVideoIds({ channelId: researchChannelId });
-            videoIds = feed.map((v) => v.videoId);
-            for (const v of feed) feedMetaById.set(v.videoId, { title: v.title, publishedAt: v.publishedAt });
-          } catch {
-            if (snapshot.uploadsPlaylistId) {
-              unitsSpentThisChannel += PLAYLIST_ITEMS_LIST_UNIT_COST;
-              remaining -= PLAYLIST_ITEMS_LIST_UNIT_COST;
-              videoIds = await deps.youtubeApi.listUploadsPlaylistFirstPageVideoIds({
-                credentials,
-                uploadsPlaylistId: snapshot.uploadsPlaylistId,
-              });
+          // Phase 13 slices 13.5/13.6, as revised by review round 1: the uploads list (ids, titles,
+          // publish times) comes from the uploads playlist's first page -- 1 pool unit, up to 50 videos;
+          // the RSS feed (newest ~15, no quota) is its FALLBACK, so collection still finds uploads when
+          // that call fails (e.g. the pool is exhausted). Statistics come from videos.batchGetStats (its
+          // own bucket) with videos.list (1 pool unit) as the fallback. Worst case unchanged (3).
+          type ListedVideo = { videoId: string; title: string; publishedAt: string | null };
+          let listed: ListedVideo[] | null = null;
+          let playlistFailed = !snapshot.uploadsPlaylistId;
+          if (snapshot.uploadsPlaylistId) {
+            unitsSpentThisChannel += PLAYLIST_ITEMS_LIST_UNIT_COST;
+            remaining -= PLAYLIST_ITEMS_LIST_UNIT_COST;
+            try {
+              listed = await deps.youtubeApi.listUploadsPlaylistFirstPage({ credentials, uploadsPlaylistId: snapshot.uploadsPlaylistId });
+            } catch {
+              playlistFailed = true;
             }
           }
+          if (playlistFailed) {
+            try {
+              listed = await deps.youtubeApi.listChannelFeedVideoIds({ channelId: researchChannelId });
+            } catch {
+              // Neither source answered: no video step this time (videosRequested stays null).
+            }
+          }
+          const videoIds: string[] | null = listed ? listed.map((v) => v.videoId) : null;
+          const metaById = new Map<string, { title: string; publishedAt: string | null }>(
+            (listed ?? []).map((v) => [v.videoId, { title: v.title, publishedAt: v.publishedAt }])
+          );
 
           if (videoIds !== null) {
             videosRequested = videoIds.length;
@@ -1868,9 +1877,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
               // accurate even if a later iteration throws, since it only counts completed inserts.
               videosReturned = 0;
               for (const videoSnapshot of videoSnapshots) {
-                const feedMeta = feedMetaById.get(videoSnapshot.videoId);
-                const title = videoSnapshot.title.length > 0 ? videoSnapshot.title : (feedMeta?.title ?? "");
-                const publishedAt = videoSnapshot.publishedAt ?? feedMeta?.publishedAt ?? null;
+                const meta = metaById.get(videoSnapshot.videoId);
+                const title = videoSnapshot.title.length > 0 ? videoSnapshot.title : (meta?.title ?? "");
+                const publishedAt = videoSnapshot.publishedAt ?? meta?.publishedAt ?? null;
                 await deps.insertMarketVideoSnapshot({
                   id: deps.idGenerator(),
                   researchChannelId,

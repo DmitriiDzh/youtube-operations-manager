@@ -7,7 +7,7 @@ import {
   getPublicVideoStatsBatch,
   getMostPopularMusicVideos,
   listChannelFeedVideos,
-  listUploadsPlaylistFirstPageVideoIds,
+  listUploadsPlaylistFirstPage,
   searchPublicChannels,
 } from "@/lib/youtube-read-gateway";
 import type { ResolvedCredentials } from "../contracts";
@@ -31,9 +31,9 @@ export function createMarketIntelligenceYoutubeApiAdapter() {
       return getPublicChannelSnapshot(youtube, args.channelId);
     },
     // Phase 9 slice 9B (docs/roadmap/plans/PHASE_9_SLICE_9B_PLAN.md).
-    async listUploadsPlaylistFirstPageVideoIds(args: { credentials: ResolvedCredentials; uploadsPlaylistId: string }) {
+    async listUploadsPlaylistFirstPage(args: { credentials: ResolvedCredentials; uploadsPlaylistId: string }) {
       const youtube = await createAuthorizedClient(args.credentials);
-      return listUploadsPlaylistFirstPageVideoIds(youtube, args.uploadsPlaylistId);
+      return listUploadsPlaylistFirstPage(youtube, args.uploadsPlaylistId);
     },
     async getPublicVideoSnapshots(args: { credentials: ResolvedCredentials; videoIds: string[] }) {
       const youtube = await createAuthorizedClient(args.credentials);
