@@ -480,11 +480,12 @@ function createFakeStore() {
         createdVia: input.createdVia,
       });
     },
-    async touchMarketDiscoveryCandidateLastSeen(channelId: string, at: Date, title: string) {
+    async touchMarketDiscoveryCandidateLastSeen(channelId: string, at: Date, title: string, reasonDiscovered: string | null) {
       const row = discoveryCandidates.get(channelId);
       if (row) {
         row.lastSeenAt = at;
         row.title = title;
+        row.reasonDiscovered = reasonDiscovered;
       }
     },
     async setMarketDiscoveryCandidateStatus(channelId: string, status: DiscoveryCandidateStatus) {

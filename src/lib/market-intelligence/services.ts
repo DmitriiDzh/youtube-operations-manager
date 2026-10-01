@@ -512,7 +512,7 @@ type ServiceDependencies = {
     reasonDiscovered?: string | null;
     createdVia: string;
   }): Promise<void>;
-  touchMarketDiscoveryCandidateLastSeen(channelId: string, at: Date, title: string): Promise<void>;
+  touchMarketDiscoveryCandidateLastSeen(channelId: string, at: Date, title: string, reasonDiscovered: string | null): Promise<void>;
   setMarketDiscoveryCandidateStatus(channelId: string, status: DiscoveryCandidateStatus): Promise<void>;
   insertMarketDiscoveryRun(input: {
     query: string;
@@ -2030,7 +2030,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
           const existingCandidate = await deps.getMarketDiscoveryCandidateById(result.channelId);
           if (existingCandidate) {
-            await deps.touchMarketDiscoveryCandidateLastSeen(result.channelId, now, result.title);
+            await deps.touchMarketDiscoveryCandidateLastSeen(result.channelId, now, result.title, result.description);
             continue;
           }
 

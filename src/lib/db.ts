@@ -6087,11 +6087,13 @@ export async function touchMarketDiscoveryCandidateLastSeen(
   /** Phase 13 (review round 1): the fresh title from the same search -- the 30-day clock may only be
    * restarted by a real refresh of the API-sourced data, never by a timestamp bump alone. */
   title: string,
+  /** The fresh channel description from the same search (stored as `reason_discovered`). */
+  reasonDiscovered: string | null,
   database: AppDb = db
 ): Promise<void> {
   await database
     .update(marketDiscoveryCandidates)
-    .set({ lastSeenAt: at, title })
+    .set({ lastSeenAt: at, title, reasonDiscovered })
     .where(eq(marketDiscoveryCandidates.id, channelId));
 }
 

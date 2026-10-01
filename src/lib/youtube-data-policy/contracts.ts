@@ -89,7 +89,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   ),
   market_discovery_candidates: nonAuthorized(
     "last_seen_at",
-    "channel ids/titles returned by search.list; refreshed (title too) when a later search returns them again",
+    "channel ids/titles/descriptions returned by search.list; refreshed (title and description too) when a later search returns them again",
     {
       assignmentRecordKind: "discovery_candidate",
       // The operator's decision (watching / ignored / promoted / archived) is kept with the channel
