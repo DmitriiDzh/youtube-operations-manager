@@ -1031,7 +1031,14 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         | StoredMarketChannelSnapshotForService
         | undefined;
       const dataQualityFlags: DataQualityFlag[] = [];
-      const freshnessFlag = assessObservationFreshness(latestChannelSnapshot?.observedAt ?? null, deps.clock.now());
+      // Phase 13 (review rounds 9/11): API snapshots expire after 30 days, so an empty visible series can
+      // mean "collected long ago, since expired" rather than "never collected". The latter is
+      // `neverObserved`; the former is stale by definition (the policy window is shorter than the stale window).
+      const everCollectedSuccessfully =
+        channelSnapshotRows.length === 0 && (await deps.hasSuccessfulMarketIntelligenceCollectionRun(parsedInput.channelId));
+      const freshnessFlag = everCollectedSuccessfully
+        ? "stale_observation"
+        : assessObservationFreshness(latestChannelSnapshot?.observedAt ?? null, deps.clock.now());
       if (freshnessFlag) dataQualityFlags.push(freshnessFlag);
       if (latestChannelSnapshot) {
         const hiddenFlag = toHiddenSubscriberCountFlag(latestChannelSnapshot.hiddenSubscriberCount);
@@ -1058,9 +1065,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           // `getMarketOverview` below already reinvented independently rather than reading from here.
           // Phase 13 (review round 9): API snapshots expire after 30 days (III.E.4.d), so an empty
           // visible series alone no longer means "never observed" -- a past successful collection does.
-          neverObserved:
-            channelSnapshotRows.length === 0 &&
-            !(await deps.hasSuccessfulMarketIntelligenceCollectionRun(parsedInput.channelId)),
+          neverObserved: channelSnapshotRows.length === 0 && !everCollectedSuccessfully,
         },
         "get watchlist entry context output"
       );

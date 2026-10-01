@@ -88,9 +88,9 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
  *   number, no hardcoded default). `null`/unset means the repeatable competitor refresh is OFF; a
  *   real `<input type="range">` slider in the Settings tab is this value's own UI (never a
  *   locale-formatted display, `settings-input-widget-conventions`). The window this budget resets
- *   against is a plain UTC calendar day, deliberately not Pacific-Time-aligned like
- *   `cloudQuotaStatus` below (`AGENTS.md` §M: no cross-feature-module import for that
- *   day-boundary logic) -- never confuse the two numbers.
+ *   against is YouTube's quota day, midnight Pacific time (`startOfYoutubeQuotaDay` in the pure
+ *   `src/lib/youtube-quota` leaf, Phase 13 slice 13.4) -- the same boundary YouTube resets its own
+ *   quota on; `cloudQuotaStatus` below is still a separate, Cloud Monitoring number.
  * - `cloudQuotaStatus` -- read-only, not settable via `POST`: real Google Cloud quota
  *   limit/usage from the Cloud Monitoring API (`docs/decisions/0008-cloud-connection.md`'s
  *   follow-up, owner instruction 2026-09-22 -- "сколько максимальная квота... сколько из неё

@@ -3739,6 +3739,8 @@ test("P13: a channel collected successfully long ago, whose snapshots have expir
   const result = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
   assert.deepEqual(result.channelSnapshots, []);
   assert.equal(result.neverObserved, false);
+  // Review round 11: collected once, since expired -- stale, never a healthy-looking empty channel.
+  assert.deepEqual(result.dataQualityFlags, ["stale_observation"]);
 });
 
 test("P13: a channel whose only collection runs failed is still neverObserved", async () => {
