@@ -1432,4 +1432,74 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   or disableable independently.
 - **Status:** OPEN, accepted.
 
+## RISK-89 — Automatic device sync: residual limits — OPEN, accepted, 2026-10-01
+
+- **Affected components:** `src/lib/device-sync/`, `src/instrumentation.ts` (ADR 0012).
+- **Residual risks:**
+  - **Changes made just before a manual stop.** Changes from the last ~minute before a manual stop
+    (`stop.sh` / SIGTERM) are not published until this device's server runs again. There is
+    deliberately no export in signal handlers: a killed export leaves an operation lock that is
+    never auto-released. The idle shutdown does flush.
+  - **Only the web server syncs.** MCP/CLI writes made while the server is down are detected by the
+    fingerprint and published at the next server start.
+  - **Stale operation locks.** Automatic exports take the lock about once a minute. A process killed
+    mid-export by SIGTERM or `taskkill /F` used to leave a lock no one cleared. Two fixes from the
+    cross-system audit (2026-10-01):
+    - a lock held by a provably dead EXPORT process is cleared automatically
+      (`releaseStaleExportLock`, at each tick and at boot when a migration is due);
+    - a process start no longer takes the lock at all unless a migration is due, so MCP/CLI start
+      normally during an export.
+
+    A dead IMPORT or MIGRATION holder keeps the never-auto-release policy and still blocks mutations.
+    There is still no UI to clear it (`forceClearOperationLock` has no caller). That is
+    pre-existing, and rare since an import takes about a second.
+  - **Two tips from more than two devices** are reported as one divergence at a time.
+  - **Accepted fail-closed re-prompts (review round 2).** In the cases below, the computers ask a
+    human again instead of converging on their own:
+    - one computer resolves while the other keeps working before it sees the resolution;
+    - two computers resolve at the same time, even when they agree.
+
+    Nothing is overwritten, and every replaced state has a never-pruned backup
+    (`pre-take-theirs-*`, `pre-superseded-*`). Automatic convergence here would need
+    content-identity tracking, which proved unsafe under concurrent opposite resolutions.
+    Revisit if re-prompts are reported in practice. The resolution matrix is
+    `src/lib/device-sync/convergence.test.ts`. Every other case there must converge without a
+    prompt.
+  - **App updates that add a column with a non-NULL DEFAULT** to a transferred table read as a
+    local change once. The fingerprint ignores added nullable columns and newly transferred empty
+    tables (review round 4). If both computers are upgraded in between, this ends in one conflict
+    prompt. It fails closed, and nothing is lost.
+  - **Merge-transaction length grows with the Research history.** An import holds the write lock
+    for two full fingerprint scans. It measured 8 ms for three scans on the owner's DB on
+    2026-10-01. Other writers wait up to their 5 s `busy_timeout`. Revisit if the transferred
+    tables reach hundreds of thousands of rows.
+- **Why accepted:** each of these fails toward "ask a human" or "publish later", never toward
+  overwriting data (AC-AS-01/07).
+- **Trigger to revisit:** a reported lost change after a stop, or a stale lock in the field.
+- **Status:** OPEN, accepted.
+
+## RISK-90 — Batch lifecycle leaves unfinished Batches that the UI cannot finish — OPEN, 2026-10-01
+
+- **Affected components:** `src/lib/batches/services.ts`, `src/components/batch-manager.tsx`.
+- **What happens:**
+  - A systemic failure (e.g. 403 `quotaExceeded`) marks the remaining rows `ABORTED_SYSTEMIC`
+    without releasing their per-video locks.
+  - The identity-guardrail abort in `executeBatch` marks only the batch `ABORTED`. Its prepared rows
+    stay `AWAITING_EXECUTION` and keep their locks.
+  - "Run dry-run preview" on a LIVE batch calls Prepare, which leaves the batch `RUNNING` with
+    `AWAITING_EXECUTION` rows. The UI shows Execute only for `PENDING` batches.
+  - `recoverBatch` would clean up, but nothing in the app calls it.
+  - A live write with an ambiguous outcome leaves a row `UNKNOWN`. That is recovery mode
+    (RISK-16), and `resolveUnknownLedgerRow` is not reachable from the app either.
+- **Found during:** reviews of automatic device sync (BL-111), 2026-10-01. All of this predates
+  that feature.
+- **Actual risk:**
+  - Leaked locks block a new Batch on the same video.
+  - An unfinished Batch also pauses automatic device sync in both directions. The pause is
+    deliberate and fail-closed, with a notice; manual Merge-tab handoff still works.
+  - That pause has no in-app way out until the Batch can be finished.
+- **Why not fixed now:** this is a change to the Phase 5 write pipeline, which is safety-critical
+  (`AGENTS.md` §L). It needs its own task and acceptance criteria.
+- **Status:** OPEN.
+
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

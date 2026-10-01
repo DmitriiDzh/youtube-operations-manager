@@ -17,6 +17,7 @@ function readers(overrides: Partial<Parameters<typeof buildSettingsSnapshot>[0]>
     operationsWorkspacePath: async () => null,
     marketIntelligenceDailyQuotaBudgetUnits: async () => 500,
     operatorCliEnabled: async () => false,
+    deviceAutoSyncEnabled: async () => true,
     ...overrides,
   };
 }

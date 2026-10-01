@@ -28,6 +28,7 @@ import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
 import { ChannelConnectionsSettings } from "@/components/channel-connections-settings";
 import { SyncFolderSettings } from "@/components/sync-folder-settings";
+import { DeviceAutoSyncSettings } from "@/components/device-auto-sync-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
 import { EditorialProfilePanel } from "@/components/editorial-profile-panel";
 import { DeviceHandoffPanel } from "@/components/device-handoff-panel";
@@ -466,6 +467,9 @@ export default function Dashboard() {
           <FeatureErrorBoundary label="Settings — Sync">
             <SyncFolderSettings />
           </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Automatic device sync">
+            <DeviceAutoSyncSettings />
+          </FeatureErrorBoundary>
         </div>
 
         <div className={settingsSubTab === "about" ? "space-y-6" : "hidden"}>
@@ -479,7 +483,9 @@ export default function Dashboard() {
         <FeatureErrorBoundary label="Merge">
           <div className="max-w-3xl">
             <p className="mb-4 text-sm text-zinc-400">
-              Whole-database handoff (export/import) below is still one active device at a time.
+              Handoff data (Batches history, audit, Research, Decisions) now syncs automatically while
+              the app runs (Settings &rarr; Sync; the bell in the header shows its state and asks you
+              if both computers changed data). The manual export/import below remains as a fallback.
               Change drafts (Change Sets/AI proposals) are different: they now sync continuously in
               the background between devices sharing the same Syncthing folder, and any conflicting
               concurrent edit is listed here for you to review &mdash; nothing is ever silently

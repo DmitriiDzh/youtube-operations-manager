@@ -4,11 +4,15 @@ export {
   SnapshotError,
   type SnapshotManifest,
   type SnapshotFileEntry,
+  type SqlExecutor,
 } from "./contracts";
 export { parseSnapshotManifest, snapshotManifestSchema } from "./schemas";
 export {
   applySnapshotToDatabase,
   exportSnapshot,
+  hasUnfinishedBatch,
+  hasUnpublishedLocalChanges,
+  isFastForwardOf,
   listSnapshots,
   migrateStagedCopy,
   readLineageState,
@@ -23,10 +27,14 @@ export {
 export {
   createStagingDir,
   discardStagingDir,
+  LINEAGE_FILE_NAME,
   listPublishedSnapshotIds,
+  listSnapshotIdsStrict,
   publishSnapshot,
+  readLineageFile,
   readManifestFromDir,
   writeManifest,
 } from "./adapters/filesystem";
 export { sha256File } from "./adapters/checksum";
 export { scrubDatabaseCopy } from "./adapters/scrub";
+export { computeContentFingerprint, computeFileContentFingerprint } from "./adapters/fingerprint";

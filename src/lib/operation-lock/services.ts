@@ -121,3 +121,23 @@ export async function withOperationLock<T>(
     await releaseOperationLock(client);
   }
 }
+
+/**
+ * Automatic device sync, cross-system audit (2026-10-01): exports now take this lock about once a
+ * minute, so a process killed mid-export (SIGTERM during Next's shutdown, Windows `taskkill /F`)
+ * would routinely leave a lock no one clears -- blocking every mutation (and, before the boot fix,
+ * every process start). Releases the lock ONLY when it is an `export` lock whose holder process
+ * is provably gone. That is safe for exports specifically: an export never changes application data
+ * in the live DB (it copies it out); a killed one leaves at most an unpublished staging folder and
+ * a stale lineage pointer, which the next export supersedes. `import`/`migration` locks keep the
+ * original never-auto-release policy (decision 2b) -- an interrupted import is for a human.
+ */
+export async function releaseStaleExportLock(client: SqlExecutor): Promise<boolean> {
+  const lock = await getOperationLock(client);
+  if (!lock || lock.operationType !== "export" || isProcessAlive(lock.holderPid)) return false;
+  await execute(client, {
+    sql: "DELETE FROM app_operation_locks WHERE id = ? AND holder_pid = ? AND operation_type = 'export'",
+    args: [LOCK_ID, lock.holderPid],
+  });
+  return true;
+}

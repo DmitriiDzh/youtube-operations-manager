@@ -4,6 +4,7 @@ export {
   assertDeviceAvailableForMutation,
   assertNotInRecoveryMode,
   exportHandoff,
+  SUPERSEDED_BACKUP_PREFIX,
   importHandoff,
   isDeviceInRecoveryMode,
 } from "./services";

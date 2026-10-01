@@ -21,44 +21,140 @@ import { scrubDatabaseCopy } from "./adapters/scrub";
 import {
   createStagingDir,
   discardStagingDir,
+  LINEAGE_FILE_NAME,
   listPublishedSnapshotIds,
+  MAX_ANCESTORS,
   publishSnapshot,
+  readLineageFile,
   readManifestFromDir,
+  writeLineageFile,
   writeManifest,
 } from "./adapters/filesystem";
+import {
+  computeContentFingerprint,
+  computeFileContentFingerprint,
+  transferredTablesAreEmpty,
+} from "./adapters/fingerprint";
 import { readLineageState, writeLineageState, type LineageState } from "./adapters/lineage-store";
 
 /** Execution-ledger statuses where a real YouTube write may have been sent but the outcome is
  * not yet certain -- the only ones a device-handoff import must never silently resolve
  * (`PENDING`/`AWAITING_EXECUTION` are always safe: no write was ever attempted for them). */
 
+/**
+ * Row statuses of a Batch that is not finished: still executable (`AWAITING_EXECUTION` -- the execute
+ * route resumes such rows whatever the batch status) or mid-write (`APPLYING`/`UNKNOWN`).
+ */
+const UNFINISHED_ROW_STATUSES = ["AWAITING_EXECUTION", "APPLYING", "UNKNOWN"] as const;
+
+/**
+ * Automatic device sync (cross-system audit and its reviews, 2026-10-01): whether `schema` ("main"
+ * = the live DB, or an attached copy) holds an UNFINISHED Batch -- a batch still `RUNNING` (set at
+ * claim time, before any per-video lock exists) or any row in `UNFINISHED_ROW_STATUSES` (e.g. an
+ * identity-aborted batch leaves its prepared rows `AWAITING_EXECUTION`). Judged from transferred
+ * data only, never from the device-local `video_execution_locks` (some abort paths leak them,
+ * RISK-90): such a Batch must never be handed to another computer, which could execute it without
+ * the locks, and must never be replaced under a Prepare/Execute running here.
+ */
+export async function hasUnfinishedBatch(client: SqlExecutor, schema = "main"): Promise<boolean> {
+  const placeholders = UNFINISHED_ROW_STATUSES.map(() => "?").join(", ");
+  const result = (await client.execute({
+    sql:
+      `SELECT 1 FROM "${schema}".batches WHERE status = 'RUNNING' ` +
+      `UNION ALL SELECT 1 FROM "${schema}".batch_ledger_rows WHERE status IN (${placeholders}) LIMIT 1`,
+    args: [...UNFINISHED_ROW_STATUSES],
+  })) as { rows: unknown[] };
+  return result.rows.length > 0;
+}
+
+/** Same check on a standalone copy, through `ATTACH` on the caller's connection (Windows EBUSY). */
+async function fileHasUnfinishedBatch(client: SqlExecutor, dbPath: string): Promise<boolean> {
+  await client.execute({ sql: "ATTACH DATABASE ? AS unfinished_check", args: [dbPath] });
+  try {
+    return await hasUnfinishedBatch(client, "unfinished_check");
+  } finally {
+    await client.execute("DETACH DATABASE unfinished_check");
+  }
+}
+
+/** Newest-first, de-duplicated, capped ancestry list. */
+function mergeAncestors(...lists: Array<Array<string | null>>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const list of lists) {
+    for (const id of list) {
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        out.push(id);
+      }
+    }
+  }
+  return out.slice(0, MAX_ANCESTORS);
+}
+
 export async function exportSnapshot(params: {
   client: SqlExecutor;
   snapshotsDir: string;
   deviceId: string;
   schemaVersion: number;
+  /**
+   * "Keep this computer's data" (DEVICE_AUTO_SYNC_PLAN.md §3.6): publish the local state as the
+   * CHILD of another device's snapshot, so that device fast-forwards to it. The local lineage's own
+   * history stays in the ancestry too.
+   */
+  supersede?: { snapshotId: string; generation: number; ancestors: string[] };
+  /** Snapshots this one deliberately replaces by a human decision (see `SnapshotLineageFile`). */
+  supersedes?: string[];
+  /** `false`: never create `snapshotsDir` itself (automatic device sync). Default `true`. */
+  createSnapshotsDir?: boolean;
+  /**
+   * Automatic device sync: refuse to publish a copy holding an unfinished Batch -- a write
+   * mid-flight (`APPLYING`/`UNKNOWN`: the receiver would enter recovery mode) or a `RUNNING` batch
+   * (the receiver could resume it without this computer's per-video locks). Checked on the copy
+   * itself, after it is taken.
+   */
+  refuseUnresolvedExecution?: boolean;
 }): Promise<SnapshotManifest> {
   const lineage = await readLineageState(params.client);
   const snapshotId = randomUUID();
-  const generation = lineage.lastGeneration + 1;
+  const parentSnapshotId = params.supersede ? params.supersede.snapshotId : lineage.lastSnapshotId;
+  const generation = Math.max(lineage.lastGeneration, params.supersede?.generation ?? 0) + 1;
+  const ancestors = params.supersede
+    ? mergeAncestors([params.supersede.snapshotId], params.supersede.ancestors, [lineage.lastSnapshotId], lineage.ancestors ?? [])
+    : mergeAncestors([lineage.lastSnapshotId], lineage.ancestors ?? []);
 
-  const { dir: stagingDir } = await createStagingDir(params.snapshotsDir);
+  const { dir: stagingDir } = await createStagingDir(params.snapshotsDir, params.createSnapshotsDir ?? true);
   let published: SnapshotManifest;
+  let contentFingerprint: string;
   try {
     const dbDestPath = path.join(stagingDir, "data.db");
     await copyDatabaseConsistently(params.client, dbDestPath);
     await scrubDatabaseCopy(params.client, dbDestPath);
+    if (params.refuseUnresolvedExecution && (await fileHasUnfinishedBatch(params.client, dbDestPath))) {
+      throw new SnapshotError(
+        "snapshot_execution_in_flight",
+        "The copy holds an unfinished Batch; not publishing it until the Batch finishes."
+      );
+    }
+    // The fingerprint of the EXPORTED FILE, not of the live DB after the copy: a change that raced
+    // the copy is not in this snapshot, so it must still read as unpublished (AC-AS-05).
+    contentFingerprint = await computeFileContentFingerprint(params.client, dbDestPath);
     const { sha256, sizeBytes } = await sha256File(dbDestPath);
+    await writeLineageFile(stagingDir, { ancestors, supersedes: params.supersedes ?? [] });
+    const lineageFile = await sha256File(path.join(stagingDir, LINEAGE_FILE_NAME));
 
     const manifest: SnapshotManifest = {
       formatVersion: 1,
       snapshotId,
-      parentSnapshotId: lineage.lastSnapshotId,
+      parentSnapshotId,
       sourceDeviceId: params.deviceId,
       generation,
       schemaVersion: params.schemaVersion,
       createdAt: new Date().toISOString(),
-      files: [{ path: "data.db", sha256, sizeBytes }],
+      files: [
+        { path: "data.db", sha256, sizeBytes },
+        { path: LINEAGE_FILE_NAME, sha256: lineageFile.sha256, sizeBytes: lineageFile.sizeBytes },
+      ],
       complete: true,
     };
 
@@ -72,8 +168,44 @@ export async function exportSnapshot(params: {
     throw error;
   }
 
-  await writeLineageState(params.client, { lastSnapshotId: snapshotId, lastGeneration: generation });
+  await writeLineageState(params.client, {
+    lastSnapshotId: snapshotId,
+    lastGeneration: generation,
+    contentFingerprint,
+    ancestors,
+  });
   return published;
+}
+
+/**
+ * DEVICE_AUTO_SYNC_PLAN.md §3.1: `manifest` continues the local lineage without discarding
+ * anything the local head contains -- its parent IS the local head, the local head is among its
+ * recorded ancestors, or this device has no lineage yet.
+ */
+export function isFastForwardOf(
+  manifest: Pick<SnapshotManifest, "parentSnapshotId">,
+  ancestors: string[] | null,
+  local: Pick<LineageState, "lastSnapshotId">
+): boolean {
+  if (local.lastSnapshotId === null) return true;
+  if (manifest.parentSnapshotId === local.lastSnapshotId) return true;
+  return (ancestors ?? []).includes(local.lastSnapshotId);
+}
+
+/**
+ * DEVICE_AUTO_SYNC_PLAN.md §2: whether this device has changes to its transferred tables that are
+ * not in its lineage head. Fails toward "dirty": an unknown fingerprint (a lineage from before
+ * v36) is dirty; with no lineage at all, only completely empty transferred tables are clean.
+ */
+export async function hasUnpublishedLocalChanges(
+  client: SqlExecutor,
+  /** The current content fingerprint, when the caller already computed it (saves a full scan). */
+  currentFingerprint?: string
+): Promise<boolean> {
+  const lineage = await readLineageState(client);
+  if (lineage.lastSnapshotId === null) return !(await transferredTablesAreEmpty(client));
+  if (!lineage.contentFingerprint) return true;
+  return (currentFingerprint ?? (await computeContentFingerprint(client))) !== lineage.contentFingerprint;
 }
 
 async function pathExistsChecked(filePath: string): Promise<boolean> {
@@ -95,7 +227,18 @@ async function pathExistsChecked(filePath: string): Promise<boolean> {
 export async function verifySnapshotForImport(params: {
   snapshotDir: string;
   localLineage: LineageState;
-}): Promise<{ manifest: SnapshotManifest; isDuplicateOfCurrent: boolean }> {
+  /**
+   * "Take the other computer's data" (DEVICE_AUTO_SYNC_PLAN.md §3.6) -- an explicit human choice
+   * to discard this device's divergent history. Skips ONLY the lineage check; completeness and
+   * checksums are still verified.
+   */
+  acceptDivergentLineage?: boolean;
+}): Promise<{
+  manifest: SnapshotManifest;
+  isDuplicateOfCurrent: boolean;
+  ancestors: string[] | null;
+  supersedes: string[];
+}> {
   const manifest = await readManifestFromDir(params.snapshotDir);
 
   if (!manifest.complete) {
@@ -125,11 +268,14 @@ export async function verifySnapshotForImport(params: {
   }
 
   const local = params.localLineage;
+  const lineageFile = await readLineageFile(params.snapshotDir, manifest);
+  const ancestors = lineageFile?.ancestors ?? null;
   const isDuplicateOfCurrent = manifest.snapshotId === local.lastSnapshotId;
-  const isDirectChild = manifest.parentSnapshotId === local.lastSnapshotId;
-  const isFirstEverImport = local.lastSnapshotId === null;
+  // Direct child, a descendant several generations on (its recorded ancestry contains the local
+  // head, §3.1), or this device's very first import.
+  const continuesLocalLineage = isFastForwardOf(manifest, ancestors, local);
 
-  if (!isDuplicateOfCurrent && !isDirectChild && !isFirstEverImport) {
+  if (!isDuplicateOfCurrent && !continuesLocalLineage && !params.acceptDivergentLineage) {
     throw new SnapshotError(
       "snapshot_divergent_lineage",
       `Snapshot ${manifest.snapshotId} (generation ${manifest.generation}, parent ` +
@@ -146,7 +292,7 @@ export async function verifySnapshotForImport(params: {
     );
   }
 
-  return { manifest, isDuplicateOfCurrent };
+  return { manifest, isDuplicateOfCurrent, ancestors, supersedes: lineageFile?.supersedes ?? [] };
 }
 
 /**
@@ -212,7 +358,14 @@ async function getColumnNames(client: SqlExecutor, table: string): Promise<strin
 
 export async function applySnapshotToDatabase(
   liveClient: SqlExecutor,
-  stagedDbPath: string
+  stagedDbPath: string,
+  /**
+   * Automatic device sync, review round 2: steps that must run INSIDE the merge transaction, so no
+   * other connection's write can land between them and the merge (`BEGIN IMMEDIATE` holds the
+   * write lock until COMMIT). `beforeMerge` runs before the first DELETE and may throw to roll back
+   * with nothing changed; `afterMerge` runs after the last INSERT, before COMMIT. Neither may ATTACH.
+   */
+  hooks: { beforeMerge?: () => Promise<void>; afterMerge?: () => Promise<void> } = {}
 ): Promise<void> {
   // ATTACH must happen *before* any transaction is opened on this connection -- attaching a
   // new database file after `BEGIN` was found to fail with "database staged is locked"
@@ -235,6 +388,7 @@ export async function applySnapshotToDatabase(
     try {
       await liveClient.execute("BEGIN IMMEDIATE");
       try {
+        if (hooks.beforeMerge) await hooks.beforeMerge();
         // Review of the architecture-audit fixes (2026-10-01): a snapshot exported by an OLDER build
         // may lack a table that is transferred today (e.g. `video_edit_audit_events`, allowlisted
         // only from 2026-10-01 on; its scrub dropped it). Such a table is left exactly as it is on
@@ -253,6 +407,7 @@ export async function applySnapshotToDatabase(
           );
         }
 
+        if (hooks.afterMerge) await hooks.afterMerge();
         await liveClient.execute("COMMIT");
       } catch (error) {
         await liveClient.execute("ROLLBACK");

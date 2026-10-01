@@ -11,10 +11,11 @@ import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } 
 import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
 import {
   assertSupportedSchemaVersion,
+  readSchemaVersion,
   runSchemaMigrations,
   type SchemaMigration,
 } from "@/lib/schema-versioning";
-import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
+import { acquireOperationLock, OperationLockError, releaseOperationLock, releaseStaleExportLock } from "@/lib/operation-lock";
 import { getAgentSession } from "@/lib/agent-session";
 import { decodeStoredOAuthToken, encodeStoredOAuthToken } from "@/lib/oauth-token-crypto";
 
@@ -2205,6 +2206,20 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 36,
+    description:
+      "snapshot_lineage.content_fingerprint + ancestors_json -- automatic device sync (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §2/§3.1): what this device's transferred tables looked like at its lineage head, and that head's ancestry. Device-local.",
+    apply: async (client) => {
+      for (const column of ["content_fingerprint", "ancestors_json"]) {
+        try {
+          await client.execute(`ALTER TABLE snapshot_lineage ADD COLUMN ${column} TEXT`);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -2490,6 +2505,35 @@ export async function initializeDatabaseSchema(
   });
 }
 
+/**
+ * Boot-time migration lock (RISK-20), taken ONLY when this boot has migrations to run -- see the
+ * comment in `initializeDatabase`. Returns whether the lock was acquired (the caller releases it).
+ * Waits for a busy lock (an export takes about a second) and clears a provably dead export's lock;
+ * gives up with the original `OperationLockError` after `attempts` waits. Exported for tests.
+ */
+export async function acquireMigrationLockIfDue(
+  client: Client,
+  options: { currentVersion?: number; attempts?: number; waitMs?: number } = {}
+): Promise<boolean> {
+  const currentVersion = options.currentVersion ?? SCHEMA_CURRENT_VERSION;
+  const attempts = options.attempts ?? 30;
+  const waitMs = options.waitMs ?? 1_000;
+  // A failed read counts as "due": the locked path is the conservative one.
+  const stampedVersion = await readSchemaVersion(client).catch(() => null);
+  if (stampedVersion !== null && stampedVersion >= currentVersion) return false;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await acquireOperationLock(client, "migration");
+      return true;
+    } catch (error) {
+      if (isMissingTableError(error)) return false;
+      if (!(error instanceof OperationLockError) || attempt >= attempts) throw error;
+      if (await releaseStaleExportLock(client).catch(() => false)) continue;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+}
+
 async function initializeDatabase() {
   await migrateLegacyDatabaseIfNeeded();
 
@@ -2501,13 +2545,14 @@ async function initializeDatabase() {
   // that version, the lock table doesn't exist yet, so there is structurally nothing to lock
   // with. That one bootstrap-to-v2 step proceeds unlocked (a low-risk, one-time, idempotent
   // CREATE TABLE); every later boot, once the lock table exists, is properly serialized.
-  let lockAcquired = false;
-  try {
-    await acquireOperationLock(rawClient, "migration");
-    lockAcquired = true;
-  } catch (error) {
-    if (!isMissingTableError(error)) throw error;
-  }
+  //
+  // Automatic device sync, cross-system audit (2026-10-01): the lock is taken ONLY when this boot
+  // actually has migrations to run. Exports now hold the same lock about once a minute; taking it
+  // on every boot made any MCP/CLI process that started during one fail its database
+  // initialization for its whole lifetime. A boot with nothing to migrate only runs idempotent
+  // `IF NOT EXISTS` DDL, which needs no serialization against export/import. When a migration is
+  // due and the lock is busy, wait for it (an export takes about a second) instead of failing.
+  const lockAcquired = await acquireMigrationLockIfDue(rawClient);
 
   try {
     await initializeDatabaseSchema(rawClient, {
@@ -3152,6 +3197,33 @@ export async function getOperatorCliEnabled(): Promise<boolean> {
 
 export async function setOperatorCliEnabled(enabled: boolean): Promise<void> {
   await setAppSetting(OPERATOR_CLI_ENABLED_SETTING_KEY, enabled ? "true" : "false");
+}
+
+const DEVICE_AUTO_SYNC_ENABLED_SETTING_KEY = "device_auto_sync_enabled";
+const DEVICE_SYNC_STATUS_SETTING_KEY = "device_sync_status";
+
+/**
+ * Automatic device sync (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md §3.7) -- ON unless the
+ * operator turned it off (the owner asked for sync to stop needing manual steps). Persistent,
+ * device-local like every `app_settings` row.
+ */
+export async function getDeviceAutoSyncEnabled(): Promise<boolean> {
+  return (await getAppSetting(DEVICE_AUTO_SYNC_ENABLED_SETTING_KEY)) !== "false";
+}
+
+export async function setDeviceAutoSyncEnabled(enabled: boolean): Promise<void> {
+  await setAppSetting(DEVICE_AUTO_SYNC_ENABLED_SETTING_KEY, enabled ? "true" : "false");
+}
+
+/** The automatic sync's own last-known state (JSON, owned by `src/lib/device-sync`). Stored rather
+ * than kept in memory: Next.js route handlers and the instrumentation scheduler are separate
+ * bundles and do not share module state. */
+export async function getDeviceSyncStatusJson(): Promise<string | null> {
+  return getAppSetting(DEVICE_SYNC_STATUS_SETTING_KEY);
+}
+
+export async function setDeviceSyncStatusJson(value: string): Promise<void> {
+  await setAppSetting(DEVICE_SYNC_STATUS_SETTING_KEY, value);
 }
 
 const DATA_API_READS_ENABLED_SETTING_KEY = "data_api_reads_enabled";

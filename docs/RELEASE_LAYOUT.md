@@ -87,6 +87,16 @@ never touched.
 
 ## 4. Device-switching procedure (Variant A: one active device at a time)
 
+**Automatic since 2026-10-01** (`docs/decisions/0012-automatic-device-sync.md`). While the app
+runs and a Syncthing folder is configured, it publishes this device's changes about once a minute.
+It also loads the other device's newer snapshot by itself, whenever this device has no unpublished
+changes of its own.
+- If both devices changed data, nothing is overwritten. The header bell asks which device's data
+  to keep.
+- **Settings → Sync → Automatic device sync** turns this off.
+- The manual procedure below is the fallback. It is unchanged.
+
+
 **On the device finishing work:**
 
 1. Open the **Device** tab → **Export handoff**.

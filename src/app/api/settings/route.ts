@@ -8,6 +8,7 @@ import {
   getAnalyticsReadsEnabled,
   getAnalyticsSyncSettings,
   getDataApiReadsEnabled,
+  getDeviceAutoSyncEnabled,
   getGatewayTrafficLast24h,
   getLiveWritesEnabled,
   getMcpConnectionEnabled,
@@ -16,6 +17,7 @@ import {
   setAnalyticsReadsEnabled,
   setAnalyticsSyncSettings,
   setDataApiReadsEnabled,
+  setDeviceAutoSyncEnabled,
   setLiveWritesEnabled,
   setMcpConnectionEnabled,
   setOperatorCliEnabled,
@@ -35,6 +37,8 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
  *   web server starts and when it shuts down (`src/instrumentation.ts`), regardless of what was
  *   last saved;
  *   turning this on is layer 1 of the two-layer live-write barrier, not the write itself.
+ * - `deviceAutoSyncEnabled` -- automatic device sync (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md
+ *   §3.7). On by default, persistent, device-local.
  * - `operatorCliEnabled` -- Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md 12.5): whether the CLI
  *   may run without an agent token (as the operator). Off by default, persistent.
  * - `mcpConnectionEnabled` -- the single gate for whether an MCP client sees ANY tool at all
@@ -108,6 +112,7 @@ async function getSettingsSnapshot() {
     operationsWorkspacePath: () => getOperationsWorkspacePath(),
     marketIntelligenceDailyQuotaBudgetUnits: () => marketIntelligenceCore.getDailyQuotaBudgetUnits(),
     operatorCliEnabled: () => getOperatorCliEnabled(),
+    deviceAutoSyncEnabled: () => getDeviceAutoSyncEnabled(),
   });
 }
 
@@ -222,6 +227,9 @@ export async function POST(request: Request) {
   }
   if (typeof body.operatorCliEnabled === "boolean") {
     await setOperatorCliEnabled(body.operatorCliEnabled);
+  }
+  if (typeof body.deviceAutoSyncEnabled === "boolean") {
+    await setDeviceAutoSyncEnabled(body.deviceAutoSyncEnabled);
   }
   if (typeof body.dataApiReadsEnabled === "boolean") {
     await setDataApiReadsEnabled(body.dataApiReadsEnabled);

@@ -433,8 +433,9 @@ decision: `docs/decisions/0002-additive-schema-versioning.md`.
 
 Makes the application safe to run alternately on Windows and macOS, with Syncthing as an
 external file-transport only (never a database), under a strict single-active-device model
-(Variant A — no simultaneous multi-device editing, no application-managed sync, no automatic
-database merging). Four new leaf/near-leaf modules plus one small domain-adjacent module:
+(Variant A — no simultaneous multi-device editing, no automatic database merging). Since
+2026-10-01 the handoff itself is scheduled automatically (§23, ADR 0012), but it is still one writer
+at a time and Syncthing is still the only transport. Four new leaf/near-leaf modules plus one small domain-adjacent module:
 
 ```text
 src/lib/platform-paths/    — pure resolveAppPaths(platform, env, homedir); zero I/O
@@ -2132,3 +2133,117 @@ low-severity divergences, recorded here as the actual rules rather than changed.
   - Both write device-local state only, which is never part of a snapshot. They are therefore not
     behind the method-based mutation gate. The equivalent MCP/CLI selection actions are
     operator-only and gated.
+
+## 23. Automatic device sync (`src/lib/device-sync/`) — ADR 0012, branch `feature/device-auto-sync`
+
+**Purpose.** Removes the manual export/import from the §13 handoff without changing its
+single-writer, whole-copy semantics. Plan and acceptance criteria:
+`docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md` (AC-AS-01..15).
+
+**Data flow (one tick, every 30 s, from `src/instrumentation.ts`):**
+
+1. Gates:
+   - the toggle (`device_auto_sync_enabled`) and a configured Syncthing folder that already
+     exists. Automatic sync never creates it, so an unplugged or renamed external drive gives
+     `folder_unreachable`, never snapshots written to a local folder no peer sees;
+   - no live operation lock (a dead export's lock is cleared first) and no recovery mode;
+   - an unfinished Batch in this computer's data pauses sync both ways, with a `batch_in_progress`
+     notice. `hasUnfinishedBatch` checks for a `RUNNING` batch or rows
+     `AWAITING_EXECUTION`/`APPLYING`/`UNKNOWN`. It is judged on transferred data, not on the
+     device-local locks, which some abort paths leak (RISK-90). The same predicate refuses an
+     unfinished copy (`refuseUnresolvedExecution`) and is re-checked inside the lock before every
+     import and export.
+2. The folder is scanned. Only UUID-named directories count, which excludes the sync-gateway
+   folders. An unreadable or incomplete snapshot is "pending": it is retried silently and noticed
+   after 10 minutes.
+3. `hasUnpublishedLocalChanges`: the current content fingerprint is compared with
+   `snapshot_lineage.content_fingerprint`.
+   - The fingerprint is a SHA-256 over every table `SNAPSHOT_REPLACE_ON_IMPORT_TABLES` names. Rows
+     are sorted by all columns, and each row is hashed as its non-NULL `column=value` pairs. A
+     missing table hashes like an empty one. So rowids and physical column order do not matter, and
+     a migration that adds a nullable column or a new transferred table leaves it unchanged.
+   - Export records the fingerprint of the exported file itself, so a write racing the copy stays
+     dirty.
+   - Import records it from the live DB inside the lock.
+   - An unknown fingerprint (a pre-v36 lineage) counts as dirty. No lineage counts as clean only
+     when every transferred table is empty.
+4. `decideSyncAction` (pure):
+   - "Known" is the local head plus its ancestry: recorded `ancestors_json`, `lineage.json`, and
+     parent pointers through every manifest in the folder.
+   - "Newer" means other devices' snapshots that are not known. Of those, only the tips count.
+   - No tips: export if dirty, otherwise idle.
+   - One tip that is a fast-forward, with local clean: import.
+   - A newer schema: `update_app`.
+   - Anything else: divergence.
+5. Actions go through the existing `exportHandoff` / `importHandoff`. `assertStillSafe` re-checks
+   the gates, and the fingerprint for an import, inside the operation lock, right before anything
+   is written. In a divergence, local unpublished changes are still published on their own branch,
+   so the other computer sees the conflict too.
+
+**Resolution (human only, via the bell → `POST /api/device-sync/resolve`):**
+- Both actions accept only a CURRENT conflicting peer tip.
+- `keep_mine` exports with `supersede` (parent = the named tip; ancestry = every current peer tip
+  and its history, plus the local one), so every peer fast-forwards.
+- `take_theirs` imports with `acceptDivergentLineage`, using its own backup prefix
+  `pre-take-theirs-`, which is never pruned. If this device had already published its own branch,
+  it then publishes a marker: the adopted state again, with that branch as ancestors. So the peer
+  sees a fast-forward.
+- Resolutions never delete from the shared folder. A deletion propagates asynchronously and looks
+  like "not arrived yet". Review round 2 showed two opposite resolutions made at the same time then
+  left both computers "synced" with swapped data. Markers fail closed instead: both computers ask
+  again.
+- `lineage.json` `supersedes` lists what a resolution replaces: the peer tips for `keep_mine`, the
+  own abandoned branch for a marker. It never widens the fast-forward rule. It only makes the
+  receiving import keep a `pre-superseded-*` backup, which is never pruned, when its head is
+  replaced.
+- **Import atomicity (round 2).** Three things run inside `applySnapshotToDatabase`'s
+  `BEGIN IMMEDIATE`, via hooks:
+  1. "Live content still equals the pre-import backup's", plus the caller's re-checks, before
+     the first DELETE.
+  2. The merged content's fingerprint.
+  3. The lineage pointer, before COMMIT.
+
+  A write that lands between the backup and the merge aborts the import with
+  `snapshot_local_changed_during_import`, and nothing is replaced.
+- A snapshot whose data fails schema migration is remembered in the status and reported as
+  `update_app`, never retried.
+- All actions on one runner are serialized. The runner is a `globalThis` singleton shared by the
+  scheduler and the routes.
+- The decision uses exactly the fast-forward rule `verifySnapshotForImport` enforces. An
+  older-build chain without `lineage.json` is caught up one direct child at a time.
+- `src/lib/device-sync/convergence.test.ts` runs the resolution matrix with one folder per device
+  and delayed propagation:
+  - {keep, take} on A × {keep, take, none} on B;
+  - sequential and simultaneous;
+  - with and without further work;
+  - plus a third device.
+
+  The invariant: identical content and no notices, or someone is asked; never lost without a
+  backup.
+
+**Retention.**
+- This device's own snapshots: the newest 5 plus the head.
+- `pre-auto-import-*` backups: the newest 10.
+- Another device's files are never touched, since Syncthing would propagate the deletion.
+
+**Why a dedicated DB connection.** `importHandoff`'s `BEGIN IMMEDIATE` on the shared
+`rawSqlClient` would absorb any unrelated in-process write issued meanwhile, such as the Live-writes
+lease renewal or a draft cycle. On its own connection, such a write just waits for the busy
+timeout.
+
+**Draft cycle.** `runAllSyncFamiliesOnce` (sync-gateway) is shared by the "Sync now" route and
+the scheduler. It runs every 60 s under the same gate the route gets from `src/proxy.ts`, and it is
+NOT tied to the device-sync toggle (§M). Instrumentation and route bundles may not share module
+state, so these are held per process via `globalThis`:
+- the run-all single-flight guard;
+- the three production sync cores, which keeps the existing "adopt peer" vs cycle exclusion real.
+
+**Boot.** `initializeDatabase` takes the migration lock only when a migration is due
+(`acquireMigrationLockIfDue`). It waits for a busy lock and clears a dead export's lock.
+
+**Not done, by design.**
+- No export in SIGINT/SIGTERM handlers, because a killed export leaves a never-auto-released
+  operation lock. The idle shutdown does flush, since nothing is in flight.
+- No concurrent editing.
+
+See RISK-89.

@@ -5,5 +5,6 @@ export {
   forceClearOperationLock,
   getOperationLock,
   releaseOperationLock,
+  releaseStaleExportLock,
   withOperationLock,
 } from "./services";

@@ -702,7 +702,9 @@ test("readLineageState returns null/0 for a device that has never exported or im
   withTempDir("snapshot-test-", async (dir) => {
     const client = await makeClient(dir, "source.db");
     const state = await readLineageState(client);
-    assert.deepEqual(state, { lastSnapshotId: null, lastGeneration: 0 });
+    // Schema v36 (DEVICE_AUTO_SYNC_PLAN.md §2) adds two fields; for a device with no lineage they
+    // are "fingerprint unknown" and "no ancestors" -- the null/0 requirement itself is unchanged.
+    assert.deepEqual(state, { lastSnapshotId: null, lastGeneration: 0, contentFingerprint: null, ancestors: [] });
     client.close();
   }));
 

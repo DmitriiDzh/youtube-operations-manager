@@ -16,10 +16,10 @@ import { createChangeDraftsSyncCore, type ChangeDraftsSyncCore } from "./service
 // mirrors `src/app/api/device-handoff/shared.ts`'s own module-level `bootstrapConfigStore`
 // singleton for the same reason (shared state that must outlive one request).
 //
-// This guarantee depends on all THREE current callers -- `/api/change-drafts/sync`,
-// `/api/change-drafts/conflicts-summary`, and `/api/channels/[channelId]/change-drafts/
-// adopt-peer` -- resolving `import "@/lib/sync-gateway"` to the same module instance
-// within one running server process. Verified by reasoning about Node.js-runtime module caching
+// This guarantee covers every caller -- `/api/change-drafts/sync`, `/api/change-drafts/
+// conflicts-summary`, `/api/channels/[channelId]/change-drafts/adopt-peer`, and (since 2026-10-01)
+// the server-side scheduler -- because the instance is held per PROCESS (below). Before that it
+// relied on all callers resolving the same module instance. Verified by reasoning about Node.js-runtime module caching
 // (this app runs as a persistent `next dev`/`next start` Node server, never as isolated
 // per-route serverless functions, where ES module imports of the same resolved path are cached
 // once per process regardless of how many files import it) and by the pre-existing, identically-
@@ -27,14 +27,21 @@ import { createChangeDraftsSyncCore, type ChangeDraftsSyncCore } from "./service
 // dedicated cross-route runtime assertion. If this app is ever deployed to a topology that
 // isolates each API route into its own module scope (e.g. true serverless functions), this
 // singleton -- and the mutual-exclusion it provides -- would silently stop working across routes.
-let productionCore: ChangeDraftsSyncCore | undefined;
+// Memoized on `globalThis`, not in module scope (device-sync cross-system audit, 2026-10-01): the
+// server-side scheduler (`src/instrumentation.ts`) is compiled separately from the route handlers,
+// so a module-level singleton could give it a DIFFERENT instance -- and a different single-flight
+// guard -- than the "adopt peer"/"Sync now" routes, letting a cycle and an adoption write the same
+// `<deviceId>.automerge` file at once. One instance per process keeps that exclusion real.
+const PRODUCTION_KEY = Symbol.for("ytom.syncGateway.changeDraftsSyncCore");
+type GlobalWithInstance = typeof globalThis & { [PRODUCTION_KEY]?: ChangeDraftsSyncCore };
+const productionHolder = globalThis as GlobalWithInstance;
 
 export function createChangeDraftsSyncCoreForProduction(): ChangeDraftsSyncCore {
-  if (!productionCore) {
+  if (!productionHolder[PRODUCTION_KEY]) {
     const paths = getProductionAppPaths();
     const changeDrafts = createChangeDraftsCoreForProduction();
 
-    productionCore = createChangeDraftsSyncCore({
+    productionHolder[PRODUCTION_KEY] = createChangeDraftsSyncCore({
       bootstrapConfig: createBootstrapConfigStore(paths.bootstrapConfigPath),
       localFallbackDir: paths.changeDraftsSyncFallbackDir,
       listChannelIds: async () => (await listStoredChannels()).map((channel) => channel.channelId),
@@ -47,7 +54,7 @@ export function createChangeDraftsSyncCoreForProduction(): ChangeDraftsSyncCore 
       logger: createDefaultLogger(),
     });
   }
-  return productionCore;
+  return productionHolder[PRODUCTION_KEY];
 }
 
 export { createChangeDraftsSyncCore } from "./services";
