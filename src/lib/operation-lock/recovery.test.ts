@@ -145,3 +145,52 @@ test("recoverable initializer: a failed start is retried on a later call, not be
   await initializer.get(); // success is never restarted
   assert.equal(calls, 2);
 });
+
+// wait-idle: the launchers' "never kill the server mid-operation" check.
+function fakeClock() {
+  let t = 0;
+  return { now: () => t, sleep: async (ms: number) => void (t += ms) };
+}
+
+test("wait-idle: no lock means safe to stop immediately", () =>
+  withLockedDb(null, async (client) => {
+    assert.equal(await runOperationLockCli(["wait-idle"], client, () => undefined, () => true, fakeClock()), 0);
+  }));
+
+test("wait-idle: a lock whose holder is gone does not block stopping, and is left in place", () =>
+  withLockedDb({ type: "migration", pid: 26912, at: ACQUIRED_AT }, async (client) => {
+    const lines: string[] = [];
+    assert.equal(await runOperationLockCli(["wait-idle"], client, (l) => lines.push(l), () => false, fakeClock()), 0);
+    assert.match(lines.join("\n"), /interrupted run \(process 26912 is gone\)/);
+    assert.notEqual(await getOperationLock(client), null);
+  }));
+
+test("wait-idle: waits for a running operation, then reports safe once it releases the lock", () =>
+  withLockedDb({ type: "import", pid: 26912, at: ACQUIRED_AT }, async (client) => {
+    const clock = fakeClock();
+    let sleeps = 0;
+    const timing = {
+      now: clock.now,
+      sleep: async (ms: number) => {
+        await clock.sleep(ms);
+        if (++sleeps === 3) await client.execute("DELETE FROM app_operation_locks");
+      },
+    };
+    const lines: string[] = [];
+    assert.equal(await runOperationLockCli(["wait-idle", "--timeout", "30"], client, (l) => lines.push(l), () => true, timing), 0);
+    assert.equal(sleeps, 3);
+    assert.match(lines[0], /Waiting for the running import operation/);
+  }));
+
+test("wait-idle: still running after the timeout means do NOT stop (exit 1), and the lock is untouched", () =>
+  withLockedDb({ type: "migration", pid: 26912, at: ACQUIRED_AT }, async (client) => {
+    const lines: string[] = [];
+    assert.equal(await runOperationLockCli(["wait-idle", "--timeout", "5"], client, (l) => lines.push(l), () => true, fakeClock()), 1);
+    assert.match(lines.join("\n"), /still running after 5s; not stopping the app/);
+    assert.notEqual(await getOperationLock(client), null);
+  }));
+
+test("wait-idle: an invalid timeout is a usage error", () =>
+  withLockedDb(null, async (client) => {
+    assert.equal(await runOperationLockCli(["wait-idle", "--timeout", "abc"], client, () => undefined, () => true, fakeClock()), 2);
+  }));

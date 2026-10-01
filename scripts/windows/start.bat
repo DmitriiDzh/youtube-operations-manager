@@ -27,6 +27,23 @@ if not exist ".env.local" (
   exit /b 1
 )
 
+REM Already running? Stop the old instance first (same principle as scripts/macos/start.sh): a second
+REM instance cannot bind the port, and the browser would otherwise open the OLD server -- possibly on
+REM a stale build. stop.bat waits for any running export/import/migration before stopping, and
+REM refuses (exit code 1) if one does not finish; then nothing is started or rebuilt over it.
+REM Note: whatever listens on port 3000 is stopped, exactly as stop.bat has always done.
+set "PORT_BUSY="
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr /C:":3000 " ^| findstr LISTENING') do set "PORT_BUSY=1"
+if defined PORT_BUSY (
+  echo Port 3000 is already in use - stopping the running instance first...
+  call "%~dp0stop.bat" /noconfirm
+  if errorlevel 1 (
+    echo [ERROR] The running instance could not be stopped safely - not starting a second one.
+    pause
+    exit /b 1
+  )
+)
+
 if not exist "node_modules" (
   echo Installing dependencies ^(first run only, this can take a few minutes^)...
   call npm install

@@ -13,7 +13,7 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-"$(dirname "$0")/stop.sh"
+"$(dirname "$0")/stop.sh" || exit 1
 
 echo "Installing dependencies for this version..."
 npm install

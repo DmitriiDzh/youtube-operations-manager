@@ -1,5 +1,12 @@
 #!/bin/sh
 # YouTube Operations Manager - macOS stop script.
+#
+# Stops the running server -- but never in the middle of an export/import/schema migration: an
+# interrupted one is exactly what leaves a stuck operation lock. Same principles as
+# scripts/windows/stop.bat (keep the two in step): (1) find the listener on port 3000, (2) wait for
+# any RUNNING operation to finish (`operation-lock wait-idle`; refuse to stop if it does not within
+# 2 minutes), (3) stop the process, (4) confirm the port is actually free. Exit code 0 = nothing
+# left running, 1 = not stopped (start.sh/update.sh must not go on).
 cd "$(dirname "$0")/../.."
 PIDFILE="$(pwd)/.launcher.pid"
 
@@ -11,6 +18,12 @@ echo "Stopping YouTube Operations Manager..."
 PORT_PIDS=$(lsof -ti tcp:3000 2>/dev/null || true)
 
 if [ -n "$PORT_PIDS" ]; then
+  echo "Checking that no export, import or database migration is running..."
+  if ! npm run --silent operation-lock -- wait-idle --timeout 120; then
+    echo "[ERROR] The application was NOT stopped: a running operation did not finish (or could not be checked)."
+    echo "        Stopping it now could leave a stuck lock. Wait and try again, or see the /recovery page."
+    exit 1
+  fi
   for PID in $PORT_PIDS; do
     if kill "$PID" 2>/dev/null; then
       echo "Sent stop signal to process $PID (listening on port 3000)."
@@ -38,4 +51,5 @@ if [ -n "$PORT_PIDS" ]; then
     sleep 1
   done
   echo "[WARN] Port 3000 is still in use after waiting -- the process may need more time, or a manual kill (lsof -ti tcp:3000)."
+  exit 1
 fi
