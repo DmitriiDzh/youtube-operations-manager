@@ -209,7 +209,7 @@ async function isExistingDirectory(dir: string): Promise<boolean> {
 class SyncAbort extends Error {
   constructor(
     message: string,
-    readonly reason: "busy" | "local_changed" | "nothing_to_export" = "busy"
+    readonly reason: "busy" | "local_changed" | "nothing_to_export" | "folder_unreachable" = "busy"
   ) {
     super(message);
   }
@@ -313,7 +313,9 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       assertStillSafe: async () => {
         // Re-checked inside the lock: the drive may have been ejected since the tick's own check
         // (round 6) -- e.g. during a "take theirs" import, before its marker export.
-        if (!(await isExistingDirectory(config.folder))) throw new SyncAbort("the sync folder is not reachable");
+        if (!(await isExistingDirectory(config.folder))) {
+          throw new SyncAbort("the sync folder is not reachable", "folder_unreachable");
+        }
         const active = await hasActiveExecution(deps.client);
         if (active) throw new SyncAbort(active);
         if (requireDirty && !(await hasUnpublishedLocalChanges(deps.client))) {
@@ -554,6 +556,9 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         }
       }
     } catch (error) {
+      if (error instanceof SyncAbort && error.reason === "folder_unreachable") {
+        return finish({ ...status, state: "folder_unreachable", notices: [] });
+      }
       if (error instanceof SyncAbort || error instanceof OperationLockError) {
         return finish({ ...status, state: "busy", busyReason: error.message });
       }
@@ -632,11 +637,20 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     }
     replaced.delete(snapshot.snapshotId);
     const generation = Math.max(snapshot.generation, ...tips.map((t) => t.generation));
-    const manifest = await exportNow(config, {
+    let manifest: Awaited<ReturnType<typeof exportNow>>;
+    try {
+      manifest = await exportNow(config, {
       supersede: { snapshotId: snapshot.snapshotId, generation, ancestors: [...replaced] },
       supersedes: tips.map((t) => t.snapshotId),
       requireDirty: false,
     });
+    } catch (error) {
+      if (error instanceof SyncAbort && error.reason === "folder_unreachable") {
+        throw new DeviceSyncError("device_sync_folder_unreachable", "The sync folder is not reachable (is the drive connected?).");
+      }
+      if (error instanceof SyncAbort) throw new DeviceSyncError("device_sync_busy", `Cannot sync now: ${error.message}.`);
+      throw error;
+    }
     const status = await loadStatusSafe();
     const next: DeviceSyncStatus = {
       ...status,

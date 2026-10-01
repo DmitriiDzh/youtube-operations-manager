@@ -852,3 +852,42 @@ test("round 6: an automatic export into a folder that vanished fails instead of 
     await assert.rejects(() => readdir(path.join(root, "Volumes")));
     a.client.close();
   }));
+
+test("round 7: a drive ejected after the tick's first check -> folder_unreachable via the in-lock re-check", () =>
+  withTempDir("device-sync-", async (root) => {
+    const folder = path.join(root, "sync");
+    await mkdir(folder, { recursive: true });
+    const aClient = createClient({ url: `file:${path.join(root, "a.db")}` });
+    await initializeDatabaseSchema(aClient);
+    await addResearchChannel(aClient, "UC1");
+    let ejected = false;
+    const ejecting = {
+      execute: async (query: unknown) => {
+        const sql = typeof query === "string" ? query : (query as { sql: string }).sql;
+        if (!ejected && /INSERT INTO app_operation_locks/i.test(sql)) {
+          ejected = true;
+          await rm(folder, { recursive: true, force: true });
+        }
+        return aClient.execute(query as never);
+      },
+    };
+    let status: DeviceSyncStatus = { ...EMPTY_DEVICE_SYNC_STATUS };
+    const runner = createDeviceSyncRunner({
+      client: ejecting as never,
+      currentSchemaVersion: SCHEMA_CURRENT_VERSION,
+      resolveConfig: async () => ({ deviceId: "device-a", folder }),
+      migrationBackupsDir: path.join(root, "a-backups"),
+      workingDir: path.join(root, "a-work"),
+      isEnabled: async () => true,
+      loadStatus: async () => status,
+      saveStatus: async (s) => {
+        status = s;
+      },
+    });
+    const result = await runner.tick({ force: true });
+    assert.equal(ejected, true, "precondition: the folder vanished after the first check");
+    assert.equal(result.state, "folder_unreachable");
+    assert.deepEqual(result.notices, []);
+    await assert.rejects(() => readdir(folder));
+    aClient.close();
+  }));
