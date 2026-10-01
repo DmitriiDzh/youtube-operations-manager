@@ -8,6 +8,8 @@ const localizationOverviewRowSchema = z
     title: z.string(),
     thumbnailUrl: z.string().nullable(),
     publishedAt: z.string(),
+    privacyStatus: z.string(),
+    publishAt: z.string().nullable(),
     defaultLanguage: z.string().nullable(),
     presentLanguages: z.array(z.string()),
     missingLanguages: z.array(z.string()),

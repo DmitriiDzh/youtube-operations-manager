@@ -1,3 +1,4 @@
+import { resolvePublishDate } from "@/lib/shared-formatting";
 import type { SyncedVideo } from "./content-manager";
 
 export type SortKey = "title" | "privacy" | "publish" | "views" | "comments";
@@ -27,10 +28,8 @@ export function nextSortState(current: SortState, key: SortKey): SortState {
 // Mirrors the "Publish" column's own logic (formatPublishColumn): the real publish date for a
 // public video, YouTube's scheduled `publishAt` otherwise, nothing when neither exists.
 function publishTimestamp(video: SyncedVideo): number | null {
-  const iso = video.privacyStatus === "public" ? video.publishedAt : video.publishAt;
-  if (!iso) return null;
-  const ms = new Date(iso).getTime();
-  return Number.isNaN(ms) ? null : ms;
+  const iso = resolvePublishDate(video);
+  return iso ? new Date(iso).getTime() : null;
 }
 
 function sortValue(video: SyncedVideo, key: SortKey): string | number | null {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { formatDisplayDate, formatDisplayDateTime } from "@/lib/shared-formatting";
+import { formatDisplayDate, formatDisplayDateTime, resolvePublishDate } from "@/lib/shared-formatting";
 import { VideoDetailModal } from "./video-detail-modal";
 import { ChangeSetReview } from "./change-set-review";
 import { ConfirmDialog } from "./confirm-dialog";
@@ -15,6 +15,8 @@ type OverviewRow = {
   title: string;
   thumbnailUrl: string | null;
   publishedAt: string;
+  privacyStatus: string;
+  publishAt: string | null;
   defaultLanguage: string | null;
   presentLanguages: string[];
   missingLanguages: string[];
@@ -168,7 +170,6 @@ const LANG_SORT_PREFIX = "lang:";
 
 function compareRows(a: OverviewRow, b: OverviewRow, key: SortKey): number {
   if (key === "title") return a.title.localeCompare(b.title);
-  if (key === "publishedAt") return a.publishedAt.localeCompare(b.publishedAt);
   if (key === "lastSyncedAt") return a.lastSyncedAt.localeCompare(b.lastSyncedAt);
   if (key.startsWith(LANG_SORT_PREFIX)) {
     const lang = key.slice(LANG_SORT_PREFIX.length);
@@ -951,6 +952,14 @@ export function LanguagesManager() {
   const sortedFilteredVideos = useMemo(() => {
     const copy = [...filteredVideos];
     copy.sort((a, b) => {
+      // Publish date: undated videos (private, not scheduled) always last, in either direction.
+      if (sort.key === "publishedAt") {
+        const aDate = resolvePublishDate(a);
+        const bDate = resolvePublishDate(b);
+        if (!aDate || !bDate) return aDate ? -1 : bDate ? 1 : 0;
+        const byDate = new Date(aDate).getTime() - new Date(bDate).getTime();
+        return sort.direction === "asc" ? byDate : -byDate;
+      }
       const cmp = compareRows(a, b, sort.key);
       return sort.direction === "asc" ? cmp : -cmp;
     });
@@ -1426,7 +1435,7 @@ export function LanguagesManager() {
                         </div>
                       </td>
                       <td className="truncate px-4 py-3 text-zinc-400">
-                        {formatDisplayDate(video.publishedAt)}
+                        {resolvePublishDate(video) ? formatDisplayDate(resolvePublishDate(video)!) : "—"}
                       </td>
                       {languages.map((lang) => (
                         <td key={lang} className="px-2 py-3 text-center">

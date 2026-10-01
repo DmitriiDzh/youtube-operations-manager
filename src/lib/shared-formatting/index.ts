@@ -116,3 +116,19 @@ export function parseDisplayDateTime(text: string): string | null {
   date.setHours(hour, minute, 0, 0);
   return date.toISOString();
 }
+
+/**
+ * The date the "Publish" column of the Content and Languages tables shows for a video: the real
+ * `publishedAt` once it is public, YouTube's own scheduled `status.publishAt` while it is still
+ * non-public, otherwise `null` (rendered as a dash). `publishedAt` can be `""` for a malformed API
+ * response, so an empty/unparseable value is also `null` rather than "Invalid date".
+ */
+export function resolvePublishDate(video: {
+  privacyStatus: string;
+  publishedAt: string;
+  publishAt: string | null;
+}): string | null {
+  const iso = video.privacyStatus === "public" ? video.publishedAt : video.publishAt;
+  if (!iso || Number.isNaN(new Date(iso).getTime())) return null;
+  return iso;
+}
