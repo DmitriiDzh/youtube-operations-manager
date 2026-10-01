@@ -202,7 +202,8 @@ export class SnapshotError extends Error {
     | "snapshot_divergent_lineage"
     | "snapshot_manifest_invalid"
     | "snapshot_already_exists"
-    | "snapshot_local_changed_during_import";
+    | "snapshot_local_changed_during_import"
+    | "snapshot_execution_in_flight";
   details?: Record<string, unknown>;
 
   constructor(code: SnapshotError["code"], message: string, details?: Record<string, unknown>) {

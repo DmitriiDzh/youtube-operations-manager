@@ -65,7 +65,7 @@ export function DeviceAutoSyncSettings() {
             While the app is running, it publishes this computer&apos;s changes to the sync folder about once a minute
             and loads the other computer&apos;s newer data by itself, as long as this computer has no unpublished
             changes of its own. Covered: Batches history and audit, Research, Decisions, and market-record
-            assignments. Drafts sync separately. If both computers changed data, nothing is overwritten: the bell in
+            assignments. Drafts (Change Sets, profiles, AI connections) sync separately and are not affected by this switch. If both computers changed data, nothing is overwritten: the bell in
             the header asks you which computer&apos;s data to keep. The manual export/import in the Merge tab still works.
           </InfoTooltip>
         </h3>

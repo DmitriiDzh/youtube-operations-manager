@@ -34,7 +34,13 @@ export type SyncDecision =
   | { kind: "divergence"; snapshot: SnapshotEntry; localDirty: boolean; multipleTips: boolean }
   | { kind: "update_app"; snapshot: SnapshotEntry };
 
-export type DeviceSyncNoticeKind = "divergence" | "update_app" | "recovery_mode" | "transfer_stuck" | "error";
+export type DeviceSyncNoticeKind =
+  | "divergence"
+  | "update_app"
+  | "recovery_mode"
+  | "transfer_stuck"
+  | "batch_in_progress"
+  | "error";
 
 export type DeviceSyncNotice = {
   kind: DeviceSyncNoticeKind;

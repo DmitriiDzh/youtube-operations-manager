@@ -2146,7 +2146,11 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
    - the toggle (`device_auto_sync_enabled`) and a configured Syncthing folder that already
      exists. Automatic sync never creates it, so an unplugged or renamed external drive gives
      `folder_unreachable`, never snapshots written to a local folder no peer sees;
-   - no operation lock, no recovery mode, no `RUNNING` batch, no `video_execution_locks` row.
+   - no live operation lock (a dead export's lock is cleared first) and no recovery mode;
+   - a Batch prepared or running on this computer (`video_execution_locks`) pauses imports only,
+     with a notice. Exports continue, with `refuseUnresolvedExecution`: a copy that caught an
+     `APPLYING` row is not published. This follows the cross-system audit: a prepared live Batch
+     can wait indefinitely for Execute.
 2. The folder is scanned. Only UUID-named directories count, which excludes the sync-gateway
    folders. An unreadable or incomplete snapshot is "pending": it is retried silently and noticed
    after 10 minutes.
@@ -2226,9 +2230,14 @@ lease renewal or a draft cycle. On its own connection, such a write just waits f
 timeout.
 
 **Draft cycle.** `runAllSyncFamiliesOnce` (sync-gateway) is shared by the "Sync now" route and
-the scheduler, with a `globalThis` single-flight guard, because instrumentation and route bundles
-may not share module state. It runs every 60 s under the same gate the route gets from
-`src/proxy.ts`.
+the scheduler. It runs every 60 s under the same gate the route gets from `src/proxy.ts`, and it is
+NOT tied to the device-sync toggle (§M). Instrumentation and route bundles may not share module
+state, so these are held per process via `globalThis`:
+- the run-all single-flight guard;
+- the three production sync cores, which keeps the existing "adopt peer" vs cycle exclusion real.
+
+**Boot.** `initializeDatabase` takes the migration lock only when a migration is due
+(`acquireMigrationLockIfDue`). It waits for a busy lock and clears a dead export's lock.
 
 **Not done, by design.**
 - No export in SIGINT/SIGTERM handlers, because a killed export leaves a never-auto-released

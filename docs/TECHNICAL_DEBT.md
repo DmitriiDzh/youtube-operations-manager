@@ -1442,9 +1442,17 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
     never auto-released. The idle shutdown does flush.
   - **Only the web server syncs.** MCP/CLI writes made while the server is down are detected by the
     fingerprint and published at the next server start.
-  - **A crash mid-export or mid-import** still leaves the pre-existing stale operation lock, which
-    blocks mutations until the operator clears it. This is unchanged from manual handoff, but
-    automatic exports make it more frequent.
+  - **Stale operation locks.** Automatic exports take the lock about once a minute. A process killed
+    mid-export by SIGTERM or `taskkill /F` used to leave a lock no one cleared. Two fixes from the
+    cross-system audit (2026-10-01):
+    - a lock held by a provably dead EXPORT process is cleared automatically
+      (`releaseStaleExportLock`, at each tick and at boot when a migration is due);
+    - a process start no longer takes the lock at all unless a migration is due, so MCP/CLI start
+      normally during an export.
+
+    A dead IMPORT or MIGRATION holder keeps the never-auto-release policy and still blocks mutations.
+    There is still no UI to clear it (`forceClearOperationLock` has no caller). That is
+    pre-existing, and rare since an import takes about a second.
   - **Two tips from more than two devices** are reported as one divergence at a time.
   - **Accepted fail-closed re-prompts (review round 2).** In the cases below, the computers ask a
     human again instead of converging on their own:

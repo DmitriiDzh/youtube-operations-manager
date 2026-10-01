@@ -886,6 +886,15 @@ second error-code enum:
 | `AGENT_SESSION_CREDENTIAL_OVERRIDE` | 403 | Phase 12: an agent session supplied its own `credentialRef`/`--userId`/`--accessToken`. |
 | ~~`AGENT_ZONE_VIOLATION`~~ | -- | Retired with BL-091 capability zones (`docs/decisions/0011-retire-agent-capability-zones.md`); never thrown any more. |
 
+**Device-gate codes (outside `DomainErrorCode`, from `src/lib/device-mutation-gate`).**
+- **`operation_lock_held` (409) is transient and retryable.** It means an export, import or
+  migration is running. Since automatic device sync (ADR 0012), the app exports about once a
+  minute while there are unpublished changes, and each export holds the lock for about a second.
+  An agent should retry a refused mutation after a short wait. Reads are never refused. Since the
+  same change, an MCP/CLI process also starts normally while an export runs.
+- **`device_in_recovery_mode` (423) is not retryable.** It persists until the unresolved YouTube
+  write is reconciled.
+
 ## 7. Implementation status by slice (owner spec §29's recommended order)
 
 | Slice | Scope | Status |

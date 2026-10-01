@@ -57,6 +57,8 @@ export async function exportHandoff(params: {
   supersedes?: string[];
   /** `false`: never create the snapshots folder itself (automatic device sync). */
   createSnapshotsDir?: boolean;
+  /** Automatic device sync: never publish a copy that caught a YouTube write mid-flight. */
+  refuseUnresolvedExecution?: boolean;
   /** Automatic sync (§3.3): re-checked inside the operation lock before anything is written. */
   assertStillSafe?: () => Promise<void>;
 }): Promise<ExportHandoffResult> {
@@ -71,6 +73,7 @@ export async function exportHandoff(params: {
       supersede: params.supersede,
       supersedes: params.supersedes,
       createSnapshotsDir: params.createSnapshotsDir,
+      refuseUnresolvedExecution: params.refuseUnresolvedExecution,
     });
     await recordHandoffLog(params.client, {
       direction: "export",

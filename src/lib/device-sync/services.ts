@@ -1,7 +1,7 @@
 import path from "node:path";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { exportHandoff, importHandoff, isDeviceInRecoveryMode, RecoveryModeError } from "@/lib/device-handoff";
-import { getOperationLock, OperationLockError } from "@/lib/operation-lock";
+import { getOperationLock, OperationLockError, releaseStaleExportLock } from "@/lib/operation-lock";
 import {
   hasUnpublishedLocalChanges,
   isFastForwardOf,
@@ -209,21 +209,27 @@ async function isExistingDirectory(dir: string): Promise<boolean> {
 class SyncAbort extends Error {
   constructor(
     message: string,
-    readonly reason: "busy" | "local_changed" | "nothing_to_export" | "folder_unreachable" = "busy"
+    readonly reason: "busy" | "local_changed" | "nothing_to_export" | "folder_unreachable" | "batch_in_progress" = "busy"
   ) {
     super(message);
   }
 }
 
-async function hasActiveExecution(client: SqlExecutor): Promise<string | null> {
-  const running = (await client.execute("SELECT 1 FROM batches WHERE status = 'RUNNING' LIMIT 1")) as {
-    rows: unknown[];
-  };
-  if (running.rows.length > 0) return "a batch is running";
+/**
+ * Whether THIS computer has a Batch prepared or executing (cross-system audit, 2026-10-01). Phase 5
+ * holds `video_execution_locks` (device-local, never transferred) from Prepare until each row
+ * finishes, and a prepared live Batch can wait indefinitely for Execute. While one exists, an
+ * import would replace the batch tables under it, so imports wait. Exports do NOT wait -- the
+ * snapshot is a consistent copy, and `refuseUnresolvedExecution` keeps a mid-write row out of it.
+ * A `RUNNING` batch WITHOUT local locks is another computer's imported state, not work here.
+ */
+async function localBatchInProgress(client: SqlExecutor): Promise<boolean> {
   const locks = (await client.execute("SELECT 1 FROM video_execution_locks LIMIT 1")) as { rows: unknown[] };
-  if (locks.rows.length > 0) return "a video write is in progress";
-  return null;
+  return locks.rows.length > 0;
 }
+
+const BATCH_PAUSES_IMPORT_MESSAGE =
+  "A Batch prepared or running on this computer pauses loading the other computer's data. This computer's own changes are still published. Execute or finish the Batch to resume.";
 
 function transientSnapshotError(error: unknown): boolean {
   return (
@@ -262,10 +268,11 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
 
   /** Reasons an automatic action must not run right now (§3.3), outside the lock. */
   async function busyReason(): Promise<{ reason: string; recovery: boolean } | null> {
+    // A lock left by a killed export would otherwise block every mutation until cleared by hand.
+    await releaseStaleExportLock(deps.client).catch(() => false);
     if (await getOperationLock(deps.client)) return { reason: "an export/import/migration is in progress", recovery: false };
     if (await isDeviceInRecoveryMode(deps.client)) return { reason: "this computer is in recovery mode", recovery: true };
-    const active = await hasActiveExecution(deps.client);
-    return active ? { reason: active, recovery: false } : null;
+    return null;
   }
 
   /** `previous` is the map as loaded at the start of the tick, so a snapshot's first-seen time
@@ -310,14 +317,13 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       supersede,
       supersedes,
       createSnapshotsDir: false,
+      refuseUnresolvedExecution: true,
       assertStillSafe: async () => {
         // Re-checked inside the lock: the drive may have been ejected since the tick's own check
         // (round 6) -- e.g. during a "take theirs" import, before its marker export.
         if (!(await isExistingDirectory(config.folder))) {
           throw new SyncAbort("the sync folder is not reachable", "folder_unreachable");
         }
-        const active = await hasActiveExecution(deps.client);
-        if (active) throw new SyncAbort(active);
         if (requireDirty && !(await hasUnpublishedLocalChanges(deps.client))) {
           throw new SyncAbort("nothing to export", "nothing_to_export");
         }
@@ -352,8 +358,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
       acceptDivergentLineage: mode.acceptDivergentLineage,
       backupPrefix: mode.acceptDivergentLineage ? TAKE_THEIRS_BACKUP_PREFIX : AUTO_IMPORT_BACKUP_PREFIX,
       assertStillSafe: async ({ liveFingerprint }) => {
-        const active = await hasActiveExecution(deps.client);
-        if (active) throw new SyncAbort(active);
+        if (await localBatchInProgress(deps.client)) throw new SyncAbort(BATCH_PAUSES_IMPORT_MESSAGE, "batch_in_progress");
         // AC-AS-07: a local change that landed after the decision aborts the automatic import.
         if (mode.requireClean && (await hasUnpublishedLocalChanges(deps.client, liveFingerprint))) {
           throw new SyncAbort("local data changed", "local_changed");
@@ -485,6 +490,14 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
         }
 
         case "import": {
+          if (await localBatchInProgress(deps.client)) {
+            return finish({
+              ...status,
+              state: "busy",
+              busyReason: "a Batch on this computer is prepared or running",
+              notices: [{ kind: "batch_in_progress", message: BATCH_PAUSES_IMPORT_MESSAGE }, ...stuckNotice(status)],
+            });
+          }
           try {
             const result = await importNow(folder, decision.snapshot.snapshotId, {
               acceptDivergentLineage: false,
@@ -558,6 +571,17 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     } catch (error) {
       if (error instanceof SyncAbort && error.reason === "folder_unreachable") {
         return finish({ ...status, state: "folder_unreachable", notices: [] });
+      }
+      if (error instanceof SyncAbort && error.reason === "batch_in_progress") {
+        return finish({
+          ...status,
+          state: "busy",
+          busyReason: "a Batch on this computer is prepared or running",
+          notices: [{ kind: "batch_in_progress", message: BATCH_PAUSES_IMPORT_MESSAGE }],
+        });
+      }
+      if (error instanceof SnapshotError && error.code === "snapshot_execution_in_flight") {
+        return finish({ ...status, state: "busy", busyReason: "a YouTube write was in flight; retrying" });
       }
       if (error instanceof SyncAbort || error instanceof OperationLockError) {
         return finish({ ...status, state: "busy", busyReason: error.message });
@@ -679,6 +703,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     const { config, snapshot, snapshots } = await requireCurrentPeerTip(snapshotId);
     const busy = await busyReason();
     if (busy && !busy.recovery) throw new DeviceSyncError("device_sync_busy", `Cannot sync now: ${busy.reason}.`);
+    if (await localBatchInProgress(deps.client)) throw new DeviceSyncError("device_sync_busy", BATCH_PAUSES_IMPORT_MESSAGE);
     const result = await importNow(config.folder, snapshotId, { acceptDivergentLineage: true, requireClean: false });
 
     const adoptedAncestry = ancestryOf(snapshotId, snapshots);

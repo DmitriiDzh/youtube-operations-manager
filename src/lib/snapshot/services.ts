@@ -41,6 +41,21 @@ import { readLineageState, writeLineageState, type LineageState } from "./adapte
  * not yet certain -- the only ones a device-handoff import must never silently resolve
  * (`PENDING`/`AWAITING_EXECUTION` are always safe: no write was ever attempted for them). */
 
+/** Through `ATTACH` on the caller's connection, like the scrub/fingerprint steps (Windows EBUSY). */
+async function fileHasUnresolvedExecution(client: SqlExecutor, dbPath: string): Promise<boolean> {
+  await client.execute({ sql: "ATTACH DATABASE ? AS unresolved_check", args: [dbPath] });
+  try {
+    const placeholders = UNRESOLVED_EXECUTION_STATUSES.map(() => "?").join(", ");
+    const result = (await client.execute({
+      sql: `SELECT 1 FROM unresolved_check.batch_ledger_rows WHERE status IN (${placeholders}) LIMIT 1`,
+      args: [...UNRESOLVED_EXECUTION_STATUSES],
+    })) as { rows: unknown[] };
+    return result.rows.length > 0;
+  } finally {
+    await client.execute("DETACH DATABASE unresolved_check");
+  }
+}
+
 /** Newest-first, de-duplicated, capped ancestry list. */
 function mergeAncestors(...lists: Array<Array<string | null>>): string[] {
   const seen = new Set<string>();
@@ -71,6 +86,12 @@ export async function exportSnapshot(params: {
   supersedes?: string[];
   /** `false`: never create `snapshotsDir` itself (automatic device sync). Default `true`. */
   createSnapshotsDir?: boolean;
+  /**
+   * Automatic device sync: refuse to publish a copy that caught a YouTube write mid-flight
+   * (`APPLYING`/`UNKNOWN` rows) -- the receiving computer would enter recovery mode for a write
+   * that is about to finish here. Checked on the copy itself, after it is taken.
+   */
+  refuseUnresolvedExecution?: boolean;
 }): Promise<SnapshotManifest> {
   const lineage = await readLineageState(params.client);
   const snapshotId = randomUUID();
@@ -87,6 +108,12 @@ export async function exportSnapshot(params: {
     const dbDestPath = path.join(stagingDir, "data.db");
     await copyDatabaseConsistently(params.client, dbDestPath);
     await scrubDatabaseCopy(params.client, dbDestPath);
+    if (params.refuseUnresolvedExecution && (await fileHasUnresolvedExecution(params.client, dbDestPath))) {
+      throw new SnapshotError(
+        "snapshot_execution_in_flight",
+        "The copy caught a YouTube write in progress; not publishing it (the next export will)."
+      );
+    }
     // The fingerprint of the EXPORTED FILE, not of the live DB after the copy: a change that raced
     // the copy is not in this snapshot, so it must still read as unpublished (AC-AS-05).
     contentFingerprint = await computeFileContentFingerprint(params.client, dbDestPath);

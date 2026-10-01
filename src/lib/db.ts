@@ -11,10 +11,11 @@ import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } 
 import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
 import {
   assertSupportedSchemaVersion,
+  readSchemaVersion,
   runSchemaMigrations,
   type SchemaMigration,
 } from "@/lib/schema-versioning";
-import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
+import { acquireOperationLock, OperationLockError, releaseOperationLock, releaseStaleExportLock } from "@/lib/operation-lock";
 import { getAgentSession } from "@/lib/agent-session";
 import { decodeStoredOAuthToken, encodeStoredOAuthToken } from "@/lib/oauth-token-crypto";
 
@@ -2504,6 +2505,35 @@ export async function initializeDatabaseSchema(
   });
 }
 
+/**
+ * Boot-time migration lock (RISK-20), taken ONLY when this boot has migrations to run -- see the
+ * comment in `initializeDatabase`. Returns whether the lock was acquired (the caller releases it).
+ * Waits for a busy lock (an export takes about a second) and clears a provably dead export's lock;
+ * gives up with the original `OperationLockError` after `attempts` waits. Exported for tests.
+ */
+export async function acquireMigrationLockIfDue(
+  client: Client,
+  options: { currentVersion?: number; attempts?: number; waitMs?: number } = {}
+): Promise<boolean> {
+  const currentVersion = options.currentVersion ?? SCHEMA_CURRENT_VERSION;
+  const attempts = options.attempts ?? 30;
+  const waitMs = options.waitMs ?? 1_000;
+  // A failed read counts as "due": the locked path is the conservative one.
+  const stampedVersion = await readSchemaVersion(client).catch(() => null);
+  if (stampedVersion !== null && stampedVersion >= currentVersion) return false;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await acquireOperationLock(client, "migration");
+      return true;
+    } catch (error) {
+      if (isMissingTableError(error)) return false;
+      if (!(error instanceof OperationLockError) || attempt >= attempts) throw error;
+      if (await releaseStaleExportLock(client).catch(() => false)) continue;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+}
+
 async function initializeDatabase() {
   await migrateLegacyDatabaseIfNeeded();
 
@@ -2515,13 +2545,14 @@ async function initializeDatabase() {
   // that version, the lock table doesn't exist yet, so there is structurally nothing to lock
   // with. That one bootstrap-to-v2 step proceeds unlocked (a low-risk, one-time, idempotent
   // CREATE TABLE); every later boot, once the lock table exists, is properly serialized.
-  let lockAcquired = false;
-  try {
-    await acquireOperationLock(rawClient, "migration");
-    lockAcquired = true;
-  } catch (error) {
-    if (!isMissingTableError(error)) throw error;
-  }
+  //
+  // Automatic device sync, cross-system audit (2026-10-01): the lock is taken ONLY when this boot
+  // actually has migrations to run. Exports now hold the same lock about once a minute; taking it
+  // on every boot made any MCP/CLI process that started during one fail its database
+  // initialization for its whole lifetime. A boot with nothing to migrate only runs idempotent
+  // `IF NOT EXISTS` DDL, which needs no serialization against export/import. When a migration is
+  // due and the lock is busy, wait for it (an export takes about a second) instead of failing.
+  const lockAcquired = await acquireMigrationLockIfDue(rawClient);
 
   try {
     await initializeDatabaseSchema(rawClient, {

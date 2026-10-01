@@ -337,19 +337,22 @@ test("AC-AS-08: toggle off or no folder -> a tick does nothing", () =>
     n.client.close();
   }));
 
-test("AC-AS-08: a running batch, recovery mode, or a held operation lock -> no import and no export", () =>
+// AC-AS-08, as revised by the cross-system audit (2026-10-01): a Batch PREPARED here can wait
+// indefinitely for Execute, so pausing ALL sync on it stalled sync for good. Now: a local Batch
+// (video_execution_locks held) pauses IMPORTS only, with a notice; exports continue but never publish
+// a mid-write row; a RUNNING batch without local locks (another computer's imported state) pauses
+// nothing; recovery mode and a live operation lock still pause everything.
+test("AC-AS-08: recovery mode or a live operation lock -> no import and no export", () =>
   withTempDir("device-sync-", async (root) => {
     const a = await makeDevice(root, "a");
     await addResearchChannel(a.client, "UC1");
     await a.client.execute("INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('c', 't', 'u')");
+    await a.client.execute("INSERT INTO batches (id, channel_id, status) VALUES ('b1', 'c', 'COMPLETED')");
 
-    await a.client.execute("INSERT INTO batches (id, channel_id, status) VALUES ('b1', 'c', 'RUNNING')");
-    assert.equal((await a.runner.tick()).state, "busy");
-    await a.client.execute("UPDATE batches SET status = 'COMPLETED' WHERE id = 'b1'");
-
-    await a.client.execute(
-      "INSERT INTO app_operation_locks (id, operation_type, holder_pid, acquired_at) VALUES ('singleton', 'export', 1, '2026-10-01T00:00:00Z')"
-    );
+    await a.client.execute({
+      sql: "INSERT INTO app_operation_locks (id, operation_type, holder_pid, acquired_at) VALUES ('singleton', 'import', ?, '2026-10-01T00:00:00Z')",
+      args: [process.pid],
+    });
     assert.equal((await a.runner.tick()).state, "busy");
     await a.client.execute("DELETE FROM app_operation_locks");
 
@@ -359,9 +362,65 @@ test("AC-AS-08: a running batch, recovery mode, or a held operation lock -> no i
     const status = await a.runner.tick();
     assert.equal(status.state, "busy");
     assert.equal(status.notices[0]?.kind, "recovery_mode");
+    assert.deepEqual(await readdir(path.join(root, "sync")), []);
+    a.client.close();
+  }));
 
-    const exists = await readdir(path.join(root, "sync")).catch(() => []);
-    assert.deepEqual(exists, []);
+test("AC-AS-08: a Batch prepared on this computer pauses imports (with a notice) but not exports", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    await addResearchChannel(b.client, "UC-b");
+    await b.runner.tick();
+    await a.client.execute("INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('c', 't', 'u')");
+    await a.client.execute("INSERT INTO batches (id, channel_id, status) VALUES ('b1', 'c', 'RUNNING')");
+    await a.client.execute(
+      "INSERT INTO batch_ledger_rows (id, batch_id, video_id, change_ids_json, status) VALUES ('l1', 'b1', 'v', '[]', 'AWAITING_EXECUTION')"
+    );
+    await a.client.execute("INSERT INTO video_execution_locks (video_id, batch_id, ledger_row_id) VALUES ('v', 'b1', 'l1')");
+
+    // a is dirty (it has a prepared batch), b published: a conflict -- a still publishes its own state.
+    const first = await a.runner.tick();
+    assert.ok(first.lastExportSnapshotId, "exports continue while a Batch is prepared");
+    assert.deepEqual(await researchIds(a.client), [], "nothing of b's was imported over the prepared Batch");
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-AS-08: a clean device with a prepared Batch never auto-imports; it says why", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    const b = await makeDevice(root, "b");
+    await addResearchChannel(b.client, "UC-b");
+    await b.runner.tick();
+    // a: only device-local state (the lock table is not transferred and not fingerprinted), so a is clean.
+    await a.client.execute("PRAGMA foreign_keys = OFF");
+    await a.client.execute("INSERT INTO video_execution_locks (video_id, batch_id, ledger_row_id) VALUES ('v', 'b-x', 'l-x')");
+    const status = await a.runner.tick();
+    assert.equal(status.state, "busy");
+    assert.equal(status.notices[0]?.kind, "batch_in_progress");
+    assert.deepEqual(await researchIds(a.client), []);
+    a.client.close();
+    b.client.close();
+  }));
+
+test("AC-AS-08: a RUNNING batch without local locks (imported from another computer) pauses nothing", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    await a.client.execute("INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('c', 't', 'u')");
+    await a.client.execute("INSERT INTO batches (id, channel_id, status) VALUES ('b1', 'c', 'RUNNING')");
+    assert.equal((await a.runner.tick()).state, "exported");
+    a.client.close();
+  }));
+
+test("audit: a lock left by a dead export process is cleared by the next tick", () =>
+  withTempDir("device-sync-", async (root) => {
+    const a = await makeDevice(root, "a");
+    await addResearchChannel(a.client, "UC1");
+    await a.client.execute(
+      "INSERT INTO app_operation_locks (id, operation_type, holder_pid, acquired_at) VALUES ('singleton', 'export', 2147483000, '2026-10-01T00:00:00Z')"
+    );
+    assert.equal((await a.runner.tick()).state, "exported");
     a.client.close();
   }));
 
@@ -889,5 +948,46 @@ test("round 7: a drive ejected after the tick's first check -> folder_unreachabl
     assert.equal(result.state, "folder_unreachable");
     assert.deepEqual(result.notices, []);
     await assert.rejects(() => readdir(folder));
+    aClient.close();
+  }));
+
+test("audit: an export whose copy catches a YouTube write mid-flight is not published", () =>
+  withTempDir("device-sync-", async (root) => {
+    const aClient = createClient({ url: `file:${path.join(root, "a.db")}` });
+    await initializeDatabaseSchema(aClient);
+    await mkdir(path.join(root, "sync"), { recursive: true });
+    await aClient.execute("INSERT INTO channels (id, title, uploads_playlist_id) VALUES ('c', 't', 'u')");
+    await aClient.execute("INSERT INTO batches (id, channel_id, status) VALUES ('b1', 'c', 'RUNNING')");
+    await aClient.execute(
+      "INSERT INTO batch_ledger_rows (id, batch_id, video_id, change_ids_json, status) VALUES ('l1', 'b1', 'v', '[]', 'PENDING')"
+    );
+    let injected = false;
+    const midWrite = {
+      execute: async (query: unknown) => {
+        const sql = typeof query === "string" ? query : (query as { sql: string }).sql;
+        if (!injected && /^VACUUM INTO/i.test(sql)) {
+          injected = true;
+          await aClient.execute("UPDATE batch_ledger_rows SET status = 'APPLYING' WHERE id = 'l1'");
+        }
+        return aClient.execute(query as never);
+      },
+    };
+    let status: DeviceSyncStatus = { ...EMPTY_DEVICE_SYNC_STATUS };
+    const runner = createDeviceSyncRunner({
+      client: midWrite as never,
+      currentSchemaVersion: SCHEMA_CURRENT_VERSION,
+      resolveConfig: async () => ({ deviceId: "device-a", folder: path.join(root, "sync") }),
+      migrationBackupsDir: path.join(root, "a-backups"),
+      workingDir: path.join(root, "a-work"),
+      isEnabled: async () => true,
+      loadStatus: async () => status,
+      saveStatus: async (s) => {
+        status = s;
+      },
+    });
+    const result = await runner.tick({ force: true });
+    assert.equal(injected, true, "precondition: a row went APPLYING during the copy");
+    assert.equal(result.state, "busy");
+    assert.deepEqual((await readdir(path.join(root, "sync"))).filter((n) => !n.startsWith(".")), []);
     aClient.close();
   }));

@@ -14,14 +14,21 @@ import { GLOBAL_DOCUMENT_KEY, isDomainError } from "../ai-connections-catalog/co
  * shortened to one iteration. Memoized for the same single-flight reason as the other two
  * production sync factories in this gateway.
  */
-let productionRunner: SyncRunner | undefined;
+// Memoized on `globalThis`, not in module scope (device-sync cross-system audit, 2026-10-01): the
+// server-side scheduler (`src/instrumentation.ts`) is compiled separately from the route handlers,
+// so a module-level singleton could give it a DIFFERENT instance -- and a different single-flight
+// guard -- than the "adopt peer"/"Sync now" routes, letting a cycle and an adoption write the same
+// `<deviceId>.automerge` file at once. One instance per process keeps that exclusion real.
+const PRODUCTION_KEY = Symbol.for("ytom.syncGateway.aiConnectionsCatalogSyncRunner");
+type GlobalWithInstance = typeof globalThis & { [PRODUCTION_KEY]?: SyncRunner };
+const productionHolder = globalThis as GlobalWithInstance;
 
 export function createAiConnectionsCatalogSyncRunnerForProduction(): SyncRunner {
-  if (!productionRunner) {
+  if (!productionHolder[PRODUCTION_KEY]) {
     const paths = getProductionAppPaths();
     const catalog = createAiConnectionsCatalogCoreForProduction();
 
-    productionRunner = createSyncRunner({
+    productionHolder[PRODUCTION_KEY] = createSyncRunner({
       syncthingSubfolderName: "ai-connections-catalog",
       bootstrapConfig: createBootstrapConfigStore(paths.bootstrapConfigPath),
       localFallbackDir: paths.aiConnectionsCatalogSyncFallbackDir,
@@ -40,5 +47,5 @@ export function createAiConnectionsCatalogSyncRunnerForProduction(): SyncRunner 
       describeError: (error) => (error instanceof Error ? error.message : "unknown error"),
     });
   }
-  return productionRunner;
+  return productionHolder[PRODUCTION_KEY];
 }

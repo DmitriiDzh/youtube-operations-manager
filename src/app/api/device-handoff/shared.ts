@@ -46,6 +46,7 @@ const ERROR_STATUS: Record<string, number> = {
   snapshot_manifest_invalid: 422,
   snapshot_already_exists: 409,
   snapshot_local_changed_during_import: 409,
+  snapshot_execution_in_flight: 409,
   schema_version_unsupported: 409,
   bootstrap_config_invalid: 500,
   backup_destination_exists: 409,

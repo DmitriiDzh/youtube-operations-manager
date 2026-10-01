@@ -79,13 +79,14 @@ export async function register() {
   setTimeout(() => void tickQuietly(), DEVICE_SYNC_BOOT_DELAY_MS).unref();
   setInterval(() => void tickQuietly(), DEVICE_SYNC_TICK_MS).unref();
 
-  const { rawSqlClient, getDeviceAutoSyncEnabled } = await import("@/lib/db");
+  const { rawSqlClient } = await import("@/lib/db");
   const { runAllSyncFamiliesOnce } = await import("@/lib/sync-gateway");
   const { assertDeviceAvailableForMutation } = await import("@/lib/device-mutation-gate");
   setInterval(() => {
     void (async () => {
       try {
-        if (!(await getDeviceAutoSyncEnabled())) return;
+        // NOT tied to the "Automatic device sync" toggle (cross-system audit, §M): that toggle
+        // governs snapshot handoff only; draft sync already ran from every open tab regardless.
         // Same gate the "Sync now" route gets from src/proxy.ts.
         await assertDeviceAvailableForMutation(rawSqlClient);
         await runAllSyncFamiliesOnce();

@@ -10,7 +10,7 @@ import { ConfirmDialog } from "./confirm-dialog";
  */
 
 type Notice = {
-  kind: "divergence" | "update_app" | "recovery_mode" | "transfer_stuck" | "error";
+  kind: "divergence" | "update_app" | "recovery_mode" | "transfer_stuck" | "batch_in_progress" | "error";
   message: string;
   snapshotId?: string;
   sourceDeviceId?: string;
