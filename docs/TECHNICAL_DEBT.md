@@ -1582,4 +1582,26 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
       re-exporting after each purge, with the false-conflict risk described above.
 - **Status:** MOSTLY RESOLVED (residual above).
 
+## RISK-93 — The in-app HTTP MCP endpoint is not verified on macOS — OPEN, 2026-10-01
+
+- **Affected components:** `POST /api/mcp` (`src/lib/agent-mcp-endpoint`, ADR 0013), the `-H 127.0.0.1`
+  binding in `package.json`'s `dev`/`start` scripts, `scripts/macos/start.sh` / `stop.sh`.
+- **Found during:** BL-113. Every check (tests, build, live end-to-end against a real `next start`) ran on
+  Windows only. The owner asked for this to be tracked (2026-10-01): *"запиши в тех долг что нам надо
+  протестить это на мак"*.
+- **Actual risk:** the code itself is platform-independent (Node + Web APIs), so a defect is not expected,
+  but it is unproven. Concretely unverified on macOS:
+  - `start.sh` polls `http://localhost:3000/` with `curl` and opens the browser on `localhost`, while the
+    server now listens on IPv4 `127.0.0.1` only; `localhost` often resolves to `::1` first, so the readiness
+    poll or the browser could fail instead of falling back;
+  - a real agent client (Codex, Claude Code) connecting to `http://127.0.0.1:<port>/api/mcp`;
+  - the loopback `Host`/`Origin` guard against the Host values macOS clients actually send.
+- **To close:** on a Mac, run `scripts/macos/start.sh` (page opens, readiness detected), then
+  `curl -i -X POST http://127.0.0.1:3000/api/mcp` (expect 403 `MCP_CONNECTION_DISABLED` or 401), then connect
+  a real agent with a channel token. If the poll fails, change `localhost` to `127.0.0.1` in both launchers.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE` (`AGENTS.md` §K.3: a release's platform behavior is checked, not
+  inferred from a passing `dev` suite).
+- **Approval required from:** none to verify; the project owner for a release.
+- **Status:** OPEN, tracked.
+
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
