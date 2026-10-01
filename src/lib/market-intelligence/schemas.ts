@@ -416,7 +416,7 @@ export const getWatchlistEntryContextOutputSchema = z
 const fieldVelocitySchema = z
   .object({
     value: z.number().nullable(),
-    basis: z.enum(["insufficient_history", "stale_latest", "partial_window", "full_window"]),
+    basis: z.enum(["insufficient_history", "stale_latest", "partial_window", "full_window", "withheld_by_policy"]),
   })
   .strict();
 

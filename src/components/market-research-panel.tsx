@@ -370,6 +370,11 @@ export function MarketResearchPanel() {
             yourself, each with its source.
           </InfoTooltip>
         </h3>
+        {/* Phase 13 slices 13.2/13.3 (owner decision D1 = a): YouTube API Developer Policies III.E.4.d/h. */}
+        <p className="mt-1 text-xs text-zinc-500">
+          Per YouTube API policy, data about other people&rsquo;s channels is kept for 30 days (refreshed by
+          collection), and no metrics are derived from it &mdash; only the observed values, each with its date.
+        </p>
       </div>
 
       {!autoCollectionBudgetUnits && autoCollectionBudgetUnits !== undefined && (

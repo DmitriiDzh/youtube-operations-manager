@@ -1319,188 +1319,6 @@ test("AC-9H-01b: getChannelIntelligenceSummary's own methodology field matches t
   });
 });
 
-test("AC-9H-02: subscriberVelocity is 'full_window' when 2 channel snapshots exist 8 days apart, and its value/basis feed uploadCadence from the same call", async () => {
-  const now = new Date("2026-09-27T12:00:00.000Z");
-  const { services, store } = createFixture({ now });
-  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
-  store.channelSnapshots.push(
-    {
-      id: "snap-early",
-      researchChannelId: VALID_CHANNEL_ID,
-      observedAt: new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000),
-      subscriberCount: 100,
-      viewCount: 1000,
-      videoCount: 5,
-      hiddenSubscriberCount: false,
-      source: "youtube.channels.list",
-      createdVia: "web_ui",
-    },
-    {
-      id: "snap-late",
-      researchChannelId: VALID_CHANNEL_ID,
-      observedAt: now,
-      subscriberCount: 180,
-      viewCount: 1000,
-      videoCount: 13,
-      hiddenSubscriberCount: false,
-      source: "youtube.channels.list",
-      createdVia: "web_ui",
-    }
-  );
-
-  const result = await services.getChannelIntelligenceSummary({ channelId: VALID_CHANNEL_ID });
-  assert.equal(result.subscriberVelocity.basis, "full_window");
-  assert.equal(result.subscriberVelocity.value, 10); // (180-100)/8 days
-  assert.equal(result.uploadCadence.basis, "full_window");
-  assert.equal(result.uploadCadence.value, 1); // (13-5)/8 days
-});
-
-test("AC-9H-03: subscriberVelocity is 'insufficient_history' with only 1 channel snapshot", async () => {
-  const { services, store } = createFixture();
-  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
-  store.channelSnapshots.push({
-    id: "snap-1",
-    researchChannelId: VALID_CHANNEL_ID,
-    observedAt: new Date(),
-    subscriberCount: 100,
-    viewCount: 1000,
-    videoCount: 5,
-    hiddenSubscriberCount: false,
-    source: "youtube.channels.list",
-    createdVia: "web_ui",
-  });
-
-  const result = await services.getChannelIntelligenceSummary({ channelId: VALID_CHANNEL_ID });
-  assert.equal(result.subscriberVelocity.basis, "insufficient_history");
-  assert.equal(result.subscriberVelocity.value, null);
-});
-
-function pushDay7VideoSnapshot(
-  store: ReturnType<typeof createFakeStore>,
-  now: Date,
-  args: { id: string; videoId: string; viewCount: number }
-) {
-  const publishedAt = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-  store.videoSnapshots.push({
-    id: args.id,
-    researchChannelId: VALID_CHANNEL_ID,
-    videoId: args.videoId,
-    observedAt: now,
-    viewCount: args.viewCount,
-    likeCount: null,
-    commentCount: null,
-    publishedAt,
-    title: null,
-    source: "youtube.videos.list",
-    createdVia: "web_ui",
-  });
-}
-
-test("AC-9H-04: recentBreakoutVideos uses a LEAVE-ONE-OUT baseline per video, not one shared median including the video itself -- the plan's own hand-computed disagreement fixture", async () => {
-  const now = new Date("2026-09-27T12:00:00.000Z");
-  const { services, store } = createFixture({ now });
-  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
-  pushDay7VideoSnapshot(store, now, { id: "s-a", videoId: "vA00000000000000000000A", viewCount: 10 });
-  pushDay7VideoSnapshot(store, now, { id: "s-b", videoId: "vB00000000000000000000B", viewCount: 20 });
-  pushDay7VideoSnapshot(store, now, { id: "s-c", videoId: "vC00000000000000000000C", viewCount: 30 });
-  pushDay7VideoSnapshot(store, now, { id: "s-d", videoId: "vD00000000000000000000D", viewCount: 65 });
-
-  const result = await services.getChannelIntelligenceSummary({ channelId: VALID_CHANNEL_ID });
-  const byVideoId = new Map(result.recentBreakoutVideos.map((v) => [v.videoId, v]));
-
-  const d = byVideoId.get("vD00000000000000000000D")!;
-  assert.equal(d.channelBaselineMedianViewCount, 20, "leave-one-out baseline for D = median([10,20,30])");
-  assert.equal(d.ratio, 3.25);
-  assert.equal(d.isBreakout, true);
-
-  // Include-self (rejected method) would have given D a baseline of 25 (median of all 4) and a
-  // ratio of 2.6 -- NOT a breakout. This is the exact disagreement the plan's §4 documents.
-  const a = byVideoId.get("vA00000000000000000000A")!;
-  assert.equal(a.isBreakout, false);
-});
-
-test("AC-9H-05: with exactly 3 recent videos, every leave-one-out baseline sample size is 2 (below BREAKOUT_MIN_BASELINE_SAMPLE_SIZE) -- no video gets a breakout verdict", async () => {
-  const now = new Date("2026-09-27T12:00:00.000Z");
-  const { services, store } = createFixture({ now });
-  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
-  pushDay7VideoSnapshot(store, now, { id: "s-a", videoId: "vA00000000000000000000A", viewCount: 10 });
-  pushDay7VideoSnapshot(store, now, { id: "s-b", videoId: "vB00000000000000000000B", viewCount: 20 });
-  pushDay7VideoSnapshot(store, now, { id: "s-c", videoId: "vC00000000000000000000C", viewCount: 1000 });
-
-  const result = await services.getChannelIntelligenceSummary({ channelId: VALID_CHANNEL_ID });
-  assert.equal(result.recentBreakoutVideos.length, 3);
-  for (const v of result.recentBreakoutVideos) {
-    assert.equal(v.ratio, null, `${v.videoId} must have no ratio -- baseline sample size 2 is below the minimum`);
-    assert.equal(v.isBreakout, false);
-  }
-});
-
-test("AC-9H-06: a video whose only snapshot lands at day 30 (outside the ±1.75-day day-7 tolerance) reports insufficient_history for itself and does NOT count toward any other video's leave-one-out baseline sample size", async () => {
-  const now = new Date("2026-09-27T12:00:00.000Z");
-  const { services, store } = createFixture({ now });
-  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
-  pushDay7VideoSnapshot(store, now, { id: "s-a", videoId: "vA00000000000000000000A", viewCount: 10 });
-  pushDay7VideoSnapshot(store, now, { id: "s-b", videoId: "vB00000000000000000000B", viewCount: 20 });
-  pushDay7VideoSnapshot(store, now, { id: "s-c", videoId: "vC00000000000000000000C", viewCount: 30 });
-  // Video E: published 30 days ago, its only snapshot is AT day 30 -- nowhere near day 7.
-  store.videoSnapshots.push({
-    id: "s-e",
-    researchChannelId: VALID_CHANNEL_ID,
-    videoId: "vE00000000000000000000E",
-    observedAt: now,
-    viewCount: 999999,
-    likeCount: null,
-    commentCount: null,
-    publishedAt: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
-    title: null,
-    source: "youtube.videos.list",
-    createdVia: "web_ui",
-  });
-
-  const result = await services.getChannelIntelligenceSummary({ channelId: VALID_CHANNEL_ID });
-  const byVideoId = new Map(result.recentBreakoutVideos.map((v) => [v.videoId, v]));
-
-  const e = byVideoId.get("vE00000000000000000000E")!;
-  assert.equal(e.videoViewCount, null, "E's own day-7 point must be insufficient_history, not its real (wrong-age) view count");
-  assert.equal(e.isBreakout, false);
-  assert.match(e.reason, /no snapshot observed within/, "must be the specific insufficient_history reason, not assessBreakout's own generic one");
-
-  // If E's null were wrongly counted as a real baseline contributor, A/B/C would each see a
-  // sample size of 3 (meeting the minimum) instead of 2 -- asserting ratio: null here is the
-  // observable proof E was excluded, not merely that E itself looks right.
-  const a = byVideoId.get("vA00000000000000000000A")!;
-  assert.equal(a.ratio, null, "A's baseline (B, C, and NOT E) must still be below the minimum sample size");
-});
-
-test("AC-9H-06b: a video published less than 7 days ago reports 'not_yet_reached' with its own distinct reason, not the same generic reason a too-old-and-never-observed video gets", async () => {
-  const now = new Date("2026-09-27T12:00:00.000Z");
-  const { services, store } = createFixture({ now });
-  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
-  pushDay7VideoSnapshot(store, now, { id: "s-a", videoId: "vA00000000000000000000A", viewCount: 10 });
-  pushDay7VideoSnapshot(store, now, { id: "s-b", videoId: "vB00000000000000000000B", viewCount: 20 });
-  pushDay7VideoSnapshot(store, now, { id: "s-c", videoId: "vC00000000000000000000C", viewCount: 30 });
-  // Video F: published only 2 days ago -- physically too young for a day-7 point to exist yet.
-  store.videoSnapshots.push({
-    id: "s-f",
-    researchChannelId: VALID_CHANNEL_ID,
-    videoId: "vF00000000000000000000F",
-    observedAt: now,
-    viewCount: 5,
-    likeCount: null,
-    commentCount: null,
-    publishedAt: new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000),
-    title: null,
-    source: "youtube.videos.list",
-    createdVia: "web_ui",
-  });
-
-  const result = await services.getChannelIntelligenceSummary({ channelId: VALID_CHANNEL_ID });
-  const f = result.recentBreakoutVideos.find((v) => v.videoId === "vF00000000000000000000F")!;
-  assert.equal(f.videoViewCount, null);
-  assert.equal(f.isBreakout, false);
-  assert.match(f.reason, /not yet 7 days old/, "must be the specific not_yet_reached reason, distinct from the insufficient_history one");
-});
-
 test("AC-9H-07: zero videos with a publishedAt produces an empty recentBreakoutVideos, no crash", async () => {
   const { services, store } = createFixture();
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
@@ -1739,70 +1557,6 @@ test("AC-9HB-03: newDiscoveries contains exactly the 'new'-status candidate, not
   const result = await services.getMarketOverview();
   assert.equal(result.newDiscoveries.length, 1);
   assert.equal(result.newDiscoveries[0].status, "new");
-});
-
-test("AC-9HB-04: breakoutVideos aggregates across channels, tagging each entry with its own channelId, using the plan's own hand-computed leave-one-out fixture", async () => {
-  const now = new Date("2026-09-27T12:00:00.000Z");
-  const { services, store } = createFixture({ now });
-  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
-  await services.addToWatchlist({ channelId: OTHER_VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
-
-  pushDay7VideoSnapshot(store, now, { id: "s-a", videoId: "vA00000000000000000000A", viewCount: 10 });
-  pushDay7VideoSnapshot(store, now, { id: "s-b", videoId: "vB00000000000000000000B", viewCount: 20 });
-  pushDay7VideoSnapshot(store, now, { id: "s-c", videoId: "vC00000000000000000000C", viewCount: 30 });
-  pushDay7VideoSnapshot(store, now, { id: "s-d", videoId: "vD00000000000000000000D", viewCount: 65 });
-  // Second channel: no breakout (only one video, sample size below BREAKOUT_MIN_BASELINE_SAMPLE_SIZE).
-  store.videoSnapshots.push({
-    id: "s-other",
-    researchChannelId: OTHER_VALID_CHANNEL_ID,
-    videoId: "vOther000000000000000A",
-    observedAt: now,
-    viewCount: 999,
-    likeCount: null,
-    commentCount: null,
-    publishedAt: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000),
-    title: null,
-    source: "youtube.videos.list",
-    createdVia: "web_ui",
-  });
-
-  const result = await services.getMarketOverview();
-  assert.equal(result.breakoutVideos.length, 1);
-  assert.equal(result.breakoutVideos[0].videoId, "vD00000000000000000000D");
-  assert.equal(result.breakoutVideos[0].channelId, VALID_CHANNEL_ID);
-  assert.equal(result.breakoutVideos[0].ratio, 3.25);
-});
-
-test("AC-9HB-05: emergingChannels -- hand-checked fixture [10,10,10,10,100,100] gives exactly 2 breakouts, meeting EMERGING_MIN_BREAKOUT_VIDEOS; a channel with no qualifying signal does not appear", async () => {
-  const now = new Date("2026-09-27T12:00:00.000Z");
-  const { services, store } = createFixture({ now });
-  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
-  await services.addToWatchlist({ channelId: OTHER_VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
-
-  // Channel A: day-7 views [10,10,10,10,100,100] -- each 100 vs. median([10,10,10,10,100]) = 10 ->
-  // ratio 10, breakout; each 10 vs. median of the other five (which include one 100) = 10 -> ratio
-  // 1, not a breakout. Exactly 2 breakouts.
-  const viewsA = [10, 10, 10, 10, 100, 100];
-  viewsA.forEach((viewCount, i) => {
-    pushDay7VideoSnapshot(store, now, { id: `a-${i}`, videoId: `vA${String(i).padStart(21, "0")}`, viewCount });
-  });
-  store.channelSnapshots.push(
-    { id: "a-snap-1", researchChannelId: VALID_CHANNEL_ID, observedAt: new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000), subscriberCount: 100, viewCount: 1000, videoCount: 5, hiddenSubscriberCount: false, source: "youtube.channels.list", createdVia: "web_ui" },
-    { id: "a-snap-2", researchChannelId: VALID_CHANNEL_ID, observedAt: now, subscriberCount: 180, viewCount: 1000, videoCount: 13, hiddenSubscriberCount: false, source: "youtube.channels.list", createdVia: "web_ui" }
-  );
-
-  // Channel B: zero breakout videos and non-positive subscriber velocity -- must not appear.
-  pushVideoSnapshotForChannel(store, OTHER_VALID_CHANNEL_ID, now, { id: "b-0", videoId: "vB000000000000000000000", viewCount: 10 });
-  store.channelSnapshots.push(
-    { id: "b-snap-1", researchChannelId: OTHER_VALID_CHANNEL_ID, observedAt: new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000), subscriberCount: 100, viewCount: 1000, videoCount: 5, hiddenSubscriberCount: false, source: "youtube.channels.list", createdVia: "web_ui" },
-    { id: "b-snap-2", researchChannelId: OTHER_VALID_CHANNEL_ID, observedAt: now, subscriberCount: 90, viewCount: 1000, videoCount: 5, hiddenSubscriberCount: false, source: "youtube.channels.list", createdVia: "web_ui" }
-  );
-
-  const result = await services.getMarketOverview();
-  assert.equal(result.emergingChannels.length, 1);
-  assert.equal(result.emergingChannels[0].researchChannelId, VALID_CHANNEL_ID);
-  assert.equal(result.emergingChannels[0].recentBreakoutVideoCount, 2);
-  assert.equal(result.emergingChannels[0].isEmerging, true);
 });
 
 test("AC-9HB-06: trendCandidates is byte-for-byte identical to a direct listTrendCandidatesWithFreshness() call", async () => {
@@ -2099,60 +1853,6 @@ test("AC-9HC-02b: methodology reports the real, checked constants (found necessa
   const { services } = createFixture();
   const result = await services.getMarketVideosOverview();
   assert.deepEqual(result.methodology, { velocityWindowDays: 7, recentVideoWindowDays: 180, baselineDayOffset: 7 });
-});
-
-test("AC-9HC-03: velocity is hand-derived from derived-metrics.ts's own documented rules (day 0 -> day 5, now pinned at day 5, CHANNEL_VELOCITY_WINDOW_DAYS=7 -> value 10, basis 'partial_window')", async () => {
-  const now = new Date("2026-09-27T12:00:00.000Z");
-  const { services, store } = createFixture({ now });
-  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
-  store.videoSnapshots.push(
-    {
-      id: "s-day0",
-      researchChannelId: VALID_CHANNEL_ID,
-      videoId: "vVelocity000000000000A",
-      observedAt: new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000),
-      viewCount: 100,
-      likeCount: null,
-      commentCount: null,
-      publishedAt: null,
-      title: "Velocity Test",
-      source: "youtube.videos.list",
-      createdVia: "web_ui",
-    },
-    {
-      id: "s-day5",
-      researchChannelId: VALID_CHANNEL_ID,
-      videoId: "vVelocity000000000000A",
-      observedAt: now,
-      viewCount: 150,
-      likeCount: null,
-      commentCount: null,
-      publishedAt: null,
-      title: "Velocity Test",
-      source: "youtube.videos.list",
-      createdVia: "web_ui",
-    }
-  );
-
-  const result = await services.getMarketVideosOverview();
-  assert.equal(result.videos.length, 1);
-  assert.deepEqual(result.videos[0].velocity, { value: 10, basis: "partial_window" });
-});
-
-test("AC-9HC-04: breakout parity -- the plan's own hand-computed day-7 fixture ([10,20,30,65]) produces the identical verdict through getMarketVideosOverview as getChannelIntelligenceSummary already does", async () => {
-  const now = new Date("2026-09-27T12:00:00.000Z");
-  const { services, store } = createFixture({ now });
-  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
-  pushDay7VideoSnapshot(store, now, { id: "s-a", videoId: "vA00000000000000000000A", viewCount: 10 });
-  pushDay7VideoSnapshot(store, now, { id: "s-b", videoId: "vB00000000000000000000B", viewCount: 20 });
-  pushDay7VideoSnapshot(store, now, { id: "s-c", videoId: "vC00000000000000000000C", viewCount: 30 });
-  pushDay7VideoSnapshot(store, now, { id: "s-d", videoId: "vD00000000000000000000D", viewCount: 65 });
-
-  const result = await services.getMarketVideosOverview();
-  const d = result.videos.find((v) => v.videoId === "vD00000000000000000000D")!;
-  assert.ok(d.breakout, "a video within the recent window with a known publishedAt must never be null");
-  assert.equal(d.breakout!.isBreakout, true);
-  assert.equal(d.breakout!.ratio, 3.25);
 });
 
 test("AC-9HC-05: a video older than RECENT_VIDEO_WINDOW_DAYS gets breakout: null (excluded entirely, never a fabricated non-breakout verdict); a video with no publishedAt also gets breakout: null", async () => {
@@ -3721,4 +3421,105 @@ test("listMarketResearchRequests/getMarketResearchRequest round-trip; getMarketR
     () => services.getMarketResearchRequest({ requestId: "nonexistent" }),
     (error: unknown) => isDomainError(error) && error.code === "RESEARCH_REQUEST_NOT_FOUND"
   );
+});
+
+function pushDay7VideoSnapshot(
+  store: ReturnType<typeof createFakeStore>,
+  now: Date,
+  args: { id: string; videoId: string; viewCount: number }
+) {
+  const publishedAt = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  store.videoSnapshots.push({
+    id: args.id,
+    researchChannelId: VALID_CHANNEL_ID,
+    videoId: args.videoId,
+    observedAt: now,
+    viewCount: args.viewCount,
+    likeCount: null,
+    commentCount: null,
+    publishedAt,
+    title: null,
+    source: "youtube.videos.list",
+    createdVia: "web_ui",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 13 slice 13.3 (docs/roadmap/plans/PHASE_13_PLAN.md, owner decision D1 = a, msg 1129) --
+// REPLACES AC-9H-02..06b, AC-9HB-04/05 and AC-9HC-03/04. Those asserted velocity, breakout and
+// emerging-channel values computed from watchlist channels' snapshots. The requirement changed:
+// YouTube API Developer Policies III.E.4.h forbid "new or derived data or metrics" from API Data,
+// and every watchlist channel is someone else's (Non-Authorized) data. The pure math is still
+// covered by derived-metrics.test.ts / historical-intelligence.test.ts for our own channels.
+// ---------------------------------------------------------------------------
+
+test("13.3: the channel summary returns raw snapshots but no velocity/breakout/emerging values, with the policy reason", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  for (const [id, ageDays, subs] of [["snap-early", 8, 100], ["snap-late", 0, 180]] as const) {
+    store.channelSnapshots.push({
+      id,
+      researchChannelId: VALID_CHANNEL_ID,
+      observedAt: new Date(now.getTime() - ageDays * 24 * 60 * 60 * 1000),
+      subscriberCount: subs,
+      viewCount: 1000,
+      videoCount: 5,
+      hiddenSubscriberCount: false,
+      source: "youtube.channels.list",
+      createdVia: "web_ui",
+    });
+  }
+  pushDay7VideoSnapshot(store, now, { id: "s-a", videoId: "vA00000000000000000000A", viewCount: 10 });
+  pushDay7VideoSnapshot(store, now, { id: "s-b", videoId: "vB00000000000000000000B", viewCount: 20 });
+  pushDay7VideoSnapshot(store, now, { id: "s-c", videoId: "vC00000000000000000000C", viewCount: 30 });
+  pushDay7VideoSnapshot(store, now, { id: "s-d", videoId: "vD00000000000000000000D", viewCount: 65 });
+
+  const result = await services.getChannelIntelligenceSummary({ channelId: VALID_CHANNEL_ID });
+  assert.deepEqual(result.subscriberVelocity, { value: null, basis: "withheld_by_policy" });
+  assert.deepEqual(result.uploadCadence, { value: null, basis: "withheld_by_policy" });
+  assert.deepEqual(result.recentBreakoutVideos, []);
+  assert.equal(result.emergingChannel.isEmerging, false);
+  assert.match(result.emergingChannel.reasons.join(" "), /III\.E\.4\.h/);
+  // The raw observations themselves are still shown (with their time, III.E.4.f).
+  assert.equal(result.channelSnapshots.length, 2);
+  assert.equal(result.latestSnapshotPerVideo.length, 4);
+});
+
+test("13.3: the market videos overview shows each video's latest raw count but no velocity or breakout", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  for (const [id, ageDays, views] of [["s-day0", 5, 100], ["s-day5", 0, 150]] as const) {
+    store.videoSnapshots.push({
+      id,
+      researchChannelId: VALID_CHANNEL_ID,
+      videoId: "vVelocity000000000000A",
+      observedAt: new Date(now.getTime() - ageDays * 24 * 60 * 60 * 1000),
+      viewCount: views,
+      likeCount: null,
+      commentCount: null,
+      publishedAt: null,
+      title: "Velocity Test",
+      source: "youtube.videos.list",
+      createdVia: "web_ui",
+    });
+  }
+  const result = await services.getMarketVideosOverview();
+  assert.equal(result.videos.length, 1);
+  assert.equal(result.videos[0].viewCount, 150);
+  assert.deepEqual(result.videos[0].velocity, { value: null, basis: "withheld_by_policy" });
+  assert.equal(result.videos[0].breakout, null);
+});
+
+test("13.3: the market overview lists no breakout videos and no emerging channels derived from other channels' data", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { services, store } = createFixture({ now });
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  for (const [id, views] of [["s-a", 10], ["s-b", 10], ["s-c", 10], ["s-d", 10], ["s-e", 100], ["s-f", 100]] as const) {
+    pushDay7VideoSnapshot(store, now, { id, videoId: `v${id}`.padEnd(23, "0"), viewCount: views });
+  }
+  const result = await services.getMarketOverview();
+  assert.deepEqual(result.breakoutVideos, []);
+  assert.deepEqual(result.emergingChannels, []);
 });
