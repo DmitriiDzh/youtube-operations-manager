@@ -13,8 +13,8 @@ export { DomainError, isDomainError, parseWithSchema, formatZodError };
 /**
  * Phase 12 (`docs/roadmap/plans/PHASE_12_PLAN.md` slice 12.1) -- channel tokens. A token IS an
  * agent's identity and its channel binding at once (owner decision: one agent = one channel). The
- * operator issues it in Settings -> Channels; the agent presents it via `YTOM_AGENT_TOKEN` /
- * `--agentToken`. Only its SHA-256 hash is stored.
+ * operator issues it in Settings -> Channels; the agent presents it as a Bearer credential on the
+ * app's MCP endpoint (docs/decisions/0013-in-app-http-mcp-transport.md). Only its SHA-256 hash is stored.
  */
 
 /** Recognizable prefix so a leaked token is identifiable in a secret scanner / config review. */

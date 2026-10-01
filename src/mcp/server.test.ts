@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { DomainError } from "@/lib/shared-domain";
+import { runInAgentSession } from "@/lib/agent-session";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import type { PlaylistManagementCore } from "@/lib/playlist-management";
 import type { ChangeSetCore } from "@/lib/changesets";
@@ -24,7 +25,7 @@ import { createMcpServer, createMcpToolHandlers } from "./server";
 // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-01): tools are registered only for a
 // channel-bound agent session. Tests that exercise registered tools inject one explicitly (a test
 // seam, never a relaxed production rule); its token is treated as always valid.
-const TEST_AGENT_SESSION = { channelId: "UC_1", reverify: async () => {} };
+const TEST_AGENT_SESSION = { tokenId: "test-token", channelId: "UC_1", reverify: async () => {} };
 
 function makeCoreStub(): Pick<
   VideoMetadataCore & PlaylistManagementCore,
@@ -2869,7 +2870,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
   // Bumped 0.14.0 -> 0.15.0, Phase 11: new channel_workspace.get_channel_workspace capability
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11).
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (AC-P12-13): breaking agent-contract change -> MAJOR.
-  assert.equal(payload.agentApiVersion, "1.0.0");
+  assert.equal(payload.agentApiVersion, "2.0.0"); // AC-HM-14: MAJOR bump, the agent connection contract changed (docs/decisions/0013)
   assert.ok(
     payload.capabilities.some(
       (c: { id: string; permission: string }) => c.id === "channel_workspace.get_channel_workspace" && c.permission === "READ"
@@ -5493,6 +5494,7 @@ test("AC-P12-02: a revoked token fails the very next call of a running session, 
   const server = createMcpServer(makeCoreStub(), {
     connectionEnabled: true,
     agentSession: {
+      tokenId: "test-token",
       channelId: "UC_1",
       async reverify() {
         if (revoked) throw new DomainError({ code: "AGENT_TOKEN_INVALID", message: "revoked" });
@@ -5502,10 +5504,35 @@ test("AC-P12-02: a revoked token fails the very next call of a running session, 
   const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: Array<{ text: string }> }> }> })
     ._registeredTools;
 
-  const before = await tools.agent_get_capabilities.handler({});
-  assert.notEqual(before.isError, true);
-  revoked = true;
-  const after = await tools.agent_get_capabilities.handler({});
-  assert.equal(after.isError, true);
-  assert.equal(JSON.parse(after.content[0].text).error.code, "AGENT_TOKEN_INVALID");
+  await runInAgentSession({ tokenId: "test-token", channelId: "UC_1", userId: "u" }, async () => {
+    const before = await tools.agent_get_capabilities.handler({});
+    assert.notEqual(before.isError, true);
+    revoked = true;
+    const after = await tools.agent_get_capabilities.handler({});
+    assert.equal(after.isError, true);
+    assert.equal(JSON.parse(after.content[0].text).error.code, "AGENT_TOKEN_INVALID");
+  });
+});
+
+// docs/decisions/0013-in-app-http-mcp-transport.md, AC-HM-08: in the web process "no scope" means
+// operator mode, so a handler must never run unless the ambient scope is exactly this request's token.
+test("AC-HM-08: a tool call with no ambient scope, or another token's scope, is refused before any handler runs", async () => {
+  let handlerRan = false;
+  const core = makeCoreStub();
+  const original = core.listVideos;
+  core.listVideos = (async (...args: Parameters<typeof original>) => {
+    handlerRan = true;
+    return original(...args);
+  }) as typeof original;
+  const server = createMcpServer(core, { connectionEnabled: true, agentSession: TEST_AGENT_SESSION });
+  const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<{ isError?: boolean; content: Array<{ text: string }> }> }> })
+    ._registeredTools;
+
+  const noScope = await tools.list.handler({ channelId: "UC_1" });
+  assert.equal(noScope.isError, true);
+  await runInAgentSession({ tokenId: "another-token", channelId: "UC_1", userId: "u" }, async () => {
+    const wrongScope = await tools.list.handler({ channelId: "UC_1" });
+    assert.equal(wrongScope.isError, true);
+  });
+  assert.equal(handlerRan, false);
 });

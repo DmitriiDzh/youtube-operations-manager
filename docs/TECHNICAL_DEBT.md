@@ -201,9 +201,9 @@ Not every issue in this register must be fixed immediately. It must, however, al
 
   | Package(s) | Severity | Direct/transitive | Prod/dev exposure | Vulnerable functionality actually used? | Patched version | Breaking upgrade required? | Relevance |
   |---|---|---|---|---|---|---|---|
-  | `hono`, `@hono/node-server` | high, moderate | transitive via `@modelcontextprotocol/sdk` (prod dep) | Present in `node_modules`, but `src/mcp/server.ts` constructs only `StdioServerTransport` (verified: no `hono`/`express`/HTTP-transport import anywhere in `src/`) | **No** — the HTTP-transport code path these packages implement is never instantiated by this repo | non-major (`npm audit fix` without `--force`) | No | Dormant unless a future MCP HTTP transport is added (Slice 5/CLI-MCP work, `RISK-04`) or a real YouTube adapter (Slice 4) somehow pulls in an HTTP-based MCP transport — re-check at that point |
-  | `express-rate-limit`, `ip-address` | moderate, high | transitive via `@modelcontextprotocol/sdk` → unused HTTP transport | Same as above — HTTP transport never started | **No** | non-major | No | Same as above |
-  | `fast-uri` | high | transitive via `@modelcontextprotocol/sdk`'s `ajv` (JSON Schema validation) | `ajv` validates MCP tool input schemas, which **is** exercised over the stdio transport already in use | Likely yes, indirectly — `fast-uri` is `ajv-formats`' URI-format validator; only reachable if an MCP tool schema uses a `format: "uri"` string field with attacker-controlled input | non-major | No | Worth closing before Slice 5 (CLI/MCP interfaces) if any future MCP tool schema validates URIs from untrusted input; not currently blocking |
+  | `hono`, `@hono/node-server` | high, moderate | transitive via `@modelcontextprotocol/sdk` (prod dep) | Present in `node_modules`. **Re-triaged 2026-10-01 (ADR 0013):** `src/lib/agent-mcp-endpoint` now uses the SDK's web-standard Streamable HTTP transport (`webStandardStreamableHttp`, built on Web `Request`/`Response`); the SDK's own Node/`hono`/`express` adapters are not imported anywhere in `src/` (the `node:http` wrapper `StreamableHTTPServerTransport` is not used) | **No** — the hono/express adapter code path these packages implement is not instantiated by this repo (the endpoint is loopback-only and does not use them) | non-major (`npm audit fix` without `--force`) | No | Dormant unless the hono/express-based SDK adapters are imported — re-check if the endpoint ever stops using the web-standard transport |
+  | `express-rate-limit`, `ip-address` | moderate, high | transitive via `@modelcontextprotocol/sdk` → unused HTTP transport | Same as above — the SDK's express adapter is not used | **No** | non-major | No | Same as above |
+  | `fast-uri` | high | transitive via `@modelcontextprotocol/sdk`'s `ajv` (JSON Schema validation) | `ajv` validates MCP tool input schemas, which **is** exercised over the in-app HTTP endpoint | Likely yes, indirectly — `fast-uri` is `ajv-formats`' URI-format validator; only reachable if an MCP tool schema uses a `format: "uri"` string field with attacker-controlled input | non-major | No | Worth closing before Slice 5 (CLI/MCP interfaces) if any future MCP tool schema validates URIs from untrusted input; not currently blocking |
   | `qs` (via `@modelcontextprotocol/sdk`'s `express`/`body-parser`) | moderate | transitive, unused HTTP transport | Same as `hono` above | **No** | non-major | No | No |
   | `qs` (via `googleapis`) | moderate | transitive, **prod dep actively used** (all YouTube/Google API calls) | `googleapis` is exercised on every read of channel/video data and every existing write (playlists, single-item metadata) | Yes — `qs` serializes query strings for outgoing Google API requests; the DoS vectors are about parsing attacker-controlled query strings, which does not describe our own outgoing-request construction, but the dependency is genuinely in the production request path | non-major | No | Should be closed opportunistically (low effort, `npm audit fix` scope) — not itself a blocker, but do not defer indefinitely given active prod usage |
   | `ws` | high | transitive via `@libsql/client` → `@libsql/hrana-client` (prod dep) | `src/lib/db.ts` constructs the client with a `file:` URL (local SQLite) — the Hrana/WebSocket transport this pulls in is for **remote** libsql/Turso connections and is not exercised by the current local-file deployment | **No**, under the current local-only configuration | non-major | No | **Re-check immediately if the project ever moves to a remote libsql/Turso URL** — that would activate this exact code path; until then, dormant |
@@ -1392,10 +1392,12 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   `src/lib/agent-tokens`, MCP/CLI).
 - **Found during:** Phase 12 design. The owner chose it knowingly: decision D0(b), Telegram
   msg 1051, *"мне нужно иметь возможность быстро сменять каналы... не могу заводить 10 учеток"*.
-- **Actual risk:** the MCP server is a stdio child running as the agent's OS user and opens
-  `data.db` itself. So an agent with its own filesystem tools, as the same OS user, can read
-  another channel's data from the database file directly, read another channel's workspace
-  folder, or read another agent's launch config, including its plaintext channel token.
+- **Actual risk:** the agent runs as the operator's OS user. So an agent with its own filesystem
+  tools can find and read another channel's data from the database file directly, read another
+  channel's workspace folder, or read another agent's client configuration, including its plaintext
+  channel token. **Updated 2026-10-01 (ADR 0013):** MCP is now served by the running app over
+  loopback HTTP and the CLI agent mode is gone, so no agent configuration contains the project path or
+  needs to open the database; the same-OS-user read remains possible, only no longer pointed at.
   - Within the product's interface the wall is complete (AC-P12-01..10).
   - The risk is a deliberate bypass, or a careless agent wandering the disk.
 - **Mitigations in place:**
@@ -1403,9 +1405,8 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
   - OAuth tokens encrypted at rest when `OAUTH_TOKENS_ENCRYPTION_KEY` is set (PHASE_12_PLAN.md
     12.8), so reading the database file alone yields no usable Google credential. The key itself
     is in the environment file, which a determined same-user agent could also read.
-- **Required remediation (only if the threat model changes):** serve the agent interface from the
-  operator's own process (MCP over localhost HTTP with the token as bearer credential), plus one
-  OS user or sandbox per agent. This is PHASE_12_PLAN.md D0(a).
+- **Required remediation (only if the threat model changes):** one OS user or sandbox per agent, on
+  top of the in-app HTTP endpoint that is now in place (PHASE_12_PLAN.md D0(a), second half).
 - **Gate(s):** none.
 - **Approval required from:** project owner, to change the threat model.
 - **Status:** OPEN, accepted by the owner.
@@ -1580,5 +1581,27 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
     - Trigger to revisit: if the owner wants the shared folder itself bound to 30 days. That would mean
       re-exporting after each purge, with the false-conflict risk described above.
 - **Status:** MOSTLY RESOLVED (residual above).
+
+## RISK-93 — The in-app HTTP MCP endpoint is not verified on macOS — OPEN, 2026-10-01
+
+- **Affected components:** `POST /api/mcp` (`src/lib/agent-mcp-endpoint`, ADR 0013), the `-H 127.0.0.1`
+  binding in `package.json`'s `dev`/`start` scripts, `scripts/macos/start.sh` / `stop.sh`.
+- **Found during:** BL-113. Every check (tests, build, live end-to-end against a real `next start`) ran on
+  Windows only. The owner asked for this to be tracked (2026-10-01): *"запиши в тех долг что нам надо
+  протестить это на мак"*.
+- **Actual risk:** the code itself is platform-independent (Node + Web APIs), so a defect is not expected,
+  but it is unproven. Concretely unverified on macOS:
+  - `start.sh` polls `http://localhost:3000/` with `curl` and opens the browser on `localhost`, while the
+    server now listens on IPv4 `127.0.0.1` only; `localhost` often resolves to `::1` first, so the readiness
+    poll or the browser could fail instead of falling back;
+  - a real agent client (Codex, Claude Code) connecting to `http://127.0.0.1:<port>/api/mcp`;
+  - the loopback `Host`/`Origin` guard against the Host values macOS clients actually send.
+- **To close:** on a Mac, run `scripts/macos/start.sh` (page opens, readiness detected), then
+  `curl -i -X POST http://127.0.0.1:3000/api/mcp` (expect 403 `MCP_CONNECTION_DISABLED` or 401), then connect
+  a real agent with a channel token. If the poll fails, change `localhost` to `127.0.0.1` in both launchers.
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE` (`AGENTS.md` §K.3: a release's platform behavior is checked, not
+  inferred from a passing `dev` suite).
+- **Approval required from:** none to verify; the project owner for a release.
+- **Status:** OPEN, tracked.
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).

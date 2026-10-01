@@ -121,8 +121,8 @@ export function ChannelAgentTokenField({ channelId }: { channelId: string }) {
         <span className="flex items-center gap-1.5">
           Agent token
           <InfoTooltip>
-            The one token that binds an AI agent to this channel. An agent started with this token
-            (the YTOM_AGENT_TOKEN environment variable) can only read and change this channel&apos;s data. It
+            The one token that binds an AI agent to this channel. An agent that presents this token to the
+            app&apos;s MCP endpoint (as a Bearer credential) can only read and change this channel&apos;s data. It
             cannot see or switch to any other channel. Issuing a new token revokes the old one. The token is
             shown only once, right after issuing. It is stored only as a hash on this device.
           </InfoTooltip>

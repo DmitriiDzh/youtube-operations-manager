@@ -44,13 +44,12 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
  * - `deviceAutoSyncEnabled` -- automatic device sync (docs/roadmap/plans/DEVICE_AUTO_SYNC_PLAN.md
  *   §3.7). On by default, persistent, device-local.
  * - `operatorCliEnabled` -- Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md 12.5): whether the CLI
- *   may run without an agent token (as the operator). Off by default, persistent.
+ *   may run at all, as the operator (agent mode removed, ADR 0013). Off by default, persistent.
  * - `mcpConnectionEnabled` -- the single gate for whether an MCP client sees ANY tool at all
  *   (renamed and inverted from the earlier "MCP restricted mode", owner instruction 2026-09-21:
  *   "по началу MCP / агент от всего отключен"). Unlike `liveWritesEnabled`, this persists across
- *   process boots -- a one-time setup toggle, not reset every session. Takes effect the next
- *   time an MCP client spawns/reconnects the server process, not for an already-open MCP
- *   connection (an MCP server's tool set is fixed at construction time).
+ *   process boots -- a one-time setup toggle, not reset every session. Read on every request
+ *   by the in-app MCP endpoint, so it takes effect on the very next agent call.
  * - `analyticsSyncLocalTime`/`analyticsSyncTimezone` -- BL-059's daily auto-collection boundary
  *   (docs/roadmap/plans/PHASE_8_PLAN.md §10 items 3-4). Unlike the two booleans above, these are
  *   validated before being persisted (`isValidLocalTimeOfDay`/`isValidIanaTimezone`) -- a bad

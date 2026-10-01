@@ -40,11 +40,10 @@ Use this as the operational reference after setup: covers channel workflows acro
 
 ## CLI (`npm run cli:video-metadata -- ...`)
 
-**Phase 12:** every CLI invocation runs either as a channel-bound agent (`--agentToken <token>` or
-`YTOM_AGENT_TOKEN`: only `bound` commands, only that channel) or as the operator (no token, and
-only while Settings → AI Agent → "Operator CLI access" is on; refused otherwise). The `auth`
-namespace and `asset register` are operator-only. See "Channel-bound agent sessions" under the
-MCP section.
+**The CLI is the operator's tool only** (`docs/decisions/0013-in-app-http-mcp-transport.md`): it runs
+only while Settings → AI Agent → "Operator CLI access" is on and refuses otherwise. The former agent
+mode is removed: `--agentToken` is rejected with `AGENT_TOKEN_INVALID` and `YTOM_AGENT_TOKEN` is not
+read. AI agents use the app's MCP endpoint (see the MCP section).
 
 CLI prints JSON envelopes on stdout (`{ ok: true|false, ... }`) and uses non-zero exit on failure.
 
@@ -345,11 +344,16 @@ below.
 
 ---
 
-## MCP server (`npm run mcp:video-metadata`)
+## MCP server (`POST /api/mcp`, served by the running app)
 
-Starts the stdio MCP server. **Since Phase 12 it exposes tools only to a channel-bound agent
-session.** The "MCP connection" toggle must be on, and the process must be started with a valid
-`YTOM_AGENT_TOKEN`; otherwise zero tools are registered. The server never exposes a login flow:
+The app itself serves MCP (stateless Streamable HTTP, `src/lib/agent-mcp-endpoint`, route
+`src/app/api/mcp/route.ts`); the stdio server and `npm run mcp:video-metadata` no longer exist
+(`docs/decisions/0013-in-app-http-mcp-transport.md`). **It exposes tools only to a channel-bound
+agent.** Each request is checked in order: loopback `Host`/`Origin` (else `403
+AGENT_ENDPOINT_NOT_LOOPBACK`), method `POST` (else `405`), "MCP connection" toggle on (else `403
+MCP_CONNECTION_DISABLED`), `Authorization: Bearer <channel token>` present (else `401
+AGENT_TOKEN_REQUIRED`) and valid (else `401 AGENT_TOKEN_INVALID`). Errors are explicit; there is no
+empty tool list and no `WWW-Authenticate` challenge. The server never exposes a login flow:
 channel identities are connected by the operator in the Web UI (Settings → Channels).
 
 The list below is the full tool inventory. Tools marked *(operator-only)* are classified
@@ -749,28 +753,24 @@ Renamed and inverted 2026-09-21 from the earlier "restricted mode" (owner instru
 началу MCP / агент от всего отключен и получит доступ только если я зайду в настройки и
 переключу этот тумблер... Все взаимодействия MCP / агента должны идти через это переключение"*).
 
-The real entrypoint, `startMcpServer()` (`npm run mcp:video-metadata`), reads a single persisted
-setting (`getMcpConnectionEnabled`, `src/lib/db.ts`) once at process startup and passes it to
-`createMcpServer(core, { connectionEnabled })`. **While disconnected (the default, and the state
-of every newly-created local database), the server registers ZERO tools at all** — not just the
-write/identity-switching ones, every read/propose/create tool too (`whoami`, `list`,
-`changeset_list`, `channel_sync`, everything). A connected MCP client sees a server with no
-capabilities whatsoever until the project owner explicitly turns "MCP connection" on in the
-app's Settings tab. There is no environment-variable override — the Settings-tab toggle is the
-one and only way to grant a connection any access.
+The endpoint reads the persisted setting (`getMcpConnectionEnabled`, `src/lib/db.ts`) **on every
+request** and passes it to `createMcpServer(core, { connectionEnabled, agentSession })`, built fresh per
+request. **While disconnected (the default, and the state of every newly-created local database), the
+endpoint answers `403` and registers nothing** -- no read/propose/create tool is reachable. There is no
+environment-variable override: the Settings-tab toggle is the one and only way to grant a connection any
+access.
 
-**Since Phase 12 this toggle is the master switch only** (`docs/roadmap/plans/PHASE_12_PLAN.md`).
-With it on, a server still registers **zero tools unless it was started with a valid channel token**:
-`YTOM_AGENT_TOKEN` in that client's MCP launch config, issued in Settings → Channels. A valid token
-binds the whole server process to that one channel (see "Channel-bound agent sessions" below). Write
-tools remain separately gated by the unrelated "Live writes" toggle (`docs/decisions/
-0005-youtube-write-gateway.md`). Turning on "MCP connection" alone never sends anything to YouTube.
+**Since Phase 12 this toggle is the master switch only** (`docs/roadmap/plans/PHASE_12_PLAN.md`). With it
+on, a request still gets nothing unless it carries a valid channel token (issued in Settings → Channels,
+sent as a Bearer token). A valid token binds that one request to that one channel (see "Channel-bound
+agent sessions" below). Write tools remain separately gated by the unrelated "Live writes" toggle
+(`docs/decisions/0005-youtube-write-gateway.md`). Turning on "MCP connection" alone never sends anything
+to YouTube.
 
-Persisted across process boots once turned on — unlike "Live writes" (which resets to off every
-session by design), this is a one-time setup step, per explicit project-owner instruction.
-**Known limitation:** an MCP server's tool set is fixed at `createMcpServer()` construction time
-(standard SDK behavior) — flipping this setting takes effect the next time an MCP client spawns
-or reconnects the server process, not instantly for a connection that is already open.
+Persisted across restarts once turned on -- unlike "Live writes" (which resets to off every session by
+design), this is a one-time setup step, per explicit project-owner instruction. Because the server is
+stateless, flipping the setting, or revoking/rotating a token, applies to the very next request; no
+client restart is needed.
 
 This is the concrete implementation of Phase 7's "operation-specific permissions and read-only
 access to application data" (`docs/roadmap/FUTURE_PHASES.md` §3) taken to its safer, default-deny
@@ -788,8 +788,10 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
   - The token is shown once, and only its SHA-256 hash is stored, on this device only.
   - Issuing requires the channel's recorded Google identity to own the channel live. Issuing
     again revokes the previous token.
-- **Session.** MCP reads `YTOM_AGENT_TOKEN` at spawn. The CLI takes `--agentToken <token>` or the
-  same env var. A valid token freezes the process into that channel:
+- **Session.** The token arrives per request as a Bearer credential. A valid token puts that request
+  (and only it) into that channel's scope, carried by an `AsyncLocalStorage`
+  (`src/lib/agent-session`; there is no process-wide scope, and before every tool handler the wrapper
+  asserts that the ambient scope is exactly this request's token, failing closed otherwise):
   - every channel-scoped check uses the bound channel;
   - credentials are always the token's recorded identity, and a caller `credentialRef` /
     `--userId` / `--accessToken` is rejected (`AGENT_SESSION_CREDENTIAL_OVERRIDE`);
@@ -798,12 +800,11 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
   The token is re-verified on every MCP call, so revocation takes effect immediately
   (`AGENT_TOKEN_INVALID`). A token is also invalid once its channel is disconnected or reconnected
   under another Google identity, and disconnecting revokes it. The "MCP connection" master switch
-  gates token-bound CLI use too.
+  gates every agent request.
 - **What an agent session can reach.**
-  - Only tools and commands classified `bound` (`src/mcp/tool-classification.ts`,
-    `src/cli/command-classification.ts`, both enforced by inventory tests).
+  - Only tools classified `bound` (`src/mcp/tool-classification.ts`, enforced by an inventory test).
   - Operator-only, and never available to an agent: `write_channel_select`, `write_channel_list`,
-    `auth_user_select`, every `auth *` CLI command, `asset register`, and the global
+    `auth_user_select`, and the global
     operations-workspace tools (owner decision D2: channel folders only).
   - `list` / `transcript` / `preview` / `channel_sync` are confined to the bound channel.
   - Market tools return only records the operator assigned to that channel (below).
@@ -813,12 +814,12 @@ nothing. This replaces BL-091's per-capability zones, which are retired in
     trend candidates, discovery candidates and research requests to channels, using the
     "Visible to agents of:" chips on the Research panels (`GET/PUT /api/market-assignments`).
   - A research request an agent creates is owned by its channel automatically.
-- **CLI without a token.** It runs only while Settings → AI Agent → "Operator CLI access" is on
-  (default off). Otherwise it is refused, so a shell-capable agent cannot bypass its binding by
-  omitting its token.
-- **Limit (owner decision D0(b)).** This is an in-app wall. It stops agent mistakes, not an agent
-  that deliberately reads `data.db` or another agent's launch config as the same OS user. See
-  `docs/AGENT_ISOLATION_SETUP.md`.
+- **CLI.** It is the operator's tool and runs only while Settings → AI Agent → "Operator CLI access"
+  is on (default off). Otherwise it is refused, so a shell-capable agent cannot run it from the
+  project folder.
+- **Limit (RISK-87).** This is an in-app wall. It stops agent mistakes, not an agent that
+  deliberately finds and reads `data.db` or another agent's client configuration as the same OS user.
+  See `docs/AGENT_ISOLATION_SETUP.md`.
 
 ---
 

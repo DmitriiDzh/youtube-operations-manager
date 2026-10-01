@@ -1,15 +1,13 @@
 #!/usr/bin/env node
 
 import { loadEnvConfig } from "@next/env";
-import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { createVideoMetadataCore } from "@/lib/video-metadata";
 import { DomainError } from "@/lib/shared-domain";
 import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createCliAuthService, type CliAuthService } from "@/lib/cli-auth";
-import { getMcpConnectionEnabled, recordGatewayCallOutcome } from "@/lib/db";
+import { recordGatewayCallOutcome } from "@/lib/db";
 import type { CredentialRef } from "@/lib/shared-domain";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
 import { OperationLockError } from "@/lib/operation-lock";
@@ -68,9 +66,8 @@ import {
   listWeeklyReportsInputSchema,
 } from "@/lib/analytics/schemas";
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
-import { createAgentTokenCore, type AgentTokenBinding } from "@/lib/agent-tokens";
 import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
-import { enterAgentSession } from "@/lib/agent-session";
+import { assertAgentSession } from "@/lib/agent-session";
 import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
 import {
   createChannelWorkspacesCore,
@@ -1883,13 +1880,14 @@ export function createMcpServer(
   },
   options: {
     connectionEnabled?: boolean;
-    // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md §6) -- the channel-bound agent session this
-    // process runs as. Absent means "no valid token": ZERO tools are registered (owner decision
-    // msg 1048, "agent without a token has nothing to receive"), on top of the unchanged
-    // connectionEnabled master switch. `reverify` re-checks the token on every call so a revocation
-    // takes effect mid-session (AC-P12-02). The process-wide scope itself
-    // (`src/lib/agent-session`) is entered by `startMcpServer`, not here, so tests can inject this.
-    agentSession?: { channelId: string; reverify(): Promise<void> } | null;
+    // The channel-bound agent session of THIS request (`src/lib/agent-mcp-endpoint` builds one server
+    // per request, from a token it just verified). Absent means "no valid token": ZERO tools are
+    // registered, on top of the unchanged connectionEnabled master switch. Before every tool call the
+    // wrapper asserts that the ambient request scope (`src/lib/agent-session`) is exactly this
+    // `tokenId` -- a lost async context would otherwise degrade into operator mode inside the web
+    // process -- and `reverify` re-checks the token so a revocation lands even mid-request
+    // (AC-P12-02). The scope itself is entered by the endpoint, not here, so tests can inject this.
+    agentSession?: { tokenId: string; channelId: string; reverify(): Promise<void> } | null;
   } = {}
 ) {
   const connectionEnabled = options.connectionEnabled ?? false;
@@ -1933,6 +1931,7 @@ export function createMcpServer(
     // its channel's work; see docs/decisions/0011-retire-agent-capability-zones.md.)
     const countedHandler = (async (args: never) => {
       try {
+        assertAgentSession(agentSession.tokenId);
         await agentSession.reverify();
       } catch (error) {
         await recordGatewayCallOutcome("mcp_tool_calls", "blocked");
@@ -2532,55 +2531,4 @@ export function createMcpServer(
   );
 
   return server;
-}
-
-async function resolveMcpAgentSession(
-  token: string | undefined
-): Promise<{ channelId: string; reverify(): Promise<void> } | null> {
-  if (!token) return null;
-  const agentTokenCore = createAgentTokenCore();
-  let binding: AgentTokenBinding;
-  try {
-    binding = await agentTokenCore.verifyToken(token);
-  } catch {
-    return null;
-  }
-  enterAgentSession(binding);
-  return {
-    channelId: binding.channelId,
-    async reverify() {
-      const current = await agentTokenCore.verifyToken(token);
-      if (current.tokenId !== binding.tokenId) {
-        throw new DomainError({ code: "AGENT_TOKEN_INVALID", message: "agent token is missing, unknown, or revoked" });
-      }
-    },
-  };
-}
-
-export async function startMcpServer() {
-  // Read once, here, at process startup -- see getMcpConnectionEnabled's own doc comment in
-  // src/lib/db.ts for the one known limitation: createMcpServer()'s tool registration is fixed
-  // at construction time, so an already-running MCP connection keeps its existing tool set
-  // until it reconnects; this is never hot-swapped mid-session.
-  const connectionEnabled = await getMcpConnectionEnabled();
-  // Phase 12 -- the channel token (YTOM_AGENT_TOKEN, set in this client's MCP launch config). A
-  // valid one freezes this whole process into its channel's scope BEFORE any tool exists; a
-  // missing/invalid one leaves the server with zero tools.
-  const agentSession = await resolveMcpAgentSession(process.env.YTOM_AGENT_TOKEN);
-  const server = createMcpServer(undefined, { connectionEnabled, agentSession });
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  // Phase 13 (review round 5): the YouTube API 30-day purge also runs when an agent starts this
-  // process, not only while the web server is up -- an MCP-only period must not keep expired data.
-  // Best effort, silent (stdout is the MCP protocol channel), behind the same mutation gate.
-  void import("@/lib/youtube-data-policy").then((m) => m.runApiDataRetention()).catch(() => undefined);
-}
-
-const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
-
-if (isMainModule) {
-  startMcpServer().catch((error) => {
-    console.error(error);
-    process.exitCode = 1;
-  });
 }

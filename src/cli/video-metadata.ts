@@ -11,7 +11,7 @@ import type { VideoMetadataCore } from "@/lib/video-metadata";
 import { createPlaylistManagementCore, type PlaylistManagementCore } from "@/lib/playlist-management";
 import { createCliAuthService } from "@/lib/cli-auth";
 import type { CredentialRef } from "@/lib/shared-domain";
-import { getMcpConnectionEnabled, getOperatorCliEnabled, rawSqlClient } from "@/lib/db";
+import { getOperatorCliEnabled, rawSqlClient } from "@/lib/db";
 import { assertDeviceAvailableForMutation, RecoveryModeError } from "@/lib/device-mutation-gate";
 import { OperationLockError } from "@/lib/operation-lock";
 import { createChangeSetCore, type ChangeSetCore } from "@/lib/changesets";
@@ -24,10 +24,7 @@ import { createAgentOperationsCore, type AgentOperationsCore } from "@/lib/agent
 import { createAssetCatalogCore, type AssetCatalogCore } from "@/lib/asset-catalog";
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
 import { createChannelWorkspacesCore, type ChannelWorkspacesCore } from "@/lib/channel-workspaces";
-import { createAgentTokenCore, type AgentTokenBinding } from "@/lib/agent-tokens";
 import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
-import { enterAgentSession } from "@/lib/agent-session";
-import { CLI_COMMAND_CLASSIFICATION } from "./command-classification";
 import { createDecisionEngineCore, type DecisionEngineCore } from "@/lib/decision-engine";
 
 // CLI parity for the read/propose/create MCP tools (docs/roadmap/plans/PHASE_7_PLAN.md,
@@ -568,16 +565,9 @@ export async function runCliCommand(args: {
   marketAssignmentCore?: Pick<MarketAssignmentCore, "filterForAgent" | "assertAvailableToAgent" | "recordAgentOwnership">;
   writeStdout?: (line: string) => void;
   writeStderr?: (line: string) => void;
-  // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md §6) -- the channel-bound agent session this
-  // invocation runs as, established by the entrypoint below from `--agentToken`/`YTOM_AGENT_TOKEN`
-  // (which also enters the process-wide scope, `src/lib/agent-session`). Absent = operator mode.
-  agentSession?: { channelId: string } | null;
   // Phase 12 slice 12.5 -- whether operator mode (no token) is allowed at all. Injectable for tests;
   // defaults to the persisted "Operator CLI access" setting (off unless the operator turned it on).
   operatorCliEnabled?: () => Promise<boolean>;
-  // Review round 2 -- the "MCP connection" master switch governs agent CLI use too (owner rule,
-  // 2026-09-21: every MCP/agent interaction goes through it). Injectable for tests.
-  agentConnectionEnabled?: () => Promise<boolean>;
 }): Promise<number> {
   const core = args.core ?? {
     ...createVideoMetadataCore(),
@@ -603,31 +593,14 @@ export async function runCliCommand(args: {
   try {
     const parsedArgs = parseArgs(args.argv);
 
-    // Phase 12 (AC-P12-04/08/10): an agent session may run only commands classified `bound`; with no
-    // agent session the CLI is the operator's tool and runs only while "Operator CLI access" is on.
-    // Checked before anything else touches state.
-    const commandKey = `${parsedArgs.namespace} ${parsedArgs.command}`;
-    if (args.agentSession) {
-      if (!(await (args.agentConnectionEnabled ?? getMcpConnectionEnabled)())) {
-        throw new DomainError({
-          code: "AGENT_TOKEN_INVALID",
-          message: "agent access is switched off (Settings -> AI Agent -> MCP connection)",
-        });
-      }
-      const commandClass = CLI_COMMAND_CLASSIFICATION[commandKey];
-      if (commandClass !== "bound") {
-        throw new DomainError({
-          code: "AGENT_SESSION_OPERATOR_ONLY",
-          message: commandClass
-            ? `"${commandKey}" is operator-only and unavailable to a channel-bound agent`
-            : `"${commandKey}" is not classified for agent sessions`,
-        });
-      }
-    } else if (!(await (args.operatorCliEnabled ?? getOperatorCliEnabled)())) {
+    // The CLI is the OPERATOR's tool only (docs/decisions/0013-in-app-http-mcp-transport.md): agents use
+    // the in-app MCP endpoint. Without this switch a shell-capable agent could simply run it from the
+    // project folder, so it runs only while "Operator CLI access" is on (AC-P12-10).
+    if (!(await (args.operatorCliEnabled ?? getOperatorCliEnabled)())) {
       throw new DomainError({
         code: "AGENT_TOKEN_INVALID",
         message:
-          "no agent token: set YTOM_AGENT_TOKEN (or --agentToken) to this channel's token, or enable \"Operator CLI access\" in Settings to use the CLI as the operator",
+          "the CLI is the operator's tool and \"Operator CLI access\" is off (Settings -> AI Agent). AI agents connect through the app's MCP endpoint instead, see Settings -> AI Agent",
       });
     }
 
@@ -1570,40 +1543,25 @@ export async function runCliCommand(args: {
 const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
 
 /**
- * Phase 12 -- the CLI process entrypoint resolves its agent token ONCE, before any command runs:
- * `--agentToken <token>` (removed from argv before parsing) or `YTOM_AGENT_TOKEN`. A valid token
- * freezes this process into its channel's scope (`src/lib/agent-session`); an invalid one is a
- * refusal, never a silent fall-back to operator mode.
+ * The CLI process entrypoint. The agent mode (`--agentToken` / `YTOM_AGENT_TOKEN`) was removed with the
+ * stdio MCP server (docs/decisions/0013-in-app-http-mcp-transport.md): a flag naming a token is a
+ * refusal, never silently ignored, so a stale agent configuration fails loudly instead of running as
+ * the operator. The `YTOM_AGENT_TOKEN` environment variable is not read at all.
  */
 export async function runCliProcess(argv: string[]): Promise<number> {
-  // Accepts `--agentToken <token>` and `--agentToken=<token>` (review round 2: the `=` form must
-  // never be mistaken for "no token"). An explicit flag must carry a value; an empty or missing one
-  // is a refusal (review round 1), never a silent fall-back to operator mode. An empty env var
-  // counts as unset.
-  const tokenFlagIndex = argv.findIndex((arg) => arg === "--agentToken" || arg.startsWith("--agentToken="));
-  let token: string | undefined;
-  let remainingArgv = argv;
-  if (tokenFlagIndex >= 0) {
-    const flag = argv[tokenFlagIndex];
-    const inline = flag.startsWith("--agentToken=");
-    token = inline ? flag.slice("--agentToken=".length) : argv[tokenFlagIndex + 1];
-    if (!token || token.startsWith("--")) token = "";
-    remainingArgv = [...argv.slice(0, tokenFlagIndex), ...argv.slice(tokenFlagIndex + (inline ? 1 : 2))];
-  } else {
-    token = process.env.YTOM_AGENT_TOKEN || undefined;
-  }
-  if (token === undefined) {
-    return runCliCommand({ argv: remainingArgv });
-  }
-  let binding: AgentTokenBinding;
-  try {
-    binding = await createAgentTokenCore().verifyToken(token);
-  } catch (error) {
-    process.stderr.write(`${serializeError(error)}\n`);
+  if (argv.some((arg) => arg === "--agentToken" || arg.startsWith("--agentToken="))) {
+    process.stderr.write(
+      `${serializeError(
+        new DomainError({
+          code: "AGENT_TOKEN_INVALID",
+          message: "--agentToken is no longer supported: the CLI is operator-only. AI agents connect through the app's MCP endpoint (Settings -> AI Agent).",
+        })
+      )}
+`
+    );
     return 1;
   }
-  enterAgentSession(binding);
-  return runCliCommand({ argv: remainingArgv, agentSession: { channelId: binding.channelId } });
+  return runCliCommand({ argv });
 }
 
 if (isMainModule) {

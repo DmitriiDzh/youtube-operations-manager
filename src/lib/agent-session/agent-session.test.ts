@@ -5,7 +5,7 @@ import { db, getSelectedChannelId, setSelectedChannelId, users } from "@/lib/db"
 import { createCliAuthService } from "@/lib/cli-auth/services";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { isDomainError } from "@/lib/shared-domain";
-import { enterAgentSession, getAgentSession, withAgentSessionForTests } from "./index";
+import { assertAgentSession, getAgentSession, runInAgentSession, withAgentSessionForTests } from "./index";
 
 // docs/roadmap/plans/PHASE_12_PLAN.md §6 enforcement design + AC-P12-04/05/06. These run against
 // the real db.ts singleton (redirected to a per-file temp database under the test runner) and the
@@ -127,11 +127,106 @@ test("AC-P12-03/05: whoami in a session reports the bound identity without readi
   });
 });
 
-test("enterAgentSession can be entered once and never replaced", () => {
-  enterAgentSession(BOUND);
-  assert.throws(() => enterAgentSession({ ...BOUND, channelId: "UC_OTHER" }));
-  assert.equal(getAgentSession()?.channelId, "UC_BOUND");
-  assert.throws(() => {
-    (getAgentSession() as { channelId: string }).channelId = "UC_OTHER";
+// docs/decisions/0013-in-app-http-mcp-transport.md -- the scope is per request (AsyncLocalStorage),
+// never process-wide. Expected values below are stated by hand from AC-HM-07/08/09.
+
+const TOKEN_A = { tokenId: "tok-a", channelId: "UC_A", userId: "user-a" };
+const TOKEN_B = { tokenId: "tok-b", channelId: "UC_B", userId: "user-b" };
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+test("AC-HM-09: no ambient scope exists outside a request's run, before and after it", async () => {
+  assert.equal(getAgentSession(), null);
+  await runInAgentSession(TOKEN_A, async () => {
+    assert.equal(getAgentSession()?.channelId, "UC_A");
+  });
+  assert.equal(getAgentSession(), null);
+});
+
+test("AC-HM-07: concurrent requests for A, B and an operator path each see only their own scope", async () => {
+  const seen: Record<string, Array<string | null>> = { a: [], b: [], operator: [] };
+  const sample = (key: string) => seen[key].push(getAgentSession()?.channelId ?? null);
+
+  await Promise.all([
+    runInAgentSession(TOKEN_A, async () => {
+      sample("a");
+      await delay(30); // B and the operator run while A is suspended mid-request
+      sample("a");
+      await Promise.resolve().then(() => sample("a"));
+    }),
+    runInAgentSession(TOKEN_B, async () => {
+      await delay(5);
+      sample("b");
+      await delay(40);
+      sample("b");
+    }),
+    (async () => {
+      await delay(10);
+      sample("operator");
+      await delay(40);
+      sample("operator");
+    })(),
+  ]);
+
+  assert.deepEqual(seen.a, ["UC_A", "UC_A", "UC_A"]);
+  assert.deepEqual(seen.b, ["UC_B", "UC_B"]);
+  assert.deepEqual(seen.operator, [null, null]);
+});
+
+test("AC-HM-07: the selection choke point is scoped per request too (A, B, operator interleaved)", async () => {
+  await seedUser("user-a", "UC_A_STORED");
+  await seedUser("user-b", "UC_B_STORED");
+  const results: Record<string, string | null> = {};
+  await Promise.all([
+    runInAgentSession(TOKEN_A, async () => {
+      await delay(20);
+      results.a = await getSelectedChannelId("user-a");
+      results.aForB = await getSelectedChannelId("user-b");
+    }),
+    runInAgentSession(TOKEN_B, async () => {
+      results.b = await getSelectedChannelId("user-b");
+    }),
+    (async () => {
+      await delay(10);
+      results.operator = await getSelectedChannelId("user-a");
+    })(),
+  ]);
+  assert.deepEqual(results, { a: "UC_A", aForB: null, b: "UC_B", operator: "UC_A_STORED" });
+});
+
+test("AC-HM-08: assertAgentSession refuses when the scope is absent or belongs to another token", async () => {
+  assert.throws(() => assertAgentSession("tok-a"));
+  await runInAgentSession(TOKEN_B, async () => {
+    assert.throws(() => assertAgentSession("tok-a"));
+    assert.equal(assertAgentSession("tok-b").channelId, "UC_B");
+  });
+});
+
+test("AC-HM-08: a scope escaping into detached work never leaks into a sibling request", async () => {
+  let detached: Promise<string | null> = Promise.resolve(null);
+  await runInAgentSession(TOKEN_A, async () => {
+    detached = delay(10).then(() => getAgentSession()?.channelId ?? null);
+  });
+  // Work started inside A's run keeps A's scope (never another's, never "operator").
+  assert.equal(await detached, "UC_A");
+  assert.equal(getAgentSession(), null);
+});
+
+test("the scope object is frozen", async () => {
+  await runInAgentSession(TOKEN_A, async () => {
+    assert.throws(() => {
+      (getAgentSession() as { channelId: string }).channelId = "UC_OTHER";
+    });
+  });
+});
+
+test("withAgentSessionForTests(null) removes the scope even inside one", async () => {
+  await runInAgentSession(TOKEN_A, async () => {
+    await withAgentSessionForTests(null, async () => {
+      assert.equal(getAgentSession(), null);
+    });
+    assert.equal(getAgentSession()?.channelId, "UC_A");
   });
 });

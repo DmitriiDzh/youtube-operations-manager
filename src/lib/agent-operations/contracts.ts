@@ -44,8 +44,9 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * evolve (additively, per owner spec §4 "explicit versioning and backward-compatible evolution")
  * on a different cadence than the product itself. Bump the MINOR version once per slice/landing
  * that adds one or more capabilities (not once per individual capability item within that slice);
- * bump MAJOR only for a breaking change to an existing tool's contract (none is anticipated in
- * Phase 7's own additive slices). Do NOT bump for a purely additive, backward-compatible widening
+ * bump MAJOR only for a breaking change to an existing tool's contract, or to how an agent connects
+ * (Phase 12's channel tokens, the in-app HTTP endpoint replacing stdio -- both break every released
+ * agent configuration). Do NOT bump for a purely additive, backward-compatible widening
  * of an EXISTING capability's own contract (e.g. a new optional input/output field an existing
  * caller can simply ignore) -- that is neither a new capability nor a breaking change; MINOR is
  * reserved for capability-discovery-relevant changes (a caller enumerating `AGENT_CAPABILITIES`
@@ -58,7 +59,7 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts`) for the current, authoritative
  * list of capabilities.
  */
-export const AGENT_API_VERSION = "1.0.0";
+export const AGENT_API_VERSION = "2.0.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry

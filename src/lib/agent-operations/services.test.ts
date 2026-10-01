@@ -236,7 +236,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11): new channel_workspace capability.
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-13): a breaking
   // agent-contract change (token required, identity/credential overrides removed) -> MAJOR.
-  assert.equal(result.agentApiVersion, "1.0.0");
+  assert.equal(result.agentApiVersion, "2.0.0"); // AC-HM-14: MAJOR bump, the agent connection contract changed (docs/decisions/0013)
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));

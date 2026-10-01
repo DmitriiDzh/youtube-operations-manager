@@ -152,7 +152,7 @@ Entry point: `src/mcp/server.ts` (`createMcpServer()`, `createMcpToolHandlers()`
 
 ## 6.8 Adding CLI commands
 
-Entry point: `src/cli/video-metadata.ts`. Current namespaces: `metadata` (default), `auth`, `playlist`, `changeset`, `batch`, `channel`, `analytics`, `ai-localization`, `agent`, `asset`. Every command must also be classified in `src/cli/command-classification.ts` (`bound` / `operator-only`, Phase 12). An inventory test fails otherwise.
+Entry point: `src/cli/video-metadata.ts`. Current namespaces: `metadata` (default), `auth`, `playlist`, `changeset`, `batch`, `channel`, `analytics`, `ai-localization`, `agent`, `asset`. The CLI is the operator's tool only (no agent mode, `docs/decisions/0013-in-app-http-mcp-transport.md`): a new agent-facing capability is an MCP tool, classified in `src/mcp/tool-classification.ts` (an inventory test fails otherwise).
 
 1. Extend `ParsedArgs`'s `namespace`/`command` union types and `parseArgs()`'s dispatch logic — follow the existing `isAuthNamespace`/`isPlaylistNamespace` branching pattern for a new namespace.
 2. Call the same core factory (`createChangeSetCore()`, etc.) other interfaces use — do not reimplement.

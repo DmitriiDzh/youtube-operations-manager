@@ -656,6 +656,15 @@ Plan, decisions D1–D3 and acceptance criteria: `docs/roadmap/plans/PHASE_13_PL
 `docs/roadmap/plans/PHASE_13_SOURCES_RESEARCH.md`. **Status: planned, not assigned.** Implementation starts on the
 owner's assignment. D1 is needed before slices 13.2/13.3. Backlog: BL-112.
 
+## 15. In-app HTTP MCP transport (replaces stdio)
+
+**Recorded 2026-10-01, owner direction (chat).** The MCP server runs inside the app (Streamable HTTP,
+`POST /api/mcp`, loopback only, channel token as bearer); Codex/Claude only connect to it. stdio MCP and
+the CLI agent mode are removed, not kept alongside. Reverses Phase 12's D0(b).
+
+Plan and acceptance criteria: `docs/roadmap/plans/HTTP_MCP_SERVER_PLAN.md`. ADR:
+`docs/decisions/0013-in-app-http-mcp-transport.md`. **Status: in progress.** Backlog: BL-113.
+
 ## 12. Current next-action marker
 
 Recorded 2026-09-26, owner instruction ("Strategic Roadmap Update — Post Phase 8") — kept short
