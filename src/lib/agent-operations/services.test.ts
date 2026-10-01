@@ -392,6 +392,41 @@ test("getChannelContext returns channel basics, video count, editorial profile, 
   assert.deepEqual(result.trackedLanguages, ["es", "fr"]);
 });
 
+// Regression: the real `ai-localization` EditorialProfile carries its own `channelId`, which the
+// strict agent-facing profile schema does not allow -- the call used to throw on any channel
+// that had a saved profile. The fake above omits `channelId`, which is why it was never caught.
+test("getChannelContext does not leak or choke on the stored profile's own channelId", async () => {
+  const { services } = createFixture({
+    channels: { UC_A: { channelId: "UC_A", title: "Rural Japan Music", lastSyncedAt: null } },
+    videosByChannel: {},
+    profilesByChannel: {
+      UC_A: {
+        channelId: "UC_A",
+        version: 2,
+        targetAudience: "Ambient music listeners",
+        toneNotes: null,
+        terminologyNotes: null,
+        titleConstraints: null,
+        descriptionConstraints: null,
+        updatedAt: "2026-09-19T00:00:00.000Z",
+      } as never,
+    },
+    trackedLanguagesByChannel: {},
+  });
+
+  const result = await services.getChannelContext({ channelId: "UC_A" });
+
+  assert.deepEqual(result.editorialProfile, {
+    version: 2,
+    targetAudience: "Ambient music listeners",
+    toneNotes: null,
+    terminologyNotes: null,
+    titleConstraints: null,
+    descriptionConstraints: null,
+    updatedAt: "2026-09-19T00:00:00.000Z",
+  });
+});
+
 test("getChannelContext reports lastSyncedAt as null (never fabricated) for a channel never synced, and editorialProfile as null when none was ever saved", async () => {
   const { services } = createFixture({
     channels: { UC_A: { channelId: "UC_A", title: "New Channel", lastSyncedAt: null } },
