@@ -34,8 +34,8 @@ const STATUS_LABELS: Record<MarketResearchRequestStatus, string> = {
 };
 
 // Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md §9) -- the ONLY
-// place a research request can be approved or rejected. Approving spends real quota (~100 units,
-// one search.list call) -- the approve action sits behind ConfirmDialog (never window.confirm, per
+// place a research request can be approved or rejected. Approving spends real quota (one search.list call,
+// 1 of YouTube's 100 daily searches) -- the approve action sits behind ConfirmDialog (never window.confirm, per
 // this app's own standing UI convention) and states the cost explicitly before the operator
 // commits.
 export function MarketResearchRequestsPanel() {
@@ -118,8 +118,8 @@ export function MarketResearchRequestsPanel() {
           Research requests
           <InfoTooltip>
             Structured research drafts an agent (MCP/CLI) can create -- an agent can never approve
-            or reject its own request. Approving here spends real YouTube API quota (~100 units,
-            one search.list call) and runs Discover with the request&rsquo;s own query.
+            or reject its own request. Approving here uses one of YouTube&rsquo;s 100 daily searches
+            (one search.list call) and runs Discover with the request&rsquo;s own query.
           </InfoTooltip>
         </h3>
       </div>
@@ -187,7 +187,7 @@ export function MarketResearchRequestsPanel() {
       {approveTarget && (
         <ConfirmDialog
           title="Approve this research request?"
-          description={`This spends real YouTube API quota (~100 units, one search.list call) for "${approveTarget.query}". This cannot be undone.`}
+          description={`This uses one of YouTube's 100 daily searches (one search.list call) for "${approveTarget.query}". This cannot be undone.`}
           confirmLabel={approving ? "Approving..." : "Approve"}
           confirmVariant="danger"
           onCancel={() => setApproveTarget(null)}

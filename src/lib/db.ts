@@ -5821,15 +5821,24 @@ export async function getLatestMarketIntelligenceCollectionRunForChannel(
  * share ONE operator-set daily budget (owner decision 2) -- there is no per-feature sub-budget.
  */
 export async function getMarketIntelligenceUnitsSpentSince(since: Date, database: AppDb = db): Promise<number> {
+  // Phase 13 slice 13.4: since 2026-06-01 `search.list` has its own quota bucket, so discovery runs
+  // no longer count against the shared 10k-unit pool this budget guards -- collection runs only.
+  // Searches are counted by `countMarketDiscoverySearchesSince` against their own daily limit.
   const [collectionRow] = await database
     .select({ total: sql<number | null>`SUM(${marketIntelligenceCollectionRuns.unitsSpent})` })
     .from(marketIntelligenceCollectionRuns)
     .where(gte(marketIntelligenceCollectionRuns.ranAt, since));
-  const [discoveryRow] = await database
-    .select({ total: sql<number | null>`SUM(${marketDiscoveryRuns.unitsSpent})` })
+  return collectionRow?.total ?? 0;
+}
+
+/** Phase 13 slice 13.4: `search.list` calls made since `since` -- each `market_discovery_runs` row is
+ * exactly one call (a row is only written once the call was attempted). */
+export async function countMarketDiscoverySearchesSince(since: Date, database: AppDb = db): Promise<number> {
+  const [row] = await database
+    .select({ total: sql<number>`COUNT(*)` })
     .from(marketDiscoveryRuns)
     .where(gte(marketDiscoveryRuns.ranAt, since));
-  return (collectionRow?.total ?? 0) + (discoveryRow?.total ?? 0);
+  return Number(row?.total ?? 0);
 }
 
 const MARKET_INTELLIGENCE_DAILY_QUOTA_BUDGET_SETTING_KEY = "market_intelligence_daily_quota_budget_units";

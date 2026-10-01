@@ -368,9 +368,10 @@ export type PublicChannelSearchResult = {
 /**
  * Phase 9 slice 9C -- `search.list` (channel-type only), exactly ONE call, never paginates
  * (mirrors `listUploadsPlaylistFirstPageVideoIds`'s own precedent: capping by page keeps the real
- * unit cost -- 100 units, YouTube's own published rate for this method, two orders of magnitude
- * above any `.list` read -- exactly and always 1 call, deterministically, never silently doubling
- * to 200 units for a query whose first page alone doesn't satisfy the caller). A result missing
+ * cost exactly and always 1 call, deterministically, never silently doubling for a query whose
+ * first page alone doesn't satisfy the caller). Since 2026-06-01 that call is 1 of the method's own
+ * 100-calls-per-day bucket (Phase 13 slice 13.4; it used to cost 100 units of the shared pool), so
+ * every call is a scarce daily resource. A result missing
  * its own channel id (a malformed/unexpected API response) is simply omitted, never fabricated.
  */
 export async function searchPublicChannels(

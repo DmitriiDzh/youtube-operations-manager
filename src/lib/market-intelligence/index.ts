@@ -31,6 +31,7 @@ export function createMarketIntelligenceCore() {
     getMarketIntelligenceDailyQuotaBudgetUnits: store.getMarketIntelligenceDailyQuotaBudgetUnits,
     setMarketIntelligenceDailyQuotaBudgetUnits: store.setMarketIntelligenceDailyQuotaBudgetUnits,
     getMarketIntelligenceUnitsSpentSince: store.getMarketIntelligenceUnitsSpentSince,
+    countMarketDiscoverySearchesSince: store.countMarketDiscoverySearchesSince,
     claimStaleResearchChannelsForCollection: store.claimStaleResearchChannelsForCollection,
     releaseResearchChannelCollectionClaim: store.releaseResearchChannelCollectionClaim,
     listRecentlyFailedResearchChannelIds: store.listRecentlyFailedResearchChannelIds,

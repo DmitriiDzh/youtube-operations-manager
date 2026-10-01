@@ -116,9 +116,9 @@ export function MarketIntelligenceCollectionSettings() {
             automatic competitor auto-refresh &mdash; once per running dashboard session, this app
             checks every watchlisted competitor channel that hasn&rsquo;t been refreshed in the last
             24h and refreshes as many as the budget allows (up to 3 units per channel, only ever
-            spent in full, never partially); and (2) manual channel discovery &mdash; each search
-            you run on the Research tab costs 100 units. Set to 0 to turn both off. This budget
-            resets at UTC midnight, independent of the Cloud quota numbers shown elsewhere.
+            spent in full, never partially); and (2) it enables channel discovery &mdash; searches no
+            longer spend this budget: YouTube gives searches their own limit of 100 per day. Set to 0
+            to turn both off. Both reset at midnight Pacific time, like YouTube&rsquo;s own quota.
           </InfoTooltip>
         </h3>
       </div>

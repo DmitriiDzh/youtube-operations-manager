@@ -374,10 +374,13 @@ function createFakeStore() {
     },
     // Sums BOTH tables -- mirrors db.ts's own real implementation exactly (one shared budget
     // across collection and discovery, not two independent ones).
+    // Phase 13 slice 13.4: the shared 10k pool counts collection runs only; searches have their own
+    // bucket and are counted below.
     async getMarketIntelligenceUnitsSpentSince(since: Date) {
-      const collectionSpent = collectionRuns.filter((row) => row.ranAt.getTime() >= since.getTime()).reduce((sum, row) => sum + row.unitsSpent, 0);
-      const discoverySpent = discoveryRuns.filter((row) => row.ranAt.getTime() >= since.getTime()).reduce((sum, row) => sum + row.unitsSpent, 0);
-      return collectionSpent + discoverySpent;
+      return collectionRuns.filter((row) => row.ranAt.getTime() >= since.getTime()).reduce((sum, row) => sum + row.unitsSpent, 0);
+    },
+    async countMarketDiscoverySearchesSince(since: Date) {
+      return discoveryRuns.filter((row) => row.ranAt.getTime() >= since.getTime()).length;
     },
     async claimStaleResearchChannelsForCollection(args: {
       now: Date;
@@ -2485,32 +2488,51 @@ test("AC-9C-01: with budget null/unset, discoverChannels makes zero real calls a
   assert.equal(store.discoveryRuns.length, 0);
 });
 
-test("AC-9C-02: with remaining < 100 (accounting for both collection and discovery spend already recorded today), discoverChannels throws MARKET_INTELLIGENCE_QUOTA_EXCEEDED before any real call", async () => {
+// Phase 13 slice 13.4 -- REVISED: since 2026-06-01 `search.list` has its own quota bucket of 100 calls
+// per day at 1 unit each (official quota page / revision history), no longer 100 units of the shared
+// pool. The old expectation (100 units, shared with collection) encoded a quota model YouTube dropped.
+test("AC-9C-02 (13.4): with 100 searches already made today, discoverChannels throws MARKET_INTELLIGENCE_QUOTA_EXCEEDED before any real call -- collection spend does not matter", async () => {
   const now = new Date("2026-09-27T12:00:00.000Z");
   const { store, services, searchCalls } = createFixture({ now });
   store.setQuotaBudget(150);
-  store.collectionRuns.push({
-    researchChannelId: VALID_CHANNEL_ID,
-    status: "success",
-    unitsSpent: 60,
-    videosRequested: null,
-    videosReturned: null,
-    errorMessage: null,
-    ranAt: now,
-  });
-  store.discoveryRuns.push({ query: "gaming", status: "success", unitsSpent: 60, candidatesFound: 0, candidatesNew: 0, errorMessage: null, ranAt: now });
-
+  for (let i = 0; i < 100; i++) {
+    store.discoveryRuns.push({ query: `q${i}`, status: "success", unitsSpent: 1, candidatesFound: 0, candidatesNew: 0, errorMessage: null, ranAt: now });
+  }
   await assert.rejects(
     () => services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }),
     (error: unknown) => {
       if (!isDomainError(error) || error.code !== "MARKET_INTELLIGENCE_QUOTA_EXCEEDED") return false;
-      assert.deepEqual(error.details, { remaining: 30, required: 100 });
+      assert.deepEqual(error.details, { remaining: 0, required: 1 });
       return true;
     }
   );
   assert.equal(searchCalls.length, 0);
 });
 
+test("13.4: a 99th search today still runs, even when the collection has spent the whole unit budget", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { store, services, searchCalls } = createFixture({ now });
+  store.setQuotaBudget(10);
+  store.collectionRuns.push({ researchChannelId: VALID_CHANNEL_ID, status: "success", unitsSpent: 10, videosRequested: null, videosReturned: null, errorMessage: null, ranAt: now });
+  for (let i = 0; i < 98; i++) {
+    store.discoveryRuns.push({ query: `q${i}`, status: "success", unitsSpent: 1, candidatesFound: 0, candidatesNew: 0, errorMessage: null, ranAt: now });
+  }
+  await services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.equal(searchCalls.length, 1);
+  assert.equal(store.discoveryRuns.at(-1)?.unitsSpent, 1);
+});
+
+test("13.4: searches made before midnight Pacific time do not count against today's limit", async () => {
+  // 2026-09-27T12:00Z is 05:00 PDT; the quota day began at 2026-09-27T07:00Z.
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const { store, services, searchCalls } = createFixture({ now });
+  store.setQuotaBudget(150);
+  for (let i = 0; i < 100; i++) {
+    store.discoveryRuns.push({ query: `q${i}`, status: "success", unitsSpent: 1, candidatesFound: 0, candidatesNew: 0, errorMessage: null, ranAt: new Date("2026-09-27T06:59:00.000Z") });
+  }
+  await services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.equal(searchCalls.length, 1);
+});
 test("AC-9C-03/04/05: a result already watchlisted is skipped; a result matching an existing candidate only touches lastSeenAt (never resets status); a genuinely new result is inserted as status:new", async () => {
   const now = new Date("2026-09-27T12:00:00.000Z");
   const { store, services } = createFixture({
@@ -2640,7 +2662,7 @@ test("AC-9C-07b: promoteDiscoveryCandidate is idempotent when the channel is alr
   assert.equal(store.channels.size, 1);
 });
 
-test("AC-9C-08: a search.list call that throws still records its own real 100-unit spend on the run log", async () => {
+test("AC-9C-08 (13.4): a search.list call that throws still records its own real spend (1 unit of the search bucket) on the run log", async () => {
   const { store, services } = createFixture({
     searchImpl: async () => {
       throw new Error("simulated search.list failure");
@@ -2652,36 +2674,22 @@ test("AC-9C-08: a search.list call that throws still records its own real 100-un
 
   assert.equal(store.discoveryRuns.length, 1);
   assert.equal(store.discoveryRuns[0]?.status, "failed");
-  assert.equal(store.discoveryRuns[0]?.unitsSpent, 100, "a thrown request must still record its own real, non-zero spend");
+  assert.equal(store.discoveryRuns[0]?.unitsSpent, 1, "a thrown request must still record its own real, non-zero spend");
 });
 
-test("AC-9C-09: getMarketIntelligenceUnitsSpentSince (via the shared budget check) sees both a 9B collection spend and this slice's own discovery spend", async () => {
+// Phase 13 slice 13.4 -- REVISED: since 2026-06-01 `search.list` has its own quota bucket of 100 calls
+// per day at 1 unit each (official quota page / revision history), no longer 100 units of the shared
+// pool. The old expectation (100 units, shared with collection) encoded a quota model YouTube dropped.
+test("AC-9C-09 (13.4): the shared unit budget counts collection only -- a search is not refused because collection spent units", async () => {
   const now = new Date("2026-09-27T12:00:00.000Z");
   const { store, services, searchCalls } = createFixture({ now });
   store.setQuotaBudget(100);
-  store.collectionRuns.push({
-    researchChannelId: VALID_CHANNEL_ID,
-    status: "success",
-    unitsSpent: 5,
-    videosRequested: null,
-    videosReturned: null,
-    errorMessage: null,
-    ranAt: now,
-  });
-
-  // 100 budget - 5 already spent by 9B's own collection = 95 remaining, short of the 100 this
-  // search needs -- proves the two ledgers are genuinely shared, not independent.
-  await assert.rejects(
-    () => services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" }),
-    (error: unknown) => isDomainError(error) && error.code === "MARKET_INTELLIGENCE_QUOTA_EXCEEDED"
-  );
-  assert.equal(searchCalls.length, 0);
+  store.collectionRuns.push({ researchChannelId: VALID_CHANNEL_ID, status: "success", unitsSpent: 100, videosRequested: null, videosReturned: null, errorMessage: null, ranAt: now });
+  await services.discoverChannels({ query: "cooking", credentialRef: { userId: "u1" } }, { createdVia: "web_ui" });
+  assert.equal(searchCalls.length, 1);
 });
 
-// Found by independent/advisor review: an earlier version only wrapped the search.list call itself
-// in try/catch -- a throw from the dedup loop afterward (e.g. a duplicate-insert race) propagated
-// with NO run row written at all, silently losing the audit trail for real, already-spent quota.
-test("AC-9C-10: a throw from the dedup loop (after search.list itself succeeded) still records the full 100-unit spend, with whatever partial candidate counts were actually reached", async () => {
+test("AC-9C-10 (13.4): a throw from the dedup loop (after search.list itself succeeded) still records the search's spend, with whatever partial candidate counts were actually reached", async () => {
   const { store, services } = createFixture({
     searchResults: [
       { channelId: "UC_FIRST00000000000000", title: "First", description: null },
@@ -2697,7 +2705,7 @@ test("AC-9C-10: a throw from the dedup loop (after search.list itself succeeded)
   assert.equal(store.discoveryRuns.length, 1);
   const [run] = store.discoveryRuns;
   assert.equal(run.status, "failed");
-  assert.equal(run.unitsSpent, 100, "the search.list call itself succeeded and really cost 100 units -- must never be lost");
+  assert.equal(run.unitsSpent, 1, "the search.list call itself succeeded and really cost 1 unit of the search bucket -- must never be lost");
   assert.equal(run.candidatesFound, 3);
   assert.equal(run.candidatesNew, 1, "only the first candidate was actually inserted before the second one threw");
   assert.equal(store.discoveryCandidates.has("UC_FIRST00000000000000"), true);
@@ -3215,8 +3223,11 @@ test("AC-9G-B-05b: a missing/exhausted budget, or disabled Data API reads, leave
   );
   assert.equal(store.marketResearchRequests.get(created.requestId)?.status, "pending");
 
-  // Budget set but exhausted.
+  // Budget set, but today's search bucket is exhausted (13.4: 100 searches per quota day).
   store.setQuotaBudget(50);
+  for (let i = 0; i < 100; i++) {
+    store.discoveryRuns.push({ query: `q${i}`, status: "success", unitsSpent: 1, candidatesFound: 0, candidatesNew: 0, errorMessage: null, ranAt: new Date() });
+  }
   await assert.rejects(
     () =>
       services.approveMarketResearchRequest(

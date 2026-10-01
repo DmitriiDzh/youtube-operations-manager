@@ -1,3 +1,4 @@
+import { SEARCH_LIST_DAILY_CALL_LIMIT, SEARCH_LIST_UNIT_COST, startOfYoutubeQuotaDay } from "@/lib/youtube-quota";
 import { YOUTUBE_READ_SCOPE } from "@/lib/auth";
 import {
   assessObservationFreshness,
@@ -467,6 +468,8 @@ type ServiceDependencies = {
   getMarketIntelligenceDailyQuotaBudgetUnits(): Promise<number | null>;
   setMarketIntelligenceDailyQuotaBudgetUnits(units: number | null): Promise<void>;
   getMarketIntelligenceUnitsSpentSince(since: Date): Promise<number>;
+  /** Phase 13 slice 13.4: `search.list` calls since `since` (their own quota bucket). */
+  countMarketDiscoverySearchesSince(since: Date): Promise<number>;
   // Phase 9 slice 9G, part A (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md).
   getLatestMarketIntelligenceCollectionRunForChannel(
     researchChannelId: string
@@ -689,9 +692,8 @@ const VIDEOS_LIST_UNIT_COST = 1;
 // partial channel.
 const PER_CHANNEL_WORST_CASE_UNIT_COST = CHANNELS_LIST_UNIT_COST + PLAYLIST_ITEMS_LIST_UNIT_COST + VIDEOS_LIST_UNIT_COST;
 
-// Phase 9 slice 9C -- YouTube's own published quota cost for `search.list`, two orders of
-// magnitude above any `.list` read (docs/roadmap/plans/PHASE_9_PLAN.md §11).
-const SEARCH_LIST_UNIT_COST = 100;
+// Phase 13 slice 13.4: `search.list` now costs 1 unit of its OWN bucket (100 calls per quota day),
+// not 100 units of the shared pool (official quota page, revision history 2026-06-01).
 
 // A channel is stale after 24h with no successful collection -- deliberately a plain elapsed-time
 // check, not Phase 8's own local-wall-clock-boundary rule (`AGENTS.md` §M: no cross-feature-module
@@ -702,9 +704,8 @@ const SEARCH_LIST_UNIT_COST = 100;
 // generous relative to a single channel's real work (at most 3 outbound HTTP calls).
 const MARKET_INTELLIGENCE_CLAIM_EXPIRY_MS = 15 * 60 * 1000;
 
-function startOfUtcDay(date: Date): Date {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-}
+// Phase 13 slice 13.4: the YouTube quota day starts at midnight PACIFIC time, not UTC.
+const startOfQuotaDay = startOfYoutubeQuotaDay;
 
 /**
  * The upfront, zero-cost preconditions a real `search.list` call needs -- extracted so
@@ -726,13 +727,15 @@ async function assertDiscoveryPreconditions(deps: ServiceDependencies, now: Date
     });
   }
 
-  const spentToday = await deps.getMarketIntelligenceUnitsSpentSince(startOfUtcDay(now));
-  const remaining = budget - spentToday;
-  if (remaining < SEARCH_LIST_UNIT_COST) {
+  // The operator's budget still has to be set (it is the switch that enables discovery at all), but
+  // a search no longer spends it: searches have their own bucket of SEARCH_LIST_DAILY_CALL_LIMIT.
+  const searchesToday = await deps.countMarketDiscoverySearchesSince(startOfQuotaDay(now));
+  const remaining = SEARCH_LIST_DAILY_CALL_LIMIT - searchesToday;
+  if (remaining < 1) {
     throw new DomainError({
       code: "MARKET_INTELLIGENCE_QUOTA_EXCEEDED",
-      message: `This search costs ${SEARCH_LIST_UNIT_COST} units; only ${Math.max(remaining, 0)} remain today`,
-      details: { remaining: Math.max(remaining, 0), required: SEARCH_LIST_UNIT_COST },
+      message: `YouTube allows ${SEARCH_LIST_DAILY_CALL_LIMIT} searches per day; all are used. The limit resets at midnight Pacific time.`,
+      details: { remaining: 0, required: 1 },
     });
   }
 
@@ -1666,7 +1669,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       }
 
       const now = deps.clock.now();
-      const spentToday = await deps.getMarketIntelligenceUnitsSpentSince(startOfUtcDay(now));
+      const spentToday = await deps.getMarketIntelligenceUnitsSpentSince(startOfQuotaDay(now));
       let remaining = budget - spentToday;
       if (remaining <= 0) {
         return parseWithSchema(runCollectionIfStaleOutputSchema, zeroed, "run collection if stale output");
@@ -1704,7 +1707,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       // eliminate -- see this function's own top-level doc comment) the race window a second
       // concurrent caller's own stale pre-claim `spentToday` read would otherwise leave open
       // (advisor review, before implementation).
-      const spentAfterClaim = await deps.getMarketIntelligenceUnitsSpentSince(startOfUtcDay(now));
+      const spentAfterClaim = await deps.getMarketIntelligenceUnitsSpentSince(startOfQuotaDay(now));
       remaining = budget - spentAfterClaim;
       if (remaining <= 0) {
         for (const claimedId of claimedIds) {
@@ -1960,7 +1963,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         await deps.insertMarketDiscoveryRun({
           query: parsedInput.query,
           status: "success",
-          unitsSpent: SEARCH_LIST_UNIT_COST,
+          unitsSpent: SEARCH_LIST_UNIT_COST, // 1 unit of the search bucket
           candidatesFound,
           candidatesNew: candidatesNewCount,
           ranAt: now,
@@ -1975,7 +1978,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         await deps.insertMarketDiscoveryRun({
           query: parsedInput.query,
           status: "failed",
-          unitsSpent: SEARCH_LIST_UNIT_COST,
+          unitsSpent: SEARCH_LIST_UNIT_COST, // 1 unit of the search bucket
           candidatesFound,
           candidatesNew: candidatesNewCount,
           errorMessage: error instanceof Error ? error.message : String(error),
