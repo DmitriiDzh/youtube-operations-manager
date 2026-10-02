@@ -1,5 +1,6 @@
 "use client";
 
+import { LanguageDefaultsPanel } from "@/components/language-defaults-panel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatDisplayDate, formatDisplayDateTime, resolvePublishDate } from "@/lib/shared-formatting";
 import { VideoDetailModal } from "./video-detail-modal";
@@ -1240,6 +1241,8 @@ export function LanguagesManager() {
           </p>
         </div>
       )}
+
+      {channelId && <LanguageDefaultsPanel channelId={channelId} supportedLanguages={supportedLanguages} />}
 
       {channelId && (
         <div className="rounded-xl border border-dashed border-zinc-800 bg-zinc-900/50 px-4 py-3 text-xs text-zinc-500">
