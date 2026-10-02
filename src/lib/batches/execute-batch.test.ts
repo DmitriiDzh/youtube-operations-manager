@@ -215,6 +215,7 @@ function createHarness(options: {
   freshSequenceByVideoId?: Record<string, Array<Fixture | null>>;
   backupHealthy?: boolean;
   verifyRetryDelaysMs?: number[];
+  channelBaseline?: string | null;
   assertWriteChannel?: (args: {
     expectedChannelId?: string;
   }) => Promise<{ expectedChannelId: string; shouldPersistSelection: boolean; userId: string | null }>;
@@ -242,6 +243,7 @@ function createHarness(options: {
         options.assertWriteChannel ??
         (async (args) => ({ expectedChannelId: args.expectedChannelId ?? "UC_TEST", shouldPersistSelection: false, userId: "user-1" })),
     },
+    channelLanguageBaseline: options.channelBaseline === undefined ? undefined : { getExpectedDefaultLanguage: async () => options.channelBaseline ?? null },
     youtubeApi: {
       async fetchFreshVideoContext(args: { videoId: string }) {
         const sequence = options.freshSequenceByVideoId?.[args.videoId];
@@ -833,4 +835,49 @@ test("AC-H1-3: an attempt refused by the Live-writes gate ends FAILED (not APPLY
     await harness.store.acquireVideoExecutionLock({ videoId: failedVideo, batchId: "other-batch", ledgerRowId: "other-row" }),
     true
   );
+});
+
+// Owner authorization 2026-10-02: the channel baseline is injected as defaultLanguage for a video
+// that has none, and the post-write read-back must confirm it (an unconfirmed language is FAILED).
+const NO_DEFAULT_BASELINE = { snippet: { title: "T", description: "D", defaultLanguage: null }, localizations: {} };
+
+test("channel baseline (live): injected defaultLanguage is sent and a read-back showing it -> SUCCESS; ATTEMPT audit records it", async () => {
+  const harness = createHarness({
+    channelBaseline: "en",
+    freshSequenceByVideoId: {
+      v1: [
+        NO_DEFAULT_BASELINE,
+        NO_DEFAULT_BASELINE,
+        { snippet: { title: "T", description: "D", defaultLanguage: "en" }, localizations: { es: { title: "New Value", description: "" } } },
+      ],
+    },
+  });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+  const sent: Array<Record<string, unknown>> = [];
+  const executor = { async attemptWrite(payload: { snippet: Record<string, unknown> }) { sent.push(payload.snippet); return { outcome: "SUCCESS" as const }; } };
+
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: executor as never });
+
+  assert.equal(summary.results[0].status, "SUCCESS");
+  assert.equal(sent[0].defaultLanguage, "en");
+  const attempt = harness.auditEvents.find((e) => e.eventType === "ATTEMPT");
+  assert.equal((attempt?.detail as { defaultLanguageApplied?: string }).defaultLanguageApplied, "en");
+});
+
+test("channel baseline (live): translations land but the read-back still has no defaultLanguage -> FAILED, never SUCCESS", async () => {
+  const harness = createHarness({
+    channelBaseline: "en",
+    freshSequenceByVideoId: {
+      v1: [
+        NO_DEFAULT_BASELINE,
+        NO_DEFAULT_BASELINE,
+        { snippet: { title: "T", description: "D", defaultLanguage: null }, localizations: { es: { title: "New Value", description: "" } } },
+      ],
+    },
+  });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: scriptedExecutor([{ outcome: "SUCCESS" }]) });
+
+  assert.equal(summary.results[0].status, "FAILED");
 });
