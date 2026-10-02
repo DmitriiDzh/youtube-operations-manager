@@ -336,7 +336,8 @@ export type PreparedRowOutcome =
  */
 export type PreparedPayload = {
   videoId: string;
-  snippet: Record<string, unknown>;
+  /** Absent when no snippet field is being changed (older persisted snapshots always have it). */
+  snippet?: Record<string, unknown>;
   localizations: Record<string, { title: string; description: string }>;
 };
 
