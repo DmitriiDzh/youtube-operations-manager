@@ -124,7 +124,8 @@ test("RISK-11: documented read-only snippet fields are never echoed back into th
   assert.equal(result.snippet!.description, "New Description");
   assert.equal(result.snippet!.categoryId, "10");
   assert.deepEqual(result.snippet!.tags, ["jazz", "cuba"]);
-  assert.equal(result.snippet!.defaultAudioLanguage, "es");
+  // Not in the official settable list (2026-10-02) -- never sent, even though the fresh fetch has it.
+  assert.equal(Object.prototype.hasOwnProperty.call(result.snippet!, "defaultAudioLanguage"), false);
   assert.equal(result.snippet!.defaultLanguage, "en");
 });
 

@@ -40,7 +40,6 @@ const preparedPayload: PreparedPayload = {
     categoryId: "10",
     tags: ["jazz", "cuba"],
     defaultLanguage: "es",
-    defaultAudioLanguage: "es",
   },
   localizations: {
     es: { title: "New Title", description: "New Description" },

@@ -21,6 +21,11 @@ type Report = {
 
 const NOT_APPLICABLE = "zxx";
 
+type AlignState =
+  | { status: "ready"; etag: string | null; before: string | null }
+  | { status: "applied" }
+  | { status: "failed"; message: string };
+
 /**
  * Per-channel expected language baseline (owner instruction 2026-10-02): "Title and description
  * language" (`defaultLanguage`) and "Video language" (`defaultAudioLanguage`). This panel only
@@ -41,6 +46,9 @@ export function LanguageDefaultsPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [align, setAlign] = useState<Record<string, AlignState>>({});
+  const [aligning, setAligning] = useState<"preview" | "apply" | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -76,6 +84,77 @@ export function LanguageDefaultsPanel({
     } finally {
       setBusy(false);
     }
+  }
+
+  const target = report?.defaults.defaultLanguage ?? null;
+  const fixable = deviations_of(report).filter((row) => row.defaultLanguageDeviates);
+  const chosen = fixable.filter((row) => selected.has(row.videoId));
+  const readyIds = chosen.filter((row) => align[row.videoId]?.status === "ready").map((row) => row.videoId);
+
+  function toggle(videoId: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(videoId)) next.delete(videoId);
+      else next.add(videoId);
+      return next;
+    });
+    setAlign((prev) => {
+      const next = { ...prev };
+      delete next[videoId];
+      return next;
+    });
+  }
+
+  const detailsUrl = (videoId: string, step: "preview" | "apply") =>
+    `/api/channels/${encodeURIComponent(channelId)}/videos/${encodeURIComponent(videoId)}/details/${step}`;
+
+  async function previewAlignment() {
+    if (!target) return;
+    setAligning("preview");
+    const next: Record<string, AlignState> = {};
+    for (const row of chosen) {
+      try {
+        const res = await fetch(detailsUrl(row.videoId, "preview"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ patch: { defaultLanguage: target } }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message ?? data.error ?? "Preview failed");
+        next[row.videoId] = { status: "ready", etag: data.before?.etag ?? null, before: data.before?.defaultLanguage ?? null };
+      } catch (e) {
+        next[row.videoId] = { status: "failed", message: e instanceof Error ? e.message : "Preview failed" };
+      }
+    }
+    setAlign((prev) => ({ ...prev, ...next }));
+    setAligning(null);
+  }
+
+  /** Sequential and fail-fast: the first failure stops the run, so a systemic problem (live writes
+   * off, wrong channel, quota) is reported once instead of repeated for every selected video. */
+  async function applyAlignment() {
+    if (!target) return;
+    setAligning("apply");
+    for (const videoId of readyIds) {
+      const state = align[videoId];
+      if (state?.status !== "ready") continue;
+      try {
+        const res = await fetch(detailsUrl(videoId, "apply"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ patch: { defaultLanguage: target }, ...(state.etag ? { expectedEtag: state.etag } : {}) }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message ?? data.error ?? "Apply failed");
+        if (data.verified === false) throw new Error("Written, but the read-back did not match");
+        setAlign((prev) => ({ ...prev, [videoId]: { status: "applied" } }));
+      } catch (e) {
+        setAlign((prev) => ({ ...prev, [videoId]: { status: "failed", message: e instanceof Error ? e.message : "Apply failed" } }));
+        break;
+      }
+    }
+    setAligning(null);
+    await load();
   }
 
   const dirty =
@@ -130,11 +209,34 @@ export function LanguageDefaultsPanel({
         )}
       </div>
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+      {open && deviations.length > 0 && target && fixable.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-zinc-400">
+          <span>
+            Align Title/description language to <b className="text-zinc-200">{target}</b> (label only: title and description text
+            are not changed; Video language cannot be set via the API).
+          </span>
+          <button
+            onClick={previewAlignment}
+            disabled={aligning !== null || chosen.length === 0}
+            className="rounded-lg bg-zinc-700 px-3 py-1 text-white hover:bg-zinc-600 disabled:opacity-50"
+          >
+            {aligning === "preview" ? "Checking..." : `Preview (${chosen.length})`}
+          </button>
+          <button
+            onClick={applyAlignment}
+            disabled={aligning !== null || readyIds.length === 0}
+            className="rounded-lg bg-red-600 px-3 py-1 text-white hover:bg-red-700 disabled:opacity-50"
+          >
+            {aligning === "apply" ? "Writing..." : `Confirm and write to YouTube (${readyIds.length})`}
+          </button>
+        </div>
+      )}
       {open && deviations.length > 0 && (
         <div className="mt-3 max-h-64 overflow-auto rounded-lg border border-zinc-800">
           <table className="w-full text-xs">
             <thead className="text-left text-zinc-500">
               <tr>
+                <th className="px-3 py-1.5" />
                 <th className="px-3 py-1.5">Video</th>
                 <th className="px-3 py-1.5">Title/description language</th>
                 <th className="px-3 py-1.5">Video language</th>
@@ -143,7 +245,19 @@ export function LanguageDefaultsPanel({
             <tbody>
               {deviations.map((row) => (
                 <tr key={row.videoId} className="border-t border-zinc-800">
-                  <td className="px-3 py-1.5">{row.title}</td>
+                  <td className="px-3 py-1.5">
+                    {row.defaultLanguageDeviates && (
+                      <input type="checkbox" checked={selected.has(row.videoId)} onChange={() => toggle(row.videoId)} />
+                    )}
+                  </td>
+                  <td className="px-3 py-1.5">
+                    {row.title}
+                    {align[row.videoId]?.status === "ready" && <span className="ml-2 text-emerald-400">ready</span>}
+                    {align[row.videoId]?.status === "applied" && <span className="ml-2 text-emerald-400">written</span>}
+                    {align[row.videoId]?.status === "failed" && (
+                      <span className="ml-2 text-red-400">{(align[row.videoId] as { message: string }).message}</span>
+                    )}
+                  </td>
                   <td className={`px-3 py-1.5 ${row.defaultLanguageDeviates ? "text-amber-400" : "text-zinc-400"}`}>
                     {row.defaultLanguage ?? "not set"}
                   </td>
@@ -159,4 +273,8 @@ export function LanguageDefaultsPanel({
       )}
     </div>
   );
+}
+
+function deviations_of(report: Report | null): DeviationRow[] {
+  return report?.deviations ?? [];
 }

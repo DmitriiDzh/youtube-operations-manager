@@ -492,7 +492,7 @@ test("RISK-11 (legacy single-item path, 2026-09-18): every documented read-only 
   assert.equal(proposal.update.snippet.title, "Updated title");
   assert.equal(proposal.update.snippet.categoryId, "22");
   assert.deepEqual(proposal.update.snippet.tags, ["youtube", "metadata"]);
-  assert.equal(proposal.update.snippet.defaultAudioLanguage, "es");
+  assert.equal(Object.prototype.hasOwnProperty.call(proposal.update.snippet, "defaultAudioLanguage"), false);
 });
 
 // Requirement change (architecture audit 2026-10-01, H5 + its review): the single-localization

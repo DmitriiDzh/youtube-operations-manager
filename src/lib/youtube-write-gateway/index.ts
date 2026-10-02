@@ -68,6 +68,11 @@ export async function assertLiveWritesAuthorized(): Promise<void> {
  * `thumbnails`, `liveBroadcastContent`) or a separate read-only echo of the
  * `localizations` object (`localized`). This is the single canonical source for every
  * write path in this repository.
+ *
+ * `defaultAudioLanguage` is deliberately NOT here (2026-10-02): the official `videos.update`
+ * "You can set values for these properties" list names only categoryId, defaultLanguage,
+ * description, tags[] and title. Echoing it back was rejected live (`invalidVideoMetadata`) for
+ * every Japan Music video whose value is `zxx` (Not applicable).
  */
 export const WRITABLE_SNIPPET_FIELDS = [
   "title",
@@ -75,7 +80,6 @@ export const WRITABLE_SNIPPET_FIELDS = [
   "tags",
   "categoryId",
   "defaultLanguage",
-  "defaultAudioLanguage",
 ] as const;
 
 export function pickWritableSnippetFields(snippet: Record<string, unknown>): Record<string, unknown> {
