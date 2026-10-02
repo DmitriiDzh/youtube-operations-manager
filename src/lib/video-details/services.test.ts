@@ -53,6 +53,7 @@ function makeSnapshot(overrides?: Partial<VideoDetailsSnapshot>): VideoDetailsSn
     tags: ["a", "b"],
     categoryId: "22",
     defaultLanguage: "en",
+    defaultAudioLanguage: null,
     privacyStatus: "public",
     publishAt: null,
     license: "youtube",
@@ -316,6 +317,7 @@ test("captureBackup snapshot is kind: video_fields and mirrors the before snapsh
       tags: ["a", "b"],
       categoryId: "22",
       defaultLanguage: "en",
+      defaultAudioLanguage: null,
     },
     status: {
       privacyStatus: "public",
@@ -399,4 +401,40 @@ test("AC-SVC-09: a matching expectedEtag succeeds normally", async () => {
     expectedEtag: "matching-etag",
   });
   assert.equal(result.verified, true);
+});
+
+// Owner 2026-10-02: defaultAudioLanguage is writable through this module (experimental, read-back verified).
+test("defaultAudioLanguage patch: confirmed by read-back -> verified, and the backup keeps the previous value", async () => {
+  let backedUp: { snippet?: Record<string, unknown> } | null = null;
+  const { deps } = makeDeps({
+    youtubeApi: {
+      getSnapshot: async () => makeSnapshot({ defaultAudioLanguage: "zxx" }),
+      applyPatch: async ({ patch }) => ({ before: makeSnapshot({ defaultAudioLanguage: "zxx" }), after: makeSnapshot({ ...patch }) }),
+    },
+    backup: {
+      checkInfrastructureHealth: async () => ({ healthy: true }),
+      captureBackup: async (args) => {
+        backedUp = args.snapshot as typeof backedUp;
+        return { path: "/fake/backup.json", capturedAt: new Date().toISOString() };
+      },
+    },
+  });
+  const result = await createVideoDetailsServices(deps).applyFieldsUpdate(baseInput({ defaultAudioLanguage: "ja" }));
+
+  assert.equal(result.verified, true);
+  assert.equal(result.after.defaultAudioLanguage, "ja");
+  assert.equal(backedUp!.snippet!.defaultAudioLanguage, "zxx");
+});
+
+test("defaultAudioLanguage patch: YouTube silently ignoring it (read-back unchanged) -> update_failed, never verified", async () => {
+  const { deps } = makeDeps({
+    youtubeApi: {
+      getSnapshot: async () => makeSnapshot({ defaultAudioLanguage: "zxx" }),
+      applyPatch: async () => ({ before: makeSnapshot({ defaultAudioLanguage: "zxx" }), after: makeSnapshot({ defaultAudioLanguage: "zxx" }) }),
+    },
+  });
+  await assert.rejects(
+    () => createVideoDetailsServices(deps).applyFieldsUpdate(baseInput({ defaultAudioLanguage: "ja" })),
+    (error: unknown) => error instanceof DomainError && error.code === "update_failed"
+  );
 });

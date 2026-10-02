@@ -59,7 +59,7 @@ test("report states API writability: defaultLanguage yes, defaultAudioLanguage n
   const { services } = makeServices({ videos });
   const report = await services.getDeviations({ channelId: "ch" });
   assert.equal(report.defaultLanguageWritableViaApi, true);
-  assert.equal(report.defaultAudioLanguageWritableViaApi, false);
+  assert.equal(report.defaultAudioLanguageWritableViaApi, true); // owner 2026-10-02: defaultAudioLanguage is now written via video-details
 });
 
 test("setDefaults stores en + zxx, and null/blank clears a field", async () => {

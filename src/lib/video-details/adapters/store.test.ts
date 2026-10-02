@@ -22,6 +22,7 @@ function baseSnapshot(overrides: Partial<VideoDetailsSnapshot> = {}): VideoDetai
     tags: [],
     categoryId: null,
     defaultLanguage: null,
+    defaultAudioLanguage: null,
     privacyStatus: "public",
     publishAt: null,
     license: null,

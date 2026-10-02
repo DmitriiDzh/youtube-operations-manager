@@ -69,7 +69,7 @@ export async function assertLiveWritesAuthorized(): Promise<void> {
  * `localizations` object (`localized`). This is the single canonical source for every
  * write path in this repository.
  *
- * `defaultAudioLanguage` is deliberately NOT here (2026-10-02): the official `videos.update`
+ * `defaultAudioLanguage` is deliberately NOT here (2026-10-02; see pickWritableSnippetFields for the opt-in): the official `videos.update`
  * "You can set values for these properties" list names only categoryId, defaultLanguage,
  * description, tags[] and title. Echoing it back was rejected live (`invalidVideoMetadata`) for
  * every Japan Music video whose value is `zxx` (Not applicable).
@@ -82,10 +82,24 @@ export const WRITABLE_SNIPPET_FIELDS = [
   "defaultLanguage",
 ] as const;
 
-export function pickWritableSnippetFields(snippet: Record<string, unknown>): Record<string, unknown> {
+/**
+ * `defaultAudioLanguage` is NOT in the official `videos.update` settable list, yet the owner
+ * (2026-10-02) states it can be changed, and the earlier live rejection may have been caused by the
+ * `zxx` value rather than the field. So it is sent ONLY when a caller explicitly asks to write it
+ * (`src/lib/video-details/`, owner-initiated, read-back verified) -- never echoed back by the batch
+ * path, which keeps using the default (documented-settable-only) whitelist. Experimental until one
+ * live write confirms it (docs/SYSTEM_MAP.md).
+ */
+export function pickWritableSnippetFields(
+  snippet: Record<string, unknown>,
+  options: { includeDefaultAudioLanguage?: boolean } = {}
+): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const field of WRITABLE_SNIPPET_FIELDS) {
     if (field in snippet) result[field] = snippet[field];
+  }
+  if (options.includeDefaultAudioLanguage && "defaultAudioLanguage" in snippet) {
+    result.defaultAudioLanguage = snippet.defaultAudioLanguage;
   }
   return result;
 }
