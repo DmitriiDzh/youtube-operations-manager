@@ -34,6 +34,7 @@ const videoDetailsPatchSchema = z
       .optional(),
     categoryId: z.string().min(1).optional(),
     defaultLanguage: z.string().min(1).optional(),
+    defaultAudioLanguage: z.string().min(1).optional(),
     privacyStatus: z.enum(["private", "public", "unlisted"]).optional(),
     publishAt: z.string().min(1).optional(),
     license: z.enum(["youtube", "creativeCommon"]).optional(),

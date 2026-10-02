@@ -40,7 +40,8 @@ export type LanguageDeviationReport = {
    * developers.google.com/youtube/v3/docs/videos/update), so it is reported only -- fix in Studio.
    */
   defaultLanguageWritableViaApi: true;
-  defaultAudioLanguageWritableViaApi: false;
+  /** Owner 2026-10-02: written via video-details (not in the official settable list -- experimental until one live write confirms it). */
+  defaultAudioLanguageWritableViaApi: true;
   deviations: LanguageDeviationRow[];
 };
 

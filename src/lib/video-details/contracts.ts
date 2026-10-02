@@ -21,7 +21,7 @@ export { DomainError, isDomainError, parseWithSchema, formatZodError, mapUnknown
  * locale; that stays the exclusive responsibility of `src/lib/localization/`/`src/lib/changesets/`
  * (no parallel implementation, AGENTS.md §D). Fields confirmed writable via the OFFICIAL
  * "You can set values for these properties" list on developers.google.com's `videos.update`/
- * `videos.insert` reference (checked live 2026-09-20) -- `defaultAudioLanguage`, `madeForKids`,
+ * `videos.insert` reference (checked live 2026-09-20) -- `madeForKids`,
  * and every `contentDetails.*` field (age restriction, region restriction) are readable but NOT
  * settable via the public API and are excluded on purpose, not by oversight.
  */
@@ -31,6 +31,8 @@ export type VideoDetailsPatch = {
   tags?: string[];
   categoryId?: string;
   defaultLanguage?: string;
+  /** Not in the official settable list; allowed experimentally (owner 2026-10-02), read-back verified. */
+  defaultAudioLanguage?: string;
   privacyStatus?: "private" | "public" | "unlisted";
   /** Settable only together with `privacyStatus: "private"`, and only if the video has never
    * been published -- both enforced before any network call (schemas.ts + services.ts). */
@@ -51,6 +53,7 @@ export type VideoDetailsSnapshot = {
   tags: string[];
   categoryId: string | null;
   defaultLanguage: string | null;
+  defaultAudioLanguage: string | null;
   privacyStatus: string | null;
   publishAt: string | null;
   license: string | null;

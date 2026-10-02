@@ -41,7 +41,7 @@ export function createVideoDetailsLocalCacheAdapter() {
             publishedAt: current.publishedAt,
             privacyStatus: args.after.privacyStatus ?? current.privacyStatus,
             defaultLanguage: args.after.defaultLanguage,
-            defaultAudioLanguage: current.defaultAudioLanguage,
+            defaultAudioLanguage: args.after.defaultAudioLanguage,
             thumbnails: current.thumbnails,
             existingLocalizations: current.existingLocalizations,
             etag: args.after.etag,

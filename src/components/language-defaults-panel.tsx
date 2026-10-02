@@ -30,9 +30,10 @@ type AlignState =
 /**
  * Per-channel expected language baseline (owner instruction 2026-10-02): "Title and description
  * language" (`defaultLanguage`) and "Video language" (`defaultAudioLanguage`). This panel only
- * stores the expectation and lists videos that deviate from it -- it never writes to YouTube.
- * Aligning `defaultLanguage` through the API is a separate, approval-gated step; `defaultAudioLanguage`
- * is not settable via the public API, so deviations in it are informational ("fix in Studio").
+ * stores the expectation and lists videos that deviate from it; writing happens only through the
+ * approval-gated "Fix all"/Preview + Confirm flow over `video-details`. `defaultAudioLanguage` is not in
+ * the official `videos.update` settable list, so writing it is experimental (owner 2026-10-02) -- the
+ * read-back check reports a failure if YouTube ignores or rejects it.
  */
 export function LanguageDefaultsPanel({
   channelId,
@@ -90,7 +91,13 @@ export function LanguageDefaultsPanel({
   }
 
   const target = report?.defaults.defaultLanguage ?? null;
-  const fixable = deviations_of(report).filter((row) => row.defaultLanguageDeviates);
+  const targetAudio = report?.defaults.defaultAudioLanguage ?? null;
+  const fixable = deviations_of(report).filter((row) => row.defaultLanguageDeviates || row.defaultAudioLanguageDeviates);
+  /** Only the fields that actually deviate for this video -- an in-sync field is never re-sent. */
+  const patchFor = (row: DeviationRow) => ({
+    ...(row.defaultLanguageDeviates && target ? { defaultLanguage: target } : {}),
+    ...(row.defaultAudioLanguageDeviates && targetAudio ? { defaultAudioLanguage: targetAudio } : {}),
+  });
   const chosen = fixable.filter((row) => selected.has(row.videoId));
   const readyIds = chosen.filter((row) => align[row.videoId]?.status === "ready").map((row) => row.videoId);
 
@@ -113,7 +120,7 @@ export function LanguageDefaultsPanel({
 
   async function previewAlignment(rows: DeviationRow[] = chosen): Promise<Record<string, AlignState>> {
     const next: Record<string, AlignState> = {};
-    if (!target) return next;
+    if (!target && !targetAudio) return next;
     setAligning("preview");
     let done = 0;
     for (const row of rows) {
@@ -122,7 +129,7 @@ export function LanguageDefaultsPanel({
         const res = await fetch(detailsUrl(row.videoId, "preview"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ patch: { defaultLanguage: target } }),
+          body: JSON.stringify({ patch: patchFor(rows.find((r) => r.videoId === row.videoId) ?? row) }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.message ?? data.error ?? "Preview failed");
@@ -139,7 +146,7 @@ export function LanguageDefaultsPanel({
 
   /** One-button flow: preview EVERY video that deviates (read-only), then ask once before writing. */
   async function fixAll() {
-    if (!target) return;
+    if (!target && !targetAudio) return;
     setSelected(new Set(fixable.map((row) => row.videoId)));
     setOpen(true);
     const next = await previewAlignment(fixable);
@@ -149,7 +156,7 @@ export function LanguageDefaultsPanel({
   /** Sequential and fail-fast: the first failure stops the run, so a systemic problem (live writes
    * off, wrong channel, quota) is reported once instead of repeated for every selected video. */
   async function applyAlignment() {
-    if (!target) return;
+    if (!target && !targetAudio) return;
     setAligning("apply");
     let done = 0;
     for (const videoId of readyIds) {
@@ -160,7 +167,7 @@ export function LanguageDefaultsPanel({
         const res = await fetch(detailsUrl(videoId, "apply"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ patch: { defaultLanguage: target }, ...(state.etag ? { expectedEtag: state.etag } : {}) }),
+          body: JSON.stringify({ patch: patchFor(chosen.find((r) => r.videoId === videoId)!), ...(state.etag ? { expectedEtag: state.etag } : {}) }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.message ?? data.error ?? "Apply failed");
@@ -215,7 +222,7 @@ export function LanguageDefaultsPanel({
         >
           {busy ? "Saving..." : "Save channel defaults"}
         </button>
-        {target && fixable.length > 0 && (
+        {(target || targetAudio) && fixable.length > 0 && (
           <button
             onClick={fixAll}
             disabled={aligning !== null || dirty}
@@ -240,8 +247,8 @@ export function LanguageDefaultsPanel({
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
       {confirmAll && (
         <ConfirmDialog
-          title={`Set Title/description language to "${target}" on ${readyIds.length} videos?`}
-          description={`Writes only the language label to YouTube (title and description text stay unchanged). Each video is backed up and verified; the run stops at the first error.${
+          title={`Set ${[target && `Title/description language "${target}"`, targetAudio && `Video language "${targetAudio}"`].filter(Boolean).join(" and ")} on ${readyIds.length} videos?`}
+          description={`Writes only the language labels to YouTube (title and description text stay unchanged); only fields that differ are sent. Each video is backed up and verified; the run stops at the first error.${
             fixable.length > readyIds.length ? ` ${fixable.length - readyIds.length} video(s) failed the check and will be skipped (see the list).` : ""
           }`}
           confirmLabel={`Write ${readyIds.length} videos to YouTube`}
@@ -253,11 +260,11 @@ export function LanguageDefaultsPanel({
           }}
         />
       )}
-      {open && deviations.length > 0 && target && fixable.length > 0 && (
+      {open && deviations.length > 0 && (target || targetAudio) && fixable.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-zinc-400">
           <span>
-            Align Title/description language to <b className="text-zinc-200">{target}</b> (label only: title and description text
-            are not changed; Video language cannot be set via the API).
+            Align language labels to the defaults (title and description text are not changed). Video language is written
+            experimentally -- a failure means YouTube refused it.
           </span>
           <button
             onClick={() => void previewAlignment()}
@@ -290,7 +297,7 @@ export function LanguageDefaultsPanel({
               {deviations.map((row) => (
                 <tr key={row.videoId} className="border-t border-zinc-800">
                   <td className="px-3 py-1.5">
-                    {row.defaultLanguageDeviates && (
+                    {(row.defaultLanguageDeviates || row.defaultAudioLanguageDeviates) && (
                       <input type="checkbox" checked={selected.has(row.videoId)} onChange={() => toggle(row.videoId)} />
                     )}
                   </td>
@@ -307,7 +314,6 @@ export function LanguageDefaultsPanel({
                   </td>
                   <td className={`px-3 py-1.5 ${row.defaultAudioLanguageDeviates ? "text-amber-400" : "text-zinc-400"}`}>
                     {row.defaultAudioLanguage ?? "not set"}
-                    {row.defaultAudioLanguageDeviates && <span className="ml-1 text-zinc-500">(change in Studio)</span>}
                   </td>
                 </tr>
               ))}

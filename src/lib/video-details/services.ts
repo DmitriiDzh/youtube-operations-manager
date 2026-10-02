@@ -185,7 +185,7 @@ export function createVideoDetailsServices(deps: ServiceDependencies) {
           videoId: parsedInput.videoId,
           snapshot: {
             kind: "video_fields",
-            snippet: { title: before.title, description: before.description, tags: before.tags, categoryId: before.categoryId, defaultLanguage: before.defaultLanguage },
+            snippet: { title: before.title, description: before.description, tags: before.tags, categoryId: before.categoryId, defaultLanguage: before.defaultLanguage, defaultAudioLanguage: before.defaultAudioLanguage },
             status: {
               privacyStatus: before.privacyStatus,
               publishAt: before.publishAt,

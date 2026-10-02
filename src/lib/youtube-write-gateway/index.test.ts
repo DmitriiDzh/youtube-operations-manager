@@ -373,3 +373,13 @@ test("deletePlaylistItemById calls playlistItems.delete with the given id", asyn
   await deletePlaylistItemById(youtube, "PLI1");
   assert.equal(deletedId, "PLI1");
 });
+
+test("pickWritableSnippetFields: defaultAudioLanguage is dropped by default (batches never echo it) and kept only on explicit opt-in", () => {
+  const snippet = { title: "T", defaultLanguage: "en", defaultAudioLanguage: "zxx", channelId: "UC" };
+  assert.deepEqual(pickWritableSnippetFields(snippet), { title: "T", defaultLanguage: "en" });
+  assert.deepEqual(pickWritableSnippetFields(snippet, { includeDefaultAudioLanguage: true }), {
+    title: "T",
+    defaultLanguage: "en",
+    defaultAudioLanguage: "zxx",
+  });
+});

@@ -72,7 +72,7 @@ export function createChannelLanguageDefaultsServices(deps: ServiceDependencies)
           defaults,
           totalVideos: videos.length,
           defaultLanguageWritableViaApi: true,
-          defaultAudioLanguageWritableViaApi: false,
+          defaultAudioLanguageWritableViaApi: true,
           deviations,
         };
       } catch (error) {

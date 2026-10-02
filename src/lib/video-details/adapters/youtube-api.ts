@@ -29,6 +29,7 @@ function toSnapshot(videoId: string, context: NonNullable<Awaited<ReturnType<typ
     tags: context.snippet.tags ?? [],
     categoryId: context.snippet.categoryId ?? null,
     defaultLanguage: context.snippet.defaultLanguage ?? null,
+    defaultAudioLanguage: context.snippet.defaultAudioLanguage ?? null,
     privacyStatus: context.status.privacyStatus ?? null,
     publishAt: context.status.publishAt ?? null,
     license: context.status.license ?? null,
@@ -40,7 +41,7 @@ function toSnapshot(videoId: string, context: NonNullable<Awaited<ReturnType<typ
   };
 }
 
-const SNIPPET_PATCH_KEYS = ["title", "description", "tags", "categoryId", "defaultLanguage"] as const;
+const SNIPPET_PATCH_KEYS = ["title", "description", "tags", "categoryId", "defaultLanguage", "defaultAudioLanguage"] as const;
 const STATUS_PATCH_KEYS = [
   "privacyStatus",
   "publishAt",
@@ -108,10 +109,11 @@ export function createVideoDetailsYoutubeApiAdapter() {
         parts: {
           ...(touchesSnippet
             ? {
-                snippet: pickWritableSnippetFields({
-                  ...context.snippet,
-                  ...args.patch,
-                }) as typeof context.snippet,
+                snippet: pickWritableSnippetFields(
+                  { ...context.snippet, ...args.patch },
+                  // Echoed only when the caller is changing it (never a blind round-trip of a stored value).
+                  { includeDefaultAudioLanguage: "defaultAudioLanguage" in args.patch }
+                ) as typeof context.snippet,
               }
             : {}),
           ...(touchesStatus
