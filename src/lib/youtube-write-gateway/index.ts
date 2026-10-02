@@ -68,6 +68,11 @@ export async function assertLiveWritesAuthorized(): Promise<void> {
  * `thumbnails`, `liveBroadcastContent`) or a separate read-only echo of the
  * `localizations` object (`localized`). This is the single canonical source for every
  * write path in this repository.
+ *
+ * `defaultAudioLanguage` is deliberately NOT here (2026-10-02): the official `videos.update`
+ * "You can set values for these properties" list names only categoryId, defaultLanguage,
+ * description, tags[] and title. Echoing it back was rejected live (`invalidVideoMetadata`) for
+ * every Japan Music video whose value is `zxx` (Not applicable).
  */
 export const WRITABLE_SNIPPET_FIELDS = [
   "title",
@@ -75,7 +80,6 @@ export const WRITABLE_SNIPPET_FIELDS = [
   "tags",
   "categoryId",
   "defaultLanguage",
-  "defaultAudioLanguage",
 ] as const;
 
 export function pickWritableSnippetFields(snippet: Record<string, unknown>): Record<string, unknown> {
@@ -136,15 +140,19 @@ export async function applyVideoMetadataUpdate(args: {
   youtube: youtube_v3.Youtube;
   update: {
     videoId: string;
-    snippet: Record<string, unknown>;
+    /** Omitted when the caller changes no snippet field: only the `localizations` part is then
+     * sent, so no snippet field (defaultAudioLanguage, tags, categoryId, ...) is echoed back
+     * or can be rejected/cleared by the API. */
+    snippet?: Record<string, unknown>;
     localizations: Record<string, LocaleMetadata>;
   };
 }): Promise<void> {
+  const { snippet } = args.update;
   await args.youtube.videos.update({
-    part: ["snippet", "localizations"],
+    part: snippet ? ["snippet", "localizations"] : ["localizations"],
     requestBody: {
       id: args.update.videoId,
-      snippet: args.update.snippet as youtube_v3.Schema$VideoSnippet,
+      ...(snippet ? { snippet: snippet as youtube_v3.Schema$VideoSnippet } : {}),
       localizations: args.update.localizations,
     },
   });

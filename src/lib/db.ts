@@ -192,6 +192,12 @@ export const channels = sqliteTable("channels", {
   // NULL means "none explicitly tracked yet", never backfilled to "[]" (RISK-02/RISK-33's "never
   // silently create a fact that isn't true").
   targetLanguagesJson: text("target_languages_json"),
+  // Additive, SCHEMA_MIGRATIONS version 39 -- the operator-chosen EXPECTED language baseline for
+  // this channel's videos (owner instruction 2026-10-02): `defaultLanguage` = "Title and
+  // description language", `defaultAudioLanguage` = "Video language" (e.g. "zxx" = Not
+  // applicable). NULL = no baseline chosen. Pure expectation data; nothing here writes to YouTube.
+  expectedDefaultLanguage: text("expected_default_language"),
+  expectedDefaultAudioLanguage: text("expected_default_audio_language"),
   // Additive, SCHEMA_MIGRATIONS version 9 (BL-059, docs/roadmap/plans/PHASE_8_PLAN.md §10 items
   // 3-5). Mirrors `lastSyncedAt` exactly, but for the daily auto-collection check specifically --
   // deliberately NOT derived from MAX(video_metrics_daily.collected_at), since that column is a
@@ -2392,6 +2398,20 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 39,
+    description:
+      "channels.expected_default_language / expected_default_audio_language -- per-channel expected language baseline (owner instruction 2026-10-02)",
+    apply: async (client) => {
+      for (const column of ["expected_default_language", "expected_default_audio_language"]) {
+        try {
+          await client.execute(`ALTER TABLE channels ADD COLUMN ${column} TEXT`);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -3263,6 +3283,29 @@ export async function getChannelTargetLanguages(channelId: string): Promise<stri
   } catch {
     return [];
   }
+}
+
+export type ChannelExpectedLanguages = {
+  defaultLanguage: string | null;
+  defaultAudioLanguage: string | null;
+};
+
+export async function getChannelExpectedLanguages(channelId: string): Promise<ChannelExpectedLanguages> {
+  const [row] = await db
+    .select({
+      defaultLanguage: channels.expectedDefaultLanguage,
+      defaultAudioLanguage: channels.expectedDefaultAudioLanguage,
+    })
+    .from(channels)
+    .where(eq(channels.id, channelId));
+  return { defaultLanguage: row?.defaultLanguage ?? null, defaultAudioLanguage: row?.defaultAudioLanguage ?? null };
+}
+
+export async function setChannelExpectedLanguages(channelId: string, value: ChannelExpectedLanguages): Promise<void> {
+  await db
+    .update(channels)
+    .set({ expectedDefaultLanguage: value.defaultLanguage, expectedDefaultAudioLanguage: value.defaultAudioLanguage })
+    .where(eq(channels.id, channelId));
 }
 
 export async function setChannelTargetLanguages(channelId: string, languages: string[]): Promise<void> {

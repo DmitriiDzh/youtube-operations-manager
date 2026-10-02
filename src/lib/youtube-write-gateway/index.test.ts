@@ -224,7 +224,8 @@ test("RISK-11: pickWritableSnippetFields strips every read-only field the source
     tags: ["a"],
     categoryId: "22",
     defaultLanguage: "en",
-    defaultAudioLanguage: "en",
+    // defaultAudioLanguage is NOT settable per the official videos.update list (2026-10-02),
+    // so it is stripped from the input above and absent here.
   });
 });
 

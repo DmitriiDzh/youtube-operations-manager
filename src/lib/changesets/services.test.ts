@@ -480,3 +480,87 @@ test("proposeLocalizationDeletion + re-sync: a third-party edit made after propo
   assert.equal(titleChange.conflictStatus, "conflict", "a deletion baseline that no longer matches the live remote value must be flagged, never silently applied");
   assert.equal(after.changeSet.status, "in_review");
 });
+
+// --- auto-revoke of superseded proposals (owner instruction 2026-10-02) ---------------------
+
+function proposed(id: string, videoId: string, language: string, field: "title" | "description", value: string) {
+  return {
+    id,
+    videoId,
+    language,
+    field,
+    baselineValue: "",
+    proposedValue: value,
+    changeType: "add" as const,
+    validationStatus: "valid" as const,
+    validationError: null,
+    conflictStatus: "none" as const,
+  };
+}
+
+test("a new same-source change set revokes only the older PENDING changes it covers; uncovered ones stay pending", async () => {
+  const { services } = createFixture();
+  const old = await services.createChangeSetFromProposals({
+    channelId: "UC_TEST",
+    source: "ai_localization",
+    changes: [
+      proposed("o1", "v1", "ja", "title", "old title"),
+      proposed("o2", "v1", "ja", "description", "old description"),
+      proposed("o3", "v1", "es", "title", "otro titulo"),
+    ],
+  });
+
+  await services.createChangeSetFromProposals({
+    channelId: "UC_TEST",
+    source: "ai_localization",
+    changes: [proposed("n1", "v1", "ja", "title", "new title"), proposed("n2", "v1", "ja", "description", "new description")],
+  });
+
+  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: old.id });
+  const byId = new Map(after.changes.map((c) => [c.id, c.approvalStatus]));
+  assert.equal(byId.get("o1"), "rejected");
+  assert.equal(byId.get("o2"), "rejected");
+  assert.equal(byId.get("o3"), "pending");
+});
+
+test("an already APPROVED older change is never revoked by a newer set", async () => {
+  const { services } = createFixture();
+  const old = await services.createChangeSetFromProposals({
+    channelId: "UC_TEST",
+    source: "ai_localization",
+    changes: [proposed("o1", "v1", "ja", "title", "old title")],
+  });
+  await services.approveChange({ channelId: "UC_TEST", changeSetId: old.id, changeId: "o1" });
+
+  await services.createChangeSetFromProposals({
+    channelId: "UC_TEST",
+    source: "ai_localization",
+    changes: [proposed("n1", "v1", "ja", "title", "new title")],
+  });
+
+  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: old.id });
+  assert.equal(after.changes.find((c) => c.id === "o1")?.approvalStatus, "approved");
+});
+
+test("a different source, or a new deletion set, never revokes anything", async () => {
+  const { services } = createFixture();
+  const old = await services.createChangeSetFromProposals({
+    channelId: "UC_TEST",
+    source: "ai_localization",
+    changes: [proposed("o1", "v1", "ja", "title", "old title")],
+  });
+
+  await services.createChangeSetFromProposals({
+    channelId: "UC_TEST",
+    source: "xlsx_import",
+    changes: [proposed("n1", "v1", "ja", "title", "from xlsx")],
+  });
+  await services.createChangeSetFromProposals({
+    channelId: "UC_TEST",
+    source: "deletion",
+    changes: [{ ...proposed("n2", "v1", "ja", "title", ""), changeType: "delete" as const }],
+  });
+
+  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: old.id });
+  assert.equal(after.changes.find((c) => c.id === "o1")?.approvalStatus, "pending");
+});

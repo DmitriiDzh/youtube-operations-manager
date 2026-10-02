@@ -265,6 +265,67 @@ type ChangeToPersist = {
 };
 
 /**
+ * Auto-revoke of superseded proposals (owner instruction 2026-10-02: when an agent re-sends
+ * corrected translations, the older version must be withdrawn automatically instead of the
+ * operator hunting for and rejecting it by hand).
+ *
+ * Deliberately narrow, never touching anything a human already decided on: only changes that are
+ * still `pending` in an OLDER, non-rejected change set of the SAME channel and SAME source, and
+ * only those whose (videoId, language, field) is covered by the new set. `approved` changes are
+ * never revoked (an operator explicitly accepted them), and neither side may be a `deletion`
+ * set/change -- removal proposals have their own priority rules (docs/PROJECT_SPEC.md §16).
+ * Best-effort: a failure here is logged and never fails creation of the new change set.
+ */
+async function supersedeOlderPendingChanges(
+  deps: ServiceDependencies,
+  input: { newChangeSetId: string; channelId: string; source: ChangeSet["source"]; changesToPersist: ChangeToPersist[] }
+): Promise<number> {
+  if (input.source === "deletion") return 0;
+  try {
+    const keyOf = (c: { videoId: string; language: string; field: string }) => `${c.videoId} ${c.language} ${c.field}`;
+    const coveredKeys = new Set(input.changesToPersist.filter((c) => c.changeType !== "delete").map(keyOf));
+    if (coveredKeys.size === 0) return 0;
+
+    let revoked = 0;
+    const olderSets = (await deps.changeSetStore.listChangeSetsByChannel(input.channelId)).filter(
+      (cs) => cs.id !== input.newChangeSetId && cs.source === input.source && cs.status !== "rejected"
+    );
+    for (const olderSet of olderSets) {
+      const changes = await deps.changeSetStore.listChangesByChangeSet(olderSet.id);
+      const toRevoke = changes.filter(
+        (c) => c.approvalStatus === "pending" && c.changeType !== "delete" && coveredKeys.has(keyOf(c))
+      );
+      if (toRevoke.length === 0) continue;
+
+      await deps.changeSetStore.bulkUpdateChanges(
+        toRevoke.map((c) => ({
+          id: c.id,
+          patch: { approvalStatus: "rejected" as const, approvedValue: null, conflictStatus: c.conflictStatus },
+        }))
+      );
+      const revokedIds = new Set(toRevoke.map((c) => c.id));
+      const newStatus = computeChangeSetStatus(
+        changes.map((c) => (revokedIds.has(c.id) ? { ...c, approvalStatus: "rejected" as const } : c))
+      );
+      if (newStatus !== olderSet.status) await deps.changeSetStore.updateChangeSetStatus(olderSet.id, newStatus);
+
+      revoked += toRevoke.length;
+      deps.logger.info({
+        event: "changesets.superseded",
+        context: { olderChangeSetId: olderSet.id, newChangeSetId: input.newChangeSetId, revokedCount: toRevoke.length },
+      });
+    }
+    return revoked;
+  } catch (error) {
+    deps.logger.error({
+      event: "changesets.supersede_failed",
+      context: { newChangeSetId: input.newChangeSetId, message: error instanceof Error ? error.message : "unknown" },
+    });
+    return 0;
+  }
+}
+
+/**
  * Shared persistence tail for every ChangeSet-creating entrypoint (XLSX import,
  * AI-generated proposals, and any future source): computes the aggregate status,
  * persists the ChangeSet + its Changes in one call, and reloads the stored result.
@@ -300,6 +361,13 @@ async function persistChangeSet(
     schemaVersion: input.schemaVersion,
     exportedAt: input.exportedAt,
     changes: input.changesToPersist,
+  });
+
+  await supersedeOlderPendingChanges(deps, {
+    newChangeSetId: changeSetId,
+    channelId: input.channelId,
+    source: input.source,
+    changesToPersist: input.changesToPersist,
   });
 
   const storedChangeSet = await deps.changeSetStore.getChangeSet(changeSetId);

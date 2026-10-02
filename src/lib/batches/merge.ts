@@ -101,7 +101,9 @@ export function detectPreWriteConflict(changes: PendingChange[], fresh: FreshVid
 }
 
 export type SafeLocalizationsPayload = {
-  snippet: Record<string, unknown>;
+  /** Present only when a change targets the video's defaultLanguage (whose title/description
+   * live on `snippet`); otherwise absent so the write sends the `localizations` part alone. */
+  snippet?: Record<string, unknown>;
   localizations: Record<string, FreshVideoLocale>;
 };
 
@@ -127,7 +129,7 @@ export function buildSafeLocalizationsPayload(
   fresh: FreshVideoContext,
   changes: PendingChange[]
 ): SafeLocalizationsPayload {
-  const snippet: Record<string, unknown> = pickWritableSnippetFields(fresh.snippet);
+  let snippet: Record<string, unknown> | undefined;
 
   // The video's default language is represented by `snippet.title`/`description`, never by
   // a `localizations` entry -- if `fresh.localizations` defensively contains a stale entry
@@ -169,6 +171,7 @@ export function buildSafeLocalizationsPayload(
     }
 
     if (fresh.snippet.defaultLanguage && change.language === fresh.snippet.defaultLanguage) {
+      snippet ??= pickWritableSnippetFields(fresh.snippet);
       snippet[change.field] = change.proposedValue;
       continue;
     }
@@ -181,7 +184,7 @@ export function buildSafeLocalizationsPayload(
     delete localizations[language];
   }
 
-  return { snippet, localizations };
+  return snippet ? { snippet, localizations } : { localizations };
 }
 
 // ---------------------------------------------------------------------------

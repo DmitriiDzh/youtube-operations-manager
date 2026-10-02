@@ -100,6 +100,7 @@ export function BatchManager({
   const [preparing, setPreparing] = useState(false);
   const [executing, setExecuting] = useState(false);
   const [confirmingExecute, setConfirmingExecute] = useState(false);
+  const [confirmingSendAll, setConfirmingSendAll] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -152,26 +153,26 @@ export function BatchManager({
     });
   }
 
-  async function createBatch() {
-    if (!channelId || selectedChangeIds.size === 0) return;
+  /** Creates a batch from the given already-approved change ids (grouped per video, DEC-OQ-1).
+   * Returns the new batch id, or null on failure (the error is already shown). */
+  async function createBatchFrom(changeIds: Set<string>, live: boolean): Promise<string | null> {
+    if (!channelId || changeIds.size === 0) return null;
     setCreatingBatch(true);
     setError(null);
     try {
-      // Group the operator's selected, already-approved changes by video -- DEC-OQ-1:
-      // one ledger row per video, all of that video's selected changes bundled together.
       const byVideo = new Map<string, string[]>();
       for (const change of changes) {
-        if (!selectedChangeIds.has(change.id)) continue;
+        if (!changeIds.has(change.id)) continue;
         const list = byVideo.get(change.videoId) ?? [];
         list.push(change.id);
         byVideo.set(change.videoId, list);
       }
-      const selections = [...byVideo.entries()].map(([videoId, changeIds]) => ({ videoId, changeIds }));
+      const selections = [...byVideo.entries()].map(([videoId, ids]) => ({ videoId, changeIds: ids }));
 
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/batches`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ selections, dryRun: liveWritesEnabled ? !createAsLive : true }),
+        body: JSON.stringify({ selections, dryRun: liveWritesEnabled ? !live : true }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -183,11 +184,26 @@ export function BatchManager({
       await fetchBatches(channelId);
       setSelectedBatchId(data.id);
       await openBatch(data.id);
+      return data.id as string;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create batch");
+      return null;
     } finally {
       setCreatingBatch(false);
     }
+  }
+
+  async function createBatch() {
+    await createBatchFrom(selectedChangeIds, createAsLive);
+  }
+
+  /** One-click path for a fully approved change set: a live batch of EVERY approved, valid,
+   * non-conflicting change, executed right away. The explicit confirmation dialog is the
+   * approval step; every per-video safety check (identity, fresh conflict check, backup,
+   * verification, Live Writes barrier) still runs inside the execute pipeline. */
+  async function sendAllApproved() {
+    const batchId = await createBatchFrom(new Set(approvedSelectableChanges.map((c) => c.id)), true);
+    if (batchId) await executeBatch(batchId);
   }
 
   async function executeBatch(batchId: string) {
@@ -316,6 +332,34 @@ export function BatchManager({
               <p className="p-2 text-sm text-zinc-500">No approved, valid, non-conflicting changes in this Change Set.</p>
             )}
           </div>
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+            <button
+              onClick={() => setSelectedChangeIds(new Set(approvedSelectableChanges.map((c) => c.id)))}
+              disabled={approvedSelectableChanges.length === 0}
+              className="text-zinc-400 underline disabled:opacity-40"
+            >
+              Select all ({approvedSelectableChanges.length})
+            </button>
+            <button
+              onClick={() => setSelectedChangeIds(new Set())}
+              disabled={selectedChangeIds.size === 0}
+              className="text-zinc-400 underline disabled:opacity-40"
+            >
+              Clear
+            </button>
+            {liveWritesEnabled && (
+              <button
+                onClick={() => setConfirmingSendAll(true)}
+                disabled={approvedSelectableChanges.length === 0 || changes.length >= 500 || creatingBatch || executing}
+                className="rounded-lg bg-red-600 px-3 py-1.5 font-medium text-white hover:bg-red-700 disabled:opacity-40"
+              >
+                Send all {approvedSelectableChanges.length} approved changes to YouTube
+              </button>
+            )}
+            {changes.length >= 500 && (
+              <span className="text-amber-300">Only the first 500 changes are loaded; &ldquo;Send all&rdquo; is disabled &mdash; select in parts.</span>
+            )}
+          </div>
           {liveWritesEnabled && (
             <label className="mt-3 flex items-center gap-2 text-xs text-amber-300">
               <input type="checkbox" checked={createAsLive} onChange={(e) => setCreateAsLive(e.target.checked)} />
@@ -432,6 +476,25 @@ export function BatchManager({
             )}
           </div>
         </div>
+      )}
+
+      {confirmingSendAll && (
+        <ConfirmDialog
+          title="Send every approved change to YouTube for real?"
+          description={
+            `Channel: ${channelTitle ?? channelId}. ${approvedSelectableChanges.length} approved change${approvedSelectableChanges.length === 1 ? "" : "s"} ` +
+            `across ${new Set(approvedSelectableChanges.map((c) => c.videoId)).size} video(s) will be put into one live batch and executed now. ` +
+            `Each video still goes through identity check, a fresh conflict check and an automatic backup before being written; ` +
+            `only title/description translations are sent. This cannot be undone by this app.`
+          }
+          confirmLabel="Send all"
+          confirmVariant="danger"
+          onCancel={() => setConfirmingSendAll(false)}
+          onConfirm={() => {
+            setConfirmingSendAll(false);
+            void sendAllApproved();
+          }}
+        />
       )}
 
       {confirmingExecute && selectedBatchId && (
