@@ -140,19 +140,15 @@ export async function applyVideoMetadataUpdate(args: {
   youtube: youtube_v3.Youtube;
   update: {
     videoId: string;
-    /** Omitted when the caller changes no snippet field: only the `localizations` part is then
-     * sent, so no snippet field (defaultAudioLanguage, tags, categoryId, ...) is echoed back
-     * or can be rejected/cleared by the API. */
-    snippet?: Record<string, unknown>;
+    snippet: Record<string, unknown>;
     localizations: Record<string, LocaleMetadata>;
   };
 }): Promise<void> {
-  const { snippet } = args.update;
   await args.youtube.videos.update({
-    part: snippet ? ["snippet", "localizations"] : ["localizations"],
+    part: ["snippet", "localizations"],
     requestBody: {
       id: args.update.videoId,
-      ...(snippet ? { snippet: snippet as youtube_v3.Schema$VideoSnippet } : {}),
+      snippet: args.update.snippet as youtube_v3.Schema$VideoSnippet,
       localizations: args.update.localizations,
     },
   });

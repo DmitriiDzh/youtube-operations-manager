@@ -30,6 +30,7 @@ import {
   checkDefaultLanguage,
   classifyFreshStateAgainstAttempt,
   detectPreWriteConflict,
+  readCurrentValue,
   type FreshVideoContext,
   type PendingChange,
 } from "./merge";
@@ -160,6 +161,13 @@ type ServiceDependencies = {
   audit: AuditDeps;
   clock: ClockDeps;
   retryConfig?: RetryConfig;
+  /**
+   * Pauses (ms) before each EXTRA post-write verification read when the first read still shows the
+   * pre-write baseline -- a fresh `videos.list` straight after `videos.update` can be stale
+   * (propagation lag, see classifyFreshStateAgainstAttempt's "matches_baseline"). Omitted/empty =
+   * a single read (what unit tests rely on); production wiring (`index.ts`) supplies real delays.
+   */
+  verifyRetryDelaysMs?: number[];
   idGenerator: () => string;
   logger: {
     info(payload: { event: string; context?: Record<string, unknown> }): void;
@@ -267,6 +275,24 @@ function assertApprovalStillValid(change: PendingChangeRecord): void {
       details: { changeId: change.id, approvedValue: change.approvedValue, proposedValue: change.proposedValue },
     });
   }
+}
+
+/** Compact, non-sensitive diagnosis for a verification mismatch audit event: per changed field,
+ * whether the freshly read value equals the requested / baseline value, plus lengths only (never
+ * the text itself). */
+function describeObservedState(changes: PendingChange[], fresh: FreshVideoContext | null) {
+  if (!fresh) return null;
+  return changes.map((change) => {
+    const current = readCurrentValue(fresh, change.language, change.field);
+    return {
+      language: change.language,
+      field: change.field,
+      equalsRequested: current === change.proposedValue,
+      equalsBaseline: current === change.baselineValue,
+      observedLength: current.length,
+      requestedLength: change.proposedValue.length,
+    };
+  });
 }
 
 export function createBatchServices(deps: ServiceDependencies) {
@@ -1073,10 +1099,18 @@ export function createBatchServices(deps: ServiceDependencies) {
       });
 
       if (result.outcome === "SUCCESS") {
-        const verifyRaw = await deps.youtubeApi.fetchFreshVideoContext({ credentials, videoId: row.videoId });
-        const verifyClassification = verifyRaw
+        let verifyRaw = await deps.youtubeApi.fetchFreshVideoContext({ credentials, videoId: row.videoId });
+        let verifyClassification = verifyRaw
           ? classifyFreshStateAgainstAttempt(pendingChanges, toFreshVideoContext(verifyRaw))
           : "diverged";
+        for (const delayMs of deps.verifyRetryDelaysMs ?? []) {
+          if (verifyClassification !== "matches_baseline") break;
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          verifyRaw = await deps.youtubeApi.fetchFreshVideoContext({ credentials, videoId: row.videoId });
+          verifyClassification = verifyRaw
+            ? classifyFreshStateAgainstAttempt(pendingChanges, toFreshVideoContext(verifyRaw))
+            : "diverged";
+        }
 
         if (verifyClassification === "matches_requested") {
           await transitionLedgerStatus(row.id, "SUCCESS", {
@@ -1089,7 +1123,7 @@ export function createBatchServices(deps: ServiceDependencies) {
 
         // AC-VERIFY-01/AC-CONFLICT-02: a 200 response alone is never sufficient -- a
         // mismatch here means either a partial apply or a same-instant external race.
-        await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "VERIFICATION", detail: { confirmed: false, classification: verifyClassification } });
+        await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "VERIFICATION", detail: { confirmed: false, classification: verifyClassification, observed: describeObservedState(pendingChanges, verifyRaw ? toFreshVideoContext(verifyRaw) : null) } });
         await transitionLedgerStatus(row.id, "FAILED", { error: "Post-write verification mismatch: confirmed remote state does not match the requested value" });
         await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
         return { ledgerRowId: row.id, videoId: row.videoId, status: "FAILED", detail: "verification_mismatch" };

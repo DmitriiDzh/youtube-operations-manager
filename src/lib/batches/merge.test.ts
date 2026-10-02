@@ -59,10 +59,11 @@ test("AC-MERGE-01 (= official test §57): adding pt-BR preserves es/de/fr byte-f
   assert.deepEqual(result.localizations["pt-BR"], { title: "Titulo PT", description: "Descricao PT" });
 });
 
-test("AC-MERGE-03: a localizations-only change sends no snippet at all, so unrelated snippet fields (categoryId/tags/defaultAudioLanguage) are never touched", () => {
-  // Owner instruction 2026-10-02: only the fields actually changed may be sent. Superseding the
-  // earlier "snippet echoed back whole" shape -- a live Japan Music batch showed the echoed
-  // defaultAudioLanguage "zxx" rejected by videos.update (invalidVideoMetadata) for 41/41 videos.
+test("AC-MERGE-03: a localizations-only change still sends the full writable snippet (YouTube requires defaultLanguage with localizations), without defaultAudioLanguage", () => {
+  // Live Japan Music batch 2026-10-02: omitting the snippet made videos.update reject 25/41 with
+  // "localized video details without specifying the default language"; echoing the snippet's
+  // defaultAudioLanguage "zxx" had made the previous attempt reject 41/41 -- hence: snippet yes,
+  // defaultAudioLanguage (not in the official settable list) no.
   const fresh: FreshVideoContext = {
     snippet: {
       title: "Main Title",
@@ -80,7 +81,13 @@ test("AC-MERGE-03: a localizations-only change sends no snippet at all, so unrel
 
   const result = buildSafeLocalizationsPayload(fresh, changes);
 
-  assert.equal(result.snippet, undefined);
+  assert.deepEqual(result.snippet, {
+    title: "Main Title",
+    description: "Main Description",
+    defaultLanguage: "en",
+    categoryId: "10",
+    tags: ["jazz", "cuba"],
+  });
   assert.deepEqual(result.localizations.es, { title: "Titulo New", description: "Desc Old" });
 });
 
@@ -114,19 +121,19 @@ test("RISK-11: documented read-only snippet fields are never echoed back into th
 
   for (const readOnlyField of ["publishedAt", "channelId", "channelTitle", "thumbnails", "liveBroadcastContent", "localized"]) {
     assert.equal(
-      Object.prototype.hasOwnProperty.call(result.snippet!, readOnlyField),
+      Object.prototype.hasOwnProperty.call(result.snippet, readOnlyField),
       false,
       `read-only field "${readOnlyField}" must never appear in the write payload`
     );
   }
   // Writable fields still survive -- this is a whitelist, not a wholesale strip.
-  assert.equal(result.snippet!.title, "Main Title");
-  assert.equal(result.snippet!.description, "New Description");
-  assert.equal(result.snippet!.categoryId, "10");
-  assert.deepEqual(result.snippet!.tags, ["jazz", "cuba"]);
+  assert.equal(result.snippet.title, "Main Title");
+  assert.equal(result.snippet.description, "New Description");
+  assert.equal(result.snippet.categoryId, "10");
+  assert.deepEqual(result.snippet.tags, ["jazz", "cuba"]);
   // Not in the official settable list (2026-10-02) -- never sent, even though the fresh fetch has it.
-  assert.equal(Object.prototype.hasOwnProperty.call(result.snippet!, "defaultAudioLanguage"), false);
-  assert.equal(result.snippet!.defaultLanguage, "en");
+  assert.equal(Object.prototype.hasOwnProperty.call(result.snippet, "defaultAudioLanguage"), false);
+  assert.equal(result.snippet.defaultLanguage, "en");
 });
 
 test("AC-MULTI-01: three changes to one video merge into one payload, untouched fields survive", () => {
@@ -314,7 +321,7 @@ test("buildSafeLocalizationsPayload never carries a stale localizations entry fo
 
   const result = buildSafeLocalizationsPayload(fresh, changes);
 
-  assert.equal(result.snippet!.title, "New EN Title");
+  assert.equal(result.snippet.title, "New EN Title");
   assert.equal(Object.prototype.hasOwnProperty.call(result.localizations, "en"), false);
   assert.deepEqual(result.localizations.es, { title: "Titulo ES", description: "Descripcion ES" });
 });

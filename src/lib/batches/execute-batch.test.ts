@@ -214,6 +214,7 @@ type Fixture = { snippet: Record<string, unknown>; localizations: Record<string,
 function createHarness(options: {
   freshSequenceByVideoId?: Record<string, Array<Fixture | null>>;
   backupHealthy?: boolean;
+  verifyRetryDelaysMs?: number[];
   assertWriteChannel?: (args: {
     expectedChannelId?: string;
   }) => Promise<{ expectedChannelId: string; shouldPersistSelection: boolean; userId: string | null }>;
@@ -283,6 +284,7 @@ function createHarness(options: {
       },
     },
     clock: { async wait() {} }, // instant in tests -- no real backoff/reconciliation delay
+    verifyRetryDelaysMs: options.verifyRetryDelaysMs,
     idGenerator: () => `id-${++counter}`,
     logger: { info() {}, error() {} },
   });
@@ -529,6 +531,41 @@ test("AC-VERIFY-01/AC-CONFLICT-02: a SUCCESS response with a verification mismat
   const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor });
 
   assert.equal(summary.results[0].status, "FAILED");
+});
+
+test("verification: a first post-write read that still shows the baseline (stale) is re-read, and a later fresh read confirms SUCCESS", async () => {
+  const harness = createHarness({
+    verifyRetryDelaysMs: [0, 0],
+    freshSequenceByVideoId: {
+      v1: [
+        PRE_SEND_BASELINE,
+        PRE_SEND_BASELINE,
+        PRE_SEND_BASELINE, // first post-write read: stale, still the baseline
+        { snippet: { title: "T", description: "D", defaultLanguage: "en" }, localizations: { es: { title: "New Value", description: "" } } },
+      ],
+    },
+  });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: scriptedExecutor([{ outcome: "SUCCESS" }]) });
+
+  assert.equal(summary.results[0].status, "SUCCESS");
+  assert.equal(harness.freshCallCount["v1"], 4);
+});
+
+test("verification: a read that stays at the baseline after every retry is FAILED, and the audit event says what was observed (lengths/booleans only)", async () => {
+  const harness = createHarness({ verifyRetryDelaysMs: [0, 0], freshSequenceByVideoId: { v1: [PRE_SEND_BASELINE] } });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: scriptedExecutor([{ outcome: "SUCCESS" }]) });
+
+  assert.equal(summary.results[0].status, "FAILED");
+  assert.equal(harness.freshCallCount["v1"], 5); // 2 pre-write + 1 verification + 2 retries
+  const event = harness.auditEvents.find((e) => e.eventType === "VERIFICATION") as { detail: { classification: string; observed: Array<Record<string, unknown>> } };
+  assert.equal(event.detail.classification, "matches_baseline");
+  assert.equal(event.detail.observed[0].equalsRequested, false);
+  assert.equal(event.detail.observed[0].equalsBaseline, true);
+  assert.equal("observedValue" in event.detail.observed[0], false);
 });
 
 test("AC-VERIFY-02: a genuine SUCCESS stores requested/confirmed/timestamp via verificationResult", async () => {

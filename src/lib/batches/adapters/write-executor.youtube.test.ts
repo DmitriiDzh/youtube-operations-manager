@@ -142,26 +142,6 @@ test("performYoutubeWrite: sends the exact prepared payload to videos.update, pr
   assert.deepEqual(sent.requestBody.localizations, preparedPayload.localizations);
 });
 
-test("performYoutubeWrite: a payload without snippet sends only part=localizations and no snippet key", async () => {
-  const calls: unknown[] = [];
-  const client: MinimalYoutubeWriteClient = {
-    videos: {
-      update: (async (params: unknown) => {
-        calls.push(params);
-        return { data: {} };
-      }) as MinimalYoutubeWriteClient["videos"]["update"],
-    },
-  };
-
-  const result = await performYoutubeWrite(client, { videoId: "v1", localizations: preparedPayload.localizations });
-
-  assert.deepEqual(result, { outcome: "SUCCESS" });
-  const sent = calls[0] as { part: string[]; requestBody: Record<string, unknown> };
-  assert.deepEqual(sent.part, ["localizations"]);
-  assert.equal("snippet" in sent.requestBody, false);
-  assert.deepEqual(sent.requestBody.localizations, preparedPayload.localizations);
-});
-
 test("performYoutubeWrite: RISK-11 defense-in-depth -- read-only snippet fields are stripped even if a payload somehow contained them", async () => {
   const calls: unknown[] = [];
   const client: MinimalYoutubeWriteClient = {
@@ -176,7 +156,7 @@ test("performYoutubeWrite: RISK-11 defense-in-depth -- read-only snippet fields 
   const contaminatedPayload: PreparedPayload = {
     ...preparedPayload,
     snippet: {
-      ...preparedPayload.snippet!,
+      ...preparedPayload.snippet,
       publishedAt: "2026-01-01T00:00:00.000Z",
       channelId: "UC_TEST",
       channelTitle: "Tropico Jazz",
@@ -192,7 +172,7 @@ test("performYoutubeWrite: RISK-11 defense-in-depth -- read-only snippet fields 
   for (const readOnlyField of ["publishedAt", "channelId", "channelTitle", "thumbnails", "liveBroadcastContent", "localized"]) {
     assert.equal(Object.prototype.hasOwnProperty.call(sent.requestBody.snippet, readOnlyField), false);
   }
-  assert.equal(sent.requestBody.snippet.title, preparedPayload.snippet!.title);
+  assert.equal(sent.requestBody.snippet.title, preparedPayload.snippet.title);
 });
 
 test("performYoutubeWrite: a thrown googleapis error is classified, not propagated raw", async () => {
