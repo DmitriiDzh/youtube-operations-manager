@@ -6,6 +6,7 @@ import { createCloudQuotasCore } from "@/lib/cloud-quotas";
 import { createMarketIntelligenceCore } from "@/lib/market-intelligence";
 import {
   getAnalyticsReadsEnabled,
+  getReportingReadsEnabled,
   getWikipediaReadsEnabled,
   getYoutubeFeedReadsEnabled,
   getAnalyticsSyncSettings,
@@ -17,6 +18,7 @@ import {
   getOperatorCliEnabled,
   getOperationsWorkspacePath,
   setAnalyticsReadsEnabled,
+  setReportingReadsEnabled,
   setWikipediaReadsEnabled,
   setYoutubeFeedReadsEnabled,
   setAnalyticsSyncSettings,
@@ -56,7 +58,8 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
  *   timezone string would otherwise only surface as a thrown `RangeError` deep inside the
  *   staleness check on a later dashboard load, not at the point the owner actually typed it.
  * - `youtubeFeedReadsEnabled`/`wikipediaReadsEnabled` -- Phase 13 read categories (RSS feeds, Wikipedia
- *   Pageviews); same semantics as the two below: on by default, persistent.
+ *   Pageviews); same semantics as the two below: on by default, persistent. `reportingReadsEnabled`
+ *   (BL-114, YouTube Reporting API bulk reports) is the same kind of toggle.
  * - `dataApiReadsEnabled`/`analyticsReadsEnabled` -- per-category read-gateway toggles (owner
  *   instruction, 2026-09-22, `docs/decisions/0007-youtube-read-gateway.md`). Unlike the two
  *   booleans above, these default to **enabled** and persist across restarts (see
@@ -114,6 +117,7 @@ async function getSettingsSnapshot() {
     analyticsReadsEnabled: () => getAnalyticsReadsEnabled(),
     youtubeFeedReadsEnabled: () => getYoutubeFeedReadsEnabled(),
     wikipediaReadsEnabled: () => getWikipediaReadsEnabled(),
+    reportingReadsEnabled: () => getReportingReadsEnabled(),
     gatewayTraffic: () => getGatewayTrafficLast24h(),
     cloudQuotaStatus: () => createCloudQuotasCore().getQuotaStatus(),
     operationsWorkspacePath: () => getOperationsWorkspacePath(),
@@ -249,6 +253,9 @@ export async function POST(request: Request) {
   }
   if (typeof body.wikipediaReadsEnabled === "boolean") {
     await setWikipediaReadsEnabled(body.wikipediaReadsEnabled);
+  }
+  if (typeof body.reportingReadsEnabled === "boolean") {
+    await setReportingReadsEnabled(body.reportingReadsEnabled);
   }
   if (analyticsSyncLocalTimeToSet !== undefined) {
     await setAnalyticsSyncSettings({ localTime: analyticsSyncLocalTimeToSet });

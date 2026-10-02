@@ -1198,6 +1198,72 @@ export const wikipediaPageviewsDaily = sqliteTable(
 );
 
 /**
+ * BL-114 (docs/decisions/0014-youtube-reporting-api-gateway-child.md) -- the YouTube Reporting API job
+ * this app holds for a channel and report type. Google is the source of truth (`jobs.list`); this row only
+ * lets the UI/agent say "the job exists since X" without a network call.
+ */
+export const reportingJobs = sqliteTable(
+  "reporting_jobs",
+  {
+    channelId: text("channel_id").notNull(),
+    reportTypeId: text("report_type_id").notNull(),
+    jobId: text("job_id").notNull(),
+    jobName: text("job_name").notNull(),
+    /** Google's own `job.createTime` (RFC 3339), never this app's clock. */
+    jobCreatedAt: text("job_created_at"),
+    lastCheckedAt: integer("last_checked_at", { mode: "timestamp" }),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.reportTypeId] })]
+);
+
+/**
+ * One row per Reporting API report FILE already seen: the idempotency ledger (a file is downloaded once)
+ * and the replacement bookkeeping (Google regenerates a period's file with a later `createTime`; the newer
+ * file's rows replace the older file's, never add to them). `status` is `imported` or `superseded`.
+ */
+export const reportingReportFiles = sqliteTable(
+  "reporting_report_files",
+  {
+    reportId: text("report_id").primaryKey(),
+    channelId: text("channel_id").notNull(),
+    reportTypeId: text("report_type_id").notNull(),
+    jobId: text("job_id").notNull(),
+    /** RFC 3339, as Google returned them. The period is [startTime, endTime). */
+    startTime: text("start_time").notNull(),
+    endTime: text("end_time").notNull(),
+    createTime: text("create_time").notNull(),
+    rowCount: integer("row_count").notNull(),
+    status: text("status").notNull(),
+    importedAt: integer("imported_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [index("reporting_report_files_period_idx").on(table.channelId, table.reportTypeId, table.startTime, table.endTime)]
+);
+
+/**
+ * `channel_reach_basic_a1` rows: thumbnail impressions and click-through rate per video per day. No FK to
+ * `videos` (a report can name a video this device never synced, or one since deleted). `ctr` is NULL when the
+ * report left it empty -- never fabricated as 0 -- and is stored exactly as the report gave it.
+ */
+export const channelReachDaily = sqliteTable(
+  "channel_reach_daily",
+  {
+    channelId: text("channel_id").notNull(),
+    /** YYYY-MM-DD, the report's own day (a Pacific-Time reporting day, never converted). */
+    date: text("date").notNull(),
+    videoId: text("video_id").notNull(),
+    impressions: integer("impressions").notNull(),
+    ctr: real("ctr"),
+    sourceReportId: text("source_report_id").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.channelId, table.date, table.videoId] }),
+    index("channel_reach_daily_source_idx").on(table.sourceReportId),
+  ]
+);
+
+/**
  * Links a topic to a watchlisted channel or a video (owner spec §13's "manual associations").
  * `subjectId` is NOT a foreign key -- a single column can't conditionally reference two different
  * tables depending on `subjectType`, and a video has no canonical one-row-per-video table to
@@ -2280,6 +2346,52 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 38,
+    description:
+      "reporting_jobs + reporting_report_files + channel_reach_daily -- BL-114 (docs/decisions/0014-youtube-reporting-api-gateway-child.md): the YouTube Reporting API job per channel, the ledger of downloaded report files, and thumbnail impressions/CTR per video per day from the Reach basic report.",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS reporting_jobs (" +
+          "channel_id TEXT NOT NULL, " +
+          "report_type_id TEXT NOT NULL, " +
+          "job_id TEXT NOT NULL, " +
+          "job_name TEXT NOT NULL, " +
+          "job_created_at TEXT, " +
+          "last_checked_at INTEGER, " +
+          "PRIMARY KEY (channel_id, report_type_id))"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS reporting_report_files (" +
+          "report_id TEXT PRIMARY KEY, " +
+          "channel_id TEXT NOT NULL, " +
+          "report_type_id TEXT NOT NULL, " +
+          "job_id TEXT NOT NULL, " +
+          "start_time TEXT NOT NULL, " +
+          "end_time TEXT NOT NULL, " +
+          "create_time TEXT NOT NULL, " +
+          "row_count INTEGER NOT NULL, " +
+          "status TEXT NOT NULL, " +
+          "imported_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS reporting_report_files_period_idx ON reporting_report_files(channel_id, report_type_id, start_time, end_time)"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS channel_reach_daily (" +
+          "channel_id TEXT NOT NULL, " +
+          "date TEXT NOT NULL, " +
+          "video_id TEXT NOT NULL, " +
+          "impressions INTEGER NOT NULL, " +
+          "ctr REAL, " +
+          "source_report_id TEXT NOT NULL, " +
+          "PRIMARY KEY (channel_id, date, video_id))"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS channel_reach_daily_source_idx ON channel_reach_daily(source_report_id)"
+      );
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -3348,6 +3460,206 @@ export async function listTopicWikipediaArticles(
   return rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 }
 
+// --- BL-114: YouTube Reporting API storage ------------------------------------------------------
+
+export type StoredReportingJob = {
+  channelId: string;
+  reportTypeId: string;
+  jobId: string;
+  jobName: string;
+  jobCreatedAt: string | null;
+  lastCheckedAt: Date | null;
+};
+
+export async function upsertReportingJob(
+  input: { channelId: string; reportTypeId: string; jobId: string; jobName: string; jobCreatedAt: string | null },
+  database: AppDb = db
+): Promise<void> {
+  const lastCheckedAt = new Date();
+  await database
+    .insert(reportingJobs)
+    .values({ ...input, lastCheckedAt })
+    .onConflictDoUpdate({
+      target: [reportingJobs.channelId, reportingJobs.reportTypeId],
+      set: { jobId: input.jobId, jobName: input.jobName, jobCreatedAt: input.jobCreatedAt, lastCheckedAt },
+    });
+}
+
+export async function getReportingJob(
+  channelId: string,
+  reportTypeId: string,
+  database: AppDb = db
+): Promise<StoredReportingJob | null> {
+  const [row] = await database
+    .select()
+    .from(reportingJobs)
+    .where(and(eq(reportingJobs.channelId, channelId), eq(reportingJobs.reportTypeId, reportTypeId)));
+  return row ?? null;
+}
+
+export async function listSeenReportingReportIds(
+  channelId: string,
+  reportTypeId: string,
+  database: AppDb = db
+): Promise<Set<string>> {
+  const rows = await database
+    .select({ reportId: reportingReportFiles.reportId })
+    .from(reportingReportFiles)
+    .where(and(eq(reportingReportFiles.channelId, channelId), eq(reportingReportFiles.reportTypeId, reportTypeId)));
+  return new Set(rows.map((row) => row.reportId));
+}
+
+export type ReachReportImport = {
+  channelId: string;
+  reportTypeId: string;
+  jobId: string;
+  reportId: string;
+  startTime: string;
+  endTime: string;
+  createTime: string;
+  rows: Array<{ date: string; videoId: string; impressions: number; ctr: number | null }>;
+};
+
+export type ReachReportImportResult =
+  | { outcome: "imported"; replacedReports: number }
+  | { outcome: "superseded_by_newer" };
+
+/**
+ * Imports one Reach report file in a single transaction. **Replacement, not addition:** when an
+ * already-imported file covers the SAME period, the one with the later `createTime` wins -- a newer file
+ * replaces the older file's rows (including a video the regenerated file no longer lists), and an older
+ * file arriving after a newer one is recorded as superseded without touching the data.
+ */
+export async function importReachReport(
+  input: ReachReportImport,
+  database: AppDb = db
+): Promise<ReachReportImportResult> {
+  const newCreate = Date.parse(input.createTime);
+  return database.transaction(async (tx) => {
+    const samePeriod = await tx
+      .select()
+      .from(reportingReportFiles)
+      .where(
+        and(
+          eq(reportingReportFiles.channelId, input.channelId),
+          eq(reportingReportFiles.reportTypeId, input.reportTypeId),
+          eq(reportingReportFiles.startTime, input.startTime),
+          eq(reportingReportFiles.endTime, input.endTime),
+          eq(reportingReportFiles.status, "imported")
+        )
+      );
+
+    if (samePeriod.some((file) => Date.parse(file.createTime) >= newCreate)) {
+      await tx.insert(reportingReportFiles).values({
+        reportId: input.reportId,
+        channelId: input.channelId,
+        reportTypeId: input.reportTypeId,
+        jobId: input.jobId,
+        startTime: input.startTime,
+        endTime: input.endTime,
+        createTime: input.createTime,
+        rowCount: 0,
+        status: "superseded",
+      });
+      return { outcome: "superseded_by_newer" } as const;
+    }
+
+    const olderIds = samePeriod.map((file) => file.reportId);
+    if (olderIds.length > 0) {
+      await tx.delete(channelReachDaily).where(inArray(channelReachDaily.sourceReportId, olderIds));
+      await tx
+        .update(reportingReportFiles)
+        .set({ status: "superseded" })
+        .where(inArray(reportingReportFiles.reportId, olderIds));
+    }
+
+    for (const row of input.rows) {
+      await tx
+        .insert(channelReachDaily)
+        .values({
+          channelId: input.channelId,
+          date: row.date,
+          videoId: row.videoId,
+          impressions: row.impressions,
+          ctr: row.ctr,
+          sourceReportId: input.reportId,
+        })
+        .onConflictDoUpdate({
+          target: [channelReachDaily.channelId, channelReachDaily.date, channelReachDaily.videoId],
+          set: { impressions: row.impressions, ctr: row.ctr, sourceReportId: input.reportId },
+        });
+    }
+
+    await tx.insert(reportingReportFiles).values({
+      reportId: input.reportId,
+      channelId: input.channelId,
+      reportTypeId: input.reportTypeId,
+      jobId: input.jobId,
+      startTime: input.startTime,
+      endTime: input.endTime,
+      createTime: input.createTime,
+      rowCount: input.rows.length,
+      status: "imported",
+    });
+    return { outcome: "imported", replacedReports: olderIds.length } as const;
+  });
+}
+
+export type StoredChannelReachRow = {
+  channelId: string;
+  date: string;
+  videoId: string;
+  impressions: number;
+  ctr: number | null;
+};
+
+export async function listChannelReachDaily(
+  channelId: string,
+  range: { startDate: string; endDate: string },
+  database: AppDb = db
+): Promise<StoredChannelReachRow[]> {
+  return database
+    .select({
+      channelId: channelReachDaily.channelId,
+      date: channelReachDaily.date,
+      videoId: channelReachDaily.videoId,
+      impressions: channelReachDaily.impressions,
+      ctr: channelReachDaily.ctr,
+    })
+    .from(channelReachDaily)
+    .where(
+      and(
+        eq(channelReachDaily.channelId, channelId),
+        gte(channelReachDaily.date, range.startDate),
+        sql`${channelReachDaily.date} <= ${range.endDate}`
+      )
+    )
+    .orderBy(asc(channelReachDaily.date), asc(channelReachDaily.videoId));
+}
+
+export async function getChannelReachCoverage(
+  channelId: string,
+  database: AppDb = db
+): Promise<{ firstDate: string | null; lastDate: string | null; importedFiles: number }> {
+  const [days] = await database
+    .select({
+      firstDate: sql<string | null>`MIN(${channelReachDaily.date})`,
+      lastDate: sql<string | null>`MAX(${channelReachDaily.date})`,
+    })
+    .from(channelReachDaily)
+    .where(eq(channelReachDaily.channelId, channelId));
+  const [files] = await database
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(reportingReportFiles)
+    .where(and(eq(reportingReportFiles.channelId, channelId), eq(reportingReportFiles.status, "imported")));
+  return {
+    firstDate: days?.firstDate ?? null,
+    lastDate: days?.lastDate ?? null,
+    importedFiles: Number(files?.count ?? 0),
+  };
+}
+
+
 export async function upsertWikipediaPageviews(
   rows: { project: string; article: string; date: string; views: number }[],
   database: AppDb = db
@@ -3443,6 +3755,7 @@ export async function setAnalyticsReadsEnabled(enabled: boolean, database: AppDb
 
 const YOUTUBE_FEED_READS_ENABLED_SETTING_KEY = "youtube_feed_reads_enabled";
 const WIKIPEDIA_READS_ENABLED_SETTING_KEY = "wikipedia_reads_enabled";
+const REPORTING_READS_ENABLED_SETTING_KEY = "reporting_reads_enabled";
 
 /** Phase 13 slice 13.5: the YouTube RSS feed read category (no quota). Same semantics as the other
  * read toggles: on unless the operator turned it off, persistent. */
@@ -3461,6 +3774,16 @@ export async function getWikipediaReadsEnabled(database: AppDb = db): Promise<bo
 
 export async function setWikipediaReadsEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
   await setAppSetting(WIKIPEDIA_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
+}
+
+/** BL-114: the YouTube Reporting API read category (bulk reports: impressions/CTR). Same semantics as
+ * the other read toggles: on unless the operator turned it off, persistent. */
+export async function getReportingReadsEnabled(database: AppDb = db): Promise<boolean> {
+  return (await getAppSetting(REPORTING_READS_ENABLED_SETTING_KEY, database)) !== "false";
+}
+
+export async function setReportingReadsEnabled(enabled: boolean, database: AppDb = db): Promise<void> {
+  await setAppSetting(REPORTING_READS_ENABLED_SETTING_KEY, enabled ? "true" : "false", database);
 }
 
 const OPERATIONS_WORKSPACE_PATH_SETTING_KEY = "operations_workspace_path";
@@ -3658,7 +3981,8 @@ export type GatewayTrafficCategory =
   | "mcp_tool_calls"
   | "cloud_monitoring_reads"
   | "youtube_feed_reads"
-  | "wikipedia_reads";
+  | "wikipedia_reads"
+  | "reporting_reads";
 
 export type GatewayTrafficWindow = {
   category: GatewayTrafficCategory;
@@ -3676,6 +4000,7 @@ const GATEWAY_TRAFFIC_CATEGORIES: readonly GatewayTrafficCategory[] = [
   "cloud_monitoring_reads",
   "youtube_feed_reads",
   "wikipedia_reads",
+  "reporting_reads",
 ];
 
 // Kept well past the 24h window this table exists to answer (owner instruction, 2026-09-22:

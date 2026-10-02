@@ -459,6 +459,20 @@ Key MCP tools:
     `period`, `freshness`, and, additively from Phase 13, `viewCountingChangeInComparison: boolean` -- true when the two periods straddle YouTube's 2026-08-27 view-counting change, so the totals are not like-for-like). Wraps `analytics_overview` unchanged — a **live** Analytics API read
     that counts against that API's quota. Requires `channelId` to be the caller's active channel
     (checked internally by the wrapped `analyticsCore` call, not a second check in this module).
+  - `agent_query_channel_reach` — `{ channelId, startDate, endDate, credentialRef? }` →
+    `{ channelId, state, jobCreatedAt, coverage, startDate, endDate, daily, videos, totals }`
+    (BL-114, ADR 0014). Thumbnail impressions and click-through rate from the YouTube Reporting API
+    Reach report that the app downloads and stores locally -- a **local read**, no live YouTube
+    call (these two metrics are not available from the Analytics API, so they are not in
+    `agent_query_channel_analytics`). `state` is `no_job`, `waiting_for_first_report` (a job exists
+    but YouTube has delivered no file yet, up to ~48 h -- **not** zero impressions) or `ready`.
+    Days without data are absent, never zero-filled. `daily` and `videos` (top 50 by impressions,
+    keyed by canonical `videoId`) are raw FACT values; `totals` are DERIVED, with the CTR
+    **impressions-weighted** (never an average of per-row CTRs); a `ctr` of `null` means the report
+    left it empty. `coverage` (`firstDate`/`lastDate`/`importedFiles`) shows which days exist. The
+    app refreshes the data when its dashboard is opened, at most every 6 hours; an agent cannot
+    trigger the sync. Requires `channelId` to be the caller's active channel (checked inside the
+    service, before any data is read). Maximum range 400 days.
   - `agent_query_video_analytics` — `{ channelId, videoId?, startDate?, endDate?, metricNames?,
     credentialRef? }` → `VideoAnalyticsContext` (raw already-collected rows, `metricDefinitions`,
     `period`/`filters` echoed back, `freshness`). Wraps `analytics_list` unchanged — a local read

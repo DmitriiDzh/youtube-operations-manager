@@ -179,6 +179,23 @@ export default function Dashboard() {
       });
   }, [channel]);
 
+  // BL-114 (docs/decisions/0014-youtube-reporting-api-gateway-child.md) -- the Reporting API's Reach report
+  // (impressions/CTR). Its own independent fire-and-forget call, deliberately NOT chained to the Analytics
+  // calls above (AGENTS.md §M: one module failing or being switched off must not affect another). The server
+  // decides whether anything runs: `onlyIfDue` makes it a no-op within 6 hours of the last check.
+  const reachSyncTriggeredRef = useRef(false);
+  useEffect(() => {
+    if (!channel?.id || reachSyncTriggeredRef.current) return;
+    reachSyncTriggeredRef.current = true;
+    fetch(`/api/channels/${encodeURIComponent(channel.id)}/reach/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ onlyIfDue: true }),
+    }).catch(() => {
+      // Non-fatal -- the next dashboard load simply tries again.
+    });
+  }, [channel]);
+
   const refreshConflictSummary = useCallback(async () => {
     try {
       const res = await fetch("/api/change-drafts/conflicts-summary");

@@ -6,6 +6,7 @@ import { AnalyticsBreakdownCard } from "./analytics-breakdown-card";
 import { AnalyticsLineChart } from "./analytics-line-chart";
 import { labelTrafficSource } from "@/lib/analytics/breakdown-labels";
 import { useTopVideos } from "./use-top-videos";
+import { ReachPanel } from "./reach-panel";
 
 type SyncedChannel = { channelId: string; title: string };
 type RetentionPoint = { elapsedVideoTimeRatio: number; audienceWatchRatio: number; relativeRetentionPerformance: number };
@@ -111,6 +112,8 @@ export function ContentAnalyticsPanel() {
           ))}
         </div>
       </div>
+
+      <ReachPanel channelId={channel.channelId} periodDays={periodDays} />
 
       <AnalyticsBreakdownCard
         channelId={channel.channelId}

@@ -66,6 +66,8 @@ import {
   listWeeklyReportsInputSchema,
 } from "@/lib/analytics/schemas";
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
+import { createReachReportsCore, type ReachReportsCore } from "@/lib/reach-reports";
+import { getChannelReachInputObjectSchema } from "@/lib/reach-reports/schemas";
 import { createMarketAssignmentCore, type MarketAssignmentCore } from "@/lib/market-assignments";
 import { assertAgentSession } from "@/lib/agent-session";
 import { MCP_TOOL_CLASSIFICATION } from "./tool-classification";
@@ -243,6 +245,7 @@ type McpToolHandlers = {
   agentGetChannelContext: (input: unknown) => Promise<ToolResponse>;
   agentGetVideoContext: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelAnalytics: (input: unknown) => Promise<ToolResponse>;
+  agentQueryChannelReach: (input: unknown) => Promise<ToolResponse>;
   agentQueryVideoAnalytics: (input: unknown) => Promise<ToolResponse>;
   agentListAssets: (input: unknown) => Promise<ToolResponse>;
   agentGetAssetContext: (input: unknown) => Promise<ToolResponse>;
@@ -500,7 +503,11 @@ export function createMcpToolHandlers(
   channelWorkspacesCore: Pick<ChannelWorkspacesCore, "getWorkspace"> = createChannelWorkspacesCore(),
   // Phase 12 slice 12.4 (owner decision D1) -- per-channel assignment of the global market records
   // above. Agent-confinement subset only; assigning is operator-only (Web UI).
-  marketAssignmentCore: Pick<MarketAssignmentCore, "filterForAgent" | "assertAvailableToAgent" | "recordAgentOwnership"> = createMarketAssignmentCore()
+  marketAssignmentCore: Pick<MarketAssignmentCore, "filterForAgent" | "assertAvailableToAgent" | "recordAgentOwnership"> = createMarketAssignmentCore(),
+  // BL-114 (ADR 0014) -- thumbnail impressions/CTR from the Reporting API, registered directly here (not through
+  // `agentOperationsCore`) so `agent-operations` and `analytics` gain no dependency on it (AGENTS.md §M). Read-only
+  // subset: the sync that talks to Google is the app's own (dashboard/Sync now), never an agent tool.
+  reachReportsCore: Pick<ReachReportsCore, "getChannelReach"> = createReachReportsCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -1221,6 +1228,26 @@ export function createMcpToolHandlers(
       }
     },
 
+    /**
+     * BL-114. A LOCAL read of Reach data the app already imported -- no Google call. Same shape as
+     * `agentQueryChannelAnalytics`: `credentialRef` resolved once and forwarded; `getChannelReach` does the
+     * active-channel check itself, before touching any data.
+     */
+    async agentQueryChannelReach(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getChannelReachInputObjectSchema.partial({ credentialRef: true }).safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await reachReportsCore.getChannelReach({ ...parsedInput.data, credentialRef });
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
     /** Slice C, owner spec §9. Same forwarding pattern as `agentQueryChannelAnalytics` above. */
     async agentQueryVideoAnalytics(input: unknown): Promise<ToolResponse> {
       const parsedInput = queryVideoAnalyticsInputSchema.partial({ credentialRef: true }).safeParse(input);
@@ -1807,6 +1834,8 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // `analyticsOverview`), `queryVideoAnalytics` a pure local read (like `analyticsList`); both
     // mutate no local state, so both are ungated, same classification as their wrapped tools.
     agentQueryChannelAnalytics: handlers.agentQueryChannelAnalytics,
+    // BL-114 -- a pure local read, ungated.
+    agentQueryChannelReach: handlers.agentQueryChannelReach,
     agentQueryVideoAnalytics: handlers.agentQueryVideoAnalytics,
     // Slice D -- pure local reads over the asset catalog, ungated.
     agentListAssets: handlers.agentListAssets,
@@ -2303,6 +2332,16 @@ export function createMcpServer(
       inputSchema: queryChannelAnalyticsInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.agentQueryChannelAnalytics(args)
+  );
+
+  registerTool(
+    "agent_query_channel_reach",
+    {
+      description:
+        "Thumbnail impressions and click-through rate (CTR) for a date range, from YouTube's Reporting API Reach report that this app downloads and stores locally -- a LOCAL read, no live YouTube call. These two metrics are NOT available from the Analytics API, so they are absent from agent_query_channel_analytics. `state` is explicit: `no_job` (the report subscription does not exist yet), `waiting_for_first_report` (it exists but YouTube has not delivered a file yet, up to ~48h -- this is NOT zero impressions), or `ready`. Days without data are absent, never zero-filled. `daily` and `videos` (top 50 by impressions, by canonical videoId) carry raw FACT values; `totals` are DERIVED and the CTR is impressions-weighted, never an average of per-row CTRs -- a CTR of null means the report left it empty. `coverage` shows which days have data. Data is refreshed when the app's dashboard is opened, so check coverage.lastDate for freshness. Requires channelId to be the caller's currently-active channel.",
+      inputSchema: getChannelReachInputObjectSchema.partial({ credentialRef: true }),
+    },
+    (args) => handlers.agentQueryChannelReach(args)
   );
 
   registerTool(

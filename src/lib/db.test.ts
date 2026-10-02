@@ -878,6 +878,7 @@ test("getGatewayTrafficLast24h: every category reports a zeroed row before any c
         "data_api_reads",
         "live_writes",
         "mcp_tool_calls",
+        "reporting_reads",
         "wikipedia_reads",
         "youtube_feed_reads",
       ]

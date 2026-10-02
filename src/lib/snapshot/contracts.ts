@@ -171,6 +171,9 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   gateway_call_events: "per-device traffic counters",
   sync_family_status: "this device's own sync-gateway status",
   wikipedia_pageviews_daily: "re-fetchable cache of Wikimedia page views (Phase 13.8)",
+  reporting_jobs: "Reporting API job bookkeeping for this device (BL-114); Google is the source of truth",
+  reporting_report_files: "ledger of Reporting API files this device downloaded (BL-114)",
+  channel_reach_daily: "accepted limitation (RISK-52, same as video_metrics_daily): collected impressions/CTR stay local (BL-114)",
 });
 
 /**
