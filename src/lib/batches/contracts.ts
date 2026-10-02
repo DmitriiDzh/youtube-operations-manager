@@ -318,8 +318,8 @@ export type PendingChangeRecord = {
 };
 
 export type PreparedRowOutcome =
-  | { ledgerRowId: string; videoId: string; status: "DRY_RUN_COMPLETE"; payload: PreparedPayload }
-  | { ledgerRowId: string; videoId: string; status: "AWAITING_EXECUTION"; payload: PreparedPayload }
+  | { ledgerRowId: string; videoId: string; status: "DRY_RUN_COMPLETE"; payload: PreparedPayload; appliedDefaultLanguage?: string | null }
+  | { ledgerRowId: string; videoId: string; status: "AWAITING_EXECUTION"; payload: PreparedPayload; appliedDefaultLanguage?: string | null }
   | { ledgerRowId: string; videoId: string; status: "FAILED"; error: string }
   | { ledgerRowId: string; videoId: string; status: "CONFLICT"; conflictingChangeIds: string[] };
 

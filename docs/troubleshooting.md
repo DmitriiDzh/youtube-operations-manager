@@ -107,6 +107,13 @@ Fix:
 
 ## Metadata/API errors
 
+### Batch row FAILED: "Video has no defaultLanguage"
+
+Since 2026-10-02 a Batch sets the channel's default language on a video that has none. This error
+now means no baseline is configured: set "Title and description language" in the Languages tab
+(Save channel defaults) and re-run. A different error ("cannot be applied ... collide") means the
+video already has, or is being given, a localization in that same language — fix that video manually.
+
 ### `target_language_unresolvable`
 
 Meaning: the app could not determine the target language for a metadata apply.

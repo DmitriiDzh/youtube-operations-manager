@@ -151,8 +151,18 @@ type BackupDeps = {
   }): Promise<{ path: string; capturedAt: string }>;
 };
 
+/**
+ * Owner authorization 2026-10-02 (Telegram: "Разрешаю чтобы дефолтный язык подставлялся в батчи,
+ * при загрузке файлов на перевод"): the one deliberate exception to DEC-OQ-2 / AC-DEFAULTLANG-01.
+ * Optional so a wiring that does not supply it keeps the original block-only behavior.
+ */
+type ChannelLanguageBaselineDeps = {
+  getExpectedDefaultLanguage(channelId: string): Promise<string | null>;
+};
+
 type ServiceDependencies = {
   batchStore: BatchStoreDeps;
+  channelLanguageBaseline?: ChannelLanguageBaselineDeps;
   changeSetStore: ChangeSetStoreDeps;
   authResolver: AuthResolverDeps;
   writeContext: WriteContextDeps;
@@ -500,7 +510,7 @@ export function createBatchServices(deps: ServiceDependencies) {
   type SafetyPipelineResult =
     | { outcome: "FAILED"; error: string }
     | { outcome: "CONFLICT"; conflictingChangeIds: string[] }
-    | { outcome: "READY"; payload: PreparedPayload; changes: PendingChangeRecord[] };
+    | { outcome: "READY"; payload: PreparedPayload; changes: PendingChangeRecord[]; appliedDefaultLanguage: string | null };
 
   /**
    * The single shared "is it still safe to send this payload right now" pipeline:
@@ -538,9 +548,32 @@ export function createBatchServices(deps: ServiceDependencies) {
     }
     const fresh = toFreshVideoContext(rawFresh);
 
+    // Owner exception to DEC-OQ-2 (2026-10-02): a video with NO defaultLanguage on YouTube gets the
+    // channel's chosen baseline written together with its localizations (YouTube rejects a
+    // localizations write without snippet.defaultLanguage). Without a baseline it still blocks, and a
+    // video that already has its own defaultLanguage is never touched. `fresh` stays the untouched
+    // remote state (conflict detection, backup); only `mergeBase` carries the injected value.
+    let appliedDefaultLanguage: string | null = null;
+    let mergeBase = fresh;
     const defaultLanguageCheck = checkDefaultLanguage(fresh.snippet);
     if (!defaultLanguageCheck.ok) {
-      return { outcome: "FAILED", error: defaultLanguageCheck.reason };
+      const baseline = (await deps.channelLanguageBaseline?.getExpectedDefaultLanguage(batch.channelId)) ?? null;
+      if (!baseline) {
+        return { outcome: "FAILED", error: defaultLanguageCheck.reason };
+      }
+      // The baseline language's text would become the snippet title/description; a change for it,
+      // or an existing remote localization under that code, would be silently overwritten/dropped.
+      const collides =
+        changeRecords.some((change) => change.language === baseline) ||
+        Object.prototype.hasOwnProperty.call(fresh.localizations, baseline);
+      if (collides) {
+        return {
+          outcome: "FAILED",
+          error: `Video has no defaultLanguage and the channel default "${baseline}" cannot be applied: this video already has, or is being given, a "${baseline}" localization, which would collide with the snippet title/description. Set the video's language manually.`,
+        };
+      }
+      appliedDefaultLanguage = baseline;
+      mergeBase = { ...fresh, snippet: { ...fresh.snippet, defaultLanguage: baseline } };
     }
 
     const pendingChanges = toPendingChanges(changeRecords);
@@ -569,7 +602,7 @@ export function createBatchServices(deps: ServiceDependencies) {
 
     let merged: ReturnType<typeof buildSafeLocalizationsPayload>;
     try {
-      merged = buildSafeLocalizationsPayload(fresh, pendingChanges);
+      merged = buildSafeLocalizationsPayload(mergeBase, pendingChanges);
     } catch (error) {
       // Only the defense-in-depth defaultLanguage-deletion guard inside
       // buildSafeLocalizationsPayload throws (see merge.ts) -- fail closed the same way
@@ -581,7 +614,7 @@ export function createBatchServices(deps: ServiceDependencies) {
     // -- see contracts.ts's PreparedPayload doc comment for why it lives on the payload
     // itself rather than as a second argument threaded separately into attemptWrite.
     const payload: PreparedPayload = { videoId: row.videoId, ...merged };
-    return { outcome: "READY", payload, changes: changeRecords };
+    return { outcome: "READY", payload, changes: changeRecords, appliedDefaultLanguage };
   }
 
   /**
@@ -620,14 +653,14 @@ export function createBatchServices(deps: ServiceDependencies) {
 
     if (batch.dryRun) {
       await transitionLedgerStatus(row.id, "DRY_RUN_COMPLETE");
-      await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "DRY_RUN", detail: { payload: result.payload } });
+      await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "DRY_RUN", detail: { payload: result.payload, defaultLanguageApplied: result.appliedDefaultLanguage } });
       await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
-      return { ledgerRowId: row.id, videoId: row.videoId, status: "DRY_RUN_COMPLETE", payload: result.payload };
+      return { ledgerRowId: row.id, videoId: row.videoId, status: "DRY_RUN_COMPLETE", payload: result.payload, appliedDefaultLanguage: result.appliedDefaultLanguage };
     }
 
     await transitionLedgerStatus(row.id, "AWAITING_EXECUTION");
     // Live batch: prepared and ready, video lock stays held -- executeBatch continues.
-    return { ledgerRowId: row.id, videoId: row.videoId, status: "AWAITING_EXECUTION", payload: result.payload };
+    return { ledgerRowId: row.id, videoId: row.videoId, status: "AWAITING_EXECUTION", payload: result.payload, appliedDefaultLanguage: result.appliedDefaultLanguage };
   }
 
   /**
@@ -1054,15 +1087,18 @@ export function createBatchServices(deps: ServiceDependencies) {
     changes: PendingChangeRecord[];
     credentials: ResolvedCredentials;
     executor: WriteExecutor;
+    /** Set when the safety pipeline injected the channel baseline as this video's defaultLanguage. */
+    appliedDefaultLanguage?: string | null;
   }): Promise<ExecutionResult> {
     const { row, batch, payload, changes, credentials, executor } = args;
+    const appliedDefaultLanguage = args.appliedDefaultLanguage ?? null;
     const pendingChanges = toPendingChanges(changes);
 
     let attemptCount = 0;
     for (;;) {
       attemptCount++;
       const { attemptId, attemptNumber } = await beginAttempt(row.id, payload);
-      await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "ATTEMPT", detail: { attemptId, attemptNumber } });
+      await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "ATTEMPT", detail: { attemptId, attemptNumber, ...(appliedDefaultLanguage ? { defaultLanguageApplied: appliedDefaultLanguage } : {}) } });
 
       let result: Awaited<ReturnType<WriteExecutor["attemptWrite"]>>;
       try {
@@ -1100,16 +1136,22 @@ export function createBatchServices(deps: ServiceDependencies) {
 
       if (result.outcome === "SUCCESS") {
         let verifyRaw = await deps.youtubeApi.fetchFreshVideoContext({ credentials, videoId: row.videoId });
-        let verifyClassification = verifyRaw
-          ? classifyFreshStateAgainstAttempt(pendingChanges, toFreshVideoContext(verifyRaw))
-          : "diverged";
+        // An injected defaultLanguage is part of what this write promised: the read-back must show it.
+        const classifyVerify = (raw: typeof verifyRaw) => {
+          if (!raw) return "diverged" as const;
+          const context = toFreshVideoContext(raw);
+          const classification = classifyFreshStateAgainstAttempt(pendingChanges, context);
+          if (classification === "matches_requested" && appliedDefaultLanguage && context.snippet.defaultLanguage !== appliedDefaultLanguage) {
+            return "matches_baseline" as const;
+          }
+          return classification;
+        };
+        let verifyClassification = classifyVerify(verifyRaw);
         for (const delayMs of deps.verifyRetryDelaysMs ?? []) {
           if (verifyClassification !== "matches_baseline") break;
           await new Promise((resolve) => setTimeout(resolve, delayMs));
           verifyRaw = await deps.youtubeApi.fetchFreshVideoContext({ credentials, videoId: row.videoId });
-          verifyClassification = verifyRaw
-            ? classifyFreshStateAgainstAttempt(pendingChanges, toFreshVideoContext(verifyRaw))
-            : "diverged";
+          verifyClassification = classifyVerify(verifyRaw);
         }
 
         if (verifyClassification === "matches_requested") {
@@ -1484,6 +1526,7 @@ export function createBatchServices(deps: ServiceDependencies) {
         changes: safety.changes,
         credentials,
         executor: input.executor,
+        appliedDefaultLanguage: safety.appliedDefaultLanguage,
       });
       results[index] = result;
 

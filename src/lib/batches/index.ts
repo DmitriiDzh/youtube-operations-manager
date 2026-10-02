@@ -5,6 +5,7 @@ import { createBackupCore } from "@/lib/backup";
 import { createAuditCore } from "@/lib/audit";
 import { createBatchStoreAdapter, createChangeSetStoreAdapter, createIdGenerator } from "./adapters/store";
 import { createBatchYoutubeApiAdapter } from "./adapters/youtube-api";
+import { getChannelExpectedLanguages } from "@/lib/db";
 import { createBatchServices } from "./services";
 
 function createRealClock() {
@@ -33,6 +34,9 @@ export function createBatchCore() {
     authResolver: { resolve: resolveGoogleCredentials },
     writeContext,
     youtubeApi: createBatchYoutubeApiAdapter(),
+    channelLanguageBaseline: {
+      getExpectedDefaultLanguage: async (channelId) => (await getChannelExpectedLanguages(channelId)).defaultLanguage,
+    },
     backup: createBackupCore(),
     audit: createAuditCore(),
     clock: createRealClock(),

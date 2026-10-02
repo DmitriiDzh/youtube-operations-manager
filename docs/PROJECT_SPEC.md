@@ -440,6 +440,8 @@ Set default language:
 
 Changing default language is a YouTube write operation and must follow the same approval/audit rules.
 
+**Owner exception (2026-10-02, project owner via Telegram: "Разрешаю чтобы дефолтный язык подставлялся в батчи, при загрузке файлов на перевод").** In a Batch, a video that has *no* `defaultLanguage` on YouTube receives the channel's baseline (`channels.expected_default_language`, Languages tab) as `snippet.defaultLanguage` in the same `videos.update` as its localizations. Constraints: only when the video has none (an existing value is never overridden); no baseline configured → blocked as before; a change for, or an existing remote localization under, the baseline language itself → FAILED (would overwrite/drop snippet text); backup keeps the original (missing) value; the applied value is recorded in the DRY_RUN/ATTEMPT audit detail and verified in the post-write read-back (unconfirmed → FAILED). Scope: Batches only — the Change Set mechanism's own field authority (title/description) is unchanged.
+
 ---
 
 # 15. XLSX Export
