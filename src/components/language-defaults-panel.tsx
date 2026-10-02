@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { ConfirmDialog } from "./confirm-dialog";
 
 type LanguageOption = { code: string; name: string };
 
@@ -49,6 +50,8 @@ export function LanguageDefaultsPanel({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [align, setAlign] = useState<Record<string, AlignState>>({});
   const [aligning, setAligning] = useState<"preview" | "apply" | null>(null);
+  const [confirmAll, setConfirmAll] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -108,11 +111,13 @@ export function LanguageDefaultsPanel({
   const detailsUrl = (videoId: string, step: "preview" | "apply") =>
     `/api/channels/${encodeURIComponent(channelId)}/videos/${encodeURIComponent(videoId)}/details/${step}`;
 
-  async function previewAlignment() {
-    if (!target) return;
-    setAligning("preview");
+  async function previewAlignment(rows: DeviationRow[] = chosen): Promise<Record<string, AlignState>> {
     const next: Record<string, AlignState> = {};
-    for (const row of chosen) {
+    if (!target) return next;
+    setAligning("preview");
+    let done = 0;
+    for (const row of rows) {
+      setProgress(`Checking ${++done} / ${rows.length}...`);
       try {
         const res = await fetch(detailsUrl(row.videoId, "preview"), {
           method: "POST",
@@ -128,6 +133,17 @@ export function LanguageDefaultsPanel({
     }
     setAlign((prev) => ({ ...prev, ...next }));
     setAligning(null);
+    setProgress(null);
+    return next;
+  }
+
+  /** One-button flow: preview EVERY video that deviates (read-only), then ask once before writing. */
+  async function fixAll() {
+    if (!target) return;
+    setSelected(new Set(fixable.map((row) => row.videoId)));
+    setOpen(true);
+    const next = await previewAlignment(fixable);
+    if (Object.values(next).some((state) => state.status === "ready")) setConfirmAll(true);
   }
 
   /** Sequential and fail-fast: the first failure stops the run, so a systemic problem (live writes
@@ -135,7 +151,9 @@ export function LanguageDefaultsPanel({
   async function applyAlignment() {
     if (!target) return;
     setAligning("apply");
+    let done = 0;
     for (const videoId of readyIds) {
+      setProgress(`Writing ${++done} / ${readyIds.length}...`);
       const state = align[videoId];
       if (state?.status !== "ready") continue;
       try {
@@ -154,6 +172,7 @@ export function LanguageDefaultsPanel({
       }
     }
     setAligning(null);
+    setProgress(null);
     await load();
   }
 
@@ -196,6 +215,16 @@ export function LanguageDefaultsPanel({
         >
           {busy ? "Saving..." : "Save channel defaults"}
         </button>
+        {target && fixable.length > 0 && (
+          <button
+            onClick={fixAll}
+            disabled={aligning !== null || dirty}
+            title={dirty ? "Save channel defaults first" : undefined}
+            className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+          >
+            {aligning === "preview" && progress ? progress : aligning === "apply" && progress ? progress : `Fix all ${fixable.length} videos`}
+          </button>
+        )}
         {report && (
           <button
             onClick={() => setOpen((v) => !v)}
@@ -209,6 +238,21 @@ export function LanguageDefaultsPanel({
         )}
       </div>
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+      {confirmAll && (
+        <ConfirmDialog
+          title={`Set Title/description language to "${target}" on ${readyIds.length} videos?`}
+          description={`Writes only the language label to YouTube (title and description text stay unchanged). Each video is backed up and verified; the run stops at the first error.${
+            fixable.length > readyIds.length ? ` ${fixable.length - readyIds.length} video(s) failed the check and will be skipped (see the list).` : ""
+          }`}
+          confirmLabel={`Write ${readyIds.length} videos to YouTube`}
+          confirmVariant="danger"
+          onCancel={() => setConfirmAll(false)}
+          onConfirm={() => {
+            setConfirmAll(false);
+            void applyAlignment();
+          }}
+        />
+      )}
       {open && deviations.length > 0 && target && fixable.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-zinc-400">
           <span>
@@ -216,7 +260,7 @@ export function LanguageDefaultsPanel({
             are not changed; Video language cannot be set via the API).
           </span>
           <button
-            onClick={previewAlignment}
+            onClick={() => void previewAlignment()}
             disabled={aligning !== null || chosen.length === 0}
             className="rounded-lg bg-zinc-700 px-3 py-1 text-white hover:bg-zinc-600 disabled:opacity-50"
           >
