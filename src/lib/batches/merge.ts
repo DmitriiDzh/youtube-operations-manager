@@ -101,9 +101,15 @@ export function detectPreWriteConflict(changes: PendingChange[], fresh: FreshVid
 }
 
 export type SafeLocalizationsPayload = {
-  /** Present only when a change targets the video's defaultLanguage (whose title/description
-   * live on `snippet`); otherwise absent so the write sends the `localizations` part alone. */
-  snippet?: Record<string, unknown>;
+  /**
+   * ALWAYS present. `videos.update` rejects a request that adds/changes `localizations` without
+   * `snippet.defaultLanguage` in the same call ("trying to add localized video details without
+   * specifying the default language", live Japan Music batch 2026-10-02: 25/41 rejected when
+   * the snippet was omitted). The snippet part replaces the stored snippet wholesale, so it is
+   * the full documented-writable set (`pickWritableSnippetFields`) from the FRESH fetch --
+   * `defaultAudioLanguage` is not settable and is not sent.
+   */
+  snippet: Record<string, unknown>;
   localizations: Record<string, FreshVideoLocale>;
 };
 
@@ -129,7 +135,7 @@ export function buildSafeLocalizationsPayload(
   fresh: FreshVideoContext,
   changes: PendingChange[]
 ): SafeLocalizationsPayload {
-  let snippet: Record<string, unknown> | undefined;
+  const snippet: Record<string, unknown> = pickWritableSnippetFields(fresh.snippet);
 
   // The video's default language is represented by `snippet.title`/`description`, never by
   // a `localizations` entry -- if `fresh.localizations` defensively contains a stale entry
@@ -171,7 +177,6 @@ export function buildSafeLocalizationsPayload(
     }
 
     if (fresh.snippet.defaultLanguage && change.language === fresh.snippet.defaultLanguage) {
-      snippet ??= pickWritableSnippetFields(fresh.snippet);
       snippet[change.field] = change.proposedValue;
       continue;
     }
@@ -184,7 +189,7 @@ export function buildSafeLocalizationsPayload(
     delete localizations[language];
   }
 
-  return snippet ? { snippet, localizations } : { localizations };
+  return { snippet, localizations };
 }
 
 // ---------------------------------------------------------------------------

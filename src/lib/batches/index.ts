@@ -36,6 +36,7 @@ export function createBatchCore() {
     backup: createBackupCore(),
     audit: createAuditCore(),
     clock: createRealClock(),
+    verifyRetryDelaysMs: [2000, 5000],
     idGenerator: createIdGenerator(),
     logger: createDefaultLogger(),
   });

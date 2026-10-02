@@ -151,7 +151,7 @@ export async function performYoutubeWrite(
     // the actual boundary to the live API -- it must never trust that every possible
     // caller of `attemptWrite` correctly pre-filtered `snippet`, even though today only
     // `merge.ts`'s output ever reaches here.
-    const safeSnippet = prepared.snippet ? pickWritableSnippetFields(prepared.snippet) : undefined;
+    const safeSnippet = pickWritableSnippetFields(prepared.snippet);
     await applyVideoMetadataUpdate({
       youtube: client as youtube_v3.Youtube,
       update: {
