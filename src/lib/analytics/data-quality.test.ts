@@ -267,3 +267,24 @@ test("the covered-meaning text says it does not mean data is present", () => {
   });
   assert.match(extras.coveredMeans, /NOT mean data is present/);
 });
+
+import { isRangeFullyCovered } from "./data-quality";
+
+test("BL-118 isRangeFullyCovered: every date covered by a run, or still inside the reporting lag, is fully covered; one uncovered date is not", () => {
+  const now = new Date("2026-09-22T13:00:00Z"); // lag cutoff 2026-09-20: later dates count as covered
+  const runs = [{ requestedStartDate: "2026-09-14", requestedEndDate: "2026-09-21", videoCount: 5 }];
+  assert.equal(isRangeFullyCovered({ startDate: "2026-09-15", endDate: "2026-09-21", runs, now }), true);
+  assert.equal(isRangeFullyCovered({ startDate: "2026-09-15", endDate: "2026-09-22", runs, now }), true, "2026-09-22 is inside the lag window");
+  assert.equal(isRangeFullyCovered({ startDate: "2026-09-13", endDate: "2026-09-21", runs, now }), false, "2026-09-13 was never collected");
+  assert.equal(isRangeFullyCovered({ startDate: "2026-08-01", endDate: "2026-08-02", runs, now }), false);
+});
+
+test("BL-118 isRangeFullyCovered: a run with no videos proves nothing, and several runs together can cover a range", () => {
+  const now = new Date("2026-09-22T13:00:00Z");
+  assert.equal(isRangeFullyCovered({ startDate: "2026-08-01", endDate: "2026-08-03", runs: [{ requestedStartDate: "2026-08-01", requestedEndDate: "2026-08-03", videoCount: 0 }], now }), false);
+  const two = [
+    { requestedStartDate: "2026-08-01", requestedEndDate: "2026-08-02", videoCount: 3 },
+    { requestedStartDate: "2026-08-03", requestedEndDate: "2026-08-05", videoCount: 3 },
+  ];
+  assert.equal(isRangeFullyCovered({ startDate: "2026-08-01", endDate: "2026-08-05", runs: two, now }), true);
+});

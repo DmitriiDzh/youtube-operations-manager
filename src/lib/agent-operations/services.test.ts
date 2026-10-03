@@ -236,7 +236,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11): new channel_workspace capability.
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-13): a breaking
   // agent-contract change (token required, identity/credential overrides removed) -> MAJOR.
-  assert.equal(result.agentApiVersion, "2.0.0"); // AC-HM-14: MAJOR bump, the agent connection contract changed (docs/decisions/0013)
+  assert.equal(result.agentApiVersion, "3.0.0"); // MAJOR bump, BL-118 (docs/decisions/0018): agent_query_channel_analytics.previousTotals can be null
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -390,6 +390,98 @@ test("getChannelContext returns channel basics, video count, editorial profile, 
   assert.equal(result.editorialProfile!.version, 3);
   assert.equal(result.editorialProfile!.targetAudience, "Ambient music listeners");
   assert.deepEqual(result.trackedLanguages, ["es", "fr"]);
+});
+
+// ---- BL-118: channel analytics for the agent: local-first, previous period vs channel start, granularity ------------------------------
+
+type OverviewStub = FakeChannelOverview;
+
+function overviewFixture(over: { source?: "live" | "local"; collectedAt?: string | null; previousStartDate?: string; previousEndDate?: string; publishedAt?: string | null } = {}) {
+  const captured: unknown[] = [];
+  const { services } = createFixture({
+    now: () => new Date("2026-10-03T18:26:00.000Z"),
+    channels: { UC_A: { channelId: "UC_A", title: "T", lastSyncedAt: null, publishedAt: over.publishedAt === undefined ? "2026-08-13T08:00:00Z" : over.publishedAt } },
+    getChannelOverview: async (input) => {
+      captured.push(input);
+      const stub = {
+        channelId: "UC_A",
+        startDate: (input as { startDate: string }).startDate,
+        endDate: (input as { endDate: string }).endDate,
+        previousStartDate: over.previousStartDate ?? "2026-06-22",
+        previousEndDate: over.previousEndDate ?? "2026-08-12",
+        daily: [
+          { date: "2026-08-13", views: 10, estimatedMinutesWatched: 100, subscribersGained: 1, subscribersLost: 0 },
+          { date: "2026-08-17", views: 5, estimatedMinutesWatched: 50, subscribersGained: 0, subscribersLost: 1 },
+          { date: "2026-08-18", views: 7, estimatedMinutesWatched: 70, subscribersGained: 2, subscribersLost: 0 },
+        ],
+        currentTotals: { views: 22, estimatedMinutesWatched: 220, subscribersGained: 3, subscribersLost: 1 },
+        previousTotals: { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 },
+        source: over.source ?? "local",
+        collectedAt: over.collectedAt === undefined ? "2026-10-03T10:00:00.000Z" : over.collectedAt,
+      };
+      return stub as unknown as OverviewStub;
+    },
+  });
+  return { services, captured };
+}
+
+const Q = { credentialRef: { userId: "u1" }, channelId: "UC_A", startDate: "2026-08-13", endDate: "2026-10-03" };
+
+test("BL-118: the agent's case — a previous period that ended before the channel existed gives previousTotals null (not 0), with the reason", async () => {
+  const { services } = overviewFixture();
+  const result = await services.queryChannelAnalytics(Q);
+  assert.equal(result.previousTotals, null);
+  assert.equal(result.previousPeriod?.status, "predates_channel");
+  assert.match(result.previousPeriod?.note ?? "", /2026-08-13/);
+  assert.equal(result.channelStartDate, "2026-08-13");
+});
+
+test("BL-118: a previous period that starts before the channel but ends after it is 'partial' and keeps its totals; a full one is 'full'", async () => {
+  const partial = await overviewFixture({ previousStartDate: "2026-07-20", previousEndDate: "2026-08-14" }).services.queryChannelAnalytics(Q);
+  assert.equal(partial.previousPeriod?.status, "partial");
+  assert.ok(partial.previousTotals);
+  const full = await overviewFixture({ previousStartDate: "2026-08-20", previousEndDate: "2026-09-05" }).services.queryChannelAnalytics(Q);
+  assert.equal(full.previousPeriod?.status, "full");
+  assert.ok(full.previousTotals);
+});
+
+test("BL-118: an unknown channel start is never guessed: previousTotals stays, status 'full', and the note says the date is unknown", async () => {
+  const result = await overviewFixture({ publishedAt: null }).services.queryChannelAnalytics(Q);
+  assert.equal(result.channelStartDate, null);
+  assert.equal(result.previousPeriod?.status, "full");
+  assert.match(result.previousPeriod?.note ?? "", /not known/);
+});
+
+test("BL-118: local-first — the overview is asked with preferLocal, and the freshness says local with the collection time; refresh=true asks for a live read", async () => {
+  const local = overviewFixture({ source: "local", collectedAt: "2026-10-03T10:00:00.000Z" });
+  const result = await local.services.queryChannelAnalytics(Q);
+  assert.equal((local.captured[0] as { preferLocal: boolean }).preferLocal, true);
+  assert.equal(result.freshness.source, "local_collected_data");
+  assert.equal(result.freshness.asOf, "2026-10-03T10:00:00.000Z");
+
+  const forced = overviewFixture({ source: "live" });
+  const live = await forced.services.queryChannelAnalytics({ ...Q, refresh: true });
+  assert.equal((forced.captured[0] as { preferLocal: boolean }).preferLocal, false);
+  assert.equal(live.freshness.source, "live_youtube_analytics_api");
+});
+
+test("BL-118 D: granularity week returns summed Monday-Sunday buckets and an empty daily list; day (default) keeps daily rows and null buckets", async () => {
+  const { services } = overviewFixture();
+  const weekly = await services.queryChannelAnalytics({ ...Q, endDate: "2026-08-23", granularity: "week" });
+  assert.equal(weekly.granularity, "week");
+  assert.deepEqual(weekly.daily, []);
+  // 2026-08-13 is a Thursday: first bucket 08-13..08-16 (partial), then 08-17..08-23
+  assert.deepEqual(
+    weekly.buckets?.map((b) => [b.periodStart, b.periodEnd, b.partialBucket, b.views, b.subscribersGained, b.subscribersLost]),
+    [
+      ["2026-08-13", "2026-08-16", true, 10, 1, 0],
+      ["2026-08-17", "2026-08-23", false, 12, 2, 1],
+    ]
+  );
+  const daily = await services.queryChannelAnalytics(Q);
+  assert.equal(daily.granularity, "day");
+  assert.equal(daily.buckets, null);
+  assert.equal(daily.daily.length, 3);
 });
 
 // BL-118: the first MCP agent test could not tell when a channel was created.
@@ -958,11 +1050,14 @@ test("queryChannelAnalytics forwards input unchanged to getChannelOverview and w
     endDate: "2026-09-07",
   });
 
+  // BL-118 (owner decision 2026-10-03: channel analytics from the local database): the agent tool now asks for the stored totals first
+  // (`preferLocal`), so the forwarded input gains this one field; the caller's own fields are still forwarded unchanged.
   assert.deepEqual(captured, {
     credentialRef: { userId: "u1" },
     channelId: "UC_A",
     startDate: "2026-09-01",
     endDate: "2026-09-07",
+    preferLocal: true,
   });
   assert.deepEqual(result.period, {
     startDate: "2026-09-01",

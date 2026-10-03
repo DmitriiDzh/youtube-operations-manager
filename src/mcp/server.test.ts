@@ -2870,7 +2870,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
   // Bumped 0.14.0 -> 0.15.0, Phase 11: new channel_workspace.get_channel_workspace capability
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11).
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (AC-P12-13): breaking agent-contract change -> MAJOR.
-  assert.equal(payload.agentApiVersion, "2.0.0"); // AC-HM-14: MAJOR bump, the agent connection contract changed (docs/decisions/0013)
+  assert.equal(payload.agentApiVersion, "3.0.0"); // MAJOR bump, BL-118 (docs/decisions/0018): agent_query_channel_analytics.previousTotals can be null
   assert.ok(
     payload.capabilities.some(
       (c: { id: string; permission: string }) => c.id === "channel_workspace.get_channel_workspace" && c.permission === "READ"
@@ -3380,6 +3380,81 @@ test("MCP agent_query_channel_reach forwards the resolved credentialRef and the 
     credentialRef: { userId: "active-user" },
   });
   assert.equal((result.structuredContent as { state?: string } | undefined)?.state, "waiting_for_first_report");
+});
+
+test("BL-118: MCP agent_query_channel_breakdown forwards the resolved credentialRef, labels every row, and says the read is live", async () => {
+  const capture: { input?: unknown } = {};
+  const breakdownStub = {
+    async getChannelBreakdown(input: unknown) {
+      capture.input = input;
+      return {
+        channelId: "UC_1",
+        breakdown: "trafficSources" as const,
+        startDate: "2026-09-01",
+        endDate: "2026-09-07",
+        rows: [{ dimensionValues: ["YT_SEARCH"], metrics: { views: 120 } }],
+      };
+    },
+  };
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    makeReachCoreStub({}),
+    breakdownStub
+  );
+
+  const result = await handlers.agentQueryChannelBreakdown({ channelId: "UC_1", startDate: "2026-09-01", endDate: "2026-09-07", breakdown: "trafficSources" });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(capture.input, {
+    channelId: "UC_1",
+    startDate: "2026-09-01",
+    endDate: "2026-09-07",
+    breakdown: "trafficSources",
+    credentialRef: { userId: "active-user" },
+  });
+  const payload = result.structuredContent as { rows: Array<{ dimensionValues: string[]; label: string; metrics: Record<string, number> }>; freshness: { source: string } };
+  assert.deepEqual(payload.rows[0].dimensionValues, ["YT_SEARCH"], "the raw API value is kept");
+  assert.notEqual(payload.rows[0].label, "", "and a readable label is added");
+  assert.equal(payload.freshness.source, "live_youtube_analytics_api");
+});
+
+test("BL-118: MCP agent_query_channel_breakdown rejects an unknown breakdown kind or extra field without calling the service", async () => {
+  let called = false;
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    makeChannelAccessCoreStub(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    makeReachCoreStub({}),
+    { async getChannelBreakdown() { called = true; throw new Error("must not be called"); } }
+  );
+  for (const bad of [
+    { channelId: "UC_1", startDate: "2026-09-01", endDate: "2026-09-07", breakdown: "nope" },
+    { channelId: "UC_1", startDate: "2026-09-01", endDate: "2026-09-07", breakdown: "deviceType", extra: 1 },
+  ]) {
+    const result = await handlers.agentQueryChannelBreakdown(bad);
+    assert.equal(result.isError, true);
+  }
+  assert.equal(called, false);
 });
 
 test("MCP agent_query_channel_reach rejects a malformed or unknown-field input without calling the service", async () => {

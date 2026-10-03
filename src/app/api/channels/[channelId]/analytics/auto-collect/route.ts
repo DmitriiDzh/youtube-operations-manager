@@ -1,7 +1,8 @@
 import { getServerSession } from "next-auth";
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createAnalyticsCore } from "@/lib/analytics";
+import { getOperationRegistry, runTrackedOperation } from "@/lib/operation-progress";
 import { DomainError } from "@/lib/analytics/contracts";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
@@ -30,7 +31,36 @@ export async function POST(
       channelId,
     });
 
-    return NextResponse.json(result);
+    // BL-118 (owner decisions 2026-10-03): the automatic collection also closes the gap between the start of a channel's history and what
+    // was collected (older days of every video, channel totals) -- once per missing range, never by hand. It runs AFTER this response (a
+    // long job must not hold the dashboard), as a tracked operation so the server's idle shutdown sees it and a progress view can attach.
+    let catchUpScheduled = false;
+    try {
+      const credentialRef = { userId: session.user.id };
+      const plan = await core.getHistoryCatchUpPlan({ credentialRef, channelId });
+      if (plan.videoRanges.length > 0 || plan.channelRange) {
+        catchUpScheduled = true;
+        after(async () => {
+          try {
+            await runTrackedOperation({
+              registry: getOperationRegistry(),
+              kind: "analytics-backfill",
+              channelId,
+              title: "Collecting earlier analytics history",
+              cancellable: false,
+              work: (progress) => core.runHistoryCatchUp({ credentialRef, channelId }, { progress }),
+              messageFor: (done) => (done.ranCatchUp ? `${done.videosQueried} video(s) back-filled.` : "Nothing to back-fill."),
+            });
+          } catch {
+            // Already running, reads switched off, quota reserve: the catch-up is planned again on the next dashboard open.
+          }
+        });
+      }
+    } catch {
+      // Planning is best-effort: it never turns a successful rolling collection into an error.
+    }
+
+    return NextResponse.json({ ...result, catchUpScheduled });
   } catch (error) {
     if (error instanceof DomainError) {
       return NextResponse.json(

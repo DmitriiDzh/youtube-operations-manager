@@ -57,6 +57,7 @@ import type { CreativeAsset } from "@/lib/asset-catalog";
 import type { StoredGenerationProvenance } from "@/lib/ai-localization/contracts";
 import type { ContentProposal, ProposalArtifactLink } from "@/lib/content-proposals";
 import type { CreatedVia } from "@/lib/shared-provenance";
+import { bucketDailyRows, classifyPreviousPeriod } from "@/lib/analytics/granularity";
 import type { OperationsWorkspaceFileResult, OperationsWorkspaceListResult } from "@/lib/operations-instructions";
 import type { FindComparableVideosResult } from "@/lib/comparable-content";
 import type { ListAssetPerformanceResult } from "@/lib/asset-performance";
@@ -147,7 +148,15 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "analytics",
     permission: "READ",
     description:
-      "Agent-oriented channel-level analytics for a date range (views, watch time, subscriber deltas), with explicit metric definitions and data freshness. Wraps the existing `analytics_overview` capability (`src/lib/analytics/`) -- a LIVE YouTube Analytics API read that counts against that API's quota, unlike most other capabilities in this interface. Requires channelId to be the caller's currently-active channel.",
+      "Agent-oriented channel-level analytics for a date range (views, watch time, subscriber deltas), with explicit metric definitions and data freshness. Answers from the channel totals this app collects and stores locally when they cover the range (no live call, no quota; `freshness.source` says which), and falls back to a live YouTube Analytics API read otherwise; pass `refresh: true` to force the live read. `granularity` day (default) / week (Monday-Sunday) / month returns daily rows or summed buckets. `previousTotals` is null (not zero) when the comparison period ended before the channel was created (`previousPeriod` says why); `channelStartDate` is the channel's creation date. Requires channelId to be the caller's currently-active channel.",
+  },
+  {
+    id: "analytics.query_channel_breakdown",
+    mcpTools: ["agent_query_channel_breakdown"],
+    domain: "analytics",
+    permission: "READ",
+    description:
+      "Channel-level breakdown for a date range: traffic sources, devices, age/gender, geography, subscribed status or content format (the same breakdown the Content tab shows), with raw API values and readable labels. A LIVE YouTube Analytics API read that counts against that API's quota (1 unit) -- there is no locally stored copy. Requires channelId to be the caller's currently-active channel.",
   },
   {
     id: "analytics.query_channel_reach",
@@ -496,6 +505,9 @@ type ServiceDependencies = {
     previousTotals: { views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number };
     /** Phase 13 slice 13.7: the two compared periods straddle YouTube's 2026-08-27 view-counting change. */
     viewCountingChangeInComparison?: boolean;
+    /** BL-118: where the figures came from, and when the stored rows were last collected (local source only). */
+    source?: "live" | "local";
+    collectedAt?: string | null;
   }>;
   listMetrics(input: unknown): Promise<{
     channelId: string;
@@ -686,11 +698,42 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
      */
     async queryChannelAnalytics(input: unknown): Promise<ChannelAnalyticsContext> {
       const parsedInput = parseWithSchema(queryChannelAnalyticsInputSchema, input, "query channel analytics input");
+      const granularity = parsedInput.granularity ?? "day";
 
-      const overview = await deps.getChannelOverview(parsedInput);
+      // BL-118: answer from the locally stored channel totals when they cover the range (no live call, no quota); `refresh` forces a live read.
+      const [overview, channel] = await Promise.all([
+        deps.getChannelOverview({
+          credentialRef: parsedInput.credentialRef,
+          channelId: parsedInput.channelId,
+          startDate: parsedInput.startDate,
+          endDate: parsedInput.endDate,
+          preferLocal: parsedInput.refresh !== true,
+        }),
+        deps.channelStore.getChannel(parsedInput.channelId),
+      ]);
+      const channelStartDate = channel?.publishedAt ? channel.publishedAt.slice(0, 10) : null;
 
+      const previousStatus = classifyPreviousPeriod({
+        previousStartDate: overview.previousStartDate,
+        previousEndDate: overview.previousEndDate,
+        channelStartDate,
+      });
+      const previousNote =
+        previousStatus === "predates_channel"
+          ? `The comparison period (${overview.previousStartDate} to ${overview.previousEndDate}) ended before the channel was created (${channelStartDate}); there is nothing to compare with, so previousTotals is null (not zero).`
+          : previousStatus === "partial"
+            ? `The channel was created on ${channelStartDate}, inside the comparison period (${overview.previousStartDate} to ${overview.previousEndDate}); previousTotals covers only the days after it existed.`
+            : channelStartDate === null
+              ? "The channel's creation date is not known yet (not synced since this was added), so whether the comparison period existed could not be checked."
+              : "The comparison period lies fully inside the channel's lifetime.";
+
+      const local = overview.source === "local";
       const output: ChannelAnalyticsContext = {
         channelId: overview.channelId,
+        channelStartDate,
+        granularity,
+        buckets: granularity === "day" ? null : bucketDailyRows({ daily: overview.daily, granularity, startDate: overview.startDate, endDate: overview.endDate }),
+        previousPeriod: { status: previousStatus, note: previousNote },
         period: {
           startDate: overview.startDate,
           endDate: overview.endDate,
@@ -699,15 +742,22 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
         },
         filters: {},
         metricDefinitions: getMetricDefinitions(CHANNEL_OVERVIEW_METRIC_NAMES),
-        freshness: {
-          source: "live_youtube_analytics_api",
-          asOf: deps.now().toISOString(),
-          note:
-            "Fetched live from the YouTube Analytics API for this call -- YouTube itself typically reports this data with a 1-2 day lag behind real time (see docs/ARCHITECTURE.md §14.8), so recent days may still be incomplete or absent. Call the existing analytics_data_quality tool for coverage of the equivalent local video-level data.",
-        },
-        daily: overview.daily,
+        freshness: local
+          ? {
+              source: "local_collected_data",
+              asOf: overview.collectedAt ?? deps.now().toISOString(),
+              note:
+                "Read from the channel totals this app collected and stored locally (no live YouTube call, no quota); asOf is when they were last collected. YouTube itself reports this data with a 1-2 day lag, and the most recent days are refreshed by the next automatic collection. Pass refresh=true for a live read.",
+            }
+          : {
+              source: "live_youtube_analytics_api",
+              asOf: deps.now().toISOString(),
+              note:
+                "Fetched live from the YouTube Analytics API for this call -- YouTube itself typically reports this data with a 1-2 day lag behind real time (see docs/ARCHITECTURE.md §14.8). It counts against that API's quota.",
+            },
+        daily: granularity === "day" ? overview.daily : [],
         currentTotals: overview.currentTotals,
-        previousTotals: overview.previousTotals,
+        previousTotals: previousStatus === "predates_channel" ? null : overview.previousTotals,
         viewCountingChangeInComparison: overview.viewCountingChangeInComparison ?? false,
       };
 

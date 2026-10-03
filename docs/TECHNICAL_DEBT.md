@@ -1673,3 +1673,18 @@ No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a d
 - **Gate(s):** none blocking (the guard only ever makes a run refuse earlier; it cannot cause a write).
 - **Approval required from:** none to implement; the owner decides on tolerance.
 - **Status:** OPEN, tracked.
+
+## RISK-97 — Analytics history catch-up and local channel totals are not verified against the real API — OPEN, 2026-10-03
+
+- **Affected components:** `src/lib/analytics/` (`runHistoryCatchUp`, per-video `perVideoQueryRange`, channel-level collection, `getChannelOverview`
+  `preferLocal`), the auto-collect route's `after()` job, ADR 0018.
+- **Actual risk:** everything is unit-tested with fakes; none of it has run against the real YouTube Analytics API or the owner's data. Open
+  questions only a real run answers: how long the catch-up takes for ~50 videos per channel, whether a very long date range in ONE per-video
+  query is accepted (the plan assumes it is, as the existing manual collection accepted any range), whether the channel-level query for a
+  long range behaves, and whether the local channel totals agree with a live read for the same days.
+- **To close:** after the merge and a restart (with a backup), let the automatic catch-up run, then compare `analytics_data_quality` from the
+  channel start (no genuine uncovered dates), a pre-2026-09-14 video's day-0 row, and one local-vs-live channel overview; then mark BL-118's
+  agent retest done.
+- **Gate(s):** none blocking (read-only data collection; a failure leaves the previous state and is planned again).
+- **Approval required from:** none to verify; the owner decides when to run it.
+- **Status:** OPEN, tracked.

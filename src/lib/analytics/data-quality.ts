@@ -237,3 +237,24 @@ export function extendDataQualityReport(args: {
     },
   };
 }
+
+/**
+ * BL-118 -- whether EVERY date of `[startDate, endDate]` is already covered by a collection run (or still inside the reporting lag, where a
+ * new run cannot find more than the last one did). The manual-collection freshness gate refuses only when this is true: asking again for
+ * what is collected only burns quota, while a range with an uncovered date brings new data.
+ */
+export function isRangeFullyCovered(args: {
+  startDate: string;
+  endDate: string;
+  runs: ReadonlyArray<{ requestedStartDate: string; requestedEndDate: string; videoCount: number }>;
+  now: Date;
+}): boolean {
+  const cutoff = new Date(args.now);
+  cutoff.setUTCDate(cutoff.getUTCDate() - ANALYTICS_REPORTING_LAG_DAYS);
+  const cutoffDate = formatDateUtc(cutoff);
+  return enumerateDates(args.startDate, args.endDate).every(
+    (date) =>
+      date > cutoffDate ||
+      args.runs.some((run) => run.videoCount > 0 && date >= run.requestedStartDate && date <= run.requestedEndDate)
+  );
+}

@@ -217,6 +217,10 @@ export type GetChannelOverviewResult = {
   daily: ChannelOverviewDailyRow[];
   currentTotals: ChannelOverviewTotals;
   previousTotals: ChannelOverviewTotals;
+  /** BL-118: `local` = served from the stored channel-level daily totals, `live` = a live Analytics API read. */
+  source?: "live" | "local";
+  /** BL-118: when the stored rows were last collected (local source only). */
+  collectedAt?: string | null;
   /** Phase 13 slice 13.7: the "vs previous period" view comparison mixes YouTube's old and new view
    * counting (changed 2026-08-27) -- the percent change is not like-for-like. */
   viewCountingChangeInComparison: boolean;

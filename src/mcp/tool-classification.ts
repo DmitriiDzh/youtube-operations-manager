@@ -50,6 +50,7 @@ export const MCP_TOOL_CLASSIFICATION: Readonly<Record<string, McpToolClass>> = O
   agent_get_video_context: "bound",
   agent_query_channel_analytics: "bound",
   agent_query_channel_reach: "bound",
+  agent_query_channel_breakdown: "bound",
   agent_query_video_analytics: "bound",
   agent_list_assets: "bound",
   agent_get_asset_context: "bound",

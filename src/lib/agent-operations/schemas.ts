@@ -201,6 +201,10 @@ export const queryChannelAnalyticsInputSchema = z
     channelId: z.string().min(1),
     startDate: z.string().min(1),
     endDate: z.string().min(1),
+    /** BL-118: `day` (default) returns one row per day; `week` (Monday-Sunday) / `month` return summed buckets instead, to keep long ranges small. */
+    granularity: z.enum(["day", "week", "month"]).optional(),
+    /** BL-118: force a live YouTube Analytics API read. Default: answer from the locally stored channel totals when they cover the range. */
+    refresh: z.boolean().optional(),
   })
   .strict();
 
@@ -229,9 +233,29 @@ const channelAnalyticsTotalsSchema = z
   })
   .strict();
 
+const channelBucketSchema = z
+  .object({
+    periodStart: z.string(),
+    periodEnd: z.string(),
+    calendarDays: z.number().int().positive(),
+    partialBucket: z.boolean(),
+    views: z.number(),
+    estimatedMinutesWatched: z.number(),
+    subscribersGained: z.number(),
+    subscribersLost: z.number(),
+  })
+  .strict();
+
 export const channelAnalyticsContextOutputSchema = z
   .object({
     channelId: z.string().min(1),
+    /** BL-118: the date (YYYY-MM-DD, UTC) the channel was created; null until a sync recorded it. */
+    channelStartDate: z.string().nullable(),
+    granularity: z.enum(["day", "week", "month"]),
+    /** BL-118: `week`/`month` summed buckets (then `daily` is empty); null for `day`. */
+    buckets: z.array(channelBucketSchema).nullable(),
+    /** BL-118: whether the comparison period existed. `predates_channel` => `previousTotals` is null (not zero). */
+    previousPeriod: z.object({ status: z.enum(["full", "partial", "predates_channel"]), note: z.string() }).strict(),
     period: z
       .object({
         startDate: z.string(),
@@ -255,7 +279,8 @@ export const channelAnalyticsContextOutputSchema = z
         .strict()
     ),
     currentTotals: channelAnalyticsTotalsSchema,
-    previousTotals: channelAnalyticsTotalsSchema,
+    /** BL-118: null when the previous period lies entirely before the channel existed (it used to read 0). */
+    previousTotals: channelAnalyticsTotalsSchema.nullable(),
     /** Phase 13 slice 13.7: true when the two periods straddle YouTube's 2026-08-27 view-counting change. */
     viewCountingChangeInComparison: z.boolean(),
   })

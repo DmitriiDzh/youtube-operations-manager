@@ -110,6 +110,11 @@ export const getChannelOverviewInputSchema = z
     channelId: z.string().min(1),
     startDate: isoDateSchema,
     endDate: isoDateSchema,
+    /**
+     * BL-118: read the stored channel-level daily totals instead of a live Analytics API call, when every requested date is covered by a
+     * collection run that stored them. Falls back to the live call otherwise. Off by default: the Web UI Overview tab keeps its live read.
+     */
+    preferLocal: z.boolean().optional(),
   })
   .strict();
 
@@ -137,6 +142,10 @@ export const getChannelOverviewOutputSchema = z
     currentTotals: channelOverviewTotalsSchema,
     previousTotals: channelOverviewTotalsSchema,
     viewCountingChangeInComparison: z.boolean(),
+    /** BL-118: where the figures came from (absent on older callers' fixtures = live). */
+    source: z.enum(["live", "local"]).optional(),
+    /** BL-118: when the stored rows were last collected (local source only). */
+    collectedAt: z.string().nullable().optional(),
   })
   .strict();
 

@@ -795,12 +795,48 @@ export const analyticsCollectionRuns = sqliteTable(
     videoCount: integer("video_count").notNull(),
     upsertsIssued: integer("upserts_issued").notNull(),
     skippedVideoIdsJson: text("skipped_video_ids_json").notNull(),
+    // Additive, SCHEMA_MIGRATIONS version 45 (BL-118): 1 when this run also collected the CHANNEL-level daily totals
+    // (`channel_metrics_daily`); NULL/0 for every earlier run.
+    channelLevel: integer("channel_level"),
     ranAt: integer("ran_at", { mode: "timestamp" })
       .notNull()
       .$defaultFn(() => new Date()),
   },
   (table) => [index("analytics_collection_runs_channel_id_idx").on(table.channelId)]
 );
+
+/**
+ * SCHEMA_MIGRATIONS version 45 (BL-118) -- CHANNEL-level daily totals (views, watch time, subscribers...) collected with the per-video
+ * metrics, so the agent's channel analytics can be read locally instead of a live Analytics API call every time. Same shape and
+ * rules as `video_metrics_daily` (the API omits zero-activity days: absence is not zero), device-local like it.
+ */
+export const channelMetricsDaily = sqliteTable(
+  "channel_metrics_daily",
+  {
+    channelId: text("channel_id").notNull(),
+    metricDate: text("metric_date").notNull(),
+    metricName: text("metric_name").notNull(),
+    metricValue: real("metric_value").notNull(),
+    collectedAt: integer("collected_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.metricDate, table.metricName] })]
+);
+
+/**
+ * SCHEMA_MIGRATIONS version 45 (BL-118) -- per-VIDEO history coverage: this video's daily metrics are collected contiguously from its
+ * publish date through `history_through` (a date). Run windows alone cannot say this: a video first synced long after it was published
+ * is covered by every channel-level run window yet has no early days. Maintained by collection; drives the automatic history catch-up.
+ */
+export const analyticsVideoHistory = sqliteTable("analytics_video_history", {
+  videoId: text("video_id").primaryKey(),
+  channelId: text("channel_id").notNull(),
+  historyThrough: text("history_through").notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
 
 /**
  * SCHEMA_MIGRATIONS version 14 -- Phase 8 follow-up, slice 4 (docs/roadmap/FUTURE_PHASES.md §4's
@@ -2538,6 +2574,34 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     apply: async (client) => {
       try {
         await client.execute("ALTER TABLE channels ADD COLUMN published_at TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
+  {
+    version: 45,
+    description:
+      "channel_metrics_daily + analytics_video_history + analytics_collection_runs.channel_level -- BL-118: channel-level daily totals stored locally, per-video history coverage, and a flag on runs that collected channel totals",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS channel_metrics_daily (" +
+          "channel_id TEXT NOT NULL, " +
+          "metric_date TEXT NOT NULL, " +
+          "metric_name TEXT NOT NULL, " +
+          "metric_value REAL NOT NULL, " +
+          "collected_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "PRIMARY KEY (channel_id, metric_date, metric_name))"
+      );
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS analytics_video_history (" +
+          "video_id TEXT PRIMARY KEY, " +
+          "channel_id TEXT NOT NULL, " +
+          "history_through TEXT NOT NULL, " +
+          "updated_at INTEGER NOT NULL DEFAULT (unixepoch()))"
+      );
+      try {
+        await client.execute("ALTER TABLE analytics_collection_runs ADD COLUMN channel_level INTEGER");
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
@@ -5994,6 +6058,72 @@ export async function listVideoMetricsByChannel(
   return rows.map(mapStoredVideoMetric);
 }
 
+// --- BL-118: channel-level daily totals and per-video history coverage ------------------------------------
+
+export type StoredChannelMetric = { channelId: string; metricDate: string; metricName: string; metricValue: number };
+
+export async function saveChannelDailyMetric(input: StoredChannelMetric, database: AppDb = db): Promise<void> {
+  const collectedAt = new Date();
+  await database
+    .insert(channelMetricsDaily)
+    .values({ ...input, collectedAt })
+    .onConflictDoUpdate({
+      target: [channelMetricsDaily.channelId, channelMetricsDaily.metricDate, channelMetricsDaily.metricName],
+      set: { metricValue: input.metricValue, collectedAt },
+    });
+}
+
+/** Inclusive date range; oldest first. */
+export async function listChannelMetricsInRange(
+  channelId: string,
+  range: { startDate: string; endDate: string },
+  database: AppDb = db
+): Promise<StoredChannelMetric[]> {
+  const rows = await database
+    .select()
+    .from(channelMetricsDaily)
+    .where(
+      and(
+        eq(channelMetricsDaily.channelId, channelId),
+        gte(channelMetricsDaily.metricDate, range.startDate),
+        sql`${channelMetricsDaily.metricDate} <= ${range.endDate}`
+      )
+    )
+    .orderBy(asc(channelMetricsDaily.metricDate), asc(channelMetricsDaily.metricName));
+  return rows.map((r) => ({ channelId: r.channelId, metricDate: r.metricDate, metricName: r.metricName, metricValue: r.metricValue }));
+}
+
+/** The latest time any channel-level row of this channel was collected (for the freshness note), or null. */
+export async function getLatestChannelMetricCollectedAt(channelId: string, database: AppDb = db): Promise<Date | null> {
+  const [row] = await database
+    .select({ at: sql<number | null>`MAX(${channelMetricsDaily.collectedAt})` })
+    .from(channelMetricsDaily)
+    .where(eq(channelMetricsDaily.channelId, channelId));
+  return row?.at ? new Date(Number(row.at) * 1000) : null;
+}
+
+export type StoredVideoHistory = { videoId: string; channelId: string; historyThrough: string };
+
+export async function listVideoHistoryByChannel(channelId: string, database: AppDb = db): Promise<StoredVideoHistory[]> {
+  const rows = await database.select().from(analyticsVideoHistory).where(eq(analyticsVideoHistory.channelId, channelId));
+  return rows.map((r) => ({ videoId: r.videoId, channelId: r.channelId, historyThrough: r.historyThrough }));
+}
+
+/** Records that this video's daily metrics are collected from its publish date through `historyThrough`; never moves a later value back. */
+export async function advanceVideoHistory(input: StoredVideoHistory, database: AppDb = db): Promise<void> {
+  await database
+    .insert(analyticsVideoHistory)
+    .values({ videoId: input.videoId, channelId: input.channelId, historyThrough: input.historyThrough })
+    .onConflictDoUpdate({
+      target: analyticsVideoHistory.videoId,
+      set: {
+        channelId: input.channelId,
+        historyThrough: sql`CASE WHEN ${analyticsVideoHistory.historyThrough} > ${input.historyThrough} THEN ${analyticsVideoHistory.historyThrough} ELSE ${input.historyThrough} END`,
+        updatedAt: new Date(),
+      },
+    });
+}
+
 export type StoredAnalyticsCollectionRun = {
   id: number;
   channelId: string;
@@ -6002,6 +6132,8 @@ export type StoredAnalyticsCollectionRun = {
   videoCount: number;
   upsertsIssued: number;
   skippedVideoIds: string[];
+  /** BL-118: this run also collected the channel-level daily totals. */
+  channelLevel: boolean;
   ranAt: Date;
 };
 
@@ -6021,10 +6153,12 @@ export async function recordAnalyticsCollectionRun(
     videoCount: number;
     upsertsIssued: number;
     skippedVideoIds: string[];
+    channelLevel?: boolean;
   },
   database: AppDb = db
 ): Promise<void> {
   await database.insert(analyticsCollectionRuns).values({
+    channelLevel: input.channelLevel ? 1 : null,
     channelId: input.channelId,
     requestedStartDate: input.requestedStartDate,
     requestedEndDate: input.requestedEndDate,
@@ -6062,6 +6196,7 @@ export async function listAnalyticsCollectionRunsByChannel(
         return [];
       }
     })(),
+    channelLevel: row.channelLevel === 1,
     ranAt: row.ranAt,
   }));
 }
