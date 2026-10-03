@@ -1,3 +1,4 @@
+import type { ProgressReporter } from "@/lib/operation-progress";
 import { rangesStraddleViewCountingChange } from "@/lib/youtube-quota";
 import { YOUTUBE_ANALYTICS_READ_SCOPE } from "@/lib/auth";
 import type { ChannelAccessService } from "@/lib/channel-access";
@@ -328,8 +329,9 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
      *    (logged as `mark_disagrees_with_run_history`, a real, reportable inconsistency, not a
      *    silent override).
      */
-    async collectMetrics(input: unknown): Promise<CollectMetricsResult> {
+    async collectMetrics(input: unknown, options: { progress?: ProgressReporter } = {}): Promise<CollectMetricsResult> {
       const parsedInput = parseWithSchema(collectMetricsInputSchema, input, "collect metrics input");
+      const progress = options.progress;
       const metricNames = parsedInput.metricNames ?? ANALYTICS_METRIC_NAMES;
 
       try {
@@ -410,7 +412,10 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         let upsertsIssued = 0;
         const skippedVideoIds: string[] = [];
 
+        progress?.stage("Querying the YouTube Analytics API (one query per video)");
+        let finished = 0;
         for (const video of videos) {
+          progress?.counts(finished, videos.length);
           try {
             const rows = await deps.youtubeApi.queryVideoAnalyticsReport({
               credentials,
@@ -444,7 +449,9 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
               },
             });
           }
+          finished += 1;
         }
+        progress?.counts(finished, videos.length);
 
         const output = {
           channelId: parsedInput.channelId,

@@ -7,10 +7,12 @@ export type {
   OperationItemStatus,
   OperationRunStatus,
   OperationSnapshot,
+  ProgressReporter,
   StartOperationInput,
 } from "./contracts";
 export { OperationAlreadyRunningError, isOperationAlreadyRunning } from "./contracts";
 export { createOperationRegistry } from "./registry";
+export { runTrackedOperation } from "./tracked";
 export type { OperationRegistry } from "./registry";
 
 // One registry per server process. Kept on globalThis so Next's dev hot-reload (which re-evaluates

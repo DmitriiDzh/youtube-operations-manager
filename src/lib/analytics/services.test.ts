@@ -1715,3 +1715,33 @@ test("getWeeklyReport rejects a corrupted stored reportJson as validation_failed
     (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
   );
 });
+
+// Progress (ADR 0015): one Analytics query per video, so progress is per video. A video that fails and is
+// skipped is still a finished step; the result itself is unchanged by the reporter.
+test("collectMetrics reports per-video progress, counting a skipped video as finished, and the result is unchanged", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }, { videoId: "v2", channelId: "UC_A" }, { videoId: "v3", channelId: "UC_A" }] },
+    analyticsResponses: {
+      v1: [{ date: "2026-09-01", metrics: { views: 1 } }],
+      v2: new Error("simulated Analytics API failure for v2"),
+      v3: [{ date: "2026-09-01", metrics: { views: 3 } }],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  const events: string[] = [];
+  const progress = {
+    stage: (text: string | null) => void events.push(`stage:${text}`),
+    counts: (done: number, total: number) => void events.push(`counts:${done}/${total}`),
+    isCancelRequested: () => false,
+  };
+
+  const result = await services.collectMetrics(
+    { credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-09-01", endDate: "2026-09-01" },
+    { progress }
+  );
+
+  assert.equal(result.videoCount, 3);
+  assert.deepEqual(result.skippedVideoIds, ["v2"]);
+  assert.deepEqual(events.filter((e) => e.startsWith("counts:")), ["counts:0/3", "counts:1/3", "counts:2/3", "counts:3/3"]);
+  assert.ok(events.some((e) => e.startsWith("stage:") && /Analytics/.test(e)));
+});

@@ -95,6 +95,8 @@ function createServicesFixture(
   overrides: Partial<{
     videoIds: string[];
     videoMetadataCalls: string[][];
+    /** When true the fake adapter calls the optional progress callbacks the way the real one does. */
+    adapterReportsProgress: boolean;
   }> = {}
 ) {
   const store = createFakeStore();
@@ -119,9 +121,19 @@ function createServicesFixture(
         thumbnailUrl: "https://example.com/thumb.jpg",
         uploadsPlaylistId: "UU_MINE",
       }),
-      listUploadsPlaylistVideoIds: async () => videoIds,
-      getVideosMetadataBatch: async ({ videoIds: batch }) => {
+      listUploadsPlaylistVideoIds: async ({ onPage }) => {
+        if (overrides.adapterReportsProgress) {
+          onPage?.(Math.min(50, videoIds.length));
+          onPage?.(videoIds.length);
+        }
+        return videoIds;
+      },
+      getVideosMetadataBatch: async ({ videoIds: batch, onProgress }) => {
         videoMetadataCalls.push(batch);
+        if (overrides.adapterReportsProgress) {
+          onProgress?.(Math.min(50, batch.length), batch.length);
+          onProgress?.(batch.length, batch.length);
+        }
         return batch.map((videoId) => ({
           videoId,
           title: `Title ${videoId}`,
@@ -368,4 +380,38 @@ test("AC-H3: implicit sync records the owner; explicit-id and user-less syncs ne
   await services.syncChannel({ credentialRef: { accessToken: "ya29.raw" } });
   assert.equal(store.upsertCalls.at(-1)?.connectedUserId, undefined);
   assert.equal(store.channels.get("UC_MINE")?.connectedUserId, "owner-user");
+});
+
+// Progress (ADR 0015): the service reports stages and counts to an OPTIONAL reporter, never changes what
+// it asks YouTube for (still ONE logical video-metadata call for all ids -- see the test above) and
+// never changes its result.
+test("syncChannel reports its stages and the video counts to a progress reporter", async () => {
+  const { services } = createServicesFixture({ adapterReportsProgress: true, videoIds: Array.from({ length: 120 }, (_, i) => `v${i + 1}`) });
+  const events: string[] = [];
+  const progress = {
+    stage: (text: string | null) => void events.push(`stage:${text}`),
+    counts: (done: number, total: number) => void events.push(`counts:${done}/${total}`),
+    isCancelRequested: () => false,
+  };
+
+  const result = await services.syncChannel({ credentialRef: { userId: "user-1" } }, { progress });
+
+  assert.equal(result.videoCount, 120);
+  assert.deepEqual(events.filter((e) => e.startsWith("stage:")).map((e) => e.replace(/\d+ found/, "N found")), [
+    "stage:Resolving the channel on YouTube",
+    "stage:Listing uploads",
+    "stage:Listing uploads \u2014 N found",
+    "stage:Listing uploads \u2014 N found",
+    "stage:Reading video details",
+    "stage:Saving videos locally",
+  ]);
+  // Counts: first the total becomes known (0/120), then the adapter's own reports, then done.
+  assert.deepEqual(events.filter((e) => e.startsWith("counts:")), ["counts:0/120", "counts:50/120", "counts:120/120", "counts:120/120"]);
+});
+
+test("syncChannel without a reporter is unchanged", async () => {
+  const { services, videoMetadataCalls } = createServicesFixture({ videoIds: ["v1", "v2"] });
+  const result = await services.syncChannel({ credentialRef: { userId: "user-1" } });
+  assert.equal(result.videoCount, 2);
+  assert.equal(videoMetadataCalls.length, 1);
 });

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatDisplayDate, resolvePublishDate } from "@/lib/shared-formatting";
+import { OperationOverlay, useOperation } from "./operation-progress";
 import { DEFAULT_SORT, nextSortState, sortVideos, type SortKey, type SortState } from "./content-sort";
 import { VideoDetailModal } from "./video-detail-modal";
 import { VideoDetailsPanel } from "./video-details-panel";
@@ -99,6 +100,8 @@ function SortableHeader({
  * same thing Studio's own Content > Videos table shows, not a second, separate concept.
  */
 export function ContentManager() {
+  const op = useOperation();
+  const { runBlocking, attach } = op;
   const [channels, setChannels] = useState<SyncedChannel[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState<string>("");
   const [videos, setVideos] = useState<SyncedVideo[]>([]);
@@ -142,12 +145,22 @@ export function ContentManager() {
     setError(null);
     setLastSyncSummary(null);
     try {
-      const res = await fetch("/api/channels/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(channelId ? { channelId } : {}),
+      // Shown in the progress overlay (ADR 0015); the request and its error handling are unchanged.
+      const { res, data } = await runBlocking({
+        title: "Syncing the channel from YouTube",
+        track: { channelId: channelId ?? null, kind: "channel-sync" },
+        quotaServices: ["dataApi"],
+        request: async () => {
+          const res = await fetch("/api/channels/sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(channelId ? { channelId } : {}),
+          });
+          return { res, data: await res.json() };
+        },
+        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? data.error ?? `Error ${res.status}`)),
+        summarize: ({ data }) => (typeof data.videoCount === "number" ? `${data.videoCount} video${data.videoCount === 1 ? "" : "s"} synced.` : null),
       });
-      const data = await res.json();
       if (!res.ok) {
         setError(data.message ?? data.error ?? `Error ${res.status}`);
         return;
@@ -163,7 +176,37 @@ export function ContentManager() {
     } finally {
       setSyncing(false);
     }
-  }, [fetchVideos]);
+  }, [fetchVideos, runBlocking]);
+
+  // After a reload, follow a sync the server is still running for this channel (ADR 0015). Only syncs:
+  // their result is the saved data, which a refresh picks up. (An AI generation's proposals exist only in
+  // its original HTTP response, so it is deliberately NOT re-attached -- the unload warning covers it.)
+  useEffect(() => {
+    if (!selectedChannelId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/operations?channelId=${encodeURIComponent(selectedChannelId)}&kind=channel-sync&active=1`);
+        if (!res.ok || cancelled) return;
+        const running = ((await res.json()).operations ?? [])[0] as { id: string } | undefined;
+        if (!running || cancelled) return;
+        setSyncing(true);
+        attach(running.id, {
+          title: "Syncing the channel from YouTube",
+          quotaServices: ["dataApi"],
+          onFinished: () => {
+            setSyncing(false);
+            void fetchVideos(selectedChannelId);
+          },
+        });
+      } catch {
+        // Nothing to re-attach to.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedChannelId, attach, fetchVideos]);
 
   // Only one channel is ever active (docs/decisions/0004-active-channel-read-scoping.md), so
   // there is nothing for the operator to pick -- resolve it implicitly and, per the staleness
@@ -227,6 +270,7 @@ export function ContentManager() {
 
   return (
     <div className="space-y-4">
+      <OperationOverlay state={op.state} onCancel={op.requestCancel} onClose={op.reset} />
       <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
         <div className="flex flex-wrap items-center gap-3">
           {loadingChannels ? (

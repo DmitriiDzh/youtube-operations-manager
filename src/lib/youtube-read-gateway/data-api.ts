@@ -257,7 +257,12 @@ export async function getPublicChannelSnapshot(
   };
 }
 
-export async function listUploadsPlaylistVideoIds(youtube: youtube_v3.Youtube, uploadsPlaylistId: string): Promise<string[]> {
+export async function listUploadsPlaylistVideoIds(
+  youtube: youtube_v3.Youtube,
+  uploadsPlaylistId: string,
+  /** Optional progress hook (ADR 0015): called with the running count of unique ids after each page. */
+  options: { onPage?: (found: number) => void } = {}
+): Promise<string[]> {
   const seen = new Set<string>();
   const videoIds: string[] = [];
   let pageToken: string | undefined;
@@ -277,6 +282,7 @@ export async function listUploadsPlaylistVideoIds(youtube: youtube_v3.Youtube, u
       videoIds.push(videoId);
     }
 
+    options.onPage?.(videoIds.length);
     pageToken = res.data.nextPageToken ?? undefined;
   } while (pageToken);
 
@@ -490,9 +496,12 @@ function toThumbnailMap(
 
 export async function getVideosMetadataContextBatch(
   youtube: youtube_v3.Youtube,
-  videoIds: string[]
+  videoIds: string[],
+  /** Optional progress hook (ADR 0015): `(ids processed so far, total ids)` after each chunk. */
+  options: { onProgress?: (done: number, total: number) => void } = {}
 ): Promise<VideoSyncMetadata[]> {
   const results: VideoSyncMetadata[] = [];
+  let processed = 0;
 
   for (const batch of chunk(videoIds, YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
     if (batch.length === 0) continue;
@@ -533,6 +542,9 @@ export async function getVideosMetadataContextBatch(
         publishAt: item.status?.publishAt ?? null,
       });
     }
+
+    processed += batch.length;
+    options.onProgress?.(processed, videoIds.length);
   }
 
   return results;

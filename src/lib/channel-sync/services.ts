@@ -1,3 +1,4 @@
+import type { ProgressReporter } from "@/lib/operation-progress";
 import { YOUTUBE_READ_SCOPE } from "@/lib/auth";
 import type { ChannelAccessService } from "@/lib/channel-access";
 import {
@@ -67,10 +68,14 @@ type ServiceDependencies = {
     listUploadsPlaylistVideoIds(args: {
       credentials: ResolvedCredentials;
       uploadsPlaylistId: string;
+      /** Optional: running count of uploads found, after each page. */
+      onPage?: (found: number) => void;
     }): Promise<string[]>;
     getVideosMetadataBatch(args: {
       credentials: ResolvedCredentials;
       videoIds: string[];
+      /** Optional: `(ids processed, total)` after each chunk. Still ONE logical call for all ids. */
+      onProgress?: (done: number, total: number) => void;
     }): Promise<VideoSyncMetadata[]>;
   };
   channelStore: {
@@ -160,10 +165,12 @@ function getCredentialUserId(credentialRef: unknown): string | null {
 
 export function createChannelSyncServices(deps: ServiceDependencies) {
   return {
-    async syncChannel(input: unknown): Promise<SyncChannelResult> {
+    async syncChannel(input: unknown, options: { progress?: ProgressReporter } = {}): Promise<SyncChannelResult> {
       const parsedInput = parseWithSchema(syncChannelInputSchema, input, "sync channel input");
+      const progress = options.progress;
 
       try {
+        progress?.stage("Resolving the channel on YouTube");
         const credentials = await deps.authResolver.resolve({
           credentialRef: parsedInput.credentialRef,
           requiredScopes: [YOUTUBE_READ_SCOPE],
@@ -208,15 +215,22 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
           connectedUserId: !parsedInput.channelId && connectedUserId ? connectedUserId : undefined,
         });
 
+        progress?.stage("Listing uploads");
         const videoIds = await deps.youtubeApi.listUploadsPlaylistVideoIds({
           credentials,
           uploadsPlaylistId: channel.uploadsPlaylistId,
+          onPage: progress ? (found) => progress.stage(`Listing uploads \u2014 ${found} found`) : undefined,
         });
 
+        progress?.counts(0, videoIds.length);
+        progress?.stage("Reading video details");
         const videoMetadata = await deps.youtubeApi.getVideosMetadataBatch({
           credentials,
           videoIds,
+          onProgress: progress ? (done, total) => progress.counts(done, total) : undefined,
         });
+
+        progress?.stage("Saving videos locally");
 
         const syncedAt = new Date();
 
@@ -243,6 +257,7 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
         );
 
         await deps.channelStore.markChannelSynced(channel.channelId, syncedAt);
+        progress?.counts(videoMetadata.length, videoMetadata.length);
 
         const storedChannel = await deps.channelStore.getChannel(channel.channelId);
         if (!storedChannel) {

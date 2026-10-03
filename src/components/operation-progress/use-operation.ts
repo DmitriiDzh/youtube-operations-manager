@@ -14,6 +14,28 @@ import {
 const QUOTA_POLL_MS = 10_000;
 const SERVER_POLL_MS = 1_000;
 
+/** One blocking request shown in the overlay (see `runBlocking`). */
+export type BlockingOptions<T> = {
+  title: string;
+  /** Static stage text, used when the server reports none. */
+  stage?: string;
+  /** The server-tracked operation (`runTrackedOperation`) whose progress to mirror, if any. */
+  track?: { channelId: string | null; kind: string };
+  /** Only meaningful with `track`: Cancel is forwarded to the server registry. */
+  cancellable?: boolean;
+  quotaServices?: QuotaServiceKey[];
+  request: () => Promise<T>;
+  /** A result that represents a failure (e.g. `!res.ok`): the text to show, or null when fine. */
+  failureOf?: (result: T) => string | null;
+  /** A result that knows it was cancelled on the server (a late Cancel must not claim a stop). */
+  outcomeOf?: (result: T) => "success" | "cancelled";
+  summarize?: (result: T) => string | null;
+};
+
+function postCancel(operationId: string): void {
+  void fetch(`/api/operations/${encodeURIComponent(operationId)}/cancel`, { method: "POST" }).catch(() => undefined);
+}
+
 /** What `attach` hands to `onFinished`: the final server snapshot. */
 export type AttachedOperationResult = ServerOperationSnapshot & { id: string };
 
@@ -29,6 +51,10 @@ export function useOperation() {
   const cancelRef = useRef(false);
   const active = isOperationActive(state);
   const quotaServicesRef = useRef<QuotaServiceKey[]>([]);
+  // The server operation a blocking request is being mirrored from, and a Cancel pressed before that
+  // operation was discovered (sent as soon as it is, never dropped).
+  const trackedIdRef = useRef<string | null>(null);
+  const cancelPendingRef = useRef(false);
   // A server-run operation being followed (survives a page reload: the caller re-attaches by id).
   const [attached, setAttached] = useState<{ id: string; onFinished?: (result: AttachedOperationResult) => void } | null>(null);
 
@@ -108,6 +134,8 @@ export function useOperation() {
   const start = useCallback(
     (options: { title: string; items?: OperationItem[]; total?: number; cancellable?: boolean; quotaServices?: QuotaServiceKey[] }) => {
       cancelRef.current = false;
+      trackedIdRef.current = null;
+      cancelPendingRef.current = false;
       setAttached(null);
       const { quotaServices = [], ...rest } = options;
       quotaServicesRef.current = quotaServices;
@@ -125,8 +153,73 @@ export function useOperation() {
   const requestCancel = useCallback(() => {
     cancelRef.current = true;
     dispatch({ type: "requestCancel" });
-    if (attached) void fetch(`/api/operations/${encodeURIComponent(attached.id)}/cancel`, { method: "POST" }).catch(() => undefined);
+    const serverId = attached?.id ?? trackedIdRef.current;
+    if (serverId) postCancel(serverId);
+    else cancelPendingRef.current = true;
   }, [attached]);
+  /**
+   * Shows ONE blocking request in the overlay (a sync, a generation, a collection). With `track` it also
+   * mirrors the server's stage/counts for that operation (polling the registry while the request is in
+   * flight) and forwards Cancel to it. The request's own result and errors reach the caller unchanged:
+   * a thrown error is shown as failed and rethrown; `failureOf` turns a returned failure (`!res.ok`)
+   * into the failed state without throwing, so each call site keeps its own error handling.
+   */
+  const runBlocking = useCallback(
+    async <T,>(options: BlockingOptions<T>): Promise<T> => {
+      cancelRef.current = false;
+      trackedIdRef.current = null;
+      cancelPendingRef.current = false;
+      setAttached(null);
+      quotaServicesRef.current = options.quotaServices ?? [];
+      dispatch({ type: "start", title: options.title, cancellable: Boolean(options.track && options.cancellable), now: Date.now() });
+      if (options.stage) dispatch({ type: "stage", stage: options.stage });
+
+      let timer: ReturnType<typeof setInterval> | null = null;
+      if (options.track?.channelId) {
+        const { channelId, kind } = options.track;
+        const poll = async () => {
+          try {
+            const res = await fetch(
+              `/api/operations?channelId=${encodeURIComponent(channelId)}&kind=${encodeURIComponent(kind)}&active=1`
+            );
+            if (!res.ok) return;
+            const running = ((await res.json()).operations ?? [])[0] as { id: string; stage: string | null; done: number; total: number } | undefined;
+            if (!running) return;
+            if (!trackedIdRef.current) {
+              trackedIdRef.current = running.id;
+              if (cancelPendingRef.current) postCancel(running.id);
+            }
+            if (running.stage) dispatch({ type: "stage", stage: running.stage });
+            if (running.total > 0) dispatch({ type: "counts", done: running.done, total: running.total });
+          } catch {
+            // A missed poll only delays the display; the request is the source of truth.
+          }
+        };
+        void poll();
+        timer = setInterval(() => void poll(), 1000);
+      }
+
+      try {
+        const result = await options.request();
+        if (timer) clearInterval(timer);
+        const failure = options.failureOf?.(result) ?? null;
+        dispatch(
+          failure
+            ? { type: "finish", error: true, message: failure, now: Date.now() }
+            : { type: "finish", outcome: options.outcomeOf?.(result) ?? "success", message: options.summarize?.(result) ?? null, now: Date.now() }
+        );
+        void pollQuota();
+        return result;
+      } catch (error) {
+        if (timer) clearInterval(timer);
+        dispatch({ type: "finish", error: true, message: error instanceof Error ? error.message : String(error), now: Date.now() });
+        void pollQuota();
+        throw error;
+      }
+    },
+    [pollQuota]
+  );
+
   /** Follows an operation the SERVER is running (survives a reload -- call it again with the same id
    * from a freshly loaded page). Cancel then goes to the server's registry. */
   const attach = useCallback(
@@ -151,7 +244,7 @@ export function useOperation() {
     dispatch({ type: "reset" });
   }, []);
 
-  return { state, start, attach, setStage, setItem, setItems, setCounts, requestCancel, isCancelRequested, finish, reset };
+  return { state, start, attach, runBlocking, setStage, setItem, setItems, setCounts, requestCancel, isCancelRequested, finish, reset };
 }
 
 export type OperationController = ReturnType<typeof useOperation>;

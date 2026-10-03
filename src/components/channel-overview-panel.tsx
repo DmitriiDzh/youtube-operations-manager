@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { computeDefaultPeriodRange, computePercentChange, formatChartDate, formatWatchTimeHours } from "@/lib/analytics/period";
 import { AnalyticsLineChart } from "./analytics-line-chart";
+import { OperationOverlay, useOperation } from "./operation-progress";
 import { MetricDelta } from "./metric-delta";
 import { useTopVideos } from "./use-top-videos";
 
@@ -78,6 +79,8 @@ const PERIOD_OPTIONS = [
 ] as const;
 
 export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: string }) {
+  const op = useOperation();
+  const { runBlocking } = op;
   const [channel, setChannel] = useState<SyncedChannel | null>(null);
   const [loadingChannel, setLoadingChannel] = useState(true);
   const [periodDays, setPeriodDays] = useState<number>(28);
@@ -209,12 +212,23 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
       // viewed (found live, 2026-09-25: an empty body failed schema validation with "Invalid
       // collect metrics input", since these two fields have no default).
       const { startDate, endDate } = computeDefaultPeriodRange(periodDays);
-      const res = await fetch(`/api/channels/${encodeURIComponent(channel.channelId)}/analytics/collect`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ startDate, endDate }),
+      const { res, data } = await runBlocking({
+        title: "Collecting YouTube Analytics",
+        track: { channelId: channel.channelId, kind: "analytics-collect" },
+        quotaServices: ["analytics"],
+        request: async () => {
+          const res = await fetch(`/api/channels/${encodeURIComponent(channel.channelId)}/analytics/collect`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ startDate, endDate }),
+          });
+          return { res, data: await res.json() };
+        },
+        failureOf: ({ res, data }) =>
+          res.ok || data.error === "analytics_data_current" ? null : (data.message ?? data.error ?? `Error ${res.status}`),
+        summarize: ({ data }) =>
+          typeof data.videoCount === "number" ? `${data.videoCount} video${data.videoCount === 1 ? "" : "s"} queried.` : null,
       });
-      const data = await res.json();
       if (!res.ok) {
         if (data.error === "analytics_data_current") {
           setCollectMessage({ kind: "info", text: data.message ?? "Analytics data is already up to date for today." });
@@ -241,7 +255,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     } finally {
       setCollecting(false);
     }
-  }, [channel, periodDays, fetchOverview, refetchTopVideos, fetchDataQuality]);
+  }, [channel, periodDays, fetchOverview, refetchTopVideos, fetchDataQuality, runBlocking]);
 
   const chartData = useMemo(() => {
     if (!overview) return [];
@@ -289,6 +303,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
 
   return (
     <div className="space-y-4">
+      <OperationOverlay state={op.state} onCancel={op.requestCancel} onClose={op.reset} />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-sm font-medium text-zinc-300">Overview</h3>
         <div className="flex flex-wrap items-center gap-3">

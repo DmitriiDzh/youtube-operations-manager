@@ -1,6 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
+import { getOperationRegistry, isOperationAlreadyRunning, runTrackedOperation } from "@/lib/operation-progress";
 import { createAiLocalizationCore } from "@/lib/ai-localization";
 import { DomainError } from "@/lib/ai-localization/contracts";
 import { createChannelAccessCore } from "@/lib/channel-access";
@@ -40,9 +41,29 @@ export async function POST(
       );
     }
 
-    const result = await core.generateProposals({ ...body, channelId });
+    // Followed in the progress overlay and CANCELLABLE (ADR 0015): generation through a real connection
+    // is paid, and Cancel stops the provider being called for the remaining targets. The response is the
+    // same GenerationResult as before (plus `cancelled`/`targetsSkipped` only when a cancel happened).
+    const result = await runTrackedOperation({
+      registry: getOperationRegistry(),
+      kind: "ai-generation",
+      channelId,
+      title: "Generating translations",
+      cancellable: true,
+      work: (progress) => core.generateProposals({ ...body, channelId }, { progress }),
+      messageFor: (generated) =>
+        generated.cancelled
+          ? `Stopped: ${generated.summary.targetsGenerated} generated, ${generated.summary.targetsSkipped ?? 0} not started.`
+          : `${generated.summary.targetsGenerated} generated, ${generated.summary.targetsFailed} failed.`,
+    });
     return NextResponse.json(result);
   } catch (error) {
+    if (isOperationAlreadyRunning(error)) {
+      return NextResponse.json(
+        { error: error.code, message: error.message, details: { operationId: error.operationId } },
+        { status: 409 }
+      );
+    }
     // This route is the one place assertDeviceAvailable's OperationLockError/RecoveryModeError
     // (RISK-30, docs/TECHNICAL_DEBT.md) can reach an API route handler directly -- proxy.ts
     // exempts this specific path from its own blanket device-availability check, on the

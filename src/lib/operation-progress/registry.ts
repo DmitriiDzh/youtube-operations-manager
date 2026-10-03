@@ -13,6 +13,8 @@ type Entry = {
   snapshot: OperationSnapshot;
   cancelRequested: boolean;
   heartbeatAt: number;
+  /** Set once `setCounts` is used: done/total then come from the counts, not from the item list. */
+  countsMode: boolean;
 };
 
 export type OperationRegistryOptions = {
@@ -97,8 +99,9 @@ export function createOperationRegistry(options: OperationRegistryOptions = {}) 
 
       const id = idGenerator();
       const t = now();
-      const items: OperationItemSnapshot[] = input.items.map((item) => ({ id: item.id, label: item.label, status: "pending" }));
+      const items: OperationItemSnapshot[] = (input.items ?? []).map((item) => ({ id: item.id, label: item.label, status: "pending" }));
       const entry: Entry = {
+        countsMode: false,
         cancelRequested: false,
         heartbeatAt: t,
         snapshot: {
@@ -134,11 +137,20 @@ export function createOperationRegistry(options: OperationRegistryOptions = {}) 
           const nextItems = entry.snapshot.items.map((item) =>
             item.id === itemId ? { ...item, status, detail: detail ?? item.detail } : item
           );
-          entry.snapshot = { ...entry.snapshot, items: nextItems, done: countDone(nextItems) };
+          entry.snapshot = entry.countsMode
+            ? { ...entry.snapshot, items: nextItems }
+            : { ...entry.snapshot, items: nextItems, done: countDone(nextItems) };
         },
         isCancelRequested: () => entry.cancelRequested,
         touch() {
           if (live()) beat(entry);
+        },
+        setCounts(done, total) {
+          if (!live()) return;
+          beat(entry);
+          entry.countsMode = true;
+          const safeTotal = Math.max(0, total);
+          entry.snapshot = { ...entry.snapshot, total: safeTotal, done: Math.min(Math.max(0, done), safeTotal) };
         },
         finish(result = {}) {
           if (!live()) return;

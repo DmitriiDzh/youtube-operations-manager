@@ -40,6 +40,8 @@ export type OperationHandle = {
   /** Cooperative cancel: check BEFORE starting each item, never mid-request. */
   isCancelRequested(): boolean;
   touch(): void;
+  /** Overall progress for an operation without a per-item list (a sync, a collection). */
+  setCounts(done: number, total: number): void;
   finish(result?: { error?: boolean; message?: string | null }): void;
 };
 
@@ -47,8 +49,20 @@ export type StartOperationInput = {
   kind: string;
   channelId: string;
   title: string;
-  items: Array<{ id: string; label: string }>;
+  /** Optional: an operation without a per-item list reports `setCounts` instead. */
+  items?: Array<{ id: string; label: string }>;
   cancellable: boolean;
+};
+
+/**
+ * What a long-running service may call to report progress (passed in by the host, never required).
+ * Structural on purpose: a service depends on this shape, not on the registry behind it. Every call is
+ * also a heartbeat. `isCancelRequested` is cooperative -- check it BEFORE each item, never mid-request.
+ */
+export type ProgressReporter = {
+  stage(text: string | null): void;
+  counts(done: number, total: number): void;
+  isCancelRequested(): boolean;
 };
 
 /** Matches by `code` so it still works when a dev hot reload gave the class two identities. */

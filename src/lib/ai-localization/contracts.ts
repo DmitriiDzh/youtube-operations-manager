@@ -83,12 +83,16 @@ export type GenerationSummary = {
   validProposals: number;
   invalidProposals: number;
   unchangedProposals: number;
+  /** Only present when the operator cancelled: targets never sent to the provider. */
+  targetsSkipped?: number;
 };
 
 export type GenerationResult = {
   results: GeneratedTargetResult[];
   errors: GenerationRowError[];
   summary: GenerationSummary;
+  /** Only present (true) when the operator cancelled the run; `results` then holds what finished before. */
+  cancelled?: boolean;
   /**
    * What was actually used for this call (channel profile version + the merged
    * context sent to the provider) -- echo this back verbatim in
