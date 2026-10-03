@@ -20,7 +20,17 @@ type FakeUser = {
   refreshToken: string | null;
 };
 
-function createFixture(opts: { channels?: FakeChannel[]; users?: FakeUser[] } = {}) {
+function createFixture(
+  opts: {
+    channels?: FakeChannel[];
+    users?: FakeUser[];
+    issuedAt?: Record<string, Date | null>;
+    probeResults?: Record<string, "ok" | "invalid_grant" | "error">;
+    now?: Date;
+  } = {}
+) {
+  const probeCalls: string[] = [];
+  const clock = { current: opts.now ?? new Date("2026-10-10T12:00:00Z") };
   const channels = new Map(opts.channels?.map((c) => [c.channelId, { ...c }]) ?? []);
   const users = new Map(opts.users?.map((u) => [u.userId, { ...u }]) ?? []);
   const revokeCalls: string[] = [];
@@ -60,6 +70,9 @@ function createFixture(opts: { channels?: FakeChannel[]; users?: FakeUser[] } = 
       const c = channels.get(channelId);
       if (c) c.connectedUserId = connectedUserId;
     },
+    async getRefreshTokenIssuedAt(userId: string) {
+      return opts.issuedAt?.[userId] ?? null;
+    },
   };
 
   const revokeToken = async (token: string) => {
@@ -67,13 +80,23 @@ function createFixture(opts: { channels?: FakeChannel[]; users?: FakeUser[] } = 
     if (revokeShouldThrow) throw new Error("revoke failed");
   };
 
-  const services = createChannelConnectionsServices({ store, revokeToken });
+  const services = createChannelConnectionsServices({
+    store,
+    revokeToken,
+    probeRefreshToken: async (token: string) => {
+      probeCalls.push(token);
+      return opts.probeResults?.[token] ?? "ok";
+    },
+    clock: { now: () => clock.current },
+  });
 
   return {
     services,
     channels,
     users,
     revokeCalls,
+    probeCalls,
+    clock,
     setRevokeShouldThrow(value: boolean) {
       revokeShouldThrow = value;
     },
@@ -285,4 +308,82 @@ test("disconnectChannel still clears local state and reports success even when G
   assert.deepEqual(result, { disconnected: true, disconnectedUserId: "user-1" });
   assert.equal(fixture.channels.get("chan-1")?.connectedUserId, null);
   assert.equal(fixture.users.get("user-1")?.accessToken, null);
+});
+
+// ---- connection health (BL-115) ----
+
+const HEALTH_NOW = new Date("2026-10-10T12:00:00Z");
+const daysAgo = (d: number) => new Date(HEALTH_NOW.getTime() - d * 86_400_000);
+
+function twoConnections(extra: Parameters<typeof createFixture>[0] = {}) {
+  return createFixture({
+    now: HEALTH_NOW,
+    channels: [
+      { channelId: "UC_A", title: "Alpha", thumbnailUrl: null, connectedUserId: "u-a", connectedAt: new Date(0) },
+      { channelId: "UC_B", title: "Beta", thumbnailUrl: null, connectedUserId: "u-b", connectedAt: new Date(0) },
+      { channelId: "UC_C", title: "Disconnected", thumbnailUrl: null, connectedUserId: null, connectedAt: new Date(0) },
+    ],
+    users: [
+      { userId: "u-a", email: "a@example.com", name: null, image: null, accessToken: "ACCESS-A", refreshToken: "REFRESH-A" },
+      { userId: "u-b", email: "b@example.com", name: null, image: null, accessToken: "ACCESS-B", refreshToken: "REFRESH-B" },
+    ],
+    ...extra,
+  });
+}
+
+test("getConnectionHealth: only the non-active, dead connection is reauth_required; the active one stays ok; disconnected channels are omitted", async () => {
+  const { services } = twoConnections({
+    issuedAt: { "u-a": daysAgo(1), "u-b": daysAgo(8) },
+    probeResults: { "REFRESH-B": "invalid_grant" },
+  });
+  const health = await services.getConnectionHealth("u-a");
+  assert.deepEqual(
+    health.map((h) => ({ channelId: h.channelId, state: h.state, isActive: h.isActive, ageDays: h.ageDays })),
+    [
+      { channelId: "UC_A", state: "ok", isActive: true, ageDays: 1 },
+      { channelId: "UC_B", state: "reauth_required", isActive: false, ageDays: 8 },
+    ]
+  );
+});
+
+test("getConnectionHealth never exposes a token or the internal user id", async () => {
+  const { services } = twoConnections({ issuedAt: { "u-a": daysAgo(1), "u-b": daysAgo(1) } });
+  const serialized = JSON.stringify(await services.getConnectionHealth("u-a"));
+  for (const secret of ["ACCESS-A", "REFRESH-A", "ACCESS-B", "REFRESH-B", "u-a", "u-b"]) {
+    assert.ok(!serialized.includes(secret), `leaked ${secret}`);
+  }
+});
+
+test("getConnectionHealth: a connection with no stored refresh token is reauth_required and is not probed", async () => {
+  const { services, probeCalls, users } = twoConnections({ issuedAt: { "u-a": daysAgo(1), "u-b": daysAgo(1) } });
+  users.get("u-b")!.refreshToken = null;
+  const health = await services.getConnectionHealth("u-a");
+  assert.equal(health.find((h) => h.channelId === "UC_B")?.state, "reauth_required");
+  assert.deepEqual(probeCalls, ["REFRESH-A"]);
+});
+
+test("getConnectionHealth reuses a real check for 10 minutes, re-checks after, and forceRefresh bypasses the cache", async () => {
+  const { services, probeCalls, clock } = twoConnections({ issuedAt: { "u-a": daysAgo(1), "u-b": daysAgo(1) } });
+  await services.getConnectionHealth("u-a");
+  assert.equal(probeCalls.length, 2);
+
+  clock.current = new Date(HEALTH_NOW.getTime() + 9 * 60_000 + 59_000);
+  await services.getConnectionHealth("u-a");
+  assert.equal(probeCalls.length, 2, "within 10 minutes: cached");
+
+  await services.getConnectionHealth("u-a", { forceRefresh: true });
+  assert.equal(probeCalls.length, 4, "forceRefresh checks again");
+
+  clock.current = new Date(clock.current.getTime() + 10 * 60_000);
+  await services.getConnectionHealth("u-a");
+  assert.equal(probeCalls.length, 6, "after 10 minutes: checked again");
+});
+
+test("getConnectionHealth: a failed real check (network) is never cached and never blocks: unknown age stays unknown, then recovers", async () => {
+  const { services, probeCalls } = twoConnections({ probeResults: { "REFRESH-A": "error", "REFRESH-B": "error" } });
+  const first = await services.getConnectionHealth("u-a");
+  assert.deepEqual(first.map((h) => h.state), ["unknown", "unknown"]);
+  assert.equal(first[0].checkedAt, null);
+  await services.getConnectionHealth("u-a");
+  assert.equal(probeCalls.length, 4, "an error result is retried on the next call");
 });

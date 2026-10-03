@@ -1,5 +1,14 @@
 import type { revokeGoogleToken } from "@/lib/auth";
-import { DomainError, type ActivationIdentity, type ConnectedChannel, type DisconnectResult } from "./contracts";
+import { classifyConnectionHealth } from "./connection-health";
+import {
+  DomainError,
+  HEALTH_PROBE_CACHE_MINUTES,
+  type ActivationIdentity,
+  type ConnectedChannel,
+  type ConnectionHealth,
+  type DisconnectResult,
+  type HealthProbe,
+} from "./contracts";
 
 type StoredChannelLike = {
   channelId: string;
@@ -30,11 +39,19 @@ type ServiceDependencies = {
     getUserTokens(userId: string): Promise<StoredOAuthTokenLike | null>;
     clearUserTokens(userId: string): Promise<void>;
     setChannelConnectedUserId(channelId: string, connectedUserId: string | null): Promise<void>;
+    /** When Google issued this identity's refresh token (BL-115); `null` = never recorded. */
+    getRefreshTokenIssuedAt(userId: string): Promise<Date | null>;
   };
   revokeToken: typeof revokeGoogleToken;
+  /** Asks Google whether a refresh token still works (BL-115); never throws, never logs the token. */
+  probeRefreshToken(refreshToken: string): Promise<"ok" | "invalid_grant" | "error">;
+  clock: { now(): Date };
 };
 
 export function createChannelConnectionsServices(deps: ServiceDependencies) {
+  // Real-check results by internal user id. `error` outcomes are never cached (retry next time).
+  const probeCache = new Map<string, { probe: "ok" | "invalid_grant"; at: Date }>();
+
   return {
     /** Every locally-known channel that currently has a connected identity, for the Settings
      * "Channels" list. Never includes a channel whose OAuth link has been disconnected.
@@ -67,6 +84,66 @@ export function createChannelConnectionsServices(deps: ServiceDependencies) {
       );
 
       return resolved.filter((c): c is ConnectedChannel => c !== null);
+    },
+
+    /**
+     * BL-115 -- the health of every connected channel's stored Google grant, for the dashboard's re-login prompt
+     * and the Settings badges. One real refresh-token check per connection, reused for
+     * `HEALTH_PROBE_CACHE_MINUTES` unless `forceRefresh`. A connection with no stored refresh token cannot renew
+     * its access, so it counts as `invalid_grant`. Never returns or logs a token or the internal user id.
+     */
+    async getConnectionHealth(activeUserId?: string, options: { forceRefresh?: boolean } = {}): Promise<ConnectionHealth[]> {
+      const now = deps.clock.now();
+      const connected = (await deps.store.listChannels()).filter(
+        (c): c is StoredChannelLike & { connectedUserId: string } => c.connectedUserId !== null
+      );
+
+      const results = await Promise.all(
+        connected.map(async (c): Promise<ConnectionHealth | null> => {
+          const profile = await deps.store.getUserProfile(c.connectedUserId);
+          if (!profile) return null;
+
+          const [tokens, issuedAt] = await Promise.all([
+            deps.store.getUserTokens(c.connectedUserId),
+            deps.store.getRefreshTokenIssuedAt(c.connectedUserId),
+          ]);
+
+          let probe: HealthProbe;
+          let checkedAt: Date | null = null;
+          if (!tokens?.refreshToken) {
+            probe = "invalid_grant";
+          } else {
+            const cached = probeCache.get(c.connectedUserId);
+            const fresh = cached && now.getTime() - cached.at.getTime() < HEALTH_PROBE_CACHE_MINUTES * 60_000;
+            if (cached && fresh && !options.forceRefresh) {
+              probe = cached.probe;
+              checkedAt = cached.at;
+            } else {
+              const result = await deps.probeRefreshToken(tokens.refreshToken);
+              probe = result;
+              if (result === "error") {
+                probeCache.delete(c.connectedUserId);
+              } else {
+                checkedAt = now;
+                probeCache.set(c.connectedUserId, { probe: result, at: now });
+              }
+            }
+          }
+
+          const verdict = classifyConnectionHealth({ refreshTokenIssuedAt: issuedAt, probe, now });
+          return {
+            channelId: c.channelId,
+            title: c.title,
+            connectedEmail: profile.email,
+            isActive: c.connectedUserId === activeUserId,
+            state: verdict.state,
+            ageDays: verdict.ageDays,
+            daysLeft: verdict.daysLeft,
+            checkedAt: checkedAt ? checkedAt.toISOString() : null,
+          };
+        })
+      );
+      return results.filter((r): r is ConnectionHealth => r !== null);
     },
 
     /** Resolves the identity to hand to NextAuth's Credentials provider so it can mint a session

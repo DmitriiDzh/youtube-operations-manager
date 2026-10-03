@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { BlockingDialog } from "../blocking-dialog";
 import { ProgressBar } from "../progress-bar";
 import { blocksKey, isOperationActive, type OperationItemStatus, type OperationState } from "./operation-state";
 import { Spinner } from "./spinner";
@@ -72,81 +73,70 @@ export function OperationOverlay({
   const failedItems = state.items.filter((item) => item.status === "failed").length;
 
   return (
-    <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
-      role="presentation"
-    >
-      <div
-        className="w-full max-w-lg space-y-3 rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl"
-        role="dialog"
-        aria-modal="true"
-        aria-busy={active}
-        aria-label={state.title}
-      >
-        <div className="flex items-center gap-2">
-          {active && <Spinner />}
-          <p className="text-sm font-medium text-zinc-100">{finishedStatus ? `${state.title} — ${FINISHED_TITLE[finishedStatus]}` : state.title}</p>
-          <span className="ml-auto text-xs tabular-nums text-zinc-500">{formatElapsed(elapsed)}</span>
-        </div>
-
-        {active && (
-          <p className="text-xs text-zinc-400">
-            {state.status === "cancelling"
-              ? "Stopping after the current item — a write already sent to YouTube cannot be recalled."
-              : state.stage ?? "Working…"}
-          </p>
-        )}
-        {state.total > 0 && (
-          <ProgressBar value={state.done} max={state.total} label={`${state.done} / ${state.total}${failedItems ? ` · ${failedItems} failed` : ""}`} />
-        )}
-        {state.quotas.map((q) => (
-          <ProgressBar
-            key={q.service}
-            value={q.used}
-            max={q.limit}
-            color="indigo"
-            label={`${QUOTA_LABEL[q.service]}: ${q.used.toLocaleString()} / ${q.limit.toLocaleString()} · this operation +${Math.max(0, q.used - q.baseline).toLocaleString()} units`}
-          />
-        ))}
-        {state.quotas.length > 0 && (
-          <p className="text-[11px] text-zinc-600">Google reports usage with a delay of about a minute, so the figure may lag.</p>
-        )}
-        {active && <p className="text-xs text-zinc-500">Keep this window open until it finishes.</p>}
-        {state.message && (
-          <p className={`text-xs ${state.status === "failed" ? "text-red-400" : "text-zinc-300"}`}>{state.message}</p>
-        )}
-
-        {state.items.length > 0 && (
-          <ul className="max-h-60 space-y-0.5 overflow-auto rounded-md border border-zinc-800 p-2 text-xs">
-            {state.items.map((item) => (
-              <li key={item.id} className="flex gap-2">
-                <span className={`w-3 shrink-0 text-center ${ITEM_MARK[item.status].className}`}>{ITEM_MARK[item.status].mark}</span>
-                <span className="min-w-0 flex-1 truncate text-zinc-300" title={item.label}>
-                  {item.label}
-                </span>
-                {item.detail && <span className="shrink-0 truncate text-red-400">{item.detail}</span>}
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <div className="flex justify-end gap-2">
-          {active && state.cancellable && onCancel && (
-            <button
-              onClick={onCancel}
-              disabled={state.status === "cancelling"}
-              className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
-            >
-              {state.status === "cancelling" ? "Stopping…" : "Cancel"}
-            </button>
-          )}
-          {!active && (
-            <button onClick={onClose} className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500">
-              Close
-            </button>
-          )}
-        </div>
+    <BlockingDialog label={state.title} busy={active}>
+      <div className="flex items-center gap-2">
+        {active && <Spinner />}
+        <p className="text-sm font-medium text-zinc-100">{finishedStatus ? `${state.title} — ${FINISHED_TITLE[finishedStatus]}` : state.title}</p>
+        <span className="ml-auto text-xs tabular-nums text-zinc-500">{formatElapsed(elapsed)}</span>
       </div>
-    </div>
+
+      {active && (
+        <p className="text-xs text-zinc-400">
+          {state.status === "cancelling"
+            ? "Stopping after the current item — a write already sent to YouTube cannot be recalled."
+            : state.stage ?? "Working…"}
+        </p>
+      )}
+      {state.total > 0 && (
+        <ProgressBar value={state.done} max={state.total} label={`${state.done} / ${state.total}${failedItems ? ` · ${failedItems} failed` : ""}`} />
+      )}
+      {state.quotas.map((q) => (
+        <ProgressBar
+          key={q.service}
+          value={q.used}
+          max={q.limit}
+          color="indigo"
+          label={`${QUOTA_LABEL[q.service]}: ${q.used.toLocaleString()} / ${q.limit.toLocaleString()} · this operation +${Math.max(0, q.used - q.baseline).toLocaleString()} units`}
+        />
+      ))}
+      {state.quotas.length > 0 && (
+        <p className="text-[11px] text-zinc-600">Google reports usage with a delay of about a minute, so the figure may lag.</p>
+      )}
+      {active && <p className="text-xs text-zinc-500">Keep this window open until it finishes.</p>}
+      {state.message && (
+        <p className={`text-xs ${state.status === "failed" ? "text-red-400" : "text-zinc-300"}`}>{state.message}</p>
+      )}
+
+      {state.items.length > 0 && (
+        <ul className="max-h-60 space-y-0.5 overflow-auto rounded-md border border-zinc-800 p-2 text-xs">
+          {state.items.map((item) => (
+            <li key={item.id} className="flex gap-2">
+              <span className={`w-3 shrink-0 text-center ${ITEM_MARK[item.status].className}`}>{ITEM_MARK[item.status].mark}</span>
+              <span className="min-w-0 flex-1 truncate text-zinc-300" title={item.label}>
+                {item.label}
+              </span>
+              {item.detail && <span className="shrink-0 truncate text-red-400">{item.detail}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="flex justify-end gap-2">
+        {active && state.cancellable && onCancel && (
+          <button
+            onClick={onCancel}
+            disabled={state.status === "cancelling"}
+            className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50"
+          >
+            {state.status === "cancelling" ? "Stopping…" : "Cancel"}
+          </button>
+        )}
+        {!active && (
+          <button onClick={onClose} className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500">
+            Close
+          </button>
+        )}
+      </div>
+    </BlockingDialog>
   );
 }

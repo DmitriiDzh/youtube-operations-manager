@@ -24,6 +24,8 @@ export function AppShell<T extends string>(props: {
   activeTab: T;
   onTabChange: (tab: T) => void;
   channel: Pick<ChannelInfo, "title" | "thumbnail" | "videoCount"> | null;
+  /** The channel request failed (typically a stale Google sign-in): say so instead of "Loading..." forever. */
+  channelUnavailable?: boolean;
   onSignOut: () => void;
   children: ReactNode;
 }) {
@@ -78,7 +80,7 @@ export function AppShell<T extends string>(props: {
             <div>
               <p className="text-xs text-muted">Active channel</p>
               <p className="text-sm font-medium">
-                {props.channel?.title ?? "Loading..."}
+                {props.channel?.title ?? (props.channelUnavailable ? "Reconnect needed" : "Loading...")}
                 {props.channel?.videoCount && (
                   <span className="ml-2 text-xs text-muted">{props.channel.videoCount} videos</span>
                 )}

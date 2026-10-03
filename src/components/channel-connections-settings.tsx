@@ -9,6 +9,7 @@ import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { InfoTooltip } from "./info-tooltip";
 import { activateStoredChannel, useConnectedChannels, type ConnectedChannel } from "./use-connected-channels";
 import { LoadingIndicator } from "./operation-progress";
+import { useConnectionHealth } from "./use-connection-health";
 
 /**
  * Settings-tab card for persistent channel connections (`docs/decisions/0010-persistent-channel-connections.md`,
@@ -21,6 +22,7 @@ import { LoadingIndicator } from "./operation-progress";
  */
 export function ChannelConnectionsSettings() {
   const { channels, refetch } = useConnectedChannels();
+  const { health } = useConnectionHealth();
   const [error, setError] = useState<string | null>(null);
   const [activatingChannelId, setActivatingChannelId] = useState<string | null>(null);
   const [pendingDisconnect, setPendingDisconnect] = useState<ConnectedChannel | null>(null);
@@ -105,6 +107,26 @@ export function ChannelConnectionsSettings() {
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
+                    {(() => {
+                      const h = health?.find((x) => x.channelId === c.channelId);
+                      if (!h || (h.state !== "reauth_required" && h.state !== "expiring_soon")) return null;
+                      const dead = h.state === "reauth_required";
+                      return (
+                        <>
+                          <span
+                            className={`rounded-full px-2.5 py-1 text-xs font-medium ${dead ? "bg-red-950/60 text-red-400" : "bg-amber-950/60 text-amber-400"}`}
+                          >
+                            {dead ? "Reconnect needed" : `Expires in ${h.daysLeft ?? "?"} d`}
+                          </span>
+                          <button
+                            onClick={() => void signIn("google", undefined, { login_hint: c.connectedEmail })}
+                            className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"
+                          >
+                            Reconnect
+                          </button>
+                        </>
+                      );
+                    })()}
                     {isActive ? (
                       <span className="rounded-full bg-emerald-950/60 px-2.5 py-1 text-xs font-medium text-emerald-400">
                         Active now

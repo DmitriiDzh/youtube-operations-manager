@@ -1,5 +1,7 @@
 # Google Connection Health & Re-login Prompt Plan (BL-115)
 
+**Status 2026-10-03: implemented on `feature/bl-115-connection-reauth`** (owner assigned: "начинай реализацию"). Clarification made during implementation: AC-1's "exactly 7 d => `reauth_required`" holds when no real check could run; a *passing* real check proves the grant works, so age >= 7 d then reads `ok` (and 6-7 d `expiring_soon`). An `invalid_grant` is final at any age. Pure verdict + tests: `src/lib/channel-connections/connection-health{,.test}.ts`.
+
 Produced 2026-10-03 at the project owner's request (Telegram, after the Mac showed "Active channel: Loading..."
 forever). **This is a plan, not an implementation** (`AGENTS.md` §C): nothing here starts until the owner assigns it.
 

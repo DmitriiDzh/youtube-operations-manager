@@ -382,6 +382,39 @@ export async function revokeGoogleToken(token: string): Promise<void> {
   }
 }
 
+export type RefreshProbeResult = "ok" | "invalid_grant" | "error";
+
+/**
+ * BL-115 -- asks Google's token endpoint whether a stored refresh token still works, without touching any YouTube
+ * API (no quota). `invalid_grant` is Google's answer for an expired/revoked grant (e.g. the 7-day limit in Testing
+ * status); anything else that goes wrong (network, misconfigured client) is `error`: unknown, never proof of a
+ * dead grant. The returned access token is discarded, and no token is ever logged or put in an error message.
+ */
+export async function probeGoogleRefreshToken(refreshToken: string): Promise<RefreshProbeResult> {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return "error";
+
+  try {
+    const response = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        grant_type: "refresh_token",
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (response.ok) return "ok";
+    const payload = (await response.json().catch(() => ({}))) as { error?: unknown };
+    return payload.error === "invalid_grant" ? "invalid_grant" : "error";
+  } catch {
+    return "error";
+  }
+}
+
 export const authOptions: NextAuthOptions = {
   providers: [
     GoogleProvider({
