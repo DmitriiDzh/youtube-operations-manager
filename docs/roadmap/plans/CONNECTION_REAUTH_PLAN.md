@@ -95,7 +95,7 @@ write. No change to Live writes / write-safety gates.
    days and the age signal is only advisory; the real check still decides. (Cannot be read from this repo.)
 2. For a non-active dead connection, is it acceptable that re-login switches the active channel to it (existing
    behaviour of the sign-in flow, ADR 0010), or should it keep the current active channel?
-3. Should `expiring_soon` interrupt with a dismissable popup, or only show the Settings badge?
+3. ~~Should `expiring_soon` interrupt with a dismissable popup, or only show the Settings badge?~~ **Answered by the owner (Telegram, 2026-10-03): a popup** (as §3.4 already specifies, with a "Later" button). Questions 1 and 2 were put to the owner in plainer words; the plan keeps its defaults until answered: the age threshold stays a constant, and re-login as another account makes that account the active session (the sign-in flow signs in one account at a time).
 
 ## 7. Risks
 
