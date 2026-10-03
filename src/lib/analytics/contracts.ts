@@ -236,6 +236,17 @@ export type DataQualityReportResult = {
   uncoveredDates: string[];
   tooRecentDates: string[];
   videosWithSkips: DataQualityVideoSkip[];
+  /** BL-118 (see `extendDataQualityReport`): the channel's creation date, ranges, and what "covered" means. */
+  channelStartDate?: string | null;
+  /** In-range dates before the channel existed: not applicable, and NOT listed in `uncoveredDates`. */
+  notApplicableRange?: { startDate: string; endDate: string } | null;
+  coveredRanges?: Array<{ startDate: string; endDate: string }>;
+  uncoveredRanges?: Array<{ startDate: string; endDate: string }>;
+  /** Covered dates with no stored metric row (zero-activity days, or data YouTube had not reported yet). */
+  coveredWithoutData?: string[];
+  /** Covered dates inside the re-collection window: the next automatic run is expected to refresh them. */
+  provisionalDates?: string[];
+  coveredMeans?: string;
 };
 
 export type ComparableAgeVideoSeries = {

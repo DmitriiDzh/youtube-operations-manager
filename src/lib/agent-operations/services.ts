@@ -77,6 +77,7 @@ import type { FindComparableVideosContext, ListAssetPerformanceContext } from ".
 const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   {
     id: "system.get_capabilities",
+    mcpTools: ["agent_get_capabilities"],
     domain: "system",
     permission: "READ",
     description:
@@ -84,6 +85,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "channel_context.get_channel_context",
+    mcpTools: ["agent_get_channel_context"],
     domain: "channel_context",
     permission: "READ",
     description:
@@ -91,6 +93,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "video_context.get_video_context",
+    mcpTools: ["agent_get_video_context"],
     domain: "video_context",
     permission: "READ",
     description:
@@ -132,6 +135,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "localization_draft.get_generation_provenance",
+    mcpTools: ["agent_get_generation_provenance"],
     domain: "localization_draft",
     permission: "READ",
     description:
@@ -139,13 +143,23 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "analytics.query_channel_analytics",
+    mcpTools: ["agent_query_channel_analytics", "analytics_overview"],
     domain: "analytics",
     permission: "READ",
     description:
       "Agent-oriented channel-level analytics for a date range (views, watch time, subscriber deltas), with explicit metric definitions and data freshness. Wraps the existing `analytics_overview` capability (`src/lib/analytics/`) -- a LIVE YouTube Analytics API read that counts against that API's quota, unlike most other capabilities in this interface. Requires channelId to be the caller's currently-active channel.",
   },
   {
+    id: "analytics.query_channel_reach",
+    mcpTools: ["agent_query_channel_reach"],
+    domain: "analytics",
+    permission: "READ",
+    description:
+      "Thumbnail impressions and click-through rate (CTR) per video per day for a date range, from YouTube's Reporting API Reach report that this app downloads and stores locally -- a LOCAL read, no live YouTube call. Neither metric is available from the Analytics API. Returns `state` (`no_job` / `waiting_for_first_report` / `ready`) so an empty result is never mistaken for zero, plus daily points, per-video totals and impressions-weighted totals; the first report file arrives up to 48 hours after the subscription is created, and data only exists from the day Google started producing files.",
+  },
+  {
     id: "analytics.query_video_analytics",
+    mcpTools: ["agent_query_video_analytics", "analytics_list"],
     domain: "analytics",
     permission: "READ",
     description:
@@ -157,6 +171,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   // above.
   {
     id: "analytics.query_data_quality",
+    mcpTools: ["analytics_data_quality"],
     domain: "analytics",
     permission: "READ",
     description:
@@ -164,6 +179,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "analytics.query_comparable_age_performance",
+    mcpTools: ["analytics_comparable_age"],
     domain: "analytics",
     permission: "READ",
     description:
@@ -171,6 +187,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "analytics.query_weekly_reports",
+    mcpTools: ["analytics_weekly_reports_list", "analytics_weekly_report_get"],
     domain: "analytics",
     permission: "READ",
     description:
@@ -178,6 +195,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "asset_catalog.list_assets",
+    mcpTools: ["agent_list_assets"],
     domain: "asset_catalog",
     permission: "READ",
     description:
@@ -185,6 +203,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "asset_catalog.get_asset_context",
+    mcpTools: ["agent_get_asset_context"],
     domain: "asset_catalog",
     permission: "READ",
     description:
@@ -192,6 +211,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "content_proposal.create_content_proposal",
+    mcpTools: ["agent_create_content_proposal"],
     domain: "content_proposal",
     permission: "DRAFT",
     description:
@@ -199,6 +219,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "content_proposal.get_content_proposal",
+    mcpTools: ["agent_get_content_proposal"],
     domain: "content_proposal",
     permission: "READ",
     description:
@@ -206,6 +227,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "content_proposal.list_content_proposals",
+    mcpTools: ["agent_list_content_proposals"],
     domain: "content_proposal",
     permission: "READ",
     description:
@@ -213,6 +235,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "content_proposal.register_external_artifact",
+    mcpTools: ["agent_register_external_artifact"],
     domain: "content_proposal",
     permission: "DRAFT",
     description:
@@ -220,6 +243,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "content_proposal.list_proposal_artifacts",
+    mcpTools: ["agent_list_proposal_artifacts"],
     domain: "content_proposal",
     permission: "READ",
     description:
@@ -227,6 +251,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "operations_workspace.list_files",
+    mcpTools: ["agent_list_operations_files"],
     domain: "operations_workspace",
     permission: "READ",
     description:
@@ -234,6 +259,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "operations_workspace.get_file",
+    mcpTools: ["agent_get_operations_file"],
     domain: "operations_workspace",
     permission: "READ",
     description:
@@ -241,6 +267,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "comparable_content.find_comparable_videos",
+    mcpTools: ["agent_find_comparable_videos"],
     domain: "comparable_content",
     permission: "READ",
     description:
@@ -248,6 +275,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "asset_performance.list_asset_performance",
+    mcpTools: ["agent_list_asset_performance"],
     domain: "asset_performance",
     permission: "READ",
     description:
@@ -281,6 +309,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   // rather than three separate tools for topics/trend candidates/discovery candidates.
   {
     id: "market_intelligence.agent_list_market_records",
+    mcpTools: ["agent_list_market_records"],
     domain: "market_intelligence",
     permission: "READ",
     description:
@@ -294,6 +323,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   // the first time to an agent-facing capability.
   {
     id: "market_intelligence.agent_create_market_research_request",
+    mcpTools: ["agent_create_market_research_request"],
     domain: "market_intelligence",
     permission: "DRAFT",
     description:
@@ -306,6 +336,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   // registration layer.
   {
     id: "decision_engine.agent_list_hypotheses",
+    mcpTools: ["agent_list_hypotheses"],
     domain: "decision_engine",
     permission: "READ",
     description:
@@ -313,6 +344,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   },
   {
     id: "decision_engine.agent_get_hypothesis_trail",
+    mcpTools: ["agent_get_hypothesis_trail"],
     domain: "decision_engine",
     permission: "READ",
     description:
@@ -332,12 +364,19 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
   // market_intelligence entries above.
   {
     id: "channel_workspace.get_channel_workspace",
+    mcpTools: ["agent_get_channel_workspace"],
     domain: "channel_workspace",
     permission: "READ",
     description:
       "The local production-workspace folder path the operator set for a channel on THIS device (Settings -> Channels), returned as an absolute path string, or { configured: false } when none is set (never an empty-string path). Implemented as the `agent_get_channel_workspace` MCP tool / `agent channel-workspace` CLI command (`src/lib/channel-workspaces/`). This application never opens, lists, reads, writes, or re-validates anything inside the folder -- the string is returned exactly as stored, even if the folder has since been moved or deleted. Device-local: never synced or handed off, and a path set on another device is never returned. Read-only: no agent-callable way exists to set or clear it -- only the operator, through the Settings UI (`PUT /api/channel-workspaces`), the same self-authorization concern owner spec §17 raised for `local_path` asset registration. Requires channelId to be the caller's currently-active channel.",
   },
 ];
+
+/** The literal capability inventory, for tests that tie it to the real MCP tool registry (BL-118 drift test). */
+export function listAgentCapabilityDescriptors(): readonly AgentCapabilityDescriptor[] {
+  return AGENT_CAPABILITIES;
+}
+
 
 
 /**
@@ -396,6 +435,8 @@ type StoredChannelForContext = {
   channelId: string;
   title: string;
   lastSyncedAt: Date | null;
+  /** BL-118: when the channel was created on YouTube (RFC 3339); absent/null until a sync recorded it. */
+  publishedAt?: string | null;
 };
 
 type StoredVideoForContext = {
@@ -562,6 +603,7 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
         channelId: channel.channelId,
         title: channel.title,
         lastSyncedAt: channel.lastSyncedAt ? channel.lastSyncedAt.toISOString() : null,
+        channelStartDate: channel.publishedAt ? channel.publishedAt.slice(0, 10) : null,
         syncedVideoCount: videos.length,
         // Explicit projection: the stored profile also carries its own `channelId` (redundant
         // with this context's top-level one), which the strict output schema rejects.

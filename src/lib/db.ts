@@ -191,6 +191,9 @@ export const channels = sqliteTable("channels", {
     .notNull()
     .$defaultFn(() => new Date()),
   lastSyncedAt: integer("last_synced_at", { mode: "timestamp" }),
+  // Additive, SCHEMA_MIGRATIONS version 44 (BL-118): when the channel was created on YouTube (`snippet.publishedAt`, RFC 3339 as
+  // returned). Nullable with no default (RISK-89: this table is transferred); filled by the next channel sync.
+  publishedAt: text("published_at"),
   // Additive, SCHEMA_MIGRATIONS version 6 -- a JSON array of language codes the operator wants
   // tracked as Languages-tab columns even before any video has a real translation in them
   // (docs/roadmap/plans/LANGUAGES_UX_REDESIGN_PLAN.md §7.2/E5, owner instruction 2026-09-21).
@@ -2529,6 +2532,17 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 44,
+    description: "channels.published_at -- BL-118: the channel's creation time on YouTube, for the analytics channel start date",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE channels ADD COLUMN published_at TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -3280,6 +3294,8 @@ export type StoredChannel = {
   connectedAt: Date;
   lastSyncedAt: Date | null;
   analyticsLastAutoCollectedAt: Date | null;
+  /** BL-118: when the channel was created on YouTube (RFC 3339); null until a sync recorded it. */
+  publishedAt: string | null;
 };
 
 export type StoredVideo = {
@@ -3312,6 +3328,7 @@ function mapStoredChannel(row: typeof channels.$inferSelect): StoredChannel {
     connectedAt: row.connectedAt,
     lastSyncedAt: row.lastSyncedAt,
     analyticsLastAutoCollectedAt: row.analyticsLastAutoCollectedAt,
+    publishedAt: row.publishedAt,
   };
 }
 
@@ -3349,6 +3366,8 @@ export async function upsertChannel(input: {
    * owner (the implicit "my channel" sync) ever sets it, and a sync never clears it (`null` is
    * treated like `undefined` here). */
   connectedUserId?: string | null;
+  /** BL-118: the channel's creation time (`snippet.publishedAt`); `undefined`/`null` leaves a stored value untouched. */
+  publishedAt?: string | null;
 }): Promise<void> {
   await db
     .insert(channels)
@@ -3358,6 +3377,7 @@ export async function upsertChannel(input: {
       thumbnailUrl: input.thumbnailUrl,
       uploadsPlaylistId: input.uploadsPlaylistId,
       connectedUserId: input.connectedUserId ?? null,
+      publishedAt: input.publishedAt ?? null,
     })
     .onConflictDoUpdate({
       target: channels.id,
@@ -3366,6 +3386,7 @@ export async function upsertChannel(input: {
         thumbnailUrl: input.thumbnailUrl,
         uploadsPlaylistId: input.uploadsPlaylistId,
         ...(input.connectedUserId ? { connectedUserId: input.connectedUserId } : {}),
+        ...(input.publishedAt ? { publishedAt: input.publishedAt } : {}),
       },
     });
 }

@@ -59,6 +59,8 @@ export type ChannelForSync = {
   title: string;
   thumbnailUrl: string | null;
   uploadsPlaylistId: string;
+  /** BL-118: when the channel was created on YouTube (`snippet.publishedAt`); null if the API omitted it. */
+  publishedAt?: string | null;
 };
 
 export type VideoSyncMetadata = {

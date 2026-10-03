@@ -4,7 +4,7 @@ import { DomainError } from "./contracts";
 import { createAgentOperationsServices } from "./services";
 import type { EvidenceReference } from "@/lib/ai-localization/contracts";
 
-type FakeChannel = { channelId: string; title: string; lastSyncedAt: Date | null };
+type FakeChannel = { channelId: string; title: string; lastSyncedAt: Date | null; publishedAt?: string | null };
 type FakeVideo = {
   videoId: string;
   channelId: string;
@@ -390,6 +390,17 @@ test("getChannelContext returns channel basics, video count, editorial profile, 
   assert.equal(result.editorialProfile!.version, 3);
   assert.equal(result.editorialProfile!.targetAudience, "Ambient music listeners");
   assert.deepEqual(result.trackedLanguages, ["es", "fr"]);
+});
+
+// BL-118: the first MCP agent test could not tell when a channel was created.
+test("BL-118: getChannelContext exposes the channel start date (the date part of YouTube's creation time), and null when it is not synced yet", async () => {
+  const withDate = createFixture({
+    channels: { UC_A: { channelId: "UC_A", title: "Rural Japan Music", lastSyncedAt: null, publishedAt: "2026-08-13T09:30:00Z" } },
+  });
+  assert.equal((await withDate.services.getChannelContext({ channelId: "UC_A" })).channelStartDate, "2026-08-13");
+
+  const withoutDate = createFixture({ channels: { UC_A: { channelId: "UC_A", title: "T", lastSyncedAt: null } } });
+  assert.equal((await withoutDate.services.getChannelContext({ channelId: "UC_A" })).channelStartDate, null);
 });
 
 // Regression: the real `ai-localization` EditorialProfile carries its own `channelId`, which the

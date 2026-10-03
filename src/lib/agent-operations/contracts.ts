@@ -92,6 +92,11 @@ export type AgentCapabilityDescriptor = {
   domain: AgentCapabilityDomain;
   permission: PermissionClass;
   description: string;
+  /**
+   * BL-118: the MCP tool name(s) that serve this capability, so an agent (and a test) can tie the inventory to the real tool
+   * registry. Optional: a capability may be served by an HTTP route or a pre-existing tool outside the `agent_*`/`analytics_*` names.
+   */
+  mcpTools?: string[];
 };
 
 /**
@@ -190,6 +195,8 @@ export type ChannelContext = {
   /** ISO instant of the channel's last full sync (`channels.lastSyncedAt`), or `null` if it has
    * never been synced -- never fabricated as "now" or omitted silently. */
   lastSyncedAt: string | null;
+  /** BL-118: the date (YYYY-MM-DD, UTC) the channel was created on YouTube; `null` until a sync recorded it (never guessed). */
+  channelStartDate?: string | null;
   syncedVideoCount: number;
   /** `null` when the channel has never had one saved -- never a default/invented profile
    * (`AGENTS.md` §B: this repository never authors channel-specific editorial content). */

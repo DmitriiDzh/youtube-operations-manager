@@ -20,7 +20,7 @@ function createFakeChannelAccess() {
 function createFakeStore() {
   const channels = new Map<string, StoredChannelRecord>();
   const videos = new Map<string, StoredVideoRecord[]>();
-  const upsertCalls: Array<{ channelId: string; connectedUserId?: string | null }> = [];
+  const upsertCalls: Array<{ channelId: string; connectedUserId?: string | null; publishedAt?: string | null }> = [];
 
   return {
     channels,
@@ -97,6 +97,8 @@ function createServicesFixture(
     videoMetadataCalls: string[][];
     /** When true the fake adapter calls the optional progress callbacks the way the real one does. */
     adapterReportsProgress: boolean;
+    /** BL-118: the channel's YouTube creation time as the adapter would return it. */
+    channelPublishedAt: string | null;
   }> = {}
 ) {
   const store = createFakeStore();
@@ -120,6 +122,7 @@ function createServicesFixture(
         title: "Tropico Jazz",
         thumbnailUrl: "https://example.com/thumb.jpg",
         uploadsPlaylistId: "UU_MINE",
+        publishedAt: overrides.channelPublishedAt ?? null,
       }),
       listUploadsPlaylistVideoIds: async ({ onPage }) => {
         if (overrides.adapterReportsProgress) {
@@ -160,6 +163,19 @@ function createServicesFixture(
 
   return { services, store, channelAccess, videoMetadataCalls };
 }
+
+test("BL-118: syncChannel hands the channel's YouTube creation time to the store (the analytics channel start date)", async () => {
+  const { services, store } = createServicesFixture({ channelPublishedAt: "2026-08-13T09:30:00Z" });
+  await services.syncChannel({ credentialRef: { userId: "u1" } });
+  assert.equal(store.upsertCalls.length, 1);
+  assert.equal(store.upsertCalls[0].publishedAt, "2026-08-13T09:30:00Z");
+});
+
+test("BL-118: a channel whose creation time the API omitted is passed as null (the store then leaves a stored value untouched)", async () => {
+  const { services, store } = createServicesFixture();
+  await services.syncChannel({ credentialRef: { userId: "u1" } });
+  assert.equal(store.upsertCalls[0].publishedAt, null);
+});
 
 test("syncChannel persists channel and videos and returns a stable summary", async () => {
   const { services, store } = createServicesFixture({ videoIds: ["v1", "v2"] });

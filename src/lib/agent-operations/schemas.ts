@@ -64,6 +64,7 @@ const agentCapabilityDescriptorSchema = z
     domain: z.enum(AGENT_CAPABILITY_DOMAINS),
     permission: permissionClassSchema,
     description: z.string().min(1),
+    mcpTools: z.array(z.string().min(1)).optional(),
   })
   .strict();
 
@@ -117,6 +118,8 @@ export const channelContextOutputSchema = z
     channelId: z.string().min(1),
     title: z.string(),
     lastSyncedAt: z.string().nullable(),
+    /** BL-118: the date (YYYY-MM-DD, UTC) the channel was created on YouTube; null until a sync recorded it. */
+    channelStartDate: z.string().nullable(),
     syncedVideoCount: z.number().int().nonnegative(),
     editorialProfile: agentEditorialProfileContextSchema.nullable(),
     trackedLanguages: z.array(z.string()),

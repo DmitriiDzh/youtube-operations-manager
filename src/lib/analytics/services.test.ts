@@ -33,6 +33,8 @@ function createServicesFixture(opts: {
   syncSettings?: { localTime: string; timezone: string };
   now?: Date;
   authResolverError?: Error;
+  /** BL-118: the channels' YouTube creation times (RFC 3339), by channel id. */
+  channelPublishedAt?: Record<string, string>;
 }) {
   const channelAccess = createFakeChannelAccess();
   const analyticsCalls: Array<{ channelId: string; videoId: string }> = [];
@@ -143,6 +145,9 @@ function createServicesFixture(opts: {
     },
     async markAnalyticsAutoCollected(channelId: string, at: Date) {
       lastAutoCollectedAtByChannel.set(channelId, at);
+    },
+    async getChannelPublishedAt(channelId: string): Promise<string | null> {
+      return opts.channelPublishedAt?.[channelId] ?? null;
     },
   };
 
@@ -659,6 +664,34 @@ test("getDataQualityReport reflects real collectMetrics runs: covered/uncovered 
   assert.deepEqual(report.videosWithSkips.map((s) => s.videoId), ["v2"]);
 });
 
+test("BL-118: getDataQualityReport treats dates before the channel's creation as not applicable and reports ranges and what 'covered' means", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 10 } }] },
+    channelPublishedAt: { UC_A: "2026-08-31T08:00:00Z" },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  await services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-09-01", endDate: "2026-09-02" });
+
+  const report = await services.getDataQualityReport({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-08-28", endDate: "2026-09-02" });
+  assert.equal(report.channelStartDate, "2026-08-31");
+  assert.deepEqual(report.notApplicableRange, { startDate: "2026-08-28", endDate: "2026-08-30" });
+  assert.deepEqual(report.uncoveredDates, ["2026-08-31"]);
+  assert.deepEqual(report.uncoveredRanges, [{ startDate: "2026-08-31", endDate: "2026-08-31" }]);
+  assert.deepEqual(report.coveredRanges, [{ startDate: "2026-09-01", endDate: "2026-09-02" }]);
+  assert.deepEqual(report.coveredWithoutData, ["2026-09-02"], "covered by the run, but YouTube returned no row for it");
+  assert.match(report.coveredMeans ?? "", /NOT mean data is present/);
+});
+
+test("BL-118: a channel whose creation time is not synced yet reports channelStartDate null and keeps every unmatched date as uncovered", async () => {
+  const { services, channelAccess } = createServicesFixture({ videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] }, analyticsResponses: {} });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  const report = await services.getDataQualityReport({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-08-28", endDate: "2026-08-29" });
+  assert.equal(report.channelStartDate, null);
+  assert.equal(report.notApplicableRange, null);
+  assert.deepEqual(report.uncoveredDates, ["2026-08-28", "2026-08-29"]);
+});
+
 test("collectMetrics defaults to the full ANALYTICS_METRIC_NAMES list when metricNames is omitted", async () => {
   let requestedMetricNames: readonly string[] | undefined;
   const { channelAccess } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
@@ -698,6 +731,7 @@ test("collectMetrics defaults to the full ANALYTICS_METRIC_NAMES list when metri
     channelStore: {
       async getAnalyticsLastAutoCollectedAt() { return null; },
       async markAnalyticsAutoCollected() {},
+      async getChannelPublishedAt() { return null; },
     },
     settingsStore: {
       async getAnalyticsSyncSettings() { return { localTime: "12:00", timezone: "UTC" }; },

@@ -49,6 +49,9 @@ export function createAnalyticsStoreAdapter() {
         return channel?.analyticsLastAutoCollectedAt ?? null;
       },
       markAnalyticsAutoCollected,
+      async getChannelPublishedAt(channelId: string) {
+        return (await getStoredChannel(channelId))?.publishedAt ?? null;
+      },
     },
     settingsStore: {
       getAnalyticsSyncSettings,

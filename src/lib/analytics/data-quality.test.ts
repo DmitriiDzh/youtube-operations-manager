@@ -176,3 +176,94 @@ test("computeDataQualityReport: skipCount reflects total historical skips, even 
     { videoId: "v1", skipCount: 3, lastSkippedAt: "2026-09-16T00:00:00.000Z" },
   ]);
 });
+
+// ---- BL-118: channel start date, ranges, and what "covered" means ------------------------------------------------------
+import { compactDateRanges, extendDataQualityReport, PROVISIONAL_WINDOW_DAYS } from "./data-quality";
+
+test("compactDateRanges joins consecutive days and splits on a gap, across a month boundary", () => {
+  assert.deepEqual(compactDateRanges([]), []);
+  assert.deepEqual(compactDateRanges(["2026-08-30", "2026-08-31", "2026-09-01", "2026-09-03"]), [
+    { startDate: "2026-08-30", endDate: "2026-09-01" },
+    { startDate: "2026-09-03", endDate: "2026-09-03" },
+  ]);
+});
+
+// The agent's own case: channel created 2026-08-13; collection exists from 2026-09-14; asked 2026-01-01..2026-10-03, now = 2026-10-03.
+test("the agent's case: dates before the channel existed are 'not applicable', only 2026-08-13..2026-09-13 is a genuine gap", () => {
+  const now = new Date("2026-10-03T18:26:00Z");
+  const base = computeDataQualityReport({
+    startDate: "2026-08-10",
+    endDate: "2026-10-03",
+    runs: [{ requestedStartDate: "2026-09-14", requestedEndDate: "2026-10-01", videoCount: 28, skippedVideoIds: [], ranAt: new Date("2026-10-02T10:00:00Z") }],
+    now,
+  });
+  const { report, extras } = extendDataQualityReport({
+    report: base,
+    startDate: "2026-08-10",
+    channelStartDate: "2026-08-13",
+    datesWithAnyMetricRow: new Set(),
+    now,
+  });
+  assert.deepEqual(extras.notApplicableRange, { startDate: "2026-08-10", endDate: "2026-08-12" });
+  assert.deepEqual(extras.uncoveredRanges, [{ startDate: "2026-08-13", endDate: "2026-09-13" }]);
+  assert.equal(report.uncoveredDates.length, 32, "2026-08-13 .. 2026-09-13 inclusive");
+  assert.equal(report.uncoveredDates[0], "2026-08-13");
+  assert.deepEqual(extras.coveredRanges, [{ startDate: "2026-09-14", endDate: "2026-10-01" }]);
+  assert.equal(extras.channelStartDate, "2026-08-13");
+});
+
+test("an unknown channel start date changes nothing about the lists and says so (null), never guessing", () => {
+  const now = FAR_FUTURE_NOW;
+  const base = computeDataQualityReport({ startDate: "2026-09-01", endDate: "2026-09-03", runs: [], now });
+  const { report, extras } = extendDataQualityReport({ report: base, startDate: "2026-09-01", channelStartDate: null, datesWithAnyMetricRow: new Set(), now });
+  assert.deepEqual(report.uncoveredDates, ["2026-09-01", "2026-09-02", "2026-09-03"]);
+  assert.equal(extras.notApplicableRange, null);
+  assert.equal(extras.channelStartDate, null);
+});
+
+test("a channel start date inside the range removes only the earlier dates; a start after the whole range makes everything not applicable", () => {
+  const now = FAR_FUTURE_NOW;
+  const base = computeDataQualityReport({ startDate: "2026-09-01", endDate: "2026-09-03", runs: [], now });
+  const mid = extendDataQualityReport({ report: base, startDate: "2026-09-01", channelStartDate: "2026-09-02", datesWithAnyMetricRow: new Set(), now });
+  assert.deepEqual(mid.report.uncoveredDates, ["2026-09-02", "2026-09-03"]);
+  assert.deepEqual(mid.extras.notApplicableRange, { startDate: "2026-09-01", endDate: "2026-09-01" });
+  const after = extendDataQualityReport({ report: base, startDate: "2026-09-01", channelStartDate: "2026-12-31", datesWithAnyMetricRow: new Set(), now });
+  assert.deepEqual(after.report.uncoveredDates, []);
+  assert.deepEqual(after.extras.notApplicableRange, { startDate: "2026-09-01", endDate: "2026-09-03" });
+});
+
+test("'covered' is not 'has data': a covered date with no metric row is listed in coveredWithoutData (2026-10-01 in the agent's report)", () => {
+  const now = new Date("2026-10-03T18:26:00Z");
+  const base = computeDataQualityReport({
+    startDate: "2026-09-29",
+    endDate: "2026-10-01",
+    runs: [{ requestedStartDate: "2026-09-25", requestedEndDate: "2026-10-02", videoCount: 28, skippedVideoIds: [], ranAt: new Date("2026-10-02T10:00:00Z") }],
+    now,
+  });
+  const { extras } = extendDataQualityReport({ report: base, startDate: "2026-09-29", channelStartDate: "2026-08-13", datesWithAnyMetricRow: new Set(["2026-09-29", "2026-09-30"]), now });
+  assert.deepEqual(extras.coveredWithoutData, ["2026-10-01"]);
+});
+
+test("provisional dates are the covered ones inside the re-collection window (7 days): exactly the window edge is not provisional", () => {
+  assert.equal(PROVISIONAL_WINDOW_DAYS, 7);
+  const now = new Date("2026-10-10T12:00:00Z"); // cutoff = 2026-10-03: dates strictly after it are provisional
+  const base = computeDataQualityReport({
+    startDate: "2026-10-01",
+    endDate: "2026-10-08",
+    runs: [{ requestedStartDate: "2026-10-01", requestedEndDate: "2026-10-09", videoCount: 5, skippedVideoIds: [], ranAt: new Date("2026-10-10T08:00:00Z") }],
+    now,
+  });
+  const { extras } = extendDataQualityReport({ report: base, startDate: "2026-10-01", channelStartDate: null, datesWithAnyMetricRow: new Set(), now });
+  assert.deepEqual(extras.provisionalDates, ["2026-10-04", "2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08"]);
+});
+
+test("the covered-meaning text says it does not mean data is present", () => {
+  const { extras } = extendDataQualityReport({
+    report: computeDataQualityReport({ startDate: "2026-09-01", endDate: "2026-09-01", runs: [], now: FAR_FUTURE_NOW }),
+    startDate: "2026-09-01",
+    channelStartDate: null,
+    datesWithAnyMetricRow: new Set(),
+    now: FAR_FUTURE_NOW,
+  });
+  assert.match(extras.coveredMeans, /NOT mean data is present/);
+});

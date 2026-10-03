@@ -232,11 +232,21 @@ const dataQualityReportShapeSchema = z
   })
   .strict();
 
+const dateRangeSchema = z.object({ startDate: z.string(), endDate: z.string() }).strict();
+
 export const getDataQualityReportOutputSchema = dataQualityReportShapeSchema
   .extend({
     channelId: z.string().min(1),
     startDate: z.string(),
     endDate: z.string(),
+    // BL-118 -- added on top of the base shape (which stays frozen inside stored weekly reports).
+    channelStartDate: z.string().nullable(),
+    notApplicableRange: dateRangeSchema.nullable(),
+    coveredRanges: z.array(dateRangeSchema),
+    uncoveredRanges: z.array(dateRangeSchema),
+    coveredWithoutData: z.array(z.string()),
+    provisionalDates: z.array(z.string()),
+    coveredMeans: z.string(),
   })
   .strict();
 

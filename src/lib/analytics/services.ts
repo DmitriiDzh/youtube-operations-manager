@@ -5,7 +5,7 @@ import type { ChannelAccessService } from "@/lib/channel-access";
 import { computeDefaultAutoCollectionRange, computeNextRefreshAt, isAnalyticsCollectionStale } from "./staleness";
 import { assertValidDateRange, assertValidIsoDate, computePreviousPeriod, zeroFillDailySeries } from "./period";
 import { computeComparableAgeSeries } from "./comparable-age";
-import { computeDataQualityReport } from "./data-quality";
+import { computeDataQualityReport, extendDataQualityReport } from "./data-quality";
 import { computeDueReportWeek, computeWeeklyReportContent } from "./weekly-report";
 import {
   ANALYTICS_METRIC_NAMES,
@@ -123,6 +123,8 @@ type ServiceDependencies = {
   channelStore: {
     getAnalyticsLastAutoCollectedAt(channelId: string): Promise<Date | null>;
     markAnalyticsAutoCollected(channelId: string, at: Date): Promise<void>;
+    /** BL-118: the channel's YouTube creation time (RFC 3339), or null when no sync recorded it yet. */
+    getChannelPublishedAt(channelId: string): Promise<string | null>;
   };
   settingsStore: {
     getAnalyticsSyncSettings(): Promise<{ localTime: string; timezone: string }>;
@@ -906,12 +908,22 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           deps.metricStore.listMetricsByChannel(parsedInput.channelId),
         ]);
         const datesWithAnyMetricRow = new Set(metricRecords.map((record) => record.metricDate));
-        const report = computeDataQualityReport({
+        const now = deps.clock.now();
+        const baseReport = computeDataQualityReport({
           startDate: parsedInput.startDate,
           endDate: parsedInput.endDate,
           runs,
           datesWithAnyMetricRow,
-          now: deps.clock.now(),
+          now,
+        });
+        // BL-118: dates before the channel existed are "not applicable", not "uncovered"; plus ranges and what "covered" means.
+        const publishedAt = await deps.channelStore.getChannelPublishedAt(parsedInput.channelId);
+        const { report, extras } = extendDataQualityReport({
+          report: baseReport,
+          startDate: parsedInput.startDate,
+          channelStartDate: publishedAt ? publishedAt.slice(0, 10) : null,
+          datesWithAnyMetricRow,
+          now,
         });
 
         return parseWithSchema(
@@ -921,6 +933,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             startDate: parsedInput.startDate,
             endDate: parsedInput.endDate,
             ...report,
+            ...extras,
           },
           "get data quality report output"
         );
