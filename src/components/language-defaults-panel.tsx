@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "./confirm-dialog";
-import { OperationOverlay, useOperation } from "./operation-progress";
+import { OperationOverlay, useOperation, type AttachedOperationResult } from "./operation-progress";
 
 type LanguageOption = { code: string; name: string };
 
@@ -54,6 +54,7 @@ export function LanguageDefaultsPanel({
   const [aligning, setAligning] = useState<"preview" | "apply" | null>(null);
   const [confirmAll, setConfirmAll] = useState(false);
   const op = useOperation();
+  const { attach } = op;
 
   const load = useCallback(async () => {
     try {
@@ -72,6 +73,7 @@ export function LanguageDefaultsPanel({
   useEffect(() => {
     void load();
   }, [load]);
+
 
   async function save() {
     setBusy(true);
@@ -187,61 +189,77 @@ export function LanguageDefaultsPanel({
     setConfirmAll(true);
   }
 
-  /** Sequential and fail-fast: the first failure stops the run, so a systemic problem (live writes
-   * off, wrong channel, quota) is reported once instead of repeated for every selected video.
-   * Cancel stops BEFORE the next video; a write already sent is never aborted. */
+  /** Applies the result of a finished server run to the table and reloads the report. */
+  const handleFixAllFinished = useCallback(
+    (result: AttachedOperationResult) => {
+      setAlign((prev) => {
+        const next = { ...prev };
+        for (const item of result.items) {
+          if (item.status === "done") next[item.id] = { status: "applied" };
+          else if (item.status === "failed") next[item.id] = { status: "failed", message: item.detail ?? "Apply failed" };
+        }
+        return next;
+      });
+      setAligning(null);
+      void load();
+    },
+    [load]
+  );
+
+  // After a reload, follow a Fix all the server is still running for this channel.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/operations?channelId=${encodeURIComponent(channelId)}&kind=language-fix-all&active=1`);
+        if (!res.ok || cancelled) return;
+        const running = ((await res.json()).operations ?? [])[0] as { id: string } | undefined;
+        if (!running || cancelled) return;
+        setAligning("apply");
+        attach(running.id, { title: "Writing language labels to YouTube", quotaServices: ["dataApi"], onFinished: handleFixAllFinished });
+      } catch {
+        // Nothing to re-attach to.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [channelId, attach, handleFixAllFinished]);
+
+  /**
+   * Starts the write on the SERVER and follows it (ADR 0015): the run continues if this page is
+   * reloaded or closed, Cancel stops it before the next video, and a reloaded page re-attaches (see
+   * the effect above). The server decides which fields are written from the channel baseline; this
+   * only names the videos and the etag each one was previewed at. Sequential and fail-fast; every
+   * write goes through video-details -> the single YouTube write gateway.
+   */
   async function applyAlignment() {
     if (!target && !targetAudio) return;
     setAligning("apply");
-    op.start({
-      title: "Writing to YouTube",
-      cancellable: true,
-      quotaServices: ["dataApi"],
-      items: readyIds.map((id) => ({ id, label: chosen.find((r) => r.videoId === id)?.title ?? id, status: "pending" })),
-    });
-    op.setStage("Writing language labels — each video is backed up and verified");
-    let written = 0;
-    let stopMessage: string | null = null;
-    let failedRun = false;
-    for (const videoId of readyIds) {
-      if (stopMessage) {
-        op.setItem(videoId, "skipped");
-        continue;
+    op.start({ title: "Starting…", cancellable: false });
+    try {
+      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/language-defaults/fix-all`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videos: readyIds.map((videoId) => {
+            const state = align[videoId];
+            return { videoId, ...(state?.status === "ready" && state.etag ? { expectedEtag: state.etag } : {}) };
+          }),
+        }),
+      });
+      const data = await res.json();
+      if (res.status === 409 && data.details?.operationId) {
+        // Already running (e.g. started from another tab): just follow that run.
+        op.attach(data.details.operationId, { title: "Writing language labels to YouTube", quotaServices: ["dataApi"], onFinished: handleFixAllFinished });
+        return;
       }
-      if (op.isCancelRequested()) {
-        stopMessage = "Cancelled — the remaining videos were not written.";
-        op.setItem(videoId, "skipped");
-        continue;
-      }
-      const state = align[videoId];
-      if (state?.status !== "ready") {
-        op.setItem(videoId, "skipped");
-        continue;
-      }
-      op.setItem(videoId, "running");
-      try {
-        const res = await fetch(detailsUrl(videoId, "apply"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ patch: patchFor(chosen.find((r) => r.videoId === videoId)!), ...(state.etag ? { expectedEtag: state.etag } : {}) }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.message ?? data.error ?? "Apply failed");
-        if (data.verified === false) throw new Error("Written, but the read-back did not match");
-        setAlign((prev) => ({ ...prev, [videoId]: { status: "applied" } }));
-        op.setItem(videoId, "done");
-        written += 1;
-      } catch (e) {
-        const message = e instanceof Error ? e.message : "Apply failed";
-        setAlign((prev) => ({ ...prev, [videoId]: { status: "failed", message } }));
-        op.setItem(videoId, "failed", message);
-        stopMessage = `Stopped at the first error: ${message}`;
-        failedRun = true;
-      }
+      if (!res.ok) throw new Error(data.message ?? data.error ?? "Could not start the write");
+      op.attach(data.operationId, { title: "Writing language labels to YouTube", quotaServices: ["dataApi"], onFinished: handleFixAllFinished });
+    } catch (e) {
+      setAligning(null);
+      op.finish({ error: true, message: e instanceof Error ? e.message : "Could not start the write" });
     }
-    setAligning(null);
-    op.finish({ error: failedRun, message: stopMessage ?? `${written} video${written === 1 ? "" : "s"} written and verified.` });
-    await load();
   }
 
   const dirty =
@@ -310,7 +328,7 @@ export function LanguageDefaultsPanel({
       {confirmAll && (
         <ConfirmDialog
           title={`Set ${[target && `Title/description language "${target}"`, targetAudio && `Video language "${targetAudio}"`].filter(Boolean).join(" and ")} on ${readyIds.length} videos?`}
-          description={`Writes only the language labels to YouTube (title and description text stay unchanged); only fields that differ are sent. Each video is backed up and verified; the run stops at the first error.${
+          description={`Writes only the language labels to YouTube (title and description text stay unchanged); only fields that differ are sent. Each video is backed up and verified; the run stops at the first error and continues on the server if you close this page.${
             fixable.length > readyIds.length ? ` ${fixable.length - readyIds.length} video(s) failed the check and will be skipped (see the list).` : ""
           }`}
           confirmLabel={`Write ${readyIds.length} videos to YouTube`}

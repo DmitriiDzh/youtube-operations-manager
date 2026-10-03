@@ -24,6 +24,18 @@ export type QuotaServiceKey = "dataApi" | "analytics";
  * meanwhile) spent. */
 export type OperationQuota = { service: QuotaServiceKey; used: number; limit: number; baseline: number };
 
+/** The subset of the server registry snapshot (`src/lib/operation-progress`) the overlay mirrors. */
+export type ServerOperationSnapshot = {
+  title: string;
+  status: "running" | "cancelling" | "success" | "failed" | "cancelled";
+  stage: string | null;
+  items: OperationItem[];
+  cancellable: boolean;
+  message: string | null;
+  startedAt: number;
+  finishedAt: number | null;
+};
+
 export type OperationState = {
   status: OperationStatus;
   title: string;
@@ -61,6 +73,7 @@ export type OperationAction =
   | { type: "setItems"; items: OperationItem[] }
   | { type: "counts"; done: number; total: number }
   | { type: "quota"; service: QuotaServiceKey; used: number; limit: number }
+  | { type: "sync"; snapshot: ServerOperationSnapshot }
   | { type: "requestCancel" }
   | { type: "finish"; message?: string | null; error?: boolean; now: number }
   | { type: "reset" };
@@ -119,6 +132,25 @@ export function operationReducer(state: OperationState, action: OperationAction)
       return {
         ...state,
         quotas: existing ? state.quotas.map((q) => (q.service === action.service ? entry : q)) : [...state.quotas, entry],
+      };
+    }
+    case "sync": {
+      // Server-driven operation: the registry is the source of truth, mirror it. Ignored once the
+      // overlay was closed (idle), so a poll still in flight cannot reopen it.
+      if (state.status === "idle") return state;
+      const s = action.snapshot;
+      return {
+        ...state,
+        title: s.title,
+        status: s.status,
+        stage: s.stage,
+        items: s.items,
+        total: s.items.length,
+        done: countDone(s.items),
+        cancellable: s.cancellable,
+        message: s.message,
+        startedAt: s.startedAt,
+        finishedAt: s.finishedAt,
       };
     }
     case "requestCancel":

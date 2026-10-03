@@ -154,3 +154,50 @@ test("quota: a new operation starts with no quota readings", () => {
   );
   assert.deepEqual(s.quotas, []);
 });
+
+test("sync mirrors a server snapshot: items, counts, status, timestamps", () => {
+  const s = run(
+    IDLE_OPERATION,
+    { type: "start", title: "Starting", cancellable: false, now: 0 },
+    {
+      type: "sync",
+      snapshot: {
+        title: "Writing",
+        status: "cancelling",
+        stage: "Writing language labels",
+        items: [
+          { id: "a", label: "a", status: "done" },
+          { id: "b", label: "b", status: "running" },
+          { id: "c", label: "c", status: "pending" },
+        ],
+        cancellable: true,
+        message: null,
+        startedAt: 100,
+        finishedAt: null,
+      },
+    }
+  );
+  assert.equal(s.status, "cancelling");
+  assert.equal(s.total, 3);
+  assert.equal(s.done, 1);
+  assert.equal(s.startedAt, 100);
+  assert.equal(s.title, "Writing");
+});
+
+test("sync with a final server status ends the operation; later syncs after reset are ignored", () => {
+  const snapshot = {
+    title: "Writing",
+    status: "failed" as const,
+    stage: null,
+    items: [{ id: "a", label: "a", status: "failed" as const, detail: "boom" }],
+    cancellable: true,
+    message: "Stopped at the first error: boom",
+    startedAt: 1,
+    finishedAt: 9,
+  };
+  const ended = run(IDLE_OPERATION, { type: "start", title: "t", now: 0 }, { type: "sync", snapshot });
+  assert.equal(ended.status, "failed");
+  assert.equal(isOperationActive(ended), false);
+  assert.equal(ended.finishedAt, 9);
+  assert.deepEqual(run(ended, { type: "reset" }, { type: "sync", snapshot }), IDLE_OPERATION);
+});
