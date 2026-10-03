@@ -46,12 +46,20 @@ Source: first MCP test by a project agent (Rural Japan Music, product 0.1.1, sch
 - `granularity: day | week | month` for `agent_query_channel_analytics` (server-side aggregation: additive metrics are summed; ratio
   metrics are recomputed from their parts or omitted, never averaged blindly; weeks start Monday).
 
+**Slice E — channel-level analytics from the local database (owner's observation, Telegram 2026-10-03).** Per-video daily metrics are
+stored (`video_metrics_daily`) and the agent's per-video and data-quality tools read them locally. **Channel-level** totals are not
+stored: `agent_query_channel_analytics` (`analytics_overview`) is a LIVE Analytics API read on every call (quota, 1-2 day lag). Add a
+local table of channel-level daily rows (filled by the same collection and backfill), make the agent tool read the local rows, and call
+the API only for dates not stored yet or on an explicit refresh. This also makes `previousTotals`, weekly granularity and the
+reporting-lag handling work offline and removes the agent's quota use for repeat questions.
+
 ## 3. Owner decisions
 
 1. **Slice C gate relaxation** (recommended yes): allow a manual collection whose range contains uncovered dates even after today's
    auto-collection. It changes a deliberate invariant ("a manual call is refused once today's real collection happened").
 2. **Automatic first-time backfill** (recommended yes) versus operator-triggered only.
-3. Order: A and B first (cheap, remove the confusion), then C, then D — or C first because it unblocks the agent's per-video work.
+3. Slice E (local channel-level rows) after C, or together with C (recommended: together, since both change what collection stores).
+4. Order: A and B first (cheap, remove the confusion), then C, then D — or C first because it unblocks the agent's per-video work.
 
 ## 4. Not changed / open
 
