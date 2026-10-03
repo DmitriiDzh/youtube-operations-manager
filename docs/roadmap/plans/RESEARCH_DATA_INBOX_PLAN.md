@@ -1,6 +1,6 @@
 # BL-123 — Research data for scripts: «99 Data Inbox» destination and a read-only HTTP path
 
-Raised by the operations agent (updated request 2026-10-04, «дополнен пожеланиями о процессе передачи файлов») and forwarded by the owner (Telegram, 2026-10-04: «Изучи и составь план выполнения»). **Plan only — nothing assigned or implemented.** Builds on BL-119 (ADR 0019, Agent API 3.1.0).
+Raised by the operations agent (updated request 2026-10-04, «дополнен пожеланиями о процессе передачи файлов») and forwarded by the owner (Telegram, 2026-10-04: «Изучи и составь план выполнения»). **Status 2026-10-04: slice 1 assigned by the owner («Да, вместо») and implemented on `feature/research-data-inbox`; slice 2 (HTTP read route) NOT built — the owner: the application's work ends with the export into the folder.** Builds on BL-119 (ADR 0019, Agent API 3.1.0).
 
 ## What the update asks
 

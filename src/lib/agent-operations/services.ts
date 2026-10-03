@@ -323,7 +323,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
       "Compact bulk read of the research watchlist: several channels in one paged call, each with its newest raw channel snapshot and snapshot/evidence counts (no evidence text, no snapshot lists). Other channels' API-sourced snapshots only for the last 30 days (YouTube API policy III.E.4.d); nothing computed from competitor statistics (III.E.4.h). Implemented as the `query_market_overview` MCP tool (`src/lib/research-export/`). Local read only, never a live YouTube call.",
   },
   // Research export (ADR 0019): the Manager writes flat CSV/JSON files of watchlist snapshots (and our own channel's videos) into the
-  // channel's workspace `exports/` folder so a script can read them. DRAFT, not READ: it creates local files and a ledger row (never
+  // channel's workspace `99 Data Inbox/` folder so a script can read them. DRAFT, not READ: it creates local files and a ledger row (never
   // anything on YouTube). The agent chooses neither folder nor file names.
   {
     id: "market_intelligence.export_research_data",
@@ -331,7 +331,7 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     domain: "market_intelligence",
     permission: "DRAFT",
     description:
-      "Write the research watchlist's channel snapshots and video snapshots (and our own channel's public videos in the same columns) as CSV and/or JSON files into `exports/` inside this channel's workspace folder, chosen and named by the Manager; returns only paths, row counts, sizes and expiry. Other channels' API-sourced data is kept at most 30 days (YouTube API policy III.E.4.d): research files carry `expiresAt` and the Manager deletes them itself. Fails with RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED when the operator has not set a workspace folder for the channel. Implemented as the `agent_export_research_data` MCP tool (`src/lib/research-export/`). Requires channelId to be the caller's currently-active channel.",
+      "Write the research watchlist's channel snapshots and video snapshots (and our own channel's public videos in the same columns) as CSV and/or JSON files into the fixed folder `99 Data Inbox/` inside this channel's workspace folder, named by the Manager; returns only paths, row counts, sizes and expiry. Other channels' API-sourced data is kept at most 30 days (YouTube API policy III.E.4.d): research files carry `expiresAt` and the Manager deletes them itself. Fails with RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED when the operator has not set a workspace folder for the channel. Implemented as the `agent_export_research_data` MCP tool (`src/lib/research-export/`). Requires channelId to be the caller's currently-active channel.",
   },
   // Phase 9 slice 9G, part A (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md) -- one list tool with a
   // `kind` discriminator (owner spec §28: "prefer a small number of powerful composable MCP tools"),

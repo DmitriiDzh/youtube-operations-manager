@@ -12,7 +12,7 @@ export { DomainError, isDomainError, parseWithSchema, formatZodError };
 
 /**
  * Research export (`docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md`, ADR 0019) -- the Manager writes flat, script-ready CSV/JSON files of the
- * research watchlist's snapshots (and our own channel's videos, in the same shape) into `exports/` inside the operator-set channel
+ * research watchlist's snapshots (and our own channel's videos, in the same shape) into `99 Data Inbox/` inside the operator-set channel
  * workspace folder, so a script can use them instead of an agent retyping tool output. The agent chooses neither the folder nor any
  * file name; it only asks for an export and gets back the paths, row counts and expiry.
  */
@@ -87,7 +87,7 @@ export type OwnVideoForExport = {
 export type ExportedFile = {
   dataset: ExportDataset;
   format: ExportFormat;
-  /** Absolute path of the written file (inside the channel's workspace folder, `exports/`). */
+  /** Absolute path of the written file (inside the channel's workspace folder, `99 Data Inbox/`). */
   path: string;
   /** Data rows, header excluded -- equals the number of records the corresponding read tool returned. */
   rows: number;
