@@ -35,6 +35,9 @@ function createFixture(opts: {
   now?: Date;
   coverage?: { firstDate: string | null; lastDate: string | null; importedFiles: number };
   dailyRows?: ReachRow[];
+  storedAttempt?: Awaited<ReturnType<ReachReportsDependencies["store"]["getAttempt"]>>;
+  storedFiles?: Awaited<ReturnType<ReachReportsDependencies["store"]["listFiles"]>>;
+  ensureJobError?: Error;
   importOutcomes?: Record<string, { outcome: "imported"; replacedReports: number } | { outcome: "superseded_by_newer" }>;
 } = {}) {
   const calls = {
@@ -45,6 +48,7 @@ function createFixture(opts: {
     imports: [] as Array<{ reportId: string; rows: ReachRow[] }>,
     upsertJob: [] as unknown[],
     resolveArgs: [] as unknown[],
+    attempts: [] as Array<Parameters<ReachReportsDependencies["store"]["recordAttempt"]>[0]>,
   };
   const activeChannelId = opts.activeChannelId === undefined ? "UC_X" : opts.activeChannelId;
 
@@ -59,6 +63,7 @@ function createFixture(opts: {
     reportingApi: {
       async ensureJob() {
         calls.ensureJob += 1;
+        if (opts.ensureJobError) throw opts.ensureJobError;
         const job = opts.existingJob ?? { id: "job-1", reportTypeId: TYPE, name: "YTOM reach basic", createTime: "2026-10-01T21:05:54Z", expireTime: null };
         return { job, created: !opts.existingJob };
       },
@@ -94,6 +99,15 @@ function createFixture(opts: {
       },
       async getCoverage() {
         return opts.coverage ?? { firstDate: null, lastDate: null, importedFiles: 0 };
+      },
+      async recordAttempt(args) {
+        calls.attempts.push(args);
+      },
+      async getAttempt() {
+        return opts.storedAttempt ?? null;
+      },
+      async listFiles() {
+        return opts.storedFiles ?? [];
       },
     },
     channelAccess: {
@@ -302,4 +316,128 @@ test("a manual sync (no onlyIfDue) always runs, even right after a check", async
   const result = await services.syncReachReports(SYNC);
   assert.equal(result.skipped, false);
   assert.equal(calls.ensureJob, 1);
+});
+
+// ---- sync-attempt recording and status (BL-114 follow-up: the owner asked for the job/files status in Analytics) ----
+
+test("syncReachReports records an 'ok' attempt with the counts, and a 'partial' one listing the failed files", async () => {
+  const ok = createFixture({
+    reports: [reportFile("a", "2026-10-03T03:00:00Z", "2026-10-01")],
+    files: { a: csvFor("UC_X", ["20261001,{c},vidA,1,0.1"]) },
+  });
+  await ok.services.syncReachReports(SYNC);
+  assert.deepEqual(ok.calls.attempts, [
+    { channelId: "UC_X", reportTypeId: TYPE, outcome: "ok", error: null, filesListed: 1, filesImported: 1, failures: [] },
+  ]);
+
+  const partial = createFixture({
+    reports: [reportFile("a", "2026-10-03T03:00:00Z", "2026-10-01"), reportFile("b", "2026-10-04T03:00:00Z", "2026-10-02")],
+    files: { a: csvFor("UC_X", ["20261001,{c},vidA,1,0.1"]), b: new Error("HTTP 503") },
+  });
+  await partial.services.syncReachReports(SYNC);
+  assert.equal(partial.calls.attempts.length, 1);
+  assert.equal(partial.calls.attempts[0].outcome, "partial");
+  assert.deepEqual(partial.calls.attempts[0].failures, [{ reportId: "b", error: "HTTP 503" }]);
+  assert.equal(partial.calls.attempts[0].filesImported, 1);
+});
+
+test("syncReachReports: a failure before any file (e.g. API error) is recorded as 'failed' with the message AND still thrown", async () => {
+  const { services, calls } = createFixture({ ensureJobError: new Error("Reporting API has not been used in project") });
+  await assert.rejects(services.syncReachReports(SYNC), /Reporting API has not been used/);
+  assert.deepEqual(calls.attempts, [
+    { channelId: "UC_X", reportTypeId: TYPE, outcome: "failed", error: "Reporting API has not been used in project", filesListed: 0, filesImported: 0, failures: [] },
+  ]);
+});
+
+test("syncReachReports: a wrong-channel call records nothing (the channel check fails closed before any attempt)", async () => {
+  const { services, calls } = createFixture({ activeChannelId: "UC_OTHER" });
+  await assert.rejects(services.syncReachReports(SYNC), (e: unknown) => e instanceof DomainError);
+  assert.deepEqual(calls.attempts, []);
+});
+
+test("onlyIfDue: a recent FAILED attempt does not throttle (its cause is fixable); a recent partial/ok attempt does, until 6 hours have passed", async () => {
+  const base = { error: null, filesListed: 1, filesImported: 1, failures: [] };
+  const failed = createFixture({
+    storedAttempt: { ...base, attemptedAt: new Date("2026-10-03T11:59:00Z"), outcome: "failed", error: "reads disabled" },
+    now: new Date("2026-10-03T12:00:00Z"),
+    reports: [],
+  });
+  const ranAfterFailure = await failed.services.syncReachReports({ ...SYNC, onlyIfDue: true });
+  assert.ok(!ranAfterFailure.skipped, "a failed attempt one minute ago must not block the retry");
+  assert.equal(failed.calls.ensureJob, 1);
+
+  const okAttempt = { ...base, attemptedAt: new Date("2026-10-03T08:00:00Z"), outcome: "partial" as const };
+  const recent = createFixture({ storedAttempt: okAttempt, now: new Date("2026-10-03T13:59:00Z") });
+  assert.deepEqual(await recent.services.syncReachReports({ ...SYNC, onlyIfDue: true }), {
+    skipped: true,
+    reason: "checked_recently",
+    lastCheckedAt: "2026-10-03T08:00:00.000Z",
+  });
+  assert.equal(recent.calls.ensureJob, 0);
+
+  const due = createFixture({ storedAttempt: okAttempt, now: new Date("2026-10-03T14:00:00Z"), reports: [] });
+  assert.ok(!(await due.services.syncReachReports({ ...SYNC, onlyIfDue: true })).skipped);
+});
+
+test("getReachStatus with no job: everything null/empty, never overdue", async () => {
+  const { services } = createFixture();
+  assert.deepEqual(await services.getReachStatus(SYNC), {
+    channelId: "UC_X",
+    job: null,
+    firstFileExpectedBy: null,
+    firstFileOverdue: false,
+    lastAttempt: null,
+    nextAutoCheckAt: null,
+    importedFiles: 0,
+    files: [],
+  });
+});
+
+test("getReachStatus: job created 2026-10-01T21:05:54Z expects the first file by +48h (2026-10-03T21:05:54Z); not overdue before it, overdue after", async () => {
+  const storedJob = { jobId: "job-1", jobCreatedAt: "2026-10-01T21:05:54Z", lastCheckedAt: null };
+  const before = await createFixture({ storedJob, now: new Date("2026-10-03T21:05:54Z") }).services.getReachStatus(SYNC);
+  assert.equal(before.firstFileExpectedBy, "2026-10-03T21:05:54.000Z");
+  assert.equal(before.firstFileOverdue, false, "exactly at the deadline is not yet overdue");
+  const after = await createFixture({ storedJob, now: new Date("2026-10-03T21:05:55Z") }).services.getReachStatus(SYNC);
+  assert.equal(after.firstFileOverdue, true);
+  assert.deepEqual(after.job, { jobId: "job-1", createdAt: "2026-10-01T21:05:54Z" });
+});
+
+test("getReachStatus: once a file is imported it is never 'overdue'; next auto check = last attempt + 6h; files and attempt are passed through", async () => {
+  const { services } = createFixture({
+    storedJob: { jobId: "job-1", jobCreatedAt: "2026-10-01T21:05:54Z", lastCheckedAt: new Date("2026-10-03T10:00:00Z") },
+    storedAttempt: {
+      attemptedAt: new Date("2026-10-03T12:00:00Z"),
+      outcome: "partial",
+      error: null,
+      filesListed: 2,
+      filesImported: 1,
+      failures: [{ reportId: "b", error: "HTTP 503" }],
+    },
+    coverage: { firstDate: "2026-10-01", lastDate: "2026-10-01", importedFiles: 1 },
+    storedFiles: [
+      { reportId: "a", startTime: "2026-10-01T07:00:00Z", endTime: "2026-10-02T07:00:00Z", createTime: "2026-10-03T03:00:00Z", rowCount: 7, status: "imported", importedAt: new Date("2026-10-03T12:00:01Z") },
+    ],
+    now: new Date("2026-10-09T00:00:00Z"),
+  });
+  const status = await services.getReachStatus(SYNC);
+  assert.equal(status.firstFileOverdue, false);
+  assert.equal(status.nextAutoCheckAt, "2026-10-03T18:00:00.000Z");
+  assert.equal(status.importedFiles, 1);
+  assert.deepEqual(status.lastAttempt, {
+    at: "2026-10-03T12:00:00.000Z",
+    outcome: "partial",
+    error: null,
+    filesListed: 2,
+    filesImported: 1,
+    failures: [{ reportId: "b", error: "HTTP 503" }],
+  });
+  assert.deepEqual(status.files, [
+    { reportId: "a", startTime: "2026-10-01T07:00:00Z", endTime: "2026-10-02T07:00:00Z", createTime: "2026-10-03T03:00:00Z", rowCount: 7, status: "imported", importedAt: "2026-10-03T12:00:01.000Z" },
+  ]);
+});
+
+test("getReachStatus rejects a channel that is not the active one", async () => {
+  const { services } = createFixture({ activeChannelId: "UC_OTHER" });
+  await assert.rejects(services.getReachStatus(SYNC), (e: unknown) => e instanceof DomainError);
 });

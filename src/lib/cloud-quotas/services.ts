@@ -92,7 +92,7 @@ export function createCloudQuotasServices(deps: ServiceDependencies) {
     async getQuotaStatus(): Promise<CloudQuotaStatus> {
       const connectionStatus = await deps.cloudConnection.getStatus();
       if (!connectionStatus.connected || !deps.projectNumber) {
-        return { connected: connectionStatus.connected, dataApi: null, analytics: null, monitoring: null };
+        return { connected: connectionStatus.connected, dataApi: null, analytics: null, reporting: null, monitoring: null };
       }
 
       // A Cloud connection whose token can no longer be refreshed (revoked/expired grant) degrades
@@ -103,17 +103,18 @@ export function createCloudQuotasServices(deps: ServiceDependencies) {
       try {
         ({ accessToken } = await deps.cloudConnection.resolveCloudCredentials());
       } catch {
-        return { connected: true, dataApi: null, analytics: null, monitoring: null };
+        return { connected: true, dataApi: null, analytics: null, reporting: null, monitoring: null };
       }
       const projectNumber = deps.projectNumber;
 
-      const [dataApi, analytics, monitoring] = await Promise.all([
+      const [dataApi, analytics, reporting, monitoring] = await Promise.all([
         fetchServiceQuota({ service: "youtube.googleapis.com", accessToken, projectNumber, deps }),
         fetchServiceQuota({ service: "youtubeanalytics.googleapis.com", accessToken, projectNumber, deps }),
+        fetchServiceQuota({ service: "youtubereporting.googleapis.com", accessToken, projectNumber, deps }),
         fetchMonitoringOwnQuota({ accessToken, projectNumber, deps }),
       ]);
 
-      return { connected: true, dataApi, analytics, monitoring };
+      return { connected: true, dataApi, analytics, reporting, monitoring };
     },
   };
 }

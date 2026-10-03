@@ -107,6 +107,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   video_metrics_daily: authorized("YouTube Analytics API data for our channels"),
   channel_reach_daily: authorized("YouTube Reporting API Reach data for our channels (III.E.4.b: Reporting API data)"),
   reporting_report_files: authorized("Reporting API file ledger for our channels: ids and timestamps, no content"),
+  reporting_sync_attempts: authorized("last Reporting API sync attempt per our channel: time, outcome, error text, no YouTube content"),
   reporting_jobs: authorized("Reporting API job per our channel: ids and timestamps, no content"),
   analytics_collection_runs: authorized("bookkeeping of our own analytics collection"),
   analytics_weekly_reports: authorized("reports built from our own analytics"),

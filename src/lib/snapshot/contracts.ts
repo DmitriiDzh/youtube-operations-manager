@@ -173,6 +173,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   wikipedia_pageviews_daily: "re-fetchable cache of Wikimedia page views (Phase 13.8)",
   reporting_jobs: "Reporting API job bookkeeping for this device (BL-114); Google is the source of truth",
   reporting_report_files: "ledger of Reporting API files this device downloaded (BL-114)",
+  reporting_sync_attempts: "last Reporting API sync attempt of this device (BL-114): time, outcome, error text",
   channel_reach_daily: "accepted limitation (RISK-52, same as video_metrics_daily): collected impressions/CTR stay local (BL-114)",
 });
 
