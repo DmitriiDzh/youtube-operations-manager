@@ -766,3 +766,45 @@ test("getPublicVideoStatsBatch parses the documented batchGetStats response (sni
   ]);
   assert.equal(requested!.url, "https://www.googleapis.com/youtube/v3/videos:batchGetStats");
 });
+
+// Progress callbacks (ADR 0015): optional, additive, never change what is requested or returned.
+test("getVideosMetadataContextBatch reports (done, total) after each chunk of 50, ending at the total", async () => {
+  const reports: Array<[number, number]> = [];
+  const youtube = fakeYoutubeClient({
+    videosList: (async (args: { id?: string[] }) => ({
+      data: { items: (args.id ?? []).map((id) => ({ id, etag: id, snippet: { title: id, publishedAt: "2026-01-01T00:00:00.000Z" }, status: { privacyStatus: "public" } })) },
+    })) as unknown as youtube_v3.Youtube["videos"]["list"],
+  });
+  const ids = Array.from({ length: 120 }, (_, i) => `v${i + 1}`);
+
+  const results = await getVideosMetadataContextBatch(youtube, ids, { onProgress: (done, total) => reports.push([done, total]) });
+
+  assert.equal(results.length, 120);
+  assert.deepEqual(reports, [[50, 120], [100, 120], [120, 120]]);
+});
+
+test("getVideosMetadataContextBatch without a callback behaves exactly as before", async () => {
+  const youtube = fakeYoutubeClient({
+    videosList: (async (args: { id?: string[] }) => ({
+      data: { items: (args.id ?? []).map((id) => ({ id, etag: id, snippet: { title: id, publishedAt: "2026-01-01T00:00:00.000Z" }, status: { privacyStatus: "public" } })) },
+    })) as unknown as youtube_v3.Youtube["videos"]["list"],
+  });
+  assert.equal((await getVideosMetadataContextBatch(youtube, ["a", "b"])).length, 2);
+});
+
+test("listUploadsPlaylistVideoIds reports the running count of unique ids after each page", async () => {
+  const pages = [
+    { items: [{ contentDetails: { videoId: "a" } }, { contentDetails: { videoId: "b" } }], nextPageToken: "p2" },
+    { items: [{ contentDetails: { videoId: "b" } }, { contentDetails: { videoId: "c" } }], nextPageToken: undefined },
+  ];
+  let call = 0;
+  const youtube = fakeYoutubeClient({
+    playlistItemsList: (async () => ({ data: pages[call++] })) as unknown as youtube_v3.Youtube["playlistItems"]["list"],
+  });
+  const found: number[] = [];
+
+  const ids = await listUploadsPlaylistVideoIds(youtube, "UU1", { onPage: (n) => found.push(n) });
+
+  assert.deepEqual(ids, ["a", "b", "c"]);
+  assert.deepEqual(found, [2, 3], "the duplicate b on page 2 is not counted twice");
+});

@@ -27,17 +27,19 @@ export function createChannelSyncYoutubeApiAdapter() {
     async listUploadsPlaylistVideoIds(args: {
       credentials: ResolvedCredentials;
       uploadsPlaylistId: string;
+      onPage?: (found: number) => void;
     }) {
       const youtube = await createAuthorizedClient(args.credentials);
-      return listUploadsPlaylistVideoIds(youtube, args.uploadsPlaylistId);
+      return listUploadsPlaylistVideoIds(youtube, args.uploadsPlaylistId, { onPage: args.onPage });
     },
 
     async getVideosMetadataBatch(args: {
       credentials: ResolvedCredentials;
       videoIds: string[];
+      onProgress?: (done: number, total: number) => void;
     }) {
       const youtube = await createAuthorizedClient(args.credentials);
-      return getVideosMetadataContextBatch(youtube, args.videoIds);
+      return getVideosMetadataContextBatch(youtube, args.videoIds, { onProgress: args.onProgress });
     },
   };
 }

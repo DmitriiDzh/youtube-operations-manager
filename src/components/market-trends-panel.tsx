@@ -5,6 +5,7 @@ import { MarketChannelAssignment } from "./market-channel-assignment";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import { LoadingIndicator } from "./operation-progress";
 
 type TrendCandidateStatus = "emerging" | "growing" | "established" | "declining" | "stale";
 type TrendEvidenceType = "supporting_channel" | "supporting_video" | "signal";
@@ -307,7 +308,7 @@ export function MarketTrendsPanel() {
                   <p className="mb-1 text-xs font-medium text-zinc-400">
                     Evidence {evidence.length > 0 && `(${independentChannelCount} independent channel${independentChannelCount === 1 ? "" : "s"})`}
                   </p>
-                  {evidenceLoading && <p className="text-xs text-zinc-500">Loading...</p>}
+                  {evidenceLoading && <LoadingIndicator className="text-xs text-zinc-500" />}
                   {!evidenceLoading && evidence.length === 0 && <p className="text-xs text-zinc-500">No evidence yet.</p>}
                   {!evidenceLoading && evidence.some((row) => row.evidenceType === "supporting_video") && (
                     <div className="mb-2">

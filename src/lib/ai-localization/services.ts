@@ -1,3 +1,4 @@
+import type { ProgressReporter } from "@/lib/operation-progress";
 import {
   YOUTUBE_DESCRIPTION_MAX_LENGTH,
   YOUTUBE_TITLE_MAX_LENGTH,
@@ -251,8 +252,9 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
      * proposals. Persists nothing -- mirrors `changesets.previewImport`'s "preview
      * only" contract.
      */
-    async generateProposals(input: unknown): Promise<GenerationResult> {
+    async generateProposals(input: unknown, options: { progress?: ProgressReporter } = {}): Promise<GenerationResult> {
       const parsedInput = parseWithSchema(generateProposalsInputSchema, input, "generate proposals input");
+      const progress = options.progress;
 
       try {
         const channel = await requireChannel(deps, parsedInput.channelId);
@@ -321,7 +323,18 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
         }
 
         const results: GeneratedTargetResult[] = [];
+        let cancelled = false;
+        progress?.stage("Generating translations");
         for (const target of targets) {
+          // Reported at the top of each iteration so every exit path of the loop body (a provider error,
+          // a thrown error, a normal result) is counted the same way.
+          progress?.counts(results.length, targets.length);
+          // Cooperative cancel (ADR 0015): checked BEFORE each target, so a paid provider call is never
+          // made after the operator asked to stop.
+          if (progress?.isCancelRequested()) {
+            cancelled = true;
+            break;
+          }
           // A provider is untrusted, out-of-process (in spirit) code: it can throw
           // synchronously or reject its promise instead of resolving to a
           // { status: "error" } outcome (network timeout, thrown exception, bug).
@@ -381,6 +394,7 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
             usage: outcome.usage ?? null,
           });
         }
+        progress?.counts(results.length, targets.length);
 
         const allFields = results.flatMap((r) => r.fields);
         const summary: GenerationSummary = {
@@ -390,6 +404,7 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
           validProposals: allFields.filter((f) => f.validationStatus === "valid" && f.changeType !== "unchanged").length,
           invalidProposals: allFields.filter((f) => f.validationStatus === "invalid").length,
           unchangedProposals: allFields.filter((f) => f.validationStatus === "valid" && f.changeType === "unchanged").length,
+          ...(cancelled ? { targetsSkipped: targets.length - results.length } : {}),
         };
 
         deps.logger.info({
@@ -397,7 +412,7 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
           context: { channelId: channel.channelId, ...summary },
         });
 
-        return { results, errors, summary, generationContext };
+        return { results, errors, summary, ...(cancelled ? { cancelled: true } : {}), generationContext };
       } catch (error) {
         const mapped = mapUnknownError(error, "generation_failed");
         deps.logger.error({ event: "ai_localization.generate.error", context: { code: mapped.code } });

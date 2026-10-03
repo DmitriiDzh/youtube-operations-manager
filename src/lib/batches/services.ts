@@ -35,6 +35,7 @@ import {
   type PendingChange,
 } from "./merge";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
+import { beginBatchExecution, endBatchExecution, isBatchCancelRequested, requestBatchCancelFlag } from "./execution-control";
 import type { CredentialRef, ResolvedCredentials } from "@/lib/shared-domain";
 
 type BatchStoreDeps = {
@@ -88,7 +89,7 @@ type AuditDeps = {
     batchId: string;
     ledgerRowId: string;
     videoId: string;
-    eventType: "PREPARATION" | "ATTEMPT" | "RESULT" | "CONFLICT" | "VERIFICATION" | "DRY_RUN" | "RECONCILIATION";
+    eventType: "PREPARATION" | "ATTEMPT" | "RESULT" | "CONFLICT" | "VERIFICATION" | "DRY_RUN" | "RECONCILIATION" | "CANCELLED";
     detail: unknown;
   }): Promise<void>;
 };
@@ -178,6 +179,14 @@ type ServiceDependencies = {
    * a single read (what unit tests rely on); production wiring (`index.ts`) supplies real delays.
    */
   verifyRetryDelaysMs?: number[];
+  /**
+   * The same device-availability gate `src/proxy.ts` applies to a mutating request (docs/TECHNICAL_DEBT.md
+   * RISK-94). The proxy only sees the START of `execute`; this is called before every row that has not
+   * started, so an export / import / unavailable device appearing mid-run stops the remaining rows
+   * instead of letting a long run write on. Throws to refuse. Optional so tests and any other wiring
+   * keep their behavior.
+   */
+  assertMutationAllowed?: () => Promise<void>;
   idGenerator: () => string;
   logger: {
     info(payload: { event: string; context?: Record<string, unknown> }): void;
@@ -664,6 +673,40 @@ export function createBatchServices(deps: ServiceDependencies) {
   }
 
   /**
+   * Cancels ONE row that has not begun an attempt (ADR 0016): moves it to the terminal CANCELLED
+   * state, releases its video lock and records a CANCELLED audit event. Returns whether the row was
+   * actually transitioned -- a concurrent worker may have moved it first, and the caller must report
+   * what was persisted, not what it hoped for (RISK-31).
+   */
+  async function cancelNotStartedRow(batch: StoredBatchRecord, row: StoredLedgerRowRecord): Promise<boolean> {
+    if (row.status !== "PENDING" && row.status !== "AWAITING_EXECUTION") return false;
+    const transitioned = await batchStore.transitionLedgerRowStatus({ ledgerRowId: row.id, from: [row.status], to: "CANCELLED" });
+    // Only when the guarded transition really happened: a false result means the row is no longer in the
+    // status seen here (a concurrent worker may already have moved it to APPLYING), and releasing the
+    // lock of a row whose write is in flight would break per-video exclusivity. A PENDING row never
+    // held the lock, so this is a safe no-op for it.
+    if (transitioned) {
+      await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
+      await audit.record({
+        batchId: batch.id,
+        ledgerRowId: row.id,
+        videoId: row.videoId,
+        eventType: "CANCELLED",
+        detail: { previousStatus: row.status, reason: "cancelled by the operator before this video was written" },
+      });
+    }
+    return transitioned;
+  }
+
+  /** Asks the execution of `batchId` running IN THIS PROCESS to stop before its next row. Refused
+   * (`accepted: false`) when nothing is executing -- never leaves a flag behind for a later run. */
+  async function requestBatchCancel(batchId: string): Promise<{ accepted: boolean }> {
+    const accepted = requestBatchCancelFlag(batchId);
+    if (accepted) logger.info({ event: "batch.cancel_requested", context: { batchId } });
+    return { accepted };
+  }
+
+  /**
    * Batch-level orchestration entry point for Slice 2. Order, per the approved plan:
    * claim (AC-CONCURRENCY-02/03) -> identity check (AC-GUARD-01, whole batch fails
    * closed before any write/backup) -> backup-infrastructure health (AC-BACKUP-04, whole
@@ -739,6 +782,38 @@ export function createBatchServices(deps: ServiceDependencies) {
     const outcomes: PreparedRowOutcome[] = [];
 
     for (const row of ledgerRows) {
+      // ADR 0016: a cancel stops preparation before the next row; the rest end CANCELLED.
+      if (isBatchCancelRequested(input.batchId)) {
+        if (await cancelNotStartedRow(batch, row)) {
+          outcomes.push({ ledgerRowId: row.id, videoId: row.videoId, status: "CANCELLED" });
+        }
+        continue;
+      }
+      // RISK-94: preparation writes local state (ledger, locks, backups) -- stop if the device became
+      // unavailable for mutation (export/import running) since the batch started.
+      if (deps.assertMutationAllowed) {
+        let refusal: string | null = null;
+        try {
+          await deps.assertMutationAllowed();
+        } catch (error) {
+          refusal = error instanceof Error ? error.message : String(error);
+        }
+        if (refusal !== null) {
+          for (const pending of await batchStore.listLedgerRowsByBatch(input.batchId)) {
+            if (pending.status === "PENDING" || pending.status === "AWAITING_EXECUTION") {
+              const aborted = await batchStore.transitionLedgerRowStatus({ ledgerRowId: pending.id, from: [pending.status], to: "ABORTED_SYSTEMIC" });
+              if (aborted) await releaseVideoLock({ batchId: batch.id, videoId: pending.videoId });
+            }
+          }
+          await batchStore.markBatchTerminal(input.batchId, "ABORTED");
+          logger.error({ event: "batch.aborted_systemic", context: { batchId: input.batchId, reason: "device_unavailable", detail: refusal } });
+          throw new DomainError({
+            code: "device_unavailable",
+            message: `Batch stopped before writing: ${refusal}`,
+            details: { batchId: input.batchId },
+          });
+        }
+      }
       try {
         outcomes.push(await prepareLedgerRow({ row, batch, credentials }));
       } catch (error) {
@@ -1383,6 +1458,22 @@ export function createBatchServices(deps: ServiceDependencies) {
     expectedChannelId?: string;
     executor: WriteExecutor;
   }): Promise<BatchExecutionSummary> {
+    // Registers this run so `requestBatchCancel` can reach it, and (always) unregisters it so no
+    // cancel flag can outlive the run.
+    const token = beginBatchExecution(input.batchId);
+    try {
+      return await executeBatchRun(input);
+    } finally {
+      endBatchExecution(input.batchId, token);
+    }
+  }
+
+  async function executeBatchRun(input: {
+    batchId: string;
+    credentialRef: CredentialRef;
+    expectedChannelId?: string;
+    executor: WriteExecutor;
+  }): Promise<BatchExecutionSummary> {
     const initialBatch = await requireBatch(input.batchId);
     if (initialBatch.status === "PENDING") {
       await prepareBatchExecution({
@@ -1418,8 +1509,38 @@ export function createBatchServices(deps: ServiceDependencies) {
     const rows = await batchStore.listLedgerRowsByBatch(input.batchId);
     const results: ExecutionResult[] = new Array(rows.length);
     let haltedSystemically = false;
+    let cancelObserved = false;
 
     async function processRow(row: StoredLedgerRowRecord, index: number): Promise<void> {
+      const notStarted = row.status === "PENDING" || row.status === "AWAITING_EXECUTION";
+
+      // ADR 0016: a cancel is honoured BEFORE a row starts. A row already in flight is never touched.
+      if (!haltedSystemically && notStarted && isBatchCancelRequested(input.batchId)) {
+        cancelObserved = true;
+        if (await cancelNotStartedRow(batch, row)) {
+          results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: "CANCELLED" };
+        } else {
+          const current = await batchStore.getLedgerRow(row.id);
+          results[index] = current
+            ? { ledgerRowId: row.id, videoId: row.videoId, status: current.status, detail: current.error ?? undefined }
+            : { ledgerRowId: row.id, videoId: row.videoId, status: "CANCELLED", detail: "ledger row disappeared" };
+        }
+        return;
+      }
+
+      // RISK-94: the proxy gated only the START of execute; re-check the device before every row.
+      if (!haltedSystemically && notStarted && deps.assertMutationAllowed) {
+        try {
+          await deps.assertMutationAllowed();
+        } catch (error) {
+          haltedSystemically = true;
+          logger.error({
+            event: "batch.systemic_failure_mid_execution",
+            context: { batchId: batch.id, ledgerRowId: row.id, detail: `device unavailable: ${error instanceof Error ? error.message : String(error)}` },
+          });
+        }
+      }
+
       if (haltedSystemically) {
         if (row.status === "PENDING" || row.status === "AWAITING_EXECUTION") {
           // RISK-31 (docs/TECHNICAL_DEBT.md): `row` is the in-memory snapshot taken before this
@@ -1433,6 +1554,10 @@ export function createBatchServices(deps: ServiceDependencies) {
             to: "ABORTED_SYSTEMIC",
           });
           if (transitioned) {
+            // A terminal row must not hold its video lock (see recoverLedgerRow). Prepared rows
+            // (AWAITING_EXECUTION) hold one; without this a halted batch left its videos locked and
+            // every later batch for them failed with video_locked (RISK-90: no UI way to clear it).
+            await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
             results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: "ABORTED_SYSTEMIC" };
           } else {
             const current = await batchStore.getLedgerRow(row.id);
@@ -1538,13 +1663,16 @@ export function createBatchServices(deps: ServiceDependencies) {
 
     await runWithConcurrencyLimit(rows, batch.concurrency, processRow);
 
-    if (!haltedSystemically) {
+    // Rows cancelled during PREPARATION (before this loop) show up as CANCELLED results too.
+    const cancelled = cancelObserved || results.some((result) => result?.status === "CANCELLED");
+
+    if (!haltedSystemically && !cancelled) {
       await batchStore.markBatchTerminal(input.batchId, "COMPLETED");
     } else {
       await batchStore.markBatchTerminal(input.batchId, "ABORTED");
     }
 
-    return { batchId: input.batchId, results, haltedSystemically };
+    return { batchId: input.batchId, results, haltedSystemically, cancelled };
   }
 
   /** Downloadable error report (AC-ISOLATION-03): every non-successful item, with detail. */
@@ -1587,6 +1715,9 @@ export function createBatchServices(deps: ServiceDependencies) {
     prepareBatchExecution,
     executeWithRetry,
     executeBatch,
+    requestBatchCancel,
+    /** Test seam only: exposes the single-row cancel helper so the lost-race case can be driven directly. */
+    cancelNotStartedRowForTest: async (batchId: string, row: StoredLedgerRowRecord) => cancelNotStartedRow(await requireBatch(batchId), row),
     resolveUnknownLedgerRow,
     recoverLedgerRow,
     recoverBatch,

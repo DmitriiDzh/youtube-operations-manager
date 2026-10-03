@@ -6,6 +6,8 @@ import { formatDisplayDate, formatDisplayDateTime, resolvePublishDate } from "@/
 import { VideoDetailModal } from "./video-detail-modal";
 import { ChangeSetReview } from "./change-set-review";
 import { ConfirmDialog } from "./confirm-dialog";
+import { postChannelSync } from "./channel-sync-client";
+import { OperationOverlay, useOperation } from "./operation-progress";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -224,6 +226,8 @@ type GenerateScope = { kind: "bulk" } | { kind: "row"; videoId: string };
  * (docs/TECHNICAL_DEBT.md RISK-09).
  */
 export function LanguagesManager() {
+  const op = useOperation();
+  const { runBlocking, attach } = op;
   const [channelId, setChannelId] = useState("");
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -475,24 +479,56 @@ export function LanguagesManager() {
     setSyncing(true);
     setError(null);
     try {
-      const res = await fetch("/api/channels/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channelId }),
+      const { res, data } = await runBlocking({
+        title: "Syncing the channel from YouTube",
+        track: { channelId, kind: "channel-sync" },
+        quotaServices: ["dataApi"],
+        request: () => postChannelSync(channelId, { onConflict: "retry" }),
+        failureOf: ({ res, data }) => (res.ok ? null : String(data?.message ?? data?.error ?? `Error ${res.status}`)),
+        summarize: ({ data }) =>
+          typeof data?.videoCount === "number" ? `${data.videoCount} video${data.videoCount === 1 ? "" : "s"} synced.` : null,
       });
-      const data = await res.json();
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(String(data?.message ?? data?.error ?? `Error ${res.status}`));
         return;
       }
-      setLastSyncedAt(data.channel?.lastSyncedAt ?? null);
+      setLastSyncedAt((data?.channel as { lastSyncedAt?: string } | undefined)?.lastSyncedAt ?? null);
       await Promise.all([fetchOverview(channelId), fetchChangeSets(channelId)]);
     } catch (e) {
       setError(String(e));
     } finally {
       setSyncing(false);
     }
-  }, [channelId, fetchOverview, fetchChangeSets]);
+  }, [channelId, fetchOverview, fetchChangeSets, runBlocking]);
+
+  // After a reload, follow a sync the server is still running for this channel (ADR 0015). Syncs only --
+  // see the same note in content-manager.tsx for why an AI generation is not re-attached.
+  useEffect(() => {
+    if (!channelId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/operations?channelId=${encodeURIComponent(channelId)}&kind=channel-sync&active=1`);
+        if (!res.ok || cancelled) return;
+        const running = ((await res.json()).operations ?? [])[0] as { id: string } | undefined;
+        if (!running || cancelled) return;
+        setSyncing(true);
+        attach(running.id, {
+          title: "Syncing the channel from YouTube",
+          quotaServices: ["dataApi"],
+          onFinished: () => {
+            setSyncing(false);
+            void Promise.all([fetchOverview(channelId), fetchChangeSets(channelId)]);
+          },
+        });
+      } catch {
+        // Nothing to re-attach to.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [channelId, attach, fetchOverview, fetchChangeSets]);
 
   useEffect(() => {
     (async () => {
@@ -754,16 +790,31 @@ export function LanguagesManager() {
       generateScope.kind === "row" ? `video ${generateScope.videoId}` : `${selectedIdsRef.current.size} selected video(s)`;
     setGenerating(true);
     try {
-      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/ai-localization/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          videoIds,
-          targetLanguages: languages,
-          ...(connectionId ? { connectionId } : {}),
-        }),
+      // Shown in the progress overlay with Cancel (ADR 0015): a real connection is paid, and Cancel
+      // stops the provider being called for the remaining targets; what finished is kept.
+      const { res, data } = await runBlocking({
+        title: "Generating translations",
+        track: { channelId, kind: "ai-generation" },
+        cancellable: true,
+        request: async () => {
+          const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/ai-localization/generate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              videoIds,
+              targetLanguages: languages,
+              ...(connectionId ? { connectionId } : {}),
+            }),
+          });
+          return { res, data: (await res.json()) as GenerationResponse & { message?: string; cancelled?: boolean; summary?: { targetsGenerated?: number; targetsSkipped?: number } } };
+        },
+        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? "Generation failed")),
+        outcomeOf: ({ data }) => (data.cancelled === true ? "cancelled" : "success"),
+        summarize: ({ data }) =>
+          data.cancelled
+            ? `Stopped: ${data.summary?.targetsGenerated ?? 0} generated, ${data.summary?.targetsSkipped ?? 0} not started.`
+            : `${data.summary?.targetsGenerated ?? 0} generated.`,
       });
-      const data = (await res.json()) as GenerationResponse & { message?: string };
       if (!res.ok) {
         // Surfaced unconditionally, even for an abandoned/superseded session (round-3
         // independent-review finding, 2026-09-21: a real provider failure -- quota, invalid key,
@@ -1221,6 +1272,7 @@ export function LanguagesManager() {
 
   return (
     <div className="space-y-4">
+      <OperationOverlay state={op.state} onCancel={op.requestCancel} onClose={op.reset} />
       {!channelId && <p className="text-sm text-zinc-400">No channel synchronized yet.</p>}
 
       {error && (

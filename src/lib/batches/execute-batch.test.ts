@@ -224,6 +224,10 @@ function createHarness(options: {
    * to assert the real relative order across the createBatch/executeBatch call boundary --
    * not just that both happen somewhere in the pipeline. */
   calls?: Array<{ type: "backup" | "write"; videoId: string }>;
+  /** Called from captureBackup (the preparation phase) with the video being prepared. */
+  onBackup?: (videoId: string) => void;
+  /** The device-availability gate, checked before every not-yet-started row (RISK-94). */
+  assertMutationAllowed?: () => Promise<void>;
 } = {}) {
   const store = createFakeStore();
   let counter = 0;
@@ -277,6 +281,7 @@ function createHarness(options: {
       },
       async captureBackup(args: { videoId: string }) {
         options.calls?.push({ type: "backup", videoId: args.videoId });
+        options.onBackup?.(args.videoId);
         return { path: "/fake/backup.json", capturedAt: new Date().toISOString() };
       },
     },
@@ -287,6 +292,7 @@ function createHarness(options: {
     },
     clock: { async wait() {} }, // instant in tests -- no real backoff/reconciliation delay
     verifyRetryDelaysMs: options.verifyRetryDelaysMs,
+    assertMutationAllowed: options.assertMutationAllowed,
     idGenerator: () => `id-${++counter}`,
     logger: { info() {}, error() {} },
   });
@@ -880,4 +886,299 @@ test("channel baseline (live): translations land but the read-back still has no 
   const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: scriptedExecutor([{ outcome: "SUCCESS" }]) });
 
   assert.equal(summary.results[0].status, "FAILED");
+});
+
+
+// ---------------------------------------------------------------------------
+// Batch Cancel (owner decision 2026-10-03: cancelled rows get the new terminal ledger status
+// CANCELLED; the batch ends ABORTED). Acceptance criteria, fixed from the requirement before any
+// implementation -- "stop BEFORE the next item, never interrupt a write already in flight":
+//
+// AC-CANCEL-01 a cancel requested while row 1 is being written lets row 1 finish and be verified
+//   (SUCCESS); every row not yet started becomes CANCELLED; no further write is attempted.
+// AC-CANCEL-02 a cancelled row holds no video lock afterwards.
+// AC-CANCEL-03 every cancelled row gets a CANCELLED audit event; a completed row does not.
+// AC-CANCEL-04 a cancel during the PREPARATION phase means no write is ever sent: nothing is
+//   written, rows end CANCELLED, the batch ends ABORTED.
+// AC-CANCEL-05 a cancel for a batch that is not being executed is refused (accepted:false) and
+//   leaves no stale flag: a later execution of the same batch is not affected by it.
+// AC-CANCEL-06 a cancel after completion is refused and changes nothing.
+// AC-CANCEL-07 a repeated cancel is harmless.
+// AC-CANCEL-08 rows already terminal (FAILED) are never rewritten to CANCELLED.
+// AC-CANCEL-09 with concurrency > 1 every in-flight write completes; every other row is CANCELLED;
+//   the number of writes sent equals the number of SUCCESS rows; nothing stays APPLYING.
+// AC-CANCEL-10 the state machine allows only PENDING and AWAITING_EXECUTION to become CANCELLED.
+// RISK-94 gate: a refusal from the device-availability gate before a not-yet-started row halts the
+//   batch systemically (ABORTED_SYSTEMIC for the rest) and no further write is sent.
+// ---------------------------------------------------------------------------
+
+import { ALLOWED_LEDGER_TRANSITIONS, TERMINAL_LEDGER_STATUSES } from "./contracts";
+
+function threeVideoBatch(harness: ReturnType<typeof createHarness>, extra: { concurrency?: number } = {}) {
+  return createApprovedBatch(harness, {
+    channelId: "UC_TEST",
+    dryRun: false,
+    ...extra,
+    selections: [
+      { videoId: "v1", changeIds: ["c1"] },
+      { videoId: "v2", changeIds: ["c2"] },
+      { videoId: "v3", changeIds: ["c3"] },
+    ],
+  } as Parameters<typeof createApprovedBatch>[1]);
+}
+
+const statusOf = (harness: ReturnType<typeof createHarness>, videoId: string) =>
+  [...harness.store.ledgerRows.values()].find((r) => r.videoId === videoId)!.status;
+
+test("AC-CANCEL-01/02/03: cancel during row 1's write -> row 1 SUCCESS, rows 2-3 CANCELLED, one write, no locks, CANCELLED audit events, batch ABORTED", async () => {
+  const harness = createHarness();
+  const batch = await threeVideoBatch(harness);
+  let writes = 0;
+  const executor: WriteExecutor = {
+    async attemptWrite() {
+      writes += 1;
+      // The operator presses Cancel while this (the first) write is in flight.
+      const cancel = await harness.services.requestBatchCancel(batch.id);
+      assert.equal(cancel.accepted, true);
+      return { outcome: "SUCCESS" };
+    },
+  };
+
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor });
+
+  assert.equal(writes, 1);
+  assert.equal(statusOf(harness, "v1"), "SUCCESS");
+  assert.equal(statusOf(harness, "v2"), "CANCELLED");
+  assert.equal(statusOf(harness, "v3"), "CANCELLED");
+  assert.equal(summary.cancelled, true);
+  assert.equal(summary.haltedSystemically, false);
+  assert.equal((await harness.services.getBatch(batch.id)).status, "ABORTED");
+
+  for (const videoId of ["v1", "v2", "v3"]) {
+    assert.equal(await harness.store.getVideoExecutionLockHolder(videoId), null, `${videoId} must hold no lock`);
+  }
+  const cancelledAudit = harness.auditEvents.filter((e) => e.eventType === "CANCELLED").map((e) => e.ledgerRowId);
+  const rowIdOf = (videoId: string) => [...harness.store.ledgerRows.values()].find((r) => r.videoId === videoId)!.id;
+  assert.deepEqual(cancelledAudit.sort(), [rowIdOf("v2"), rowIdOf("v3")].sort());
+});
+
+test("AC-CANCEL-04: cancel during preparation -> no write is ever sent, rows end CANCELLED, batch ABORTED", async () => {
+  let armed = false;
+  let batchIdForCancel = "";
+  const harness = createHarness({
+    onBackup: () => {
+      if (!armed) return;
+      armed = false; // the operator presses Cancel while the FIRST row is being prepared
+      void harness.services.requestBatchCancel(batchIdForCancel);
+    },
+  });
+  const batch = await threeVideoBatch(harness);
+  batchIdForCancel = batch.id;
+  armed = true; // arm only for execution: createBatch may also capture backups
+  let writes = 0;
+  const executor: WriteExecutor = {
+    async attemptWrite() {
+      writes += 1;
+      return { outcome: "SUCCESS" };
+    },
+  };
+
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor });
+
+  assert.equal(writes, 0, "no write may be sent after a cancel during preparation");
+  for (const videoId of ["v1", "v2", "v3"]) assert.equal(statusOf(harness, videoId), "CANCELLED");
+  assert.equal(summary.cancelled, true);
+  assert.equal((await harness.services.getBatch(batch.id)).status, "ABORTED");
+  for (const videoId of ["v1", "v2", "v3"]) assert.equal(await harness.store.getVideoExecutionLockHolder(videoId), null);
+});
+
+test("AC-CANCEL-05: cancel for a batch that is not being executed is refused and leaves no stale flag", async () => {
+  const harness = createHarness();
+  const batch = await threeVideoBatch(harness);
+
+  const refused = await harness.services.requestBatchCancel(batch.id);
+  assert.equal(refused.accepted, false);
+
+  let writes = 0;
+  const executor: WriteExecutor = {
+    async attemptWrite() {
+      writes += 1;
+      return { outcome: "SUCCESS" };
+    },
+  };
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor });
+  assert.equal(writes, 3);
+  assert.equal(summary.cancelled, false);
+  for (const videoId of ["v1", "v2", "v3"]) assert.equal(statusOf(harness, videoId), "SUCCESS");
+  assert.equal((await harness.services.getBatch(batch.id)).status, "COMPLETED");
+});
+
+test("AC-CANCEL-06: cancel after the batch completed is refused and changes nothing", async () => {
+  const harness = createHarness();
+  const batch = await threeVideoBatch(harness);
+  await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: scriptedExecutor([{ outcome: "SUCCESS" }, { outcome: "SUCCESS" }, { outcome: "SUCCESS" }]) });
+
+  assert.equal((await harness.services.requestBatchCancel(batch.id)).accepted, false);
+  for (const videoId of ["v1", "v2", "v3"]) assert.equal(statusOf(harness, videoId), "SUCCESS");
+  assert.equal((await harness.services.getBatch(batch.id)).status, "COMPLETED");
+});
+
+test("AC-CANCEL-07: a repeated cancel while executing is harmless", async () => {
+  const harness = createHarness();
+  const batch = await threeVideoBatch(harness);
+  const executor: WriteExecutor = {
+    async attemptWrite() {
+      await harness.services.requestBatchCancel(batch.id);
+      const again = await harness.services.requestBatchCancel(batch.id);
+      assert.equal(again.accepted, true);
+      return { outcome: "SUCCESS" };
+    },
+  };
+  await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor });
+  assert.equal(statusOf(harness, "v1"), "SUCCESS");
+  assert.equal(statusOf(harness, "v2"), "CANCELLED");
+  assert.equal(statusOf(harness, "v3"), "CANCELLED");
+});
+
+test("AC-CANCEL-08: a row that already ended FAILED stays FAILED when the batch is cancelled afterwards", async () => {
+  const harness = createHarness();
+  const batch = await threeVideoBatch(harness);
+  let call = 0;
+  const executor: WriteExecutor = {
+    async attemptWrite() {
+      call += 1;
+      if (call === 1) return { outcome: "FAILED", detail: "insufficient permissions", classification: "permanent" };
+      await harness.services.requestBatchCancel(batch.id);
+      return { outcome: "SUCCESS" };
+    },
+  };
+  await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor });
+  assert.equal(statusOf(harness, "v1"), "FAILED");
+  assert.equal(statusOf(harness, "v2"), "SUCCESS");
+  assert.equal(statusOf(harness, "v3"), "CANCELLED");
+});
+
+test("AC-CANCEL-09: with concurrency 2 every in-flight write completes, the rest are CANCELLED, writes == SUCCESS rows, nothing stays APPLYING", async () => {
+  const harness = createHarness();
+  const batch = await createApprovedBatch(harness, {
+    channelId: "UC_TEST",
+    dryRun: false,
+    concurrency: 2,
+    selections: [
+      { videoId: "v1", changeIds: ["c1"] },
+      { videoId: "v2", changeIds: ["c2"] },
+      { videoId: "v3", changeIds: ["c3"] },
+      { videoId: "v4", changeIds: ["c4"] },
+      { videoId: "v5", changeIds: ["c5"] },
+    ],
+  } as Parameters<typeof createApprovedBatch>[1]);
+  let writes = 0;
+  const executor: WriteExecutor = {
+    async attemptWrite() {
+      writes += 1;
+      await harness.services.requestBatchCancel(batch.id);
+      return { outcome: "SUCCESS" };
+    },
+  };
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor });
+
+  const statuses = [...harness.store.ledgerRows.values()].map((r) => r.status);
+  assert.ok(statuses.every((st) => st === "SUCCESS" || st === "CANCELLED"), `unexpected statuses: ${statuses.join(",")}`);
+  assert.equal(statuses.filter((st) => st === "SUCCESS").length, writes);
+  assert.ok(statuses.includes("CANCELLED"));
+  assert.equal(summary.cancelled, true);
+  assert.equal((await harness.services.getBatch(batch.id)).status, "ABORTED");
+  for (const videoId of ["v1", "v2", "v3", "v4", "v5"]) assert.equal(await harness.store.getVideoExecutionLockHolder(videoId), null);
+});
+
+test("AC-CANCEL-10: only PENDING and AWAITING_EXECUTION may become CANCELLED, and CANCELLED is terminal with no exits", () => {
+  const sources = (Object.keys(ALLOWED_LEDGER_TRANSITIONS) as LedgerStatus[]).filter((from) => ALLOWED_LEDGER_TRANSITIONS[from].includes("CANCELLED"));
+  assert.deepEqual(sources.sort(), ["AWAITING_EXECUTION", "PENDING"]);
+  assert.deepEqual(ALLOWED_LEDGER_TRANSITIONS.CANCELLED, []);
+  assert.equal(TERMINAL_LEDGER_STATUSES.has("CANCELLED"), true);
+});
+
+// The gate is consulted in BOTH phases (preparation also writes local state: ledger rows, locks,
+// backups). For three rows that is calls 1-3 during preparation, then one call per row during
+// execution (calls 4, 5, 6). The requirement is the same in both phases: a refusal stops every
+// further step and no write is sent after it.
+test("RISK-94 (execution phase): a refusal before the second row halts the rest and sends no more writes", async () => {
+  let gateCalls = 0;
+  const harness = createHarness({
+    assertMutationAllowed: async () => {
+      gateCalls += 1;
+      if (gateCalls === 5) throw new Error("An export is running"); // preparation: 1-3, execution: v1 = 4, v2 = 5
+    },
+  });
+  const batch = await threeVideoBatch(harness);
+  let writes = 0;
+  const executor: WriteExecutor = {
+    async attemptWrite() {
+      writes += 1;
+      return { outcome: "SUCCESS" };
+    },
+  };
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor });
+
+  assert.equal(writes, 1);
+  assert.equal(statusOf(harness, "v1"), "SUCCESS");
+  assert.equal(statusOf(harness, "v2"), "ABORTED_SYSTEMIC");
+  assert.equal(statusOf(harness, "v3"), "ABORTED_SYSTEMIC");
+  assert.equal(summary.haltedSystemically, true);
+  assert.equal((await harness.services.getBatch(batch.id)).status, "ABORTED");
+  // A terminal row must never hold a video lock (recoverLedgerRow's own design rule); a stranded lock
+  // would make every later batch for that video fail with video_locked, with no UI way to clear it.
+  for (const videoId of ["v1", "v2", "v3"]) {
+    assert.equal(await harness.store.getVideoExecutionLockHolder(videoId), null, `${videoId} must hold no lock after a halted batch`);
+  }
+});
+
+test("RISK-94 (preparation phase): a refusal while preparing aborts every unfinished row, releases the locks, sends no write and reports device_unavailable", async () => {
+  let gateCalls = 0;
+  const harness = createHarness({
+    assertMutationAllowed: async () => {
+      gateCalls += 1;
+      if (gateCalls === 2) throw new Error("An import is running");
+    },
+  });
+  const batch = await threeVideoBatch(harness);
+  let writes = 0;
+  const executor: WriteExecutor = {
+    async attemptWrite() {
+      writes += 1;
+      return { outcome: "SUCCESS" };
+    },
+  };
+
+  await assert.rejects(
+    () => harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor }),
+    (error: unknown) => error instanceof DomainError && error.code === "device_unavailable"
+  );
+
+  assert.equal(writes, 0);
+  for (const videoId of ["v1", "v2", "v3"]) {
+    assert.equal(statusOf(harness, videoId), "ABORTED_SYSTEMIC");
+    assert.equal(await harness.store.getVideoExecutionLockHolder(videoId), null);
+  }
+  assert.equal((await harness.services.getBatch(batch.id)).status, "ABORTED");
+});
+
+
+// Per-video exclusivity (AC-CONCURRENCY): a cancel races a worker that already moved the row on. If the
+// guarded transition to CANCELLED did not happen because the row is already APPLYING, its lock must stay.
+test("AC-CANCEL-11: a cancel that loses the race to a row already APPLYING neither rewrites it nor releases its lock", async () => {
+  const harness = createHarness();
+  const batch = await threeVideoBatch(harness);
+  // Prepare only (rows AWAITING_EXECUTION, locks held), then move v1 to APPLYING as a concurrent worker would.
+  await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } });
+  const v1 = [...harness.store.ledgerRows.values()].find((r) => r.videoId === "v1")!;
+  await harness.store.transitionLedgerRowStatus({ ledgerRowId: v1.id, from: ["AWAITING_EXECUTION"], to: "APPLYING" });
+  assert.notEqual(await harness.store.getVideoExecutionLockHolder("v1"), null);
+
+  // The cancel helper sees a stale in-memory snapshot (AWAITING_EXECUTION) of the row.
+  const cancelled = await harness.services.cancelNotStartedRowForTest(batch.id, { ...v1, status: "AWAITING_EXECUTION" });
+
+  assert.equal(cancelled, false);
+  assert.equal(statusOf(harness, "v1"), "APPLYING", "an in-flight row is never rewritten");
+  assert.notEqual(await harness.store.getVideoExecutionLockHolder("v1"), null, "its lock must stay while the write is in flight");
 });

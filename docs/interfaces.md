@@ -391,7 +391,11 @@ Key MCP tools:
     device-availability check as `channel_sync`/`apply`.
   - `batch_list` — `{ channelId }` → `{ batches: Batch[] }`
   - `batch_get` — `{ channelId, batchId }` → `{ batch, ledgerRows }`; verifies the batch belongs
-    to `channelId` via `requireBatchForChannel` before returning anything (`AGENTS.md` §F)
+    to `channelId` via `requireBatchForChannel` before returning anything (`AGENTS.md` §F).
+    A ledger row `status` is one of `PENDING`, `AWAITING_EXECUTION`, `APPLYING`, `SUCCESS`, `FAILED`,
+    `CONFLICT`, `UNKNOWN`, `ABORTED_SYSTEMIC`, `DRY_RUN_COMPLETE` or (since 2026-10-03, ADR 0016)
+    `CANCELLED` — the operator stopped the batch before that video started; nothing was written for it.
+    A cancelled batch ends `ABORTED`.
 
   Deliberately **not** included in this slice: any apply-class Change Set/Batch tool (creating,
   approving, or executing) — blocked on Gate B's live-write validation track

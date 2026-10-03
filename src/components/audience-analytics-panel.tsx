@@ -9,6 +9,7 @@ import {
   labelDeviceType,
   labelSubscribedStatus,
 } from "@/lib/analytics/breakdown-labels";
+import { LoadingIndicator } from "./operation-progress";
 
 type SyncedChannel = { channelId: string; title: string };
 
@@ -54,7 +55,7 @@ export function AudienceAnalyticsPanel() {
   }, []);
 
   if (loadingChannel) {
-    return <p className="text-sm text-zinc-400">Loading...</p>;
+    return <LoadingIndicator className="text-sm text-zinc-400" />;
   }
 
   if (!channel) {

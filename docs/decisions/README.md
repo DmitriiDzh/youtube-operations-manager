@@ -68,3 +68,5 @@ A decision made before this policy existed (e.g. the Phase 2 choice to keep addi
 | [0012](0012-automatic-device-sync.md) | Automatic device sync on top of the snapshot handoff (fingerprint, ancestry, human-resolved divergence) | Accepted |
 | [0013](0013-in-app-http-mcp-transport.md) | Serve MCP over HTTP from the app; remove stdio and CLI agent mode | Accepted |
 | [0014](0014-youtube-reporting-api-gateway-child.md) | YouTube Reporting API as a read-gateway child; a reporting job is not a YouTube write | Accepted |
+| [0015](0015-operation-progress-overlay.md) | Shared operation-progress overlay for long writes and syncs; cooperative Cancel | Accepted |
+| [0016](0016-batch-cancel.md) | Cooperative cancel for a running Batch; new terminal ledger status CANCELLED | Accepted |

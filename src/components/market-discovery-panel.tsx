@@ -3,6 +3,7 @@
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MarketChannelAssignment } from "./market-channel-assignment";
 import { useCallback, useEffect, useState } from "react";
+import { OperationOverlay, useOperation } from "./operation-progress";
 import { InfoTooltip } from "./info-tooltip";
 import { ConfirmDialog } from "./confirm-dialog";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
@@ -27,6 +28,8 @@ type DiscoveryCandidate = {
 // Watch/Ignore/Archive/Promote actions. Only ever triggered by an explicit click here (owner
 // decision 4) -- there is no automatic or scheduled discovery anywhere in this app.
 export function MarketDiscoveryPanel() {
+  const op = useOperation();
+  const { runBlocking } = op;
   const [candidates, setCandidates] = useState<DiscoveryCandidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
@@ -75,12 +78,20 @@ export function MarketDiscoveryPanel() {
     setSearchError(null);
     setLastResult(null);
     try {
-      const res = await fetch("/api/market-intelligence/discover", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ query }),
+      const { res, data } = await runBlocking({
+        title: "Searching YouTube for channels",
+        stage: "Running a YouTube search (uses the separate daily search quota)",
+        request: async () => {
+          const res = await fetch("/api/market-intelligence/discover", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ query }),
+          });
+          return { res, data: await res.json() };
+        },
+        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? "Discovery failed")),
+        summarize: () => "Search finished.",
       });
-      const data = await res.json();
       if (!res.ok) {
         setSearchError(data.message ?? "Discovery failed");
         return;
@@ -139,6 +150,7 @@ export function MarketDiscoveryPanel() {
 
   return (
     <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+      <OperationOverlay state={op.state} onClose={op.reset} />
       <div>
         <h3 className="flex items-center gap-1.5 text-base font-semibold text-zinc-100">
           Discover channels

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
 
 type SyncedChannel = {
   channelId: string;
@@ -70,6 +71,8 @@ function formatCountdown(msRemaining: number): string {
  * `docs/roadmap/FUTURE_PHASES.md` §4's "facts only" constraint).
  */
 export function AnalyticsManager() {
+  const op = useOperation();
+  const { runBlocking } = op;
   const [channel, setChannel] = useState<SyncedChannel | null>(null);
   const [loadingChannel, setLoadingChannel] = useState(true);
   const [rows, setRows] = useState<MetricRow[]>([]);
@@ -141,12 +144,25 @@ export function AnalyticsManager() {
     setNextRefreshAt(null);
     setCollectResult(null);
     try {
-      const res = await fetch(`/api/channels/${encodeURIComponent(channel.channelId)}/analytics/collect`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ startDate, endDate }),
+      // Shown in the progress overlay with the Analytics quota (ADR 0015); the request is unchanged.
+      // "Already collected today" is an expected answer, not a failure.
+      const { res, data } = await runBlocking({
+        title: "Collecting YouTube Analytics",
+        track: { channelId: channel.channelId, kind: "analytics-collect" },
+        quotaServices: ["analytics"],
+        request: async () => {
+          const res = await fetch(`/api/channels/${encodeURIComponent(channel.channelId)}/analytics/collect`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ startDate, endDate }),
+          });
+          return { res, data: await res.json() };
+        },
+        failureOf: ({ res, data }) =>
+          res.ok || data.error === "analytics_data_current" ? null : (data.message ?? "Collection failed"),
+        summarize: ({ data }) =>
+          typeof data.videoCount === "number" ? `${data.videoCount} video${data.videoCount === 1 ? "" : "s"} queried.` : null,
       });
-      const data = await res.json();
       if (!res.ok) {
         if (data.error === "analytics_data_current" && data.details?.nextRefreshAt) {
           setNextRefreshAt(new Date(data.details.nextRefreshAt));
@@ -167,7 +183,7 @@ export function AnalyticsManager() {
     } finally {
       setCollecting(false);
     }
-  }, [channel, startDate, endDate, fetchRows]);
+  }, [channel, startDate, endDate, fetchRows, runBlocking]);
 
   const sortedRows = useMemo(
     () =>
@@ -186,9 +202,10 @@ export function AnalyticsManager() {
 
   return (
     <div className="space-y-4">
+      <OperationOverlay state={op.state} onCancel={op.requestCancel} onClose={op.reset} />
       <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
         {loadingChannel ? (
-          <p className="text-sm text-zinc-400">Loading...</p>
+          <LoadingIndicator className="text-sm text-zinc-400" />
         ) : !channel ? (
           <p className="text-sm text-zinc-400">
             No channel synchronized yet — sign in and sync a channel in the Content tab first.

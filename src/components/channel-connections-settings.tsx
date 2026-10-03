@@ -8,6 +8,7 @@ import { ChannelWorkspaceField } from "./channel-workspace-field";
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { InfoTooltip } from "./info-tooltip";
 import { activateStoredChannel, useConnectedChannels, type ConnectedChannel } from "./use-connected-channels";
+import { LoadingIndicator } from "./operation-progress";
 
 /**
  * Settings-tab card for persistent channel connections (`docs/decisions/0010-persistent-channel-connections.md`,
@@ -81,7 +82,7 @@ export function ChannelConnectionsSettings() {
       </h3>
 
       {channels === null ? (
-        <p className="text-xs text-zinc-500">Loading...</p>
+        <LoadingIndicator className="text-xs text-zinc-500" />
       ) : channels.length === 0 ? (
         <p className="text-xs text-zinc-500">No channels connected yet.</p>
       ) : (

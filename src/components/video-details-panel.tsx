@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { OperationOverlay, useOperation } from "./operation-progress";
 import { formatDisplayDateTime, formatDisplayDateUtc, parseDisplayDate, parseDisplayDateTime } from "@/lib/shared-formatting";
 
 // Exported so `video-details-panel.test.ts` can exercise the date-conversion wiring directly --
@@ -151,6 +152,8 @@ export function VideoDetailsPanel({
    * edits, without this panel needing to know anything about where/how it's displayed. */
   onDirtyChange?: (dirty: boolean) => void;
 }) {
+  const op = useOperation();
+  const { runBlocking } = op;
   const [snapshot, setSnapshot] = useState<VideoDetailsSnapshot | null>(null);
   const [form, setForm] = useState<FormValues | null>(null);
   const [loading, setLoading] = useState(true);
@@ -240,15 +243,26 @@ export function VideoDetailsPanel({
     setApplying(true);
     setError(null);
     try {
-      const res = await fetch(
-        `/api/channels/${encodeURIComponent(channelId)}/videos/${encodeURIComponent(videoId)}/details/apply`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ patch: currentPatch, expectedEtag: snapshot.etag ?? undefined }),
-        }
-      );
-      const data = await res.json();
+      // A real write to YouTube: backup, write, then a read-back that may wait a few seconds for YouTube
+      // to show the change. Shown in the progress overlay (ADR 0015); the request is unchanged.
+      const { res, data } = await runBlocking({
+        title: "Saving to YouTube",
+        stage: "Backing up, writing and verifying — YouTube can take a few seconds to show the change",
+        quotaServices: ["dataApi"],
+        request: async () => {
+          const res = await fetch(
+            `/api/channels/${encodeURIComponent(channelId)}/videos/${encodeURIComponent(videoId)}/details/apply`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ patch: currentPatch, expectedEtag: snapshot.etag ?? undefined }),
+            }
+          );
+          return { res, data: await res.json() };
+        },
+        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? data.error ?? `Error ${res.status}`)),
+        summarize: () => "Saved and verified.",
+      });
       if (!res.ok) {
         setError(data.message ?? data.error ?? `Error ${res.status}`);
         return;
@@ -274,6 +288,7 @@ export function VideoDetailsPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col space-y-4">
+      <OperationOverlay state={op.state} onClose={op.reset} />
       {error && (
         <div className="shrink-0 rounded-lg border border-red-900 bg-red-950/50 p-3 text-sm text-red-400">{error}</div>
       )}

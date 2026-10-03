@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import { LoadingIndicator } from "./operation-progress";
 
 type BuildInfo = {
   version: string;
@@ -43,7 +44,7 @@ export function AppVersionInfo() {
     <div className="mb-6 rounded-md border border-border bg-surface px-4 py-3 text-sm">
       <div className="mb-1 font-medium text-white">App version</div>
       {error && <p className="text-muted">{error}</p>}
-      {!buildInfo && !error && <p className="text-muted">Loading...</p>}
+      {!buildInfo && !error && <LoadingIndicator className="text-muted" />}
       {buildInfo && (
         <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-muted">
           <dt>Version</dt>

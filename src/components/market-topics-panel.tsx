@@ -7,6 +7,7 @@ import { TopicWikipediaSignals } from "./topic-wikipedia-signals";
 import { InfoTooltip } from "./info-tooltip";
 import { ConfirmDialog } from "./confirm-dialog";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import { LoadingIndicator } from "./operation-progress";
 
 type MarketTopic = {
   topicId: string;
@@ -223,7 +224,7 @@ export function MarketTopicsPanel() {
                 <FeatureErrorBoundary label="Research — Wikipedia interest">
                   <TopicWikipediaSignals topicId={topic.topicId} />
                 </FeatureErrorBoundary>
-                {assignmentsLoading && <p className="text-xs text-zinc-500">Loading...</p>}
+                {assignmentsLoading && <LoadingIndicator className="text-xs text-zinc-500" />}
                 {!assignmentsLoading && assignments.length === 0 && <p className="text-xs text-zinc-500">No assignments yet.</p>}
                 {assignments.map((assignment) => (
                   <div key={assignment.assignmentId} className="flex items-center justify-between gap-2 text-xs text-zinc-300">

@@ -24,9 +24,9 @@ export function createChannelSyncCore() {
   // row's connected_user_id. The implicit "my channel" path already resolves to the bound channel.
   return {
     ...services,
-    async syncChannel(input: unknown) {
+    async syncChannel(input: unknown, options?: Parameters<typeof services.syncChannel>[1]) {
       assertAgentScopeChannel(readStringField(input, "channelId"));
-      return services.syncChannel(input);
+      return services.syncChannel(input, options);
     },
   };
 }

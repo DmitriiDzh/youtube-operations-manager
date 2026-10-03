@@ -5328,7 +5328,8 @@ export type AuditEventType =
   | "CONFLICT"
   | "VERIFICATION"
   | "DRY_RUN"
-  | "RECONCILIATION";
+  | "RECONCILIATION"
+  | "CANCELLED";
 
 export type StoredAuditEvent = {
   id: number;

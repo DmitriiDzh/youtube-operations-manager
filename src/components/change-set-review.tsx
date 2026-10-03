@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { LoadingIndicator } from "./operation-progress";
 
 type Change = {
   id: string;
@@ -229,7 +230,7 @@ export function ChangeSetReview({
       {error && <div className="rounded-lg border border-red-900 bg-red-950/50 p-3 text-sm text-red-400">{error}</div>}
 
       <div className="space-y-2">
-        {loading && <p className="text-sm text-zinc-500">Loading...</p>}
+        {loading && <LoadingIndicator className="text-sm text-zinc-500" />}
         {!loading && changes.length === 0 && <p className="text-sm text-zinc-500">No changes match the current filters.</p>}
         {changes.map((change) => (
           <div key={change.id} className="rounded-lg border border-zinc-800 bg-zinc-900 p-3">

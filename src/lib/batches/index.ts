@@ -5,7 +5,8 @@ import { createBackupCore } from "@/lib/backup";
 import { createAuditCore } from "@/lib/audit";
 import { createBatchStoreAdapter, createChangeSetStoreAdapter, createIdGenerator } from "./adapters/store";
 import { createBatchYoutubeApiAdapter } from "./adapters/youtube-api";
-import { getChannelExpectedLanguages } from "@/lib/db";
+import { getChannelExpectedLanguages, rawSqlClient } from "@/lib/db";
+import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createBatchServices } from "./services";
 
 function createRealClock() {
@@ -41,6 +42,7 @@ export function createBatchCore() {
     audit: createAuditCore(),
     clock: createRealClock(),
     verifyRetryDelaysMs: [2000, 5000],
+    assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
     idGenerator: createIdGenerator(),
     logger: createDefaultLogger(),
   });

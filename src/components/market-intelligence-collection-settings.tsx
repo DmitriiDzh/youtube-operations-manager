@@ -3,6 +3,7 @@
 import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
+import { LoadingIndicator } from "./operation-progress";
 
 type Settings = {
   marketIntelligenceDailyQuotaBudgetUnits: number | null;
@@ -97,7 +98,7 @@ export function MarketIntelligenceCollectionSettings() {
             </button>
           </div>
         ) : (
-          <p className="text-sm text-zinc-400">Loading...</p>
+          <LoadingIndicator className="text-sm text-zinc-400" />
         )}
       </div>
     );

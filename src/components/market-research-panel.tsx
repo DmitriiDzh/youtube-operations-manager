@@ -7,6 +7,7 @@ import { InfoTooltip } from "./info-tooltip";
 import { ConfirmDialog } from "./confirm-dialog";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { formatFieldVelocity } from "./market-velocity-format";
+import { LoadingIndicator } from "./operation-progress";
 
 type ResearchChannel = {
   channelId: string;
@@ -424,7 +425,7 @@ export function MarketResearchPanel() {
       </div>
 
       <div className="space-y-2">
-        {loading && <p className="text-sm text-zinc-500">Loading...</p>}
+        {loading && <LoadingIndicator className="text-sm text-zinc-500" />}
         {!loading && channels.length === 0 && <p className="text-sm text-zinc-500">No channels on the watchlist yet.</p>}
         {channels.map((c) => (
           <div key={c.channelId} className="rounded-lg border border-zinc-800 p-3">
@@ -478,7 +479,7 @@ export function MarketResearchPanel() {
                       result until enough snapshots have accumulated over real days.
                     </InfoTooltip>
                   </p>
-                  {intelligenceLoading && <p className="text-xs text-zinc-500">Loading...</p>}
+                  {intelligenceLoading && <LoadingIndicator className="text-xs text-zinc-500" />}
                   {!intelligenceLoading && intelligenceError && <p className="text-xs text-red-400">{intelligenceError}</p>}
                   {!intelligenceLoading && intelligence && (
                     <div className="space-y-2 text-xs text-zinc-400">

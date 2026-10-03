@@ -203,6 +203,10 @@ export type DeviceSyncDeps = {
   loadStatus: () => Promise<DeviceSyncStatus>;
   saveStatus: (status: DeviceSyncStatus) => Promise<void>;
   now?: () => number;
+  /** True while this process is running a long server-side write (e.g. "Fix all"). Such a run calls the
+   * device-availability gate before every video, and an automatic export holds the operation lock, so
+   * an export started mid-run would abort it. Optional: omitted = never blocks. */
+  hasActiveLocalOperation?: () => boolean;
 };
 
 async function isExistingDirectory(dir: string): Promise<boolean> {
@@ -277,6 +281,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
     if (await getOperationLock(deps.client)) return { reason: "an export/import/migration is in progress", recovery: false };
     if (await isDeviceInRecoveryMode(deps.client)) return { reason: "this computer is in recovery mode", recovery: true };
     if (await hasUnfinishedBatch(deps.client)) return { reason: "an unfinished Batch is in this computer's data", recovery: false, batch: true };
+    if (deps.hasActiveLocalOperation?.()) return { reason: "a server-side write operation is running", recovery: false };
     return null;
   }
 
@@ -330,6 +335,7 @@ export function createDeviceSyncRunner(deps: DeviceSyncDeps) {
           throw new SyncAbort("the sync folder is not reachable", "folder_unreachable");
         }
         if (await hasUnfinishedBatch(deps.client)) throw new SyncAbort(BATCH_PAUSES_IMPORT_MESSAGE, "batch_in_progress");
+        if (deps.hasActiveLocalOperation?.()) throw new SyncAbort("a server-side write operation is running", "busy");
         if (requireDirty && !(await hasUnpublishedLocalChanges(deps.client))) {
           throw new SyncAbort("nothing to export", "nothing_to_export");
         }

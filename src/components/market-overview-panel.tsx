@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import { LoadingIndicator } from "./operation-progress";
 
 // Phase 9 slice 9H, part B (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_B_PLAN.md) -- Market Overview.
 // Mirrors getMarketOverviewOutputSchema. A read-only aggregation across the whole watchlist -- no
@@ -103,7 +104,7 @@ export function MarketOverviewPanel() {
         </InfoTooltip>
       </h3>
 
-      {loading && <p className="text-xs text-zinc-500">Loading...</p>}
+      {loading && <LoadingIndicator className="text-xs text-zinc-500" />}
       {!loading && error && <p className="text-sm text-red-400">{error}</p>}
 
       {!loading && overview && (

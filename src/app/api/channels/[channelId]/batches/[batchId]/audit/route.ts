@@ -12,7 +12,7 @@ const auditCore = createAuditCore();
 const channelAccess = createChannelAccessCore();
 
 /** Audit + recovery visibility for a batch: the full per-video event sequence
- * (PREPARATION/ATTEMPT/RESULT/CONFLICT/VERIFICATION/DRY_RUN/RECONCILIATION), reused
+ * (PREPARATION/ATTEMPT/RESULT/CONFLICT/VERIFICATION/DRY_RUN/RECONCILIATION/CANCELLED), reused
  * unchanged from src/lib/audit/ -- no parallel audit-reading logic here. */
 export async function GET(
   _request: Request,

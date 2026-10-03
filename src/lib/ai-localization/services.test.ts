@@ -719,3 +719,73 @@ test("REAL_CONNECTION_MAX_TARGETS_PER_CALL: the same 51-target request through t
   assert.equal(provider.calls, 51);
   assert.equal(result.results.length, 51);
 });
+
+// Progress and cancel for generation (ADR 0015). Generation through a real connection is PAID, so Cancel
+// must stop the provider being called for the remaining targets -- that is the whole point of it:
+//  AC-GEN-P1 a reporter sees the total first, then one update per finished target;
+//  AC-GEN-P2 a cancel requested during target 1 keeps target 1's result, calls the provider for no further
+//            target, and says how many were skipped;
+//  AC-GEN-P3 with no cancel the result shape is unchanged (no `cancelled`, no `targetsSkipped`);
+//  AC-GEN-P4 without a reporter nothing changes.
+function reporterSpy(options: { cancelAfterCalls?: number; getCalls?: () => number } = {}) {
+  const events: string[] = [];
+  return {
+    events,
+    stage: (text: string | null) => void events.push(`stage:${text}`),
+    counts: (done: number, total: number) => void events.push(`counts:${done}/${total}`),
+    isCancelRequested: () => options.cancelAfterCalls !== undefined && (options.getCalls?.() ?? 0) >= options.cancelAfterCalls,
+  };
+}
+
+test("AC-GEN-P1: the reporter learns the total first and then each finished target", async () => {
+  const { build } = makeFixture([makeVideo({ videoId: "v1" }), makeVideo({ videoId: "v2" })]);
+  const provider = fixedProvider(() => ({ status: "ok", title: "T", description: "D" }));
+  const spy = reporterSpy();
+
+  await build(provider).generateProposals({ channelId: "UC_TEST", videoIds: ["v1", "v2"], targetLanguages: ["es", "fr"] }, { progress: spy });
+
+  assert.deepEqual(spy.events.filter((e) => e.startsWith("counts:")), ["counts:0/4", "counts:1/4", "counts:2/4", "counts:3/4", "counts:4/4"]);
+  assert.ok(spy.events.some((e) => e.startsWith("stage:") && /Generating/.test(e)));
+});
+
+test("AC-GEN-P2: cancel during target 1 keeps its result, calls the provider for no further target and reports the skipped count", async () => {
+  const { build } = makeFixture([makeVideo({ videoId: "v1" }), makeVideo({ videoId: "v2" })]);
+  const provider = fixedProvider(() => ({ status: "ok", title: "T", description: "D" })) as LocalizationProvider & { calls: number };
+  const spy = reporterSpy({ cancelAfterCalls: 1, getCalls: () => provider.calls });
+
+  const result = (await build(provider).generateProposals(
+    { channelId: "UC_TEST", videoIds: ["v1", "v2"], targetLanguages: ["es", "fr"] },
+    { progress: spy }
+  )) as Awaited<ReturnType<ReturnType<typeof build>["generateProposals"]>> & { cancelled?: boolean };
+
+  assert.equal(provider.calls, 1, "no paid provider call after the cancel");
+  assert.equal(result.results.length, 1);
+  assert.equal(result.summary.targetsRequested, 4);
+  assert.equal(result.summary.targetsGenerated, 1);
+  assert.equal(result.summary.targetsSkipped, 3);
+  assert.equal(result.cancelled, true);
+});
+
+test("AC-GEN-P3/P4: without a cancel (or without a reporter) the result has no cancelled / targetsSkipped", async () => {
+  const { build } = makeFixture();
+  const provider = fixedProvider(() => ({ status: "ok", title: "T", description: "D" }));
+  const withReporter = await build(provider).generateProposals({ channelId: "UC_TEST", videoIds: ["v1"], targetLanguages: ["es"] }, { progress: reporterSpy() });
+  const without = await build(provider).generateProposals({ channelId: "UC_TEST", videoIds: ["v1"], targetLanguages: ["es"] });
+  for (const result of [withReporter, without]) {
+    assert.equal("cancelled" in result, false);
+    assert.equal("targetsSkipped" in result.summary, false);
+    assert.equal(result.results.length, 1);
+  }
+});
+
+test("AC-GEN-P1b: a target that ends in a provider error is still counted as finished", async () => {
+  const { build } = makeFixture([makeVideo({ videoId: "v1" })]);
+  let call = 0;
+  const provider = fixedProvider(() => {
+    call += 1;
+    return call === 1 ? { status: "error", message: "rate limited" } : { status: "ok", title: "T", description: "D" };
+  });
+  const spy = reporterSpy();
+  await build(provider).generateProposals({ channelId: "UC_TEST", videoIds: ["v1"], targetLanguages: ["es", "fr"] }, { progress: spy });
+  assert.deepEqual(spy.events.filter((e) => e.startsWith("counts:")), ["counts:0/2", "counts:1/2", "counts:2/2"]);
+});
