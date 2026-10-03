@@ -1704,6 +1704,7 @@ No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a d
   runs (a file can outlive its expiry by the downtime); (3) the agent's own planned medians/percentiles of competitor statistics are derived
   metrics from API data (YouTube policy III.E.4.h) even though the Manager computes none; (4) the export is only verified with fakes and an
   isolated database, not yet against a real watchlist and workspace folder.
+- **Owner position (2026-10-04, Telegram):** the tool enforces retention for what IT stores (files it writes, expiry sweep) and gives the agent what it asks for; it tells the agent the files must be deleted per YouTube policy (`retentionNote`, tool description), but monitoring copies or the agent's own use is outside the tool's scope. Points (1)-(2) and the agent-side part of (3) are therefore accepted as outside the tool; the policy wording check for passing API data to an external AI model remains open.
 - **To close:** owner decision on (3) (policy reading); one real export on the owner's machine (rows equal `query_market_intelligence`), then a
   sweep after a shortened expiry in a scratch workspace.
 - **Gate(s):** none blocking the merge; (3) is a policy question for the owner.
