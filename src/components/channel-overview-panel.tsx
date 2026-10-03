@@ -130,7 +130,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     periodDays,
     10
   );
-  const { reach, reload: reloadReach } = useReachSummary(channel?.channelId ?? null, periodDays);
+  const { reach, loaded: reachLoaded, reload: reloadReach } = useReachSummary(channel?.channelId ?? null, periodDays);
 
   const [dataQuality, setDataQuality] = useState<DataQualityReport | null>(null);
 
@@ -177,7 +177,12 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
   }, []);
 
   // Stored channel totals first (no quota); `refresh` forces a live read (BL-120, owner decision 2026-10-04).
+  // Only the response of the request that started LAST is applied (a slower earlier one never overwrites a newer period/granularity), and a
+  // failed live refresh keeps the stored overview already on screen (it shows the error instead of throwing the data away).
+  const latestOverviewRequest = useRef(0);
   const fetchOverview = useCallback(async (channelId: string, days: number, grain: Granularity, refresh = false) => {
+    const requestId = ++latestOverviewRequest.current;
+    const isLatest = () => requestId === latestOverviewRequest.current;
     setLoadingOverview(true);
     setOverviewError(null);
     try {
@@ -188,17 +193,19 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
         }`
       );
       const data = await res.json();
+      if (!isLatest()) return;
       if (!res.ok) {
         setOverviewError(data.message ?? "Failed to load channel analytics");
-        setOverview(null);
+        if (!refresh) setOverview(null);
         return;
       }
       setOverview(data as ChannelOverview);
     } catch {
+      if (!isLatest()) return;
       setOverviewError("Failed to load channel analytics");
-      setOverview(null);
+      if (!refresh) setOverview(null);
     } finally {
-      setLoadingOverview(false);
+      if (isLatest()) setLoadingOverview(false);
     }
   }, []);
 
@@ -207,6 +214,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
   // "can I trust the numbers 'Top content' just showed for this period." Failure is silent
   // (dataQuality stays null) -- this is a nice-to-have annotation, not load-bearing for the rest
   // of the panel.
+  const latestQualityRequest = useRef(0);
   const fetchDataQuality = useCallback(async (channelId: string, days: number) => {
     // Reset first, not just on success (found by independent review, 2026-09-23): without this,
     // a failed request after a channel/period switch left the PREVIOUS channel's/period's warning
@@ -216,6 +224,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     // visible flicker, but this is a nice-to-have annotation (see this component's own doc
     // comment on `fetchDataQuality`), not something worth a separate "don't flicker on an
     // unchanged result" cache layer for.
+    const requestId = ++latestQualityRequest.current;
     setDataQuality(null);
     try {
       const { startDate, endDate } = computeDefaultPeriodRange(days);
@@ -223,7 +232,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
         `/api/channels/${encodeURIComponent(channelId)}/analytics/data-quality?startDate=${startDate}&endDate=${endDate}`
       );
       const data = await res.json();
-      if (res.ok) setDataQuality(data as DataQualityReport);
+      if (res.ok && requestId === latestQualityRequest.current) setDataQuality(data as DataQualityReport);
     } catch {
       // Non-fatal (see doc comment above) -- dataQuality already reset to null above.
     }
@@ -521,7 +530,9 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
                     <div className="text-2xl font-semibold text-zinc-600">—</div>
                     <span className="text-xs text-zinc-500">
                       {reach === null
-                        ? "Not available"
+                        ? reachLoaded
+                          ? "Not available"
+                          : "Loading…"
                         : reach.state === "no_job"
                           ? "Not set up yet — see Content"
                           : "Waiting for YouTube's first report"}

@@ -53,3 +53,14 @@ test("a comparison period before the channel existed is reported as predates_cha
   const partial = buildChannelOverviewView({ overview: overview(), channelStartDate: "2026-09-27", granularity: "day", now: new Date("2026-10-03T12:00:00Z") });
   assert.equal(partial.previousPeriod.status, "partial"); // starts 09-25 (before) ends 09-28 (after)
 });
+
+test("month view buckets across a month boundary: 2026-09-29..2026-10-02 -> September (09-29..09-30, 3 views) and October (10-01..10-02, 7 views), both flagged partial", () => {
+  const view = buildChannelOverviewView({ overview: overview(), channelStartDate: null, granularity: "month", now: new Date("2026-10-03T12:00:00Z") });
+  assert.deepEqual(
+    view.buckets!.map((b) => ({ start: b.periodStart, end: b.periodEnd, views: b.views, partial: b.partialBucket })),
+    [
+      { start: "2026-09-29", end: "2026-09-30", views: 3, partial: true },
+      { start: "2026-10-01", end: "2026-10-02", views: 7, partial: true },
+    ]
+  );
+});

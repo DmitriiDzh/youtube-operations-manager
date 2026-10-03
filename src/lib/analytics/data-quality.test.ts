@@ -307,3 +307,9 @@ test("BL-120 isRangeFullyCovered: dates before the channel's start are not appli
   // Unknown start behaves as before (never guessed).
   assert.equal(isRangeFullyCovered({ startDate: "2026-08-09", endDate: "2026-10-01", runs, now, requireVideos: false, channelStartDate: null }), false);
 });
+
+test("BL-120 isRangeFullyCovered: a range lying entirely before the channel's start has nothing to cover (true); a channel start later than the range end skips every date", () => {
+  const now = new Date("2026-10-03T13:00:00Z");
+  assert.equal(isRangeFullyCovered({ startDate: "2026-07-01", endDate: "2026-07-31", runs: [], now, requireVideos: false, channelStartDate: "2026-08-13" }), true);
+  assert.equal(isRangeFullyCovered({ startDate: "2026-08-13", endDate: "2026-08-14", runs: [], now, requireVideos: false, channelStartDate: "2026-08-13" }), false, "the start day itself is applicable");
+});

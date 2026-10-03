@@ -809,11 +809,6 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
       }
     },
 
-    /**
-     * BL-118 -- what automatic history catch-up still has to do for a channel (local reads only): per-video ranges before the rolling window
-     * that are not collected yet, and the span of channel-level dates no channel-level run covers. Empty plan = nothing to do. Videos are
-     * asked from one day before their own publish date; a video with recorded history is asked only from the day after it ends.
-     */
     /** The channel's creation date (`YYYY-MM-DD`) for the Web UI's coverage display, `null` until a sync recorded it. Active-channel checked. */
     async getChannelStartDate(input: unknown): Promise<string | null> {
       const parsedInput = parseWithSchema(runAutoCollectionInputSchema, input, "channel start date input");
@@ -826,6 +821,11 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
       }
     },
 
+    /**
+     * BL-118 -- what automatic history catch-up still has to do for a channel (local reads only): per-video ranges before the rolling window
+     * that are not collected yet, and the span of channel-level dates no channel-level run covers. Empty plan = nothing to do. Videos are
+     * asked from one day before their own publish date; a video with recorded history is asked only from the day after it ends.
+     */
     async getHistoryCatchUpPlan(input: unknown): Promise<HistoryCatchUpPlan> {
       const parsedInput = parseWithSchema(runAutoCollectionInputSchema, input, "history catch-up plan input");
       try {

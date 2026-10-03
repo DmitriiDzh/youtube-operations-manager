@@ -44,8 +44,11 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
   const activeChannelRef = useRef(channelId);
   const titles = useVideoTitles(channelId);
   const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
-  const [videoDetail, setVideoDetail] = useState<ReachData | null>(null);
-  const [videoDetailError, setVideoDetailError] = useState(false);
+  // The loaded detail is tagged with the video/period it was read for and shown only while that is still selected.
+  const [detailState, setDetailState] = useState<{ key: string; data: ReachData | null } | null>(null);
+  const detailKey = `${channelId}:${selectedVideoId}:${periodDays}`;
+  const videoDetail = detailState && detailState.key === detailKey ? detailState.data : null;
+  const videoDetailError = detailState?.key === detailKey && detailState.data === null;
 
   // Per-video drill-down (BL-120): this video's impressions and CTR day by day, from the stored rows -- one request, not one per day.
   useEffect(() => {
@@ -58,14 +61,9 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
           `/api/channels/${encodeURIComponent(channelId)}/reach?startDate=${startDate}&endDate=${endDate}&videoId=${encodeURIComponent(selectedVideoId)}&groupBy=video_day`
         );
         const body = res.ok ? ((await res.json()) as ReachData) : null;
-        if (cancelled) return;
-        setVideoDetail(body);
-        setVideoDetailError(body === null);
+        if (!cancelled) setDetailState({ key: `${channelId}:${selectedVideoId}:${periodDays}`, data: body });
       } catch {
-        if (!cancelled) {
-          setVideoDetail(null);
-          setVideoDetailError(true);
-        }
+        if (!cancelled) setDetailState({ key: `${channelId}:${selectedVideoId}:${periodDays}`, data: null });
       }
     })();
     return () => {
@@ -75,8 +73,6 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
 
   function selectVideo(videoId: string | null) {
     setSelectedVideoId(videoId);
-    setVideoDetail(null);
-    setVideoDetailError(false);
   }
 
   const load = useCallback(async () => {

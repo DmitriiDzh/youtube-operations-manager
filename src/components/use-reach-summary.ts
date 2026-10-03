@@ -15,8 +15,11 @@ export type ReachSummary = {
  * then say nothing rather than showing zero.
  */
 export function useReachSummary(channelId: string | null, periodDays: number) {
-  const [reach, setReach] = useState<ReachSummary | null>(null);
+  // The data is stored together with the channel/period it was read for, and handed out only while that is still what is selected -- a
+  // period switch never shows the previous period's numbers as current.
+  const [loaded, setLoaded] = useState<{ key: string; reach: ReachSummary | null } | null>(null);
   const [loading, setLoading] = useState(false);
+  const key = `${channelId}:${periodDays}`;
   const latest = useRef(0);
 
   const load = useCallback(async () => {
@@ -27,9 +30,9 @@ export function useReachSummary(channelId: string | null, periodDays: number) {
       const { startDate, endDate } = computeDefaultPeriodRange(periodDays);
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/reach?startDate=${startDate}&endDate=${endDate}`);
       const body = res.ok ? ((await res.json()) as ReachSummary) : null;
-      if (requestId === latest.current) setReach(body);
+      if (requestId === latest.current) setLoaded({ key: `${channelId}:${periodDays}`, reach: body });
     } catch {
-      if (requestId === latest.current) setReach(null);
+      if (requestId === latest.current) setLoaded({ key: `${channelId}:${periodDays}`, reach: null });
     } finally {
       if (requestId === latest.current) setLoading(false);
     }
@@ -39,5 +42,5 @@ export function useReachSummary(channelId: string | null, periodDays: number) {
     void load();
   }, [load]);
 
-  return { reach, loading, reload: load };
+  return { reach: loaded && loaded.key === key ? loaded.reach : null, loaded: loaded?.key === key, loading, reload: load };
 }
