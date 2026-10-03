@@ -3911,6 +3911,15 @@ export async function listQuotaCalls(
   }));
 }
 
+/** Every service's calls since `sinceSeconds`, oldest first (for publishing this device's log to the shared folder). */
+export async function listAllQuotaCalls(sinceSeconds: number, database: AppDb = db): Promise<QuotaCallRecord[]> {
+  const [data, analytics] = await Promise.all([
+    listQuotaCalls({ sinceSeconds, service: "data" }, database),
+    listQuotaCalls({ sinceSeconds, service: "analytics" }, database),
+  ]);
+  return [...data, ...analytics].sort((a, b) => a.occurredAt - b.occurredAt);
+}
+
 /** How many ledger rows of each status a batch has (history says "N videos changed" from SUCCESS, not from call counts). */
 export async function countBatchRowsByStatus(batchId: string, database: AppDb = db): Promise<Record<string, number>> {
   const rows = await database
@@ -5409,9 +5418,13 @@ export async function splitPendingBatchForQuota(
     const [original] = await tx.select().from(batches).where(eq(batches.id, input.batchId));
     if (!original || original.status !== "PENDING" || original.dryRun) return null;
 
-    const rows = (await tx.select().from(batchLedgerRows).where(eq(batchLedgerRows.batchId, input.batchId))).sort(
-      (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id)
-    );
+    // Insertion order (SQLite rowid) is the batch's stored order: `created_at` has second precision and ids are random, so
+    // neither can say which rows came first.
+    const rows = await tx
+      .select()
+      .from(batchLedgerRows)
+      .where(eq(batchLedgerRows.batchId, input.batchId))
+      .orderBy(sql`rowid`);
     if (rows.length === 0 || rows.some((r) => r.status !== "PENDING")) return null;
 
     const fitCount = Math.min(Math.max(0, input.fitCount), rows.length);

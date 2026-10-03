@@ -87,6 +87,7 @@ export function QuotaHistoryDialog({ service, onClose }: { service: "data" | "an
                 <li key={`${entry.kind}-${entry.contextId ?? ""}-${entry.startedAt}`} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-zinc-800/60 py-1 last:border-0">
                   <span className="text-zinc-500">{formatDisplayDateTime(entry.startedAt)}</span>
                   <span className="font-medium text-zinc-200">{entry.label}</span>
+                  {entry.onOtherDevice && <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400">other device</span>}
                   <span className="text-zinc-400">
                     {entry.changedVideos !== null
                       ? `${entry.changedVideos} video(s) changed`
@@ -101,7 +102,7 @@ export function QuotaHistoryDialog({ service, onClose }: { service: "data" | "an
               ))}
               {data.otherUnits !== null && data.otherUnits > 0 && (
                 <li className="flex gap-3 py-1 text-zinc-400">
-                  <span>Other device or not attributed</span>
+                  <span>Not attributed (a computer that shares no log, or earlier calls)</span>
                   <span className="ml-auto tabular-nums">{data.otherUnits.toLocaleString()} units</span>
                 </li>
               )}

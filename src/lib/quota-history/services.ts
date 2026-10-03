@@ -15,13 +15,17 @@ export type QuotaHistoryResult = {
   cloud: { connected: boolean; limit: number | null; used: number | null; window: "since_reset" | "rolling_24h" | null; resetsAt: string | null };
   /** Units THIS device logged inside the same window as `cloud.used`. */
   localUnits: number;
-  /** `cloud.used - localUnits` (never negative): another device on the shared Cloud project, or calls this log missed. `null` if unknown. */
+  /** Units the other devices published (shared log) inside the same window. */
+  peerUnits: number;
+  /** `cloud.used - localUnits - peerUnits` (never negative): a device that shares no log, or calls made before logging began. `null` if unknown. */
   otherUnits: number | null;
   entries: QuotaHistoryEntryView[];
 };
 
 export type QuotaHistoryDependencies = {
   listCalls(args: { sinceSeconds: number; service: QuotaHistoryService }): Promise<Array<QuotaCallLike>>;
+  /** Calls the OTHER devices published (shared Syncthing folder); empty when nothing is shared. */
+  listPeerCalls(args: { sinceSeconds: number; service: QuotaHistoryService }): Promise<Array<QuotaCallLike>>;
   countBatchRowsByStatus(batchId: string): Promise<Record<string, number>>;
   getCloudQuota(service: QuotaHistoryService): Promise<{
     connected: boolean;
@@ -40,12 +44,13 @@ export function createQuotaHistoryServices(deps: QuotaHistoryDependencies) {
       const now = deps.clock.now();
       const sinceSeconds = Math.floor(now.getTime() / 1000) - days * 86_400;
 
-      const [calls, cloudQuota] = await Promise.all([
+      const [localCalls, peerCalls, cloudQuota] = await Promise.all([
         deps.listCalls({ sinceSeconds, service: args.service }),
+        deps.listPeerCalls({ sinceSeconds, service: args.service }),
         deps.getCloudQuota(args.service),
       ]);
 
-      const entries = groupQuotaCalls(calls);
+      const entries = groupQuotaCalls([...localCalls, ...peerCalls]);
       const views: QuotaHistoryEntryView[] = await Promise.all(
         entries.map(async (entry) => {
           if (entry.kind !== "batch" || !entry.contextId) return { ...entry, changedVideos: null };
@@ -61,8 +66,10 @@ export function createQuotaHistoryServices(deps: QuotaHistoryDependencies) {
         : status.window === "since_reset"
           ? Math.floor(startOfYoutubeQuotaDay(now).getTime() / 1000)
           : Math.floor(now.getTime() / 1000) - 86_400;
-      const localUnits =
-        windowStartSeconds === null ? 0 : calls.filter((c) => c.occurredAt >= windowStartSeconds).reduce((sum, c) => sum + (c.units ?? 0), 0);
+      const unitsInWindow = (rows: readonly QuotaCallLike[]) =>
+        windowStartSeconds === null ? 0 : rows.filter((c) => c.occurredAt >= windowStartSeconds).reduce((sum, c) => sum + (c.units ?? 0), 0);
+      const localUnits = unitsInWindow(localCalls);
+      const peerUnits = unitsInWindow(peerCalls);
 
       return {
         service: args.service,
@@ -75,7 +82,8 @@ export function createQuotaHistoryServices(deps: QuotaHistoryDependencies) {
           resetsAt: status?.resetsAt ?? null,
         },
         localUnits,
-        otherUnits: status ? Math.max(0, status.usedLast24h - localUnits) : null,
+        peerUnits,
+        otherUnits: status ? Math.max(0, status.usedLast24h - localUnits - peerUnits) : null,
         entries: views,
       };
     },

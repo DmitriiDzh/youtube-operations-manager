@@ -37,7 +37,7 @@ export function createAnalyticsCore() {
     // BL-117 (owner decision 2026-10-03): the AUTOMATIC collection waits while less than the configured reserve of the daily
     // quota is left, so writes keep headroom. A manual "Collect now" is the user's own call and is not held back.
     runAutoCollectionIfStale: quotaScoped(async (input: unknown) => {
-      if (!(await guard.isBackgroundReadAllowed())) return { ranCollection: false } as const;
+      if (!(await guard.isBackgroundReadAllowed("analytics"))) return { ranCollection: false } as const;
       return services.runAutoCollectionIfStale(input);
     }, context),
   };

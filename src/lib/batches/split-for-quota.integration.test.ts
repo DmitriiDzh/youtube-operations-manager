@@ -72,11 +72,9 @@ test("a split moves every original video into exactly one new batch, in order, a
   const rest = await listStoredLedgerRowsByBatch(result.restBatchId!, db);
   const originalRows = await listStoredLedgerRowsByBatch(original, db);
 
-  const byOriginalOrder = (rows: Array<{ videoId: string }>) => rows.map((r) => r.videoId);
-  const originalOrder = byOriginalOrder([...originalRows].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id)));
-  assert.deepEqual([...byOriginalOrder(fits)].sort(), [...originalOrder.slice(0, 2)].sort());
-  assert.deepEqual([...byOriginalOrder(rest)].sort(), [...originalOrder.slice(2)].sort());
-  const all = [...byOriginalOrder(fits), ...byOriginalOrder(rest)];
+  assert.deepEqual(fits.map((r) => r.videoId).sort(), ["v1", "v2"], "the FIRST two rows in stored (insertion) order go to the batch that fits");
+  assert.deepEqual(rest.map((r) => r.videoId).sort(), ["v3", "v4", "v5"]);
+  const all = [...fits, ...rest].map((r) => r.videoId);
   assert.deepEqual([...all].sort(), [...videos].sort(), "no video lost");
   assert.equal(new Set(all).size, videos.length, "no video doubled");
 

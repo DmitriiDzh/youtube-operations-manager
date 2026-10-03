@@ -1,16 +1,25 @@
 import { createCloudQuotasCore } from "@/lib/cloud-quotas";
 import { getQuotaReservePercent, listQuotaCalls } from "@/lib/db";
+import { getQuotaLedgerSyncCore } from "@/lib/quota-ledger-sync";
 import { createQuotaGuardServices } from "./services";
 
 export function createQuotaGuardCore() {
   return createQuotaGuardServices({
-    async getDataApiQuota() {
+    async getQuota(service) {
       const status = await createCloudQuotasCore().getQuotaStatus();
-      return { connected: status.connected, status: status.dataApi };
+      return { connected: status.connected, status: service === "data" ? status.dataApi : status.analytics };
     },
-    async sumLocalUnitsSince(sinceSeconds) {
-      const calls = await listQuotaCalls({ sinceSeconds, service: "data" });
-      return calls.reduce((sum, call) => sum + (call.units ?? 0), 0);
+    // The Cloud project's quota is shared by every device, and Monitoring lags a minute: count what THIS device and the devices
+    // that share their log (Syncthing folder) did in the last couple of minutes, which Google's figure does not show yet.
+    async sumLocalUnitsSince(service, sinceSeconds) {
+      const local = (await listQuotaCalls({ sinceSeconds, service })).reduce((sum, call) => sum + (call.units ?? 0), 0);
+      let peers = 0;
+      try {
+        peers = (await getQuotaLedgerSyncCore().readPeerCalls({ sinceSeconds, service })).reduce((sum, call) => sum + (call.units ?? 0), 0);
+      } catch {
+        // peers are a correction only
+      }
+      return local + peers;
     },
     getReservePercent: () => getQuotaReservePercent(),
     clock: { now: () => new Date() },

@@ -142,6 +142,13 @@ async function startServerSession() {
   setTimeout(collectWikipediaQuietly, 90_000).unref();
   setInterval(collectWikipediaQuietly, WIKIPEDIA_COLLECTION_INTERVAL_MS).unref();
 
+  // BL-117 slice 1b: publish this device's quota-spend log to the shared Syncthing folder (its own file only), so every
+  // device's history shows the whole picture of the shared Cloud quota. Never creates the folder; quiet on any failure.
+  const { getQuotaLedgerSyncCore } = await import("@/lib/quota-ledger-sync");
+  const publishQuotaLedgerQuietly = () => void getQuotaLedgerSyncCore().publishLocal().catch(() => undefined);
+  setTimeout(publishQuotaLedgerQuietly, 45_000).unref();
+  setInterval(publishQuotaLedgerQuietly, 120_000).unref();
+
   if (process.env.NODE_ENV !== "production") return;
   // Idle auto-shutdown: no request is in flight by definition, so reset, publish any unexported
   // local changes, then exit. Deliberately NOT raced against a timeout: exiting while the export

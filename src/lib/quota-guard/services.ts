@@ -3,21 +3,21 @@ import { MONITORING_LAG_SECONDS, type GuardVerdict, type QuotaSnapshot } from ".
 
 export type QuotaGuardDependencies = {
   /** Data API quota status from Cloud Monitoring; `null` status = not connected / lookup failed. */
-  getDataApiQuota(): Promise<{
+  getQuota(service: "data" | "analytics"): Promise<{
     connected: boolean;
     status: { limit: number; usedLast24h: number; resetsAt: string | null } | null;
   }>;
-  /** Units this device logged since `sinceSeconds` (unix) on the Data API. */
-  sumLocalUnitsSince(sinceSeconds: number): Promise<number>;
+  /** Units logged since `sinceSeconds` (unix) on that API by this device and the devices sharing its log. */
+  sumLocalUnitsSince(service: "data" | "analytics", sinceSeconds: number): Promise<number>;
   getReservePercent(): Promise<number>;
   clock: { now(): Date };
 };
 
 export function createQuotaGuardServices(deps: QuotaGuardDependencies) {
-  async function getSnapshot(): Promise<QuotaSnapshot> {
-    let quota: Awaited<ReturnType<QuotaGuardDependencies["getDataApiQuota"]>>;
+  async function getSnapshot(service: "data" | "analytics" = "data"): Promise<QuotaSnapshot> {
+    let quota: Awaited<ReturnType<QuotaGuardDependencies["getQuota"]>>;
     try {
-      quota = await deps.getDataApiQuota();
+      quota = await deps.getQuota(service);
     } catch {
       return { known: false, cloudConnected: false };
     }
@@ -26,7 +26,7 @@ export function createQuotaGuardServices(deps: QuotaGuardDependencies) {
     const nowSeconds = Math.floor(deps.clock.now().getTime() / 1000);
     let recentLocalUnits = 0;
     try {
-      recentLocalUnits = await deps.sumLocalUnitsSince(nowSeconds - MONITORING_LAG_SECONDS);
+      recentLocalUnits = await deps.sumLocalUnitsSince(service, nowSeconds - MONITORING_LAG_SECONDS);
     } catch {
       // The local log is only a correction; Google's own figure still decides.
     }
@@ -40,8 +40,8 @@ export function createQuotaGuardServices(deps: QuotaGuardDependencies) {
       return evaluateWriteRun(videos, await getSnapshot());
     },
     /** False while less than the configured reserve of the quota is left: background reads wait so writes keep headroom. */
-    async isBackgroundReadAllowed(): Promise<boolean> {
-      return backgroundReadAllowed(await getSnapshot(), await deps.getReservePercent());
+    async isBackgroundReadAllowed(service: "data" | "analytics" = "data"): Promise<boolean> {
+      return backgroundReadAllowed(await getSnapshot(service), await deps.getReservePercent());
     },
   };
 }

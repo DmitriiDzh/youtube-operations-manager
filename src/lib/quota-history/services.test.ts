@@ -16,12 +16,15 @@ const call = (iso: string, over: Partial<QuotaCallLike> = {}): QuotaCallLike => 
   ...over,
 });
 
-function make(opts: { calls?: QuotaCallLike[]; cloud?: Awaited<ReturnType<QuotaHistoryDependencies["getCloudQuota"]>>; batchCounts?: Record<string, number> }) {
+function make(opts: { calls?: QuotaCallLike[]; peerCalls?: QuotaCallLike[]; cloud?: Awaited<ReturnType<QuotaHistoryDependencies["getCloudQuota"]>>; batchCounts?: Record<string, number> }) {
   const requested: Array<{ sinceSeconds: number }> = [];
   const services = createQuotaHistoryServices({
     async listCalls(args) {
       requested.push(args);
       return opts.calls ?? [];
+    },
+    async listPeerCalls() {
+      return opts.peerCalls ?? [];
     },
     async countBatchRowsByStatus() {
       return opts.batchCounts ?? {};
@@ -58,6 +61,7 @@ test("Cloud connected: 'other' = Google's used minus what this device logged sin
   const cloud = { connected: true, status: { limit: 10000, usedLast24h: 1000, window: "since_reset" as const, resetsAt: "2026-10-04T07:00:00.000Z" } };
   const result = await make({ calls, cloud }).services.getQuotaHistory({ service: "data" });
   assert.equal(result.localUnits, 500);
+  assert.equal(result.peerUnits, 0);
   assert.equal(result.otherUnits, 500);
   assert.deepEqual(result.cloud, { connected: true, limit: 10000, used: 1000, window: "since_reset", resetsAt: "2026-10-04T07:00:00.000Z" });
 });
@@ -94,4 +98,17 @@ test("the requested window is clamped to 1..45 days and defaults to 14", async (
   const c = make({});
   await c.services.getQuotaHistory({ service: "data", days: 0 });
   assert.equal(c.requested[0].sinceSeconds, sec("2026-10-03T18:00:00Z") - 1 * 86400);
+});
+
+test("shared log: another device's calls appear as their own entries, count as explained usage, and shrink 'not attributed'", async () => {
+  const peerBatch: QuotaCallLike = { ...call("2026-10-03T09:00:00Z", { contextId: "batch-on-B", contextLabel: "Batch batch-on", units: 400, count: 8, unknownCount: 0 }), otherDevice: true };
+  const cloud = { connected: true, status: { limit: 10000, usedLast24h: 1000, window: "since_reset" as const, resetsAt: null } };
+  const result = await make({ calls: [call("2026-10-03T08:00:00Z", { units: 300 })], peerCalls: [peerBatch], cloud }).services.getQuotaHistory({ service: "data" });
+  assert.equal(result.localUnits, 300);
+  assert.equal(result.peerUnits, 400);
+  assert.equal(result.otherUnits, 300, "1000 used by Google - 300 local - 400 from the other device");
+  const other = result.entries.find((e) => e.contextId === "batch-on-B");
+  assert.equal(other?.onOtherDevice, true);
+  assert.equal(other?.calls, 8);
+  assert.equal(result.entries.find((e) => e.contextId === "b1")?.onOtherDevice, false);
 });

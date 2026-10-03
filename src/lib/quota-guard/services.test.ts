@@ -5,17 +5,17 @@ import { createQuotaGuardServices, type QuotaGuardDependencies } from "./service
 const NOW = new Date("2026-10-03T18:00:00Z");
 
 function make(opts: {
-  quota?: Awaited<ReturnType<QuotaGuardDependencies["getDataApiQuota"]>> | Error;
+  quota?: Awaited<ReturnType<QuotaGuardDependencies["getQuota"]>> | Error;
   localUnits?: number | Error;
   reserve?: number;
 }) {
   const sinceRequested: number[] = [];
   const services = createQuotaGuardServices({
-    async getDataApiQuota() {
+    async getQuota() {
       if (opts.quota instanceof Error) throw opts.quota;
       return opts.quota ?? { connected: false, status: null };
     },
-    async sumLocalUnitsSince(since) {
+    async sumLocalUnitsSince(_service, since) {
       sinceRequested.push(since);
       if (opts.localUnits instanceof Error) throw opts.localUnits;
       return opts.localUnits ?? 0;
@@ -56,4 +56,24 @@ test("background reads honour the configured reserve", async () => {
   assert.equal(await make({ quota: connected(8100), reserve: 20 }).services.isBackgroundReadAllowed(), false);
   assert.equal(await make({ quota: connected(8100), reserve: 10 }).services.isBackgroundReadAllowed(), true); // 1900 left >= 10%
   assert.equal(await make({ quota: { connected: false, status: null }, reserve: 90 }).services.isBackgroundReadAllowed(), true, "unknown never blocks reads");
+});
+
+test("a background read is judged against ITS OWN pool: Analytics collection by the Analytics quota, not the Data API's", async () => {
+  const asked: string[] = [];
+  const services = createQuotaGuardServices({
+    async getQuota(service) {
+      asked.push(service);
+      return service === "analytics" ? connected(1000, 100000) : connected(9990, 10000);
+    },
+    async sumLocalUnitsSince() {
+      return 0;
+    },
+    async getReservePercent() {
+      return 20;
+    },
+    clock: { now: () => NOW },
+  });
+  assert.equal(await services.isBackgroundReadAllowed("analytics"), true); // Analytics pool nearly untouched
+  assert.equal(await services.isBackgroundReadAllowed("data"), false); // Data pool almost exhausted
+  assert.deepEqual(asked, ["analytics", "data"]);
 });

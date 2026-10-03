@@ -368,6 +368,7 @@ export function BatchManager({
     const outcome = data as SplitOutcome;
     setSplitOutcome(outcome);
     await fetchBatches(channelId);
+    if (selectedBatchId === batchId) await openBatch(batchId); // the closed original: show its new state
     return outcome;
   }
 

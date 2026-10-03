@@ -1,10 +1,18 @@
 import { createCloudQuotasCore } from "@/lib/cloud-quotas";
 import { countBatchRowsByStatus, listQuotaCalls } from "@/lib/db";
+import { getQuotaLedgerSyncCore } from "@/lib/quota-ledger-sync";
 import { createQuotaHistoryServices } from "./services";
 
 export function createQuotaHistoryCore() {
   return createQuotaHistoryServices({
     listCalls: (args) => listQuotaCalls(args),
+    async listPeerCalls(args) {
+      try {
+        return await getQuotaLedgerSyncCore().readPeerCalls(args);
+      } catch {
+        return []; // another device's log is an addition, never a reason to lose this device's history
+      }
+    },
     countBatchRowsByStatus: (batchId) => countBatchRowsByStatus(batchId),
     async getCloudQuota(service) {
       const status = await createCloudQuotasCore().getQuotaStatus();

@@ -8,6 +8,12 @@ export type QuotaCallLike = {
   contextKind: string | null;
   contextId: string | null;
   contextLabel: string | null;
+  /** A bucket published by another device stands for this many calls (default 1: a single call). */
+  count?: number;
+  /** Of `count`, calls with unknown cost (their cost is not in `units`). Default: 1 if `units` is null, else 0. */
+  unknownCount?: number;
+  /** True for a row that another device published. */
+  otherDevice?: boolean;
 };
 
 export type QuotaHistoryEntry = {
@@ -24,6 +30,8 @@ export type QuotaHistoryEntry = {
   units: number;
   /** Calls whose method has no known cost (not counted in `units`). */
   unknownUnitCalls: number;
+  /** Every call of this entry was made by another device (shared through the Syncthing folder). */
+  onOtherDevice: boolean;
 };
 
 /** Calls of one run closer together than this belong to the same entry; a gap longer than this starts a new one (a resumed batch). */
@@ -45,7 +53,8 @@ export function groupQuotaCalls(calls: readonly QuotaCallLike[]): QuotaHistoryEn
     const kind = call.contextKind ?? "other";
     const contextId = call.contextKind ? call.contextId : null;
     const day = call.contextKind ? "" : startOfYoutubeQuotaDay(new Date(call.occurredAt * 1000)).toISOString();
-    const key = `${kind}\u0000${contextId ?? ""}\u0000${day}`;
+    // Another device's rows are a separate run even when the work id is the same (a batch resumed on the other computer).
+    const key = `${kind}\u0000${contextId ?? ""}\u0000${day}\u0000${call.otherDevice ? "other" : "this"}`;
     const existing = open.get(key);
     const last = existing?.calls[existing.calls.length - 1];
     if (existing && last && call.occurredAt - last.occurredAt <= RUN_GAP_SECONDS) {
@@ -67,11 +76,12 @@ export function groupQuotaCalls(calls: readonly QuotaCallLike[]): QuotaHistoryEn
         label: bucket.label,
         startedAt: new Date(first.occurredAt * 1000).toISOString(),
         endedAt: new Date(last.occurredAt * 1000).toISOString(),
-        calls: bucket.calls.length,
-        writeCalls: bucket.calls.filter((c) => c.outcome === "ok" && isWriteMethod(c.method)).length,
-        failedCalls: bucket.calls.filter((c) => c.outcome !== "ok").length,
+        calls: bucket.calls.reduce((sum, c) => sum + (c.count ?? 1), 0),
+        writeCalls: bucket.calls.filter((c) => c.outcome === "ok" && isWriteMethod(c.method)).reduce((sum, c) => sum + (c.count ?? 1), 0),
+        failedCalls: bucket.calls.filter((c) => c.outcome !== "ok").reduce((sum, c) => sum + (c.count ?? 1), 0),
         units: bucket.calls.reduce((sum, c) => sum + (c.units ?? 0), 0),
-        unknownUnitCalls: bucket.calls.filter((c) => c.units === null).length,
+        unknownUnitCalls: bucket.calls.reduce((sum, c) => sum + (c.unknownCount ?? (c.units === null ? 1 : 0)), 0),
+        onOtherDevice: bucket.calls.every((c) => c.otherDevice === true),
       };
     })
     .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt) || a.label.localeCompare(b.label));
