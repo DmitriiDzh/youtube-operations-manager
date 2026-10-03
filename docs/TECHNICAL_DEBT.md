@@ -1596,6 +1596,12 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
     poll or the browser could fail instead of falling back;
   - a real agent client (Codex, Claude Code) connecting to `http://127.0.0.1:<port>/api/mcp`;
   - the loopback `Host`/`Origin` guard against the Host values macOS clients actually send.
+- **Partly verified on macOS (2026-10-03, agent, isolated app-data, port 3100, current `dev` build):** with
+  `next start -H 127.0.0.1` `curl http://localhost:3100/` returns 200 although `localhost` resolves to `::1`
+  first and `[::1]` refuses (curl falls back to IPv4), so the launcher's readiness poll works; `POST /api/mcp`
+  answers 403 `MCP_CONNECTION_DISABLED`. **Still unverified:** the `Host`/`Origin` guard (the disabled check answers
+  first, so a wrong `Host` also got 403 for that reason), a real agent client, and the browser opened on
+  `localhost`.
 - **To close:** on a Mac, run `scripts/macos/start.sh` (page opens, readiness detected), then
   `curl -i -X POST http://127.0.0.1:3000/api/mcp` (expect 403 `MCP_CONNECTION_DISABLED` or 401), then connect
   a real agent with a channel token. If the poll fails, change `localhost` to `127.0.0.1` in both launchers.
