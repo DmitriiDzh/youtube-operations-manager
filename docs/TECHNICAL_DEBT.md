@@ -197,6 +197,14 @@ Not every issue in this register must be fixed immediately. It must, however, al
 
   One regression was found and fixed as a direct consequence of this bump: refreshing `node_modules` to match the lockfile (untouched by this change, but not previously fully materialized on disk) exposed a pre-existing, previously-cache-masked TypeScript error in `src/lib/localization/adapters/xlsx.test.ts` — `typescript@5.9.3` makes `Uint8Array`/`Buffer` generic, and `exceljs`'s own bundled (non-exported, module-scoped) `Buffer` typing stub (`declare interface Buffer extends ArrayBuffer {}`) does not have the newer resizable-`ArrayBuffer` members and is therefore structurally incompatible with the real Node `Buffer`. `src/lib/changesets/import.ts` already carried the identical `as any` + `eslint-disable-next-line @typescript-eslint/no-explicit-any` workaround for the exact same issue; the test file was given the matching treatment for consistency. This is a compile-time-only type assertion — the runtime value passed to `workbook.xlsx.load()` is unchanged, no test assertion, expected value, or test case was touched. `typescript`/`@types/node` versions themselves were not changed.
 
+### Update 2026-10-03 — Next.js critical advisory closed
+
+`npm audit` found a new critical advisory in `next` 16.2.0-16.3.5 (GHSA-vcvr-r3jv-pc5j, remote code execution in `next/og`
+`ImageResponse`; this repo does not use `next/og`, so it was not reachable through our code). Fixed by the non-major bump to
+`next` **16.3.8** (owner approved, 2026-10-03). After it: 0 critical; production dependencies 13 (2 low / 6 moderate / 5 high),
+all dependencies 25 (2 low / 11 moderate / 12 high) — the remaining highs are the transitive/dev-tool ones triaged below.
+Verified: `npm test`, lint, build, and a production-server smoke test (`/`, `/api/presence`, `/dashboard` answer 200 on 16.3.8).
+
 ### Remaining 20 findings (0 critical / 7 high / 11 moderate / 2 low), triaged 2026-09-18
 
   | Package(s) | Severity | Direct/transitive | Prod/dev exposure | Vulnerable functionality actually used? | Patched version | Breaking upgrade required? | Relevance |
