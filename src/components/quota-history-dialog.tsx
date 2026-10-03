@@ -1,5 +1,6 @@
 "use client";
 
+import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { useEffect, useState } from "react";
 import { BlockingDialog } from "./blocking-dialog";
 import { LoadingIndicator } from "./operation-progress";
@@ -68,7 +69,7 @@ export function QuotaHistoryDialog({ service, onClose }: { service: "data" | "an
             )}
             {data.cloud.resetsAt ? (
               <p>
-                Quota resets at <span className="text-zinc-200">{new Date(data.cloud.resetsAt).toLocaleString()}</span> (midnight Pacific
+                Quota resets at <span className="text-zinc-200">{formatDisplayDateTime(data.cloud.resetsAt)}</span> (midnight Pacific
                 Time), in <span className="text-zinc-200">{formatTimeUntil(Date.parse(data.cloud.resetsAt) - now)}</span>.
               </p>
             ) : (
@@ -84,7 +85,7 @@ export function QuotaHistoryDialog({ service, onClose }: { service: "data" | "an
             <ul className="max-h-80 space-y-1 overflow-auto rounded-md border border-zinc-800 p-2 text-xs">
               {data.entries.map((entry) => (
                 <li key={`${entry.kind}-${entry.contextId ?? ""}-${entry.startedAt}`} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-zinc-800/60 py-1 last:border-0">
-                  <span className="text-zinc-500">{new Date(entry.startedAt).toLocaleString()}</span>
+                  <span className="text-zinc-500">{formatDisplayDateTime(entry.startedAt)}</span>
                   <span className="font-medium text-zinc-200">{entry.label}</span>
                   <span className="text-zinc-400">
                     {entry.changedVideos !== null

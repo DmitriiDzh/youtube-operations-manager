@@ -1,5 +1,6 @@
 "use client";
 
+import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { useState } from "react";
 import { ProgressBar } from "./progress-bar";
 import { QuotaHistoryDialog } from "./quota-history-dialog";
@@ -42,7 +43,7 @@ export function CloudQuotaProgress({
           label={`Google Cloud quota (${sinceReset ? "since reset" : "24h"}): ${status.usedLast24h.toLocaleString()} / ${status.limit.toLocaleString()}`}
         />
         {status.resetsAt && (
-          <p className="mt-0.5 text-[11px] text-zinc-500">Resets {new Date(status.resetsAt).toLocaleString()} (midnight Pacific Time)</p>
+          <p className="mt-0.5 text-[11px] text-zinc-500">Resets {formatDisplayDateTime(status.resetsAt)} (midnight Pacific Time)</p>
         )}
       </div>
       {historyService && (
