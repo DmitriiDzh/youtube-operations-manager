@@ -1,3 +1,4 @@
+import { runWithQuotaContext } from "@/lib/youtube-quota";
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { assertAgentScopeChannel, createChannelAccessCore, readStringField } from "@/lib/channel-access";
 import { createChannelSyncStoreAdapter } from "./adapters/store";
@@ -26,7 +27,7 @@ export function createChannelSyncCore() {
     ...services,
     async syncChannel(input: unknown, options?: Parameters<typeof services.syncChannel>[1]) {
       assertAgentScopeChannel(readStringField(input, "channelId"));
-      return services.syncChannel(input, options);
+      return runWithQuotaContext({ kind: "channel_sync", id: null, label: "Channel sync" }, () => services.syncChannel(input, options));
     },
   };
 }

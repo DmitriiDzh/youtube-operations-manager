@@ -58,6 +58,8 @@ function createFakeStore() {
   const changes = new Map<string, PendingChangeRecord>();
 
   return {
+    batches,
+    locks,
     changes,
     ledgerRows,
     registerApprovedChange(entry: Partial<PendingChangeRecord> & { id: string; videoId: string }) {
@@ -228,6 +230,9 @@ function createHarness(options: {
   onBackup?: (videoId: string) => void;
   /** The device-availability gate, checked before every not-yet-started row (RISK-94). */
   assertMutationAllowed?: () => Promise<void>;
+  /** BL-117 slice 2: the pre-flight quota guard and the atomic split, both optional like in production wiring tests. */
+  quotaGuard?: Parameters<typeof createBatchServices>[0]["quotaGuard"];
+  splitPendingBatch?: Parameters<typeof createBatchServices>[0]["splitPendingBatch"];
 } = {}) {
   const store = createFakeStore();
   let counter = 0;
@@ -293,6 +298,8 @@ function createHarness(options: {
     clock: { async wait() {} }, // instant in tests -- no real backoff/reconciliation delay
     verifyRetryDelaysMs: options.verifyRetryDelaysMs,
     assertMutationAllowed: options.assertMutationAllowed,
+    quotaGuard: options.quotaGuard,
+    splitPendingBatch: options.splitPendingBatch,
     idGenerator: () => `id-${++counter}`,
     logger: { info() {}, error() {} },
   });
@@ -1181,4 +1188,213 @@ test("AC-CANCEL-11: a cancel that loses the race to a row already APPLYING neith
   assert.equal(cancelled, false);
   assert.equal(statusOf(harness, "v1"), "APPLYING", "an in-flight row is never rewritten");
   assert.notEqual(await harness.store.getVideoExecutionLockHolder("v1"), null, "its lock must stay while the write is in flight");
+});
+
+// ---------------------------------------------------------------------------
+// BL-117 slice 2 -- pre-flight quota guard (docs/roadmap/plans/QUOTA_HISTORY_AND_GUARD_PLAN.md). Acceptance criteria written
+// from the owner's requirement before the code: a live batch that certainly needs more quota than is left is refused BEFORE
+// anything happens (no claim, no backup, no lock, no API call), the refusal says how many videos would fit and whether the
+// batch can be split, an unreadable quota is its own refusal that the user may knowingly override, dry runs are never checked,
+// a resumed batch counts only the rows still to write. No real YouTube write is involved (fake executor).
+// ---------------------------------------------------------------------------
+
+type GuardVerdictFake = NonNullable<Parameters<typeof createBatchServices>[0]["quotaGuard"]> extends { checkWriteRun(n: number): Promise<infer V> } ? V : never;
+
+function guardReturning(verdict: GuardVerdictFake) {
+  const asked: number[] = [];
+  return {
+    asked,
+    guard: {
+      async checkWriteRun(videos: number) {
+        asked.push(videos);
+        return verdict;
+      },
+    },
+  };
+}
+
+function countingExecutor() {
+  const state = { writes: 0 };
+  const executor: WriteExecutor = {
+    async attemptWrite() {
+      state.writes += 1;
+      return { outcome: "SUCCESS" };
+    },
+  };
+  return { state, executor };
+}
+
+const EXEC_INPUT = { credentialRef: { userId: "user-1" }, expectedChannelId: "UC_TEST" };
+
+test("BL-117 AC-G3: insufficient quota refuses the batch BEFORE anything starts: quota_insufficient with the numbers, batch still PENDING, no backup, no write, no lock", async () => {
+  const { guard, asked } = guardReturning({ decision: "insufficient", estimatedUnits: 156, remainingUnits: 120, fitVideos: 2, resetsAt: "2026-10-04T07:00:00.000Z" });
+  const backups: string[] = [];
+  const harness = createHarness({ quotaGuard: guard, onBackup: (v) => backups.push(v) });
+  const batch = await threeVideoBatch(harness);
+  const { state, executor } = countingExecutor();
+
+  await assert.rejects(
+    harness.services.executeBatch({ batchId: batch.id, ...EXEC_INPUT, executor }),
+    (error: unknown) => {
+      assert.ok(error instanceof DomainError);
+      assert.equal(error.code, "quota_insufficient");
+      assert.deepEqual(error.details, {
+        batchId: batch.id,
+        estimatedUnits: 156,
+        remainingUnits: 120,
+        rowsToWrite: 3,
+        fitVideos: 2,
+        resetsAt: "2026-10-04T07:00:00.000Z",
+        canSplit: true,
+      });
+      return true;
+    }
+  );
+
+  assert.deepEqual(asked, [3]);
+  assert.equal(state.writes, 0);
+  assert.equal((await harness.services.getBatch(batch.id)).status, "PENDING");
+  assert.deepEqual(backups, [], "no backup was taken");
+  assert.equal(harness.store.locks.size, 0);
+  assert.equal(Object.keys(harness.freshCallCount).length, 0, "no API read was made");
+  assert.ok([...harness.store.ledgerRows.values()].every((r) => r.status === "PENDING"));
+});
+
+test("BL-117: when not even one video fits, the refusal says it cannot be split", async () => {
+  const { guard } = guardReturning({ decision: "insufficient", estimatedUnits: 156, remainingUnits: 30, fitVideos: 0, resetsAt: null });
+  const harness = createHarness({ quotaGuard: guard });
+  const batch = await threeVideoBatch(harness);
+  await assert.rejects(
+    harness.services.executeBatch({ batchId: batch.id, ...EXEC_INPUT, executor: countingExecutor().executor }),
+    (error: unknown) => error instanceof DomainError && error.code === "quota_insufficient" && (error.details as { canSplit: boolean }).canSplit === false
+  );
+});
+
+test("BL-117 AC-G2: an allowed verdict lets the batch run normally (all three videos written)", async () => {
+  const { guard } = guardReturning({ decision: "allow", estimatedUnits: 156, remainingUnits: 156, fitVideos: 3 });
+  const harness = createHarness({ quotaGuard: guard });
+  const batch = await threeVideoBatch(harness);
+  const { state, executor } = countingExecutor();
+  const summary = await harness.services.executeBatch({ batchId: batch.id, ...EXEC_INPUT, executor });
+  assert.equal(state.writes, 3);
+  assert.equal(summary.results.length, 3);
+});
+
+test("BL-117 AC-G4: an unreadable quota refuses with quota_unknown (Cloud-connected flag told), unless the user acknowledges", async () => {
+  const { guard } = guardReturning({ decision: "unknown", estimatedUnits: 156, cloudConnected: false });
+  const harness = createHarness({ quotaGuard: guard });
+  const batch = await threeVideoBatch(harness);
+  const first = countingExecutor();
+  await assert.rejects(
+    harness.services.executeBatch({ batchId: batch.id, ...EXEC_INPUT, executor: first.executor }),
+    (error: unknown) =>
+      error instanceof DomainError &&
+      error.code === "quota_unknown" &&
+      (error.details as { cloudConnected: boolean; estimatedUnits: number }).cloudConnected === false &&
+      (error.details as { estimatedUnits: number }).estimatedUnits === 156
+  );
+  assert.equal(first.state.writes, 0);
+  assert.equal((await harness.services.getBatch(batch.id)).status, "PENDING");
+
+  const second = countingExecutor();
+  await harness.services.executeBatch({ batchId: batch.id, ...EXEC_INPUT, executor: second.executor, acknowledgeUnknownQuota: true });
+  assert.equal(second.state.writes, 3, "knowingly overriding runs the batch");
+});
+
+test("BL-117 AC-G5: a dry-run batch costs no quota and is never checked", async () => {
+  const { guard, asked } = guardReturning({ decision: "insufficient", estimatedUnits: 1, remainingUnits: 0, fitVideos: 0, resetsAt: null });
+  const harness = createHarness({ quotaGuard: guard });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: true, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+  await harness.services.executeBatch({ batchId: batch.id, ...EXEC_INPUT, executor: countingExecutor().executor });
+  assert.deepEqual(asked, []);
+});
+
+test("BL-117 AC-G6: a resumed (RUNNING) batch counts only the rows still to write and is never splittable", async () => {
+  const { guard, asked } = guardReturning({ decision: "insufficient", estimatedUnits: 104, remainingUnits: 60, fitVideos: 1, resetsAt: null });
+  const harness = createHarness({ quotaGuard: guard });
+  const batch = await threeVideoBatch(harness);
+  const stored = harness.store.batches.get(batch.id)!;
+  stored.status = "RUNNING";
+  const rows = [...harness.store.ledgerRows.values()];
+  rows[0].status = "SUCCESS"; // already written
+  await assert.rejects(
+    harness.services.executeBatch({ batchId: batch.id, ...EXEC_INPUT, executor: countingExecutor().executor }),
+    (error: unknown) =>
+      error instanceof DomainError &&
+      error.code === "quota_insufficient" &&
+      (error.details as { rowsToWrite: number; canSplit: boolean }).rowsToWrite === 2 &&
+      (error.details as { canSplit: boolean }).canSplit === false
+  );
+  assert.deepEqual(asked, [2]);
+});
+
+test("BL-117: a batch with nothing left to write is not checked at all", async () => {
+  const { guard, asked } = guardReturning({ decision: "insufficient", estimatedUnits: 52, remainingUnits: 0, fitVideos: 0, resetsAt: null });
+  const harness = createHarness({ quotaGuard: guard });
+  const batch = await threeVideoBatch(harness);
+  harness.store.batches.get(batch.id)!.status = "RUNNING";
+  for (const row of harness.store.ledgerRows.values()) row.status = "SUCCESS";
+  await harness.services.executeBatch({ batchId: batch.id, ...EXEC_INPUT, executor: countingExecutor().executor });
+  assert.deepEqual(asked, []);
+});
+
+test("BL-117 AC-G7/G8: splitBatchForQuota asks the atomic split for exactly the fitting number of videos and returns both new batch ids", async () => {
+  const { guard } = guardReturning({ decision: "insufficient", estimatedUnits: 156, remainingUnits: 110, fitVideos: 2, resetsAt: null });
+  const splitCalls: Array<{ batchId: string; fitCount: number; fitsBatchId: string | null; restBatchId: string | null }> = [];
+  const harness = createHarness({
+    quotaGuard: guard,
+    splitPendingBatch: async (input) => {
+      splitCalls.push({ batchId: input.batchId, fitCount: input.fitCount, fitsBatchId: input.fitsBatchId, restBatchId: input.restBatchId });
+      return { fitsBatchId: input.fitsBatchId, restBatchId: input.restBatchId, fitRows: input.fitCount, restRows: 3 - input.fitCount };
+    },
+  });
+  const batch = await threeVideoBatch(harness);
+  const result = await harness.services.splitBatchForQuota({ batchId: batch.id });
+  assert.equal(splitCalls.length, 1);
+  assert.equal(splitCalls[0].batchId, batch.id);
+  assert.equal(splitCalls[0].fitCount, 2);
+  assert.ok(splitCalls[0].fitsBatchId && splitCalls[0].restBatchId && splitCalls[0].fitsBatchId !== splitCalls[0].restBatchId);
+  assert.deepEqual(
+    { fitRows: result.fitRows, restRows: result.restRows, estimatedUnits: result.estimatedUnits, remainingUnits: result.remainingUnits },
+    { fitRows: 2, restRows: 1, estimatedUnits: 156, remainingUnits: 110 }
+  );
+});
+
+test("BL-117: splitBatchForQuota refuses when the batch fits (nothing to split), the quota is unknown, nothing fits, or the batch is not a fresh live batch", async () => {
+  const make = async (verdict: GuardVerdictFake, mutate?: (h: ReturnType<typeof createHarness>, batchId: string) => void) => {
+    const { guard } = guardReturning(verdict);
+    let splitCalled = false;
+    const harness = createHarness({ quotaGuard: guard, splitPendingBatch: async () => ((splitCalled = true), null) });
+    const batch = await threeVideoBatch(harness);
+    mutate?.(harness, batch.id);
+    const error = await harness.services.splitBatchForQuota({ batchId: batch.id }).then(() => null, (e: unknown) => e);
+    return { error, splitCalled };
+  };
+
+  const fits = await make({ decision: "allow", estimatedUnits: 156, remainingUnits: 500, fitVideos: 9 });
+  assert.ok(fits.error instanceof DomainError && fits.error.code === "validation_failed");
+  assert.equal(fits.splitCalled, false);
+
+  const unknown = await make({ decision: "unknown", estimatedUnits: 156, cloudConnected: false });
+  assert.ok(unknown.error instanceof DomainError && unknown.error.code === "quota_unknown");
+
+  const none = await make({ decision: "insufficient", estimatedUnits: 156, remainingUnits: 10, fitVideos: 0, resetsAt: null });
+  assert.ok(none.error instanceof DomainError && none.error.code === "quota_insufficient");
+  assert.equal(none.splitCalled, false);
+
+  const started = await make({ decision: "insufficient", estimatedUnits: 156, remainingUnits: 110, fitVideos: 2, resetsAt: null }, (h, id) => {
+    h.store.batches.get(id)!.status = "RUNNING";
+  });
+  assert.ok(started.error instanceof DomainError && started.error.code === "validation_failed");
+  assert.equal(started.splitCalled, false);
+});
+
+test("BL-117: if the atomic split reports the batch is no longer splittable (it was started meanwhile), nothing is reported as split", async () => {
+  const { guard } = guardReturning({ decision: "insufficient", estimatedUnits: 156, remainingUnits: 110, fitVideos: 2, resetsAt: null });
+  const harness = createHarness({ quotaGuard: guard, splitPendingBatch: async () => null });
+  const batch = await threeVideoBatch(harness);
+  await assert.rejects(
+    harness.services.splitBatchForQuota({ batchId: batch.id }),
+    (error: unknown) => error instanceof DomainError && error.code === "batch_already_running"
+  );
 });

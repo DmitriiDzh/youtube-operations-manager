@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "./confirm-dialog";
 import { OperationOverlay, useOperation, type AttachedOperationResult } from "./operation-progress";
+import { parseQuotaBlock, QuotaBlockDialog, type QuotaBlock } from "./quota-block-dialog";
 
 type LanguageOption = { code: string; name: string };
 
@@ -44,6 +45,8 @@ export function LanguageDefaultsPanel({
   supportedLanguages: LanguageOption[];
 }) {
   const [report, setReport] = useState<Report | null>(null);
+  // BL-117: the server refused to START Fix all because of quota (insufficient / cannot be checked).
+  const [quotaBlock, setQuotaBlock] = useState<QuotaBlock | null>(null);
   const [language, setLanguage] = useState("");
   const [audio, setAudio] = useState("");
   const [busy, setBusy] = useState(false);
@@ -233,7 +236,7 @@ export function LanguageDefaultsPanel({
    * only names the videos and the etag each one was previewed at. Sequential and fail-fast; every
    * write goes through video-details -> the single YouTube write gateway.
    */
-  async function applyAlignment() {
+  async function applyAlignment(options: { acknowledgeUnknownQuota?: boolean } = {}) {
     if (!target && !targetAudio) return;
     setAligning("apply");
     op.start({ title: "Starting…", cancellable: false });
@@ -248,6 +251,7 @@ export function LanguageDefaultsPanel({
             const state = align[videoId];
             return { videoId, ...(state?.status === "ready" && state.etag ? { expectedEtag: state.etag } : {}) };
           }),
+          ...(options.acknowledgeUnknownQuota ? { acknowledgeUnknownQuota: true } : {}),
         }),
       });
       const data = await res.json();
@@ -256,7 +260,17 @@ export function LanguageDefaultsPanel({
         op.attach(data.details.operationId, { title: "Writing language labels to YouTube", quotaServices: ["dataApi"], onFinished: handleFixAllFinished });
         return;
       }
-      if (!res.ok) throw new Error(data.message ?? data.error ?? "Could not start the write");
+      if (!res.ok) {
+        // BL-117: a quota refusal is a decision for the user, not an error line: nothing was started.
+        const quota = parseQuotaBlock(data);
+        if (quota) {
+          op.reset();
+          setAligning(null);
+          setQuotaBlock(quota);
+          return;
+        }
+        throw new Error(data.message ?? data.error ?? "Could not start the write");
+      }
       op.attach(data.operationId, { title: "Writing language labels to YouTube", quotaServices: ["dataApi"], onFinished: handleFixAllFinished });
     } catch (e) {
       setAligning(null);
@@ -327,6 +341,21 @@ export function LanguageDefaultsPanel({
       </div>
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
       <OperationOverlay state={op.state} onCancel={op.requestCancel} onClose={op.reset} />
+      {quotaBlock && (
+        <QuotaBlockDialog
+          block={quotaBlock}
+          noun="Fix all"
+          onClose={() => setQuotaBlock(null)}
+          onRunAnyway={
+            quotaBlock.code === "quota_unknown"
+              ? () => {
+                  setQuotaBlock(null);
+                  void applyAlignment({ acknowledgeUnknownQuota: true });
+                }
+              : undefined
+          }
+        />
+      )}
       {confirmAll && (
         <ConfirmDialog
           title={`Set ${[target && `Title/description language "${target}"`, targetAudio && `Video language "${targetAudio}"`].filter(Boolean).join(" and ")} on ${readyIds.length} videos?`}
@@ -356,7 +385,7 @@ export function LanguageDefaultsPanel({
             {aligning === "preview" ? "Checking..." : `Preview (${chosen.length})`}
           </button>
           <button
-            onClick={applyAlignment}
+            onClick={() => void applyAlignment()}
             disabled={aligning !== null || readyIds.length === 0}
             className="rounded-lg bg-red-600 px-3 py-1 text-white hover:bg-red-700 disabled:opacity-50"
           >

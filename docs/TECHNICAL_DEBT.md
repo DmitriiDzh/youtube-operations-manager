@@ -1651,3 +1651,17 @@ No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a d
 - **Gate(s):** none blocking (impressions/CTR is read-only display; the numbers must not be trusted until verified).
 - **Approval required from:** none to implement; the owner prioritises it.
 - **Status:** OPEN, tracked.
+
+## RISK-96 — Quota guard estimates and attribution are not verified against a real batch — OPEN, 2026-10-03
+
+- **Affected components:** `src/lib/quota-guard/` (52 units per written video, 100-unit margin, 2-minute Monitoring lag),
+  `src/lib/youtube-quota/costs.ts`, the `AsyncLocalStorage` work contexts, ADR 0017.
+- **Actual risk:** the per-video cost is derived from reading the call sequence and Google's published table, not measured on a
+  real batch; a retry-heavy run could cost more than estimated (the margin is 100 units). Attribution of calls to a batch run in
+  a real server build (contexts set inside `executeBatch` / `recoverBatch` / Fix all `run`) is unit-tested, not observed live.
+  The history shows Data API figures only for calls made after this build was first run.
+- **To close:** after the first real live batch, compare the history entry (units) with Google's own usage figure and the
+  estimate; adjust `UNITS_PER_WRITTEN_VIDEO` / the margin if they differ; confirm the entry carries the batch label.
+- **Gate(s):** none blocking (the guard only ever makes a run refuse earlier; it cannot cause a write).
+- **Approval required from:** none to implement; the owner decides on tolerance.
+- **Status:** OPEN, tracked.

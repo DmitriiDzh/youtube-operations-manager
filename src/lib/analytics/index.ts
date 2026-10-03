@@ -3,6 +3,8 @@ import { createChannelAccessCore } from "@/lib/channel-access";
 import { createAnalyticsStoreAdapter } from "./adapters/store";
 import { createAnalyticsYoutubeApiAdapter } from "./adapters/youtube-api";
 import { createDefaultLogger } from "@/lib/shared-logger";
+import { createQuotaGuardCore } from "@/lib/quota-guard";
+import { quotaScoped } from "@/lib/youtube-quota";
 import { createAnalyticsServices } from "./services";
 
 function defaultAuthResolver() {
@@ -13,7 +15,7 @@ function defaultAuthResolver() {
 
 export function createAnalyticsCore() {
   const store = createAnalyticsStoreAdapter();
-  return createAnalyticsServices({
+  const services = createAnalyticsServices({
     authResolver: defaultAuthResolver(),
     youtubeApi: createAnalyticsYoutubeApiAdapter(),
     videoStore: store.videoStore,
@@ -26,6 +28,19 @@ export function createAnalyticsCore() {
     logger: createDefaultLogger(),
     channelAccess: createChannelAccessCore(),
   });
+  // BL-117: API calls made while collecting metrics are logged against this kind of work in the quota history.
+  const guard = createQuotaGuardCore();
+  const context = { kind: "analytics_collection", id: null, label: "Analytics collection" };
+  return {
+    ...services,
+    collectMetrics: quotaScoped(services.collectMetrics, context),
+    // BL-117 (owner decision 2026-10-03): the AUTOMATIC collection waits while less than the configured reserve of the daily
+    // quota is left, so writes keep headroom. A manual "Collect now" is the user's own call and is not held back.
+    runAutoCollectionIfStale: quotaScoped(async (input: unknown) => {
+      if (!(await guard.isBackgroundReadAllowed("analytics"))) return { ranCollection: false } as const;
+      return services.runAutoCollectionIfStale(input);
+    }, context),
+  };
 }
 
 export type AnalyticsCore = ReturnType<typeof createAnalyticsCore>;

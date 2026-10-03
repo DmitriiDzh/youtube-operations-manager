@@ -1,4 +1,6 @@
 import { DomainError } from "../video-metadata/contracts";
+import { currentQuotaContext, quotaUnitsForCall, type QuotaLedgerService } from "../youtube-quota";
+import { recordQuotaCall } from "../db";
 
 // ---------------------------------------------------------------------------
 // Classifies a real YouTube Data API v3 / YouTube Analytics API read error into a
@@ -34,6 +36,40 @@ import { DomainError } from "../video-metadata/contracts";
 // agent could schedule a retry against it. The message states the same fact Google's own error
 // text does (quota, no timestamp) and nothing more.
 // ---------------------------------------------------------------------------
+
+function isQuotaExceededError(error: unknown): boolean {
+  const response = isRecord(error) && isRecord(error.response) ? error.response : undefined;
+  if (response?.status !== 403) return false;
+  const body = isRecord(response.data) && isRecord(response.data.error) ? response.data.error : undefined;
+  const entries = Array.isArray(body?.errors) ? body.errors : [];
+  return entries.some((e) => isRecord(e) && (e.reason === "quotaExceeded" || e.reason === "dailyLimitExceeded"));
+}
+
+/**
+ * BL-117 -- logs one API call in the quota ledger. Fire-and-forget by design: it must never fail, delay or alter the
+ * API call it describes (a busy database, an export lock, a missing table: all swallowed). Units: a successful call
+ * costs its table price (NULL if the method is unknown), a failed one at least 1 (Google: "every API request, even if
+ * invalid, will cost at least one quota point"), a 403 quotaExceeded nothing.
+ */
+function noteQuotaCall(service: QuotaLedgerService, method: string, outcome: "ok" | "error" | "quota_exceeded"): void {
+  try {
+    const context = currentQuotaContext();
+    const price = quotaUnitsForCall(service, method);
+    const units = outcome === "ok" ? price : outcome === "quota_exceeded" ? 0 : 1;
+    void recordQuotaCall({
+      occurredAt: Math.floor(Date.now() / 1000),
+      service,
+      method,
+      units,
+      outcome,
+      contextKind: context?.kind ?? null,
+      contextId: context?.id ?? null,
+      contextLabel: context?.label ?? null,
+    }).catch(() => undefined);
+  } catch {
+    // never let bookkeeping reach the caller
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -91,13 +127,26 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * so calling it goes through `callYoutubeApi`. Lazy -- only the specific resource a caller
  * actually accesses gets wrapped, nothing about the client's other, untouched internals is
  * disturbed. */
-function wrapResourceForQuotaClassification<T extends object>(resource: T): T {
+function wrapResourceForQuotaClassification<T extends object>(
+  resource: T,
+  ledger?: { service: QuotaLedgerService; resourceName: string }
+): T {
   return new Proxy(resource, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
       if (typeof value === "function") {
+        const method = typeof prop === "string" && ledger ? `${ledger.resourceName}.${prop}` : null;
         return (...args: unknown[]) =>
-          callYoutubeApi(() => (value as (...a: unknown[]) => Promise<unknown>).apply(target, args));
+          callYoutubeApi(async () => {
+            try {
+              const result = await (value as (...a: unknown[]) => Promise<unknown>).apply(target, args);
+              if (ledger && method) noteQuotaCall(ledger.service, method, "ok");
+              return result;
+            } catch (error) {
+              if (ledger && method) noteQuotaCall(ledger.service, method, isQuotaExceededError(error) ? "quota_exceeded" : "error");
+              throw error;
+            }
+          });
       }
       return value;
     },
@@ -128,12 +177,14 @@ function wrapResourceForQuotaClassification<T extends object>(resource: T): T {
  * non-writable property found via the prototype chain) sidesteps the invariant entirely -- the
  * new object has no such restrictive descriptors of its own to violate.
  */
-export function wrapYoutubeClientForQuotaClassification<T extends object>(client: T): T {
+export function wrapYoutubeClientForQuotaClassification<T extends object>(client: T, ledgerService?: QuotaLedgerService): T {
   const wrapped: Record<PropertyKey, unknown> = Object.create(Object.getPrototypeOf(client) ?? Object.prototype);
   for (const key of Reflect.ownKeys(client)) {
     const value = Reflect.get(client, key);
     Object.defineProperty(wrapped, key, {
-      value: isPlainObject(value) ? wrapResourceForQuotaClassification(value) : value,
+      value: isPlainObject(value)
+        ? wrapResourceForQuotaClassification(value, ledgerService && typeof key === "string" ? { service: ledgerService, resourceName: key } : undefined)
+        : value,
       writable: true,
       enumerable: true,
       configurable: true,

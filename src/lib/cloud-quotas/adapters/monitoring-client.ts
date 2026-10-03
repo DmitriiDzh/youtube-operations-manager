@@ -89,9 +89,11 @@ export async function fetchDailyQuotaUsage(args: {
   projectNumber: string;
   service: string;
   fetchImpl: FetchLike;
+  /** BL-117: sum from this instant (the last quota reset) instead of the rolling 24 h. */
+  since?: Date;
 }): Promise<number> {
   const now = new Date();
-  const startTime = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const startTime = (args.since ?? new Date(now.getTime() - 24 * 60 * 60 * 1000)).toISOString();
   const endTime = now.toISOString();
   const filter =
     `metric.type="serviceruntime.googleapis.com/quota/rate/net_usage" AND resource.type="consumer_quota" ` +

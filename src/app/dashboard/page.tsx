@@ -12,6 +12,7 @@ import { BatchManager } from "@/components/batch-manager";
 import { AiConnectionsManager } from "@/components/ai-connections-manager";
 import { AnalyticsCollectionSettings } from "@/components/analytics-collection-settings";
 import { MarketIntelligenceCollectionSettings } from "@/components/market-intelligence-collection-settings";
+import { QuotaReserveSettings } from "@/components/quota-reserve-settings";
 import { LiveWritesSettings } from "@/components/live-writes-settings";
 import { McpConnectionSettings } from "@/components/mcp-connection-settings";
 import { OperationsWorkspaceSettings } from "@/components/operations-workspace-settings";
@@ -457,6 +458,9 @@ export default function Dashboard() {
           </FeatureErrorBoundary>
           <FeatureErrorBoundary label="Settings — Google Cloud">
             <CloudConnectionSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Quota reserve">
+            <QuotaReserveSettings />
           </FeatureErrorBoundary>
           <FeatureErrorBoundary label="Settings — Analytics collection">
             <AnalyticsCollectionSettings />

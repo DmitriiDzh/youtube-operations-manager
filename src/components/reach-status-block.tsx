@@ -1,5 +1,6 @@
 "use client";
 
+import { formatDisplayDateTime } from "@/lib/shared-formatting";
 export type ReachStatusData = {
   job: { jobId: string; createdAt: string | null } | null;
   firstFileExpectedBy: string | null;
@@ -27,7 +28,7 @@ export type ReachStatusData = {
   readsEnabled: boolean;
 };
 
-const fmt = (iso: string) => new Date(iso).toLocaleString();
+const fmt = (iso: string) => formatDisplayDateTime(iso);
 /** A report file's period is a Pacific-Time reporting day; the day part of its start is its label (never shifted). */
 const day = (iso: string) => iso.slice(0, 10);
 

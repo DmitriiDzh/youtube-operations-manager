@@ -403,6 +403,9 @@ export const batches = sqliteTable("batches", {
     .$defaultFn(() => new Date()),
   startedAt: integer("started_at", { mode: "timestamp" }),
   completedAt: integer("completed_at", { mode: "timestamp" }),
+  // Additive, SCHEMA_MIGRATIONS version 43 (BL-117): JSON array of the batch ids this (never executed) batch was split
+  // into because it needed more quota than was available. NULL for every other batch.
+  splitIntoJson: text("split_into_json"),
 });
 
 // One row per video per batch (DEC-OQ-1). Membership (batchId + videoId + changeIds) is
@@ -547,6 +550,29 @@ export const gatewayCallEvents = sqliteTable("gateway_call_events", {
   outcome: text("outcome").notNull(),
   occurredAt: integer("occurred_at").notNull(),
 });
+
+/**
+ * BL-117 (docs/roadmap/plans/QUOTA_HISTORY_AND_GUARD_PLAN.md) -- one row per YouTube Data / Analytics API call this
+ * device made: when, which method, how many quota units it cost (NULL = method not in the cost table), how it ended,
+ * and which piece of work it belonged to (`context_*`, NULL = none). Append-only, 45-day retention. Device-local
+ * (never in a snapshot: it is written constantly by every device, a replace-style sync would conflict forever);
+ * sharing it between devices is a separate per-device-file exchange, not this table.
+ */
+export const quotaLedger = sqliteTable(
+  "quota_ledger",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    occurredAt: integer("occurred_at").notNull(),
+    service: text("service").notNull(), // 'data' | 'analytics'
+    method: text("method").notNull(), // e.g. 'videos.update'
+    units: integer("units"),
+    outcome: text("outcome").notNull(), // 'ok' | 'error' | 'quota_exceeded'
+    contextKind: text("context_kind"),
+    contextId: text("context_id"),
+    contextLabel: text("context_label"),
+  },
+  (table) => [index("quota_ledger_occurred_idx").on(table.occurredAt)]
+);
 
 /**
  * SCHEMA_MIGRATIONS version 12 -- one row per sync-gateway document family
@@ -2472,6 +2498,37 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 42,
+    description:
+      "quota_ledger -- BL-117: one row per YouTube Data/Analytics API call (time, method, quota units, outcome, which work it belonged to), for the Settings quota-history popup and the batch quota guard. Device-local.",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS quota_ledger (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "occurred_at INTEGER NOT NULL, " +
+          "service TEXT NOT NULL, " +
+          "method TEXT NOT NULL, " +
+          "units INTEGER, " +
+          "outcome TEXT NOT NULL, " +
+          "context_kind TEXT, " +
+          "context_id TEXT, " +
+          "context_label TEXT)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS quota_ledger_occurred_idx ON quota_ledger(occurred_at)");
+    },
+  },
+  {
+    version: 43,
+    description: "batches.split_into_json -- BL-117: ids of the batches a never-executed batch was split into for quota",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE batches ADD COLUMN split_into_json TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -3786,6 +3843,93 @@ export async function getChannelReachCoverage(
   };
 }
 
+// --- BL-117 slice 2: quota reserve setting ---------------------------------------------------------
+
+const QUOTA_RESERVE_PERCENT_SETTING_KEY = "quota_reserve_percent";
+
+/** Share of the daily quota (percent) background reads leave untouched so writes keep headroom; default 20. */
+export async function getQuotaReservePercent(database: AppDb = db): Promise<number> {
+  const raw = await getAppSetting(QUOTA_RESERVE_PERCENT_SETTING_KEY, database);
+  if (raw === null || raw === "") return 20;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 90 ? Math.round(parsed) : 20;
+}
+
+export async function setQuotaReservePercent(percent: number, database: AppDb = db): Promise<void> {
+  await setAppSetting(QUOTA_RESERVE_PERCENT_SETTING_KEY, String(Math.round(percent)), database);
+}
+
+// --- BL-117: quota ledger ---------------------------------------------------------------------------
+
+export const QUOTA_LEDGER_RETENTION_SECONDS = 45 * 24 * 3600;
+let lastQuotaLedgerPruneAt = 0;
+
+export type QuotaCallRecord = {
+  occurredAt: number; // unix seconds
+  service: "data" | "analytics";
+  method: string;
+  units: number | null;
+  outcome: "ok" | "error" | "quota_exceeded";
+  contextKind: string | null;
+  contextId: string | null;
+  contextLabel: string | null;
+};
+
+/** Appends one call; prunes entries past retention at most once an hour. Callers treat this as best-effort. */
+export async function recordQuotaCall(record: QuotaCallRecord, database: AppDb = db): Promise<void> {
+  await database.insert(quotaLedger).values(record);
+  const nowMs = Date.now();
+  if (nowMs - lastQuotaLedgerPruneAt > 3_600_000) {
+    lastQuotaLedgerPruneAt = nowMs;
+    await pruneQuotaLedger(Math.floor(nowMs / 1000), database);
+  }
+}
+
+/** Deletes entries older than the retention window as of `nowSeconds`; returns nothing (best-effort housekeeping). */
+export async function pruneQuotaLedger(nowSeconds: number, database: AppDb = db): Promise<void> {
+  await database.delete(quotaLedger).where(sql`${quotaLedger.occurredAt} < ${nowSeconds - QUOTA_LEDGER_RETENTION_SECONDS}`);
+}
+
+export async function listQuotaCalls(
+  args: { sinceSeconds: number; service: "data" | "analytics" },
+  database: AppDb = db
+): Promise<QuotaCallRecord[]> {
+  const rows = await database
+    .select()
+    .from(quotaLedger)
+    .where(and(eq(quotaLedger.service, args.service), gte(quotaLedger.occurredAt, args.sinceSeconds)))
+    .orderBy(asc(quotaLedger.occurredAt), asc(quotaLedger.id));
+  return rows.map((r) => ({
+    occurredAt: r.occurredAt,
+    service: r.service === "analytics" ? "analytics" : "data",
+    method: r.method,
+    units: r.units,
+    outcome: r.outcome === "ok" || r.outcome === "quota_exceeded" ? r.outcome : "error",
+    contextKind: r.contextKind,
+    contextId: r.contextId,
+    contextLabel: r.contextLabel,
+  }));
+}
+
+/** Every service's calls since `sinceSeconds`, oldest first (for publishing this device's log to the shared folder). */
+export async function listAllQuotaCalls(sinceSeconds: number, database: AppDb = db): Promise<QuotaCallRecord[]> {
+  const [data, analytics] = await Promise.all([
+    listQuotaCalls({ sinceSeconds, service: "data" }, database),
+    listQuotaCalls({ sinceSeconds, service: "analytics" }, database),
+  ]);
+  return [...data, ...analytics].sort((a, b) => a.occurredAt - b.occurredAt);
+}
+
+/** How many ledger rows of each status a batch has (history says "N videos changed" from SUCCESS, not from call counts). */
+export async function countBatchRowsByStatus(batchId: string, database: AppDb = db): Promise<Record<string, number>> {
+  const rows = await database
+    .select({ status: batchLedgerRows.status, count: sql<number>`COUNT(*)` })
+    .from(batchLedgerRows)
+    .where(eq(batchLedgerRows.batchId, batchId))
+    .groupBy(batchLedgerRows.status);
+  return Object.fromEntries(rows.map((r) => [r.status, Number(r.count)]));
+}
+
 export type StoredReportingSyncAttempt = {
   attemptedAt: Date;
   outcome: "ok" | "partial" | "failed";
@@ -5067,6 +5211,8 @@ export type StoredBatch = {
   createdAt: Date;
   startedAt: Date | null;
   completedAt: Date | null;
+  /** BL-117: ids of the batches this one was split into (it was never executed); null otherwise. */
+  splitInto: string[] | null;
 };
 
 export type StoredLedgerRow = {
@@ -5105,7 +5251,18 @@ function mapStoredBatch(row: typeof batches.$inferSelect): StoredBatch {
     createdAt: row.createdAt,
     startedAt: row.startedAt,
     completedAt: row.completedAt,
+    splitInto: parseSplitInto(row.splitIntoJson),
   };
+}
+
+function parseSplitInto(raw: string | null): string[] | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.every((x) => typeof x === "string") ? (parsed as string[]) : null;
+  } catch {
+    return null;
+  }
 }
 
 function mapStoredLedgerRow(row: typeof batchLedgerRows.$inferSelect): StoredLedgerRow {
@@ -5237,6 +5394,89 @@ export async function markBatchTerminal(
     .update(batches)
     .set({ status, completedAt: new Date() })
     .where(eq(batches.id, batchId));
+}
+
+/**
+ * BL-117 slice 2 -- splits a never-executed live batch because it needs more quota than is available: ALL in ONE transaction,
+ * the new "fits" batch (first rows, in stored order), the new "rest" batch (everything else), and the ORIGINAL closed
+ * (`ABORTED`, every row `CANCELLED`, `split_into_json` set). The original must still be `PENDING` with every row `PENDING`
+ * (checked inside the transaction with guarded updates), so nothing that ever started can be split, a concurrent execute
+ * claim loses cleanly, and after commit every original video sits in exactly one new batch -- none lost, none doubled.
+ * Returns `null` (nothing changed) when the original was no longer splittable.
+ */
+export async function splitPendingBatchForQuota(
+  input: {
+    batchId: string;
+    fitCount: number;
+    fitsBatchId: string | null;
+    restBatchId: string | null;
+    newRowIds: () => string;
+  },
+  database: AppDb = db
+): Promise<{ fitsBatchId: string | null; restBatchId: string | null; fitRows: number; restRows: number } | null> {
+  return database.transaction(async (tx) => {
+    const [original] = await tx.select().from(batches).where(eq(batches.id, input.batchId));
+    if (!original || original.status !== "PENDING" || original.dryRun) return null;
+
+    // Insertion order (SQLite rowid) is the batch's stored order: `created_at` has second precision and ids are random, so
+    // neither can say which rows came first.
+    const rows = await tx
+      .select()
+      .from(batchLedgerRows)
+      .where(eq(batchLedgerRows.batchId, input.batchId))
+      .orderBy(sql`rowid`);
+    if (rows.length === 0 || rows.some((r) => r.status !== "PENDING")) return null;
+
+    const fitCount = Math.min(Math.max(0, input.fitCount), rows.length);
+    const fitRows = rows.slice(0, fitCount);
+    const restRows = rows.slice(fitCount);
+    if ((fitRows.length > 0 && !input.fitsBatchId) || (restRows.length > 0 && !input.restBatchId)) return null;
+
+    const claim = await tx
+      .update(batches)
+      .set({ status: "ABORTED", completedAt: new Date() })
+      .where(and(eq(batches.id, input.batchId), eq(batches.status, "PENDING")))
+      .returning({ id: batches.id });
+    if (claim.length === 0) return null;
+
+    const createdIds: string[] = [];
+    for (const [newId, part] of [
+      [input.fitsBatchId, fitRows],
+      [input.restBatchId, restRows],
+    ] as const) {
+      if (!newId || part.length === 0) continue;
+      await tx.insert(batches).values({
+        id: newId,
+        channelId: original.channelId,
+        status: "PENDING",
+        concurrency: original.concurrency,
+        dryRun: false,
+      });
+      for (const row of part) {
+        await tx.insert(batchLedgerRows).values({
+          id: input.newRowIds(),
+          batchId: newId,
+          videoId: row.videoId,
+          changeIdsJson: row.changeIdsJson,
+          status: "PENDING",
+        });
+      }
+      createdIds.push(newId);
+    }
+
+    await tx
+      .update(batchLedgerRows)
+      .set({ status: "CANCELLED", updatedAt: new Date() })
+      .where(and(eq(batchLedgerRows.batchId, input.batchId), eq(batchLedgerRows.status, "PENDING")));
+    await tx.update(batches).set({ splitIntoJson: JSON.stringify(createdIds) }).where(eq(batches.id, input.batchId));
+
+    return {
+      fitsBatchId: fitRows.length > 0 ? input.fitsBatchId : null,
+      restBatchId: restRows.length > 0 ? input.restBatchId : null,
+      fitRows: fitRows.length,
+      restRows: restRows.length,
+    };
+  });
 }
 
 /**

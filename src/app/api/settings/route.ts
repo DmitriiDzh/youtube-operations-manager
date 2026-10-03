@@ -17,6 +17,8 @@ import {
   getMcpConnectionEnabled,
   getOperatorCliEnabled,
   getOperationsWorkspacePath,
+  getQuotaReservePercent,
+  setQuotaReservePercent,
   setAnalyticsReadsEnabled,
   setReportingReadsEnabled,
   setWikipediaReadsEnabled,
@@ -124,6 +126,7 @@ async function getSettingsSnapshot() {
     marketIntelligenceDailyQuotaBudgetUnits: () => marketIntelligenceCore.getDailyQuotaBudgetUnits(),
     operatorCliEnabled: () => getOperatorCliEnabled(),
     deviceAutoSyncEnabled: () => getDeviceAutoSyncEnabled(),
+    quotaReservePercent: () => getQuotaReservePercent(),
   });
 }
 
@@ -210,6 +213,22 @@ export async function POST(request: Request) {
     }
   }
 
+  let quotaReservePercentToSet: number | undefined;
+  if (body.quotaReservePercent !== undefined) {
+    if (
+      typeof body.quotaReservePercent !== "number" ||
+      !Number.isInteger(body.quotaReservePercent) ||
+      body.quotaReservePercent < 0 ||
+      body.quotaReservePercent > 90
+    ) {
+      return NextResponse.json(
+        { error: "validation_failed", message: "quotaReservePercent must be an integer from 0 to 90" },
+        { status: 400 }
+      );
+    }
+    quotaReservePercentToSet = body.quotaReservePercent;
+  }
+
   let operationsWorkspacePathToSet: { present: true; value: string | null } | { present: false } = { present: false };
   if (body.operationsWorkspacePath !== undefined) {
     if (body.operationsWorkspacePath === null || body.operationsWorkspacePath === "") {
@@ -265,6 +284,9 @@ export async function POST(request: Request) {
   }
   if (marketIntelligenceQuotaToSet.present) {
     await marketIntelligenceCore.setDailyQuotaBudgetUnits(marketIntelligenceQuotaToSet.value);
+  }
+  if (quotaReservePercentToSet !== undefined) {
+    await setQuotaReservePercent(quotaReservePercentToSet);
   }
   if (operationsWorkspacePathToSet.present) {
     await setOperationsWorkspacePath(operationsWorkspacePathToSet.value);

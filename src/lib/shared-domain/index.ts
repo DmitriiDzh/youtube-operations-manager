@@ -64,6 +64,8 @@ export type DomainErrorCode =
   | "analytics_reads_disabled"
   | "analytics_data_current"
   | "youtube_quota_exceeded"
+  | "quota_insufficient"
+  | "quota_unknown"
   | "provider_not_configured"
   | "generation_invalid_target_language"
   | "generation_no_proposals"

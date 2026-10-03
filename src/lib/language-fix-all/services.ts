@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { runWithQuotaContext } from "@/lib/youtube-quota";
 import { DomainError, type OperationHandle, type OperationRegistry } from "./contracts";
 
 /**
@@ -27,6 +28,8 @@ const startInputSchema = z
       .array(z.object({ videoId: z.string().min(1), expectedEtag: z.string().min(1).optional() }).strict())
       .min(1)
       .max(MAX_VIDEOS),
+    /** BL-117: the user chose to run although the remaining quota could not be read (Cloud not connected). */
+    acknowledgeUnknownQuota: z.boolean().optional(),
   })
   .strict();
 
@@ -54,6 +57,17 @@ export type FixAllDependencies = {
    * only the START request; this is called before EVERY video so an export/import or an unavailable
    * device appearing mid-run stops the remaining writes. Throws to refuse. */
   assertMutationAllowed(): Promise<void>;
+  /**
+   * BL-117 slice 2: the pre-flight quota guard (same as for Batches). A bulk run that certainly needs more quota than is left is
+   * refused BEFORE it is registered or anything is written. Optional so tests keep their behavior; production wiring supplies it.
+   */
+  quotaGuard?: {
+    checkWriteRun(videos: number): Promise<
+      | { decision: "allow"; estimatedUnits: number; remainingUnits: number; fitVideos: number }
+      | { decision: "insufficient"; estimatedUnits: number; remainingUnits: number; fitVideos: number; resetsAt: string | null }
+      | { decision: "unknown"; estimatedUnits: number; cloudConnected: boolean }
+    >;
+  };
 };
 
 export const FIX_ALL_OPERATION_KIND = "language-fix-all";
@@ -129,6 +143,35 @@ export function createLanguageFixAllServices(deps: FixAllDependencies) {
         throw new DomainError({ code: "validation_failed", message: "None of the requested videos needs a language change" });
       }
 
+      if (deps.quotaGuard) {
+        const verdict = await deps.quotaGuard.checkWriteRun(planned.length);
+        if (verdict.decision === "unknown" && !input.acknowledgeUnknownQuota) {
+          throw new DomainError({
+            code: "quota_unknown",
+            message: verdict.cloudConnected
+              ? "The remaining YouTube quota could not be read just now, so this run cannot be checked against it."
+              : "Google Cloud is not connected, so the remaining YouTube quota cannot be checked before this run starts.",
+            details: { estimatedUnits: verdict.estimatedUnits, rowsToWrite: planned.length, cloudConnected: verdict.cloudConnected },
+          });
+        }
+        if (verdict.decision === "insufficient") {
+          throw new DomainError({
+            code: "quota_insufficient",
+            message:
+              `This run needs about ${verdict.estimatedUnits} units of YouTube quota but only ${verdict.remainingUnits} are available, ` +
+              "so it was not started (stopping half way would leave some videos fixed and others not).",
+            details: {
+              estimatedUnits: verdict.estimatedUnits,
+              remainingUnits: verdict.remainingUnits,
+              rowsToWrite: planned.length,
+              fitVideos: verdict.fitVideos,
+              resetsAt: verdict.resetsAt,
+              canSplit: false,
+            },
+          });
+        }
+      }
+
       const handle = deps.registry.start({
         kind: FIX_ALL_OPERATION_KIND,
         channelId: input.channelId,
@@ -143,7 +186,10 @@ export function createLanguageFixAllServices(deps: FixAllDependencies) {
 
       return {
         operationId: handle.id,
-        run: () => runPlan({ deps, handle, planned, channelId: input.channelId, userId: input.userId }),
+        run: () =>
+          runWithQuotaContext({ kind: "fix_all", id: handle.id ?? null, label: "Fix all languages" }, () =>
+            runPlan({ deps, handle, planned, channelId: input.channelId, userId: input.userId })
+          ),
       };
     },
   };

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
 import { computeDefaultPeriodRange } from "@/lib/analytics/period";
 import { formatCtr, formatImpressions } from "@/lib/reach-reports/reach-format";
+import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { AnalyticsLineChart } from "./analytics-line-chart";
 import { ReachStatusBlock, type ReachStatusData } from "./reach-status-block";
 
@@ -145,7 +146,7 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
       ) : data.state === "waiting_for_first_report" ? (
         <p className="text-sm text-zinc-500">
           Waiting for YouTube&rsquo;s first report file
-          {data.jobCreatedAt ? ` (subscription created ${new Date(data.jobCreatedAt).toLocaleString()})` : ""}. This is
+          {data.jobCreatedAt ? ` (subscription created ${formatDisplayDateTime(data.jobCreatedAt)})` : ""}. This is
           not zero impressions &mdash; there is simply no data yet. It can take up to 48 hours.
         </p>
       ) : (

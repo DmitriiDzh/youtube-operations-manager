@@ -33,7 +33,15 @@ export type QuotaService =
   | "monitoring.googleapis.com";
 
 /** `null` means "unknown" -- not connected, or the real query failed -- never a fabricated 0. */
-export type ServiceQuotaStatus = { limit: number; usedLast24h: number } | null;
+export type ServiceQuotaStatus = {
+  limit: number;
+  /** Units used in `window`: since the last quota reset (`since_reset`, Data API: Pacific midnight) or the rolling 24 h. The name predates `window`. */
+  usedLast24h: number;
+  /** BL-117. `since_reset` = the figure matches Google's quota day; `rolling_24h` = reset time not confirmed for this service. */
+  window: "since_reset" | "rolling_24h";
+  /** ISO time of the next reset when it is confirmed (Data API: next Pacific midnight); `null` otherwise. */
+  resetsAt: string | null;
+} | null;
 
 /** Same shape, different window: some services (Cloud Monitoring API itself, found live
  * 2026-09-22) have no daily quota at all, only a per-minute one. `null` means "unknown," exactly

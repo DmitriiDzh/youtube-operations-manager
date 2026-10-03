@@ -62,3 +62,15 @@ export function rangesStraddleViewCountingChange(
   const after = (r: { startDate: string; endDate: string }) => r.startDate >= d;
   return contains(a) || contains(b) || (before(a) && after(b)) || (after(a) && before(b));
 }
+
+export { ANALYTICS_API_UNIT_COSTS, DATA_API_UNIT_COSTS, isWriteMethod, quotaUnitsForCall, type QuotaLedgerService } from "./costs";
+export { currentQuotaContext, quotaScoped, runWithQuotaContext, type QuotaContext } from "./context";
+
+/**
+ * BL-117 -- when the YouTube Data API quota next resets: the next midnight in Pacific time. A Pacific day lasts 23-25 h,
+ * so a point 36 h after the current day's start always lies inside the NEXT day, whose start is the answer.
+ */
+export function nextYoutubeQuotaReset(now: Date): Date {
+  const start = startOfYoutubeQuotaDay(now);
+  return startOfYoutubeQuotaDay(new Date(start.getTime() + 36 * 3_600_000));
+}
