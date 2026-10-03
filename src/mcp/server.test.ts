@@ -1626,7 +1626,7 @@ function makeOperationsCoreStub(): Pick<
   ChangeSetCore,
   "listChangeSets" | "getChangeSet" | "previewImport" | "createChangeSetFromImport"
 > &
-  Pick<BatchCore, "listBatchesByChannel" | "requireBatchForChannel" | "listLedgerRows"> {
+  Pick<BatchCore, "listBatchesByChannel" | "getBatchWithLedgerRows"> {
   return {
     listChangeSets: async () => [makeChangeSet()],
     getChangeSet: async () => ({
@@ -1660,8 +1660,7 @@ function makeOperationsCoreStub(): Pick<
       totalErrors: 0,
     }),
     listBatchesByChannel: async () => [makeBatch()],
-    requireBatchForChannel: async () => makeBatch(),
-    listLedgerRows: async () => [makeLedgerRow()],
+    getBatchWithLedgerRows: async () => ({ batch: makeBatch(), ledgerRows: [makeLedgerRow()] }),
   };
 }
 
@@ -1816,12 +1815,12 @@ test("MCP batch_list returns batches for a channel", async () => {
   assert.equal(payload.batches[0].id, "batch-1");
 });
 
-test("MCP batch_get verifies channel ownership via requireBatchForChannel, not a bare getBatch", async () => {
+test("MCP batch_get reads through the ownership-checked getBatchWithLedgerRows (channel + batch), not a bare getBatch", async () => {
   const seenArgs: unknown[] = [];
   const operationsCore = makeOperationsCoreStub();
-  operationsCore.requireBatchForChannel = async (channelId: string, batchId: string) => {
+  operationsCore.getBatchWithLedgerRows = async (channelId: string, batchId: string) => {
     seenArgs.push([channelId, batchId]);
-    return makeBatch();
+    return { batch: makeBatch(), ledgerRows: [makeLedgerRow()] };
   };
 
   const handlers = createMcpToolHandlers(
@@ -1842,7 +1841,7 @@ test("MCP batch_get verifies channel ownership via requireBatchForChannel, not a
 
 test("MCP batch_get fails closed when the batch does not belong to the given channel", async () => {
   const operationsCore = makeOperationsCoreStub();
-  operationsCore.requireBatchForChannel = async () => {
+  operationsCore.getBatchWithLedgerRows = async () => {
     throw new DomainError({
       code: "not_found",
       message: "Batch does not belong to this channel",

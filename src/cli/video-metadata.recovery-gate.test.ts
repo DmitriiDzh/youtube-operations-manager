@@ -214,8 +214,7 @@ test("changeset import and channel sync are rejected while the operation lock is
       previewImport: async () => ({ summary: {}, errors: [], totalErrors: 0 }),
       createChangeSetFromImport: async () => ({ changeSet: {}, summary: {}, errors: [], totalErrors: 0 }),
       listBatchesByChannel: async () => [],
-      requireBatchForChannel: async () => ({}),
-      listLedgerRows: async () => [],
+      getBatchWithLedgerRows: async () => ({ batch: {}, ledgerRows: [] }),
     };
     const channelSyncCore = {
       syncChannel: async () => ({}),

@@ -116,7 +116,7 @@ type ChangeSetCoreSubset = Pick<
   ChangeSetCore,
   "listChangeSets" | "getChangeSet" | "previewImport" | "createChangeSetFromImport"
 >;
-type BatchCoreSubset = Pick<BatchCore, "listBatchesByChannel" | "requireBatchForChannel" | "listLedgerRows">;
+type BatchCoreSubset = Pick<BatchCore, "listBatchesByChannel" | "getBatchWithLedgerRows">;
 
 // BL-008 (docs/roadmap/BACKLOG.md): the remainder of RISK-04's MCP portion --
 // channel_sync writes to the local channels/videos tables (via a real YouTube API read),
@@ -914,16 +914,11 @@ export function createMcpToolHandlers(
           userId: getCredentialUserId(credentialRef),
           channelId: parsedInput.data.channelId,
         });
-        // AGENTS.md §F: requireBatchForChannel verifies this batch actually belongs to
-        // the named channel before returning anything -- same guardrail the Web UI's
-        // own API route already applies for this exact read, reused rather than
-        // reimplemented against a bare `getBatch(batchId)`.
-        const batch = await operationsCore.requireBatchForChannel(
-          parsedInput.data.channelId,
-          parsedInput.data.batchId
-        );
-        const ledgerRows = await operationsCore.listLedgerRows(parsedInput.data.batchId);
-        return toolSuccessResult({ batch, ledgerRows });
+        // AGENTS.md §F: getBatchWithLedgerRows verifies this batch actually belongs to
+        // the named channel before returning anything -- the same single read the Web UI's
+        // own API route and the CLI use, never a bare `getBatch(batchId)`.
+        const result = await operationsCore.getBatchWithLedgerRows(parsedInput.data.channelId, parsedInput.data.batchId);
+        return toolSuccessResult(result);
       } catch (error) {
         return toolErrorResult(error);
       }

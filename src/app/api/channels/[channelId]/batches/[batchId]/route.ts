@@ -22,12 +22,11 @@ export async function GET(
     const { channelId, batchId } = await params;
     await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
     // AGENTS.md §F / docs/DEVELOPMENT_PLAYBOOK.md §6.6: channel-context validation is
-    // not automatic -- requireBatchForChannel verifies this batch actually belongs to
+    // not automatic -- getBatchWithLedgerRows verifies this batch actually belongs to
     // the channel named in the URL before returning anything about it.
-    const batch = await core.requireBatchForChannel(channelId, batchId);
-    const ledgerRows = await core.listLedgerRows(batchId);
+    const result = await core.getBatchWithLedgerRows(channelId, batchId);
 
-    return NextResponse.json({ batch, ledgerRows });
+    return NextResponse.json(result);
   } catch (error) {
     if (error instanceof DomainError) {
       return NextResponse.json(
