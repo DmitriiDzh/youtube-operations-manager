@@ -1008,7 +1008,7 @@ test("BL-118 catch-up: a channel with no known start and no videos has nothing t
 
 // ---- BL-118 slice E: channel overview served from the stored channel-level totals ------------------------------------------------
 
-async function storedChannelFixture() {
+async function storedChannelFixture(channelPublishedAt: Record<string, string> = {}) {
   // One collection run over 2026-08-01 .. 2026-09-10 stores these channel-level days (the API omits zero-activity days).
   const channelAnalyticsResponses = {
     "2026-08-01|2026-09-10": [
@@ -1021,6 +1021,7 @@ async function storedChannelFixture() {
     videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
     analyticsResponses: { v1: [{ date: "2026-08-25", metrics: { views: 1 } }] },
     channelAnalyticsResponses,
+    channelPublishedAt,
     now: AUTO_NOW,
   });
   await fixture.channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
@@ -1066,6 +1067,38 @@ test("BL-118 E: preferLocal falls back to the live read when any requested date 
     endDate: "2026-07-31",
     preferLocal: true,
   });
+  assert.equal(channelAnalyticsCalls.length, 2);
+  assert.equal(overview.source, "live");
+});
+
+test("BL-120: a comparison period reaching back past the channel's creation is still served from the stored totals (days before the start are not applicable)", async () => {
+  // The stored run covers 2026-08-01..09-10 and the channel was created 2026-08-01. Range 2026-08-06..08-16 is 11 days, so its previous period is
+  // 2026-07-26..08-05: the six days 07-26..07-31 lie before the channel existed and can hold no data.
+  const { services, channelAnalyticsCalls } = await storedChannelFixture({ UC_A: "2026-08-01T00:00:00Z" });
+  const overview = await services.getChannelOverview({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-08-06",
+    endDate: "2026-08-16",
+    preferLocal: true,
+  });
+  assert.equal(channelAnalyticsCalls.length, 0, "no live call");
+  assert.equal(overview.source, "local");
+  assert.deepEqual(overview.currentTotals, { views: 10, estimatedMinutesWatched: 100, subscribersGained: 1, subscribersLost: 0 }); // 08-10 only
+  assert.deepEqual(overview.previousTotals, { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 });
+});
+
+test("BL-120: without a known channel start the same request is a live read (never guessed)", async () => {
+  const { services, channelAnalyticsCalls } = await storedChannelFixture({});
+  const overview = await services.getChannelOverview({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-08-06", endDate: "2026-08-16", preferLocal: true });
+  assert.equal(channelAnalyticsCalls.length, 2);
+  assert.equal(overview.source, "live");
+});
+
+test("BL-120: a day AFTER the channel's start that no run covers still forces the live read", async () => {
+  // Channel created 2026-07-01 but the run starts 2026-08-01: previous period 2026-07-26..08-05 has uncovered days (07-26..07-31) AFTER the start.
+  const { services, channelAnalyticsCalls } = await storedChannelFixture({ UC_A: "2026-07-01T00:00:00Z" });
+  const overview = await services.getChannelOverview({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-08-06", endDate: "2026-08-16", preferLocal: true });
   assert.equal(channelAnalyticsCalls.length, 2);
   assert.equal(overview.source, "live");
 });

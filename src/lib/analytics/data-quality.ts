@@ -254,6 +254,8 @@ export function isRangeFullyCovered(args: {
    * covers what it asked for.
    */
   requireVideos?: boolean;
+  /** The channel's creation date: dates before it are not applicable (no data can exist) and never count as uncovered. */
+  channelStartDate?: string | null;
 }): boolean {
   const requireVideos = args.requireVideos ?? true;
   const cutoff = new Date(args.now);
@@ -262,6 +264,7 @@ export function isRangeFullyCovered(args: {
   return enumerateDates(args.startDate, args.endDate).every(
     (date) =>
       date > cutoffDate ||
+      (args.channelStartDate != null && date < args.channelStartDate) ||
       args.runs.some((run) => (!requireVideos || run.videoCount > 0) && date >= run.requestedStartDate && date <= run.requestedEndDate)
   );
 }

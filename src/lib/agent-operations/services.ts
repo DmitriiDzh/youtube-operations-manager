@@ -58,7 +58,7 @@ import type { CreativeAsset } from "@/lib/asset-catalog";
 import type { StoredGenerationProvenance } from "@/lib/ai-localization/contracts";
 import type { ContentProposal, ProposalArtifactLink } from "@/lib/content-proposals";
 import type { CreatedVia } from "@/lib/shared-provenance";
-import { bucketDailyRows, classifyPreviousPeriod } from "@/lib/analytics/granularity";
+import { bucketDailyRows, describePreviousPeriod } from "@/lib/analytics/granularity";
 import type { OperationsWorkspaceFileResult, OperationsWorkspaceListResult } from "@/lib/operations-instructions";
 import type { FindComparableVideosResult } from "@/lib/comparable-content";
 import type { ListAssetPerformanceResult } from "@/lib/asset-performance";
@@ -733,19 +733,11 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
       ]);
       const channelStartDate = channel?.publishedAt ? channel.publishedAt.slice(0, 10) : null;
 
-      const previousStatus = classifyPreviousPeriod({
+      const { status: previousStatus, note: previousNote } = describePreviousPeriod({
         previousStartDate: overview.previousStartDate,
         previousEndDate: overview.previousEndDate,
         channelStartDate,
       });
-      const previousNote =
-        previousStatus === "predates_channel"
-          ? `The comparison period (${overview.previousStartDate} to ${overview.previousEndDate}) ended before the channel was created (${channelStartDate}); there is nothing to compare with, so previousTotals is null (not zero).`
-          : previousStatus === "partial"
-            ? `The channel was created on ${channelStartDate}, inside the comparison period (${overview.previousStartDate} to ${overview.previousEndDate}); previousTotals covers only the days after it existed.`
-            : channelStartDate === null
-              ? "The channel's creation date is not known yet (not synced since this was added), so whether the comparison period existed could not be checked."
-              : "The comparison period lies fully inside the channel's lifetime.";
 
       const local = overview.source === "local";
       // Days this recent were collected inside YouTube's reporting lag and are re-collected by every automatic run: provisional.

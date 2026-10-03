@@ -28,6 +28,9 @@ export async function GET(
       channelId,
       startDate: url.searchParams.get("startDate"),
       endDate: url.searchParams.get("endDate"),
+      // BL-120: one video, and/or the stored rows per video per day (the per-video impressions/CTR drill-down).
+      ...(url.searchParams.get("videoId") ? { videoId: url.searchParams.get("videoId") } : {}),
+      ...(url.searchParams.get("groupBy") ? { groupBy: url.searchParams.get("groupBy") } : {}),
     });
 
     return NextResponse.json(result);

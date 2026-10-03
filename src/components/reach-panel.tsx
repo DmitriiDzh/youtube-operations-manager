@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
-import { computeDefaultPeriodRange } from "@/lib/analytics/period";
+import { computeDefaultPeriodRange, formatChartDate } from "@/lib/analytics/period";
 import { formatCtr, formatImpressions } from "@/lib/reach-reports/reach-format";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { AnalyticsLineChart } from "./analytics-line-chart";
 import { ReachStatusBlock, type ReachStatusData } from "./reach-status-block";
+import { useVideoTitles } from "./use-video-titles";
 
 type ReachState = "no_job" | "waiting_for_first_report" | "ready";
 
@@ -17,6 +18,9 @@ type ReachData = {
   daily: Array<{ date: string; impressions: number; ctr: number | null }>;
   videos: Array<{ videoId: string; impressions: number; ctr: number | null }>;
   totals: { impressions: number; ctr: number | null };
+  /** Only on a `groupBy=video_day` read: the stored rows, one per video per day. */
+  videoDaily?: Array<{ videoId: string; date: string; impressions: number; ctr: number | null }>;
+  videoDailyTruncated?: boolean;
 };
 
 type SyncOutcome =
@@ -38,6 +42,38 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
   const [notice, setNotice] = useState<string | null>(null);
   const [status, setStatus] = useState<ReachStatusData | null>(null);
   const activeChannelRef = useRef(channelId);
+  const titles = useVideoTitles(channelId);
+  const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
+  // The loaded detail is tagged with the video/period it was read for and shown only while that is still selected.
+  const [detailState, setDetailState] = useState<{ key: string; data: ReachData | null } | null>(null);
+  const detailKey = `${channelId}:${selectedVideoId}:${periodDays}`;
+  const videoDetail = detailState && detailState.key === detailKey ? detailState.data : null;
+  const videoDetailError = detailState?.key === detailKey && detailState.data === null;
+
+  // Per-video drill-down (BL-120): this video's impressions and CTR day by day, from the stored rows -- one request, not one per day.
+  useEffect(() => {
+    if (!selectedVideoId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { startDate, endDate } = computeDefaultPeriodRange(periodDays);
+        const res = await fetch(
+          `/api/channels/${encodeURIComponent(channelId)}/reach?startDate=${startDate}&endDate=${endDate}&videoId=${encodeURIComponent(selectedVideoId)}&groupBy=video_day`
+        );
+        const body = res.ok ? ((await res.json()) as ReachData) : null;
+        if (!cancelled) setDetailState({ key: `${channelId}:${selectedVideoId}:${periodDays}`, data: body });
+      } catch {
+        if (!cancelled) setDetailState({ key: `${channelId}:${selectedVideoId}:${periodDays}`, data: null });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [channelId, periodDays, selectedVideoId]);
+
+  function selectVideo(videoId: string | null) {
+    setSelectedVideoId(videoId);
+  }
 
   const load = useCallback(async () => {
     try {
@@ -171,10 +207,25 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
           {data.daily.length === 0 ? (
             <p className="text-sm text-zinc-500">No impressions data inside this period yet.</p>
           ) : (
-            <AnalyticsLineChart
-              data={data.daily.map((d) => ({ date: d.date, value: d.impressions }))}
-              formatValue={(v) => `${formatImpressions(v)} impressions`}
-            />
+            <>
+              <AnalyticsLineChart
+                data={data.daily.map((d) => ({ date: d.date, value: d.impressions }))}
+                formatValue={(v) => `${formatImpressions(v)} impressions`}
+                formatDate={formatChartDate}
+              />
+              {data.daily.some((d) => d.ctr !== null) && (
+                <>
+                  <div className="text-xs text-zinc-500">Click-through rate by day</div>
+                  <AnalyticsLineChart
+                    data={data.daily.filter((d) => d.ctr !== null).map((d) => ({ date: d.date, value: (d.ctr as number) * 100 }))}
+                    formatValue={(v) => `${v.toFixed(2)}% CTR`}
+                    formatDate={formatChartDate}
+                    colorClassName="text-emerald-400"
+                    height={120}
+                  />
+                </>
+              )}
+            </>
           )}
 
           {data.videos.length > 0 && (
@@ -188,14 +239,62 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
               </thead>
               <tbody>
                 {data.videos.slice(0, 10).map((video) => (
-                  <tr key={video.videoId} className="border-t border-zinc-800 text-zinc-300">
-                    <td className="py-1 font-mono text-xs">{video.videoId}</td>
+                  <tr
+                    key={video.videoId}
+                    onClick={() => selectVideo(video.videoId)}
+                    className={`cursor-pointer border-t border-zinc-800 text-zinc-300 hover:bg-zinc-800/40 ${
+                      selectedVideoId === video.videoId ? "bg-zinc-800/60" : ""
+                    }`}
+                  >
+                    <td className="max-w-[26rem] truncate py-1.5" title={titles.get(video.videoId)?.title ?? video.videoId}>
+                      {titles.get(video.videoId)?.title ?? <span className="font-mono text-xs">{video.videoId}</span>}
+                    </td>
                     <td className="py-1 text-right">{formatImpressions(video.impressions)}</td>
                     <td className="py-1 text-right">{formatCtr(video.ctr)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          )}
+          {data.videos.length > 0 && !selectedVideoId && <p className="text-xs text-zinc-500">Click a video to see its impressions and CTR day by day.</p>}
+
+          {selectedVideoId && (
+            <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0 truncate text-sm font-medium text-zinc-200">{titles.get(selectedVideoId)?.title ?? selectedVideoId}</div>
+                <button onClick={() => selectVideo(null)} className="shrink-0 text-xs text-zinc-400 hover:text-zinc-200">
+                  Close
+                </button>
+              </div>
+              {videoDetailError ? (
+                <p className="text-sm text-red-400">Failed to load this video&apos;s daily data.</p>
+              ) : !videoDetail ? (
+                <LoadingIndicator className="text-sm text-zinc-500" />
+              ) : !videoDetail.videoDaily || videoDetail.videoDaily.length === 0 ? (
+                <p className="text-sm text-zinc-500">No impressions data for this video inside the period.</p>
+              ) : (
+                <>
+                  <div className="text-xs text-zinc-500">
+                    Impressions {formatImpressions(videoDetail.totals.impressions)} · CTR {formatCtr(videoDetail.totals.ctr)} in this period
+                  </div>
+                  <AnalyticsLineChart
+                    data={videoDetail.videoDaily.map((d) => ({ date: d.date, value: d.impressions }))}
+                    formatValue={(v) => `${formatImpressions(v)} impressions`}
+                    formatDate={formatChartDate}
+                    height={140}
+                  />
+                  {videoDetail.videoDaily.some((d) => d.ctr !== null) && (
+                    <AnalyticsLineChart
+                      data={videoDetail.videoDaily.filter((d) => d.ctr !== null).map((d) => ({ date: d.date, value: (d.ctr as number) * 100 }))}
+                      formatValue={(v) => `${v.toFixed(2)}% CTR`}
+                      formatDate={formatChartDate}
+                      colorClassName="text-emerald-400"
+                      height={110}
+                    />
+                  )}
+                </>
+              )}
+            </div>
           )}
         </div>
       )}

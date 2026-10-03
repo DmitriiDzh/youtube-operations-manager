@@ -2,10 +2,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { computeDefaultPeriodRange, computePercentChange, formatChartDate, formatWatchTimeHours } from "@/lib/analytics/period";
+import { formatDisplayDateUtc } from "@/lib/shared-formatting";
+import { formatCtr, formatImpressions } from "@/lib/reach-reports/reach-format";
+import { AnalyticsDataStrip } from "./analytics-data-strip";
 import { AnalyticsLineChart } from "./analytics-line-chart";
 import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
 import { MetricDelta } from "./metric-delta";
+import { useReachSummary } from "./use-reach-summary";
 import { useTopVideos } from "./use-top-videos";
+import { VideoPerformanceTable } from "./video-performance-table";
 
 /**
  * Studio-parity Slice O1 (docs/roadmap/plans/ANALYTICS_TAB_DEEP_PARITY_PLAN.md §2.4) -- real
@@ -13,7 +18,7 @@ import { useTopVideos } from "./use-top-videos";
  * chart below using that metric) and reveals a short explanation of what it means. No new API call
  * -- every number here is already fetched by `fetchOverview`, this only changes what's plotted.
  */
-type OverviewMetricKey = "views" | "watchTimeHours" | "subscribers";
+type OverviewMetricKey = "views" | "watchTimeHours" | "subscribers" | "impressions" | "ctr";
 
 const OVERVIEW_METRIC_INFO: Record<OverviewMetricKey, { label: string; explain: string }> = {
   views: {
@@ -28,6 +33,16 @@ const OVERVIEW_METRIC_INFO: Record<OverviewMetricKey, { label: string; explain: 
   subscribers: {
     label: "Subscribers",
     explain: "Net change in subscribers (gained minus lost) in this period, compared with the previous period.",
+  },
+  impressions: {
+    label: "Impressions",
+    explain:
+      "How many times YouTube showed your video thumbnails to viewers in this period (from the daily Reporting API files this app downloads). Only days since the report subscription started exist, so there is no comparison with the previous period.",
+  },
+  ctr: {
+    label: "Click-through rate",
+    explain:
+      "The share of thumbnail impressions that led to a view. Over a period it is impressions-weighted (total clicks divided by total impressions), never an average of daily rates.",
   },
 };
 
@@ -62,6 +77,14 @@ type ChannelOverview = {
     subscribersLost: number;
   };
   viewCountingChangeInComparison?: boolean;
+  /** BL-120 */
+  source?: "live" | "local";
+  collectedAt?: string | null;
+  channelStartDate: string | null;
+  previousPeriod: { status: "full" | "partial" | "predates_channel"; note: string };
+  provisionalFromDate: string;
+  granularity: "day" | "week" | "month";
+  buckets: Array<{ periodStart: string; periodEnd: string; views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number }> | null;
 };
 
 type DataQualityReport = {
@@ -69,7 +92,16 @@ type DataQualityReport = {
   uncoveredDates: string[];
   tooRecentDates: string[];
   videosWithSkips: Array<{ videoId: string; skipCount: number; lastSkippedAt: string }>;
+  notApplicableRange?: { startDate: string; endDate: string } | null;
+  uncoveredRanges?: Array<{ startDate: string; endDate: string }>;
 };
+
+type Granularity = "day" | "week" | "month";
+const GRANULARITY_OPTIONS: Array<{ key: Granularity; label: string }> = [
+  { key: "day", label: "Days" },
+  { key: "week", label: "Weeks" },
+  { key: "month", label: "Months" },
+];
 
 const PERIOD_OPTIONS = [
   { days: 7, label: "Last 7 days" },
@@ -89,10 +121,16 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
   const [loadingOverview, setLoadingOverview] = useState(false);
   const [overviewError, setOverviewError] = useState<string | null>(null);
 
+  const [granularity, setGranularity] = useState<Granularity>("day");
+  const [refreshingLive, setRefreshingLive] = useState(false);
+  const [coverageReloadKey, setCoverageReloadKey] = useState(0);
+
   const { topVideos: topContent, loading: loadingTopContent, refetch: refetchTopVideos } = useTopVideos(
     channel?.channelId ?? null,
-    periodDays
+    periodDays,
+    10
   );
+  const { reach, loaded: reachLoaded, reload: reloadReach } = useReachSummary(channel?.channelId ?? null, periodDays);
 
   const [dataQuality, setDataQuality] = useState<DataQualityReport | null>(null);
 
@@ -138,26 +176,36 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     };
   }, []);
 
-  const fetchOverview = useCallback(async (channelId: string, days: number) => {
+  // Stored channel totals first (no quota); `refresh` forces a live read (BL-120, owner decision 2026-10-04).
+  // Only the response of the request that started LAST is applied (a slower earlier one never overwrites a newer period/granularity), and a
+  // failed live refresh keeps the stored overview already on screen (it shows the error instead of throwing the data away).
+  const latestOverviewRequest = useRef(0);
+  const fetchOverview = useCallback(async (channelId: string, days: number, grain: Granularity, refresh = false) => {
+    const requestId = ++latestOverviewRequest.current;
+    const isLatest = () => requestId === latestOverviewRequest.current;
     setLoadingOverview(true);
     setOverviewError(null);
     try {
       const { startDate, endDate } = computeDefaultPeriodRange(days);
       const res = await fetch(
-        `/api/channels/${encodeURIComponent(channelId)}/analytics/overview?startDate=${startDate}&endDate=${endDate}`
+        `/api/channels/${encodeURIComponent(channelId)}/analytics/overview?startDate=${startDate}&endDate=${endDate}&granularity=${grain}${
+          refresh ? "&refresh=1" : ""
+        }`
       );
       const data = await res.json();
+      if (!isLatest()) return;
       if (!res.ok) {
         setOverviewError(data.message ?? "Failed to load channel analytics");
-        setOverview(null);
+        if (!refresh) setOverview(null);
         return;
       }
       setOverview(data as ChannelOverview);
     } catch {
+      if (!isLatest()) return;
       setOverviewError("Failed to load channel analytics");
-      setOverview(null);
+      if (!refresh) setOverview(null);
     } finally {
-      setLoadingOverview(false);
+      if (isLatest()) setLoadingOverview(false);
     }
   }, []);
 
@@ -166,6 +214,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
   // "can I trust the numbers 'Top content' just showed for this period." Failure is silent
   // (dataQuality stays null) -- this is a nice-to-have annotation, not load-bearing for the rest
   // of the panel.
+  const latestQualityRequest = useRef(0);
   const fetchDataQuality = useCallback(async (channelId: string, days: number) => {
     // Reset first, not just on success (found by independent review, 2026-09-23): without this,
     // a failed request after a channel/period switch left the PREVIOUS channel's/period's warning
@@ -175,6 +224,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
     // visible flicker, but this is a nice-to-have annotation (see this component's own doc
     // comment on `fetchDataQuality`), not something worth a separate "don't flicker on an
     // unchanged result" cache layer for.
+    const requestId = ++latestQualityRequest.current;
     setDataQuality(null);
     try {
       const { startDate, endDate } = computeDefaultPeriodRange(days);
@@ -182,7 +232,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
         `/api/channels/${encodeURIComponent(channelId)}/analytics/data-quality?startDate=${startDate}&endDate=${endDate}`
       );
       const data = await res.json();
-      if (res.ok) setDataQuality(data as DataQualityReport);
+      if (res.ok && requestId === latestQualityRequest.current) setDataQuality(data as DataQualityReport);
     } catch {
       // Non-fatal (see doc comment above) -- dataQuality already reset to null above.
     }
@@ -190,9 +240,19 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
 
   useEffect(() => {
     if (!channel) return;
-    void fetchOverview(channel.channelId, periodDays);
+    void fetchOverview(channel.channelId, periodDays, granularity);
     void fetchDataQuality(channel.channelId, periodDays);
-  }, [channel, periodDays, fetchOverview, fetchDataQuality]);
+  }, [channel, periodDays, granularity, fetchOverview, fetchDataQuality]);
+
+  const handleRefreshLive = useCallback(async () => {
+    if (!channel) return;
+    setRefreshingLive(true);
+    try {
+      await fetchOverview(channel.channelId, periodDays, granularity, true);
+    } finally {
+      setRefreshingLive(false);
+    }
+  }, [channel, periodDays, granularity, fetchOverview]);
 
   // Manual counterpart to the daily background auto-collect (dashboard.tsx's own mount effect) --
   // same underlying endpoint `AnalyticsManager`'s own "Collect now" button already calls
@@ -246,20 +306,33 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
             : "Data refreshed.",
       });
       await Promise.all([
-        fetchOverview(channel.channelId, periodDays),
+        fetchOverview(channel.channelId, periodDays, granularity),
         refetchTopVideos(),
         fetchDataQuality(channel.channelId, periodDays),
+        reloadReach(),
       ]);
+      setCoverageReloadKey((key) => key + 1);
     } catch {
       setCollectMessage({ kind: "error", text: "Failed to collect analytics data." });
     } finally {
       setCollecting(false);
     }
-  }, [channel, periodDays, fetchOverview, refetchTopVideos, fetchDataQuality, runBlocking]);
+  }, [channel, periodDays, granularity, fetchOverview, refetchTopVideos, fetchDataQuality, reloadReach, runBlocking]);
 
+  const reachReady = reach?.state === "ready";
   const chartData = useMemo(() => {
+    if (selectedMetric === "impressions" || selectedMetric === "ctr") {
+      if (!reachReady || !reach) return [];
+      return reach.daily
+        .filter((row) => selectedMetric === "impressions" || row.ctr !== null)
+        .map((row) => ({ date: row.date, value: selectedMetric === "impressions" ? row.impressions : (row.ctr as number) * 100 }));
+    }
     if (!overview) return [];
-    return overview.daily.map((row) => {
+    const rows =
+      granularity !== "day" && overview.buckets
+        ? overview.buckets.map((bucket) => ({ date: bucket.periodStart, ...bucket }))
+        : overview.daily;
+    return rows.map((row) => {
       switch (selectedMetric) {
         case "watchTimeHours":
           return { date: row.date, value: row.estimatedMinutesWatched / 60 };
@@ -270,7 +343,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
           return { date: row.date, value: row.views };
       }
     });
-  }, [overview, selectedMetric]);
+  }, [overview, selectedMetric, granularity, reach, reachReady]);
 
   const chartFormatValue = useCallback(
     (value: number) => {
@@ -279,6 +352,10 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
           return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} hours`;
         case "subscribers":
           return `${value >= 0 ? "+" : ""}${value.toLocaleString()} subscribers`;
+        case "impressions":
+          return `${formatImpressions(value)} impressions`;
+        case "ctr":
+          return `${value.toFixed(2)}% click-through rate`;
         case "views":
         default:
           return `${value.toLocaleString()} views`;
@@ -350,6 +427,15 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
         <LoadingIndicator className="text-sm text-zinc-400" />
       ) : overview ? (
         <>
+          <AnalyticsDataStrip
+            key={channel.channelId}
+            channelId={channel.channelId}
+            overview={overview}
+            dataQuality={dataQuality}
+            refreshing={refreshingLive}
+            onRefreshLive={handleRefreshLive}
+            reloadKey={coverageReloadKey}
+          />
           {overview.viewCountingChangeInComparison && (
             <p className="rounded-lg border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
               YouTube changed how views are counted on 27 Aug 2026 (a view now counts as soon as playback starts).
@@ -357,7 +443,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
               like-for-like.
             </p>
           )}
-          <div ref={metricCardsRef} className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-zinc-800 bg-zinc-800 sm:grid-cols-3">
+          <div ref={metricCardsRef} className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-zinc-800 bg-zinc-800 sm:grid-cols-3 lg:grid-cols-5">
             <button
               type="button"
               onClick={() => selectMetricCard("views")}
@@ -371,6 +457,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
               <MetricDelta
                 percent={computePercentChange(overview.currentTotals.views, overview.previousTotals.views)}
                 periodLabel={periodLabel}
+                previousStatus={overview.previousPeriod.status}
               />
             </button>
             <button
@@ -391,6 +478,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
                   overview.previousTotals.estimatedMinutesWatched
                 )}
                 periodLabel={periodLabel}
+                previousStatus={overview.previousPeriod.status}
               />
             </button>
             <button
@@ -414,8 +502,45 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
                   overview.previousTotals.subscribersGained - overview.previousTotals.subscribersLost
                 )}
                 periodLabel={periodLabel}
+                previousStatus={overview.previousPeriod.status}
               />
             </button>
+            {(["impressions", "ctr"] as const).map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => selectMetricCard(key)}
+                aria-pressed={selectedMetric === key}
+                className={`space-y-1 p-4 text-left transition-colors ${
+                  selectedMetric === key ? "bg-zinc-800 ring-1 ring-inset ring-indigo-500/60" : "bg-zinc-900 hover:bg-zinc-800/60"
+                }`}
+              >
+                <div className="text-xs text-zinc-500">{OVERVIEW_METRIC_INFO[key].label}</div>
+                {reachReady && reach ? (
+                  <>
+                    <div className="text-2xl font-semibold text-zinc-100">
+                      {key === "impressions" ? formatImpressions(reach.totals.impressions) : formatCtr(reach.totals.ctr)}
+                    </div>
+                    <span className="text-xs text-zinc-500">
+                      {reach.coverage.firstDate ? `Data since ${formatDisplayDateUtc(reach.coverage.firstDate)}` : "From YouTube Reporting files"}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-2xl font-semibold text-zinc-600">—</div>
+                    <span className="text-xs text-zinc-500">
+                      {reach === null
+                        ? reachLoaded
+                          ? "Not available"
+                          : "Loading…"
+                        : reach.state === "no_job"
+                          ? "Not set up yet — see Content"
+                          : "Waiting for YouTube's first report"}
+                    </span>
+                  </>
+                )}
+              </button>
+            ))}
           </div>
 
           {openMetricInfo && (
@@ -432,54 +557,33 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
           )}
 
           <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+            {selectedMetric !== "impressions" && selectedMetric !== "ctr" && (
+              <div className="mb-2 flex justify-end">
+                <div className="flex gap-1 rounded-lg border border-zinc-800 bg-zinc-950/40 p-0.5" role="group" aria-label="Chart granularity">
+                  {GRANULARITY_OPTIONS.map((option) => (
+                    <button
+                      key={option.key}
+                      onClick={() => setGranularity(option.key)}
+                      aria-pressed={granularity === option.key}
+                      className={`rounded-md px-2.5 py-0.5 text-xs font-medium transition-colors ${
+                        granularity === option.key ? "bg-indigo-600 text-white" : "text-zinc-400 hover:text-zinc-200"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <AnalyticsLineChart data={chartData} formatValue={chartFormatValue} formatDate={formatChartDate} />
-          </div>
-
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-            <h4 className="mb-3 text-sm font-medium text-zinc-300">Top content, this period</h4>
-            {loadingTopContent ? (
-              <LoadingIndicator className="text-sm text-zinc-500" />
-            ) : topContent.length === 0 ? (
-              <p className="text-sm text-zinc-500">
-                No collected data for this period yet — use &ldquo;Collect now&rdquo; below to fetch it.
+            {granularity !== "day" && selectedMetric !== "impressions" && selectedMetric !== "ctr" && (
+              <p className="mt-1 text-xs text-zinc-500">
+                Each point is the total of a calendar {granularity}; the first and last point may cover only part of one.
               </p>
-            ) : (
-              <ul className="space-y-2">
-                {topContent.map((item) => (
-                  <li key={item.videoId} className="flex items-center gap-3 text-sm">
-                    {item.thumbnail ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={item.thumbnail} alt="" className="h-9 w-16 rounded object-cover" />
-                    ) : (
-                      <div className="h-9 w-16 rounded bg-zinc-800" />
-                    )}
-                    <span className="flex-1 truncate text-zinc-300">{item.title}</span>
-                    <span className="text-zinc-400">{item.views.toLocaleString()} views</span>
-                  </li>
-                ))}
-              </ul>
             )}
           </div>
 
-          {dataQuality && (dataQuality.uncoveredDates.length > 0 || dataQuality.videosWithSkips.length > 0) && (
-            <div className="rounded-xl border border-amber-900/60 bg-amber-950/20 p-4 text-sm">
-              <h4 className="mb-2 font-medium text-amber-300">Data quality</h4>
-              {dataQuality.uncoveredDates.length > 0 && (
-                <p className="text-amber-200/90">
-                  {dataQuality.uncoveredDates.length} day{dataQuality.uncoveredDates.length === 1 ? "" : "s"} in this
-                  period {dataQuality.uncoveredDates.length === 1 ? "was" : "were"} never collected — &ldquo;Top
-                  content&rdquo; above (from locally-collected data) may be incomplete for this period. The Views
-                  and Watch time cards are a live API read, unaffected by this.
-                </p>
-              )}
-              {dataQuality.videosWithSkips.length > 0 && (
-                <p className="mt-1 text-amber-200/90">
-                  {dataQuality.videosWithSkips.length} video{dataQuality.videosWithSkips.length === 1 ? "" : "s"} had
-                  a collection failure in the most recent collection run covering this period.
-                </p>
-              )}
-            </div>
-          )}
+          <VideoPerformanceTable rows={topContent} reach={reach} loading={loadingTopContent} />
         </>
       ) : null}
     </div>

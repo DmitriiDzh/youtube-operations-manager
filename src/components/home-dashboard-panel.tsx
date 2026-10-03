@@ -110,7 +110,7 @@ export function HomeDashboardPanel({
     try {
       const { startDate, endDate } = computeDefaultPeriodRange(HOME_SUMMARY_PERIOD_DAYS);
       const overviewRes = await fetch(
-        `/api/channels/${encodeURIComponent(channelId)}/analytics/overview?startDate=${startDate}&endDate=${endDate}`
+        `/api/channels/${encodeURIComponent(channelId)}/analytics/overview?startDate=${startDate}&endDate=${endDate}&refresh=1`
       );
       const overviewData = await overviewRes.json();
       if (overviewRes.ok) setOverview(overviewData as ChannelOverview);

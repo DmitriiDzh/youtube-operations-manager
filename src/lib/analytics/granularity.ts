@@ -105,3 +105,22 @@ export function classifyPreviousPeriod(args: {
   if (args.previousStartDate < args.channelStartDate) return "partial";
   return "full";
 }
+
+/** The status plus the sentence that explains it (shared by the agent tool and the Web UI so both say the same thing). */
+export function describePreviousPeriod(args: {
+  previousStartDate: string;
+  previousEndDate: string;
+  channelStartDate: string | null;
+}): { status: PreviousPeriodStatus; note: string } {
+  const status = classifyPreviousPeriod(args);
+  const { previousStartDate, previousEndDate, channelStartDate } = args;
+  const note =
+    status === "predates_channel"
+      ? `The comparison period (${previousStartDate} to ${previousEndDate}) ended before the channel was created (${channelStartDate}); there is nothing to compare with, so previousTotals is null (not zero).`
+      : status === "partial"
+        ? `The channel was created on ${channelStartDate}, inside the comparison period (${previousStartDate} to ${previousEndDate}); previousTotals covers only the days after it existed.`
+        : channelStartDate === null
+          ? "The channel's creation date is not known yet (not synced since this was added), so whether the comparison period existed could not be checked."
+          : "The comparison period lies fully inside the channel's lifetime.";
+  return { status, note };
+}

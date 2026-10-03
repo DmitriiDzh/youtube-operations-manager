@@ -329,10 +329,11 @@ export default function Dashboard() {
         <FeatureErrorBoundary label="Analytics">
           <div key={channel?.id ?? "no-channel"}>
             <p className="mb-4 text-sm text-zinc-400">
-              Overview cards/chart are a live read from the Analytics API; the raw table below is
-              still fed by manual/daily-auto collection (BL-058/BL-059). Percentages here are
-              computed facts (period-over-period deltas from real numbers, same as Studio&apos;s own
-              cards) &mdash; AI-generated recommendations remain Phase 10&apos;s own, separate scope.
+              Overview numbers come from the data this app collects and stores (daily automatic
+              collection or &ldquo;Collect now&rdquo;); &ldquo;Refresh live&rdquo; reads them from
+              YouTube directly. Percentages are computed facts (period-over-period deltas from real
+              numbers, same as Studio&apos;s own cards) &mdash; AI-generated recommendations remain
+              Phase 10&apos;s own, separate scope.
             </p>
             <AnalyticsTab subscriberCount={channel?.subscriberCount} />
           </div>
