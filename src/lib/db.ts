@@ -549,6 +549,29 @@ export const gatewayCallEvents = sqliteTable("gateway_call_events", {
 });
 
 /**
+ * BL-117 (docs/roadmap/plans/QUOTA_HISTORY_AND_GUARD_PLAN.md) -- one row per YouTube Data / Analytics API call this
+ * device made: when, which method, how many quota units it cost (NULL = method not in the cost table), how it ended,
+ * and which piece of work it belonged to (`context_*`, NULL = none). Append-only, 45-day retention. Device-local
+ * (never in a snapshot: it is written constantly by every device, a replace-style sync would conflict forever);
+ * sharing it between devices is a separate per-device-file exchange, not this table.
+ */
+export const quotaLedger = sqliteTable(
+  "quota_ledger",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    occurredAt: integer("occurred_at").notNull(),
+    service: text("service").notNull(), // 'data' | 'analytics'
+    method: text("method").notNull(), // e.g. 'videos.update'
+    units: integer("units"),
+    outcome: text("outcome").notNull(), // 'ok' | 'error' | 'quota_exceeded'
+    contextKind: text("context_kind"),
+    contextId: text("context_id"),
+    contextLabel: text("context_label"),
+  },
+  (table) => [index("quota_ledger_occurred_idx").on(table.occurredAt)]
+);
+
+/**
  * SCHEMA_MIGRATIONS version 12 -- one row per sync-gateway document family
  * (`docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md` §4), recording the outcome of its
  * most recent sync cycle. Added for the Merge-tab redesign (owner instruction, 2026-09-23,
@@ -2472,6 +2495,26 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       }
     },
   },
+  {
+    version: 42,
+    description:
+      "quota_ledger -- BL-117: one row per YouTube Data/Analytics API call (time, method, quota units, outcome, which work it belonged to), for the Settings quota-history popup and the batch quota guard. Device-local.",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS quota_ledger (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+          "occurred_at INTEGER NOT NULL, " +
+          "service TEXT NOT NULL, " +
+          "method TEXT NOT NULL, " +
+          "units INTEGER, " +
+          "outcome TEXT NOT NULL, " +
+          "context_kind TEXT, " +
+          "context_id TEXT, " +
+          "context_label TEXT)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS quota_ledger_occurred_idx ON quota_ledger(occurred_at)");
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -3784,6 +3827,68 @@ export async function getChannelReachCoverage(
     lastDate: days?.lastDate ?? null,
     importedFiles: Number(files?.count ?? 0),
   };
+}
+
+// --- BL-117: quota ledger ---------------------------------------------------------------------------
+
+export const QUOTA_LEDGER_RETENTION_SECONDS = 45 * 24 * 3600;
+let lastQuotaLedgerPruneAt = 0;
+
+export type QuotaCallRecord = {
+  occurredAt: number; // unix seconds
+  service: "data" | "analytics";
+  method: string;
+  units: number | null;
+  outcome: "ok" | "error" | "quota_exceeded";
+  contextKind: string | null;
+  contextId: string | null;
+  contextLabel: string | null;
+};
+
+/** Appends one call; prunes entries past retention at most once an hour. Callers treat this as best-effort. */
+export async function recordQuotaCall(record: QuotaCallRecord, database: AppDb = db): Promise<void> {
+  await database.insert(quotaLedger).values(record);
+  const nowMs = Date.now();
+  if (nowMs - lastQuotaLedgerPruneAt > 3_600_000) {
+    lastQuotaLedgerPruneAt = nowMs;
+    await pruneQuotaLedger(Math.floor(nowMs / 1000), database);
+  }
+}
+
+/** Deletes entries older than the retention window as of `nowSeconds`; returns nothing (best-effort housekeeping). */
+export async function pruneQuotaLedger(nowSeconds: number, database: AppDb = db): Promise<void> {
+  await database.delete(quotaLedger).where(sql`${quotaLedger.occurredAt} < ${nowSeconds - QUOTA_LEDGER_RETENTION_SECONDS}`);
+}
+
+export async function listQuotaCalls(
+  args: { sinceSeconds: number; service: "data" | "analytics" },
+  database: AppDb = db
+): Promise<QuotaCallRecord[]> {
+  const rows = await database
+    .select()
+    .from(quotaLedger)
+    .where(and(eq(quotaLedger.service, args.service), gte(quotaLedger.occurredAt, args.sinceSeconds)))
+    .orderBy(asc(quotaLedger.occurredAt), asc(quotaLedger.id));
+  return rows.map((r) => ({
+    occurredAt: r.occurredAt,
+    service: r.service === "analytics" ? "analytics" : "data",
+    method: r.method,
+    units: r.units,
+    outcome: r.outcome === "ok" || r.outcome === "quota_exceeded" ? r.outcome : "error",
+    contextKind: r.contextKind,
+    contextId: r.contextId,
+    contextLabel: r.contextLabel,
+  }));
+}
+
+/** How many ledger rows of each status a batch has (history says "N videos changed" from SUCCESS, not from call counts). */
+export async function countBatchRowsByStatus(batchId: string, database: AppDb = db): Promise<Record<string, number>> {
+  const rows = await database
+    .select({ status: batchLedgerRows.status, count: sql<number>`COUNT(*)` })
+    .from(batchLedgerRows)
+    .where(eq(batchLedgerRows.batchId, batchId))
+    .groupBy(batchLedgerRows.status);
+  return Object.fromEntries(rows.map((r) => [r.status, Number(r.count)]));
 }
 
 export type StoredReportingSyncAttempt = {

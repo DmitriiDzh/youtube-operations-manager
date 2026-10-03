@@ -42,7 +42,7 @@ export async function createYoutubeAnalyticsClient(
   auth: youtubeAnalytics_v2.Options["auth"]
 ): Promise<youtubeAnalytics_v2.Youtubeanalytics> {
   await assertAnalyticsReadsAuthorized();
-  return wrapYoutubeClientForQuotaClassification(google.youtubeAnalytics({ version: "v2", auth }));
+  return wrapYoutubeClientForQuotaClassification(google.youtubeAnalytics({ version: "v2", auth }), "analytics");
 }
 
 export type VideoAnalyticsMetricRow = {

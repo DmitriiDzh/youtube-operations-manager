@@ -3,6 +3,7 @@ import { createChannelAccessCore } from "@/lib/channel-access";
 import { createAnalyticsStoreAdapter } from "./adapters/store";
 import { createAnalyticsYoutubeApiAdapter } from "./adapters/youtube-api";
 import { createDefaultLogger } from "@/lib/shared-logger";
+import { quotaScoped } from "@/lib/youtube-quota";
 import { createAnalyticsServices } from "./services";
 
 function defaultAuthResolver() {
@@ -13,7 +14,7 @@ function defaultAuthResolver() {
 
 export function createAnalyticsCore() {
   const store = createAnalyticsStoreAdapter();
-  return createAnalyticsServices({
+  const services = createAnalyticsServices({
     authResolver: defaultAuthResolver(),
     youtubeApi: createAnalyticsYoutubeApiAdapter(),
     videoStore: store.videoStore,
@@ -26,6 +27,13 @@ export function createAnalyticsCore() {
     logger: createDefaultLogger(),
     channelAccess: createChannelAccessCore(),
   });
+  // BL-117: API calls made while collecting metrics are logged against this kind of work in the quota history.
+  const context = { kind: "analytics_collection", id: null, label: "Analytics collection" };
+  return {
+    ...services,
+    collectMetrics: quotaScoped(services.collectMetrics, context),
+    runAutoCollectionIfStale: quotaScoped(services.runAutoCollectionIfStale, context),
+  };
 }
 
 export type AnalyticsCore = ReturnType<typeof createAnalyticsCore>;

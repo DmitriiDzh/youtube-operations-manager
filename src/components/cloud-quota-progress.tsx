@@ -1,8 +1,15 @@
 "use client";
 
+import { useState } from "react";
 import { ProgressBar } from "./progress-bar";
+import { QuotaHistoryDialog } from "./quota-history-dialog";
 
-export type ServiceQuotaStatusView = { limit: number; usedLast24h: number } | null;
+export type ServiceQuotaStatusView = {
+  limit: number;
+  usedLast24h: number;
+  window?: "since_reset" | "rolling_24h";
+  resetsAt?: string | null;
+} | null;
 
 /**
  * Real Google Cloud quota limit/usage for one service, rendered under a gateway toggle in
@@ -14,19 +21,45 @@ export type ServiceQuotaStatusView = { limit: number; usedLast24h: number } | nu
 export function CloudQuotaProgress({
   status,
   size = "sm",
+  historyService,
 }: {
   status: ServiceQuotaStatusView | undefined;
   size?: "sm" | "lg";
+  /** BL-117: when set, a small clock button next to the bar opens the quota-spend history popup for that API. */
+  historyService?: "data" | "analytics";
 }) {
+  const [historyOpen, setHistoryOpen] = useState(false);
   if (!status) return null;
 
+  const sinceReset = status.window === "since_reset";
   return (
-    <ProgressBar
-      value={status.usedLast24h}
-      max={status.limit}
-      size={size}
-      label={`Google Cloud quota (24h): ${status.usedLast24h.toLocaleString()} / ${status.limit.toLocaleString()}`}
-    />
+    <div className="flex items-start gap-2">
+      <div className="min-w-0 flex-1">
+        <ProgressBar
+          value={status.usedLast24h}
+          max={status.limit}
+          size={size}
+          label={`Google Cloud quota (${sinceReset ? "since reset" : "24h"}): ${status.usedLast24h.toLocaleString()} / ${status.limit.toLocaleString()}`}
+        />
+        {status.resetsAt && (
+          <p className="mt-0.5 text-[11px] text-zinc-500">Resets {new Date(status.resetsAt).toLocaleString()} (midnight Pacific Time)</p>
+        )}
+      </div>
+      {historyService && (
+        <button
+          onClick={() => setHistoryOpen(true)}
+          aria-label="Quota history"
+          title="Quota history"
+          className="mt-0.5 shrink-0 rounded-md border border-zinc-700 p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+        >
+          <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+            <circle cx="10" cy="10" r="7.25" />
+            <path d="M10 5.5V10l3 2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      )}
+      {historyService && historyOpen && <QuotaHistoryDialog service={historyService} onClose={() => setHistoryOpen(false)} />}
+    </div>
   );
 }
 

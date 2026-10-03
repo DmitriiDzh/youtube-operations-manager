@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { runWithQuotaContext } from "@/lib/youtube-quota";
 import { DomainError, type OperationHandle, type OperationRegistry } from "./contracts";
 
 /**
@@ -143,7 +144,10 @@ export function createLanguageFixAllServices(deps: FixAllDependencies) {
 
       return {
         operationId: handle.id,
-        run: () => runPlan({ deps, handle, planned, channelId: input.channelId, userId: input.userId }),
+        run: () =>
+          runWithQuotaContext({ kind: "fix_all", id: handle.id ?? null, label: "Fix all languages" }, () =>
+            runPlan({ deps, handle, planned, channelId: input.channelId, userId: input.userId })
+          ),
       };
     },
   };

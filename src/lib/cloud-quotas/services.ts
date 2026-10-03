@@ -5,6 +5,7 @@ import type {
   fetchPerMinuteQuotaLimit,
   FetchLike,
 } from "./adapters/monitoring-client";
+import { nextYoutubeQuotaReset, startOfYoutubeQuotaDay } from "@/lib/youtube-quota";
 import type { CloudQuotaStatus, PerMinuteQuotaStatus, QuotaService, ServiceQuotaStatus } from "./contracts";
 
 type ServiceDependencies = {
@@ -21,6 +22,8 @@ type ServiceDependencies = {
   fetchImpl: FetchLike;
   /** `null` when `GOOGLE_CLIENT_ID` is unset/malformed -- quota status degrades to "unknown" rather than throwing. */
   projectNumber: string | null;
+  /** Injected for tests; defaults to the real clock. */
+  now?: () => Date;
 };
 
 async function fetchServiceQuota(args: {
@@ -29,6 +32,10 @@ async function fetchServiceQuota(args: {
   projectNumber: string;
   deps: ServiceDependencies;
 }): Promise<ServiceQuotaStatus> {
+  const now = (args.deps.now ?? (() => new Date()))();
+  // Data API quota resets at Pacific midnight (Google): count usage since then so it lines up with the reset time shown.
+  // Other services keep the rolling 24 h: their reset boundary has not been confirmed.
+  const confirmedReset = args.service === "youtube.googleapis.com";
   try {
     const [limit, usedLast24h] = await Promise.all([
       args.deps.monitoringClient.fetchDailyQuotaLimit({
@@ -42,10 +49,16 @@ async function fetchServiceQuota(args: {
         projectNumber: args.projectNumber,
         service: args.service,
         fetchImpl: args.deps.fetchImpl,
+        since: confirmedReset ? startOfYoutubeQuotaDay(now) : undefined,
       }),
     ]);
     if (limit === null) return null;
-    return { limit, usedLast24h };
+    return {
+      limit,
+      usedLast24h,
+      window: confirmedReset ? "since_reset" : "rolling_24h",
+      resetsAt: confirmedReset ? nextYoutubeQuotaReset(now).toISOString() : null,
+    };
   } catch {
     // Never let a real Cloud Monitoring API hiccup (rate limit, transient network error, the API
     // itself disabled) crash the Settings tab -- this is informational-only, never a gate.

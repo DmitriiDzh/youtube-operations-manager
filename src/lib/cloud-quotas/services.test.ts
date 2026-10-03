@@ -25,13 +25,15 @@ function createFixture(opts: {
   };
 
   let monitoringCallCount = 0;
+  const usageSinceByService: Record<string, string | undefined> = {};
   const monitoringClient = {
     async fetchDailyQuotaLimit(args: { service: string }) {
       monitoringCallCount += 1;
       if (args.service === opts.throwForService) throw new Error("simulated Monitoring API failure");
       return opts.limitByService?.[args.service] ?? null;
     },
-    async fetchDailyQuotaUsage(args: { service: string }) {
+    async fetchDailyQuotaUsage(args: { service: string; since?: Date }) {
+      usageSinceByService[args.service] = args.since?.toISOString();
       monitoringCallCount += 1;
       if (args.service === opts.throwForService) throw new Error("simulated Monitoring API failure");
       return opts.usageByService?.[args.service] ?? 0;
@@ -53,9 +55,10 @@ function createFixture(opts: {
     monitoringClient,
     fetchImpl: (async () => ({ ok: true, status: 200, json: async () => ({}) })) as FetchLike,
     projectNumber: opts.projectNumber ?? "131970858038",
+    now: () => new Date("2026-10-03T18:00:00Z"), // 11:00 PDT: the Data API quota day started 2026-10-03T07:00:00Z
   });
 
-  return { services, getMonitoringCallCount: () => monitoringCallCount };
+  return { services, getMonitoringCallCount: () => monitoringCallCount, usageSinceByService };
 }
 
 // Independent test-suite audit (2026-09-26): this test's own title claimed "never calls the real
@@ -94,9 +97,9 @@ test("getQuotaStatus: connected -> returns real limit/usage per service, all kep
 
   assert.deepEqual(status, {
     connected: true,
-    dataApi: { limit: 10000, usedLast24h: 42 },
-    analytics: { limit: 100000, usedLast24h: 28 },
-    reporting: { limit: 20000, usedLast24h: 3 },
+    dataApi: { limit: 10000, usedLast24h: 42, window: "since_reset", resetsAt: "2026-10-04T07:00:00.000Z" },
+    analytics: { limit: 100000, usedLast24h: 28, window: "rolling_24h", resetsAt: null },
+    reporting: { limit: 20000, usedLast24h: 3, window: "rolling_24h", resetsAt: null },
     monitoring: { limit: 6000, usedLastMinute: 8 },
   });
 });
@@ -116,7 +119,7 @@ test("getQuotaStatus: one service's real call fails -> that service is null, the
   assert.deepEqual(status, {
     connected: true,
     dataApi: null,
-    analytics: { limit: 100000, usedLast24h: 28 },
+    analytics: { limit: 100000, usedLast24h: 28, window: "rolling_24h", resetsAt: null },
     reporting: null,
     monitoring: { limit: 6000, usedLastMinute: 8 },
   });
@@ -146,8 +149,8 @@ test("getQuotaStatus: Cloud Monitoring's own per-minute quota query fails -> mon
 
   assert.deepEqual(status, {
     connected: true,
-    dataApi: { limit: 10000, usedLast24h: 42 },
-    analytics: { limit: 100000, usedLast24h: 28 },
+    dataApi: { limit: 10000, usedLast24h: 42, window: "since_reset", resetsAt: "2026-10-04T07:00:00.000Z" },
+    analytics: { limit: 100000, usedLast24h: 28, window: "rolling_24h", resetsAt: null },
     reporting: null,
     monitoring: null,
   });
@@ -161,4 +164,18 @@ test("getQuotaStatus: Cloud credentials cannot be refreshed -> degrades to unkno
   const status = await services.getQuotaStatus();
   assert.deepEqual(status, { connected: true, dataApi: null, analytics: null, reporting: null, monitoring: null });
   assert.equal(getMonitoringCallCount(), 0);
+});
+
+test("getQuotaStatus: Data API usage is summed SINCE the last Pacific midnight (reset time known); Analytics keeps the rolling 24 h with no reset time", async () => {
+  const { services, usageSinceByService } = createFixture({
+    connected: true,
+    limitByService: { "youtube.googleapis.com": 10000, "youtubeanalytics.googleapis.com": 100000 },
+    usageByService: { "youtube.googleapis.com": 1, "youtubeanalytics.googleapis.com": 1 },
+  });
+  const status = await services.getQuotaStatus();
+  assert.equal(usageSinceByService["youtube.googleapis.com"], "2026-10-03T07:00:00.000Z");
+  assert.equal(usageSinceByService["youtubeanalytics.googleapis.com"], undefined, "rolling window: no `since`");
+  assert.equal(status.dataApi?.window, "since_reset");
+  assert.equal(status.dataApi?.resetsAt, "2026-10-04T07:00:00.000Z");
+  assert.equal(status.analytics?.resetsAt, null);
 });

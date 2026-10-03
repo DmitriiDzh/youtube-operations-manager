@@ -1,6 +1,7 @@
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createMarketIntelligenceStoreAdapter } from "./adapters/store";
 import { createMarketIntelligenceYoutubeApiAdapter } from "./adapters/youtube-api";
+import { quotaScoped } from "@/lib/youtube-quota";
 import { createMarketIntelligenceServices } from "./services";
 
 function defaultAuthResolver() {
@@ -12,7 +13,7 @@ function defaultAuthResolver() {
 export function createMarketIntelligenceCore() {
   const store = createMarketIntelligenceStoreAdapter();
 
-  return createMarketIntelligenceServices({
+  const services = createMarketIntelligenceServices({
     idGenerator: store.idGenerator,
     insertResearchChannel: store.insertResearchChannel,
     listResearchChannels: store.listResearchChannels,
@@ -75,6 +76,15 @@ export function createMarketIntelligenceCore() {
     rejectMarketResearchRequestIfPending: store.rejectMarketResearchRequestIfPending,
     recordMarketResearchRequestExecutionOutcome: store.recordMarketResearchRequestExecutionOutcome,
   });
+  // BL-117: API calls made by Research collection / discovery are logged against it in the quota history.
+  const context = { kind: "research_collection", id: null, label: "Research collection" };
+  return {
+    ...services,
+    runCollectionIfStale: quotaScoped(services.runCollectionIfStale, context),
+    discoverChannels: quotaScoped(services.discoverChannels, context),
+    captureChannelSnapshot: quotaScoped(services.captureChannelSnapshot, context),
+    fetchPublicSnapshot: quotaScoped(services.fetchPublicSnapshot, context),
+  };
 }
 
 export type MarketIntelligenceCore = ReturnType<typeof createMarketIntelligenceCore>;

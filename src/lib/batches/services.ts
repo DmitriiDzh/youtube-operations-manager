@@ -35,6 +35,7 @@ import {
   type PendingChange,
 } from "./merge";
 import { YOUTUBE_WRITE_SCOPE } from "@/lib/auth";
+import { runWithQuotaContext, type QuotaContext } from "@/lib/youtube-quota";
 import { beginBatchExecution, endBatchExecution, isBatchCancelRequested, requestBatchCancelFlag } from "./execution-control";
 import type { CredentialRef, ResolvedCredentials } from "@/lib/shared-domain";
 
@@ -312,6 +313,11 @@ function describeObservedState(changes: PendingChange[], fresh: FreshVideoContex
       requestedLength: change.proposedValue.length,
     };
   });
+}
+
+/** BL-117: the quota history groups every API call of one batch run under this label. */
+function batchQuotaContext(batchId: string): QuotaContext {
+  return { kind: "batch", id: batchId, label: `Batch ${batchId.slice(0, 8)}` };
 }
 
 export function createBatchServices(deps: ServiceDependencies) {
@@ -1379,6 +1385,14 @@ export function createBatchServices(deps: ServiceDependencies) {
     credentialRef: CredentialRef;
     expectedChannelId?: string;
   }): Promise<BatchRecoveryResult> {
+    return runWithQuotaContext(batchQuotaContext(input.batchId), () => recoverBatchRun(input));
+  }
+
+  async function recoverBatchRun(input: {
+    batchId: string;
+    credentialRef: CredentialRef;
+    expectedChannelId?: string;
+  }): Promise<BatchRecoveryResult> {
     const batch = await requireBatch(input.batchId);
     const credentials = await deps.authResolver.resolve({ credentialRef: input.credentialRef, requiredScopes: [YOUTUBE_WRITE_SCOPE] });
     await deps.writeContext.assertWriteChannel({
@@ -1462,7 +1476,7 @@ export function createBatchServices(deps: ServiceDependencies) {
     // cancel flag can outlive the run.
     const token = beginBatchExecution(input.batchId);
     try {
-      return await executeBatchRun(input);
+      return await runWithQuotaContext(batchQuotaContext(input.batchId), () => executeBatchRun(input));
     } finally {
       endBatchExecution(input.batchId, token);
     }

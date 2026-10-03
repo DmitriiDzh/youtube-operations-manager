@@ -54,7 +54,7 @@ export async function createYoutubeClient(
   auth: youtube_v3.Options["auth"]
 ): Promise<youtube_v3.Youtube> {
   await assertDataApiReadsAuthorized();
-  return wrapYoutubeClientForQuotaClassification(google.youtube({ version: "v3", auth }));
+  return wrapYoutubeClientForQuotaClassification(google.youtube({ version: "v3", auth }), "data");
 }
 
 export async function getAuthenticatedYoutube(userId: string) {

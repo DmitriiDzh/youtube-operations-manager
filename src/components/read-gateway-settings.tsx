@@ -126,7 +126,7 @@ export function ReadGatewaySettings() {
               size="lg"
               window={settings?.gatewayTraffic?.find((c) => c.category === "data_api_reads")}
             />
-            <CloudQuotaProgress size="lg" status={settings?.cloudQuotaStatus?.dataApi} />
+            <CloudQuotaProgress size="lg" status={settings?.cloudQuotaStatus?.dataApi} historyService="data" />
           </>
         }
       />
@@ -158,7 +158,7 @@ export function ReadGatewaySettings() {
                 size="lg"
                 window={settings?.gatewayTraffic?.find((c) => c.category === "analytics_reads")}
               />
-              <CloudQuotaProgress size="lg" status={settings?.cloudQuotaStatus?.analytics} />
+              <CloudQuotaProgress size="lg" status={settings?.cloudQuotaStatus?.analytics} historyService="analytics" />
             </>
           }
         />
