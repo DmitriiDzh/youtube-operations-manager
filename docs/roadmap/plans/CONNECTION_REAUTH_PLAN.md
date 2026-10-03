@@ -91,10 +91,8 @@ write. No change to Live writes / write-safety gates.
 
 ## 6. Open questions for the owner
 
-1. Is the Google OAuth consent screen in **Testing** status? If it is "In production", refresh tokens do not expire at 7
-   days and the age signal is only advisory; the real check still decides. (Cannot be read from this repo.)
-2. For a non-active dead connection, is it acceptable that re-login switches the active channel to it (existing
-   behaviour of the sign-in flow, ADR 0010), or should it keep the current active channel?
+1. ~~Is the consent screen in Testing status?~~ **Answered by the owner (2026-10-03): yes, Testing.** So Google's 7-day refresh-token limit applies and the 7-day / 6-day thresholds are real, not advisory. (If the app is ever moved to production, only the age signal becomes advisory; the real check still decides.)
+2. ~~Which account becomes active after a re-login?~~ **Answered by the owner (2026-10-03):** the popup lists **every account that needs a new login** and the user picks which one to sign in first (it becomes the active session; the others stay listed until done). Replaces the earlier default; §3.4 is amended accordingly: one popup, a row per affected account with its own "Sign in with Google" button, "Later" only when no row is `reauth_required`.
 3. ~~Should `expiring_soon` interrupt with a dismissable popup, or only show the Settings badge?~~ **Answered by the owner (Telegram, 2026-10-03): a popup** (as §3.4 already specifies, with a "Later" button). Questions 1 and 2 were put to the owner in plainer words; the plan keeps its defaults until answered: the age threshold stays a constant, and re-login as another account makes that account the active session (the sign-in flow signs in one account at a time).
 
 ## 7. Risks
