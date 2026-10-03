@@ -3,6 +3,12 @@
 set -e
 cd "$(dirname "$0")/../.."
 PIDFILE="$(pwd)/.launcher.pid"
+# BL-116: the server runs DETACHED (its own session, output in .launcher.log), so this terminal can close and the
+# server keeps running. It stops by itself 10 minutes after the last open window, or via stop.sh.
+# PORT is overridable (default 3000) and YTOM_NO_BROWSER=1 skips opening the browser, so the launcher can be
+# verified without touching a running instance.
+PORT="${PORT:-3000}"
+LOG="$(pwd)/.launcher.log"
 
 echo "=== YouTube Operations Manager - macOS launcher ==="
 
@@ -23,8 +29,8 @@ fi
 # a stale build. stop.sh waits for any running export/import/migration before stopping, and refuses
 # (exit code 1) if one does not finish; then nothing is started or rebuilt over it.
 # Note: whatever listens on port 3000 is stopped, exactly as stop.sh has always done.
-if [ -n "$(lsof -ti tcp:3000 2>/dev/null)" ]; then
-  echo "Port 3000 is already in use - stopping the running instance first..."
+if [ -n "$(lsof -ti tcp:$PORT 2>/dev/null)" ]; then
+  echo "Port $PORT is already in use - stopping the running instance first..."
   if ! "$(dirname "$0")/stop.sh"; then
     echo "[ERROR] The running instance could not be stopped safely - not starting a second one."
     exit 1
@@ -77,42 +83,55 @@ if [ -n "$NEED_BUILD" ]; then
   fi
 fi
 
-echo "Starting YouTube Operations Manager on http://localhost:3000 ..."
-npm run start &
+echo "Starting YouTube Operations Manager on http://localhost:$PORT ..."
+: > "$LOG"
+# A new session (perl's setsid) detaches the server from this terminal for real: closing the window neither
+# signals it nor makes the terminal ask "terminate running processes?". Without perl, nohup still survives SIGHUP.
+if command -v perl >/dev/null 2>&1; then
+  PORT="$PORT" perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' npm run start >> "$LOG" 2>&1 < /dev/null &
+else
+  PORT="$PORT" nohup npm run start >> "$LOG" 2>&1 < /dev/null &
+fi
 SERVER_PID=$!
 echo "$SERVER_PID" > "$PIDFILE"
 
-# Wait for the server to actually accept connections (up to ~20s) rather than assuming success
-# after a fixed sleep -- npm run start can fail immediately (e.g. a stale build) and a blind
-# sleep+open would still report success and open a browser tab that just shows a connection error.
+# Show the server's own start-up output here until it is ready (this window is only for progress).
+tail -n +1 -f "$LOG" 2>/dev/null &
+TAIL_PID=$!
+
+# Wait for the server to actually accept connections (up to ~60s) rather than assuming success after a fixed sleep.
+# 127.0.0.1 because that is exactly what the server binds to.
 READY=0
 ATTEMPT=0
-while [ "$ATTEMPT" -lt 20 ]; do
+while [ "$ATTEMPT" -lt 60 ]; do
   if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-    echo "[ERROR] The server process exited before becoming ready -- see the output above."
+    kill "$TAIL_PID" 2>/dev/null || true
+    echo "[ERROR] The server process exited before becoming ready -- see the output above (also saved in $LOG)."
     rm -f "$PIDFILE"
     exit 1
   fi
-  if command -v curl >/dev/null 2>&1 && curl -s -o /dev/null "http://localhost:3000/" 2>/dev/null; then
+  if command -v curl >/dev/null 2>&1 && curl -s -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
     READY=1
     break
   fi
   ATTEMPT=$((ATTEMPT + 1))
   sleep 1
 done
+kill "$TAIL_PID" 2>/dev/null || true
 
 if [ "$READY" = "1" ]; then
-  if command -v open >/dev/null 2>&1; then
-    open "http://localhost:3000"
+  if [ -z "$YTOM_NO_BROWSER" ] && command -v open >/dev/null 2>&1; then
+    open "http://localhost:$PORT"
   fi
   echo ""
-  echo "The application is running in the background (PID $SERVER_PID)."
-  echo "  - To stop it safely, run stop.sh."
+  echo "The application is running in the background (PID $SERVER_PID) -- you can close this window."
+  echo "  - It stops by itself about 10 minutes after the last open browser window; stop.sh stops it right away."
+  echo "  - Log: $LOG"
   echo "  - Your data is stored under ~/Library/Application Support/YouTubeOperationsManager/,"
   echo "    not in this folder -- it is not affected by replacing these program files later."
-else
-  echo "[WARN] The server process is still running (PID $SERVER_PID) but did not respond to"
-  echo "http://localhost:3000/ within 20s. Check the terminal output above for errors."
+  exit 0
 fi
 
-wait "$SERVER_PID"
+echo "[WARN] The server process is still running (PID $SERVER_PID) but did not respond on"
+echo "http://127.0.0.1:$PORT/ within 60s. See $LOG for errors."
+exit 1

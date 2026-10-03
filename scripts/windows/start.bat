@@ -93,19 +93,33 @@ if defined NEED_BUILD (
 )
 
 echo Starting YouTube Operations Manager on http://localhost:3000 ...
-start "YouTube Operations Manager" cmd /k "npm run start"
+REM BL-116: the server runs HIDDEN and detached (output in .launcher.log), so no window has to stay open. It stops by
+REM itself about 10 minutes after the last open browser window; stop.bat stops it right away.
+> ".launcher.log" echo.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','npm run start >> .launcher.log 2>&1' -WorkingDirectory (Get-Location).Path -WindowStyle Hidden"
 
-REM Give the server a moment to come up before opening the browser.
-timeout /t 4 >nul
+REM Wait for the server to really answer (up to ~60s) instead of a fixed sleep.
+set "READY="
+for /l %%i in (1,1,60) do (
+  if not defined READY (
+    curl -s -o NUL http://127.0.0.1:3000/ >nul 2>nul && set "READY=1"
+    if not defined READY timeout /t 1 >nul
+  )
+)
+if not defined READY (
+  echo [WARN] The server did not answer on http://127.0.0.1:3000/ within 60 seconds. See .launcher.log for errors.
+  pause
+  exit /b 1
+)
 start http://localhost:3000
 
 echo.
-echo The application is running in a separate window titled "YouTube Operations Manager".
-echo   - To stop it safely, run stop.bat ^(or just close that window^).
+echo The application is running in the background - you can close this window.
+echo   - It stops by itself about 10 minutes after the last open browser window; stop.bat stops it right away.
+echo   - Log: .launcher.log
 echo   - Your data is stored under %%APPDATA%%\YouTubeOperationsManager\, not in this folder -
 echo     it is not affected by replacing these program files later.
 exit /b 0
-
 :fail
 echo.
 echo [ERROR] Setup failed - see the output above for details.

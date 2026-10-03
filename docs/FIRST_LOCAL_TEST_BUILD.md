@@ -81,8 +81,9 @@ never killed mid-operation (which is what leaves a stuck operation lock); it the
 free. A stale lock left by an earlier interrupted run is reported but never cleared by these scripts
 (see the app's `/recovery` page or `npm run operation-lock -- clear`).
 
-**To stop safely:** run `scripts\windows\stop.bat`, or just close the
-"YouTube Operations Manager" window.
+**To stop safely:** run `scripts\windows\stop.bat` (macOS: `scripts/macos/stop.sh`). Since BL-116 the server runs
+in the background with no window to close (output in `.launcher.log`) and stops by itself about 10 minutes after
+the last open browser window; the launcher's own window may be closed once it reports the server is running.
 
 **To update a standalone `published/<version>/` copy** after replacing these program files with a
 newer version by hand: run `scripts\windows\update.bat` first (stops any running instance,
