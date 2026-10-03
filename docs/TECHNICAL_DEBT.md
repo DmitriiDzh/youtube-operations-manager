@@ -1625,3 +1625,23 @@ No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a d
 - **Gate(s):** `BLOCKS_OPERATIONS_RELEASE` for live Batches use together with handoff import.
 - **Approval required from:** none to implement; the project owner prioritises it.
 - **Status:** OPEN, tracked.
+
+## RISK-95 — Reach (impressions/CTR) import is not verified against real Google files — OPEN, 2026-10-03
+
+- **Affected components:** `src/lib/reach-reports/` (`reach-csv.ts`, `reach-format.ts`), `src/lib/cloud-quotas`
+  (`reporting`), BL-114, ADR 0014.
+- **Found during:** BL-114 status/quota follow-up. The Reporting job was created by a probe script on
+  2026-10-01 ~21:05:54 UTC; the app has never downloaded a real file.
+- **Expected arrival of the first file:** by **2026-10-03 ~21:06 UTC (2026-10-04 ~00:06 at UTC+3)**, i.e. job
+  creation + 48 h (the card shows "overdue" after that). Google also backfills 30 days before creation.
+- **Actual risk:** the parser, the date format (`YYYYMMDD` vs `YYYY-MM-DD`) and the **CTR scale** (ratio assumed,
+  not percent) are written from Google's documentation, not from real data; a wrong CTR scale would show
+  silently wrong numbers. Also unverified: that Cloud Monitoring exposes a daily limit for
+  `youtubereporting.googleapis.com` (the Settings bar is hidden when it does not). The real DB has not yet run
+  schema v40 / the Reach tables.
+- **To close:** after the first file arrives, back up the real DB, run the app on current `dev`, press "Sync
+  now", compare an imported day against YouTube Studio, fix `reach-csv.ts`/`reach-format.ts` if needed, check the
+  Settings quota bar, then mark BL-114's real-data check done and update this entry.
+- **Gate(s):** none blocking (impressions/CTR is read-only display; the numbers must not be trusted until verified).
+- **Approval required from:** none to implement; the owner prioritises it.
+- **Status:** OPEN, tracked.
