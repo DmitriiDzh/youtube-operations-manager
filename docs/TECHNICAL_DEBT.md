@@ -1660,6 +1660,13 @@ No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a d
 - **Approval required from:** none to implement; the owner prioritises it.
 - **Status:** OPEN, tracked.
 
+- **Update 2026-10-03 ~19:30 UTC (agent, read-only look at the owner's database):** Google delivered the first files EARLIER than the
+  expected ~21:06 UTC (it back-filled 30 days at once) and the app imported them: 62 files (31 per channel, 2026-09-01 .. 2026-10-01),
+  909 + 732 rows, every sync attempt `ok`. So the parser and the date format work on real data, and CTR arrives as a FRACTION in
+  [0, 1] (average 0.053; the largest rows 0.056, 0.065, 0.025 for 2k-3k impressions), which matches the ratio the code assumes. **Still
+  open:** a spot comparison with YouTube Studio (e.g. video `7FOvukxZ3iM`, 2026-09-01: 2,211 impressions, CTR 5.65%) and the
+  Cloud-Monitoring daily-limit question for the Reporting API.
+
 ## RISK-96 — Quota guard estimates and attribution are not verified against a real batch — OPEN, 2026-10-03
 
 - **Affected components:** `src/lib/quota-guard/` (52 units per written video, 100-unit margin, 2-minute Monitoring lag),
