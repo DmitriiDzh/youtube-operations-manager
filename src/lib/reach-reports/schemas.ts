@@ -40,3 +40,5 @@ export const getChannelReachInputSchema = getChannelReachInputObjectSchema.super
       ctx.addIssue({ code: "custom", message: `range must not exceed ${MAX_REACH_RANGE_DAYS} days` });
     }
   });
+
+export const getReachStatusInputSchema = z.object({ credentialRef: credentialRefSchema, channelId: z.string().min(1) }).strict();

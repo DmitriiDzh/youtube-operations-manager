@@ -26,7 +26,11 @@ export { DomainError, isDomainError };
 // и тот же счетчик").
 // ---------------------------------------------------------------------------
 
-export type QuotaService = "youtube.googleapis.com" | "youtubeanalytics.googleapis.com" | "monitoring.googleapis.com";
+export type QuotaService =
+  | "youtube.googleapis.com"
+  | "youtubeanalytics.googleapis.com"
+  | "youtubereporting.googleapis.com"
+  | "monitoring.googleapis.com";
 
 /** `null` means "unknown" -- not connected, or the real query failed -- never a fabricated 0. */
 export type ServiceQuotaStatus = { limit: number; usedLast24h: number } | null;
@@ -41,6 +45,10 @@ export type CloudQuotaStatus = {
   /** Covers Data API v3 reads AND Live writes (same underlying Google service). */
   dataApi: ServiceQuotaStatus;
   analytics: ServiceQuotaStatus;
+  /** YouTube Reporting API (`youtubereporting.googleapis.com`, BL-114) -- its own quota pool, separate from
+   * the Analytics API's. `null` also when Google Cloud reports no daily limit for it (not yet verified live
+   * which limit names this service exposes) -- shown as "not reported", never as 0. */
+  reporting: ServiceQuotaStatus;
   /** Cloud Monitoring API's own quota -- the same real numbers shown next to its own
    * `cloud_monitoring_reads` traffic counter (owner instruction, 2026-09-22: "Не вижу прогресс
    * бара у Google Cloud connection" -- the other three gateways get both a traffic count AND a

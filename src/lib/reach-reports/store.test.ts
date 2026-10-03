@@ -8,6 +8,9 @@ import {
   createIsolatedDb,
   getChannelReachCoverage,
   getReportingJob,
+  getReportingSyncAttempt,
+  listReportingReportFiles,
+  recordReportingSyncAttempt,
   importReachReport,
   initializeDatabaseSchema,
   listChannelReachDaily,
@@ -50,9 +53,9 @@ function report(overrides: Partial<ReachReportImport> & Pick<ReachReportImport, 
 
 const RANGE = { startDate: "2026-01-01", endDate: "2026-12-31" };
 
-test("migration creates the three BL-114 tables", () =>
+test("migration creates the BL-114 tables", () =>
   withDb(async (_db, client) => {
-    for (const name of ["reporting_jobs", "reporting_report_files", "channel_reach_daily"]) {
+    for (const name of ["reporting_jobs", "reporting_report_files", "channel_reach_daily", "reporting_sync_attempts"]) {
       const result = await client.execute({ sql: "SELECT name FROM sqlite_master WHERE type='table' AND name=?", args: [name] });
       assert.equal(result.rows.length, 1, name);
     }
@@ -202,3 +205,67 @@ test("upsertReportingJob / getReportingJob round-trip and update in place", () =
     assert.equal(job?.jobId, "j2");
     assert.equal(job?.jobCreatedAt, "2026-10-02T00:00:00Z");
   }));
+
+test("a sync attempt is stored per channel, a later attempt replaces it, failures round-trip, other channels are untouched", async () => {
+  await withDb(async (db) => {
+    assert.equal(await getReportingSyncAttempt("UC_X", TYPE, db), null);
+
+    await recordReportingSyncAttempt(
+      { channelId: "UC_X", reportTypeId: TYPE, outcome: "failed", error: "API disabled", filesListed: 0, filesImported: 0, failures: [] },
+      db
+    );
+    const failed = await getReportingSyncAttempt("UC_X", TYPE, db);
+    assert.equal(failed?.outcome, "failed");
+    assert.equal(failed?.error, "API disabled");
+    assert.deepEqual(failed?.failures, []);
+
+    await recordReportingSyncAttempt(
+      {
+        channelId: "UC_X",
+        reportTypeId: TYPE,
+        outcome: "partial",
+        error: null,
+        filesListed: 3,
+        filesImported: 2,
+        failures: [{ reportId: "r3", error: "HTTP 503" }],
+      },
+      db
+    );
+    const partial = await getReportingSyncAttempt("UC_X", TYPE, db);
+    assert.equal(partial?.outcome, "partial");
+    assert.equal(partial?.error, null, "the new attempt replaces the old one entirely, including its error");
+    assert.equal(partial?.filesListed, 3);
+    assert.equal(partial?.filesImported, 2);
+    assert.deepEqual(partial?.failures, [{ reportId: "r3", error: "HTTP 503" }]);
+    assert.ok(partial && Math.abs(partial.attemptedAt.getTime() - Date.now()) < 60_000);
+
+    assert.equal(await getReportingSyncAttempt("UC_OTHER", TYPE, db), null);
+  });
+});
+
+test("listReportingReportFiles returns this channel's files newest period first, bounded by the limit", async () => {
+  await withDb(async (db) => {
+    for (const [id, day] of [["r1", "26"], ["r2", "27"], ["r3", "28"]] as const) {
+      await importReachReport(
+        report({
+          reportId: id,
+          createTime: `2026-09-${day}T03:00:00Z`,
+          startTime: `2026-09-${day}T07:00:00Z`,
+          endTime: `2026-09-${String(Number(day) + 1)}T07:00:00Z`,
+          rows: [{ date: `2026-09-${day}`, videoId: "vidA", impressions: 10, ctr: 0.1 }],
+        }),
+        db
+      );
+    }
+    await importReachReport(
+      report({ channelId: "UC_OTHER", reportId: "other", createTime: "2026-09-29T03:00:00Z", rows: [{ date: "2026-09-29", videoId: "v", impressions: 1, ctr: null }] }),
+      db
+    );
+
+    const all = await listReportingReportFiles("UC_X", TYPE, 10, db);
+    assert.deepEqual(all.map((f) => f.reportId), ["r3", "r2", "r1"]);
+    assert.equal(all[0].rowCount, 1);
+    assert.equal(all[0].status, "imported");
+    assert.deepEqual((await listReportingReportFiles("UC_X", TYPE, 2, db)).map((f) => f.reportId), ["r3", "r2"]);
+  });
+});

@@ -1,5 +1,8 @@
 import {
   getChannelReachCoverage,
+  getReportingSyncAttempt,
+  listReportingReportFiles,
+  recordReportingSyncAttempt,
   getReportingJob,
   importReachReport,
   listChannelReachDaily,
@@ -24,5 +27,8 @@ export function createReachReportsStoreAdapter(): ReachReportsDependencies["stor
       return rows.map((row) => ({ date: row.date, videoId: row.videoId, impressions: row.impressions, ctr: row.ctr }));
     },
     getCoverage: (channelId) => getChannelReachCoverage(channelId),
+    recordAttempt: (args) => recordReportingSyncAttempt(args),
+    getAttempt: (channelId, reportTypeId) => getReportingSyncAttempt(channelId, reportTypeId),
+    listFiles: (channelId, reportTypeId, limit) => listReportingReportFiles(channelId, reportTypeId, limit),
   };
 }

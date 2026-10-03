@@ -49,3 +49,5 @@ Two questions needed an owner decision:
   `src/lib/youtube-data-policy`.
 - First files appear up to 48 hours after the job is created; Google backfills 30 days before creation, and keeps
   files 30 days (backfill) / 60 days (regular). The app must persist what it downloads.
+
+- Status and quota (2026-10-03, owner): the job/file status is shown in the Analytics tab from local data (`reporting_sync_attempts`, schema v40); Settings shows only the Reporting API quota via `cloud-quotas`. Whether Cloud Monitoring exposes a daily limit for `youtubereporting.googleapis.com` is unverified; the bar is hidden when it does not.

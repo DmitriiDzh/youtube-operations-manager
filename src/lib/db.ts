@@ -1223,6 +1223,30 @@ export const reportingJobs = sqliteTable(
 );
 
 /**
+ * BL-114 -- the LAST sync attempt per channel and report type, kept apart from `reporting_jobs` (a job row
+ * only exists once Google accepted a job; an attempt can fail before that: toggle off, missing scope, API
+ * disabled) and apart from the file ledger (a failed file must NOT be recorded as seen, or it is never
+ * retried). Read by the Analytics card and by the automatic-sync throttle.
+ */
+export const reportingSyncAttempts = sqliteTable(
+  "reporting_sync_attempts",
+  {
+    channelId: text("channel_id").notNull(),
+    reportTypeId: text("report_type_id").notNull(),
+    attemptedAt: integer("attempted_at", { mode: "timestamp" }).notNull(),
+    /** `ok` (all listed files handled), `partial` (some files failed, retried next time) or `failed` (the sync stopped early). */
+    outcome: text("outcome").notNull(),
+    /** Message of the error that stopped the sync; null unless `outcome = 'failed'`. */
+    error: text("error"),
+    filesListed: integer("files_listed").notNull().default(0),
+    filesImported: integer("files_imported").notNull().default(0),
+    /** JSON array of `{ reportId, error }` for files that failed in this attempt. */
+    failuresJson: text("failures_json"),
+  },
+  (table) => [primaryKey({ columns: [table.channelId, table.reportTypeId] })]
+);
+
+/**
  * One row per Reporting API report FILE already seen: the idempotency ledger (a file is downloaded once)
  * and the replacement bookkeeping (Google regenerates a period's file with a later `createTime`; the newer
  * file's rows replace the older file's, never add to them). `status` is `imported` or `superseded`.
@@ -2410,6 +2434,25 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           if (!isDuplicateColumnError(error)) throw error;
         }
       }
+    },
+  },
+  {
+    version: 40,
+    description:
+      "reporting_sync_attempts -- BL-114: last Reporting API sync attempt per channel (time, outcome, error, failed files), so the Analytics card can show real status and a failed attempt is not invisible",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS reporting_sync_attempts (" +
+          "channel_id TEXT NOT NULL, " +
+          "report_type_id TEXT NOT NULL, " +
+          "attempted_at INTEGER NOT NULL, " +
+          "outcome TEXT NOT NULL, " +
+          "error TEXT, " +
+          "files_listed INTEGER NOT NULL DEFAULT 0, " +
+          "files_imported INTEGER NOT NULL DEFAULT 0, " +
+          "failures_json TEXT, " +
+          "PRIMARY KEY (channel_id, report_type_id))"
+      );
     },
   },
 ];
@@ -3700,6 +3743,112 @@ export async function getChannelReachCoverage(
     lastDate: days?.lastDate ?? null,
     importedFiles: Number(files?.count ?? 0),
   };
+}
+
+export type StoredReportingSyncAttempt = {
+  attemptedAt: Date;
+  outcome: "ok" | "partial" | "failed";
+  error: string | null;
+  filesListed: number;
+  filesImported: number;
+  failures: Array<{ reportId: string; error: string }>;
+};
+
+export async function recordReportingSyncAttempt(
+  input: {
+    channelId: string;
+    reportTypeId: string;
+    outcome: "ok" | "partial" | "failed";
+    error: string | null;
+    filesListed: number;
+    filesImported: number;
+    failures: Array<{ reportId: string; error: string }>;
+  },
+  database: AppDb = db
+): Promise<void> {
+  const values = {
+    channelId: input.channelId,
+    reportTypeId: input.reportTypeId,
+    attemptedAt: new Date(),
+    outcome: input.outcome,
+    error: input.error,
+    filesListed: input.filesListed,
+    filesImported: input.filesImported,
+    failuresJson: input.failures.length > 0 ? JSON.stringify(input.failures) : null,
+  };
+  await database
+    .insert(reportingSyncAttempts)
+    .values(values)
+    .onConflictDoUpdate({
+      target: [reportingSyncAttempts.channelId, reportingSyncAttempts.reportTypeId],
+      set: values,
+    });
+}
+
+export async function getReportingSyncAttempt(
+  channelId: string,
+  reportTypeId: string,
+  database: AppDb = db
+): Promise<StoredReportingSyncAttempt | null> {
+  const [row] = await database
+    .select()
+    .from(reportingSyncAttempts)
+    .where(and(eq(reportingSyncAttempts.channelId, channelId), eq(reportingSyncAttempts.reportTypeId, reportTypeId)));
+  if (!row) return null;
+  let failures: Array<{ reportId: string; error: string }> = [];
+  try {
+    const parsed: unknown = row.failuresJson ? JSON.parse(row.failuresJson) : [];
+    if (Array.isArray(parsed)) {
+      failures = parsed.filter(
+        (f): f is { reportId: string; error: string } =>
+          typeof f === "object" && f !== null && typeof (f as { reportId?: unknown }).reportId === "string" && typeof (f as { error?: unknown }).error === "string"
+      );
+    }
+  } catch {
+    failures = [];
+  }
+  return {
+    attemptedAt: row.attemptedAt,
+    outcome: row.outcome === "ok" || row.outcome === "partial" ? row.outcome : "failed",
+    error: row.error,
+    filesListed: row.filesListed,
+    filesImported: row.filesImported,
+    failures,
+  };
+}
+
+export type StoredReportingFile = {
+  reportId: string;
+  startTime: string;
+  endTime: string;
+  createTime: string;
+  rowCount: number;
+  status: string;
+  importedAt: Date;
+};
+
+/** Newest period first; `limit` bounds the payload (Google keeps ~60 daily files). */
+export async function listReportingReportFiles(
+  channelId: string,
+  reportTypeId: string,
+  limit: number,
+  database: AppDb = db
+): Promise<StoredReportingFile[]> {
+  const rows = await database
+    .select()
+    .from(reportingReportFiles)
+    .where(and(eq(reportingReportFiles.channelId, channelId), eq(reportingReportFiles.reportTypeId, reportTypeId)))
+    .orderBy(desc(reportingReportFiles.startTime), desc(reportingReportFiles.createTime))
+    .limit(limit);
+  return rows.map((row) => ({
+    reportId: row.reportId,
+    startTime: row.startTime,
+    endTime: row.endTime,
+    createTime: row.createTime,
+    rowCount: row.rowCount,
+    status: row.status,
+    importedAt: row.importedAt,
+  }));
 }
 
 

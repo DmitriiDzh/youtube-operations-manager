@@ -65,14 +65,14 @@ function createFixture(opts: {
 test("getQuotaStatus: not connected -> connected: false, all three services unknown, never calls the real APIs", async () => {
   const { services, getMonitoringCallCount } = createFixture({ connected: false });
   const status = await services.getQuotaStatus();
-  assert.deepEqual(status, { connected: false, dataApi: null, analytics: null, monitoring: null });
+  assert.deepEqual(status, { connected: false, dataApi: null, analytics: null, reporting: null, monitoring: null });
   assert.equal(getMonitoringCallCount(), 0, "no monitoringClient method should be called when not connected");
 });
 
 test("getQuotaStatus: no project number derivable (GOOGLE_CLIENT_ID unset/malformed) -> degrades to unknown rather than throwing", async () => {
   const { services } = createFixture({ connected: true, projectNumber: null });
   const status = await services.getQuotaStatus();
-  assert.deepEqual(status, { connected: true, dataApi: null, analytics: null, monitoring: null });
+  assert.deepEqual(status, { connected: true, dataApi: null, analytics: null, reporting: null, monitoring: null });
 });
 
 // Real confirmed numbers from the live spike (2026-09-22): Data API v3 limit 10,000/day,
@@ -81,11 +81,11 @@ test("getQuotaStatus: no project number derivable (GOOGLE_CLIENT_ID unset/malfor
 // (added same day, owner: "Не вижу прогресс бара у Google Cloud connection") uses a DIFFERENT
 // shape -- `usedLastMinute`, not `usedLast24h` -- because this service has no daily quota at all
 // in this project, only a real per-minute one (6000/min, confirmed live).
-test("getQuotaStatus: connected -> returns real limit/usage per service, all three kept separate", async () => {
+test("getQuotaStatus: connected -> returns real limit/usage per service, all kept separate", async () => {
   const { services } = createFixture({
     connected: true,
-    limitByService: { "youtube.googleapis.com": 10000, "youtubeanalytics.googleapis.com": 100000 },
-    usageByService: { "youtube.googleapis.com": 42, "youtubeanalytics.googleapis.com": 28 },
+    limitByService: { "youtube.googleapis.com": 10000, "youtubeanalytics.googleapis.com": 100000, "youtubereporting.googleapis.com": 20000 },
+    usageByService: { "youtube.googleapis.com": 42, "youtubeanalytics.googleapis.com": 28, "youtubereporting.googleapis.com": 3 },
     monitoringPerMinuteLimit: 6000,
     monitoringPerMinuteUsage: 8,
   });
@@ -96,6 +96,7 @@ test("getQuotaStatus: connected -> returns real limit/usage per service, all thr
     connected: true,
     dataApi: { limit: 10000, usedLast24h: 42 },
     analytics: { limit: 100000, usedLast24h: 28 },
+    reporting: { limit: 20000, usedLast24h: 3 },
     monitoring: { limit: 6000, usedLastMinute: 8 },
   });
 });
@@ -116,6 +117,7 @@ test("getQuotaStatus: one service's real call fails -> that service is null, the
     connected: true,
     dataApi: null,
     analytics: { limit: 100000, usedLast24h: 28 },
+    reporting: null,
     monitoring: { limit: 6000, usedLastMinute: 8 },
   });
 });
@@ -146,6 +148,7 @@ test("getQuotaStatus: Cloud Monitoring's own per-minute quota query fails -> mon
     connected: true,
     dataApi: { limit: 10000, usedLast24h: 42 },
     analytics: { limit: 100000, usedLast24h: 28 },
+    reporting: null,
     monitoring: null,
   });
 });
@@ -156,6 +159,6 @@ test("getQuotaStatus: Cloud Monitoring's own per-minute quota query fails -> mon
 test("getQuotaStatus: Cloud credentials cannot be refreshed -> degrades to unknown rather than throwing", async () => {
   const { services, getMonitoringCallCount } = createFixture({ connected: true, throwOnResolveCredentials: true });
   const status = await services.getQuotaStatus();
-  assert.deepEqual(status, { connected: true, dataApi: null, analytics: null, monitoring: null });
+  assert.deepEqual(status, { connected: true, dataApi: null, analytics: null, reporting: null, monitoring: null });
   assert.equal(getMonitoringCallCount(), 0);
 });

@@ -15,7 +15,7 @@ type Settings = {
   wikipediaReadsEnabled: boolean;
   reportingReadsEnabled: boolean;
   gatewayTraffic?: GatewayTrafficWindowView[];
-  cloudQuotaStatus?: { dataApi: ServiceQuotaStatusView; analytics: ServiceQuotaStatusView };
+  cloudQuotaStatus?: { connected?: boolean; dataApi: ServiceQuotaStatusView; analytics: ServiceQuotaStatusView; reporting?: ServiceQuotaStatusView };
 };
 
 /**
@@ -226,7 +226,15 @@ export function ReadGatewaySettings() {
               </div>
             </div>
           }
-          right={<GatewayTrafficStats size="lg" window={settings?.gatewayTraffic?.find((c) => c.category === "reporting_reads")} />}
+          right={
+            <>
+              <GatewayTrafficStats size="lg" window={settings?.gatewayTraffic?.find((c) => c.category === "reporting_reads")} />
+              <CloudQuotaProgress size="lg" status={settings?.cloudQuotaStatus?.reporting} />
+              {settings?.cloudQuotaStatus?.connected && !settings.cloudQuotaStatus.reporting && (
+                <p className="text-xs text-zinc-500">No daily quota figure is available from Google Cloud for the Reporting API (not reported, or the lookup failed).</p>
+              )}
+            </>
+          }
         />
       </div>
 

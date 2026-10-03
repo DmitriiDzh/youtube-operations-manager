@@ -5,6 +5,7 @@ import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-pr
 import { computeDefaultPeriodRange } from "@/lib/analytics/period";
 import { formatCtr, formatImpressions } from "@/lib/reach-reports/reach-format";
 import { AnalyticsLineChart } from "./analytics-line-chart";
+import { ReachStatusBlock, type ReachStatusData } from "./reach-status-block";
 
 type ReachState = "no_job" | "waiting_for_first_report" | "ready";
 
@@ -34,6 +35,7 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [status, setStatus] = useState<ReachStatusData | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -53,15 +55,25 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
     }
   }, [channelId, periodDays]);
 
+  // The status block is secondary: if it cannot load, the data above still shows.
+  const loadStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/reach/status`);
+      if (res.ok) setStatus((await res.json()) as ReachStatusData);
+    } catch {
+      // keep the previous status, if any
+    }
+  }, [channelId]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (!cancelled) await load();
+      if (!cancelled) await Promise.all([load(), loadStatus()]);
     })();
     return () => {
       cancelled = true;
     };
-  }, [load]);
+  }, [load, loadStatus]);
 
   async function syncNow() {
     setSyncing(true);
@@ -80,6 +92,7 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
       });
       if (!res.ok) {
         setError(body.message ?? "Sync failed");
+        await loadStatus(); // a failed sync is recorded; show it
         return;
       }
       if (!body.skipped) {
@@ -90,9 +103,10 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
         ].filter(Boolean);
         setNotice(parts.join(" "));
       }
-      await load();
+      await Promise.all([load(), loadStatus()]);
     } catch {
       setError("Sync failed");
+      await loadStatus();
     } finally {
       setSyncing(false);
     }
@@ -178,6 +192,7 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
           )}
         </div>
       )}
+      {status && <ReachStatusBlock status={status} />}
     </div>
   );
 }

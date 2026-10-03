@@ -77,3 +77,48 @@ export type GetChannelReachResult = {
 };
 
 export const TOP_VIDEOS_LIMIT = 50;
+
+/** Google produces the first report file up to this long after a job is created (ADR 0014). */
+export const FIRST_REPORT_EXPECTED_WITHIN_HOURS = 48;
+/** At most this many report files are listed in the status payload (Google keeps ~60 daily files). */
+export const STATUS_FILES_LIMIT = 90;
+
+export type ReachSyncAttemptView = {
+  at: string;
+  /** `ok`, `partial` (some files failed and are retried) or `failed` (the sync stopped before importing). */
+  outcome: "ok" | "partial" | "failed";
+  error: string | null;
+  filesListed: number;
+  filesImported: number;
+  failures: SyncReachFailure[];
+};
+
+export type ReachFileView = {
+  reportId: string;
+  /** Google's own period of the file, RFC 3339, as returned. */
+  startTime: string;
+  endTime: string;
+  createTime: string;
+  rowCount: number;
+  /** `imported`, or `superseded` (a same-or-newer file already covered the period). */
+  status: string;
+  importedAt: string;
+};
+
+/**
+ * Everything the Analytics card shows about the Reporting job and its files. Local data only -- no Google
+ * call. `null` fields mean "not known yet", never a fabricated value.
+ */
+export type GetReachStatusResult = {
+  channelId: string;
+  job: { jobId: string; createdAt: string | null } | null;
+  /** createTime + 48h; `null` when the job's creation time is unknown. */
+  firstFileExpectedBy: string | null;
+  /** No file imported yet AND the 48h window has passed: not normal, worth the owner's attention. */
+  firstFileOverdue: boolean;
+  lastAttempt: ReachSyncAttemptView | null;
+  /** Earliest time the automatic (dashboard) sync will call Google again; `null` if it never ran. */
+  nextAutoCheckAt: string | null;
+  importedFiles: number;
+  files: ReachFileView[];
+};
