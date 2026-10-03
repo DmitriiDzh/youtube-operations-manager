@@ -47,3 +47,34 @@ Suggested order: 1 → 2 → 3 (what the owner/agent look at first), then 6, 4, 
 - A previous period before the channel existed shows an explanation, not «+∞%» or «0».
 - Per-video impressions/CTR in the UI equal `agent_query_channel_reach` for the same video and range.
 - No panel shows another channel's data.
+
+## Slices 4–6 — analysis and execution plan (2026-10-04; not assigned yet)
+
+Backend for all three already exists, so each slice is mostly UI plus, at most, one thin route. Nothing here touches competitor data (own channel only).
+
+### Slice 6 — consistency (do first: it is what 4 and 5 sit on)
+
+- **Today:** `ChannelOverviewPanel`, `ContentAnalyticsPanel` and `AudienceAnalyticsPanel` each keep their own `periodDays` state and their own copy of `PERIOD_OPTIONS`; switching sub-tabs resets the period to 28 days.
+- **Change:** one `usePeriodSelection` owner (state kept in `AnalyticsTab`, passed down; the preset list lives once). The period survives a sub-tab switch and a reload of the Analytics tab (session storage, wrapped in try/catch).
+- **Retention chart:** draw `relativeRetentionPerformance` (returned by the retention route, never shown) as a second line/marker next to `audienceWatchRatio`.
+- **Already fine (checked):** panels use the active channel (`listChannels` returns only it).
+- **Tests:** a pure helper for the stored period (valid presets only, bad stored value → 28); no backend change.
+
+### Slice 4 — compare by days since publish (new «Compare» view)
+
+- **Backend:** `GET analytics/comparable-age` (`videoIds`, `metricName`, `maxDays`) → per video `points` (day 0 = publish day in Pacific time) and `cumulativePoints`; metrics limited to `CUMULATIVE_COMPARISON_METRIC_NAMES`; a missing day is unknown, never zero (the cumulative line stops at the last contiguous known day).
+- **UI (Content tab, new card «Compare videos by age»):** pick 2–6 videos from the per-video table (checkboxes) + metric (views by default) + «first N days» (7/14/28); a line per video on one chart, x = day since publish, cumulative on/off; a legend with titles; a short note «day 0 is the partial publish day; gaps stop the line» (the limitation already documented in `comparable-age.ts`). Needs a multi-series chart: `AnalyticsLineChart` is single-series, so a small `AnalyticsMultiLineChart` (same SVG style) is added.
+- **Data honesty:** a video younger than N days simply ends earlier; a video with no collected rows says so instead of drawing zero.
+- **Tests:** pure series-to-chart mapping (hand-computed offsets), existing backend tests cover the series.
+
+### Slice 5 — weekly reports (read-only list/detail)
+
+- **Backend:** `GET analytics/weekly-reports` (list) and `.../[weekStartDate]` (one report: totals, previous week, % change or null, data quality, top 5, `status` final/provisional, 27 Aug flag). They are generated on dashboard open (`generate-if-due`) and never shown.
+- **UI (Overview, below the per-video table, collapsed by default «Weekly reviews»):** newest first; each row = week, views/watch time/net subscribers with the stored % change, a `provisional` badge (it will be replaced once the week is fully covered); click → detail with the top content and the data-quality note. No regeneration button (reports are frozen history by design).
+- **Tests:** pure formatting of a stored report (null % change → «not comparable», provisional badge) with hand-derived expectations.
+
+### Order, size, decisions
+
+Order 6 → 4 → 5 (6 introduces the shared period; 4 is the most useful; 5 is the cheapest). One branch (`feature/analytics-ui-refresh-2`), separate commits per slice, one independent review and one merge approval at the end.
+
+Open questions for the owner: (1) Compare — default metric views only, or also watch time/subscribers? (cumulative metrics are views, watch time, likes/comments if collected); (2) Weekly reviews — keep collapsed under Overview, or its own sub-tab?; (3) Should the chosen period persist across reloads (proposed: yes, per browser)?
