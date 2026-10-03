@@ -2,12 +2,17 @@ import {
   getAnalyticsSyncSettings,
   getStoredChannel,
   getWeeklyReportByWeek,
+  advanceVideoHistory,
   listAnalyticsCollectionRunsByChannel,
+  getLatestChannelMetricCollectedAt,
+  listChannelMetricsInRange,
+  listVideoHistoryByChannel,
   listStoredVideosByChannel,
   listVideoMetricsByChannel,
   listWeeklyReportsByChannel,
   markAnalyticsAutoCollected,
   recordAnalyticsCollectionRun,
+  saveChannelDailyMetric,
   upsertVideoMetric,
   upsertWeeklyReport,
 } from "@/lib/db";
@@ -43,12 +48,26 @@ export function createAnalyticsStoreAdapter() {
       upsertMetric: upsertVideoMetric,
       listMetricsByChannel: listVideoMetricsByChannel,
     },
+    // BL-118: channel-level daily totals stored locally.
+    channelMetricStore: {
+      upsert: saveChannelDailyMetric,
+      listInRange: listChannelMetricsInRange,
+      getLatestCollectedAt: getLatestChannelMetricCollectedAt,
+    },
+    // BL-118: per-video history coverage.
+    historyStore: {
+      listByChannel: listVideoHistoryByChannel,
+      advance: advanceVideoHistory,
+    },
     channelStore: {
       async getAnalyticsLastAutoCollectedAt(channelId: string) {
         const channel = await getStoredChannel(channelId);
         return channel?.analyticsLastAutoCollectedAt ?? null;
       },
       markAnalyticsAutoCollected,
+      async getChannelPublishedAt(channelId: string) {
+        return (await getStoredChannel(channelId))?.publishedAt ?? null;
+      },
     },
     settingsStore: {
       getAnalyticsSyncSettings,

@@ -168,6 +168,8 @@ export type ChannelForSync = {
   title: string;
   thumbnailUrl: string | null;
   uploadsPlaylistId: string;
+  /** BL-118: when the channel was created on YouTube (`snippet.publishedAt`); null if the API omitted it. */
+  publishedAt: string | null;
 };
 
 export async function getChannelForSync(
@@ -192,6 +194,7 @@ export async function getChannelForSync(
       channel.snippet?.thumbnails?.default?.url ??
       null,
     uploadsPlaylistId,
+    publishedAt: channel.snippet?.publishedAt ?? null,
   };
 }
 

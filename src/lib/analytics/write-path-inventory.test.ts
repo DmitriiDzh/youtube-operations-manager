@@ -90,6 +90,8 @@ const ALLOWED_DB_WRITE_IMPORTS = new Set([
   "markAnalyticsAutoCollected", // this module's own single channels column (BL-059)
   "recordAnalyticsCollectionRun", // this module's own append-only collection-run history (data-quality diagnostics)
   "upsertWeeklyReport", // this module's own weekly report snapshots (Phase 8 follow-up, slice 4)
+  "saveChannelDailyMetric", // this module's own channel-level daily totals table (BL-118)
+  "advanceVideoHistory", // this module's own per-video history-coverage bookkeeping (BL-118)
 ]);
 
 test("analytics write-path-inventory: adapters/store.ts imports no db.ts write function beyond its own allowlisted ones", async () => {

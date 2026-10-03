@@ -340,8 +340,26 @@ test("getChannelForSync resolves the authenticated channel's own uploads playlis
     title: "My Channel",
     thumbnailUrl: "https://example.com/t.jpg",
     uploadsPlaylistId: "UU_MINE",
+    publishedAt: null, // BL-118: the fixture's snippet has no publishedAt -> null, never invented
   });
   assert.deepEqual(receivedArgs, { part: ["snippet", "contentDetails"], mine: true });
+});
+
+test("BL-118: getChannelForSync passes the channel's YouTube creation time (snippet.publishedAt) through", async () => {
+  const youtube = fakeYoutubeClient({
+    channelsList: (async () => ({
+      data: {
+        items: [
+          {
+            id: "UC_MINE",
+            snippet: { title: "My Channel", publishedAt: "2026-08-13T09:30:00Z", thumbnails: { default: { url: "https://example.com/t.jpg" } } },
+            contentDetails: { relatedPlaylists: { uploads: "UU_MINE" } },
+          },
+        ],
+      },
+    })) as unknown as youtube_v3.Youtube["channels"]["list"],
+  });
+  assert.equal((await getChannelForSync(youtube))?.publishedAt, "2026-08-13T09:30:00Z");
 });
 
 test("getChannelForSync returns null when the channel has no uploads playlist", async () => {

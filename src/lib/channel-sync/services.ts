@@ -86,6 +86,8 @@ type ServiceDependencies = {
       uploadsPlaylistId: string;
       /** `undefined` = leave the stored owner unchanged (never cleared by a sync). */
       connectedUserId?: string;
+      /** BL-118: the channel's creation time on YouTube; `null`/`undefined` leaves a stored value untouched. */
+      publishedAt?: string | null;
     }): Promise<void>;
     markChannelSynced(channelId: string, syncedAt: Date): Promise<void>;
     listChannels(): Promise<StoredChannelRecord[]>;
@@ -213,6 +215,7 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
           // credential without a user id (raw access token) proves nothing -- neither may re-own or
           // disconnect the channel (that column now also decides agent-token validity, Phase 12).
           connectedUserId: !parsedInput.channelId && connectedUserId ? connectedUserId : undefined,
+          publishedAt: channel.publishedAt,
         });
 
         progress?.stage("Listing uploads");

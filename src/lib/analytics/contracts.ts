@@ -217,6 +217,10 @@ export type GetChannelOverviewResult = {
   daily: ChannelOverviewDailyRow[];
   currentTotals: ChannelOverviewTotals;
   previousTotals: ChannelOverviewTotals;
+  /** BL-118: `local` = served from the stored channel-level daily totals, `live` = a live Analytics API read. */
+  source?: "live" | "local";
+  /** BL-118: when the stored rows were last collected (local source only). */
+  collectedAt?: string | null;
   /** Phase 13 slice 13.7: the "vs previous period" view comparison mixes YouTube's old and new view
    * counting (changed 2026-08-27) -- the percent change is not like-for-like. */
   viewCountingChangeInComparison: boolean;
@@ -236,6 +240,17 @@ export type DataQualityReportResult = {
   uncoveredDates: string[];
   tooRecentDates: string[];
   videosWithSkips: DataQualityVideoSkip[];
+  /** BL-118 (see `extendDataQualityReport`): the channel's creation date, ranges, and what "covered" means. */
+  channelStartDate?: string | null;
+  /** In-range dates before the channel existed: not applicable, and NOT listed in `uncoveredDates`. */
+  notApplicableRange?: { startDate: string; endDate: string } | null;
+  coveredRanges?: Array<{ startDate: string; endDate: string }>;
+  uncoveredRanges?: Array<{ startDate: string; endDate: string }>;
+  /** Covered dates with no stored metric row (zero-activity days, or data YouTube had not reported yet). */
+  coveredWithoutData?: string[];
+  /** Covered dates inside the re-collection window: the next automatic run is expected to refresh them. */
+  provisionalDates?: string[];
+  coveredMeans?: string;
 };
 
 export type ComparableAgeVideoSeries = {

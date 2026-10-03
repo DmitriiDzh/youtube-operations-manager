@@ -59,7 +59,7 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts`) for the current, authoritative
  * list of capabilities.
  */
-export const AGENT_API_VERSION = "2.0.0";
+export const AGENT_API_VERSION = "3.0.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
@@ -92,6 +92,11 @@ export type AgentCapabilityDescriptor = {
   domain: AgentCapabilityDomain;
   permission: PermissionClass;
   description: string;
+  /**
+   * BL-118: the MCP tool name(s) that serve this capability, so an agent (and a test) can tie the inventory to the real tool
+   * registry. Optional: a capability may be served by an HTTP route or a pre-existing tool outside the `agent_*`/`analytics_*` names.
+   */
+  mcpTools?: string[];
 };
 
 /**
@@ -190,6 +195,8 @@ export type ChannelContext = {
   /** ISO instant of the channel's last full sync (`channels.lastSyncedAt`), or `null` if it has
    * never been synced -- never fabricated as "now" or omitted silently. */
   lastSyncedAt: string | null;
+  /** BL-118: the date (YYYY-MM-DD, UTC) the channel was created on YouTube; `null` until a sync recorded it (never guessed). */
+  channelStartDate?: string | null;
   syncedVideoCount: number;
   /** `null` when the channel has never had one saved -- never a default/invented profile
    * (`AGENTS.md` §B: this repository never authors channel-specific editorial content). */
@@ -271,6 +278,22 @@ export type AnalyticsFreshness = {
 
 export type ChannelAnalyticsContext = {
   channelId: string;
+  /** BL-118: the date (YYYY-MM-DD, UTC) the channel was created; null until a sync recorded it. */
+  channelStartDate?: string | null;
+  granularity?: "day" | "week" | "month";
+  /** BL-118: `week`/`month` summed buckets (then `daily` is empty); null for `day`. */
+  buckets?: Array<{
+    periodStart: string;
+    periodEnd: string;
+    calendarDays: number;
+    partialBucket: boolean;
+    views: number;
+    estimatedMinutesWatched: number;
+    subscribersGained: number;
+    subscribersLost: number;
+  }> | null;
+  /** BL-118: whether the comparison period existed; `predates_channel` => `previousTotals` is null. */
+  previousPeriod?: { status: "full" | "partial" | "predates_channel"; note: string };
   period: { startDate: string; endDate: string; previousStartDate: string; previousEndDate: string };
   /** `getChannelOverview` accepts no dimensional filter beyond `period` (no `videoId`/
    * `metricNames`) -- always an empty object here. Present for shape-parity with
@@ -286,7 +309,7 @@ export type ChannelAnalyticsContext = {
   currentTotals: { views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number };
   /** DERIVED METRIC, over the immediately-preceding period of equal length (see
    * `getChannelOverview`'s own `computePreviousPeriod`). */
-  previousTotals: { views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number };
+  previousTotals: { views: number; estimatedMinutesWatched: number; subscribersGained: number; subscribersLost: number } | null;
   /** Phase 13 slice 13.7: true when the current and previous periods straddle YouTube's 2026-08-27
    * view-counting change, so the two totals are not like-for-like (an additive field). */
   viewCountingChangeInComparison: boolean;

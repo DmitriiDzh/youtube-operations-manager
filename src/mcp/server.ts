@@ -58,6 +58,7 @@ import {
   registerExternalArtifactInputSchema,
 } from "@/lib/agent-operations/schemas";
 import {
+  getChannelBreakdownInputSchema,
   getChannelOverviewInputSchema,
   getComparableAgeComparisonInputSchema,
   getDataQualityReportInputSchema,
@@ -65,6 +66,7 @@ import {
   listMetricsInputSchema,
   listWeeklyReportsInputSchema,
 } from "@/lib/analytics/schemas";
+import { labelAgeGender, labelContentFormat, labelCountry, labelDeviceType, labelSubscribedStatus, labelTrafficSource } from "@/lib/analytics/breakdown-labels";
 import { createMarketIntelligenceCore, type MarketIntelligenceCore } from "@/lib/market-intelligence";
 import { createReachReportsCore, type ReachReportsCore } from "@/lib/reach-reports";
 import { getChannelReachInputObjectSchema } from "@/lib/reach-reports/schemas";
@@ -246,6 +248,7 @@ type McpToolHandlers = {
   agentGetVideoContext: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelAnalytics: (input: unknown) => Promise<ToolResponse>;
   agentQueryChannelReach: (input: unknown) => Promise<ToolResponse>;
+  agentQueryChannelBreakdown: (input: unknown) => Promise<ToolResponse>;
   agentQueryVideoAnalytics: (input: unknown) => Promise<ToolResponse>;
   agentListAssets: (input: unknown) => Promise<ToolResponse>;
   agentGetAssetContext: (input: unknown) => Promise<ToolResponse>;
@@ -507,7 +510,9 @@ export function createMcpToolHandlers(
   // BL-114 (ADR 0014) -- thumbnail impressions/CTR from the Reporting API, registered directly here (not through
   // `agentOperationsCore`) so `agent-operations` and `analytics` gain no dependency on it (AGENTS.md §M). Read-only
   // subset: the sync that talks to Google is the app's own (dashboard/Sync now), never an agent tool.
-  reachReportsCore: Pick<ReachReportsCore, "getChannelReach"> = createReachReportsCore()
+  reachReportsCore: Pick<ReachReportsCore, "getChannelReach"> = createReachReportsCore(),
+  // BL-118 -- the channel breakdown (traffic sources, devices, ...) the Content tab already computes; a LIVE Analytics API read.
+  breakdownCore: Pick<AnalyticsCore, "getChannelBreakdown"> = createAnalyticsCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -1248,6 +1253,46 @@ export function createMcpToolHandlers(
       }
     },
 
+    /**
+     * BL-118 -- traffic sources / devices / audience / geography / subscribed status / content format for a date range: the same
+     * `getChannelBreakdown` the Content tab uses (a LIVE YouTube Analytics API read, 1 quota unit), with each raw API value also given a
+     * readable label. Same forwarding pattern as `agentQueryChannelAnalytics`; the service checks the active channel itself.
+     */
+    async agentQueryChannelBreakdown(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getChannelBreakdownInputSchema.partial({ credentialRef: true }).safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(parsedInput.data.credentialRef);
+        const result = await breakdownCore.getChannelBreakdown({ ...parsedInput.data, credentialRef });
+        const labelOf: Record<string, (values: string[]) => string> = {
+          trafficSources: labelTrafficSource,
+          deviceType: labelDeviceType,
+          ageGender: labelAgeGender,
+          geography: labelCountry,
+          subscribedStatus: labelSubscribedStatus,
+          contentFormat: labelContentFormat,
+        };
+        const label = labelOf[result.breakdown];
+        return toolSuccessResult({
+          channelId: result.channelId,
+          breakdown: result.breakdown,
+          startDate: result.startDate,
+          endDate: result.endDate,
+          rows: result.rows.map((row) => ({ ...row, label: label ? label(row.dimensionValues) : row.dimensionValues.join(" / ") })),
+          freshness: {
+            source: "live_youtube_analytics_api",
+            note:
+              "Fetched live from the YouTube Analytics API for this call (counts against that API's quota; YouTube typically reports it with a 1-2 day lag). `dimensionValues` are the raw API values, `label` a readable name for them.",
+          },
+        });
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
     /** Slice C, owner spec §9. Same forwarding pattern as `agentQueryChannelAnalytics` above. */
     async agentQueryVideoAnalytics(input: unknown): Promise<ToolResponse> {
       const parsedInput = queryVideoAnalyticsInputSchema.partial({ credentialRef: true }).safeParse(input);
@@ -1836,6 +1881,8 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     agentQueryChannelAnalytics: handlers.agentQueryChannelAnalytics,
     // BL-114 -- a pure local read, ungated.
     agentQueryChannelReach: handlers.agentQueryChannelReach,
+    // BL-118 -- a live Analytics read like agentQueryChannelAnalytics's `refresh`; mutates nothing, ungated.
+    agentQueryChannelBreakdown: handlers.agentQueryChannelBreakdown,
     agentQueryVideoAnalytics: handlers.agentQueryVideoAnalytics,
     // Slice D -- pure local reads over the asset catalog, ungated.
     agentListAssets: handlers.agentListAssets,
@@ -2238,7 +2285,7 @@ export function createMcpServer(
     "analytics_data_quality",
     {
       description:
-        "Data-quality diagnostics for a channel's collected Analytics data over a date range: which dates were actually covered by a completed collection run (`collectMetrics`), which were requested but never collected, which are too recent for the Analytics API to have reported yet (its own 1-2 day lag), and which videos had a collection failure recorded against them. A local read only -- never a live YouTube call. Absence of a `video_metrics_daily` row for a date does NOT by itself mean data is missing (the API omits zero-activity days entirely) -- use this tool, not a raw scan of analytics_list's rows, to tell genuine gaps from real zero-activity days. credentialRef is OPTIONAL and falls back to active local auth context.",
+        "Data-quality diagnostics for a channel's collected Analytics data over a date range. `covered` means a completed collection run's window included the date (or a metric row exists) -- NOT that data is present: see `coveredWithoutData` (covered dates with no stored row: zero-activity days or data YouTube had not reported yet) and `provisionalDates` (covered dates inside the re-collection window, expected to be refreshed by the next automatic run). Dates before the channel was created (`channelStartDate`) are `notApplicableRange`, never uncovered; `coveredRanges`/`uncoveredRanges` give compact ranges, and missing history is back-filled automatically. Details: which dates were actually covered by a completed collection run (`collectMetrics`), which were requested but never collected, which are too recent for the Analytics API to have reported yet (its own 1-2 day lag), and which videos had a collection failure recorded against them. A local read only -- never a live YouTube call. Absence of a `video_metrics_daily` row for a date does NOT by itself mean data is missing (the API omits zero-activity days entirely) -- use this tool, not a raw scan of analytics_list's rows, to tell genuine gaps from real zero-activity days. credentialRef is OPTIONAL and falls back to active local auth context.",
       inputSchema: getDataQualityReportInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.analyticsDataQuality(args)
@@ -2328,10 +2375,20 @@ export function createMcpServer(
     "agent_query_channel_analytics",
     {
       description:
-        "Agent-oriented channel-level analytics for a date range: daily views/watch-time/subscriber-delta rows plus current- and previous-period totals, with explicit metric definitions and a data-freshness note. Wraps the existing analytics_overview capability -- a LIVE YouTube Analytics API read that counts against that API's quota (YouTube itself typically reports this data with a 1-2 day lag). Requires channelId to be the caller's currently-active channel. Raw daily rows are FACT; totals are DERIVED (summed).",
+        "Agent-oriented channel-level analytics for a date range: daily views/watch-time/subscriber-delta rows (or week/month summed buckets via `granularity`) plus current- and previous-period totals, with explicit metric definitions and a data-freshness note. Answers from the channel totals this app collects and stores locally when they cover the range (no live call, no quota; `freshness.source` says `local_collected_data` or `live_youtube_analytics_api`), otherwise a live YouTube Analytics API read (counts against that API's quota; 1-2 day lag); `refresh: true` forces the live read. `previousTotals` is null (not 0) when the comparison period ended before the channel was created (`previousPeriod.status` says why); `channelStartDate` is the channel's creation date. Requires channelId to be the caller's currently-active channel. Raw daily rows are FACT; totals are DERIVED (summed).",
       inputSchema: queryChannelAnalyticsInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.agentQueryChannelAnalytics(args)
+  );
+
+  registerTool(
+    "agent_query_channel_breakdown",
+    {
+      description:
+        "Channel-level breakdown for a date range: `breakdown` is one of trafficSources (views by traffic source), deviceType (watch minutes by device), ageGender (viewer percentage), geography (views by country), subscribedStatus, contentFormat. Each row carries the raw API `dimensionValues`, a readable `label`, and its metrics. A LIVE YouTube Analytics API read (counts against that API's quota; 1-2 day lag) -- unlike agent_query_channel_analytics there is no locally stored copy. Requires channelId to be the caller's currently-active channel.",
+      inputSchema: getChannelBreakdownInputSchema.partial({ credentialRef: true }),
+    },
+    (args) => handlers.agentQueryChannelBreakdown(args)
   );
 
   registerTool(

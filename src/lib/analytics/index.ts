@@ -20,6 +20,12 @@ export function createAnalyticsCore() {
     youtubeApi: createAnalyticsYoutubeApiAdapter(),
     videoStore: store.videoStore,
     metricStore: store.metricStore,
+    channelMetricStore: {
+      upsert: store.channelMetricStore.upsert,
+      listInRange: store.channelMetricStore.listInRange,
+      getLatestCollectedAt: store.channelMetricStore.getLatestCollectedAt,
+    },
+    historyStore: store.historyStore,
     channelStore: store.channelStore,
     settingsStore: store.settingsStore,
     collectionRunStore: store.collectionRunStore,
@@ -36,6 +42,11 @@ export function createAnalyticsCore() {
     collectMetrics: quotaScoped(services.collectMetrics, context),
     // BL-117 (owner decision 2026-10-03): the AUTOMATIC collection waits while less than the configured reserve of the daily
     // quota is left, so writes keep headroom. A manual "Collect now" is the user's own call and is not held back.
+    // BL-118: the automatic history catch-up is a background read too (same reserve, same work context).
+    runHistoryCatchUp: quotaScoped(async (input: unknown, options?: Parameters<typeof services.runHistoryCatchUp>[1]) => {
+      if (!(await guard.isBackgroundReadAllowed("analytics"))) return { ranCatchUp: false } as const;
+      return services.runHistoryCatchUp(input, options);
+    }, context),
     runAutoCollectionIfStale: quotaScoped(async (input: unknown) => {
       if (!(await guard.isBackgroundReadAllowed("analytics"))) return { ranCollection: false } as const;
       return services.runAutoCollectionIfStale(input);

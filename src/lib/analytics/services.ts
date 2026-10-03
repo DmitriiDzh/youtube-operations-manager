@@ -5,7 +5,8 @@ import type { ChannelAccessService } from "@/lib/channel-access";
 import { computeDefaultAutoCollectionRange, computeNextRefreshAt, isAnalyticsCollectionStale } from "./staleness";
 import { assertValidDateRange, assertValidIsoDate, computePreviousPeriod, zeroFillDailySeries } from "./period";
 import { computeComparableAgeSeries } from "./comparable-age";
-import { computeDataQualityReport } from "./data-quality";
+import { computeDataQualityReport, extendDataQualityReport, isRangeFullyCovered } from "./data-quality";
+import { nextVideoHistoryThrough, perVideoQueryRange, planChannelCatchUp, planVideoHistoryCatchUp, resolveHistoryStart } from "./catch-up";
 import { computeDueReportWeek, computeWeeklyReportContent } from "./weekly-report";
 import {
   ANALYTICS_METRIC_NAMES,
@@ -63,6 +64,34 @@ export type StoredVideoRef = {
   channelId: string;
 };
 
+/** Most per-video history queries one catch-up call makes (one Analytics unit each); a larger channel simply finishes over several days. */
+const MAX_CATCH_UP_VIDEOS_PER_RUN = 200;
+
+function shiftIsoDate(date: string, days: number): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+}
+
+export type HistoryCatchUpPlan = {
+  /** The rolling window's first day; everything this plan asks for lies before it. */
+  rollingStart: string;
+  videoRanges: Array<{ videoId: string; from: string; to: string }>;
+  channelRange: { startDate: string; endDate: string } | null;
+};
+
+export type HistoryCatchUpResult =
+  | { ranCatchUp: false }
+  | {
+      ranCatchUp: true;
+      videosQueried: number;
+      upsertsIssued: number;
+      skippedVideoIds: string[];
+      channelLevel: boolean;
+      startDate: string;
+      endDate: string;
+      /** Videos still to do (a very large channel is finished over several calls). */
+      remainingVideos: number;
+    };
+
 type ServiceDependencies = {
   authResolver: {
     resolve(args: {
@@ -116,6 +145,20 @@ type ServiceDependencies = {
     }): Promise<void>;
     listMetricsByChannel(channelId: string): Promise<StoredVideoMetricRow[]>;
   };
+  /** BL-118: channel-level daily totals stored locally (optional so older wiring keeps its behavior). */
+  channelMetricStore?: {
+    upsert(row: { channelId: string; metricDate: string; metricName: string; metricValue: number }): Promise<void>;
+    listInRange?(
+      channelId: string,
+      range: { startDate: string; endDate: string }
+    ): Promise<Array<{ metricDate: string; metricName: string; metricValue: number }>>;
+    getLatestCollectedAt?(channelId: string): Promise<Date | null>;
+  };
+  /** BL-118: per-video history coverage ("collected from the publish date through ..."). Optional like the above. */
+  historyStore?: {
+    listByChannel(channelId: string): Promise<Array<{ videoId: string; historyThrough: string }>>;
+    advance(row: { videoId: string; channelId: string; historyThrough: string }): Promise<void>;
+  };
   channelAccess: ChannelAccessService;
   // BL-059 -- the per-channel "when did the daily auto-collection last actually run" timestamp,
   // deliberately separate from metricStore's per-row collected_at (see channels.
@@ -123,6 +166,8 @@ type ServiceDependencies = {
   channelStore: {
     getAnalyticsLastAutoCollectedAt(channelId: string): Promise<Date | null>;
     markAnalyticsAutoCollected(channelId: string, at: Date): Promise<void>;
+    /** BL-118: the channel's YouTube creation time (RFC 3339), or null when no sync recorded it yet. */
+    getChannelPublishedAt(channelId: string): Promise<string | null>;
   };
   settingsStore: {
     getAnalyticsSyncSettings(): Promise<{ localTime: string; timezone: string }>;
@@ -131,6 +176,7 @@ type ServiceDependencies = {
   // collectMetrics run, read by getDataQualityReport.
   collectionRunStore: {
     record(args: {
+      channelLevel?: boolean;
       channelId: string;
       requestedStartDate: string;
       requestedEndDate: string;
@@ -145,6 +191,7 @@ type ServiceDependencies = {
         videoCount: number;
         upsertsIssued: number;
         skippedVideoIds: string[];
+        channelLevel?: boolean;
         ranAt: Date;
       }>
     >;
@@ -239,6 +286,78 @@ function mapStoredWeeklyReport(row: {
 }
 
 export function createAnalyticsServices(deps: ServiceDependencies) {
+  // BL-118: items whose catch-up query failed are not retried for a while (a removed/private video would otherwise be re-queried on every
+  // dashboard open). In-process only: a restart simply tries again.
+  const catchUpFailedAt = new Map<string, number>();
+  const CATCH_UP_RETRY_COOLDOWN_MS = 6 * 3_600_000;
+  const coolingDown = (key: string) => {
+    const at = catchUpFailedAt.get(key);
+    return at !== undefined && deps.clock.now().getTime() - at < CATCH_UP_RETRY_COOLDOWN_MS;
+  };
+
+  /**
+   * BL-118 -- fetches and stores the channel-level daily totals for a window (one Analytics query). Returns whether it succeeded; never
+   * throws (a failed channel query must not fail or hide the per-video collection that already happened).
+   */
+  async function collectChannelLevel(args: {
+    credentials: ResolvedCredentials;
+    channelId: string;
+    startDate: string;
+    endDate: string;
+  }): Promise<boolean> {
+    if (!deps.channelMetricStore) return false;
+    try {
+      const rows = await deps.youtubeApi.queryChannelAnalyticsReport({
+        credentials: args.credentials,
+        channelId: args.channelId,
+        startDate: args.startDate,
+        endDate: args.endDate,
+        metricNames: CHANNEL_OVERVIEW_METRIC_NAMES,
+      });
+      for (const row of rows) {
+        for (const [metricName, metricValue] of Object.entries(row.metrics)) {
+          await deps.channelMetricStore.upsert({ channelId: args.channelId, metricDate: row.date, metricName, metricValue });
+        }
+      }
+      return true;
+    } catch (error) {
+      deps.logger.error({
+        event: "analytics.collect_metrics.channel_level_failed",
+        context: { channelId: args.channelId, message: error instanceof Error ? error.message : "Unknown error" },
+      });
+      return false;
+    }
+  }
+
+  async function computeHistoryCatchUpPlan(channelId: string): Promise<HistoryCatchUpPlan> {
+    const now = deps.clock.now();
+    const { timezone } = await deps.settingsStore.getAnalyticsSyncSettings();
+    const rollingStart = computeDefaultAutoCollectionRange({ now, timezone, rangeDays: AUTO_COLLECTION_RANGE_DAYS }).startDate;
+    const [videoDetails, history, runs, publishedAt] = await Promise.all([
+      deps.videoStore.listVideoDetailsByChannel(channelId),
+      deps.historyStore ? deps.historyStore.listByChannel(channelId) : Promise.resolve([]),
+      deps.collectionRunStore.listByChannel(channelId),
+      deps.channelStore.getChannelPublishedAt(channelId),
+    ]);
+    const videoRanges = planVideoHistoryCatchUp({
+      videos: videoDetails,
+      historyThrough: new Map(history.map((h) => [h.videoId, h.historyThrough])),
+      rollingStart,
+    });
+    const channelRange = deps.channelMetricStore
+      ? planChannelCatchUp({
+          historyStart: resolveHistoryStart({ channelStartDate: publishedAt ? publishedAt.slice(0, 10) : null, videos: videoDetails }),
+          rollingStart,
+          runs: runs.map((r) => ({ requestedStartDate: r.requestedStartDate, requestedEndDate: r.requestedEndDate, channelLevel: r.channelLevel === true })),
+        })
+      : null;
+    return {
+      rollingStart,
+      videoRanges: videoRanges.filter((range) => !coolingDown(`${channelId}|video|${range.videoId}`)),
+      channelRange: channelRange && !coolingDown(`${channelId}|channel`) ? channelRange : null,
+    };
+  }
+
   const services = {
     /**
      * Collects daily metrics for every locally-synced video under `channelId`, over
@@ -373,8 +492,9 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         // per `getDataQualityReport`'s own doc comment), which would otherwise misclassify a
         // perfectly good "nothing happened that day" result as "the mark is lying."
         const { endDate: expectedFreshThroughDate } = computeDefaultAutoCollectionRange({ now, timezone, rangeDays: 0 });
+        const runs = markedFresh ? await deps.collectionRunStore.listByChannel(parsedInput.channelId) : [];
         const genuineRunCoversExpectedDate = markedFresh
-          ? (await deps.collectionRunStore.listByChannel(parsedInput.channelId)).some(
+          ? runs.some(
               (run) =>
                 run.requestedStartDate <= expectedFreshThroughDate &&
                 run.requestedEndDate >= expectedFreshThroughDate &&
@@ -393,7 +513,25 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           });
         }
 
-        if (markedFresh && genuineRunCoversExpectedDate) {
+        // BL-118 (owner decision 2026-10-03, replacing "a manual call is refused once today's collection has run, whatever range it
+        // asks"): the refusal only protects against re-fetching data that is already collected. A request that contains at least one date
+        // no collection run has covered (an older range being backfilled) brings NEW data and is allowed. Dates still inside the
+        // reporting lag can never hold more data than the last run already got, so they count as covered for this decision.
+        // A run that attempted no videos still counts as coverage for a channel that has none (the old behaviour); for a channel WITH videos
+        // such a run is a channel-totals-only catch-up run, which says nothing about per-video data.
+        const channelHasVideos =
+          markedFresh && genuineRunCoversExpectedDate ? (await deps.videoStore.listVideosByChannel(parsedInput.channelId)).length > 0 : false;
+        if (
+          markedFresh &&
+          genuineRunCoversExpectedDate &&
+          isRangeFullyCovered({
+            startDate: parsedInput.startDate,
+            endDate: parsedInput.endDate,
+            runs: channelHasVideos ? runs.filter((run) => !(run.videoCount === 0 && run.channelLevel === true)) : runs,
+            requireVideos: false,
+            now,
+          })
+        ) {
           const nextRefreshAt = computeNextRefreshAt({ now, timezone, localTime });
           throw new DomainError({
             code: "analytics_data_current",
@@ -407,7 +545,20 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           requiredScopes: [YOUTUBE_ANALYTICS_READ_SCOPE],
         });
 
-        const videos = await deps.videoStore.listVideosByChannel(parsedInput.channelId);
+        const [allVideos, videoDetails, existingHistory] = await Promise.all([
+          deps.videoStore.listVideosByChannel(parsedInput.channelId),
+          deps.videoStore.listVideoDetailsByChannel(parsedInput.channelId),
+          deps.historyStore ? deps.historyStore.listByChannel(parsedInput.channelId) : Promise.resolve([]),
+        ]);
+        const publishedAtById = new Map(videoDetails.map((d) => [d.videoId, d.publishedAt]));
+        const historyById = new Map(existingHistory.map((h) => [h.videoId, h.historyThrough]));
+
+        // BL-118: each video is asked from one day before its OWN publish date, never before (a day late would lose day 0); a video
+        // that did not exist yet by the window's end has nothing to ask for and is not counted as attempted or skipped.
+        const videos = allVideos.filter((video) => {
+          const publishedAt = publishedAtById.get(video.videoId);
+          return !publishedAt || perVideoQueryRange({ publishedAt }, { startDate: parsedInput.startDate, endDate: parsedInput.endDate }) !== null;
+        });
 
         let upsertsIssued = 0;
         const skippedVideoIds: string[] = [];
@@ -416,13 +567,17 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         let finished = 0;
         for (const video of videos) {
           progress?.counts(finished, videos.length);
+          const publishedAt = publishedAtById.get(video.videoId) ?? "";
+          const query = publishedAt
+            ? perVideoQueryRange({ publishedAt }, { startDate: parsedInput.startDate, endDate: parsedInput.endDate })!
+            : { from: parsedInput.startDate, to: parsedInput.endDate };
           try {
             const rows = await deps.youtubeApi.queryVideoAnalyticsReport({
               credentials,
               channelId: parsedInput.channelId,
               videoId: video.videoId,
-              startDate: parsedInput.startDate,
-              endDate: parsedInput.endDate,
+              startDate: query.from,
+              endDate: query.to,
               metricNames,
             });
 
@@ -436,6 +591,16 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
                   metricValue,
                 });
                 upsertsIssued += 1;
+              }
+            }
+
+            // BL-118: remember how far back this video's history now reaches (only a query that reaches its publish date, or extends an
+            // existing contiguous history, can claim anything).
+            if (deps.historyStore && publishedAt) {
+              const through = nextVideoHistoryThrough({ prior: historyById.get(video.videoId) ?? null, publishedAt, query });
+              if (through) {
+                await deps.historyStore.advance({ videoId: video.videoId, channelId: parsedInput.channelId, historyThrough: through });
+                historyById.set(video.videoId, through);
               }
             }
           } catch (error) {
@@ -452,6 +617,10 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           finished += 1;
         }
         progress?.counts(finished, videos.length);
+
+        // BL-118: the CHANNEL-level daily totals for the same window (one extra query), so the agent's channel analytics can be read
+        // locally. A failure here never fails the run: the run is simply recorded as not having collected channel totals.
+        const channelLevel = await collectChannelLevel({ credentials, channelId: parsedInput.channelId, startDate: parsedInput.startDate, endDate: parsedInput.endDate });
 
         const output = {
           channelId: parsedInput.channelId,
@@ -470,7 +639,12 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         // "Collect now" button until tomorrow's boundary, with zero real data fetched and no
         // visible error anywhere. A channel with no videos at all (`videos.length === 0`) still
         // counts as fully, successfully processed -- there was nothing to fetch.
-        if (videos.length === 0 || upsertsIssued > 0) {
+        // BL-118: a window that ends before EVERY video existed (a backfill from before the channel) attempted nothing: it neither marks the
+        // channel collected today nor records a run.
+        const nothingAttempted = videos.length === 0 && allVideos.length > 0;
+        if (nothingAttempted) {
+          deps.logger.info({ event: "analytics.collect_metrics.nothing_attempted", context: { channelId: parsedInput.channelId } });
+        } else if (videos.length === 0 || upsertsIssued > 0) {
           await deps.channelStore.markAnalyticsAutoCollected(parsedInput.channelId, now);
         } else {
           deps.logger.error({
@@ -482,14 +656,28 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         // Phase 8 follow-up, slice 2 (data-quality diagnostics) -- the ground truth
         // `getDataQualityReport` reads. Recorded even when every video was skipped (an all-skip
         // run is itself a real, reportable fact, not something to hide by omitting the row).
-        await deps.collectionRunStore.record({
-          channelId: output.channelId,
-          requestedStartDate: output.startDate,
-          requestedEndDate: output.endDate,
-          videoCount: output.videoCount,
-          upsertsIssued: output.upsertsIssued,
-          skippedVideoIds: output.skippedVideoIds,
-        });
+        if (!nothingAttempted) {
+          await deps.collectionRunStore.record({
+            channelId: output.channelId,
+            requestedStartDate: output.startDate,
+            requestedEndDate: output.endDate,
+            videoCount: output.videoCount,
+            upsertsIssued: output.upsertsIssued,
+            skippedVideoIds: output.skippedVideoIds,
+            channelLevel,
+          });
+        } else if (channelLevel) {
+          // Only the channel totals were collected (no video existed yet): record exactly that, no per-video claim.
+          await deps.collectionRunStore.record({
+            channelId: output.channelId,
+            requestedStartDate: output.startDate,
+            requestedEndDate: output.endDate,
+            videoCount: 0,
+            upsertsIssued: 0,
+            skippedVideoIds: [],
+            channelLevel: true,
+          });
+        }
 
         deps.logger.info({
           event: "analytics.collect_metrics.success",
@@ -622,6 +810,142 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
     },
 
     /**
+     * BL-118 -- what automatic history catch-up still has to do for a channel (local reads only): per-video ranges before the rolling window
+     * that are not collected yet, and the span of channel-level dates no channel-level run covers. Empty plan = nothing to do. Videos are
+     * asked from one day before their own publish date; a video with recorded history is asked only from the day after it ends.
+     */
+    async getHistoryCatchUpPlan(input: unknown): Promise<HistoryCatchUpPlan> {
+      const parsedInput = parseWithSchema(runAutoCollectionInputSchema, input, "history catch-up plan input");
+      try {
+        await deps.channelAccess.assertActiveChannel({ userId: getCredentialUserId(parsedInput.credentialRef), channelId: parsedInput.channelId });
+        return await computeHistoryCatchUpPlan(parsedInput.channelId);
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
+      }
+    },
+
+    /**
+     * BL-118 (owner decisions 2026-10-03: automatic, closes gaps itself, no extra button) -- executes `getHistoryCatchUpPlan`: queries each
+     * missing per-video range and the missing channel-level span, records ONE collection run for it, and advances each video's history only
+     * for queries that succeeded (a failed video is simply planned again next time). Bounded per call (`MAX_CATCH_UP_VIDEOS_PER_RUN`) so a very
+     * large channel finishes over several days instead of one long job. Not subject to the daily freshness gate: it only ever asks for
+     * data no run has collected.
+     */
+    async runHistoryCatchUp(input: unknown, options: { progress?: ProgressReporter } = {}): Promise<HistoryCatchUpResult> {
+      const parsedInput = parseWithSchema(runAutoCollectionInputSchema, input, "history catch-up input");
+      const progress = options.progress;
+      try {
+        await deps.channelAccess.assertActiveChannel({ userId: getCredentialUserId(parsedInput.credentialRef), channelId: parsedInput.channelId });
+        const plan = await computeHistoryCatchUpPlan(parsedInput.channelId);
+        if (plan.videoRanges.length === 0 && !plan.channelRange) return { ranCatchUp: false };
+
+        const credentials = await deps.authResolver.resolve({
+          credentialRef: parsedInput.credentialRef,
+          requiredScopes: [YOUTUBE_ANALYTICS_READ_SCOPE],
+        });
+        const [videoDetails, existingHistory] = await Promise.all([
+          deps.videoStore.listVideoDetailsByChannel(parsedInput.channelId),
+          deps.historyStore ? deps.historyStore.listByChannel(parsedInput.channelId) : Promise.resolve([]),
+        ]);
+        const publishedAtById = new Map(videoDetails.map((d) => [d.videoId, d.publishedAt]));
+        const historyById = new Map(existingHistory.map((h) => [h.videoId, h.historyThrough]));
+
+        const batch = plan.videoRanges.slice(0, MAX_CATCH_UP_VIDEOS_PER_RUN);
+        progress?.stage("Collecting earlier history (one query per video)");
+        let upsertsIssued = 0;
+        const skippedVideoIds: string[] = [];
+        let done = 0;
+        for (const range of batch) {
+          progress?.counts(done, batch.length);
+          try {
+            const rows = await deps.youtubeApi.queryVideoAnalyticsReport({
+              credentials,
+              channelId: parsedInput.channelId,
+              videoId: range.videoId,
+              startDate: range.from,
+              endDate: range.to,
+              metricNames: ANALYTICS_METRIC_NAMES,
+            });
+            for (const row of rows) {
+              for (const [metricName, metricValue] of Object.entries(row.metrics)) {
+                await deps.metricStore.upsertMetric({ channelId: parsedInput.channelId, videoId: range.videoId, metricDate: row.date, metricName, metricValue });
+                upsertsIssued += 1;
+              }
+            }
+            const publishedAt = publishedAtById.get(range.videoId);
+            if (deps.historyStore && publishedAt) {
+              const through = nextVideoHistoryThrough({ prior: historyById.get(range.videoId) ?? null, publishedAt, query: { from: range.from, to: range.to } });
+              if (through) await deps.historyStore.advance({ videoId: range.videoId, channelId: parsedInput.channelId, historyThrough: through });
+            }
+          } catch (error) {
+            skippedVideoIds.push(range.videoId);
+            catchUpFailedAt.set(`${parsedInput.channelId}|video|${range.videoId}`, deps.clock.now().getTime());
+            deps.logger.error({
+              event: "analytics.history_catch_up.video_skipped",
+              context: { channelId: parsedInput.channelId, videoId: range.videoId, message: error instanceof Error ? error.message : "Unknown error" },
+            });
+          }
+          done += 1;
+        }
+        progress?.counts(done, batch.length);
+
+        let channelLevel = false;
+        if (plan.channelRange) {
+          progress?.stage("Collecting earlier channel totals");
+          channelLevel = await collectChannelLevel({ credentials, channelId: parsedInput.channelId, ...plan.channelRange });
+          if (!channelLevel) catchUpFailedAt.set(`${parsedInput.channelId}|channel`, deps.clock.now().getTime());
+        }
+
+        // What is recorded must claim only what was actually collected (a run's window counts as covered for EVERY video):
+        //  - the channel totals, as their own channel-only run (no per-video claim), only if that query succeeded;
+        //  - the per-video span as one run, only if EVERY planned video was queried successfully (otherwise the per-video progress lives in
+        //    `analytics_video_history` and nothing over-claims; a failed attempt records nothing, so repeated attempts cannot grow the table).
+        const remainingVideos = plan.videoRanges.length - batch.length;
+        if (plan.channelRange && channelLevel) {
+          await deps.collectionRunStore.record({
+            channelId: parsedInput.channelId,
+            requestedStartDate: plan.channelRange.startDate,
+            requestedEndDate: plan.channelRange.endDate,
+            videoCount: 0,
+            upsertsIssued: 0,
+            skippedVideoIds: [],
+            channelLevel: true,
+          });
+        }
+        const startDate = [...batch.map((r) => r.from), ...(plan.channelRange ? [plan.channelRange.startDate] : [])].sort()[0];
+        const endDate = plan.rollingStart ? shiftIsoDate(plan.rollingStart, -1) : startDate;
+        if (batch.length > 0 && skippedVideoIds.length === 0 && remainingVideos === 0) {
+          await deps.collectionRunStore.record({
+            channelId: parsedInput.channelId,
+            requestedStartDate: batch.map((r) => r.from).sort()[0],
+            requestedEndDate: endDate,
+            videoCount: batch.length,
+            upsertsIssued,
+            skippedVideoIds: [],
+            channelLevel: false,
+          });
+        }
+
+        deps.logger.info({
+          event: "analytics.history_catch_up.success",
+          context: { channelId: parsedInput.channelId, videos: batch.length, upsertsIssued, channelLevel, remainingVideos },
+        });
+        return {
+          ranCatchUp: true,
+          videosQueried: batch.length,
+          upsertsIssued,
+          skippedVideoIds,
+          channelLevel,
+          startDate,
+          endDate,
+          remainingVideos,
+        };
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
+      }
+    },
+
+    /**
      * Studio-Parity S6b (docs/roadmap/plans/STUDIO_PARITY_PLAN.md §4) -- the Analytics
      * "Overview" tab's channel-level cards/chart. A live Analytics API read (two
      * `queryChannelAnalyticsReport` calls: the requested period, and the immediately-preceding
@@ -671,28 +995,6 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           channelId: parsedInput.channelId,
         });
 
-        const credentials = await deps.authResolver.resolve({
-          credentialRef: parsedInput.credentialRef,
-          requiredScopes: [YOUTUBE_ANALYTICS_READ_SCOPE],
-        });
-
-        const [currentRows, previousRows] = await Promise.all([
-          deps.youtubeApi.queryChannelAnalyticsReport({
-            credentials,
-            channelId: parsedInput.channelId,
-            startDate: parsedInput.startDate,
-            endDate: parsedInput.endDate,
-            metricNames: CHANNEL_OVERVIEW_METRIC_NAMES,
-          }),
-          deps.youtubeApi.queryChannelAnalyticsReport({
-            credentials,
-            channelId: parsedInput.channelId,
-            startDate: previousStartDate,
-            endDate: previousEndDate,
-            metricNames: CHANNEL_OVERVIEW_METRIC_NAMES,
-          }),
-        ]);
-
         const sumTotals = (rows: Array<{ metrics: Record<string, number> }>): ChannelOverviewTotals =>
           rows.reduce(
             (totals, row) => ({
@@ -703,8 +1005,11 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             }),
             { views: 0, estimatedMinutesWatched: 0, subscribersGained: 0, subscribersLost: 0 }
           );
-
-        const output = {
+        const buildOutput = (
+          currentRows: Array<{ date: string; metrics: Record<string, number> }>,
+          previousRows: Array<{ date: string; metrics: Record<string, number> }>,
+          extra: { source: "live" | "local"; collectedAt?: string | null }
+        ) => ({
           channelId: parsedInput.channelId,
           startDate: parsedInput.startDate,
           endDate: parsedInput.endDate,
@@ -727,7 +1032,69 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             { startDate: parsedInput.startDate, endDate: parsedInput.endDate },
             { startDate: previousStartDate, endDate: previousEndDate }
           ),
-        };
+          ...extra,
+        });
+
+        // BL-118 (owner's observation, 2026-10-03): the channel-level daily totals are collected and stored with every run, so when every date
+        // of both periods is covered by a run that stored them, answer from the database -- no live call, no quota. Anything else (or
+        // `preferLocal` off, the Web UI Overview's default) is the live read below, exactly as before.
+        if (parsedInput.preferLocal && deps.channelMetricStore?.listInRange) {
+          const runs = await deps.collectionRunStore.listByChannel(parsedInput.channelId);
+          const covered = isRangeFullyCovered({
+            startDate: previousStartDate,
+            endDate: parsedInput.endDate,
+            runs: runs.filter((run) => run.channelLevel === true),
+            requireVideos: false,
+            now: deps.clock.now(),
+          });
+          if (covered) {
+            const stored = await deps.channelMetricStore.listInRange(parsedInput.channelId, { startDate: previousStartDate, endDate: parsedInput.endDate });
+            const byDate = new Map<string, Record<string, number>>();
+            for (const row of stored) {
+              const metrics = byDate.get(row.metricDate) ?? {};
+              metrics[row.metricName] = row.metricValue;
+              byDate.set(row.metricDate, metrics);
+            }
+            const rowsIn = (from: string, to: string) =>
+              [...byDate.entries()]
+                .filter(([date]) => date >= from && date <= to)
+                .sort(([a], [b]) => (a < b ? -1 : 1))
+                .map(([date, metrics]) => ({ date, metrics }));
+            const collectedAt = deps.channelMetricStore.getLatestCollectedAt ? await deps.channelMetricStore.getLatestCollectedAt(parsedInput.channelId) : null;
+            return parseWithSchema(
+              getChannelOverviewOutputSchema,
+              buildOutput(rowsIn(parsedInput.startDate, parsedInput.endDate), rowsIn(previousStartDate, previousEndDate), {
+                source: "local",
+                collectedAt: collectedAt ? collectedAt.toISOString() : null,
+              }),
+              "get channel overview output"
+            );
+          }
+        }
+
+        const credentials = await deps.authResolver.resolve({
+          credentialRef: parsedInput.credentialRef,
+          requiredScopes: [YOUTUBE_ANALYTICS_READ_SCOPE],
+        });
+
+        const [currentRows, previousRows] = await Promise.all([
+          deps.youtubeApi.queryChannelAnalyticsReport({
+            credentials,
+            channelId: parsedInput.channelId,
+            startDate: parsedInput.startDate,
+            endDate: parsedInput.endDate,
+            metricNames: CHANNEL_OVERVIEW_METRIC_NAMES,
+          }),
+          deps.youtubeApi.queryChannelAnalyticsReport({
+            credentials,
+            channelId: parsedInput.channelId,
+            startDate: previousStartDate,
+            endDate: previousEndDate,
+            metricNames: CHANNEL_OVERVIEW_METRIC_NAMES,
+          }),
+        ]);
+
+        const output = buildOutput(currentRows, previousRows, { source: "live" });
 
         return parseWithSchema(getChannelOverviewOutputSchema, output, "get channel overview output");
       } catch (error) {
@@ -906,12 +1273,22 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           deps.metricStore.listMetricsByChannel(parsedInput.channelId),
         ]);
         const datesWithAnyMetricRow = new Set(metricRecords.map((record) => record.metricDate));
-        const report = computeDataQualityReport({
+        const now = deps.clock.now();
+        const baseReport = computeDataQualityReport({
           startDate: parsedInput.startDate,
           endDate: parsedInput.endDate,
           runs,
           datesWithAnyMetricRow,
-          now: deps.clock.now(),
+          now,
+        });
+        // BL-118: dates before the channel existed are "not applicable", not "uncovered"; plus ranges and what "covered" means.
+        const publishedAt = await deps.channelStore.getChannelPublishedAt(parsedInput.channelId);
+        const { report, extras } = extendDataQualityReport({
+          report: baseReport,
+          startDate: parsedInput.startDate,
+          channelStartDate: publishedAt ? publishedAt.slice(0, 10) : null,
+          datesWithAnyMetricRow,
+          now,
         });
 
         return parseWithSchema(
@@ -921,6 +1298,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             startDate: parsedInput.startDate,
             endDate: parsedInput.endDate,
             ...report,
+            ...extras,
           },
           "get data quality report output"
         );

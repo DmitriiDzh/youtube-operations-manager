@@ -33,9 +33,12 @@ function createServicesFixture(opts: {
   syncSettings?: { localTime: string; timezone: string };
   now?: Date;
   authResolverError?: Error;
+  /** BL-118: the channels' YouTube creation times (RFC 3339), by channel id. */
+  channelPublishedAt?: Record<string, string>;
 }) {
   const channelAccess = createFakeChannelAccess();
   const analyticsCalls: Array<{ channelId: string; videoId: string }> = [];
+  const analyticsCallRanges: Array<{ videoId: string; startDate: string; endDate: string }> = [];
   const channelAnalyticsCalls: Array<{ channelId: string; startDate: string; endDate: string }> = [];
   const channelBreakdownCalls: Array<{ channelId: string; dimensions: string; startDate: string; endDate: string; filters?: string }> = [];
   const upsertedRows: Array<{
@@ -57,6 +60,7 @@ function createServicesFixture(opts: {
       metricNames: readonly string[];
     }) {
       analyticsCalls.push({ channelId: args.channelId, videoId: args.videoId });
+      analyticsCallRanges.push({ videoId: args.videoId, startDate: args.startDate, endDate: args.endDate });
       const response = opts.analyticsResponses[args.videoId];
       if (response instanceof Error) throw response;
       return response ?? [];
@@ -144,6 +148,9 @@ function createServicesFixture(opts: {
     async markAnalyticsAutoCollected(channelId: string, at: Date) {
       lastAutoCollectedAtByChannel.set(channelId, at);
     },
+    async getChannelPublishedAt(channelId: string): Promise<string | null> {
+      return opts.channelPublishedAt?.[channelId] ?? null;
+    },
   };
 
   const settingsStore = {
@@ -159,6 +166,7 @@ function createServicesFixture(opts: {
     videoCount: number;
     upsertsIssued: number;
     skippedVideoIds: string[];
+    channelLevel?: boolean;
     ranAt: Date;
   }> = [];
   let currentNow = opts.now ?? new Date("2026-09-22T15:00:00Z");
@@ -170,6 +178,7 @@ function createServicesFixture(opts: {
       videoCount: number;
       upsertsIssued: number;
       skippedVideoIds: string[];
+      channelLevel?: boolean;
     }) {
       collectionRuns.push({ ...args, ranAt: currentNow });
     },
@@ -206,9 +215,37 @@ function createServicesFixture(opts: {
     },
   };
 
+  // BL-118: channel-level totals and per-video history coverage, in memory.
+  const channelMetricRows: Array<{ channelId: string; metricDate: string; metricName: string; metricValue: number }> = [];
+  const channelMetricStore = {
+    async upsert(row: { channelId: string; metricDate: string; metricName: string; metricValue: number }) {
+      const i = channelMetricRows.findIndex((r) => r.channelId === row.channelId && r.metricDate === row.metricDate && r.metricName === row.metricName);
+      if (i === -1) channelMetricRows.push(row);
+      else channelMetricRows[i] = row;
+    },
+    async listInRange(channelId: string, range: { startDate: string; endDate: string }) {
+      return channelMetricRows.filter((r) => r.channelId === channelId && r.metricDate >= range.startDate && r.metricDate <= range.endDate);
+    },
+    async getLatestCollectedAt() {
+      return new Date("2026-09-22T13:00:00Z");
+    },
+  };
+  const historyRows = new Map<string, { videoId: string; channelId: string; historyThrough: string }>();
+  const historyStore = {
+    async listByChannel(channelId: string) {
+      return [...historyRows.values()].filter((h) => h.channelId === channelId);
+    },
+    async advance(row: { videoId: string; channelId: string; historyThrough: string }) {
+      const existing = historyRows.get(row.videoId);
+      if (!existing || existing.historyThrough < row.historyThrough) historyRows.set(row.videoId, row);
+    },
+  };
+
   const clock = { now: () => currentNow };
 
   const services = createAnalyticsServices({
+    channelMetricStore,
+    historyStore,
     authResolver,
     youtubeApi,
     videoStore,
@@ -226,6 +263,9 @@ function createServicesFixture(opts: {
     services,
     channelAccess,
     analyticsCalls,
+    analyticsCallRanges,
+    channelMetricRows,
+    historyRows,
     channelAnalyticsCalls,
     channelBreakdownCalls,
     upsertedRows,
@@ -659,6 +699,377 @@ test("getDataQualityReport reflects real collectMetrics runs: covered/uncovered 
   assert.deepEqual(report.videosWithSkips.map((s) => s.videoId), ["v2"]);
 });
 
+test("BL-118: getDataQualityReport treats dates before the channel's creation as not applicable and reports ranges and what 'covered' means", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 10 } }] },
+    channelPublishedAt: { UC_A: "2026-08-31T08:00:00Z" },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  await services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-09-01", endDate: "2026-09-02" });
+
+  const report = await services.getDataQualityReport({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-08-28", endDate: "2026-09-02" });
+  assert.equal(report.channelStartDate, "2026-08-31");
+  assert.deepEqual(report.notApplicableRange, { startDate: "2026-08-28", endDate: "2026-08-30" });
+  assert.deepEqual(report.uncoveredDates, ["2026-08-31"]);
+  assert.deepEqual(report.uncoveredRanges, [{ startDate: "2026-08-31", endDate: "2026-08-31" }]);
+  assert.deepEqual(report.coveredRanges, [{ startDate: "2026-09-01", endDate: "2026-09-02" }]);
+  assert.deepEqual(report.coveredWithoutData, ["2026-09-02"], "covered by the run, but YouTube returned no row for it");
+  assert.match(report.coveredMeans ?? "", /NOT mean data is present/);
+});
+
+test("BL-118: a channel whose creation time is not synced yet reports channelStartDate null and keeps every unmatched date as uncovered", async () => {
+  const { services, channelAccess } = createServicesFixture({ videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] }, analyticsResponses: {} });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  const report = await services.getDataQualityReport({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-08-28", endDate: "2026-08-29" });
+  assert.equal(report.channelStartDate, null);
+  assert.equal(report.notApplicableRange, null);
+  assert.deepEqual(report.uncoveredDates, ["2026-08-28", "2026-08-29"]);
+});
+
+// ---- BL-118 slice C+E: backfill, per-video start, channel-level totals, relaxed manual gate -----------------------------------
+// Acceptance criteria (written from the agent's retest and the owner's decisions of 2026-10-03, before the code):
+//  C1 each video is asked from ONE DAY BEFORE its publish date, never before it and never after the window's start;
+//  C2 a video that did not exist yet by the window's end is neither queried nor counted as attempted/skipped;
+//  C3 the per-video history coverage advances only when a query reaches the publish date or extends the history without a hole;
+//  C4 a manual call whose range contains an uncovered date is allowed even after today's collection ran; a fully covered range is refused;
+//  E1 every run also stores the channel-level daily totals and is recorded as channel-level; a failed channel query leaves the run intact.
+
+const AUTO_NOW = new Date("2026-09-22T13:00:00Z");
+
+test("BL-118 C1/C2: each video is asked from one day before its own publish date; a video published after the window is not queried or counted", async () => {
+  const { services, channelAccess, analyticsCallRanges, collectionRuns } = createServicesFixture({
+    videosByChannel: {
+      UC_A: [
+        { videoId: "old", channelId: "UC_A" },
+        { videoId: "mid", channelId: "UC_A" },
+        { videoId: "future", channelId: "UC_A" },
+      ],
+    },
+    analyticsResponses: {},
+    videoDetailsByChannel: {
+      UC_A: [
+        { videoId: "old", title: "Old", publishedAt: "2026-08-14T13:00:22Z" },
+        { videoId: "mid", title: "Mid", publishedAt: "2026-09-20T10:00:00Z" },
+        { videoId: "future", title: "Future", publishedAt: "2026-10-05T10:00:00Z" },
+      ],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const result = await services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-09-14", endDate: "2026-10-01" });
+
+  assert.deepEqual(analyticsCallRanges, [
+    { videoId: "old", startDate: "2026-09-14", endDate: "2026-10-01" },
+    { videoId: "mid", startDate: "2026-09-19", endDate: "2026-10-01" },
+  ]);
+  assert.equal(result.videoCount, 2, "the video that did not exist yet is not an attempted video");
+  assert.deepEqual(result.skippedVideoIds, []);
+  assert.equal(collectionRuns[0].videoCount, 2);
+});
+
+test("BL-118 C3: history coverage advances only when the query reaches the publish date or extends it without a hole", async () => {
+  const { services, channelAccess, historyRows } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }, { videoId: "v2", channelId: "UC_A" }] },
+    analyticsResponses: {},
+    videoDetailsByChannel: {
+      UC_A: [
+        { videoId: "v1", title: "V1", publishedAt: "2026-09-20T10:00:00Z" }, // floor 09-19
+        { videoId: "v2", title: "V2", publishedAt: "2026-08-14T13:00:00Z" }, // floor 08-13
+      ],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  const run = (startDate: string, endDate: string) =>
+    services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate, endDate });
+
+  await run("2026-09-14", "2026-10-01"); // v1 reaches its publish floor (09-19); v2 starts at 09-14, long after its floor
+  assert.equal(historyRows.get("v1")?.historyThrough, "2026-10-01");
+  assert.equal(historyRows.has("v2"), false, "a rolling-style window that misses v2's early days proves nothing about them");
+
+  await run("2026-08-13", "2026-09-13"); // reaches v2's floor
+  assert.equal(historyRows.get("v2")?.historyThrough, "2026-09-13");
+});
+
+test("BL-118 E1: every run also stores the channel-level daily totals and is recorded as channel-level", async () => {
+  const { services, channelAccess, channelMetricRows, collectionRuns } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 10 } }] },
+    channelAnalyticsResponses: {
+      "2026-09-01|2026-09-02": [
+        { date: "2026-09-01", metrics: { views: 143, estimatedMinutesWatched: 2434 } },
+        { date: "2026-09-02", metrics: { views: 7 } },
+      ],
+    },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  await services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-09-01", endDate: "2026-09-02" });
+
+  assert.deepEqual(
+    channelMetricRows.map((r) => [r.metricDate, r.metricName, r.metricValue]).sort(),
+    [
+      ["2026-09-01", "estimatedMinutesWatched", 2434],
+      ["2026-09-01", "views", 143],
+      ["2026-09-02", "views", 7],
+    ]
+  );
+  assert.equal(collectionRuns[0].channelLevel, true);
+});
+
+test("BL-118 E1: a failed channel-level query never fails the run: the per-video data stays, the run is recorded as NOT channel-level", async () => {
+  const { services, channelAccess, collectionRuns, upsertedRows, channelMetricRows } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 10 } }] },
+    channelAnalyticsResponses: { "2026-09-01|2026-09-02": new Error("channel report failed") },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  const result = await services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-09-01", endDate: "2026-09-02" });
+
+  assert.equal(result.upsertsIssued, 1);
+  assert.equal(upsertedRows.length, 1);
+  assert.equal(channelMetricRows.length, 0);
+  assert.equal(collectionRuns[0].channelLevel, false);
+});
+
+test("BL-118 C4: after today's collection ran, a manual call for a range with an UNCOVERED date is allowed; a fully covered range is still refused", async () => {
+  const { services, channelAccess, analyticsCalls } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-01", metrics: { views: 100 } }] },
+    now: AUTO_NOW,
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }); // covers 2026-09-14 .. 2026-09-21
+  assert.equal(analyticsCalls.length, 1);
+
+  // an older range nobody collected: allowed (the point of the owner's decision)
+  const backfill = await services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-08-13", endDate: "2026-09-13" });
+  assert.equal(backfill.startDate, "2026-08-13");
+  assert.equal(analyticsCalls.length, 2);
+
+  // a range straddling covered and uncovered dates: also allowed (it contains an uncovered date)
+  await services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-08-01", endDate: "2026-08-20" });
+
+  // everything covered now: refused again, the quota-saving behaviour is intact
+  await assert.rejects(
+    () => services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-08-13", endDate: "2026-09-21" }),
+    (error: unknown) => error instanceof DomainError && error.code === "analytics_data_current"
+  );
+});
+
+test("BL-118 C4: dates still inside the reporting lag never make a range 'uncovered' (a re-ask for 'up to today' is still refused)", async () => {
+  const { services, channelAccess } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-09-16", metrics: { views: 5 } }] },
+    now: AUTO_NOW,
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+  await assert.rejects(
+    () => services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-09-15", endDate: "2026-09-22" }),
+    (error: unknown) => error instanceof DomainError && error.code === "analytics_data_current"
+  );
+});
+
+// ---- BL-118 automatic history catch-up ---------------------------------------------------------------------------------------
+// The agent's retest: after catch-up a video published before the app began collecting returns its day-0 data, and the data-quality report
+// from the channel start shows nothing uncovered. Rolling window at AUTO_NOW (2026-09-22): 2026-09-14 .. 2026-09-21.
+
+function catchUpFixture(over: Partial<Parameters<typeof createServicesFixture>[0]> = {}) {
+  return createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "old", channelId: "UC_A" }, { videoId: "recent", channelId: "UC_A" }] },
+    analyticsResponses: {
+      old: [
+        { date: "2026-08-13", metrics: { views: 4 } }, // day 0 (one day before the publish date, as asked)
+        { date: "2026-08-20", metrics: { views: 9 } },
+      ],
+    },
+    videoDetailsByChannel: {
+      UC_A: [
+        { videoId: "old", title: "Old", publishedAt: "2026-08-14T13:00:22Z" },
+        { videoId: "recent", title: "Recent", publishedAt: "2026-09-20T10:00:00Z" },
+      ],
+    },
+    channelPublishedAt: { UC_A: "2026-08-13T08:00:00Z" },
+    channelAnalyticsResponses: { "2026-08-13|2026-09-13": [{ date: "2026-08-13", metrics: { views: 143 } }] },
+    now: AUTO_NOW,
+    ...over,
+  });
+}
+
+test("BL-118 catch-up: the plan asks only for what is missing before the rolling window (a video inside the window needs nothing)", async () => {
+  const { services, channelAccess } = catchUpFixture();
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  const plan = await services.getHistoryCatchUpPlan({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+  assert.equal(plan.rollingStart, "2026-09-14");
+  assert.deepEqual(plan.videoRanges, [{ videoId: "old", from: "2026-08-13", to: "2026-09-13" }]);
+  assert.deepEqual(plan.channelRange, { startDate: "2026-08-13", endDate: "2026-09-13" });
+});
+
+test("BL-118 catch-up: runs once, stores day 0 and the channel totals, records a channel-only run plus a per-video run that claims only what was done, and a second call finds nothing left to do", async () => {
+  const { services, channelAccess, upsertedRows, channelMetricRows, collectionRuns, historyRows, analyticsCallRanges } = catchUpFixture();
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+
+  const result = await services.runHistoryCatchUp({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+  assert.equal(result.ranCatchUp, true);
+  if (!result.ranCatchUp) return;
+  assert.equal(result.videosQueried, 1);
+  assert.equal(result.channelLevel, true);
+  assert.equal(result.remainingVideos, 0);
+
+  assert.deepEqual(analyticsCallRanges, [{ videoId: "old", startDate: "2026-08-13", endDate: "2026-09-13" }]);
+  assert.deepEqual(upsertedRows.map((r) => [r.videoId, r.metricDate, r.metricValue]), [["old", "2026-08-13", 4], ["old", "2026-08-20", 9]]);
+  assert.deepEqual(channelMetricRows.map((r) => [r.metricDate, r.metricName, r.metricValue]), [["2026-08-13", "views", 143]]);
+  assert.equal(historyRows.get("old")?.historyThrough, "2026-09-13");
+  assert.equal(collectionRuns.length, 2);
+  // the channel totals are their own run: no per-video claim (videoCount 0)
+  assert.deepEqual(
+    [collectionRuns[0].requestedStartDate, collectionRuns[0].requestedEndDate, collectionRuns[0].videoCount, collectionRuns[0].channelLevel],
+    ["2026-08-13", "2026-09-13", 0, true]
+  );
+  // the per-video run exists because EVERY planned video succeeded
+  assert.deepEqual(
+    [collectionRuns[1].requestedStartDate, collectionRuns[1].requestedEndDate, collectionRuns[1].videoCount, collectionRuns[1].channelLevel],
+    ["2026-08-13", "2026-09-13", 1, false]
+  );
+
+  assert.deepEqual(await services.runHistoryCatchUp({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }), { ranCatchUp: false });
+  assert.equal(analyticsCallRanges.length, 1, "nothing was queried the second time");
+
+  // the agent's retest: from the channel start there is no genuine gap left
+  const report = await services.getDataQualityReport({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-08-10", endDate: "2026-09-13" });
+  assert.deepEqual(report.uncoveredDates, []);
+  assert.deepEqual(report.notApplicableRange, { startDate: "2026-08-10", endDate: "2026-08-12" });
+});
+
+test("BL-118 catch-up: a failed video claims nothing (no per-video run, history not advanced), is left alone for the 6-hour cooldown, then planned again", async () => {
+  const { services, channelAccess, historyRows, collectionRuns, analyticsCallRanges, setNow } = catchUpFixture({
+    analyticsResponses: { old: new Error("simulated Analytics failure") },
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  const result = await services.runHistoryCatchUp({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+  assert.equal(result.ranCatchUp && result.skippedVideoIds.join(","), "old");
+  assert.equal(historyRows.has("old"), false);
+  // only the channel-only run exists: the failed video made no over-claiming per-video run, so retries cannot grow the runs table
+  assert.deepEqual(collectionRuns.map((r) => [r.videoCount, r.channelLevel]), [[0, true]]);
+
+  const calls = analyticsCallRanges.length;
+  const cooled = await services.getHistoryCatchUpPlan({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+  assert.deepEqual(cooled.videoRanges, [], "within the cooldown the failed video is not planned (a permanently failing video is not re-queried on every dashboard open)");
+  assert.deepEqual(await services.runHistoryCatchUp({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }), { ranCatchUp: false });
+  assert.equal(analyticsCallRanges.length, calls);
+
+  setNow(new Date(AUTO_NOW.getTime() + 6 * 3_600_000 + 1000));
+  const again = await services.getHistoryCatchUpPlan({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+  assert.deepEqual(again.videoRanges.map((r) => r.videoId), ["old"]);
+});
+
+test("BL-118: a manual window that ends before every video existed attempts nothing: no run, the channel is NOT marked collected today; its channel totals are recorded as a channel-only run", async () => {
+  const { services, channelAccess, collectionRuns, lastAutoCollectedAtByChannel, analyticsCallRanges, channelMetricRows } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: {},
+    videoDetailsByChannel: { UC_A: [{ videoId: "v1", title: "V", publishedAt: "2026-09-10T10:00:00Z" }] },
+    channelAnalyticsResponses: { "2026-08-01|2026-08-31": [{ date: "2026-08-05", metrics: { views: 3 } }] },
+    now: AUTO_NOW,
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  const result = await services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-08-01", endDate: "2026-08-31" });
+  assert.equal(result.videoCount, 0);
+  assert.equal(analyticsCallRanges.length, 0, "no per-video query: the video did not exist yet");
+  assert.equal(lastAutoCollectedAtByChannel.get("UC_A") ?? null, null, "a no-op window must not lock out today's real rolling collection");
+  assert.deepEqual(collectionRuns.map((r) => [r.videoCount, r.channelLevel]), [[0, true]]);
+  assert.equal(channelMetricRows.length, 1);
+});
+
+test("BL-118: a channel that has no videos at all keeps the old behaviour — marked collected and refused on a repeat for the same range", async () => {
+  const { services, channelAccess } = createServicesFixture({ videosByChannel: { UC_A: [] }, analyticsResponses: {}, now: AUTO_NOW });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }); // rolling window 09-14..09-21, zero videos
+  await assert.rejects(
+    () => services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-09-15", endDate: "2026-09-21" }),
+    (error: unknown) => error instanceof DomainError && error.code === "analytics_data_current"
+  );
+});
+
+
+test("BL-118 catch-up: fails closed for a channel that is not the active one (no credential use, no query)", async () => {
+  const { services, analyticsCallRanges } = catchUpFixture();
+  await assert.rejects(
+    () => services.runHistoryCatchUp({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }),
+    (error: unknown) => error instanceof DomainError
+  );
+  assert.equal(analyticsCallRanges.length, 0);
+});
+
+test("BL-118 catch-up: a channel with no known start and no videos has nothing to plan (never invents a start date)", async () => {
+  const { services, channelAccess } = catchUpFixture({ videosByChannel: { UC_A: [] }, videoDetailsByChannel: { UC_A: [] }, channelPublishedAt: {} });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  assert.deepEqual(await services.runHistoryCatchUp({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }), { ranCatchUp: false });
+});
+
+// ---- BL-118 slice E: channel overview served from the stored channel-level totals ------------------------------------------------
+
+async function storedChannelFixture() {
+  // One collection run over 2026-08-01 .. 2026-09-10 stores these channel-level days (the API omits zero-activity days).
+  const channelAnalyticsResponses = {
+    "2026-08-01|2026-09-10": [
+      { date: "2026-08-10", metrics: { views: 10, estimatedMinutesWatched: 100, subscribersGained: 1, subscribersLost: 0 } },
+      { date: "2026-08-25", metrics: { views: 30, estimatedMinutesWatched: 300, subscribersGained: 2, subscribersLost: 1 } },
+      { date: "2026-08-26", metrics: { views: 20, estimatedMinutesWatched: 200, subscribersGained: 0, subscribersLost: 0 } },
+    ],
+  };
+  const fixture = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: { v1: [{ date: "2026-08-25", metrics: { views: 1 } }] },
+    channelAnalyticsResponses,
+    now: AUTO_NOW,
+  });
+  await fixture.channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  await fixture.services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-08-01", endDate: "2026-09-10" });
+  fixture.channelAnalyticsCalls.length = 0; // only count calls made by the overview itself
+  return fixture;
+}
+
+test("BL-118 E: preferLocal answers from the stored channel totals with NO live call, with the same shape and totals the live read would give", async () => {
+  const { services, channelAnalyticsCalls } = await storedChannelFixture();
+  const overview = await services.getChannelOverview({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-08-20",
+    endDate: "2026-09-01",
+    preferLocal: true,
+  });
+  assert.equal(channelAnalyticsCalls.length, 0, "no live Analytics call, no quota");
+  assert.equal(overview.source, "local");
+  assert.ok(overview.collectedAt);
+  // current period 2026-08-20..09-01 holds 08-25 (30 views) and 08-26 (20 views); previous period 08-07..08-19 holds 08-10 (10 views)
+  assert.deepEqual(overview.currentTotals, { views: 50, estimatedMinutesWatched: 500, subscribersGained: 2, subscribersLost: 1 });
+  assert.deepEqual(overview.previousTotals, { views: 10, estimatedMinutesWatched: 100, subscribersGained: 1, subscribersLost: 0 });
+  assert.equal(overview.previousStartDate, "2026-08-07");
+  assert.equal(overview.daily.length, 7, "zero-filled from the period start up to the last stored day (08-20 .. 08-26), never padded past it: the same rule as the live read");
+  assert.equal(overview.daily.find((d) => d.date === "2026-08-25")?.views, 30);
+  assert.equal(overview.daily.find((d) => d.date === "2026-08-21")?.views, 0);
+});
+
+test("BL-118 E: without preferLocal the overview stays a live read (the Web UI behaviour is unchanged), even when everything is stored", async () => {
+  const { services, channelAnalyticsCalls } = await storedChannelFixture();
+  const overview = await services.getChannelOverview({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-08-20", endDate: "2026-09-01" });
+  assert.equal(channelAnalyticsCalls.length, 2, "current and previous period, as before");
+  assert.equal(overview.source, "live");
+});
+
+test("BL-118 E: preferLocal falls back to the live read when any requested date is not covered by a channel-level run", async () => {
+  const { services, channelAnalyticsCalls } = await storedChannelFixture();
+  const overview = await services.getChannelOverview({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_A",
+    startDate: "2026-07-01", // the previous period reaches back to 2026-06-18: never collected
+    endDate: "2026-07-31",
+    preferLocal: true,
+  });
+  assert.equal(channelAnalyticsCalls.length, 2);
+  assert.equal(overview.source, "live");
+});
+
 test("collectMetrics defaults to the full ANALYTICS_METRIC_NAMES list when metricNames is omitted", async () => {
   let requestedMetricNames: readonly string[] | undefined;
   const { channelAccess } = createServicesFixture({ videosByChannel: {}, analyticsResponses: {} });
@@ -698,6 +1109,7 @@ test("collectMetrics defaults to the full ANALYTICS_METRIC_NAMES list when metri
     channelStore: {
       async getAnalyticsLastAutoCollectedAt() { return null; },
       async markAnalyticsAutoCollected() {},
+      async getChannelPublishedAt() { return null; },
     },
     settingsStore: {
       async getAnalyticsSyncSettings() { return { localTime: "12:00", timezone: "UTC" }; },

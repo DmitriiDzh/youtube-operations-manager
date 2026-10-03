@@ -152,3 +152,116 @@ export function computeDataQualityReport(args: {
 
   return { coveredDates, uncoveredDates, tooRecentDates, videosWithSkips };
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// BL-118 (docs/roadmap/plans/ANALYTICS_AGENT_FEEDBACK_PLAN.md) -- what the first MCP agent test needed on top of the base report:
+// the channel start date, honest ranges instead of 256 single dates, and an explicit statement of what "covered" means.
+// Kept separate from `computeDataQualityReport` because that shape is also frozen inside stored weekly reports.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** What "covered" means in `analytics_data_quality`. Stated in the result so no reader has to guess. */
+export const DATA_QUALITY_COVERED_MEANING =
+  "covered = a completed collection run's requested window included the date (or a metric row exists for it). It does NOT mean data " +
+  "is present: YouTube omits zero-activity days and reports recent days late. See coveredWithoutData and provisionalDates.";
+
+/**
+ * The most recent days are re-collected by every automatic run (the rolling window) because YouTube revises them after the fact:
+ * a covered date this recent is provisional, and the next automatic run is expected to refresh it.
+ */
+export const PROVISIONAL_WINDOW_DAYS = 7;
+
+export type DateRange = { startDate: string; endDate: string };
+
+/** Compacts a sorted list of ISO dates into contiguous ranges. */
+export function compactDateRanges(dates: readonly string[]): DateRange[] {
+  const ranges: DateRange[] = [];
+  const nextDay = (date: string) => new Date(Date.parse(`${date}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+  for (const date of dates) {
+    const last = ranges[ranges.length - 1];
+    if (last && nextDay(last.endDate) === date) last.endDate = date;
+    else ranges.push({ startDate: date, endDate: date });
+  }
+  return ranges;
+}
+
+export type AgentDataQualityExtras = {
+  /** Date the channel was created (YouTube `snippet.publishedAt`, date part); null when not synced yet. */
+  channelStartDate: string | null;
+  /** In-range dates that fall before the channel existed: not applicable, not "uncovered". */
+  notApplicableRange: DateRange | null;
+  coveredRanges: DateRange[];
+  /** Genuine gaps only (pre-channel dates removed), as ranges. */
+  uncoveredRanges: DateRange[];
+  /** Covered dates with no stored metric row at all: zero-activity days, or data YouTube had not reported yet. */
+  coveredWithoutData: string[];
+  /** Covered dates inside the re-collection window: expected to change when the next automatic run refreshes them. */
+  provisionalDates: string[];
+  coveredMeans: string;
+};
+
+/**
+ * Applies the channel start date to a base report and derives the BL-118 fields. Returns the adjusted base lists
+ * (`uncoveredDates`/`coveredDates` without pre-channel dates) together with the extras.
+ */
+export function extendDataQualityReport(args: {
+  report: DataQualityReport;
+  startDate: string;
+  channelStartDate: string | null;
+  datesWithAnyMetricRow: ReadonlySet<string>;
+  now: Date;
+}): { report: DataQualityReport; extras: AgentDataQualityExtras } {
+  const { channelStartDate } = args;
+  const isBeforeChannel = (date: string) => channelStartDate !== null && date < channelStartDate;
+
+  const notApplicable = args.report.uncoveredDates.filter(isBeforeChannel);
+  const adjusted: DataQualityReport = {
+    ...args.report,
+    coveredDates: args.report.coveredDates.filter((d) => !isBeforeChannel(d)),
+    uncoveredDates: args.report.uncoveredDates.filter((d) => !isBeforeChannel(d)),
+  };
+
+  const provisionalCutoff = new Date(args.now);
+  provisionalCutoff.setUTCDate(provisionalCutoff.getUTCDate() - PROVISIONAL_WINDOW_DAYS);
+  const provisionalCutoffDate = formatDateUtc(provisionalCutoff);
+
+  return {
+    report: adjusted,
+    extras: {
+      channelStartDate,
+      notApplicableRange: notApplicable.length > 0 ? { startDate: notApplicable[0], endDate: notApplicable[notApplicable.length - 1] } : null,
+      coveredRanges: compactDateRanges(adjusted.coveredDates),
+      uncoveredRanges: compactDateRanges(adjusted.uncoveredDates),
+      coveredWithoutData: adjusted.coveredDates.filter((d) => !args.datesWithAnyMetricRow.has(d)),
+      provisionalDates: adjusted.coveredDates.filter((d) => d > provisionalCutoffDate),
+      coveredMeans: DATA_QUALITY_COVERED_MEANING,
+    },
+  };
+}
+
+/**
+ * BL-118 -- whether EVERY date of `[startDate, endDate]` is already covered by a collection run (or still inside the reporting lag, where a
+ * new run cannot find more than the last one did). The manual-collection freshness gate refuses only when this is true: asking again for
+ * what is collected only burns quota, while a range with an uncovered date brings new data.
+ */
+export function isRangeFullyCovered(args: {
+  startDate: string;
+  endDate: string;
+  runs: ReadonlyArray<{ requestedStartDate: string; requestedEndDate: string; videoCount: number }>;
+  now: Date;
+  /**
+   * Default true: only a run that attempted videos proves coverage (the per-video question). Pass false for CHANNEL-level totals and for
+   * the manual-collection gate, where a run that attempted no videos (a channel with none, or a channel-totals-only catch-up run) still
+   * covers what it asked for.
+   */
+  requireVideos?: boolean;
+}): boolean {
+  const requireVideos = args.requireVideos ?? true;
+  const cutoff = new Date(args.now);
+  cutoff.setUTCDate(cutoff.getUTCDate() - ANALYTICS_REPORTING_LAG_DAYS);
+  const cutoffDate = formatDateUtc(cutoff);
+  return enumerateDates(args.startDate, args.endDate).every(
+    (date) =>
+      date > cutoffDate ||
+      args.runs.some((run) => (!requireVideos || run.videoCount > 0) && date >= run.requestedStartDate && date <= run.requestedEndDate)
+  );
+}
