@@ -1498,6 +1498,10 @@ export function LanguagesManager() {
                             <span className="text-emerald-400" title={`${lang}: translated`}>
                               &#10003;
                             </span>
+                          ) : video.defaultLanguage === lang ? (
+                            <span className="text-[10px] uppercase tracking-wide text-sky-400" title={`${lang}: this video's original language (no translation needed)`}>
+                              original
+                            </span>
                           ) : (
                             <span className="text-zinc-700" title={`${lang}: missing`}>
                               &mdash;

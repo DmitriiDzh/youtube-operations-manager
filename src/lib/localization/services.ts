@@ -40,7 +40,9 @@ type ServiceDependencies = {
 function computeOverviewRow(video: StoredVideoRecord, languages: string[]): LocalizationOverviewRow {
   const present = new Set(Object.keys(video.existingLocalizations));
   const presentLanguages = languages.filter((lang) => present.has(lang)).sort();
-  const missingLanguages = languages.filter((lang) => !present.has(lang)).sort();
+  // The video's own (default) language is its ORIGINAL: YouTube takes no localization for it, so it is never "missing". If a real localization for that
+  // code does exist it still counts as present above. Matching is by exact code (a default of `en-US` is not `en`).
+  const missingLanguages = languages.filter((lang) => !present.has(lang) && lang !== video.defaultLanguage).sort();
 
   return {
     videoId: video.videoId,
