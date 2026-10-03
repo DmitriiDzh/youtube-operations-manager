@@ -10,6 +10,7 @@ export type ProgressLedgerRow = { id: string; videoId: string; status: string; e
  *  - APPLYING                      -> a write attempt is in flight;
  *  - SUCCESS / DRY_RUN_COMPLETE    -> finished OK;
  *  - FAILED / CONFLICT / ABORTED_SYSTEMIC -> finished, not written (detail = error or status);
+ *  - CANCELLED                     -> skipped: the operator stopped the batch before this video started;
  *  - UNKNOWN                       -> outcome of a sent write could not be confirmed: shown as failed
  *    (needs reconciliation) so it is never presented as written.
  */
@@ -25,6 +26,8 @@ export function ledgerRowToItem(row: ProgressLedgerRow): OperationItem {
     case "CONFLICT":
     case "ABORTED_SYSTEMIC":
       return { ...base, status: "failed", detail: row.error ?? row.status };
+    case "CANCELLED":
+      return { ...base, status: "skipped", detail: "Cancelled" };
     case "UNKNOWN":
       return { ...base, status: "failed", detail: row.error ?? "UNKNOWN — outcome not confirmed" };
     default:
@@ -42,9 +45,11 @@ export function deriveBatchStage(rows: ProgressLedgerRow[], dryRun: boolean): st
 export function summarizeBatchRows(rows: ProgressLedgerRow[], dryRun: boolean): string {
   const ok = rows.filter((row) => row.status === "SUCCESS" || row.status === "DRY_RUN_COMPLETE").length;
   const notOk = rows.filter((row) => ["FAILED", "CONFLICT", "ABORTED_SYSTEMIC", "UNKNOWN"].includes(row.status)).length;
-  const waiting = rows.length - ok - notOk;
+  const cancelledCount = rows.filter((row) => row.status === "CANCELLED").length;
+  const waiting = rows.length - ok - notOk - cancelledCount;
   const parts = [`${ok} ${dryRun ? "checked" : "written"}`];
   if (notOk) parts.push(`${notOk} not written (see the batch table)`);
+  if (cancelledCount) parts.push(`${cancelledCount} cancelled`);
   if (waiting) parts.push(`${waiting} still waiting`);
   return `${parts.join(", ")}.`;
 }

@@ -75,6 +75,7 @@ export type DomainErrorCode =
   | "publish_at_requires_private"
   | "publish_at_already_published"
   | "video_details_conflict"
+  | "device_unavailable"
   | "deletion_targets_default_language"
   | "divergent_document_lineage"
   | "crdt_conflict_open"

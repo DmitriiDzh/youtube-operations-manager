@@ -75,7 +75,7 @@ export type OperationAction =
   | { type: "quota"; service: QuotaServiceKey; used: number; limit: number }
   | { type: "sync"; snapshot: ServerOperationSnapshot }
   | { type: "requestCancel" }
-  | { type: "finish"; message?: string | null; error?: boolean; now: number }
+  | { type: "finish"; message?: string | null; error?: boolean; outcome?: "success" | "cancelled"; now: number }
   | { type: "reset" };
 
 const FINAL_ITEM_STATUSES: ReadonlySet<OperationItemStatus> = new Set(["done", "failed", "skipped"]);
@@ -157,7 +157,11 @@ export function operationReducer(state: OperationState, action: OperationAction)
       return state.status === "running" && state.cancellable ? { ...state, status: "cancelling" } : state;
     case "finish": {
       if (!isOperationActive(state)) return state;
-      const status: OperationStatus = action.error ? "failed" : state.status === "cancelling" ? "cancelled" : "success";
+      // `outcome` lets a caller that KNOWS the result override the guess: a cancel request that arrived
+      // too late (the work finished anyway) must end as success, not as "cancelled".
+      const status: OperationStatus = action.error
+        ? "failed"
+        : action.outcome ?? (state.status === "cancelling" ? "cancelled" : "success");
       return { ...state, status, finishedAt: action.now, message: action.message ?? null, stage: null };
     }
     case "reset":

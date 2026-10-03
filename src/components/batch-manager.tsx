@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { deriveBatchStage, ledgerRowToItem, summarizeBatchRows } from "./batch-progress";
 import { ConfirmDialog } from "./confirm-dialog";
@@ -104,6 +104,9 @@ export function BatchManager({
   const [confirmingExecute, setConfirmingExecute] = useState(false);
   const [confirmingSendAll, setConfirmingSendAll] = useState(false);
   const op = useOperation();
+  // The batch whose execution the overlay is showing -- what Cancel is sent for.
+  const runningBatchIdRef = useRef<string | null>(null);
+  const [confirmingResend, setConfirmingResend] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -214,14 +217,16 @@ export function BatchManager({
    * reports each ledger row's status as the server commits it -- so the overlay shows real
    * per-video progress without any server-side change. Polling lives only as long as THIS request,
    * so a stale batch left PENDING in the database can never produce an unclosable overlay.
-   * No Cancel here: stopping a running batch is a write-pipeline state change (not yet built); an
-   * overlay button that merely stopped polling would be a fake cancel.
+   * Cancel (live execution only) asks the SERVER to stop before the next video (ADR 0016); the overlay
+   * keeps polling until the execute request itself returns, so it never claims a stop that did not happen.
    */
   async function runBatchRequest(batchId: string, kind: "execute" | "prepare", title: string, failureMessage: string) {
     if (!channelId) return;
     const base = `/api/channels/${encodeURIComponent(channelId)}/batches/${encodeURIComponent(batchId)}`;
     const dryRun = kind === "prepare";
-    op.start({ title, cancellable: false, quotaServices: ["dataApi"] });
+    runningBatchIdRef.current = batchId;
+    // Only a live execution can be cancelled (ADR 0016); a dry run writes nothing and is short.
+    op.start({ title, cancellable: kind === "execute", quotaServices: ["dataApi"] });
     op.setStage(dryRun ? deriveBatchStage([], true) : "Preparing: identity, backup and conflict checks");
 
     let polling = false;
@@ -256,7 +261,11 @@ export function BatchManager({
       const finalRows = finalRes.ok ? (((await finalRes.json()).ledgerRows ?? []) as Parameters<typeof ledgerRowToItem>[0][]) : [];
       // Synchronous with finish below, so a poll still in flight can never overwrite the final state.
       op.setItems(finalRows.map(ledgerRowToItem));
-      op.finish({ message: summarizeBatchRows(finalRows, dryRun) });
+      op.finish({
+        // Cancel may arrive too late (everything already written): trust the server's own answer.
+        outcome: data.cancelled === true ? "cancelled" : "success",
+        message: summarizeBatchRows(finalRows, dryRun),
+      });
       await openBatch(batchId);
       if (kind === "execute") await fetchBatches(channelId);
     } catch (e) {
@@ -264,7 +273,52 @@ export function BatchManager({
       const message = e instanceof Error ? e.message : failureMessage;
       setError(message);
       op.finish({ error: true, message });
+    } finally {
+      runningBatchIdRef.current = null;
     }
+  }
+
+  /** Asks the server to stop the running batch before its next video. The button only flips the overlay
+   * to "stopping"; the real outcome comes back with the execute response. */
+  function cancelRunningBatch() {
+    const batchId = runningBatchIdRef.current;
+    op.requestCancel();
+    if (!channelId || !batchId) return;
+    void fetch(`/api/channels/${encodeURIComponent(channelId)}/batches/${encodeURIComponent(batchId)}/cancel`, { method: "POST" }).catch(
+      () => undefined
+    );
+  }
+
+  /** New live batch from the rows a cancel left untouched (CANCELLED), then execute it. The cancelled
+   * batch itself stays closed -- batch membership is immutable. Every safety check runs again. */
+  async function resendCancelledRows(batchId: string) {
+    if (!channelId) return;
+    const cancelledRows = ledgerRows.filter((row) => row.status === "CANCELLED");
+    if (cancelledRows.length === 0) return;
+    setCreatingBatch(true);
+    setError(null);
+    let newBatchId: string | null = null;
+    try {
+      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/batches`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          selections: cancelledRows.map((row) => ({ videoId: row.videoId, changeIds: row.changeIds })),
+          dryRun: false,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error((data as ApiError).message ?? `Failed to create a batch from batch ${batchId.slice(0, 8)}`);
+      newBatchId = data.id as string;
+      await fetchBatches(channelId);
+      setSelectedBatchId(newBatchId);
+      await openBatch(newBatchId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to create the batch");
+    } finally {
+      setCreatingBatch(false);
+    }
+    if (newBatchId) await executeBatch(newBatchId);
   }
 
   async function executeBatch(batchId: string) {
@@ -333,7 +387,7 @@ export function BatchManager({
       )}
 
       {error && <p className="text-sm text-red-400">{error}</p>}
-      <OperationOverlay state={op.state} onClose={op.reset} />
+      <OperationOverlay state={op.state} onCancel={cancelRunningBatch} onClose={op.reset} />
 
       <div>
         <h3 className="mb-2 text-sm font-semibold text-zinc-300">1. Pick a Change Set with approved changes</h3>
@@ -450,6 +504,15 @@ export function BatchManager({
               >
                 {preparing ? "Running dry-run..." : "Run dry-run preview"}
               </button>
+              {liveWritesEnabled && selectedBatch && !selectedBatch.dryRun && ledgerRows.some((row) => row.status === "CANCELLED") && (
+                <button
+                  onClick={() => setConfirmingResend(true)}
+                  disabled={executing || creatingBatch}
+                  className="rounded-lg border border-red-700 px-3 py-1.5 text-xs font-medium text-red-300 hover:border-red-500 disabled:opacity-40"
+                >
+                  {`Resend ${ledgerRows.filter((row) => row.status === "CANCELLED").length} cancelled in a new batch`}
+                </button>
+              )}
               {liveWritesEnabled && selectedBatch && !selectedBatch.dryRun && selectedBatch.status === "PENDING" && (
                 <button
                   onClick={() => setConfirmingExecute(true)}
@@ -536,6 +599,19 @@ export function BatchManager({
         />
       )}
 
+      {confirmingResend && selectedBatchId && (
+        <ConfirmDialog
+          title={`Write the ${ledgerRows.filter((row) => row.status === "CANCELLED").length} cancelled videos to YouTube?`}
+          description="Creates a NEW live batch from the videos this batch did not get to, and runs it right away. Videos already written are not touched. Every check (identity, conflict, backup, verification) runs again, and any change that is no longer approved or has gone stale makes the whole new batch fail to start."
+          confirmLabel="Create and write"
+          confirmVariant="danger"
+          onCancel={() => setConfirmingResend(false)}
+          onConfirm={() => {
+            setConfirmingResend(false);
+            void resendCancelledRows(selectedBatchId);
+          }}
+        />
+      )}
       {confirmingExecute && selectedBatchId && (
         <ConfirmDialog
           title="Send this batch to YouTube for real?"

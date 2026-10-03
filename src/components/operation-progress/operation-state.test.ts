@@ -201,3 +201,25 @@ test("sync with a final server status ends the operation; later syncs after rese
   assert.equal(ended.finishedAt, 9);
   assert.deepEqual(run(ended, { type: "reset" }, { type: "sync", snapshot }), IDLE_OPERATION);
 });
+
+test("finish with an explicit outcome overrides the cancel guess: a cancel that arrived too late still ends as success", () => {
+  const lateCancel = run(
+    IDLE_OPERATION,
+    { type: "start", title: "t", cancellable: true, now: 0 },
+    { type: "requestCancel" },
+    { type: "finish", outcome: "success", now: 1 }
+  );
+  assert.equal(lateCancel.status, "success");
+  const real = run(
+    IDLE_OPERATION,
+    { type: "start", title: "t", cancellable: true, now: 0 },
+    { type: "finish", outcome: "cancelled", now: 1 }
+  );
+  assert.equal(real.status, "cancelled");
+  const failed = run(
+    IDLE_OPERATION,
+    { type: "start", title: "t", cancellable: true, now: 0 },
+    { type: "finish", error: true, outcome: "success", now: 1 }
+  );
+  assert.equal(failed.status, "failed", "an error is never overridden by an outcome");
+});

@@ -54,3 +54,13 @@ test("summary: 2 written, 1 failed, 1 waiting", () => {
   );
   assert.equal(summarizeBatchRows([row("DRY_RUN_COMPLETE")], true), "1 checked.");
 });
+
+test("CANCELLED is shown as skipped with the detail Cancelled, and counted separately in the summary", () => {
+  const item = ledgerRowToItem(row("CANCELLED"));
+  assert.equal(item.status, "skipped");
+  assert.equal(item.detail, "Cancelled");
+  assert.equal(
+    summarizeBatchRows([row("SUCCESS"), row("CANCELLED"), row("CANCELLED")], false),
+    "1 written, 2 cancelled."
+  );
+});

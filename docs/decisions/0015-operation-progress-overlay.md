@@ -27,10 +27,9 @@ rows are committed per row, so progress is already readable through `GET .../bat
    otherwise.
 3. **Batches show progress by polling** the existing batch GET route only while their own
    `execute`/`prepare` request is in flight, so a stale `PENDING` batch in the database can never
-   create an overlay that cannot be closed. **Batches have no Cancel yet:** stopping a live batch
-   changes the Gate B write-pipeline state machine (remaining rows, video locks, batch status) and
-   needs its own design and acceptance tests. A button that only stopped polling would be a fake
-   cancel.
+   create an overlay that cannot be closed. **Cancel for Batches** is a write-pipeline state change
+   (remaining rows, video locks, batch status) and is decided separately in ADR 0016; a button that
+   only stopped polling would be a fake cancel.
 4. **Server-run operations survive a reload** (slice 3, 2026-10-03). `src/lib/operation-progress`
    is an in-memory registry (a `globalThis` singleton) with a heartbeat: a run silent for 3 minutes
    is shown as failed, so a crashed job can never keep an overlay open, and a finished run stays

@@ -140,7 +140,7 @@ export function useOperation() {
   );
   const isCancelRequested = useCallback(() => cancelRef.current, []);
   const finish = useCallback(
-    (result: { message?: string | null; error?: boolean } = {}) => {
+    (result: { message?: string | null; error?: boolean; outcome?: "success" | "cancelled" } = {}) => {
       dispatch({ type: "finish", ...result, now: Date.now() });
       void pollQuota();
     },
