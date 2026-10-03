@@ -115,8 +115,9 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
           deps.store.getJob(parsed.channelId, REACH_BASIC_REPORT_TYPE_ID),
           deps.store.getAttempt(parsed.channelId, REACH_BASIC_REPORT_TYPE_ID),
         ]);
-        // A failed attempt throttles too (otherwise every dashboard open would retry a broken call).
-        const lastChecked = [known?.lastCheckedAt ?? null, attempt?.attemptedAt ?? null]
+        // A FAILED attempt does not throttle: its cause is usually fixable (toggle back on, scope re-granted,
+        // API enabled) and the automatic sync must pick that up on the next dashboard open, not 6 hours later.
+        const lastChecked = [known?.lastCheckedAt ?? null, attempt && attempt.outcome !== "failed" ? attempt.attemptedAt : null]
           .filter((d): d is Date => d !== null)
           .sort((a, b) => b.getTime() - a.getTime())[0];
         if (lastChecked) {
@@ -269,7 +270,7 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
 
       const createdMs = job?.jobCreatedAt ? Date.parse(job.jobCreatedAt) : NaN;
       const expectedMs = Number.isNaN(createdMs) ? null : createdMs + FIRST_REPORT_EXPECTED_WITHIN_HOURS * 3_600_000;
-      const lastChecked = [job?.lastCheckedAt ?? null, attempt?.attemptedAt ?? null]
+      const lastChecked = [job?.lastCheckedAt ?? null, attempt && attempt.outcome !== "failed" ? attempt.attemptedAt : null]
         .filter((d): d is Date => d !== null)
         .sort((a, b) => b.getTime() - a.getTime())[0];
 

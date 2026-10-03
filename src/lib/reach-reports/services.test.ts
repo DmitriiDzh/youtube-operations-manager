@@ -355,10 +355,19 @@ test("syncReachReports: a wrong-channel call records nothing (the channel check 
   assert.deepEqual(calls.attempts, []);
 });
 
-test("onlyIfDue is throttled by a recent FAILED attempt too, and goes through once 6 hours have passed", async () => {
-  const failedAt = new Date("2026-10-03T08:00:00Z");
-  const attempt = { attemptedAt: failedAt, outcome: "failed" as const, error: "x", filesListed: 0, filesImported: 0, failures: [] };
-  const recent = createFixture({ storedAttempt: attempt, now: new Date("2026-10-03T13:59:00Z") });
+test("onlyIfDue: a recent FAILED attempt does not throttle (its cause is fixable); a recent partial/ok attempt does, until 6 hours have passed", async () => {
+  const base = { error: null, filesListed: 1, filesImported: 1, failures: [] };
+  const failed = createFixture({
+    storedAttempt: { ...base, attemptedAt: new Date("2026-10-03T11:59:00Z"), outcome: "failed", error: "reads disabled" },
+    now: new Date("2026-10-03T12:00:00Z"),
+    reports: [],
+  });
+  const ranAfterFailure = await failed.services.syncReachReports({ ...SYNC, onlyIfDue: true });
+  assert.ok(!ranAfterFailure.skipped, "a failed attempt one minute ago must not block the retry");
+  assert.equal(failed.calls.ensureJob, 1);
+
+  const okAttempt = { ...base, attemptedAt: new Date("2026-10-03T08:00:00Z"), outcome: "partial" as const };
+  const recent = createFixture({ storedAttempt: okAttempt, now: new Date("2026-10-03T13:59:00Z") });
   assert.deepEqual(await recent.services.syncReachReports({ ...SYNC, onlyIfDue: true }), {
     skipped: true,
     reason: "checked_recently",
@@ -366,10 +375,8 @@ test("onlyIfDue is throttled by a recent FAILED attempt too, and goes through on
   });
   assert.equal(recent.calls.ensureJob, 0);
 
-  const due = createFixture({ storedAttempt: attempt, now: new Date("2026-10-03T14:00:00Z"), reports: [] });
-  const result = await due.services.syncReachReports({ ...SYNC, onlyIfDue: true });
-  assert.ok(!result.skipped);
-  assert.equal(due.calls.ensureJob, 1);
+  const due = createFixture({ storedAttempt: okAttempt, now: new Date("2026-10-03T14:00:00Z"), reports: [] });
+  assert.ok(!(await due.services.syncReachReports({ ...SYNC, onlyIfDue: true })).skipped);
 });
 
 test("getReachStatus with no job: everything null/empty, never overdue", async () => {

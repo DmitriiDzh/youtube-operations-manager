@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
 import { computeDefaultPeriodRange } from "@/lib/analytics/period";
 import { formatCtr, formatImpressions } from "@/lib/reach-reports/reach-format";
@@ -36,6 +36,7 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
   const [syncing, setSyncing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [status, setStatus] = useState<ReachStatusData | null>(null);
+  const activeChannelRef = useRef(channelId);
 
   const load = useCallback(async () => {
     try {
@@ -59,13 +60,18 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
   const loadStatus = useCallback(async () => {
     try {
       const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/reach/status`);
-      if (res.ok) setStatus((await res.json()) as ReachStatusData);
+      const body = res.ok ? ((await res.json()) as ReachStatusData) : null;
+      // Ignore a response that arrives after the user switched channels (this callback is recreated per channel).
+      if (body && activeChannelRef.current === channelId) setStatus(body);
     } catch {
       // keep the previous status, if any
     }
   }, [channelId]);
 
   useEffect(() => {
+    // A different channel never shows the previous channel's status, even if the new status request fails.
+    activeChannelRef.current = channelId;
+    setStatus(null);
     let cancelled = false;
     (async () => {
       if (!cancelled) await Promise.all([load(), loadStatus()]);
@@ -73,7 +79,7 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
     return () => {
       cancelled = true;
     };
-  }, [load, loadStatus]);
+  }, [channelId, load, loadStatus]);
 
   async function syncNow() {
     setSyncing(true);
