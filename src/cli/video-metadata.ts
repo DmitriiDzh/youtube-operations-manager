@@ -34,7 +34,7 @@ type ChangesetCliCoreSubset = Pick<
   ChangeSetCore,
   "listChangeSets" | "getChangeSet" | "previewImport" | "createChangeSetFromImport"
 >;
-type BatchCliCoreSubset = Pick<BatchCore, "listBatchesByChannel" | "requireBatchForChannel" | "listLedgerRows">;
+type BatchCliCoreSubset = Pick<BatchCore, "listBatchesByChannel" | "getBatchWithLedgerRows">;
 type ChannelSyncCliCoreSubset = Pick<ChannelSyncCore, "syncChannel" | "listChannels" | "listSyncedVideos">;
 // CLI parity for the MCP analytics_list/analytics_overview tools (same "machine-readable
 // analytics for operational agents" follow-up, docs/roadmap/BACKLOG.md).
@@ -173,6 +173,46 @@ export type ParsedArgs = {
 const EXPLICIT_NAMESPACES = ["auth", "playlist", "changeset", "batch", "channel", "analytics", "ai-localization", "agent", "asset"] as const;
 type ExplicitNamespace = (typeof EXPLICIT_NAMESPACES)[number];
 
+/** Every valid command per explicit namespace, and the metadata (no-namespace) commands: the single list `parseArgs` validates against and the gate below classifies. */
+export const CLI_COMMANDS_BY_NAMESPACE: Record<ExplicitNamespace, readonly string[]> = {
+  auth: ["login", "whoami", "list-channels", "select-channel", "list-users", "select-user", "logout", "revoke"],
+  playlist: ["list", "create", "update", "delete", "add", "remove"],
+  changeset: ["list", "get", "preview", "import"],
+  batch: ["list", "get"],
+  channel: ["sync", "list", "video-list"],
+  analytics: ["list", "overview", "data-quality", "comparable-age", "weekly-reports", "weekly-report-get"],
+  "ai-localization": ["generate", "create-change-set"],
+  agent: [
+    "capabilities",
+    "channel-context",
+    "video-context",
+    "channel-analytics",
+    "video-analytics",
+    "list-assets",
+    "get-asset-context",
+    "get-generation-provenance",
+    "create-content-proposal",
+    "get-content-proposal",
+    "list-content-proposals",
+    "register-external-artifact",
+    "list-proposal-artifacts",
+    "list-operations-files",
+    "get-operations-file",
+    "find-comparable-videos",
+    "list-asset-performance",
+    "competitors",
+    "market-intelligence",
+    "market-records",
+    "create-research-request",
+    "list-hypotheses",
+    "get-hypothesis-trail",
+    "create-experiment-proposal",
+    "channel-workspace",
+  ],
+  asset: ["register"],
+};
+export const CLI_METADATA_COMMANDS = ["list", "transcript", "preview", "apply"] as const;
+
 export function parseArgs(argv: string[]): ParsedArgs {
   const [namespaceRaw, maybeCommandRaw, ...remaining] = argv;
   const explicitNamespace = EXPLICIT_NAMESPACES.find((n) => n === namespaceRaw) as
@@ -184,46 +224,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
     ? remaining
     : [maybeCommandRaw, ...remaining].filter(Boolean);
 
-  const validCommandsByNamespace: Record<ExplicitNamespace, string[]> = {
-    auth: ["login", "whoami", "list-channels", "select-channel", "list-users", "select-user", "logout", "revoke"],
-    playlist: ["list", "create", "update", "delete", "add", "remove"],
-    changeset: ["list", "get", "preview", "import"],
-    batch: ["list", "get"],
-    channel: ["sync", "list", "video-list"],
-    analytics: ["list", "overview", "data-quality", "comparable-age", "weekly-reports", "weekly-report-get"],
-    "ai-localization": ["generate", "create-change-set"],
-    agent: [
-      "capabilities",
-      "channel-context",
-      "video-context",
-      "channel-analytics",
-      "video-analytics",
-      "list-assets",
-      "get-asset-context",
-      "get-generation-provenance",
-      "create-content-proposal",
-      "get-content-proposal",
-      "list-content-proposals",
-      "register-external-artifact",
-      "list-proposal-artifacts",
-      "list-operations-files",
-      "get-operations-file",
-      "find-comparable-videos",
-      "list-asset-performance",
-      "competitors",
-      "market-intelligence",
-      "market-records",
-      "create-research-request",
-      "list-hypotheses",
-      "get-hypothesis-trail",
-      "create-experiment-proposal",
-      "channel-workspace",
-    ],
-    asset: ["register"],
-  };
-  const validMetadataCommands = ["list", "transcript", "preview", "apply"];
+  const validMetadataCommands = CLI_METADATA_COMMANDS;
   const validCommands = hasExplicitNamespace
-    ? validCommandsByNamespace[explicitNamespace]
+    ? CLI_COMMANDS_BY_NAMESPACE[explicitNamespace]
     : validMetadataCommands;
 
   if (!commandRaw || !validCommands.includes(commandRaw)) {
@@ -381,117 +384,79 @@ export function optionalStringFlag(
   return readStringFlag(flags, key);
 }
 
-// Read-only per docs/DEVELOPMENT_PLAYBOOK.md §6.7's three-way classification: returns data or
-// switches which locally active identity/channel is used for future *read* resolution, but
-// mutates no YouTube state and no local record other than "which existing option is active."
-// `select-channel`/`select-user` are intentionally excluded (they persist a local-mutation
-// side effect, matching §6.7's "a local-approval tool is a mutation" rule) -- and are gated,
-// consistent with how the same two write_channel_select/auth_user_select MCP tools are
-// classified as local-state mutations, not reads, in src/mcp/server.ts.
-const READ_ONLY_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
-  "list",
-  "transcript",
-  "preview",
-  "whoami",
-  "list-channels",
-  "list-users",
-  // changeset get / batch get (read a single record); channel video-list (read synced
-  // videos). "sync" and "import" are deliberately NOT here -- both mutate local state
-  // (channels/videos, or changesets/changes respectively) and stay gated by the default
-  // (anything not explicitly listed here or in AUTH_SESSION_EXEMPT_CLI_COMMANDS is gated).
-  "get",
-  "video-list",
-  // analytics list (local read of already-collected rows) / analytics overview (a live
-  // Analytics API read, but mutates nothing anywhere -- same read-only classification as
-  // playlist_list's own live YouTube read in the MCP server) / analytics data-quality (local
-  // read over analytics_collection_runs) / analytics comparable-age (local read over
-  // video_metrics_daily, aligned by days-since-publish) / analytics weekly-reports,
-  // weekly-report-get (local reads over analytics_weekly_reports -- generation stays
-  // Web-UI-triggered only, no CLI/MCP command creates a snapshot).
-  "overview",
-  "data-quality",
-  "comparable-age",
-  "weekly-reports",
-  "weekly-report-get",
-  // ai-localization generate: persists nothing (mirrors "preview"'s own classification above --
-  // the mock provider makes no network call at all; a real-connection call is gated by the
-  // service's own internal device-availability check, RISK-30, not by this CLI gate).
-  // "create-change-set" is deliberately NOT here -- it persists a new Change Set.
-  "generate",
-  // agent capabilities: a pure local read (instance metadata + a static capability list).
-  // agent channel-context/video-context (slice B): both read only already-synced local data,
-  // mutate nothing -- same classification as "get"/"video-list" above.
-  "capabilities",
-  "channel-context",
-  "video-context",
-  // agent channel-analytics: a live YouTube Analytics API read (like "analytics overview"), but
-  // mutates no local state. agent video-analytics: a local read only (like "analytics list").
-  // Neither persists anything -- same classification as their wrapped tools above.
-  "channel-analytics",
-  "video-analytics",
-  // agent list-assets/get-asset-context: pure local reads over the asset catalog -- never
-  // resolves referenceValue to an actual file, never mutates. "asset register" is deliberately
-  // NOT here -- it persists a new row.
-  "list-assets",
-  "get-asset-context",
-  // agent get-generation-provenance: a local read over an immutable, already-persisted row.
-  "get-generation-provenance",
-  // agent get-content-proposal/list-content-proposals: pure local reads over the proposal
-  // record -- never resolves referenced videos/assets, never mutates. "create-content-proposal"
-  // is deliberately NOT here -- it persists a new row.
-  "get-content-proposal",
-  "list-content-proposals",
-  // agent list-proposal-artifacts: a local read over already-registered artifact links.
-  // "register-external-artifact" is deliberately NOT here -- it persists a new asset AND link row.
-  "list-proposal-artifacts",
-  // agent list-operations-files/get-operations-file: pure filesystem reads over the
-  // operator-configured operations-workspace directory -- never mutate anything. There is no
-  // "set-operations-workspace-path" CLI command in this (or any) namespace -- that path can only
-  // be set through the Web UI's Settings tab (owner spec §17's self-authorization concern:
-  // an agent that could choose its own instructions directory would be authorizing its own
-  // filesystem access).
-  "list-operations-files",
-  "get-operations-file",
-  // agent channel-workspace (Phase 11, docs/roadmap/plans/PHASE_11_PLAN.md): a local read of one
-  // stored path string -- never touches the workspace path itself, never mutates. Like the operations-workspace
-  // path above, there is no CLI command in any namespace that can SET a channel workspace path --
-  // only the Web UI's Settings -> Channels card can (AC-P11-10).
-  "channel-workspace",
-  // agent find-comparable-videos (slice K, owner spec §10): local reads only (sync mirror +
-  // local analytics rows), never a live YouTube call, never mutates anything.
-  "find-comparable-videos",
-  // agent list-asset-performance (slice L, owner spec §16): local reads only (asset catalog +
-  // sync mirror + local analytics rows), never a live YouTube call, never mutates anything.
-  "list-asset-performance",
-  // agent competitors/market-intelligence (Phase 9 slice 4,
-  // docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md): local reads only over the market-intelligence
-  // module's own watchlist/evidence storage, never a live YouTube call, never mutates anything.
-  "competitors",
-  "market-intelligence",
-  // agent market-records (Phase 9 slice 9G, part A,
-  // docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md): same classification as the two above -- a pure
-  // fan-out over already-existing local reads.
-  "market-records",
-  // agent list-hypotheses/get-hypothesis-trail (Phase 10 slice 2,
-  // docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md): same classification as the two above -- pure
-  // local reads over decision-engine's own hypothesis/experiment/outcome storage, never mutates
-  // anything. "create-experiment-proposal" is deliberately NOT here -- it persists a new row.
-  "list-hypotheses",
-  "get-hypothesis-trail",
+// The device-availability gate (operation lock / recovery mode) classifies every CLI command by its FULLY QUALIFIED
+// `namespace command` pair (BL-009) -- never by a bare command word. A bare word such as "list" or "get" is reused across
+// namespaces, so keying on it would let a future mutating `<namespace> list` silently inherit the read-only treatment of an
+// unrelated namespace's `list`. Anything not listed in either set below is GATED (fail-safe by construction); the metadata
+// commands (`list`, `transcript`, `preview`, `apply` with no namespace) use the namespace key "metadata".
+//
+// Read-only per docs/DEVELOPMENT_PLAYBOOK.md §6.7's three-way classification: returns data (local or a live read) but mutates
+// nothing locally or on YouTube. `auth select-channel`/`auth select-user` persist a local selection and are gated, consistent
+// with the MCP write_channel_select/auth_user_select tools. `channel sync`, `changeset import`, `ai-localization create-change-set`,
+// `agent create-content-proposal`/`register-external-artifact`/`create-research-request`/`create-experiment-proposal` and
+// `asset register` each persist rows and stay gated. No CLI command can set the operations-workspace or a channel-workspace path
+// (Web UI Settings only), and `analytics weekly-reports*` only read: generation is Web-UI-triggered.
+export type CliGateKey = `${string} ${string}`;
+export const cliGateKey = (namespace: string, command: string): CliGateKey => `${namespace} ${command}`;
+
+const READ_ONLY_CLI_COMMANDS: ReadonlySet<string> = new Set([
+  "metadata list",
+  "metadata transcript",
+  "metadata preview",
+  "auth whoami",
+  "auth list-channels",
+  "auth list-users",
+  "playlist list",
+  "changeset list",
+  "changeset get",
+  "changeset preview",
+  "batch list",
+  "batch get",
+  "channel list",
+  "channel video-list",
+  "analytics list",
+  "analytics overview",
+  "analytics data-quality",
+  "analytics comparable-age",
+  "analytics weekly-reports",
+  "analytics weekly-report-get",
+  // ai-localization generate persists nothing (like "preview"); a real-connection call is gated by the service's own check (RISK-30).
+  "ai-localization generate",
+  "agent capabilities",
+  "agent channel-context",
+  "agent video-context",
+  "agent channel-analytics",
+  "agent video-analytics",
+  "agent list-assets",
+  "agent get-asset-context",
+  "agent get-generation-provenance",
+  "agent get-content-proposal",
+  "agent list-content-proposals",
+  "agent list-proposal-artifacts",
+  "agent list-operations-files",
+  "agent get-operations-file",
+  "agent channel-workspace",
+  "agent find-comparable-videos",
+  "agent list-asset-performance",
+  "agent competitors",
+  "agent market-intelligence",
+  "agent market-records",
+  "agent list-hypotheses",
+  "agent get-hypothesis-trail",
 ]);
 
-// OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of
-// `/api/auth/**` (NextAuth's own route): decision 6 (docs/decisions/0002-...) keeps this
-// device's own OAuth session independent of the handoff/recovery-mode gate. These DO mutate
-// local state (the `users` row), so they are deliberately not on READ_ONLY_CLI_COMMANDS above --
-// they are exempt from the gate for a different reason. Found by independent review that an
-// earlier version of this file gated these while proxy.ts exempted the equivalent Web path,
-// an undocumented, unintended divergence between interfaces for the identical operation.
-const AUTH_SESSION_EXEMPT_CLI_COMMANDS: ReadonlySet<ParsedArgs["command"]> = new Set([
-  "login",
-  "logout",
-  "revoke",
-]);
+// OAuth session establishment/removal -- mirrors src/proxy.ts's unconditional exemption of `/api/auth/**`: decision 6
+// (docs/decisions/0002-...) keeps this device's own OAuth session independent of the handoff/recovery-mode gate. These DO
+// mutate local state (the `users` row), so they are not read-only -- they are exempt for a different reason.
+const AUTH_SESSION_EXEMPT_CLI_COMMANDS: ReadonlySet<string> = new Set(["auth login", "auth logout", "auth revoke"]);
+
+/** How the gate treats one command: exposed so a test can pin the classification of EVERY command and of an unknown one. */
+export function classifyCliCommand(namespace: string, command: string): "read_only" | "auth_session_exempt" | "gated" {
+  const key = cliGateKey(namespace, command);
+  if (READ_ONLY_CLI_COMMANDS.has(key)) return "read_only";
+  if (AUTH_SESSION_EXEMPT_CLI_COMMANDS.has(key)) return "auth_session_exempt";
+  return "gated";
+}
 
 function serializeSuccess(data: unknown) {
   return JSON.stringify({ ok: true, data });
@@ -608,10 +573,7 @@ export async function runCliCommand(args: {
     // single choke point, mirroring src/proxy.ts's and MCP's, gating every mutating command
     // (everything except the plainly read-only ones below) behind the local operation lock and
     // the device-handoff recovery-mode check -- never bypassable by calling the CLI directly.
-    if (
-      !READ_ONLY_CLI_COMMANDS.has(parsedArgs.command) &&
-      !AUTH_SESSION_EXEMPT_CLI_COMMANDS.has(parsedArgs.command)
-    ) {
+    if (classifyCliCommand(parsedArgs.namespace, parsedArgs.command) === "gated") {
       await assertDeviceAvailableForMutation(rawSqlClient);
     }
 
@@ -740,12 +702,10 @@ export async function runCliCommand(args: {
         return 0;
       }
 
-      // "get" -- requireBatchForChannel verifies this batch actually belongs to channelId
+      // "get" -- getBatchWithLedgerRows verifies this batch actually belongs to channelId
       // before returning anything (AGENTS.md §F), not a bare getBatch(batchId).
       const batchId = requiredStringFlag(parsedArgs.flags, "batchId");
-      const batch = await operationsCore.requireBatchForChannel(channelId, batchId);
-      const ledgerRows = await operationsCore.listLedgerRows(batchId);
-      writeStdout(serializeSuccess({ batch, ledgerRows }));
+      writeStdout(serializeSuccess(await operationsCore.getBatchWithLedgerRows(channelId, batchId)));
       return 0;
     }
 

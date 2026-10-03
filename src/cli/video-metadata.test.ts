@@ -1899,7 +1899,7 @@ function makeOperationsCoreStub(): Pick<
   ChangeSetCore,
   "listChangeSets" | "getChangeSet" | "previewImport" | "createChangeSetFromImport"
 > &
-  Pick<BatchCore, "listBatchesByChannel" | "requireBatchForChannel" | "listLedgerRows"> {
+  Pick<BatchCore, "listBatchesByChannel" | "getBatchWithLedgerRows"> {
   return {
     listChangeSets: async () => [makeChangeSetRecord()],
     getChangeSet: async () => ({
@@ -1919,8 +1919,7 @@ function makeOperationsCoreStub(): Pick<
       totalErrors: 0,
     }),
     listBatchesByChannel: async () => [],
-    requireBatchForChannel: async () => makeBatchRecord(),
-    listLedgerRows: async () => [],
+    getBatchWithLedgerRows: async () => ({ batch: makeBatchRecord(), ledgerRows: [] }),
   };
 }
 
@@ -2090,12 +2089,12 @@ test("CLI changeset import fails cleanly when --file does not exist", async () =
   assert.match(envelope.error.message, /--file/);
 });
 
-test("CLI batch list and batch get use requireBatchForChannel, not a bare batchId lookup", async () => {
+test("CLI batch get reads through the ownership-checked getBatchWithLedgerRows (channel + batch), not a bare batchId lookup", async () => {
   const operationsCore = makeOperationsCoreStub();
   const seenArgs: unknown[] = [];
-  operationsCore.requireBatchForChannel = async (channelId: string, batchId: string) => {
+  operationsCore.getBatchWithLedgerRows = async (channelId: string, batchId: string) => {
     seenArgs.push([channelId, batchId]);
-    return makeBatchRecord();
+    return { batch: makeBatchRecord(), ledgerRows: [] };
   };
 
   const stdout: string[] = [];

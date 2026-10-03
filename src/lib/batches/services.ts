@@ -466,6 +466,17 @@ export function createBatchServices(deps: ServiceDependencies) {
     return rows.map(toLedgerRow);
   }
 
+  /**
+   * The ownership-checked read every surface (Web UI route, MCP `batch_get`, CLI `batch get`) returns: the batch AFTER proving it belongs to
+   * `channelId` (AGENTS.md §F -- never a bare `getBatch(batchId)`), together with its ledger rows. One implementation instead of the same
+   * composition copied into three call sites (BL-010).
+   */
+  async function getBatchWithLedgerRows(channelId: string, batchId: string): Promise<{ batch: Batch; ledgerRows: LedgerRow[] }> {
+    const batch = await requireBatchForChannel(channelId, batchId);
+    const ledgerRows = await listLedgerRows(batchId);
+    return { batch, ledgerRows };
+  }
+
   /** Atomic PENDING -> RUNNING claim; fails if the batch is already running (AC-CONCURRENCY-02/03). */
   async function claimBatchExecution(batchId: string): Promise<{ runId: string }> {
     await requireBatch(batchId);
@@ -1859,6 +1870,7 @@ export function createBatchServices(deps: ServiceDependencies) {
     getBatch,
     listBatchesByChannel,
     requireBatchForChannel,
+    getBatchWithLedgerRows,
     listLedgerRows,
     claimBatchExecution,
     completeBatchExecution,
