@@ -248,13 +248,20 @@ export function isRangeFullyCovered(args: {
   endDate: string;
   runs: ReadonlyArray<{ requestedStartDate: string; requestedEndDate: string; videoCount: number }>;
   now: Date;
+  /**
+   * Default true: only a run that attempted videos proves coverage (the per-video question). Pass false for CHANNEL-level totals and for
+   * the manual-collection gate, where a run that attempted no videos (a channel with none, or a channel-totals-only catch-up run) still
+   * covers what it asked for.
+   */
+  requireVideos?: boolean;
 }): boolean {
+  const requireVideos = args.requireVideos ?? true;
   const cutoff = new Date(args.now);
   cutoff.setUTCDate(cutoff.getUTCDate() - ANALYTICS_REPORTING_LAG_DAYS);
   const cutoffDate = formatDateUtc(cutoff);
   return enumerateDates(args.startDate, args.endDate).every(
     (date) =>
       date > cutoffDate ||
-      args.runs.some((run) => run.videoCount > 0 && date >= run.requestedStartDate && date <= run.requestedEndDate)
+      args.runs.some((run) => (!requireVideos || run.videoCount > 0) && date >= run.requestedStartDate && date <= run.requestedEndDate)
   );
 }

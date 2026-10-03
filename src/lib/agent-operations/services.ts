@@ -728,6 +728,8 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
               : "The comparison period lies fully inside the channel's lifetime.";
 
       const local = overview.source === "local";
+      // Days this recent were collected inside YouTube's reporting lag and are re-collected by every automatic run: provisional.
+      const provisionalFromDate = new Date(deps.now().getTime() - 7 * 86_400_000).toISOString().slice(0, 10);
       const output: ChannelAnalyticsContext = {
         channelId: overview.channelId,
         channelStartDate,
@@ -747,7 +749,7 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
               source: "local_collected_data",
               asOf: overview.collectedAt ?? deps.now().toISOString(),
               note:
-                "Read from the channel totals this app collected and stored locally (no live YouTube call, no quota); asOf is when they were last collected. YouTube itself reports this data with a 1-2 day lag, and the most recent days are refreshed by the next automatic collection. Pass refresh=true for a live read.",
+                `Read from the channel totals this app collected and stored locally (no live YouTube call, no quota); asOf is when they were last collected. YouTube itself reports this data with a 1-2 day lag, and days from ${provisionalFromDate} on are PROVISIONAL: the automatic collection re-collects them daily, so they may still change. Pass refresh=true for a live read.`,
             }
           : {
               source: "live_youtube_analytics_api",

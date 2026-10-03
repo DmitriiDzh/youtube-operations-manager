@@ -288,3 +288,10 @@ test("BL-118 isRangeFullyCovered: a run with no videos proves nothing, and sever
   ];
   assert.equal(isRangeFullyCovered({ startDate: "2026-08-01", endDate: "2026-08-05", runs: two, now }), true);
 });
+
+test("BL-118 isRangeFullyCovered: requireVideos=false lets a run that attempted no videos cover its range (channel totals, a channel with no videos)", () => {
+  const now = new Date("2026-09-22T13:00:00Z");
+  const runs = [{ requestedStartDate: "2026-08-01", requestedEndDate: "2026-08-03", videoCount: 0 }];
+  assert.equal(isRangeFullyCovered({ startDate: "2026-08-01", endDate: "2026-08-03", runs, now }), false);
+  assert.equal(isRangeFullyCovered({ startDate: "2026-08-01", endDate: "2026-08-03", runs, now, requireVideos: false }), true);
+});

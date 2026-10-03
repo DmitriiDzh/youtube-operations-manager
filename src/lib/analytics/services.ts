@@ -286,6 +286,15 @@ function mapStoredWeeklyReport(row: {
 }
 
 export function createAnalyticsServices(deps: ServiceDependencies) {
+  // BL-118: items whose catch-up query failed are not retried for a while (a removed/private video would otherwise be re-queried on every
+  // dashboard open). In-process only: a restart simply tries again.
+  const catchUpFailedAt = new Map<string, number>();
+  const CATCH_UP_RETRY_COOLDOWN_MS = 6 * 3_600_000;
+  const coolingDown = (key: string) => {
+    const at = catchUpFailedAt.get(key);
+    return at !== undefined && deps.clock.now().getTime() - at < CATCH_UP_RETRY_COOLDOWN_MS;
+  };
+
   /**
    * BL-118 -- fetches and stores the channel-level daily totals for a window (one Analytics query). Returns whether it succeeded; never
    * throws (a failed channel query must not fail or hide the per-video collection that already happened).
@@ -342,7 +351,11 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           runs: runs.map((r) => ({ requestedStartDate: r.requestedStartDate, requestedEndDate: r.requestedEndDate, channelLevel: r.channelLevel === true })),
         })
       : null;
-    return { rollingStart, videoRanges, channelRange };
+    return {
+      rollingStart,
+      videoRanges: videoRanges.filter((range) => !coolingDown(`${channelId}|video|${range.videoId}`)),
+      channelRange: channelRange && !coolingDown(`${channelId}|channel`) ? channelRange : null,
+    };
   }
 
   const services = {
@@ -504,7 +517,21 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         // asks"): the refusal only protects against re-fetching data that is already collected. A request that contains at least one date
         // no collection run has covered (an older range being backfilled) brings NEW data and is allowed. Dates still inside the
         // reporting lag can never hold more data than the last run already got, so they count as covered for this decision.
-        if (markedFresh && genuineRunCoversExpectedDate && isRangeFullyCovered({ startDate: parsedInput.startDate, endDate: parsedInput.endDate, runs, now })) {
+        // A run that attempted no videos still counts as coverage for a channel that has none (the old behaviour); for a channel WITH videos
+        // such a run is a channel-totals-only catch-up run, which says nothing about per-video data.
+        const channelHasVideos =
+          markedFresh && genuineRunCoversExpectedDate ? (await deps.videoStore.listVideosByChannel(parsedInput.channelId)).length > 0 : false;
+        if (
+          markedFresh &&
+          genuineRunCoversExpectedDate &&
+          isRangeFullyCovered({
+            startDate: parsedInput.startDate,
+            endDate: parsedInput.endDate,
+            runs: channelHasVideos ? runs.filter((run) => !(run.videoCount === 0 && run.channelLevel === true)) : runs,
+            requireVideos: false,
+            now,
+          })
+        ) {
           const nextRefreshAt = computeNextRefreshAt({ now, timezone, localTime });
           throw new DomainError({
             code: "analytics_data_current",
@@ -612,7 +639,12 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         // "Collect now" button until tomorrow's boundary, with zero real data fetched and no
         // visible error anywhere. A channel with no videos at all (`videos.length === 0`) still
         // counts as fully, successfully processed -- there was nothing to fetch.
-        if (videos.length === 0 || upsertsIssued > 0) {
+        // BL-118: a window that ends before EVERY video existed (a backfill from before the channel) attempted nothing: it neither marks the
+        // channel collected today nor records a run.
+        const nothingAttempted = videos.length === 0 && allVideos.length > 0;
+        if (nothingAttempted) {
+          deps.logger.info({ event: "analytics.collect_metrics.nothing_attempted", context: { channelId: parsedInput.channelId } });
+        } else if (videos.length === 0 || upsertsIssued > 0) {
           await deps.channelStore.markAnalyticsAutoCollected(parsedInput.channelId, now);
         } else {
           deps.logger.error({
@@ -624,15 +656,28 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         // Phase 8 follow-up, slice 2 (data-quality diagnostics) -- the ground truth
         // `getDataQualityReport` reads. Recorded even when every video was skipped (an all-skip
         // run is itself a real, reportable fact, not something to hide by omitting the row).
-        await deps.collectionRunStore.record({
-          channelId: output.channelId,
-          requestedStartDate: output.startDate,
-          requestedEndDate: output.endDate,
-          videoCount: output.videoCount,
-          upsertsIssued: output.upsertsIssued,
-          skippedVideoIds: output.skippedVideoIds,
-          channelLevel,
-        });
+        if (!nothingAttempted) {
+          await deps.collectionRunStore.record({
+            channelId: output.channelId,
+            requestedStartDate: output.startDate,
+            requestedEndDate: output.endDate,
+            videoCount: output.videoCount,
+            upsertsIssued: output.upsertsIssued,
+            skippedVideoIds: output.skippedVideoIds,
+            channelLevel,
+          });
+        } else if (channelLevel) {
+          // Only the channel totals were collected (no video existed yet): record exactly that, no per-video claim.
+          await deps.collectionRunStore.record({
+            channelId: output.channelId,
+            requestedStartDate: output.startDate,
+            requestedEndDate: output.endDate,
+            videoCount: 0,
+            upsertsIssued: 0,
+            skippedVideoIds: [],
+            channelLevel: true,
+          });
+        }
 
         deps.logger.info({
           event: "analytics.collect_metrics.success",
@@ -834,6 +879,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             }
           } catch (error) {
             skippedVideoIds.push(range.videoId);
+            catchUpFailedAt.set(`${parsedInput.channelId}|video|${range.videoId}`, deps.clock.now().getTime());
             deps.logger.error({
               event: "analytics.history_catch_up.video_skipped",
               context: { channelId: parsedInput.channelId, videoId: range.videoId, message: error instanceof Error ? error.message : "Unknown error" },
@@ -847,24 +893,42 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         if (plan.channelRange) {
           progress?.stage("Collecting earlier channel totals");
           channelLevel = await collectChannelLevel({ credentials, channelId: parsedInput.channelId, ...plan.channelRange });
+          if (!channelLevel) catchUpFailedAt.set(`${parsedInput.channelId}|channel`, deps.clock.now().getTime());
         }
 
-        const froms = [...batch.map((r) => r.from), ...(plan.channelRange ? [plan.channelRange.startDate] : [])].sort();
-        const startDate = froms[0];
+        // What is recorded must claim only what was actually collected (a run's window counts as covered for EVERY video):
+        //  - the channel totals, as their own channel-only run (no per-video claim), only if that query succeeded;
+        //  - the per-video span as one run, only if EVERY planned video was queried successfully (otherwise the per-video progress lives in
+        //    `analytics_video_history` and nothing over-claims; a failed attempt records nothing, so repeated attempts cannot grow the table).
+        const remainingVideos = plan.videoRanges.length - batch.length;
+        if (plan.channelRange && channelLevel) {
+          await deps.collectionRunStore.record({
+            channelId: parsedInput.channelId,
+            requestedStartDate: plan.channelRange.startDate,
+            requestedEndDate: plan.channelRange.endDate,
+            videoCount: 0,
+            upsertsIssued: 0,
+            skippedVideoIds: [],
+            channelLevel: true,
+          });
+        }
+        const startDate = [...batch.map((r) => r.from), ...(plan.channelRange ? [plan.channelRange.startDate] : [])].sort()[0];
         const endDate = plan.rollingStart ? shiftIsoDate(plan.rollingStart, -1) : startDate;
-        await deps.collectionRunStore.record({
-          channelId: parsedInput.channelId,
-          requestedStartDate: startDate,
-          requestedEndDate: endDate,
-          videoCount: batch.length,
-          upsertsIssued,
-          skippedVideoIds,
-          channelLevel,
-        });
+        if (batch.length > 0 && skippedVideoIds.length === 0 && remainingVideos === 0) {
+          await deps.collectionRunStore.record({
+            channelId: parsedInput.channelId,
+            requestedStartDate: batch.map((r) => r.from).sort()[0],
+            requestedEndDate: endDate,
+            videoCount: batch.length,
+            upsertsIssued,
+            skippedVideoIds: [],
+            channelLevel: false,
+          });
+        }
 
         deps.logger.info({
           event: "analytics.history_catch_up.success",
-          context: { channelId: parsedInput.channelId, videos: batch.length, upsertsIssued, channelLevel, remainingVideos: plan.videoRanges.length - batch.length },
+          context: { channelId: parsedInput.channelId, videos: batch.length, upsertsIssued, channelLevel, remainingVideos },
         });
         return {
           ranCatchUp: true,
@@ -874,7 +938,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
           channelLevel,
           startDate,
           endDate,
-          remainingVideos: plan.videoRanges.length - batch.length,
+          remainingVideos,
         };
       } catch (error) {
         throw mapUnknownError(error, "unauthorized");
@@ -980,6 +1044,7 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
             startDate: previousStartDate,
             endDate: parsedInput.endDate,
             runs: runs.filter((run) => run.channelLevel === true),
+            requireVideos: false,
             now: deps.clock.now(),
           });
           if (covered) {

@@ -905,7 +905,7 @@ test("BL-118 catch-up: the plan asks only for what is missing before the rolling
   assert.deepEqual(plan.channelRange, { startDate: "2026-08-13", endDate: "2026-09-13" });
 });
 
-test("BL-118 catch-up: runs once, stores day 0 and the channel totals, records ONE run, and a second call finds nothing left to do", async () => {
+test("BL-118 catch-up: runs once, stores day 0 and the channel totals, records a channel-only run plus a per-video run that claims only what was done, and a second call finds nothing left to do", async () => {
   const { services, channelAccess, upsertedRows, channelMetricRows, collectionRuns, historyRows, analyticsCallRanges } = catchUpFixture();
   await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
 
@@ -920,10 +920,16 @@ test("BL-118 catch-up: runs once, stores day 0 and the channel totals, records O
   assert.deepEqual(upsertedRows.map((r) => [r.videoId, r.metricDate, r.metricValue]), [["old", "2026-08-13", 4], ["old", "2026-08-20", 9]]);
   assert.deepEqual(channelMetricRows.map((r) => [r.metricDate, r.metricName, r.metricValue]), [["2026-08-13", "views", 143]]);
   assert.equal(historyRows.get("old")?.historyThrough, "2026-09-13");
-  assert.equal(collectionRuns.length, 1);
+  assert.equal(collectionRuns.length, 2);
+  // the channel totals are their own run: no per-video claim (videoCount 0)
   assert.deepEqual(
     [collectionRuns[0].requestedStartDate, collectionRuns[0].requestedEndDate, collectionRuns[0].videoCount, collectionRuns[0].channelLevel],
-    ["2026-08-13", "2026-09-13", 1, true]
+    ["2026-08-13", "2026-09-13", 0, true]
+  );
+  // the per-video run exists because EVERY planned video succeeded
+  assert.deepEqual(
+    [collectionRuns[1].requestedStartDate, collectionRuns[1].requestedEndDate, collectionRuns[1].videoCount, collectionRuns[1].channelLevel],
+    ["2026-08-13", "2026-09-13", 1, false]
   );
 
   assert.deepEqual(await services.runHistoryCatchUp({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }), { ranCatchUp: false });
@@ -935,17 +941,55 @@ test("BL-118 catch-up: runs once, stores day 0 and the channel totals, records O
   assert.deepEqual(report.notApplicableRange, { startDate: "2026-08-10", endDate: "2026-08-12" });
 });
 
-test("BL-118 catch-up: a video whose query failed is reported as skipped, its history is NOT advanced, and it is planned again next time", async () => {
-  const { services, channelAccess, historyRows } = catchUpFixture({
+test("BL-118 catch-up: a failed video claims nothing (no per-video run, history not advanced), is left alone for the 6-hour cooldown, then planned again", async () => {
+  const { services, channelAccess, historyRows, collectionRuns, analyticsCallRanges, setNow } = catchUpFixture({
     analyticsResponses: { old: new Error("simulated Analytics failure") },
   });
   await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
   const result = await services.runHistoryCatchUp({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
   assert.equal(result.ranCatchUp && result.skippedVideoIds.join(","), "old");
   assert.equal(historyRows.has("old"), false);
+  // only the channel-only run exists: the failed video made no over-claiming per-video run, so retries cannot grow the runs table
+  assert.deepEqual(collectionRuns.map((r) => [r.videoCount, r.channelLevel]), [[0, true]]);
+
+  const calls = analyticsCallRanges.length;
+  const cooled = await services.getHistoryCatchUpPlan({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
+  assert.deepEqual(cooled.videoRanges, [], "within the cooldown the failed video is not planned (a permanently failing video is not re-queried on every dashboard open)");
+  assert.deepEqual(await services.runHistoryCatchUp({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }), { ranCatchUp: false });
+  assert.equal(analyticsCallRanges.length, calls);
+
+  setNow(new Date(AUTO_NOW.getTime() + 6 * 3_600_000 + 1000));
   const again = await services.getHistoryCatchUpPlan({ credentialRef: { userId: "user-1" }, channelId: "UC_A" });
   assert.deepEqual(again.videoRanges.map((r) => r.videoId), ["old"]);
 });
+
+test("BL-118: a manual window that ends before every video existed attempts nothing: no run, the channel is NOT marked collected today; its channel totals are recorded as a channel-only run", async () => {
+  const { services, channelAccess, collectionRuns, lastAutoCollectedAtByChannel, analyticsCallRanges, channelMetricRows } = createServicesFixture({
+    videosByChannel: { UC_A: [{ videoId: "v1", channelId: "UC_A" }] },
+    analyticsResponses: {},
+    videoDetailsByChannel: { UC_A: [{ videoId: "v1", title: "V", publishedAt: "2026-09-10T10:00:00Z" }] },
+    channelAnalyticsResponses: { "2026-08-01|2026-08-31": [{ date: "2026-08-05", metrics: { views: 3 } }] },
+    now: AUTO_NOW,
+  });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  const result = await services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-08-01", endDate: "2026-08-31" });
+  assert.equal(result.videoCount, 0);
+  assert.equal(analyticsCallRanges.length, 0, "no per-video query: the video did not exist yet");
+  assert.equal(lastAutoCollectedAtByChannel.get("UC_A") ?? null, null, "a no-op window must not lock out today's real rolling collection");
+  assert.deepEqual(collectionRuns.map((r) => [r.videoCount, r.channelLevel]), [[0, true]]);
+  assert.equal(channelMetricRows.length, 1);
+});
+
+test("BL-118: a channel that has no videos at all keeps the old behaviour — marked collected and refused on a repeat for the same range", async () => {
+  const { services, channelAccess } = createServicesFixture({ videosByChannel: { UC_A: [] }, analyticsResponses: {}, now: AUTO_NOW });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_A" });
+  await services.runAutoCollectionIfStale({ credentialRef: { userId: "user-1" }, channelId: "UC_A" }); // rolling window 09-14..09-21, zero videos
+  await assert.rejects(
+    () => services.collectMetrics({ credentialRef: { userId: "user-1" }, channelId: "UC_A", startDate: "2026-09-15", endDate: "2026-09-21" }),
+    (error: unknown) => error instanceof DomainError && error.code === "analytics_data_current"
+  );
+});
+
 
 test("BL-118 catch-up: fails closed for a channel that is not the active one (no credential use, no query)", async () => {
   const { services, analyticsCallRanges } = catchUpFixture();
