@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import { deriveBatchStage, ledgerRowToItem, summarizeBatchRows } from "./batch-progress";
 import { ConfirmDialog } from "./confirm-dialog";
+import { OperationOverlay, useOperation } from "./operation-progress";
 
 type ChangeSetSummary = {
   id: string;
@@ -101,6 +103,7 @@ export function BatchManager({
   const [executing, setExecuting] = useState(false);
   const [confirmingExecute, setConfirmingExecute] = useState(false);
   const [confirmingSendAll, setConfirmingSendAll] = useState(false);
+  const op = useOperation();
 
   useEffect(() => {
     (async () => {
@@ -206,23 +209,69 @@ export function BatchManager({
     if (batchId) await executeBatch(batchId);
   }
 
-  async function executeBatch(batchId: string) {
+  /**
+   * Runs one blocking batch request (`execute` / `prepare`) while polling the batch GET route, which
+   * reports each ledger row's status as the server commits it -- so the overlay shows real
+   * per-video progress without any server-side change. Polling lives only as long as THIS request,
+   * so a stale batch left PENDING in the database can never produce an unclosable overlay.
+   * No Cancel here: stopping a running batch is a write-pipeline state change (not yet built); an
+   * overlay button that merely stopped polling would be a fake cancel.
+   */
+  async function runBatchRequest(batchId: string, kind: "execute" | "prepare", title: string, failureMessage: string) {
     if (!channelId) return;
+    const base = `/api/channels/${encodeURIComponent(channelId)}/batches/${encodeURIComponent(batchId)}`;
+    const dryRun = kind === "prepare";
+    op.start({ title, cancellable: false, quotaServices: ["dataApi"] });
+    op.setStage(dryRun ? deriveBatchStage([], true) : "Preparing: identity, backup and conflict checks");
+
+    let polling = false;
+    async function poll() {
+      if (polling) return;
+      polling = true;
+      try {
+        const res = await fetch(base);
+        if (!res.ok) return;
+        const data = await res.json();
+        const rows = (data.ledgerRows ?? []) as Parameters<typeof ledgerRowToItem>[0][];
+        op.setItems(rows.map(ledgerRowToItem));
+        op.setStage(deriveBatchStage(rows, dryRun));
+      } catch {
+        // A missed poll only delays the display; the request below is the source of truth.
+      } finally {
+        polling = false;
+      }
+    }
+    void poll();
+    const timer = setInterval(() => void poll(), 1500);
+
+    try {
+      const res = await fetch(`${base}/${kind}`, { method: "POST" });
+      const data = await res.json();
+      clearInterval(timer);
+      if (!res.ok) {
+        const err = data as ApiError;
+        throw new Error(err.message ?? failureMessage);
+      }
+      const finalRes = await fetch(base);
+      const finalRows = finalRes.ok ? (((await finalRes.json()).ledgerRows ?? []) as Parameters<typeof ledgerRowToItem>[0][]) : [];
+      // Synchronous with finish below, so a poll still in flight can never overwrite the final state.
+      op.setItems(finalRows.map(ledgerRowToItem));
+      op.finish({ message: summarizeBatchRows(finalRows, dryRun) });
+      await openBatch(batchId);
+      if (kind === "execute") await fetchBatches(channelId);
+    } catch (e) {
+      clearInterval(timer);
+      const message = e instanceof Error ? e.message : failureMessage;
+      setError(message);
+      op.finish({ error: true, message });
+    }
+  }
+
+  async function executeBatch(batchId: string) {
     setExecuting(true);
     setError(null);
     try {
-      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/batches/${encodeURIComponent(batchId)}/execute`, {
-        method: "POST",
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        const err = data as ApiError;
-        throw new Error(err.message ?? "Failed to execute batch");
-      }
-      await openBatch(batchId);
-      await fetchBatches(channelId);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to execute batch");
+      await runBatchRequest(batchId, "execute", "Writing batch to YouTube", "Failed to execute batch");
     } finally {
       setExecuting(false);
     }
@@ -247,21 +296,10 @@ export function BatchManager({
   }
 
   async function runDryRun(batchId: string) {
-    if (!channelId) return;
     setPreparing(true);
     setError(null);
     try {
-      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/batches/${encodeURIComponent(batchId)}/prepare`, {
-        method: "POST",
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        const err = data as ApiError;
-        throw new Error(err.message ?? "Failed to run dry-run preview");
-      }
-      await openBatch(batchId);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to run dry-run preview");
+      await runBatchRequest(batchId, "prepare", "Dry-run preview", "Failed to run dry-run preview");
     } finally {
       setPreparing(false);
     }
@@ -295,6 +333,7 @@ export function BatchManager({
       )}
 
       {error && <p className="text-sm text-red-400">{error}</p>}
+      <OperationOverlay state={op.state} onClose={op.reset} />
 
       <div>
         <h3 className="mb-2 text-sm font-semibold text-zinc-300">1. Pick a Change Set with approved changes</h3>

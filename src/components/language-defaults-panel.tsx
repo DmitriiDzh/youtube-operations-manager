@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "./confirm-dialog";
+import { OperationOverlay, useOperation } from "./operation-progress";
 
 type LanguageOption = { code: string; name: string };
 
@@ -52,7 +53,7 @@ export function LanguageDefaultsPanel({
   const [align, setAlign] = useState<Record<string, AlignState>>({});
   const [aligning, setAligning] = useState<"preview" | "apply" | null>(null);
   const [confirmAll, setConfirmAll] = useState(false);
-  const [progress, setProgress] = useState<string | null>(null);
+  const op = useOperation();
 
   const load = useCallback(async () => {
     try {
@@ -118,30 +119,57 @@ export function LanguageDefaultsPanel({
   const detailsUrl = (videoId: string, step: "preview" | "apply") =>
     `/api/channels/${encodeURIComponent(channelId)}/videos/${encodeURIComponent(videoId)}/details/${step}`;
 
-  async function previewAlignment(rows: DeviationRow[] = chosen): Promise<Record<string, AlignState>> {
+  /** Read-only: checks each video against YouTube before anything is written. Cooperative cancel --
+   * the flag is checked before each video, never mid-request. Does NOT finish the overlay itself:
+   * the caller decides (Fix all hands straight over to the confirm dialog on success). */
+  async function previewAlignment(
+    rows: DeviationRow[] = chosen
+  ): Promise<{ next: Record<string, AlignState>; cancelled: boolean }> {
     const next: Record<string, AlignState> = {};
-    if (!target && !targetAudio) return next;
+    if (!target && !targetAudio) return { next, cancelled: false };
     setAligning("preview");
-    let done = 0;
+    op.start({
+      title: "Checking videos",
+      cancellable: true,
+      quotaServices: ["dataApi"],
+      items: rows.map((row) => ({ id: row.videoId, label: row.title, status: "pending" })),
+    });
+    op.setStage("Reading current values from YouTube — nothing is changed");
+    let cancelled = false;
     for (const row of rows) {
-      setProgress(`Checking ${++done} / ${rows.length}...`);
+      if (op.isCancelRequested()) {
+        cancelled = true;
+        op.setItem(row.videoId, "skipped");
+        continue;
+      }
+      op.setItem(row.videoId, "running");
       try {
         const res = await fetch(detailsUrl(row.videoId, "preview"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ patch: patchFor(rows.find((r) => r.videoId === row.videoId) ?? row) }),
+          body: JSON.stringify({ patch: patchFor(row) }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.message ?? data.error ?? "Preview failed");
         next[row.videoId] = { status: "ready", etag: data.before?.etag ?? null, before: data.before?.defaultLanguage ?? null };
+        op.setItem(row.videoId, "done");
       } catch (e) {
-        next[row.videoId] = { status: "failed", message: e instanceof Error ? e.message : "Preview failed" };
+        const message = e instanceof Error ? e.message : "Preview failed";
+        next[row.videoId] = { status: "failed", message };
+        op.setItem(row.videoId, "failed", message);
       }
     }
     setAlign((prev) => ({ ...prev, ...next }));
     setAligning(null);
-    setProgress(null);
-    return next;
+    return { next, cancelled };
+  }
+
+  /** The Preview button: shows the outcome in the overlay and waits for Close. */
+  async function previewChosen() {
+    const { next, cancelled } = await previewAlignment();
+    const ready = Object.values(next).filter((state) => state.status === "ready").length;
+    const failed = Object.values(next).length - ready;
+    op.finish({ message: `${ready} ready${failed ? `, ${failed} failed the check` : ""}${cancelled ? " — stopped before the rest" : ""}.` });
   }
 
   /** One-button flow: preview EVERY video that deviates (read-only), then ask once before writing. */
@@ -149,20 +177,48 @@ export function LanguageDefaultsPanel({
     if (!target && !targetAudio) return;
     setSelected(new Set(fixable.map((row) => row.videoId)));
     setOpen(true);
-    const next = await previewAlignment(fixable);
-    if (Object.values(next).some((state) => state.status === "ready")) setConfirmAll(true);
+    const { next, cancelled } = await previewAlignment(fixable);
+    const ready = Object.values(next).filter((state) => state.status === "ready").length;
+    if (cancelled || ready === 0) {
+      op.finish({ message: cancelled ? "Nothing was written." : "No video passed the check — nothing to write." });
+      return;
+    }
+    op.reset();
+    setConfirmAll(true);
   }
 
   /** Sequential and fail-fast: the first failure stops the run, so a systemic problem (live writes
-   * off, wrong channel, quota) is reported once instead of repeated for every selected video. */
+   * off, wrong channel, quota) is reported once instead of repeated for every selected video.
+   * Cancel stops BEFORE the next video; a write already sent is never aborted. */
   async function applyAlignment() {
     if (!target && !targetAudio) return;
     setAligning("apply");
-    let done = 0;
+    op.start({
+      title: "Writing to YouTube",
+      cancellable: true,
+      quotaServices: ["dataApi"],
+      items: readyIds.map((id) => ({ id, label: chosen.find((r) => r.videoId === id)?.title ?? id, status: "pending" })),
+    });
+    op.setStage("Writing language labels — each video is backed up and verified");
+    let written = 0;
+    let stopMessage: string | null = null;
+    let failedRun = false;
     for (const videoId of readyIds) {
-      setProgress(`Writing ${++done} / ${readyIds.length}...`);
+      if (stopMessage) {
+        op.setItem(videoId, "skipped");
+        continue;
+      }
+      if (op.isCancelRequested()) {
+        stopMessage = "Cancelled — the remaining videos were not written.";
+        op.setItem(videoId, "skipped");
+        continue;
+      }
       const state = align[videoId];
-      if (state?.status !== "ready") continue;
+      if (state?.status !== "ready") {
+        op.setItem(videoId, "skipped");
+        continue;
+      }
+      op.setItem(videoId, "running");
       try {
         const res = await fetch(detailsUrl(videoId, "apply"), {
           method: "POST",
@@ -173,13 +229,18 @@ export function LanguageDefaultsPanel({
         if (!res.ok) throw new Error(data.message ?? data.error ?? "Apply failed");
         if (data.verified === false) throw new Error("Written, but the read-back did not match");
         setAlign((prev) => ({ ...prev, [videoId]: { status: "applied" } }));
+        op.setItem(videoId, "done");
+        written += 1;
       } catch (e) {
-        setAlign((prev) => ({ ...prev, [videoId]: { status: "failed", message: e instanceof Error ? e.message : "Apply failed" } }));
-        break;
+        const message = e instanceof Error ? e.message : "Apply failed";
+        setAlign((prev) => ({ ...prev, [videoId]: { status: "failed", message } }));
+        op.setItem(videoId, "failed", message);
+        stopMessage = `Stopped at the first error: ${message}`;
+        failedRun = true;
       }
     }
     setAligning(null);
-    setProgress(null);
+    op.finish({ error: failedRun, message: stopMessage ?? `${written} video${written === 1 ? "" : "s"} written and verified.` });
     await load();
   }
 
@@ -229,7 +290,7 @@ export function LanguageDefaultsPanel({
             title={dirty ? "Save channel defaults first" : undefined}
             className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
           >
-            {aligning === "preview" && progress ? progress : aligning === "apply" && progress ? progress : `Fix all ${fixable.length} videos`}
+            {`Fix all ${fixable.length} videos`}
           </button>
         )}
         {report && (
@@ -245,6 +306,7 @@ export function LanguageDefaultsPanel({
         )}
       </div>
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+      <OperationOverlay state={op.state} onCancel={op.requestCancel} onClose={op.reset} />
       {confirmAll && (
         <ConfirmDialog
           title={`Set ${[target && `Title/description language "${target}"`, targetAudio && `Video language "${targetAudio}"`].filter(Boolean).join(" and ")} on ${readyIds.length} videos?`}
@@ -267,7 +329,7 @@ export function LanguageDefaultsPanel({
             experimentally -- a failure means YouTube refused it.
           </span>
           <button
-            onClick={() => void previewAlignment()}
+            onClick={() => void previewChosen()}
             disabled={aligning !== null || chosen.length === 0}
             className="rounded-lg bg-zinc-700 px-3 py-1 text-white hover:bg-zinc-600 disabled:opacity-50"
           >
