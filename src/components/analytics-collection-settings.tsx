@@ -3,6 +3,7 @@
 import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
+import { resetUserTimezoneCache } from "./use-user-timezone";
 import { isValidIanaTimezone, isValidLocalTimeOfDay } from "@/lib/analytics/staleness";
 import { LoadingIndicator } from "./operation-progress";
 
@@ -71,6 +72,7 @@ export function AnalyticsCollectionSettings() {
       }
       setSettings(data);
       setDraft(data);
+      resetUserTimezoneCache();
       setSavedNotice("Saved.");
     } catch {
       setError("Failed to save");

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   formatDisplayDate,
   formatDisplayDateTime,
+  formatDisplayDateTimeInZone,
   formatDisplayDateUtc,
   parseDisplayDate,
   parseDisplayDateTime,
@@ -190,4 +191,20 @@ test("resolvePublishDate: public -> publishedAt; non-public -> scheduled publish
   assert.equal(resolvePublishDate({ ...pub, privacyStatus: "unlisted", publishAt: null }), null);
   assert.equal(resolvePublishDate({ ...pub, publishedAt: "" }), null);
   assert.equal(resolvePublishDate({ ...pub, publishedAt: "garbage" }), null);
+});
+
+// Midnight Pacific on 04.10.2026 is 07:00 UTC (PDT, UTC-7; US DST ends 01.11.2026). Helsinki is UTC+3 (EEST) until 25.10.2026, Tokyo UTC+9 all year.
+test("formatDisplayDateTimeInZone converts one instant to the requested IANA zone in DD.MM.YYYY HH:MM", () => {
+  const instant = "2026-10-04T07:00:00Z";
+  assert.equal(formatDisplayDateTimeInZone(instant, "Europe/Helsinki"), "04.10.2026 10:00");
+  assert.equal(formatDisplayDateTimeInZone(instant, "America/Los_Angeles"), "04.10.2026 00:00"); // midnight is 00, never 24
+  assert.equal(formatDisplayDateTimeInZone(instant, "Asia/Tokyo"), "04.10.2026 16:00");
+  assert.equal(formatDisplayDateTimeInZone("2026-10-04T20:30:00Z", "Asia/Tokyo"), "05.10.2026 05:30"); // crosses the date line
+});
+
+test("formatDisplayDateTimeInZone falls back to local time for a missing or invalid zone, and flags an invalid date", () => {
+  const local = formatDisplayDateTime(new Date("2026-10-04T07:00:00Z"));
+  assert.equal(formatDisplayDateTimeInZone("2026-10-04T07:00:00Z", null), local);
+  assert.equal(formatDisplayDateTimeInZone("2026-10-04T07:00:00Z", "Not/AZone"), local);
+  assert.equal(formatDisplayDateTimeInZone("garbage", "Europe/Helsinki"), "Invalid date");
 });
