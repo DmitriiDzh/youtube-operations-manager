@@ -60,8 +60,23 @@ rows are committed per row, so progress is already readable through `GET .../bat
    reading). The numbers are Google Cloud Monitoring's, which lags by about a minute, so the figure
    may trail the work; `null` (Cloud not connected / query failed) shows nothing rather than an
    invented value. Each poll is one `cloud_monitoring_reads` gateway call.
-6. Planned, not built: registry reporting for sync, AI generation and import (`onProgress`
-   callbacks in their services); cancel for live Batches (needs its own design -- state machine).
+6. **Stage 4-5 (2026-10-03).** `runTrackedOperation` (`src/lib/operation-progress/tracked.ts`) wraps one
+   blocking server operation so it appears in the registry (stage, counts, heartbeat, final status) while
+   the endpoint's own response stays unchanged. Services take an OPTIONAL `ProgressReporter` (structural
+   type, so a service never depends on the registry): `syncChannel` (stages + per-chunk counts through
+   optional gateway callbacks; still one logical metadata call), `generateProposals` (Cancel is checked
+   BEFORE each target, so a paid provider call is never made after a cancel; finished results are kept;
+   `cancelled`/`targetsSkipped` appear only on a cancel) and `collectMetrics` (per video; not cancellable --
+   a partial run would still count for the daily freshness gate). Client: `useOperation().runBlocking`
+   shows one blocking request, mirrors the registry's stage/counts, forwards Cancel (a Cancel pressed
+   before the operation was discovered is sent as soon as it is). Wired: Content/Languages sync,
+   AI generation (Languages), Analytics collect (both tabs), single-video save, reach import, channel
+   discovery search, hypothesis draft. Re-attach after a reload exists for syncs only: an AI generation's
+   proposals exist only in its original HTTP response, so there is nothing to re-attach to (the unload
+   warning covers it). Stage 5: the shared `LoadingIndicator` (spinner + text) replaces every bare
+   `<p>Loading...</p>`; an inventory test fails if one comes back.
+7. Not covered: Batches execution is not registered in the registry (its progress comes from the ledger),
+   so a reloaded page does not re-attach to a running Batch; import of a localization workbook.
 
 ## Consequences
 

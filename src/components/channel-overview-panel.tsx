@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { computeDefaultPeriodRange, computePercentChange, formatChartDate, formatWatchTimeHours } from "@/lib/analytics/period";
 import { AnalyticsLineChart } from "./analytics-line-chart";
-import { OperationOverlay, useOperation } from "./operation-progress";
+import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
 import { MetricDelta } from "./metric-delta";
 import { useTopVideos } from "./use-top-videos";
 
@@ -290,7 +290,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
   const periodLabel = PERIOD_OPTIONS.find((p) => p.days === periodDays)?.label.toLowerCase().replace("last ", "previous ") ?? "previous period";
 
   if (loadingChannel) {
-    return <p className="text-sm text-zinc-400">Loading...</p>;
+    return <LoadingIndicator className="text-sm text-zinc-400" />;
   }
 
   if (!channel) {
@@ -347,7 +347,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
       )}
 
       {loadingOverview && !overview ? (
-        <p className="text-sm text-zinc-400">Loading...</p>
+        <LoadingIndicator className="text-sm text-zinc-400" />
       ) : overview ? (
         <>
           {overview.viewCountingChangeInComparison && (
@@ -438,7 +438,7 @@ export function ChannelOverviewPanel({ subscriberCount }: { subscriberCount?: st
           <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
             <h4 className="mb-3 text-sm font-medium text-zinc-300">Top content, this period</h4>
             {loadingTopContent ? (
-              <p className="text-sm text-zinc-500">Loading...</p>
+              <LoadingIndicator className="text-sm text-zinc-500" />
             ) : topContent.length === 0 ? (
               <p className="text-sm text-zinc-500">
                 No collected data for this period yet — use &ldquo;Collect now&rdquo; below to fetch it.

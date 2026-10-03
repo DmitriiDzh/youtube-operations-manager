@@ -4,6 +4,7 @@ import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { isValidIanaTimezone, isValidLocalTimeOfDay } from "@/lib/analytics/staleness";
+import { LoadingIndicator } from "./operation-progress";
 
 // `Intl.supportedValuesOf` (ES2022) -- the real, canonical IANA timezone database this runtime
 // ships, not a hand-maintained list that could drift from it. Backing a <datalist> rather than a
@@ -81,7 +82,7 @@ export function AnalyticsCollectionSettings() {
   if (!settings || !draft) {
     return (
       <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-        <p className="text-sm text-zinc-400">Loading...</p>
+        <LoadingIndicator className="text-sm text-zinc-400" />
       </div>
     );
   }

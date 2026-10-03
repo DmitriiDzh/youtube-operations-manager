@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatDisplayDate, resolvePublishDate } from "@/lib/shared-formatting";
-import { OperationOverlay, useOperation } from "./operation-progress";
+import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
 import { DEFAULT_SORT, nextSortState, sortVideos, type SortKey, type SortState } from "./content-sort";
 import { VideoDetailModal } from "./video-detail-modal";
 import { VideoDetailsPanel } from "./video-details-panel";
@@ -274,7 +274,7 @@ export function ContentManager() {
       <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
         <div className="flex flex-wrap items-center gap-3">
           {loadingChannels ? (
-            <p className="text-sm text-zinc-400">Loading...</p>
+            <LoadingIndicator className="text-sm text-zinc-400" />
           ) : !selectedChannelId ? (
             <p className="text-sm text-zinc-400">
               No channel synchronized yet — sign in and this app will pick up your active channel

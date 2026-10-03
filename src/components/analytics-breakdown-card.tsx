@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { computeDefaultPeriodRange } from "@/lib/analytics/period";
+import { LoadingIndicator } from "./operation-progress";
 
 type BreakdownRow = { dimensionValues: string[]; metrics: Record<string, number> };
 
@@ -78,7 +79,7 @@ export function AnalyticsBreakdownCard({
       {error ? (
         <p className="text-sm text-red-400">{error}</p>
       ) : rows === null ? (
-        <p className="text-sm text-zinc-500">Loading...</p>
+        <LoadingIndicator className="text-sm text-zinc-500" />
       ) : ranked.length === 0 ? (
         <p className="text-sm text-zinc-500">{emptyMessage}</p>
       ) : (

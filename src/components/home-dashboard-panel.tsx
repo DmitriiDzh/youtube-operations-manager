@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { computeDefaultPeriodRange, formatWatchTimeHours } from "@/lib/analytics/period";
+import { LoadingIndicator } from "./operation-progress";
 
 type SyncedChannel = {
   channelId: string;
@@ -167,7 +168,7 @@ export function HomeDashboardPanel({
   }, [metricRows, latestVideo]);
 
   if (loading) {
-    return <p className="text-sm text-zinc-400">Loading...</p>;
+    return <LoadingIndicator className="text-sm text-zinc-400" />;
   }
 
   if (!channel) {
@@ -310,7 +311,7 @@ export function HomeDashboardPanel({
             </div>
           </div>
         ) : loadingOverview ? (
-          <p className="mt-4 border-t border-zinc-800 pt-4 text-xs text-zinc-500">Loading...</p>
+          <LoadingIndicator className="mt-4 border-t border-zinc-800 pt-4 text-xs text-zinc-500" />
         ) : (
           <p className="mt-4 border-t border-zinc-800 pt-4 text-xs text-zinc-500">
             Analytics summary unavailable -- Analytics reads may be disabled, or nothing has been

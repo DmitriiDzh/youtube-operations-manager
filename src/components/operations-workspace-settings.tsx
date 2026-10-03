@@ -3,6 +3,7 @@
 import { ownSettingsUnavailable } from "./settings-unavailable";
 import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
+import { LoadingIndicator } from "./operation-progress";
 
 type WorkspaceSettings = {
   operationsWorkspacePath: string | null;
@@ -67,7 +68,7 @@ export function OperationsWorkspaceSettings() {
   if (!settings) {
     return (
       <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-        <p className="text-sm text-zinc-400">Loading...</p>
+        <LoadingIndicator className="text-sm text-zinc-400" />
       </div>
     );
   }

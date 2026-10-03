@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
 import { ConfirmDialog } from "./confirm-dialog";
 import { ToggleSwitch } from "./toggle-switch";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
@@ -78,6 +79,8 @@ const EVIDENCE_SOURCE_TYPE_LABELS: Record<EvidenceSourceType, string> = {
 // toggle below lets an operator pick per hypothesis, matching this app's standing rule that any
 // boolean ON/OFF control uses the shared ToggleSwitch, never a native checkbox.
 export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
+  const op = useOperation();
+  const { runBlocking } = op;
   const [hypotheses, setHypotheses] = useState<Hypothesis[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -265,16 +268,24 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
     setGenError(null);
     setDraft(null);
     try {
-      const res = await fetch("/api/decision-engine/hypotheses/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          notes: genNotes,
-          evidenceReferences: [],
-          channelId: genScopeToChannel && channel ? channel.id : undefined,
-        }),
+      const { res, data } = await runBlocking({
+        title: "Generating a hypothesis draft",
+        stage: "Waiting for the AI provider",
+        request: async () => {
+          const res = await fetch("/api/decision-engine/hypotheses/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              notes: genNotes,
+              evidenceReferences: [],
+              channelId: genScopeToChannel && channel ? channel.id : undefined,
+            }),
+          });
+          return { res, data: await res.json() };
+        },
+        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? "Failed to generate a draft")),
+        summarize: () => "Draft ready for review.",
       });
-      const data = await res.json();
       if (!res.ok) {
         setGenError(data.message ?? "Failed to generate a draft");
         return;
@@ -512,6 +523,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
 
   return (
     <div className="space-y-6">
+      <OperationOverlay state={op.state} onClose={op.reset} />
       {error && <p className="text-sm text-red-400">{error}</p>}
 
       <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-4">
@@ -599,7 +611,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
       <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-4">
         <h3 className="mb-3 font-medium">Hypotheses</h3>
         {loading ? (
-          <p className="text-sm text-zinc-400">Loading...</p>
+          <LoadingIndicator className="text-sm text-zinc-400" />
         ) : hypotheses.length === 0 ? (
           <p className="text-sm text-zinc-400">No hypotheses yet.</p>
         ) : (
@@ -669,7 +681,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
 
           <h4 className="mt-4 mb-2 font-medium">Experiments</h4>
           {experimentsLoading ? (
-            <p className="text-sm text-zinc-400">Loading...</p>
+            <LoadingIndicator className="text-sm text-zinc-400" />
           ) : experiments.length === 0 ? (
             <p className="text-sm text-zinc-400">No experiments yet.</p>
           ) : (
@@ -858,7 +870,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
           </div>
 
           {evidenceLoading ? (
-            <p className="text-sm text-zinc-400">Loading...</p>
+            <LoadingIndicator className="text-sm text-zinc-400" />
           ) : evidence.length === 0 ? (
             <p className="text-sm text-zinc-400">No structured evidence yet.</p>
           ) : (
@@ -943,7 +955,7 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
           )}
 
           {outcomesLoading ? (
-            <p className="text-sm text-zinc-400">Loading...</p>
+            <LoadingIndicator className="text-sm text-zinc-400" />
           ) : outcomes.length === 0 ? (
             <p className="text-sm text-zinc-400">No outcomes recorded yet.</p>
           ) : (

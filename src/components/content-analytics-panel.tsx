@@ -7,6 +7,7 @@ import { AnalyticsLineChart } from "./analytics-line-chart";
 import { labelTrafficSource } from "@/lib/analytics/breakdown-labels";
 import { useTopVideos } from "./use-top-videos";
 import { ReachPanel } from "./reach-panel";
+import { LoadingIndicator } from "./operation-progress";
 
 type SyncedChannel = { channelId: string; title: string };
 type RetentionPoint = { elapsedVideoTimeRatio: number; audienceWatchRatio: number; relativeRetentionPerformance: number };
@@ -83,7 +84,7 @@ export function ContentAnalyticsPanel() {
   }, []);
 
   if (loadingChannel) {
-    return <p className="text-sm text-zinc-400">Loading...</p>;
+    return <LoadingIndicator className="text-sm text-zinc-400" />;
   }
 
   if (!channel) {
@@ -128,7 +129,7 @@ export function ContentAnalyticsPanel() {
       <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
         <h4 className="mb-3 text-sm font-medium text-zinc-300">Top videos</h4>
         {loadingTopVideos && topVideos.length === 0 ? (
-          <p className="text-sm text-zinc-500">Loading...</p>
+          <LoadingIndicator className="text-sm text-zinc-500" />
         ) : topVideos.length === 0 ? (
           <p className="text-sm text-zinc-500">
             No collected data for this period yet — use &ldquo;Collect now&rdquo; in the Overview tab to fetch it.
@@ -168,7 +169,7 @@ export function ContentAnalyticsPanel() {
           {retentionError ? (
             <p className="text-sm text-red-400">{retentionError}</p>
           ) : retentionPoints === null ? (
-            <p className="text-sm text-zinc-500">Loading...</p>
+            <LoadingIndicator className="text-sm text-zinc-500" />
           ) : retentionPoints.length === 0 ? (
             <p className="text-sm text-zinc-500">No retention data for this video/period yet.</p>
           ) : (

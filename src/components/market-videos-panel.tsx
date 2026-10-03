@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { formatFieldVelocity } from "./market-velocity-format";
+import { LoadingIndicator } from "./operation-progress";
 
 // Phase 9 slice 9H, part C (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_C_PLAN.md) -- Videos tab.
 // Mirrors getMarketVideosOverviewOutputSchema. A read-only, per-video aggregation across the whole
@@ -87,7 +88,7 @@ export function MarketVideosPanel() {
         </InfoTooltip>
       </h3>
 
-      {loading && <p className="text-xs text-zinc-500">Loading...</p>}
+      {loading && <LoadingIndicator className="text-xs text-zinc-500" />}
       {!loading && error && <p className="text-sm text-red-400">{error}</p>}
 
       {!loading && videos && videos.length === 0 && (

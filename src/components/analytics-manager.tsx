@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { OperationOverlay, useOperation } from "./operation-progress";
+import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
 
 type SyncedChannel = {
   channelId: string;
@@ -205,7 +205,7 @@ export function AnalyticsManager() {
       <OperationOverlay state={op.state} onCancel={op.requestCancel} onClose={op.reset} />
       <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
         {loadingChannel ? (
-          <p className="text-sm text-zinc-400">Loading...</p>
+          <LoadingIndicator className="text-sm text-zinc-400" />
         ) : !channel ? (
           <p className="text-sm text-zinc-400">
             No channel synchronized yet — sign in and sync a channel in the Content tab first.

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
 import { computeDefaultPeriodRange } from "@/lib/analytics/period";
 import { formatCtr, formatImpressions } from "@/lib/reach-reports/reach-format";
 import { AnalyticsLineChart } from "./analytics-line-chart";
@@ -27,6 +28,8 @@ type SyncOutcome =
  * never shown as zero: the card says whether there is no job, a job still waiting for Google's first file, or data.
  */
 export function ReachPanel({ channelId, periodDays }: { channelId: string; periodDays: number }) {
+  const op = useOperation();
+  const { runBlocking } = op;
   const [data, setData] = useState<ReachData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -65,8 +68,16 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
     setNotice(null);
     setError(null);
     try {
-      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/reach/sync`, { method: "POST" });
-      const body = (await res.json()) as SyncOutcome & { message?: string };
+      const { res, body } = await runBlocking({
+        title: "Importing reach reports from YouTube",
+        stage: "Downloading the YouTube Reporting API files",
+        request: async () => {
+          const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/reach/sync`, { method: "POST" });
+          return { res, body: (await res.json()) as SyncOutcome & { message?: string } };
+        },
+        failureOf: ({ res, body }) => (res.ok ? null : (body.message ?? "Sync failed")),
+        summarize: ({ body }) => (body.skipped ? "Nothing new to import." : `${body.filesImported} new report file(s) imported.`),
+      });
       if (!res.ok) {
         setError(body.message ?? "Sync failed");
         return;
@@ -89,6 +100,7 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
 
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+      <OperationOverlay state={op.state} onClose={op.reset} />
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h4 className="text-sm font-medium text-zinc-300">Impressions and click-through rate</h4>
         <button
@@ -104,7 +116,7 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
       {notice && <p className="mb-2 text-xs text-emerald-400">{notice}</p>}
 
       {!data ? (
-        !error && <p className="text-sm text-zinc-500">Loading...</p>
+        !error && <LoadingIndicator className="text-sm text-zinc-500" />
       ) : data.state === "no_job" ? (
         <p className="text-sm text-zinc-500">
           Not set up yet. YouTube provides impressions and CTR only as daily report files; &ldquo;Sync now&rdquo; creates
