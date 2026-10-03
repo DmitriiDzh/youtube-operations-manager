@@ -1,6 +1,7 @@
-import { revokeGoogleToken } from "@/lib/auth";
+import { probeGoogleRefreshToken, revokeGoogleToken } from "@/lib/auth";
 import {
   clearUserOAuthTokens,
+  getRefreshTokenIssuedAt,
   getStoredChannel,
   getUserOAuthTokens,
   getUserProfileForActivation,
@@ -41,11 +42,15 @@ export function createChannelConnectionsCore() {
       },
       clearUserTokens: clearUserOAuthTokens,
       setChannelConnectedUserId,
+      getRefreshTokenIssuedAt,
     },
     revokeToken: revokeGoogleToken,
+    probeRefreshToken: probeGoogleRefreshToken,
+    clock: { now: () => new Date() },
   });
 }
 
 export type ChannelConnectionsCore = ReturnType<typeof createChannelConnectionsCore>;
 
 export * from "./contracts";
+export { classifyConnectionHealth } from "./connection-health";

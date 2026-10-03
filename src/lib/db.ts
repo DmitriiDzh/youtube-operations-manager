@@ -174,6 +174,11 @@ export const users = sqliteTable("users", {
   tokenExpiry: integer("token_expiry"),
   oauthScope: text("oauth_scope"),
   selectedChannelId: text("selected_channel_id"),
+  // Additive, SCHEMA_MIGRATIONS version 41 (BL-115): when Google last ISSUED this identity's refresh token
+  // (a sign-in / device-flow exchange that returned one; never a mere access-token refresh). NULL = unknown
+  // (every row from before v41). While the OAuth app is in Testing status Google expires a refresh token 7
+  // days after issue, so this is the age signal for the dashboard's re-login prompt.
+  refreshTokenIssuedAt: integer("refresh_token_issued_at", { mode: "timestamp" }),
 });
 
 export const channels = sqliteTable("channels", {
@@ -2455,6 +2460,18 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       );
     },
   },
+  {
+    version: 41,
+    description:
+      "users.refresh_token_issued_at -- BL-115: when Google issued the stored refresh token, for the dashboard's connection-health / re-login prompt (NULL = unknown for existing rows)",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE users ADD COLUMN refresh_token_issued_at INTEGER");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -2995,6 +3012,7 @@ export async function upsertUserOAuthOnSignIn(
         refreshToken: encodeStoredOAuthToken(input.refreshToken ?? existing.refreshToken),
         tokenExpiry: input.tokenExpiry,
         oauthScope: input.scope ?? existing.scope,
+        ...refreshTokenIssuedAtPatch(input.refreshToken),
       })
       .where(eq(users.id, input.userId));
     return;
@@ -3009,7 +3027,28 @@ export async function upsertUserOAuthOnSignIn(
     refreshToken: encodeStoredOAuthToken(input.refreshToken),
     tokenExpiry: input.tokenExpiry,
     oauthScope: input.scope,
+    ...refreshTokenIssuedAtPatch(input.refreshToken),
   });
+}
+
+/**
+ * BL-115 -- `{ refreshTokenIssuedAt: now }` exactly when an exchange handed us a refresh token, else `{}`
+ * (the column is left untouched, so an access-token-only sign-in never makes an old grant look new).
+ */
+export function refreshTokenIssuedAtPatch(
+  refreshToken: string | null | undefined,
+  now: Date = new Date()
+): { refreshTokenIssuedAt?: Date } {
+  return refreshToken ? { refreshTokenIssuedAt: now } : {};
+}
+
+/** BL-115 -- when Google issued this identity's stored refresh token; `null` = not recorded (pre-v41 row). */
+export async function getRefreshTokenIssuedAt(userId: string, database: AppDb = db): Promise<Date | null> {
+  const [row] = await database
+    .select({ issuedAt: users.refreshTokenIssuedAt })
+    .from(users)
+    .where(eq(users.id, userId));
+  return row?.issuedAt ?? null;
 }
 
 export type UpsertOAuthUserFromCliInput = {
@@ -3047,6 +3086,7 @@ export async function upsertOAuthUserFromCli(input: UpsertOAuthUserFromCliInput)
         refreshToken: input.refreshToken != null ? encodeStoredOAuthToken(input.refreshToken) : existing.refreshToken,
         tokenExpiry: input.tokenExpiry,
         oauthScope: input.scope ?? existing.oauthScope,
+        ...refreshTokenIssuedAtPatch(input.refreshToken),
       })
       .where(eq(users.id, input.userId));
 
@@ -3062,6 +3102,7 @@ export async function upsertOAuthUserFromCli(input: UpsertOAuthUserFromCliInput)
     refreshToken: encodeStoredOAuthToken(input.refreshToken),
     tokenExpiry: input.tokenExpiry,
     oauthScope: input.scope,
+    ...refreshTokenIssuedAtPatch(input.refreshToken),
   });
 }
 

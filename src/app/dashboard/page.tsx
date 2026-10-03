@@ -33,6 +33,8 @@ import { DeviceAutoSyncSettings } from "@/components/device-auto-sync-settings";
 import { AppVersionInfo } from "@/components/app-version-info";
 import { EditorialProfilePanel } from "@/components/editorial-profile-panel";
 import { DeviceHandoffPanel } from "@/components/device-handoff-panel";
+import { ConnectionHealthDialog } from "@/components/connection-health-dialog";
+import { useConnectionHealth } from "@/components/use-connection-health";
 import { AppShell } from "@/components/app-shell";
 import { InfoTooltip } from "@/components/info-tooltip";
 import { FeatureErrorBoundary } from "@/components/feature-error-boundary";
@@ -116,13 +118,23 @@ export default function Dashboard() {
   const [tab, setTab] = useState<Tab>("home");
   const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>("api");
   const [channel, setChannel] = useState<ChannelInfo | null>(null);
+  // BL-115: the channel request failed (typically a stale Google sign-in) -- say so, don't spin on "Loading..." forever.
+  const [channelUnavailable, setChannelUnavailable] = useState(false);
+  const connectionHealth = useConnectionHealth(Boolean(session));
+  const refetchConnectionHealth = connectionHealth.refetch;
   const [conflictCount, setConflictCount] = useState(0);
 
   const fetchChannel = useCallback(async () => {
     try {
       const res = await fetch("/api/youtube/channel-info");
-      if (!res.ok) return;
+      if (!res.ok) {
+        setChannelUnavailable(true);
+        // Re-check the stored grants for real now (bypassing the short cache): the popup names which account to sign in with.
+        void refetchConnectionHealth({ force: true });
+        return;
+      }
       const data = await res.json();
+      setChannelUnavailable(false);
       setChannel(data.channel);
     } catch {
       // Non-fatal -- can genuinely fail transiently right as the session cookie is swapping (e.g.
@@ -130,7 +142,7 @@ export default function Dashboard() {
       // that no longer reloads the page the way the old signIn("google")-only flow always did.
       // This effect re-runs the moment `session` settles on its new value, so it self-heals.
     }
-  }, []);
+  }, [refetchConnectionHealth]);
 
   useEffect(() => {
     if (session) {
@@ -267,8 +279,10 @@ export default function Dashboard() {
       activeTab={tab}
       onTabChange={setTab}
       channel={channel}
+      channelUnavailable={channelUnavailable}
       onSignOut={() => signOut()}
     >
+      <ConnectionHealthDialog health={connectionHealth.health} />
       {/* Visible on every tab, only while a migration/import holds (or left behind) the device lock. */}
       <OperationLockControl quiet />
       {tab === "home" && (

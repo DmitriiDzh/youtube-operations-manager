@@ -188,3 +188,6 @@ The owner then explicitly asked for exactly that follow-up: *"перерабат
   `useConnectedChannels` itself (not per-caller) by calling `POST /api/channels/sync` (mine-path)
   before every fetch; reproduced by resetting a real, valid channel's `connectedUserId` directly
   and confirming it reappears on the next mount without visiting Content/Languages.
+
+
+**Addendum 2026-10-03 (BL-115):** a stored connection can go stale (Google expires a Testing-status refresh token after 7 days) while still looking connected. The dashboard now checks every stored connection (`GET /api/channel-connections/health`) and prompts for a new login; see `docs/roadmap/plans/CONNECTION_REAUTH_PLAN.md`. Reactivation ("Activate") is unchanged and still makes no Google call.
