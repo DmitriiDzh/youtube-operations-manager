@@ -187,3 +187,21 @@ test("an already-running error is recognised by its code, not only by class iden
     assert.equal(isOperationAlreadyRunning(new Error("other")), false);
   }
 });
+
+test("hasActive is true only while some operation (any channel) is running or cancelling", () => {
+  const { registry } = setup();
+  assert.equal(registry.hasActive(), false);
+  const handle = registry.start(input({ channelId: "UC9" }));
+  assert.equal(registry.hasActive(), true);
+  registry.requestCancel(handle.id);
+  assert.equal(registry.hasActive(), true);
+  handle.finish();
+  assert.equal(registry.hasActive(), false);
+});
+
+test("hasActive ignores an operation whose heartbeat died (it can no longer block anything)", () => {
+  const { registry, advance } = setup({ heartbeatTimeoutMs: 1_000 });
+  registry.start(input());
+  advance(2_000);
+  assert.equal(registry.hasActive(), false);
+});

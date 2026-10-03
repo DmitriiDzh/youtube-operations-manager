@@ -148,6 +148,13 @@ export function createOperationRegistry(options: OperationRegistryOptions = {}) 
       };
     },
 
+    /** True while any operation (any channel) is running or cancelling -- e.g. so automatic device sync
+     * does not take the operation lock and make a running write's own gate refuse. */
+    hasActive(): boolean {
+      sweep();
+      return [...entries.values()].some((entry) => ACTIVE.has(entry.snapshot.status));
+    },
+
     get(id: string): OperationSnapshot | undefined {
       sweep();
       return entries.get(id)?.snapshot;

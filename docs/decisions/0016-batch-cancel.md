@@ -39,6 +39,15 @@ polling while the server kept writing would have been a fake cancel.
    `assertDeviceAvailableForMutation` before each not-yet-started row. A refusal during execution halts
    the rest as `ABORTED_SYSTEMIC` (existing systemic path); a refusal during preparation aborts every
    unfinished row, releases the locks, ends the batch `ABORTED` and throws `device_unavailable` (503).
+   Rows aborted by ANY systemic halt (this gate, quota) now release their video lock when the guarded
+   transition succeeds -- previously a halted batch left prepared rows' locks stranded (independent
+   review, 2026-10-03). A lock is released only when the transition really happened, so a cancel that
+   loses a race to a row already `APPLYING` never frees the lock of an in-flight write.
+6. **Automatic device sync waits for server-side operations.** An auto-export takes the operation lock,
+   which would make the per-row/per-video gate above refuse and abort a running Fix all (a Fix all is not
+   a Batch, so `hasUnfinishedBatch` does not see it). `device-sync` therefore pauses while the operation
+   registry has an active operation (`hasActiveLocalOperation`); a running Batch was already covered
+   (`RUNNING`).
 
 ## Consequences
 

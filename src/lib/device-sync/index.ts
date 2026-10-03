@@ -8,6 +8,7 @@ import {
   setDeviceSyncStatusJson,
 } from "@/lib/db";
 import { createBootstrapConfigStore } from "@/lib/bootstrap-config";
+import { getOperationRegistry } from "@/lib/operation-progress";
 import { EMPTY_DEVICE_SYNC_STATUS, type DeviceSyncStatus } from "./contracts";
 import { createDeviceSyncRunner, type DeviceSyncRunner } from "./services";
 
@@ -59,6 +60,8 @@ export function getDeviceSyncRunner(): DeviceSyncRunner {
       return { ...EMPTY_DEVICE_SYNC_STATUS, ...(JSON.parse(raw) as Partial<DeviceSyncStatus>) };
     },
     saveStatus: (status) => setDeviceSyncStatusJson(JSON.stringify(status)),
+    // A running server-side write (Fix all) must not be aborted by an automatic export's operation lock.
+    hasActiveLocalOperation: () => getOperationRegistry().hasActive(),
   });
   g[RUNNER_KEY] = runner;
   return runner;

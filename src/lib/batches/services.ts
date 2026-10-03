@@ -681,9 +681,12 @@ export function createBatchServices(deps: ServiceDependencies) {
   async function cancelNotStartedRow(batch: StoredBatchRecord, row: StoredLedgerRowRecord): Promise<boolean> {
     if (row.status !== "PENDING" && row.status !== "AWAITING_EXECUTION") return false;
     const transitioned = await batchStore.transitionLedgerRowStatus({ ledgerRowId: row.id, from: [row.status], to: "CANCELLED" });
-    // Safe no-op when the row never held the lock (a PENDING row is not yet prepared).
-    await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
+    // Only when the guarded transition really happened: a false result means the row is no longer in the
+    // status seen here (a concurrent worker may already have moved it to APPLYING), and releasing the
+    // lock of a row whose write is in flight would break per-video exclusivity. A PENDING row never
+    // held the lock, so this is a safe no-op for it.
     if (transitioned) {
+      await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
       await audit.record({
         batchId: batch.id,
         ledgerRowId: row.id,
@@ -798,8 +801,8 @@ export function createBatchServices(deps: ServiceDependencies) {
         if (refusal !== null) {
           for (const pending of await batchStore.listLedgerRowsByBatch(input.batchId)) {
             if (pending.status === "PENDING" || pending.status === "AWAITING_EXECUTION") {
-              await batchStore.transitionLedgerRowStatus({ ledgerRowId: pending.id, from: [pending.status], to: "ABORTED_SYSTEMIC" });
-              await releaseVideoLock({ batchId: batch.id, videoId: pending.videoId });
+              const aborted = await batchStore.transitionLedgerRowStatus({ ledgerRowId: pending.id, from: [pending.status], to: "ABORTED_SYSTEMIC" });
+              if (aborted) await releaseVideoLock({ batchId: batch.id, videoId: pending.videoId });
             }
           }
           await batchStore.markBatchTerminal(input.batchId, "ABORTED");
@@ -1457,11 +1460,11 @@ export function createBatchServices(deps: ServiceDependencies) {
   }): Promise<BatchExecutionSummary> {
     // Registers this run so `requestBatchCancel` can reach it, and (always) unregisters it so no
     // cancel flag can outlive the run.
-    beginBatchExecution(input.batchId);
+    const token = beginBatchExecution(input.batchId);
     try {
       return await executeBatchRun(input);
     } finally {
-      endBatchExecution(input.batchId);
+      endBatchExecution(input.batchId, token);
     }
   }
 
@@ -1551,6 +1554,10 @@ export function createBatchServices(deps: ServiceDependencies) {
             to: "ABORTED_SYSTEMIC",
           });
           if (transitioned) {
+            // A terminal row must not hold its video lock (see recoverLedgerRow). Prepared rows
+            // (AWAITING_EXECUTION) hold one; without this a halted batch left its videos locked and
+            // every later batch for them failed with video_locked (RISK-90: no UI way to clear it).
+            await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
             results[index] = { ledgerRowId: row.id, videoId: row.videoId, status: "ABORTED_SYSTEMIC" };
           } else {
             const current = await batchStore.getLedgerRow(row.id);
@@ -1709,6 +1716,8 @@ export function createBatchServices(deps: ServiceDependencies) {
     executeWithRetry,
     executeBatch,
     requestBatchCancel,
+    /** Test seam only: exposes the single-row cancel helper so the lost-race case can be driven directly. */
+    cancelNotStartedRowForTest: async (batchId: string, row: StoredLedgerRowRecord) => cancelNotStartedRow(await requireBatch(batchId), row),
     resolveUnknownLedgerRow,
     recoverLedgerRow,
     recoverBatch,

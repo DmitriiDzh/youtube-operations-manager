@@ -1126,6 +1126,11 @@ test("RISK-94 (execution phase): a refusal before the second row halts the rest 
   assert.equal(statusOf(harness, "v3"), "ABORTED_SYSTEMIC");
   assert.equal(summary.haltedSystemically, true);
   assert.equal((await harness.services.getBatch(batch.id)).status, "ABORTED");
+  // A terminal row must never hold a video lock (recoverLedgerRow's own design rule); a stranded lock
+  // would make every later batch for that video fail with video_locked, with no UI way to clear it.
+  for (const videoId of ["v1", "v2", "v3"]) {
+    assert.equal(await harness.store.getVideoExecutionLockHolder(videoId), null, `${videoId} must hold no lock after a halted batch`);
+  }
 });
 
 test("RISK-94 (preparation phase): a refusal while preparing aborts every unfinished row, releases the locks, sends no write and reports device_unavailable", async () => {
@@ -1156,4 +1161,24 @@ test("RISK-94 (preparation phase): a refusal while preparing aborts every unfini
     assert.equal(await harness.store.getVideoExecutionLockHolder(videoId), null);
   }
   assert.equal((await harness.services.getBatch(batch.id)).status, "ABORTED");
+});
+
+
+// Per-video exclusivity (AC-CONCURRENCY): a cancel races a worker that already moved the row on. If the
+// guarded transition to CANCELLED did not happen because the row is already APPLYING, its lock must stay.
+test("AC-CANCEL-11: a cancel that loses the race to a row already APPLYING neither rewrites it nor releases its lock", async () => {
+  const harness = createHarness();
+  const batch = await threeVideoBatch(harness);
+  // Prepare only (rows AWAITING_EXECUTION, locks held), then move v1 to APPLYING as a concurrent worker would.
+  await harness.services.prepareBatchExecution({ batchId: batch.id, credentialRef: { userId: "user-1" } });
+  const v1 = [...harness.store.ledgerRows.values()].find((r) => r.videoId === "v1")!;
+  await harness.store.transitionLedgerRowStatus({ ledgerRowId: v1.id, from: ["AWAITING_EXECUTION"], to: "APPLYING" });
+  assert.notEqual(await harness.store.getVideoExecutionLockHolder("v1"), null);
+
+  // The cancel helper sees a stale in-memory snapshot (AWAITING_EXECUTION) of the row.
+  const cancelled = await harness.services.cancelNotStartedRowForTest(batch.id, { ...v1, status: "AWAITING_EXECUTION" });
+
+  assert.equal(cancelled, false);
+  assert.equal(statusOf(harness, "v1"), "APPLYING", "an in-flight row is never rewritten");
+  assert.notEqual(await harness.store.getVideoExecutionLockHolder("v1"), null, "its lock must stay while the write is in flight");
 });

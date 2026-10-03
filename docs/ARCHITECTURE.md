@@ -2170,7 +2170,7 @@ single-writer, whole-copy semantics. Plan and acceptance criteria:
    - no live operation lock (a dead export's lock is cleared first) and no recovery mode;
    - an unfinished Batch in this computer's data pauses sync both ways, with a `batch_in_progress`
      notice. `hasUnfinishedBatch` checks for a `RUNNING` batch or rows
-     `AWAITING_EXECUTION`/`APPLYING`/`UNKNOWN`. It is judged on transferred data, not on the
+     `AWAITING_EXECUTION`/`APPLYING`/`UNKNOWN` (`CANCELLED` rows -- ADR 0016 -- are terminal and never count as unfinished). It is judged on transferred data, not on the
      device-local locks, which some abort paths leak (RISK-90). The same predicate refuses an
      unfinished copy (`refuseUnresolvedExecution`) and is re-checked inside the lock before every
      import and export.

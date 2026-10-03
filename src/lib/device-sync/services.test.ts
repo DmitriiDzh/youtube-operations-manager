@@ -37,7 +37,11 @@ type Device = {
   setEnabled: (v: boolean) => void;
 };
 
-async function makeDevice(root: string, name: string, opts: { folder?: string | null } = {}): Promise<Device> {
+async function makeDevice(
+  root: string,
+  name: string,
+  opts: { folder?: string | null; activeOperation?: { value: boolean } } = {}
+): Promise<Device> {
   const client = await makeClient(root, `${name}.db`);
   let status: DeviceSyncStatus = { ...EMPTY_DEVICE_SYNC_STATUS };
   let enabled = true;
@@ -57,6 +61,7 @@ async function makeDevice(root: string, name: string, opts: { folder?: string | 
       status = s;
     },
     now: () => clock.t,
+    hasActiveLocalOperation: opts.activeOperation ? () => opts.activeOperation!.value : undefined,
   });
   return { client, runner, status: () => status, clock, setEnabled: (v) => (enabled = v) };
 }
@@ -1157,3 +1162,32 @@ test("P13: own snapshots created before the cutoff are pruned, except the head",
     const left = new Set(await readdir(folder));
     for (const kept of [oldHead, freshOwn, oldPeer]) assert.ok(left.has(kept.snapshotId));
   }));
+
+
+// A server-run write (e.g. "Fix all", which is not a Batch and leaves no unfinished-Batch trace) calls the
+// same device-availability gate before every video; an automatic export would take the operation lock
+// and make that gate refuse, aborting the run midway. Automatic sync must therefore wait for it.
+test("an active server-side operation pauses automatic sync (no export), and sync resumes when it ends", () =>
+  withTempDir("device-sync-", async (root) => {
+    const active = { value: true };
+    const a = await makeDevice(root, "a", { activeOperation: active });
+    await addResearchChannel(a.client, "UC1");
+
+    const busy = await a.runner.tick({ force: true });
+    assert.equal(busy.state, "busy");
+    assert.match(busy.busyReason ?? "", /server-side/);
+    assert.deepEqual(await readdir(path.join(root, "sync")), [], "nothing is published while the operation runs");
+
+    active.value = false;
+    assert.equal((await a.runner.tick({ force: true })).state, "exported");
+    a.client.close();
+  }));
+
+// The unit test above passes `hasActiveLocalOperation` straight to the runner, so it cannot notice if the
+// PRODUCTION runner (`getDeviceSyncRunner`) is built without it -- which is exactly what happened once
+// during development. Guard the wiring itself.
+test("the production device-sync runner is wired to the operation registry", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(path.join(process.cwd(), "src/lib/device-sync/index.ts"), "utf8");
+  assert.match(source, /hasActiveLocalOperation:\s*\(\)\s*=>\s*getOperationRegistry\(\)\.hasActive\(\)/);
+});

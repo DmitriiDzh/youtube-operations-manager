@@ -7,7 +7,7 @@
 // through `recoverBatch`, never through a leftover flag). Kept on globalThis so a dev hot reload cannot
 // split the route that requests the cancel from the run that reads it.
 
-type ControlEntry = { cancelRequested: boolean };
+type ControlEntry = { cancelRequested: boolean; token: symbol };
 
 const CONTROL_KEY = Symbol.for("youtube-operations-manager.batch-execution-control");
 
@@ -16,12 +16,16 @@ function entries(): Map<string, ControlEntry> {
   return (holder[CONTROL_KEY] ??= new Map());
 }
 
-export function beginBatchExecution(batchId: string): void {
-  entries().set(batchId, { cancelRequested: false });
+/** Registers a run and returns its token; `endBatchExecution` removes the entry only for that token, so
+ * a run that finishes late can never delete the entry of a newer run of the same batch. */
+export function beginBatchExecution(batchId: string): symbol {
+  const token = Symbol(batchId);
+  entries().set(batchId, { cancelRequested: false, token });
+  return token;
 }
 
-export function endBatchExecution(batchId: string): void {
-  entries().delete(batchId);
+export function endBatchExecution(batchId: string, token: symbol): void {
+  if (entries().get(batchId)?.token === token) entries().delete(batchId);
 }
 
 /** Sets the flag if (and only if) the batch is executing now. Synchronous on purpose: the flag is set
