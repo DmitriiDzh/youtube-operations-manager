@@ -5,6 +5,7 @@ import { BlockingDialog } from "../blocking-dialog";
 import { ProgressBar } from "../progress-bar";
 import { blocksKey, isOperationActive, type OperationItemStatus, type OperationState } from "./operation-state";
 import { Spinner } from "./spinner";
+import { SuccessMark } from "./success-mark";
 
 function formatElapsed(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
@@ -76,7 +77,8 @@ export function OperationOverlay({
     <BlockingDialog label={state.title} busy={active}>
       <div className="flex items-center gap-2">
         {active && <Spinner />}
-        <p className="text-sm font-medium text-zinc-100">{finishedStatus ? `${state.title} — ${FINISHED_TITLE[finishedStatus]}` : state.title}</p>
+        {state.status === "success" && <SuccessMark />}
+        <p className={`text-sm font-medium ${state.status === "success" ? "text-emerald-300" : "text-zinc-100"}`}>{finishedStatus ? `${state.title} — ${FINISHED_TITLE[finishedStatus]}` : state.title}</p>
         <span className="ml-auto text-xs tabular-nums text-zinc-500">{formatElapsed(elapsed)}</span>
       </div>
 
