@@ -84,6 +84,12 @@ export function isOperationActive(state: OperationState): boolean {
   return state.status === "running" || state.status === "cancelling";
 }
 
+/** Whether the overlay must swallow a key press so it cannot reach whatever sits underneath (e.g. a modal
+ * that closes on Escape). Only while an operation is active -- afterwards nothing needs protecting. */
+export function blocksKey(state: OperationState, key: string): boolean {
+  return isOperationActive(state) && key === "Escape";
+}
+
 function countDone(items: OperationItem[]): number {
   return items.filter((item) => FINAL_ITEM_STATUSES.has(item.status)).length;
 }

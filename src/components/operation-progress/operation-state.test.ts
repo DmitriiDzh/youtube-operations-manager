@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   IDLE_OPERATION,
+  blocksKey,
   isOperationActive,
   operationReducer,
   type OperationAction,
@@ -222,4 +223,19 @@ test("finish with an explicit outcome overrides the cancel guess: a cancel that 
     { type: "finish", error: true, outcome: "success", now: 1 }
   );
   assert.equal(failed.status, "failed", "an error is never overridden by an outcome");
+});
+
+// Review 2026-10-03: the overlay sits above VideoDetailModal, which closes on a window-level Escape. While an
+// operation is running that Escape must not reach the modal (it would unmount the panel mid-save and lose the
+// result). Once the operation is over nothing is being protected, so Escape is not swallowed.
+test("blocksKey: Escape is swallowed only while an operation is active; other keys never are", () => {
+  const running = run(IDLE_OPERATION, { type: "start", title: "t", now: 0 });
+  const cancelling = run(IDLE_OPERATION, { type: "start", title: "t", cancellable: true, now: 0 }, { type: "requestCancel" });
+  const finished = run(IDLE_OPERATION, { type: "start", title: "t", now: 0 }, { type: "finish", now: 1 });
+  assert.equal(blocksKey(running, "Escape"), true);
+  assert.equal(blocksKey(cancelling, "Escape"), true);
+  assert.equal(blocksKey(finished, "Escape"), false);
+  assert.equal(blocksKey(IDLE_OPERATION, "Escape"), false);
+  assert.equal(blocksKey(running, "Enter"), false);
+  assert.equal(blocksKey(running, "a"), false);
 });

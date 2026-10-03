@@ -43,7 +43,7 @@ rows are committed per row, so progress is already readable through `GET .../bat
    via `video-details`' `applyFieldsUpdate` -> `youtube-write-gateway`. It calls no YouTube method
    and adds no write path (owner reminder: every write goes through the one gateway). Preview stays
    in the browser: it is read-only, so a reload only means starting it again. Three safeguards
-   (independent review, 2026-10-03): (a) every registry heartbeat also records activity for the idle
+   (author's self-review, 2026-10-03): (a) every registry heartbeat also records activity for the idle
    auto-shutdown (`onHeartbeat` -> `recordActivity`), because a closed tab sends no `/api` request
    and the 60-minute idle exit would otherwise kill a long run between backup and verification;
    (b) `src/proxy.ts` gates only the START request, so the run calls the same
@@ -75,7 +75,14 @@ rows are committed per row, so progress is already readable through `GET .../bat
    proposals exist only in its original HTTP response, so there is nothing to re-attach to (the unload
    warning covers it). Stage 5: the shared `LoadingIndicator` (spinner + text) replaces every bare
    `<p>Loading...</p>`; an inventory test fails if one comes back.
-7. Not covered: Batches execution is not registered in the registry (its progress comes from the ledger),
+7. **Found by the independent review and a browser check (2026-10-03), fixed:** (a) the Content tab's
+   automatic resync (stale data on open) would have opened the blocking overlay -- it now runs plainly
+   (`background`), only a sync the operator pressed shows the overlay; (b) the sync route now refuses a
+   concurrent second sync with 409 `operation_already_running`, so every caller waits for the running one
+   (`postChannelSync`, `waitForOperation`) instead of showing an error (the dashboard fires the same
+   implicit sync on every load); (c) the overlay swallows Escape while an operation runs, because
+   `VideoDetailModal` closes on a window-level Escape and would have unmounted the panel mid-save.
+8. Not covered: Batches execution is not registered in the registry (its progress comes from the ledger),
    so a reloaded page does not re-attach to a running Batch; import of a localization workbook.
 
 ## Consequences

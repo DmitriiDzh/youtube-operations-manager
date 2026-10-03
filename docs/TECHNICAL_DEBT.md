@@ -1611,7 +1611,7 @@ No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a d
 - **Affected components:** `src/proxy.ts` (`assertDeviceAvailableForMutation` runs once per mutating
   request), `POST .../batches/[id]/execute` (one request, many writes),
   `src/lib/language-fix-all` (checks the gate before every video itself), ADR 0015.
-- **Found during:** moving "Fix all" to the server (independent review). The browser loop used to send one
+- **Found during:** moving "Fix all" to the server (the author's self-review). The browser loop used to send one
   gated request per video; a single server request no longer gets that per-video gate for free.
 - **Actual risk:** an export / import / migration (or a device that becomes unavailable) that starts while a
   long `execute` is running does not stop its remaining writes. "Fix all" is closed by its own per-video

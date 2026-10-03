@@ -6,6 +6,7 @@ import { formatDisplayDate, formatDisplayDateTime, resolvePublishDate } from "@/
 import { VideoDetailModal } from "./video-detail-modal";
 import { ChangeSetReview } from "./change-set-review";
 import { ConfirmDialog } from "./confirm-dialog";
+import { postChannelSync } from "./channel-sync-client";
 import { OperationOverlay, useOperation } from "./operation-progress";
 
 // ---------------------------------------------------------------------------
@@ -482,22 +483,16 @@ export function LanguagesManager() {
         title: "Syncing the channel from YouTube",
         track: { channelId, kind: "channel-sync" },
         quotaServices: ["dataApi"],
-        request: async () => {
-          const res = await fetch("/api/channels/sync", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ channelId }),
-          });
-          return { res, data: await res.json() };
-        },
-        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? data.error ?? `Error ${res.status}`)),
-        summarize: ({ data }) => (typeof data.videoCount === "number" ? `${data.videoCount} video${data.videoCount === 1 ? "" : "s"} synced.` : null),
+        request: () => postChannelSync(channelId, { onConflict: "retry" }),
+        failureOf: ({ res, data }) => (res.ok ? null : String(data?.message ?? data?.error ?? `Error ${res.status}`)),
+        summarize: ({ data }) =>
+          typeof data?.videoCount === "number" ? `${data.videoCount} video${data.videoCount === 1 ? "" : "s"} synced.` : null,
       });
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(String(data?.message ?? data?.error ?? `Error ${res.status}`));
         return;
       }
-      setLastSyncedAt(data.channel?.lastSyncedAt ?? null);
+      setLastSyncedAt((data?.channel as { lastSyncedAt?: string } | undefined)?.lastSyncedAt ?? null);
       await Promise.all([fetchOverview(channelId), fetchChangeSets(channelId)]);
     } catch (e) {
       setError(String(e));

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { ProgressBar } from "../progress-bar";
-import { isOperationActive, type OperationItemStatus, type OperationState } from "./operation-state";
+import { blocksKey, isOperationActive, type OperationItemStatus, type OperationState } from "./operation-state";
 import { Spinner } from "./spinner";
 
 function formatElapsed(ms: number): string {
@@ -49,6 +49,20 @@ export function OperationOverlay({
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [active]);
+
+  // Capture phase + stopImmediatePropagation: runs before a window-level Escape handler of whatever is
+  // underneath (VideoDetailModal closes on Escape and would unmount the panel mid-save).
+  useEffect(() => {
+    if (!active) return;
+    const swallow = (event: KeyboardEvent) => {
+      if (blocksKey(state, event.key)) {
+        event.stopImmediatePropagation();
+        event.preventDefault();
+      }
+    };
+    window.addEventListener("keydown", swallow, true);
+    return () => window.removeEventListener("keydown", swallow, true);
+  }, [active, state]);
 
   if (state.status === "idle") return null;
 

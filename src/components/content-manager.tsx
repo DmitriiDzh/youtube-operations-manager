@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatDisplayDate, resolvePublishDate } from "@/lib/shared-formatting";
+import { postChannelSync } from "./channel-sync-client";
 import { OperationOverlay, useOperation, LoadingIndicator } from "./operation-progress";
 import { DEFAULT_SORT, nextSortState, sortVideos, type SortKey, type SortState } from "./content-sort";
 import { VideoDetailModal } from "./video-detail-modal";
@@ -140,37 +141,46 @@ export function ContentManager() {
     }
   }, []);
 
-  const handleSync = useCallback(async (channelId?: string) => {
+  /**
+   * `background: true` is the automatic resync when the tab opens with stale data: it must NOT dim the
+   * whole app (owner-approved plan, ADR 0015: background sync shows no overlay), so it runs plainly.
+   * A sync the operator pressed shows the overlay. In both cases "a sync is already running" is waited
+   * out rather than shown as an error (see `postChannelSync`).
+   */
+  const handleSync = useCallback(async (channelId?: string, options: { background?: boolean } = {}) => {
     setSyncing(true);
     setError(null);
     setLastSyncSummary(null);
     try {
-      // Shown in the progress overlay (ADR 0015); the request and its error handling are unchanged.
-      const { res, data } = await runBlocking({
-        title: "Syncing the channel from YouTube",
-        track: { channelId: channelId ?? null, kind: "channel-sync" },
-        quotaServices: ["dataApi"],
-        request: async () => {
-          const res = await fetch("/api/channels/sync", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(channelId ? { channelId } : {}),
+      const onConflict = options.background ? "skip" : "retry";
+      const { res, data, waitedForOther } = options.background
+        ? await postChannelSync(channelId, { onConflict })
+        : await runBlocking({
+            title: "Syncing the channel from YouTube",
+            track: { channelId: channelId ?? null, kind: "channel-sync" },
+            quotaServices: ["dataApi"],
+            request: () => postChannelSync(channelId, { onConflict }),
+            failureOf: ({ res, data }) => (res.ok ? null : String(data?.message ?? data?.error ?? `Error ${res.status}`)),
+            summarize: ({ data }) =>
+              typeof data?.videoCount === "number" ? `${data.videoCount} video${data.videoCount === 1 ? "" : "s"} synced.` : null,
           });
-          return { res, data: await res.json() };
-        },
-        failureOf: ({ res, data }) => (res.ok ? null : (data.message ?? data.error ?? `Error ${res.status}`)),
-        summarize: ({ data }) => (typeof data.videoCount === "number" ? `${data.videoCount} video${data.videoCount === 1 ? "" : "s"} synced.` : null),
-      });
       if (!res.ok) {
-        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        setError(String(data?.message ?? data?.error ?? `Error ${res.status}`));
         return;
       }
+      if (!data) {
+        // Another sync (e.g. the dashboard's own) already did the work: just show what it saved.
+        if (channelId) await fetchVideos(channelId);
+        return;
+      }
+      void waitedForOther;
+      const channel = data.channel as SyncedChannel;
       setLastSyncSummary(
-        `Synced "${data.channel.title}" — ${data.videoCount} video${data.videoCount === 1 ? "" : "s"}`
+        `Synced "${channel.title}" — ${data.videoCount} video${data.videoCount === 1 ? "" : "s"}`
       );
-      setChannels([data.channel]);
-      setSelectedChannelId(data.channel.channelId);
-      await fetchVideos(data.channel.channelId);
+      setChannels([channel]);
+      setSelectedChannelId(channel.channelId);
+      await fetchVideos(channel.channelId);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -228,7 +238,7 @@ export function ContentManager() {
         const lastSyncedMs = active.lastSyncedAt ? new Date(active.lastSyncedAt).getTime() : 0;
         const isStale = Date.now() - lastSyncedMs > AUTO_RESYNC_STALENESS_MS;
         if (isStale) {
-          await handleSync(active.channelId);
+          await handleSync(active.channelId, { background: true });
         } else {
           await fetchVideos(active.channelId);
         }
