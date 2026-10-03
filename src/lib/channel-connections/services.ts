@@ -1,4 +1,5 @@
 import type { revokeGoogleToken } from "@/lib/auth";
+import { createHash } from "node:crypto";
 import { classifyConnectionHealth } from "./connection-health";
 import {
   DomainError,
@@ -50,7 +51,9 @@ type ServiceDependencies = {
 
 export function createChannelConnectionsServices(deps: ServiceDependencies) {
   // Real-check results by internal user id. `error` outcomes are never cached (retry next time).
-  const probeCache = new Map<string, { probe: "ok" | "invalid_grant"; at: Date }>();
+  // Each entry remembers a hash of the token it was made for: a fresh sign-in stores a NEW refresh token, and an old
+  // `invalid_grant` must never be reused against it (that would keep the re-login prompt up after a successful login).
+  const probeCache = new Map<string, { probe: "ok" | "invalid_grant"; at: Date; tokenKey: string }>();
 
   return {
     /** Every locally-known channel that currently has a connected identity, for the Settings
@@ -113,8 +116,12 @@ export function createChannelConnectionsServices(deps: ServiceDependencies) {
           if (!tokens?.refreshToken) {
             probe = "invalid_grant";
           } else {
+            const tokenKey = createHash("sha256").update(tokens.refreshToken).digest("hex");
             const cached = probeCache.get(c.connectedUserId);
-            const fresh = cached && now.getTime() - cached.at.getTime() < HEALTH_PROBE_CACHE_MINUTES * 60_000;
+            const fresh =
+              cached &&
+              cached.tokenKey === tokenKey &&
+              now.getTime() - cached.at.getTime() < HEALTH_PROBE_CACHE_MINUTES * 60_000;
             if (cached && fresh && !options.forceRefresh) {
               probe = cached.probe;
               checkedAt = cached.at;
@@ -125,7 +132,7 @@ export function createChannelConnectionsServices(deps: ServiceDependencies) {
                 probeCache.delete(c.connectedUserId);
               } else {
                 checkedAt = now;
-                probeCache.set(c.connectedUserId, { probe: result, at: now });
+                probeCache.set(c.connectedUserId, { probe: result, at: now, tokenKey });
               }
             }
           }

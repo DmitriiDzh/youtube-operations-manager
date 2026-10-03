@@ -387,3 +387,17 @@ test("getConnectionHealth: a failed real check (network) is never cached and nev
   await services.getConnectionHealth("u-a");
   assert.equal(probeCalls.length, 4, "an error result is retried on the next call");
 });
+
+test("getConnectionHealth: after a fresh sign-in stores a NEW refresh token, a cached invalid_grant for the old one is not reused", async () => {
+  const { services, probeCalls, users } = twoConnections({
+    issuedAt: { "u-a": daysAgo(1), "u-b": daysAgo(8) },
+    probeResults: { "REFRESH-B": "invalid_grant" },
+  });
+  const before = await services.getConnectionHealth("u-a");
+  assert.equal(before.find((h) => h.channelId === "UC_B")?.state, "reauth_required");
+
+  users.get("u-b")!.refreshToken = "REFRESH-B-NEW"; // re-login completed within the 10-minute cache window
+  const after = await services.getConnectionHealth("u-a");
+  assert.equal(after.find((h) => h.channelId === "UC_B")?.state, "ok");
+  assert.ok(probeCalls.includes("REFRESH-B-NEW"), "the new token was really checked");
+});
