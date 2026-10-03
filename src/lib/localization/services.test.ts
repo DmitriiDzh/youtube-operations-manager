@@ -93,6 +93,37 @@ test("getLocalizationOverview reports missing languages relative to the channel-
   assert.equal(v2?.status, "complete");
 });
 
+test("getLocalizationOverview never reports a video's own default language as missing; a real localization for that code still counts as present", async () => {
+  // Hand-derived: columns are the union {de, ja}. v1 is a Japanese original with a German translation -> ja is its original (not missing), de present -> complete.
+  // v2 is an English original with nothing -> both columns missing. v3 is a Japanese original that ALSO has a real ja localization -> ja present.
+  const videos = [
+    makeVideo({ videoId: "v1", defaultLanguage: "ja", existingLocalizations: { de: { title: "DE", description: "d" } } }),
+    makeVideo({ videoId: "v2", defaultLanguage: "en", existingLocalizations: {} }),
+    makeVideo({ videoId: "v3", defaultLanguage: "ja", existingLocalizations: { ja: { title: "JA", description: "j" }, de: { title: "DE", description: "d" } } }),
+  ];
+  const { services } = createFixture(videos);
+  const overview = await services.getLocalizationOverview({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  assert.deepEqual(overview.languages, ["de", "ja"]);
+  const v1 = overview.videos.find((v) => v.videoId === "v1")!;
+  assert.deepEqual([v1.presentLanguages, v1.missingLanguages, v1.status], [["de"], [], "complete"]);
+  const v2 = overview.videos.find((v) => v.videoId === "v2")!;
+  assert.deepEqual([v2.presentLanguages, v2.missingLanguages, v2.status], [[], ["de", "ja"], "missing"]);
+  const v3 = overview.videos.find((v) => v.videoId === "v3")!;
+  assert.deepEqual([v3.presentLanguages, v3.missingLanguages, v3.status], [["de", "ja"], [], "complete"]);
+});
+
+test("getLocalizationOverview matches the default language by exact code (en-US is not en) and a video with no default language is unchanged", async () => {
+  const videos = [
+    makeVideo({ videoId: "v1", defaultLanguage: "en-US", existingLocalizations: { de: { title: "DE", description: "d" } } }),
+    makeVideo({ videoId: "v2", defaultLanguage: null, existingLocalizations: { en: { title: "EN", description: "e" } } }),
+  ];
+  const { services } = createFixture(videos);
+  const overview = await services.getLocalizationOverview({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  assert.deepEqual(overview.languages, ["de", "en"]);
+  assert.deepEqual(overview.videos.find((v) => v.videoId === "v1")!.missingLanguages, ["en"]); // "en-US" original does not excuse "en"
+  assert.deepEqual(overview.videos.find((v) => v.videoId === "v2")!.missingLanguages, ["de"]);
+});
+
 test("getLocalizationOverview treats a video with zero channel-wide languages as missing, not complete", async () => {
   const { services } = createFixture([makeVideo({ existingLocalizations: {} })]);
 
