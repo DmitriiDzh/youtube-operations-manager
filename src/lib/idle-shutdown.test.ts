@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   DEFAULT_IDLE_SHUTDOWN_TIMEOUT_MS,
+  decideIdleShutdown,
+  resolveIdleTimeoutMs,
   getLastActivityAt,
   isIdleTimeoutExceeded,
   recordActivity,
@@ -50,8 +52,8 @@ test("recordActivity: defaults to the real current time when called with no argu
   assert.ok(getLastActivityAt() >= before && getLastActivityAt() <= after);
 });
 
-test("DEFAULT_IDLE_SHUTDOWN_TIMEOUT_MS is exactly 60 minutes (widened from 5, owner instruction, 2026-09-29)", () => {
-  assert.equal(DEFAULT_IDLE_SHUTDOWN_TIMEOUT_MS, 60 * 60 * 1000);
+test("DEFAULT_IDLE_SHUTDOWN_TIMEOUT_MS is exactly 10 minutes (owner instruction 2026-10-03, BL-116: presence heartbeat replaces the 60-minute window)", () => {
+  assert.equal(DEFAULT_IDLE_SHUTDOWN_TIMEOUT_MS, 10 * 60 * 1000);
 });
 
 test("startIdleShutdownWatcher: calls onIdle once the recorded activity is stale enough, and stops checking once cancelled", async () => {
@@ -81,4 +83,69 @@ test("startIdleShutdownWatcher: calls onIdle once the recorded activity is stale
   recordActivity(new Date());
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(idleCalls, callsAtStop, "a stopped watcher must never call onIdle again");
+});
+
+// ---- BL-116: presence-based shutdown that never cuts running work short ----
+
+const T = 10 * 60_000;
+const LAST = Date.parse("2026-10-03T12:00:00Z");
+const at = (ms: number) => new Date(LAST + ms);
+
+test("decideIdleShutdown: stay inside the window, exit exactly at the timeout when nothing is running", () => {
+  assert.equal(decideIdleShutdown({ lastActivityAt: LAST, now: at(T - 1), timeoutMs: T, busy: false }), "stay");
+  assert.equal(decideIdleShutdown({ lastActivityAt: LAST, now: at(T), timeoutMs: T, busy: false }), "exit");
+  assert.equal(decideIdleShutdown({ lastActivityAt: LAST, now: at(T - 1), timeoutMs: T, busy: true }), "stay", "busy never matters before the window ends");
+});
+
+test("decideIdleShutdown: running work defers an expired window, and exits anyway 2 hours after the window expired", () => {
+  const twoHours = 2 * 60 * 60_000;
+  assert.equal(decideIdleShutdown({ lastActivityAt: LAST, now: at(T), timeoutMs: T, busy: true }), "defer");
+  assert.equal(decideIdleShutdown({ lastActivityAt: LAST, now: at(T + twoHours - 1), timeoutMs: T, busy: true }), "defer");
+  assert.equal(decideIdleShutdown({ lastActivityAt: LAST, now: at(T + twoHours), timeoutMs: T, busy: true }), "exit");
+});
+
+test("decideIdleShutdown: work that ends later lets the next check exit", () => {
+  assert.equal(decideIdleShutdown({ lastActivityAt: LAST, now: at(T + 5 * 60_000), timeoutMs: T, busy: true }), "defer");
+  assert.equal(decideIdleShutdown({ lastActivityAt: LAST, now: at(T + 6 * 60_000), timeoutMs: T, busy: false }), "exit");
+});
+
+test("resolveIdleTimeoutMs: default 10 minutes; a positive number of minutes (fractions allowed) overrides; garbage falls back", () => {
+  assert.equal(resolveIdleTimeoutMs({}), 600_000);
+  assert.equal(resolveIdleTimeoutMs({ YTOM_IDLE_SHUTDOWN_MINUTES: "0.5" }), 30_000);
+  assert.equal(resolveIdleTimeoutMs({ YTOM_IDLE_SHUTDOWN_MINUTES: "30" }), 1_800_000);
+  for (const bad of ["0", "-3", "abc", ""]) assert.equal(resolveIdleTimeoutMs({ YTOM_IDLE_SHUTDOWN_MINUTES: bad }), 600_000, bad);
+});
+
+test("startIdleShutdownWatcher: does not call onIdle while isBusy is true, calls it once the work ends; a throwing isBusy counts as busy", async () => {
+  recordActivity(new Date(Date.now() - 500));
+  let busy = true;
+  let idleCalls = 0;
+  const stop = startIdleShutdownWatcher({ timeoutMs: 20, checkIntervalMs: 10, isBusy: () => busy, onIdle: () => { idleCalls += 1; } });
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(idleCalls, 0, "deferred while busy");
+  busy = false;
+  await new Promise((r) => setTimeout(r, 80));
+  assert.ok(idleCalls >= 1, "exits once the work ended");
+  stop();
+
+  recordActivity(new Date(Date.now() - 500));
+  let throwingCalls = 0;
+  const stop2 = startIdleShutdownWatcher({
+    timeoutMs: 20,
+    checkIntervalMs: 10,
+    isBusy: () => {
+      throw new Error("cannot tell");
+    },
+    onIdle: () => { throwingCalls += 1; },
+  });
+  await new Promise((r) => setTimeout(r, 80));
+  stop2();
+  assert.equal(throwingCalls, 0, "an unknown state never cuts work short");
+});
+
+test("the last-activity timestamp lives on globalThis, so the proxy's, a route's and the watcher's separately bundled copies of this module share it", () => {
+  const stamp = new Date("2026-10-03T12:34:56Z");
+  recordActivity(stamp);
+  const shared = (globalThis as Record<symbol, unknown>)[Symbol.for("ytom.idleShutdown.lastActivityAt")];
+  assert.equal(shared, stamp.getTime());
 });

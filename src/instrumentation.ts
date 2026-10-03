@@ -147,7 +147,17 @@ async function startServerSession() {
   // local changes, then exit. Deliberately NOT raced against a timeout: exiting while the export
   // holds the operation lock would leave that lock stale (never auto-released) -- a few-MB export
   // finishes in about a second anyway.
+  // BL-116: an expired idle window never cuts running work short -- a registered operation (Fix all, syncs, ...),
+  // a held export/import/migration lock, or a RUNNING Batch defers the exit (idle-shutdown.ts caps the deferral).
+  const { getOperationRegistry } = await import("@/lib/operation-progress");
+  const { getOperationLock } = await import("@/lib/operation-lock");
   startIdleShutdownWatcher({
+    isBusy: async () => {
+      if (getOperationRegistry().hasActive()) return true;
+      if ((await getOperationLock(rawSqlClient)) !== null) return true;
+      const running = await rawSqlClient.execute("SELECT 1 FROM batches WHERE status = 'RUNNING' LIMIT 1");
+      return running.rows.length > 0;
+    },
     onIdle: () =>
       void resetQuietly()
         .then(() => ticking ?? undefined)

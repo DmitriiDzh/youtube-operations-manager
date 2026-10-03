@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { ServerPresence } from "@/components/server-presence";
 import { SessionProvider } from "@/components/session-provider";
 import "./globals.css";
 
@@ -30,6 +31,7 @@ export default function RootLayout({
     >
       <body className="min-h-full bg-zinc-950 text-zinc-100">
         <SessionProvider>{children}</SessionProvider>
+        <ServerPresence />
       </body>
     </html>
   );
