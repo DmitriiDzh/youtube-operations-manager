@@ -8,6 +8,7 @@ import {
   pickWritableStatusFields,
 } from "@/lib/youtube-write-gateway";
 import { DomainError, type ResolvedCredentials } from "@/lib/shared-domain";
+import { readBackUntilApplied } from "../read-back";
 import type { VideoDetailsPatch, VideoDetailsSnapshot } from "../contracts";
 
 function createAuthorizedClient(credentials: ResolvedCredentials) {
@@ -134,16 +135,24 @@ export function createVideoDetailsYoutubeApiAdapter() {
         },
       });
 
-      const verifiedContext = await getVideoDetailsContext(youtube, args.videoId);
-      if (!verifiedContext) {
-        throw new DomainError({
-          code: "update_failed",
-          message: "Video disappeared immediately after a successful update call",
-          details: { videoId: args.videoId },
-        });
-      }
+      // YouTube may serve the old value for a few seconds after the write (observed live for
+      // defaultAudioLanguage) -- re-read a bounded number of times before verification judges it.
+      const after = await readBackUntilApplied({
+        patch: args.patch,
+        read: async () => {
+          const verifiedContext = await getVideoDetailsContext(youtube, args.videoId);
+          if (!verifiedContext) {
+            throw new DomainError({
+              code: "update_failed",
+              message: "Video disappeared immediately after a successful update call",
+              details: { videoId: args.videoId },
+            });
+          }
+          return toSnapshot(args.videoId, verifiedContext);
+        },
+      });
 
-      return { before, after: toSnapshot(args.videoId, verifiedContext) };
+      return { before, after };
     },
   };
 }
