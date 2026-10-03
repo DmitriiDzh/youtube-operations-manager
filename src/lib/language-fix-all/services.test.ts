@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createOperationRegistry, OperationAlreadyRunningError } from "@/lib/operation-progress";
+import { DomainError } from "./contracts";
 import { createLanguageFixAllServices, type FixAllDependencies } from "./services";
 
 // Acceptance criteria (owner instruction 2026-10-03 + AGENTS.md §F/§G), written from the
@@ -22,6 +23,7 @@ function setup(opts: {
   deviations?: Array<{ videoId: string; title?: string; lang?: boolean; audio?: boolean }>;
   apply?: (call: Call, index: number) => Promise<{ verified: boolean }>;
   assertMutationAllowed?: () => Promise<void>;
+  quotaGuard?: FixAllDependencies["quotaGuard"];
 } = {}) {
   const calls: Call[] = [];
   const registry = createOperationRegistry();
@@ -33,6 +35,7 @@ function setup(opts: {
   const service = createLanguageFixAllServices({
     registry,
     assertMutationAllowed: opts.assertMutationAllowed ?? (async () => undefined),
+    quotaGuard: opts.quotaGuard,
     getDeviations: async () => ({
       defaults: opts.defaults ?? { defaultLanguage: "en", defaultAudioLanguage: "ja" },
       deviations: deviations.map((d) => ({
@@ -253,4 +256,64 @@ test("AC-9: a gate that refuses from the start writes nothing", async () => {
   const { run } = await service.start(request(["v1", "v2"]));
   await run();
   assert.equal(calls.length, 0);
+});
+
+// BL-117 slice 2 (owner decision 2026-10-03: Fix all gets the same pre-flight quota block as Batches). Acceptance criteria:
+//  AC-G11 a run that certainly needs more quota than is left is refused BEFORE it is registered or anything is written, with the
+//         numbers and how many videos would fit; an unreadable quota is its own refusal that the user may knowingly override;
+//         only the videos that will really be written count (skipped ones cost nothing).
+type FixAllVerdict = NonNullable<FixAllDependencies["quotaGuard"]> extends { checkWriteRun(n: number): Promise<infer V> } ? V : never;
+
+function guard(verdict: FixAllVerdict) {
+  const asked: number[] = [];
+  return {
+    asked,
+    quotaGuard: {
+      async checkWriteRun(videos: number) {
+        asked.push(videos);
+        return verdict;
+      },
+    },
+  };
+}
+
+test("BL-117 AC-G11: insufficient quota refuses Fix all before anything is registered or written; only videos to be written are counted", async () => {
+  const { asked, quotaGuard } = guard({ decision: "insufficient", estimatedUnits: 104, remainingUnits: 60, fitVideos: 1, resetsAt: "2026-10-04T07:00:00.000Z" });
+  const { service, calls, registry } = setup({ quotaGuard });
+  await assert.rejects(
+    service.start(request(["v1", "v2", "v3", "not-a-deviation"])),
+    (error: unknown) => {
+      assert.ok(error instanceof DomainError);
+      assert.equal(error.code, "quota_insufficient");
+      assert.deepEqual(error.details, { estimatedUnits: 104, remainingUnits: 60, rowsToWrite: 3, fitVideos: 1, resetsAt: "2026-10-04T07:00:00.000Z", canSplit: false });
+      return true;
+    }
+  );
+  assert.deepEqual(asked, [3], "the video that is not in the deviation report costs nothing and is not counted");
+  assert.equal(calls.length, 0);
+  assert.equal(registry.hasActive(), false, "nothing was registered");
+});
+
+test("BL-117: an allowed verdict runs Fix all normally", async () => {
+  const { quotaGuard } = guard({ decision: "allow", estimatedUnits: 156, remainingUnits: 500, fitVideos: 9 });
+  const { service, calls } = setup({ quotaGuard });
+  const { run } = await service.start(request(["v1", "v2", "v3"]));
+  await run();
+  assert.equal(calls.length, 3);
+});
+
+test("BL-117 AC-G4 (Fix all): an unreadable quota refuses with quota_unknown, unless the user acknowledges; nothing is started by the refusal", async () => {
+  const { quotaGuard } = guard({ decision: "unknown", estimatedUnits: 156, cloudConnected: false });
+  const first = setup({ quotaGuard });
+  await assert.rejects(
+    first.service.start(request(["v1", "v2", "v3"])),
+    (error: unknown) => error instanceof DomainError && error.code === "quota_unknown" && (error.details as { cloudConnected: boolean }).cloudConnected === false
+  );
+  assert.equal(first.calls.length, 0);
+  assert.equal(first.registry.hasActive(), false);
+
+  const second = setup({ quotaGuard });
+  const { run } = await second.service.start({ ...request(["v1", "v2", "v3"]), acknowledgeUnknownQuota: true });
+  await run();
+  assert.equal(second.calls.length, 3);
 });

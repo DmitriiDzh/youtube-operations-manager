@@ -403,6 +403,9 @@ export const batches = sqliteTable("batches", {
     .$defaultFn(() => new Date()),
   startedAt: integer("started_at", { mode: "timestamp" }),
   completedAt: integer("completed_at", { mode: "timestamp" }),
+  // Additive, SCHEMA_MIGRATIONS version 43 (BL-117): JSON array of the batch ids this (never executed) batch was split
+  // into because it needed more quota than was available. NULL for every other batch.
+  splitIntoJson: text("split_into_json"),
 });
 
 // One row per video per batch (DEC-OQ-1). Membership (batchId + videoId + changeIds) is
@@ -2515,6 +2518,17 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute("CREATE INDEX IF NOT EXISTS quota_ledger_occurred_idx ON quota_ledger(occurred_at)");
     },
   },
+  {
+    version: 43,
+    description: "batches.split_into_json -- BL-117: ids of the batches a never-executed batch was split into for quota",
+    apply: async (client) => {
+      try {
+        await client.execute("ALTER TABLE batches ADD COLUMN split_into_json TEXT");
+      } catch (error) {
+        if (!isDuplicateColumnError(error)) throw error;
+      }
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -3827,6 +3841,22 @@ export async function getChannelReachCoverage(
     lastDate: days?.lastDate ?? null,
     importedFiles: Number(files?.count ?? 0),
   };
+}
+
+// --- BL-117 slice 2: quota reserve setting ---------------------------------------------------------
+
+const QUOTA_RESERVE_PERCENT_SETTING_KEY = "quota_reserve_percent";
+
+/** Share of the daily quota (percent) background reads leave untouched so writes keep headroom; default 20. */
+export async function getQuotaReservePercent(database: AppDb = db): Promise<number> {
+  const raw = await getAppSetting(QUOTA_RESERVE_PERCENT_SETTING_KEY, database);
+  if (raw === null || raw === "") return 20;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 90 ? Math.round(parsed) : 20;
+}
+
+export async function setQuotaReservePercent(percent: number, database: AppDb = db): Promise<void> {
+  await setAppSetting(QUOTA_RESERVE_PERCENT_SETTING_KEY, String(Math.round(percent)), database);
 }
 
 // --- BL-117: quota ledger ---------------------------------------------------------------------------
@@ -5172,6 +5202,8 @@ export type StoredBatch = {
   createdAt: Date;
   startedAt: Date | null;
   completedAt: Date | null;
+  /** BL-117: ids of the batches this one was split into (it was never executed); null otherwise. */
+  splitInto: string[] | null;
 };
 
 export type StoredLedgerRow = {
@@ -5210,7 +5242,18 @@ function mapStoredBatch(row: typeof batches.$inferSelect): StoredBatch {
     createdAt: row.createdAt,
     startedAt: row.startedAt,
     completedAt: row.completedAt,
+    splitInto: parseSplitInto(row.splitIntoJson),
   };
+}
+
+function parseSplitInto(raw: string | null): string[] | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.every((x) => typeof x === "string") ? (parsed as string[]) : null;
+  } catch {
+    return null;
+  }
 }
 
 function mapStoredLedgerRow(row: typeof batchLedgerRows.$inferSelect): StoredLedgerRow {
@@ -5342,6 +5385,85 @@ export async function markBatchTerminal(
     .update(batches)
     .set({ status, completedAt: new Date() })
     .where(eq(batches.id, batchId));
+}
+
+/**
+ * BL-117 slice 2 -- splits a never-executed live batch because it needs more quota than is available: ALL in ONE transaction,
+ * the new "fits" batch (first rows, in stored order), the new "rest" batch (everything else), and the ORIGINAL closed
+ * (`ABORTED`, every row `CANCELLED`, `split_into_json` set). The original must still be `PENDING` with every row `PENDING`
+ * (checked inside the transaction with guarded updates), so nothing that ever started can be split, a concurrent execute
+ * claim loses cleanly, and after commit every original video sits in exactly one new batch -- none lost, none doubled.
+ * Returns `null` (nothing changed) when the original was no longer splittable.
+ */
+export async function splitPendingBatchForQuota(
+  input: {
+    batchId: string;
+    fitCount: number;
+    fitsBatchId: string | null;
+    restBatchId: string | null;
+    newRowIds: () => string;
+  },
+  database: AppDb = db
+): Promise<{ fitsBatchId: string | null; restBatchId: string | null; fitRows: number; restRows: number } | null> {
+  return database.transaction(async (tx) => {
+    const [original] = await tx.select().from(batches).where(eq(batches.id, input.batchId));
+    if (!original || original.status !== "PENDING" || original.dryRun) return null;
+
+    const rows = (await tx.select().from(batchLedgerRows).where(eq(batchLedgerRows.batchId, input.batchId))).sort(
+      (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id)
+    );
+    if (rows.length === 0 || rows.some((r) => r.status !== "PENDING")) return null;
+
+    const fitCount = Math.min(Math.max(0, input.fitCount), rows.length);
+    const fitRows = rows.slice(0, fitCount);
+    const restRows = rows.slice(fitCount);
+    if ((fitRows.length > 0 && !input.fitsBatchId) || (restRows.length > 0 && !input.restBatchId)) return null;
+
+    const claim = await tx
+      .update(batches)
+      .set({ status: "ABORTED", completedAt: new Date() })
+      .where(and(eq(batches.id, input.batchId), eq(batches.status, "PENDING")))
+      .returning({ id: batches.id });
+    if (claim.length === 0) return null;
+
+    const createdIds: string[] = [];
+    for (const [newId, part] of [
+      [input.fitsBatchId, fitRows],
+      [input.restBatchId, restRows],
+    ] as const) {
+      if (!newId || part.length === 0) continue;
+      await tx.insert(batches).values({
+        id: newId,
+        channelId: original.channelId,
+        status: "PENDING",
+        concurrency: original.concurrency,
+        dryRun: false,
+      });
+      for (const row of part) {
+        await tx.insert(batchLedgerRows).values({
+          id: input.newRowIds(),
+          batchId: newId,
+          videoId: row.videoId,
+          changeIdsJson: row.changeIdsJson,
+          status: "PENDING",
+        });
+      }
+      createdIds.push(newId);
+    }
+
+    await tx
+      .update(batchLedgerRows)
+      .set({ status: "CANCELLED", updatedAt: new Date() })
+      .where(and(eq(batchLedgerRows.batchId, input.batchId), eq(batchLedgerRows.status, "PENDING")));
+    await tx.update(batches).set({ splitIntoJson: JSON.stringify(createdIds) }).where(eq(batches.id, input.batchId));
+
+    return {
+      fitsBatchId: fitRows.length > 0 ? input.fitsBatchId : null,
+      restBatchId: restRows.length > 0 ? input.restBatchId : null,
+      fitRows: fitRows.length,
+      restRows: restRows.length,
+    };
+  });
 }
 
 /**

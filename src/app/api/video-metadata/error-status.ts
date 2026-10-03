@@ -42,6 +42,8 @@ const DOMAIN_ERROR_STATUS = {
   analytics_data_current: 409,
   analytics_reads_disabled: 503,
   youtube_quota_exceeded: 429,
+  quota_insufficient: 409,
+  quota_unknown: 409,
   provider_not_configured: 501,
   generation_invalid_target_language: 422,
   generation_no_proposals: 422,

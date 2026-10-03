@@ -27,14 +27,20 @@ export async function POST(request: Request, { params }: { params: Promise<{ cha
     const { channelId } = await params;
     await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
 
-    let body: { videos?: unknown; baseline?: unknown };
+    let body: { videos?: unknown; baseline?: unknown; acknowledgeUnknownQuota?: unknown };
     try {
-      body = (await request.json()) as { videos?: unknown; baseline?: unknown };
+      body = (await request.json()) as { videos?: unknown; baseline?: unknown; acknowledgeUnknownQuota?: unknown };
     } catch {
       return NextResponse.json({ error: "validation_failed", message: "Request body must be valid JSON" }, { status: 400 });
     }
 
-    const { operationId, run } = await core.start({ channelId, userId: session.user.id, baseline: body.baseline, videos: body.videos });
+    const { operationId, run } = await core.start({
+      channelId,
+      userId: session.user.id,
+      baseline: body.baseline,
+      videos: body.videos,
+      ...(body.acknowledgeUnknownQuota === true ? { acknowledgeUnknownQuota: true } : {}),
+    });
     after(run);
     return NextResponse.json({ operationId }, { status: 202 });
   } catch (error) {

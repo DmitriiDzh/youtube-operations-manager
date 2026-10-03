@@ -2,6 +2,7 @@ import { createChannelLanguageDefaultsCore } from "@/lib/channel-language-defaul
 import { rawSqlClient } from "@/lib/db";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { getOperationRegistry } from "@/lib/operation-progress";
+import { createQuotaGuardCore } from "@/lib/quota-guard";
 import { createVideoDetailsCore } from "@/lib/video-details";
 import { createLanguageFixAllServices } from "./services";
 
@@ -15,6 +16,8 @@ export function createLanguageFixAllCore() {
     applyFieldsUpdate: (input) => videoDetails.applyFieldsUpdate(input),
     registry: getOperationRegistry(),
     assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
+    // BL-117 slice 2: a bulk run that certainly needs more quota than is left is refused before it starts.
+    quotaGuard: createQuotaGuardCore(),
   });
 }
 

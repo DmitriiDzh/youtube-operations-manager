@@ -188,6 +188,26 @@ type ServiceDependencies = {
    * keep their behavior.
    */
   assertMutationAllowed?: () => Promise<void>;
+  /**
+   * BL-117 slice 2 -- the pre-flight quota guard (`src/lib/quota-guard`). Optional so tests and any other wiring keep their
+   * behavior; production wiring (`index.ts`) always supplies it. `checkWriteRun(videos)` says whether writing `videos`
+   * videos now fits into the Data API quota that is left.
+   */
+  quotaGuard?: {
+    checkWriteRun(videos: number): Promise<
+      | { decision: "allow"; estimatedUnits: number; remainingUnits: number; fitVideos: number }
+      | { decision: "insufficient"; estimatedUnits: number; remainingUnits: number; fitVideos: number; resetsAt: string | null }
+      | { decision: "unknown"; estimatedUnits: number; cloudConnected: boolean }
+    >;
+  };
+  /** Atomically splits a never-executed live batch (see `splitPendingBatchForQuota` in db.ts). Optional like `quotaGuard`. */
+  splitPendingBatch?: (input: {
+    batchId: string;
+    fitCount: number;
+    fitsBatchId: string | null;
+    restBatchId: string | null;
+    newRowIds: () => string;
+  }) => Promise<{ fitsBatchId: string | null; restBatchId: string | null; fitRows: number; restRows: number } | null>;
   idGenerator: () => string;
   logger: {
     info(payload: { event: string; context?: Record<string, unknown> }): void;
@@ -206,6 +226,7 @@ function toBatch(record: StoredBatchRecord): Batch {
     createdAt: record.createdAt.toISOString(),
     startedAt: record.startedAt ? record.startedAt.toISOString() : null,
     completedAt: record.completedAt ? record.completedAt.toISOString() : null,
+    splitInto: record.splitInto ?? null,
   };
 }
 
@@ -1466,12 +1487,135 @@ export function createBatchServices(deps: ServiceDependencies) {
    * run, which `docs/acceptance/PHASE_5_ACCEPTANCE.md` §0.B item C never requires to be
    * globally ordered, only reconstructable per video.
    */
+  /**
+   * BL-117 slice 2 (owner decision 2026-10-03: block a batch that certainly needs more quota than is available, before it
+   * starts, so it cannot be cut off half way and lose data). Runs BEFORE any claim, backup, lock or API call: a refusal
+   * changes nothing. Dry-run batches cost no quota and are never checked. For a resumed (RUNNING) batch only the rows still
+   * to be written count. Refusals are the typed errors `quota_insufficient` (numbers + whether the batch can be split) and
+   * `quota_unknown` (the quota could not be read; `acknowledgeUnknownQuota` lets the user proceed knowingly).
+   */
+  async function assertQuotaAllowsRun(batchId: string, acknowledgeUnknown: boolean): Promise<void> {
+    if (!deps.quotaGuard) return;
+    const batch = await requireBatch(batchId);
+    if (batch.dryRun) return;
+
+    const rows = await batchStore.listLedgerRowsByBatch(batchId);
+    const rowsToWrite = rows.filter((r) => r.status === "PENDING" || r.status === "AWAITING_EXECUTION").length;
+    if (rowsToWrite === 0) return;
+
+    const verdict = await deps.quotaGuard.checkWriteRun(rowsToWrite);
+    if (verdict.decision === "allow") return;
+
+    if (verdict.decision === "unknown") {
+      if (acknowledgeUnknown) return;
+      throw new DomainError({
+        code: "quota_unknown",
+        message: verdict.cloudConnected
+          ? "The remaining YouTube quota could not be read just now, so this batch cannot be checked against it."
+          : "Google Cloud is not connected, so the remaining YouTube quota cannot be checked before this batch starts.",
+        details: { estimatedUnits: verdict.estimatedUnits, rowsToWrite, cloudConnected: verdict.cloudConnected },
+      });
+    }
+
+    throw new DomainError({
+      code: "quota_insufficient",
+      message:
+        `This batch needs about ${verdict.estimatedUnits} units of YouTube quota but only ${verdict.remainingUnits} are available, ` +
+        "so it was not started (stopping half way could leave some videos written and others not).",
+      details: {
+        batchId,
+        estimatedUnits: verdict.estimatedUnits,
+        remainingUnits: verdict.remainingUnits,
+        rowsToWrite,
+        fitVideos: verdict.fitVideos,
+        resetsAt: verdict.resetsAt,
+        // Only a never-executed batch can be split into "what fits now" and "the rest".
+        canSplit: batch.status === "PENDING" && rows.every((r) => r.status === "PENDING") && verdict.fitVideos > 0,
+      },
+    });
+  }
+
+  /**
+   * BL-117 slice 2 -- turns a blocked, never-executed live batch into (a) a batch of the videos that fit into the quota left now
+   * and (b) a new batch of the rest to run later, closing the original so no video can be written twice. All in one transaction
+   * (`splitPendingBatchForQuota`); videos keep their original order. Nothing is written to YouTube.
+   */
+  async function splitBatchForQuota(input: { batchId: string }): Promise<{
+    fitsBatchId: string | null;
+    restBatchId: string | null;
+    fitRows: number;
+    restRows: number;
+    estimatedUnits: number;
+    remainingUnits: number;
+  }> {
+    const batch = await requireBatch(input.batchId);
+    if (!deps.quotaGuard || !deps.splitPendingBatch) {
+      throw new DomainError({ code: "validation_failed", message: "Quota-based splitting is not available in this setup." });
+    }
+    if (batch.dryRun || batch.status !== "PENDING") {
+      throw new DomainError({
+        code: "validation_failed",
+        message: "Only a live batch that has not started yet can be split.",
+        details: { batchId: input.batchId, status: batch.status, dryRun: batch.dryRun },
+      });
+    }
+    const rows = await batchStore.listLedgerRowsByBatch(input.batchId);
+    const verdict = await deps.quotaGuard.checkWriteRun(rows.length);
+    if (verdict.decision === "unknown") {
+      throw new DomainError({
+        code: "quota_unknown",
+        message: "The remaining YouTube quota cannot be read, so a batch that fits it cannot be prepared.",
+        details: { estimatedUnits: verdict.estimatedUnits, rowsToWrite: rows.length, cloudConnected: verdict.cloudConnected },
+      });
+    }
+    if (verdict.decision === "allow") {
+      throw new DomainError({
+        code: "validation_failed",
+        message: "This batch fits the quota that is left; nothing needs to be split.",
+        details: { estimatedUnits: verdict.estimatedUnits, remainingUnits: verdict.remainingUnits },
+      });
+    }
+    if (verdict.fitVideos <= 0) {
+      throw new DomainError({
+        code: "quota_insufficient",
+        message: "Not even one video fits into the quota that is left right now.",
+        details: { batchId: input.batchId, remainingUnits: verdict.remainingUnits, resetsAt: verdict.resetsAt, canSplit: false },
+      });
+    }
+
+    const fitCount = Math.min(verdict.fitVideos, rows.length);
+    const restCount = rows.length - fitCount;
+    const result = await deps.splitPendingBatch({
+      batchId: input.batchId,
+      fitCount,
+      fitsBatchId: fitCount > 0 ? idGenerator() : null,
+      restBatchId: restCount > 0 ? idGenerator() : null,
+      newRowIds: idGenerator,
+    });
+    if (!result) {
+      throw new DomainError({
+        code: "batch_already_running",
+        message: "This batch changed while it was being split (it may have been started). Nothing was changed.",
+        details: { batchId: input.batchId },
+      });
+    }
+    logger.info({
+      event: "batch.split_for_quota",
+      context: { batchId: input.batchId, fitsBatchId: result.fitsBatchId, restBatchId: result.restBatchId, fitRows: result.fitRows, restRows: result.restRows },
+    });
+    return { ...result, estimatedUnits: verdict.estimatedUnits, remainingUnits: verdict.remainingUnits };
+  }
+
   async function executeBatch(input: {
     batchId: string;
     credentialRef: CredentialRef;
     expectedChannelId?: string;
     executor: WriteExecutor;
+    /** BL-117: the user chose to run although the quota left could not be read (Cloud not connected). */
+    acknowledgeUnknownQuota?: boolean;
   }): Promise<BatchExecutionSummary> {
+    await assertQuotaAllowsRun(input.batchId, input.acknowledgeUnknownQuota === true);
+
     // Registers this run so `requestBatchCancel` can reach it, and (always) unregisters it so no
     // cancel flag can outlive the run.
     const token = beginBatchExecution(input.batchId);
@@ -1729,6 +1873,7 @@ export function createBatchServices(deps: ServiceDependencies) {
     prepareBatchExecution,
     executeWithRetry,
     executeBatch,
+    splitBatchForQuota,
     requestBatchCancel,
     /** Test seam only: exposes the single-row cancel helper so the lost-race case can be driven directly. */
     cancelNotStartedRowForTest: async (batchId: string, row: StoredLedgerRowRecord) => cancelNotStartedRow(await requireBatch(batchId), row),

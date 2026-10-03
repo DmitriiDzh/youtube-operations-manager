@@ -630,7 +630,8 @@ test("applySnapshotToDatabase: merges by column name, not physical position (RIS
         run_id TEXT,
         created_at INTEGER NOT NULL DEFAULT (unixepoch()),
         started_at INTEGER,
-        completed_at INTEGER
+        completed_at INTEGER,
+        split_into_json TEXT
       )
     `);
     await source.execute({

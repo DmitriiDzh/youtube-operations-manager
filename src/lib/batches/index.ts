@@ -5,7 +5,8 @@ import { createBackupCore } from "@/lib/backup";
 import { createAuditCore } from "@/lib/audit";
 import { createBatchStoreAdapter, createChangeSetStoreAdapter, createIdGenerator } from "./adapters/store";
 import { createBatchYoutubeApiAdapter } from "./adapters/youtube-api";
-import { getChannelExpectedLanguages, rawSqlClient } from "@/lib/db";
+import { getChannelExpectedLanguages, rawSqlClient, splitPendingBatchForQuota } from "@/lib/db";
+import { createQuotaGuardCore } from "@/lib/quota-guard";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createBatchServices } from "./services";
 
@@ -43,6 +44,9 @@ export function createBatchCore() {
     clock: createRealClock(),
     verifyRetryDelaysMs: [2000, 5000],
     assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
+    // BL-117 slice 2: a live batch that needs more quota than is left is refused before it starts (and can be split).
+    quotaGuard: createQuotaGuardCore(),
+    splitPendingBatch: (input) => splitPendingBatchForQuota(input),
     idGenerator: createIdGenerator(),
     logger: createDefaultLogger(),
   });

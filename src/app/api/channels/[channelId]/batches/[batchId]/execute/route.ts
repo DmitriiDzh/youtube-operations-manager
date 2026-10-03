@@ -23,7 +23,7 @@ const channelAccess = createChannelAccessCore();
  * immediately before any network call) is ever invoked.
  */
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ channelId: string; batchId: string }> }
 ) {
   const session = await getServerSession(authOptions);
@@ -48,11 +48,22 @@ export async function POST(
       );
     }
 
+    // BL-117: the pre-flight quota guard refuses a live batch that needs more quota than is left, or (when Cloud is not
+    // connected) cannot be checked. `acknowledgeUnknownQuota` is the user's explicit "run anyway" for the second case only.
+    let acknowledgeUnknownQuota = false;
+    try {
+      const body = (await request.json()) as { acknowledgeUnknownQuota?: unknown };
+      acknowledgeUnknownQuota = body?.acknowledgeUnknownQuota === true;
+    } catch {
+      // No/invalid body: a plain execute.
+    }
+
     const summary = await core.executeBatch({
       batchId,
       credentialRef,
       expectedChannelId: channelId,
       executor,
+      acknowledgeUnknownQuota,
     });
 
     return NextResponse.json(summary);

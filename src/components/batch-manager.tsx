@@ -5,6 +5,7 @@ import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { deriveBatchStage, ledgerRowToItem, summarizeBatchRows } from "./batch-progress";
 import { ConfirmDialog } from "./confirm-dialog";
 import { OperationOverlay, useOperation } from "./operation-progress";
+import { parseQuotaBlock, QuotaBlockDialog, type QuotaBlock, type SplitOutcome } from "./quota-block-dialog";
 
 type ChangeSetSummary = {
   id: string;
@@ -36,6 +37,8 @@ type Batch = {
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
+  /** BL-117: set when this batch was never executed but split into smaller batches because it needed more quota than was available. */
+  splitInto?: string[] | null;
 };
 
 type LedgerRow = {
@@ -55,7 +58,7 @@ type AuditEvent = {
   occurredAt: string;
 };
 
-type ApiError = { error: string; message: string };
+type ApiError = { error: string; message: string; details?: unknown };
 
 /**
  * Phase 5 Web UI (DEC-OQ-5, minimum scope per the approved acceptance contract):
@@ -102,6 +105,9 @@ export function BatchManager({
   const [preparing, setPreparing] = useState(false);
   const [executing, setExecuting] = useState(false);
   const [confirmingExecute, setConfirmingExecute] = useState(false);
+  // BL-117: the server refused to START a live batch because of quota (insufficient / cannot be checked).
+  const [quotaBlock, setQuotaBlock] = useState<{ batchId: string; block: QuotaBlock } | null>(null);
+  const [splitOutcome, setSplitOutcome] = useState<SplitOutcome | null>(null);
   const [confirmingSendAll, setConfirmingSendAll] = useState(false);
   const op = useOperation();
   // The batch whose execution the overlay is showing -- what Cancel is sent for.
@@ -220,7 +226,13 @@ export function BatchManager({
    * Cancel (live execution only) asks the SERVER to stop before the next video (ADR 0016); the overlay
    * keeps polling until the execute request itself returns, so it never claims a stop that did not happen.
    */
-  async function runBatchRequest(batchId: string, kind: "execute" | "prepare", title: string, failureMessage: string) {
+  async function runBatchRequest(
+    batchId: string,
+    kind: "execute" | "prepare",
+    title: string,
+    failureMessage: string,
+    options: { acknowledgeUnknownQuota?: boolean } = {}
+  ) {
     if (!channelId) return;
     const base = `/api/channels/${encodeURIComponent(channelId)}/batches/${encodeURIComponent(batchId)}`;
     const dryRun = kind === "prepare";
@@ -250,10 +262,23 @@ export function BatchManager({
     const timer = setInterval(() => void poll(), 1500);
 
     try {
-      const res = await fetch(`${base}/${kind}`, { method: "POST" });
+      const res = await fetch(`${base}/${kind}`, {
+        method: "POST",
+        ...(options.acknowledgeUnknownQuota
+          ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ acknowledgeUnknownQuota: true }) }
+          : {}),
+      });
       const data = await res.json();
       clearInterval(timer);
       if (!res.ok) {
+        // BL-117: a quota refusal is not an error to dump in the red line: it is a decision for the user (nothing was started).
+        const quota = kind === "execute" ? parseQuotaBlock(data) : null;
+        if (quota) {
+          op.reset();
+          setSplitOutcome(null);
+          setQuotaBlock({ batchId, block: quota });
+          return;
+        }
         const err = data as ApiError;
         throw new Error(err.message ?? failureMessage);
       }
@@ -321,14 +346,29 @@ export function BatchManager({
     if (newBatchId) await executeBatch(newBatchId);
   }
 
-  async function executeBatch(batchId: string) {
+  async function executeBatch(batchId: string, options: { acknowledgeUnknownQuota?: boolean } = {}) {
     setExecuting(true);
     setError(null);
     try {
-      await runBatchRequest(batchId, "execute", "Writing batch to YouTube", "Failed to execute batch");
+      await runBatchRequest(batchId, "execute", "Writing batch to YouTube", "Failed to execute batch", options);
     } finally {
       setExecuting(false);
     }
+  }
+
+  /** BL-117: prepare "what fits now" + "the rest" batches from a batch the quota guard refused (writes nothing to YouTube). */
+  async function splitBlockedBatch(batchId: string): Promise<SplitOutcome> {
+    if (!channelId) throw new Error("No active channel");
+    const res = await fetch(
+      `/api/channels/${encodeURIComponent(channelId)}/batches/${encodeURIComponent(batchId)}/split-for-quota`,
+      { method: "POST" }
+    );
+    const data = await res.json();
+    if (!res.ok) throw new Error((data as ApiError).message ?? "Could not split the batch");
+    const outcome = data as SplitOutcome;
+    setSplitOutcome(outcome);
+    await fetchBatches(channelId);
+    return outcome;
   }
 
   async function openBatch(batchId: string) {
@@ -388,6 +428,32 @@ export function BatchManager({
 
       {error && <p className="text-sm text-red-400">{error}</p>}
       <OperationOverlay state={op.state} onCancel={cancelRunningBatch} onClose={op.reset} />
+      {quotaBlock && (
+        <QuotaBlockDialog
+          block={quotaBlock.block}
+          splitOutcome={splitOutcome}
+          onClose={() => {
+            setQuotaBlock(null);
+            setSplitOutcome(null);
+          }}
+          onSplit={quotaBlock.block.code === "quota_insufficient" && quotaBlock.block.canSplit ? () => splitBlockedBatch(quotaBlock.batchId) : undefined}
+          onRunAnyway={
+            quotaBlock.block.code === "quota_unknown"
+              ? () => {
+                  const batchId = quotaBlock.batchId;
+                  setQuotaBlock(null);
+                  void executeBatch(batchId, { acknowledgeUnknownQuota: true });
+                }
+              : undefined
+          }
+          onOpenBatch={(newBatchId) => {
+            setQuotaBlock(null);
+            setSplitOutcome(null);
+            setSelectedBatchId(newBatchId);
+            void openBatch(newBatchId);
+          }}
+        />
+      )}
 
       <div>
         <h3 className="mb-2 text-sm font-semibold text-zinc-300">1. Pick a Change Set with approved changes</h3>
@@ -482,7 +548,7 @@ export function BatchManager({
             >
               <span className="font-mono text-zinc-400">{b.id.slice(0, 8)}</span>{" "}
               <span className="text-zinc-500">
-                &mdash; {b.status}, {b.dryRun ? "dry-run" : "live"}, created {formatDisplayDateTime(b.createdAt)}
+                &mdash; {b.splitInto ? "split for quota" : b.status}, {b.dryRun ? "dry-run" : "live"}, created {formatDisplayDateTime(b.createdAt)}
               </span>
             </button>
           ))}
@@ -504,7 +570,7 @@ export function BatchManager({
               >
                 {preparing ? "Running dry-run..." : "Run dry-run preview"}
               </button>
-              {liveWritesEnabled && selectedBatch && !selectedBatch.dryRun && ledgerRows.some((row) => row.status === "CANCELLED") && (
+              {liveWritesEnabled && selectedBatch && !selectedBatch.dryRun && !selectedBatch.splitInto && ledgerRows.some((row) => row.status === "CANCELLED") && (
                 <button
                   onClick={() => setConfirmingResend(true)}
                   disabled={executing || creatingBatch}
@@ -525,6 +591,20 @@ export function BatchManager({
             </div>
           </div>
 
+          {selectedBatch?.splitInto && (
+            <p className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs text-zinc-300">
+              This batch needed more YouTube quota than was available, so it was never started. It was split into{" "}
+              {selectedBatch.splitInto.map((id, i) => (
+                <span key={id}>
+                  {i > 0 ? " and " : ""}
+                  <button className="font-mono text-indigo-300 hover:underline" onClick={() => void openBatch(id)}>
+                    {id.slice(0, 8)}
+                  </button>
+                </span>
+              ))}
+              . Nothing was written to YouTube, and its videos live on in those batches.
+            </p>
+          )}
           <div className="overflow-x-auto">
           <table className="w-full min-w-[480px] text-xs">
             <thead className="text-zinc-500">

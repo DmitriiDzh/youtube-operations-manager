@@ -1,6 +1,7 @@
 import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createMarketIntelligenceStoreAdapter } from "./adapters/store";
 import { createMarketIntelligenceYoutubeApiAdapter } from "./adapters/youtube-api";
+import { createQuotaGuardCore } from "@/lib/quota-guard";
 import { quotaScoped } from "@/lib/youtube-quota";
 import { createMarketIntelligenceServices } from "./services";
 
@@ -77,10 +78,16 @@ export function createMarketIntelligenceCore() {
     recordMarketResearchRequestExecutionOutcome: store.recordMarketResearchRequestExecutionOutcome,
   });
   // BL-117: API calls made by Research collection / discovery are logged against it in the quota history.
+  const guard = createQuotaGuardCore();
   const context = { kind: "research_collection", id: null, label: "Research collection" };
   return {
     ...services,
-    runCollectionIfStale: quotaScoped(services.runCollectionIfStale, context),
+    // BL-117 (owner decision 2026-10-03): the AUTOMATIC refresh waits while less than the configured reserve of the daily quota
+    // is left, so writes keep headroom (same rule as the Analytics auto-collection).
+    runCollectionIfStale: quotaScoped(async (input: unknown) => {
+      if (!(await guard.isBackgroundReadAllowed())) return { attempted: 0, succeeded: 0, failed: 0, quotaLimited: 0, unitsSpent: 0 };
+      return services.runCollectionIfStale(input);
+    }, context),
     discoverChannels: quotaScoped(services.discoverChannels, context),
     captureChannelSnapshot: quotaScoped(services.captureChannelSnapshot, context),
     fetchPublicSnapshot: quotaScoped(services.fetchPublicSnapshot, context),

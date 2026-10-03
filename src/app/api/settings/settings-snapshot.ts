@@ -21,6 +21,8 @@ type Readers = {
   marketIntelligenceDailyQuotaBudgetUnits: () => Promise<number | null>;
   operatorCliEnabled: () => Promise<boolean>;
   deviceAutoSyncEnabled: () => Promise<boolean>;
+  /** BL-117: percent of the daily quota background reads leave untouched (default 20). */
+  quotaReservePercent: () => Promise<number>;
 };
 
 export async function buildSettingsSnapshot(readers: Readers) {
@@ -56,6 +58,7 @@ export async function buildSettingsSnapshot(readers: Readers) {
     marketIntelligenceDailyQuotaBudgetUnits: values.marketIntelligenceDailyQuotaBudgetUnits as number | null,
     operatorCliEnabled: values.operatorCliEnabled as boolean | null,
     deviceAutoSyncEnabled: values.deviceAutoSyncEnabled as boolean | null,
+    quotaReservePercent: values.quotaReservePercent as number | null,
     /** Names of the reads that failed this time (their fields are `null`). Empty when all succeeded. */
     unavailable,
   };

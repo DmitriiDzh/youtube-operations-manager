@@ -121,6 +121,8 @@ export type Batch = {
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
+  /** BL-117: set when this batch was never executed but split into smaller batches because it needed more quota than was available. */
+  splitInto?: string[] | null;
 };
 
 export type LedgerRow = {
@@ -164,6 +166,8 @@ export type StoredBatchRecord = {
   createdAt: Date;
   startedAt: Date | null;
   completedAt: Date | null;
+  /** BL-117: ids of the batches this never-executed batch was split into for quota; null otherwise. */
+  splitInto?: string[] | null;
 };
 
 export type StoredLedgerRowRecord = {
