@@ -1,4 +1,6 @@
 import { createChannelLanguageDefaultsCore } from "@/lib/channel-language-defaults";
+import { rawSqlClient } from "@/lib/db";
+import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { getOperationRegistry } from "@/lib/operation-progress";
 import { createVideoDetailsCore } from "@/lib/video-details";
 import { createLanguageFixAllServices } from "./services";
@@ -12,6 +14,7 @@ export function createLanguageFixAllCore() {
     // The only write call in this module -- video-details' own gated, audited, verified apply.
     applyFieldsUpdate: (input) => videoDetails.applyFieldsUpdate(input),
     registry: getOperationRegistry(),
+    assertMutationAllowed: () => assertDeviceAvailableForMutation(rawSqlClient),
   });
 }
 

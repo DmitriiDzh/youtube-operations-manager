@@ -21,6 +21,7 @@ function setup(opts: {
   defaults?: { defaultLanguage: string | null; defaultAudioLanguage: string | null };
   deviations?: Array<{ videoId: string; title?: string; lang?: boolean; audio?: boolean }>;
   apply?: (call: Call, index: number) => Promise<{ verified: boolean }>;
+  assertMutationAllowed?: () => Promise<void>;
 } = {}) {
   const calls: Call[] = [];
   const registry = createOperationRegistry();
@@ -31,6 +32,7 @@ function setup(opts: {
   ];
   const service = createLanguageFixAllServices({
     registry,
+    assertMutationAllowed: opts.assertMutationAllowed ?? (async () => undefined),
     getDeviations: async () => ({
       defaults: opts.defaults ?? { defaultLanguage: "en", defaultAudioLanguage: "ja" },
       deviations: deviations.map((d) => ({
@@ -48,11 +50,16 @@ function setup(opts: {
   return { service, calls, registry };
 }
 
-const request = (ids: string[], extra: Record<string, unknown> = {}) => ({
+const BASELINE = { defaultLanguage: "en", defaultAudioLanguage: "ja" };
+
+const request = (
+  ids: string[],
+  baseline: { defaultLanguage: string | null; defaultAudioLanguage: string | null } = BASELINE
+) => ({
   channelId: "UC1",
   userId: "user-1",
+  baseline,
   videos: ids.map((videoId) => ({ videoId, expectedEtag: `etag-${videoId}` })),
-  ...extra,
 });
 
 test("AC-1: patch contains only the deviating fields, with the baseline values", async () => {
@@ -72,14 +79,14 @@ test("AC-1: patch contains only the deviating fields, with the baseline values",
 test("AC-1: a caller-supplied patch or value is rejected as invalid input, never forwarded", async () => {
   const { service, calls } = setup();
   await assert.rejects(() =>
-    service.start({ channelId: "UC1", userId: "u", videos: [{ videoId: "v1", patch: { title: "Hacked" } }] })
+    service.start({ channelId: "UC1", userId: "u", baseline: BASELINE, videos: [{ videoId: "v1", patch: { title: "Hacked" } }] })
   );
   assert.equal(calls.length, 0);
 });
 
 test("AC-1: a baseline with only one field set never writes the other", async () => {
   const { service, calls } = setup({ defaults: { defaultLanguage: "en", defaultAudioLanguage: null } });
-  const { run } = await service.start(request(["v1", "v3"]));
+  const { run } = await service.start(request(["v1", "v3"], { defaultLanguage: "en", defaultAudioLanguage: null }));
   await run();
   // v3 deviates only in audio, which has no baseline -> nothing to change -> not sent.
   assert.deepEqual(calls.map((c) => [c.videoId, c.patch]), [["v1", { defaultLanguage: "en" }]]);
@@ -110,7 +117,7 @@ test("AC-3: channel, user and previewed etag are passed to the apply call", asyn
 
 test("AC-3: no etag supplied -> none is invented", async () => {
   const { service, calls } = setup();
-  const { run } = await service.start({ channelId: "UC1", userId: "u", videos: [{ videoId: "v2" }] });
+  const { run } = await service.start({ channelId: "UC1", userId: "u", baseline: BASELINE, videos: [{ videoId: "v2" }] });
   await run();
   assert.equal("expectedEtag" in calls[0], false);
 });
@@ -171,7 +178,7 @@ test("AC-7: no videos, too many videos, missing baseline and nothing-to-change a
   const { service, calls, registry } = setup({ defaults: { defaultLanguage: null, defaultAudioLanguage: null } });
   await assert.rejects(() => service.start(request([])), /Invalid Fix all request/);
   await assert.rejects(() => service.start(request(Array.from({ length: 501 }, (_, i) => `v${i}`))), /Invalid Fix all request/);
-  await assert.rejects(() => service.start(request(["v1"])), /no language baseline/);
+  await assert.rejects(() => service.start(request(["v1"], { defaultLanguage: null, defaultAudioLanguage: null })), /no language baseline/);
   const none = setup();
   await assert.rejects(() => none.service.start(request(["unknown"])), /None of the requested videos/);
   assert.equal(calls.length, 0);
@@ -195,4 +202,55 @@ test("run never throws: an unexpected failure ends the operation as failed", asy
   const { operationId, run } = await service.start(request(["v1"]));
   await run();
   assert.equal(registry.get(operationId)!.status, "failed");
+});
+
+// AC-8 (approval integrity, AGENTS.md section G): the operator approved a diff against the baseline
+// shown at preview time. If the channel baseline was changed afterwards (another tab, another
+// session), the server must NOT write the new value the operator never saw.
+test("AC-8: the baseline the operator previewed must equal the current one, else nothing is registered or written", async () => {
+  const { service, calls, registry } = setup(); // current baseline: en / ja
+  await assert.rejects(
+    () => service.start(request(["v1"], { defaultLanguage: "de", defaultAudioLanguage: "ja" })),
+    (e: unknown) => (e as { code?: string }).code === "video_details_conflict" && /re-run the check|changed/i.test((e as Error).message)
+  );
+  await assert.rejects(
+    () => service.start(request(["v1"], { defaultLanguage: "en", defaultAudioLanguage: null })),
+    (e: unknown) => (e as { code?: string }).code === "video_details_conflict"
+  );
+  assert.equal(calls.length, 0);
+  assert.equal(registry.list({ channelId: "UC1" }).length, 0);
+});
+
+test("AC-8: a request without a baseline is rejected as invalid input", async () => {
+  const { service, calls } = setup();
+  await assert.rejects(() => service.start({ channelId: "UC1", userId: "u", videos: [{ videoId: "v1" }] }), /Invalid Fix all request/);
+  assert.equal(calls.length, 0);
+});
+
+// AC-9 (mutation gate): the proxy gates only the START request. A device-handoff export/import or an
+// unavailable device appearing mid-run must stop the remaining writes, exactly as it did when every
+// video was its own gated POST.
+test("AC-9: the mutation gate is checked before EVERY video; a refusal stops the run before that write", async () => {
+  let gateCalls = 0;
+  const { service, calls, registry } = setup({
+    assertMutationAllowed: async () => {
+      gateCalls += 1;
+      if (gateCalls === 2) throw new Error("An export is running");
+    },
+  });
+  const { operationId, run } = await service.start(request(["v1", "v2", "v3"]));
+  await run();
+  assert.equal(gateCalls, 2);
+  assert.deepEqual(calls.map((c) => c.videoId), ["v1"]); // v2 refused by the gate, v3 never tried
+  const snap = registry.get(operationId)!;
+  assert.equal(snap.status, "failed");
+  assert.deepEqual(snap.items.map((i) => i.status), ["done", "failed", "skipped"]);
+  assert.match(snap.items[1].detail ?? "", /An export is running/);
+});
+
+test("AC-9: a gate that refuses from the start writes nothing", async () => {
+  const { service, calls } = setup({ assertMutationAllowed: async () => Promise.reject(new Error("device unavailable")) });
+  const { run } = await service.start(request(["v1", "v2"]));
+  await run();
+  assert.equal(calls.length, 0);
 });

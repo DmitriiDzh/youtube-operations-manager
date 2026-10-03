@@ -1605,3 +1605,21 @@ Cycle 2 reviewed cycle 1's own fix commit and correctly found two real regressio
 - **Status:** OPEN, tracked.
 
 No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a documentation/governance phase and made no functional remediation beyond RISK-01's `Content-Length` pre-check (already applied in Phase 4's acceptance review, and still only a partial mitigation, hence still OPEN here).
+
+## RISK-94 — Long server-side write runs are gated by the mutation gate only at their start (Batches) or per item (Fix all) — OPEN, 2026-10-03
+
+- **Affected components:** `src/proxy.ts` (`assertDeviceAvailableForMutation` runs once per mutating
+  request), `POST .../batches/[id]/execute` (one request, many writes),
+  `src/lib/language-fix-all` (checks the gate before every video itself), ADR 0015.
+- **Found during:** moving "Fix all" to the server (independent review). The browser loop used to send one
+  gated request per video; a single server request no longer gets that per-video gate for free.
+- **Actual risk:** an export / import / migration (or a device that becomes unavailable) that starts while a
+  long `execute` is running does not stop its remaining writes. "Fix all" is closed by its own per-video
+  check; Batches `execute` was already like this before this work and is unchanged. A hard kill of the
+  server (not SIGINT/SIGTERM) also abandons a running `after()` job; the backup and audit rows already
+  written stay consistent, the unfinished videos are simply not written.
+- **To close:** give `executeBatch` the same per-row gate dependency, and make the launchers' `stop` wait for
+  an active registry operation (as it already waits for an export/import).
+- **Gate(s):** `BLOCKS_OPERATIONS_RELEASE` for live Batches use together with handoff import.
+- **Approval required from:** none to implement; the project owner prioritises it.
+- **Status:** OPEN, tracked.

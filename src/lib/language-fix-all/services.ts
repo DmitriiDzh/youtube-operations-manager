@@ -18,6 +18,11 @@ const startInputSchema = z
   .object({
     channelId: z.string().min(1),
     userId: z.string().min(1),
+    /** The channel baseline the operator previewed against. The write is refused if it has changed
+     * since, so the server never writes a value the operator did not see (approval integrity). */
+    baseline: z
+      .object({ defaultLanguage: z.string().nullable(), defaultAudioLanguage: z.string().nullable() })
+      .strict(),
     videos: z
       .array(z.object({ videoId: z.string().min(1), expectedEtag: z.string().min(1).optional() }).strict())
       .min(1)
@@ -45,6 +50,10 @@ export type FixAllDependencies = {
     expectedEtag?: string;
   }): Promise<{ verified: boolean }>;
   registry: OperationRegistry;
+  /** The same device-availability gate `src/proxy.ts` applies to a mutating request. The proxy sees
+   * only the START request; this is called before EVERY video so an export/import or an unavailable
+   * device appearing mid-run stops the remaining writes. Throws to refuse. */
+  assertMutationAllowed(): Promise<void>;
 };
 
 export const FIX_ALL_OPERATION_KIND = "language-fix-all";
@@ -76,6 +85,13 @@ export function createLanguageFixAllServices(deps: FixAllDependencies) {
 
       const report = await deps.getDeviations({ channelId: input.channelId });
       const { defaultLanguage, defaultAudioLanguage } = report.defaults;
+      if (defaultLanguage !== input.baseline.defaultLanguage || defaultAudioLanguage !== input.baseline.defaultAudioLanguage) {
+        throw new DomainError({
+          code: "video_details_conflict",
+          message: "The channel language baseline changed since you ran the check -- re-run the check before writing",
+          details: { previewed: input.baseline, current: report.defaults },
+        });
+      }
       if (!defaultLanguage && !defaultAudioLanguage) {
         throw new DomainError({
           code: "validation_failed",
@@ -161,8 +177,9 @@ async function runPlan(args: {
         continue;
       }
       handle.touch();
-      handle.setItem(video.videoId, "running");
       try {
+        await deps.assertMutationAllowed();
+        handle.setItem(video.videoId, "running");
         const result = await deps.applyFieldsUpdate({
           credentialRef: { userId },
           expectedChannelId: channelId,

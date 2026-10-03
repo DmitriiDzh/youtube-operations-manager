@@ -242,6 +242,8 @@ export function LanguageDefaultsPanel({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          // The baseline this check was run against; the server refuses if it has changed since.
+          baseline: { defaultLanguage: target, defaultAudioLanguage: targetAudio },
           videos: readyIds.map((videoId) => {
             const state = align[videoId];
             return { videoId, ...(state?.status === "ready" && state.etag ? { expectedEtag: state.etag } : {}) };

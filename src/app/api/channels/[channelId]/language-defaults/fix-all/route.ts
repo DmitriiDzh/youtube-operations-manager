@@ -3,7 +3,7 @@ import { after, NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { createLanguageFixAllCore, DomainError } from "@/lib/language-fix-all";
-import { OperationAlreadyRunningError } from "@/lib/operation-progress";
+import { isOperationAlreadyRunning } from "@/lib/operation-progress";
 import { getVideoMetadataErrorStatus } from "../../../../video-metadata/error-status";
 
 const core = createLanguageFixAllCore();
@@ -27,18 +27,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ cha
     const { channelId } = await params;
     await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
 
-    let body: { videos?: unknown };
+    let body: { videos?: unknown; baseline?: unknown };
     try {
-      body = (await request.json()) as { videos?: unknown };
+      body = (await request.json()) as { videos?: unknown; baseline?: unknown };
     } catch {
       return NextResponse.json({ error: "validation_failed", message: "Request body must be valid JSON" }, { status: 400 });
     }
 
-    const { operationId, run } = await core.start({ channelId, userId: session.user.id, videos: body.videos });
+    const { operationId, run } = await core.start({ channelId, userId: session.user.id, baseline: body.baseline, videos: body.videos });
     after(run);
     return NextResponse.json({ operationId }, { status: 202 });
   } catch (error) {
-    if (error instanceof OperationAlreadyRunningError) {
+    if (isOperationAlreadyRunning(error)) {
       return NextResponse.json(
         { error: error.code, message: error.message, details: { operationId: error.operationId } },
         { status: 409 }

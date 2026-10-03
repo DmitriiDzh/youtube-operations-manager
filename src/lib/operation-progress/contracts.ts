@@ -51,6 +51,11 @@ export type StartOperationInput = {
   cancellable: boolean;
 };
 
+/** Matches by `code` so it still works when a dev hot reload gave the class two identities. */
+export function isOperationAlreadyRunning(error: unknown): error is OperationAlreadyRunningError {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "operation_already_running";
+}
+
 /** Thrown by `start` when an operation of the same kind is already running for the channel. */
 export class OperationAlreadyRunningError extends Error {
   readonly code = "operation_already_running";

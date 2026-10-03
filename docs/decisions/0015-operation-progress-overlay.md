@@ -43,7 +43,17 @@ rows are committed per row, so progress is already readable through `GET .../bat
    choose fields or values), runs it sequentially and fail-fast through `after()`, and writes ONLY
    via `video-details`' `applyFieldsUpdate` -> `youtube-write-gateway`. It calls no YouTube method
    and adds no write path (owner reminder: every write goes through the one gateway). Preview stays
-   in the browser: it is read-only, so a reload only means starting it again.
+   in the browser: it is read-only, so a reload only means starting it again. Three safeguards
+   (independent review, 2026-10-03): (a) every registry heartbeat also records activity for the idle
+   auto-shutdown (`onHeartbeat` -> `recordActivity`), because a closed tab sends no `/api` request
+   and the 60-minute idle exit would otherwise kill a long run between backup and verification;
+   (b) `src/proxy.ts` gates only the START request, so the run calls the same
+   `assertDeviceAvailableForMutation` before EVERY video and stops on a refusal (an export/import or
+   an unavailable device mid-run); (c) the request carries the baseline the operator previewed and
+   the server refuses (`video_details_conflict`) if it changed since, so a value the operator never
+   saw is never written. `after()` is supported by `next start` (Next self-hosting guide); a
+   SIGINT/SIGTERM shutdown drains pending `after()` callbacks, a hard kill does not -- tracked as
+   RISK-94.
 5. **Quota in the overlay** (owner addition, 2026-10-03). An operation lists the pools it spends
    (`quotaServices: ["dataApi" | "analytics"]`); while it runs the hook reads
    `GET /api/settings` -> `cloudQuotaStatus` every 10 s (plus once at the end) and the overlay shows

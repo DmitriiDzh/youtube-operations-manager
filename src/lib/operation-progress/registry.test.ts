@@ -145,3 +145,45 @@ test("list is scoped to the channel, filters by kind / activeOnly, newest first"
   assert.deepEqual(registry.list({ channelId: "UC1", kind: "language-fix-all", activeOnly: true }).map((s) => s.id), [recent.id]);
   assert.equal(registry.list({ channelId: "UC3" }).length, 0);
 });
+
+// Idle shutdown counts /api requests as activity; a server-run operation with the tab closed sends
+// none, so every heartbeat must be reported to the host (wired to idle-shutdown in index.ts).
+test("onHeartbeat fires for start and for every handle call while the operation is live", () => {
+  let beats = 0;
+  const registry = createOperationRegistry({ onHeartbeat: () => void (beats += 1) });
+  const handle = registry.start(input());
+  assert.equal(beats, 1);
+  handle.touch();
+  handle.setStage("x");
+  handle.setItem("a", "running");
+  assert.equal(beats, 4);
+  handle.finish();
+  handle.touch();
+  handle.setItem("a", "done");
+  assert.equal(beats, 4, "no heartbeat after the operation ended");
+});
+
+test("a failing onHeartbeat never breaks the operation", () => {
+  const registry = createOperationRegistry({
+    onHeartbeat: () => {
+      throw new Error("boom");
+    },
+  });
+  const handle = registry.start(input());
+  handle.setItem("a", "done");
+  assert.equal(registry.get(handle.id)!.done, 1);
+});
+
+test("an already-running error is recognised by its code, not only by class identity (dev hot reload)", async () => {
+  const { isOperationAlreadyRunning } = await import("./contracts");
+  const registry = createOperationRegistry();
+  registry.start(input());
+  try {
+    registry.start(input());
+    assert.fail("expected a throw");
+  } catch (error) {
+    assert.equal(isOperationAlreadyRunning(error), true);
+    assert.equal(isOperationAlreadyRunning({ code: "operation_already_running", operationId: "x" }), true);
+    assert.equal(isOperationAlreadyRunning(new Error("other")), false);
+  }
+});

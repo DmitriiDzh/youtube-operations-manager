@@ -23,6 +23,10 @@ export type OperationRegistryOptions = {
   heartbeatTimeoutMs?: number;
   /** How long a finished operation stays readable (so a reloaded page can still see the result). */
   retainFinishedMs?: number;
+  /** Called on every heartbeat of a live operation. The host wires it to its idle-shutdown activity
+   * timestamp: a server-run operation with the browser closed sends no requests, and must not be
+   * killed by an idle timeout in the middle of a write. Errors here are swallowed. */
+  onHeartbeat?: () => void;
 };
 
 export const DEFAULT_HEARTBEAT_TIMEOUT_MS = 3 * 60_000;
@@ -41,6 +45,15 @@ export function createOperationRegistry(options: OperationRegistryOptions = {}) 
   const heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
   const retainFinishedMs = options.retainFinishedMs ?? DEFAULT_RETAIN_FINISHED_MS;
   const entries = new Map<string, Entry>();
+
+  function beat(entry: Entry): void {
+    entry.heartbeatAt = now();
+    try {
+      options.onHeartbeat?.();
+    } catch {
+      // Host callback failure must never affect the operation.
+    }
+  }
 
   /** Applies lazy expiry: dead heartbeats become `failed`, old finished entries disappear. */
   function sweep(): void {
@@ -105,18 +118,19 @@ export function createOperationRegistry(options: OperationRegistryOptions = {}) 
         },
       };
       entries.set(id, entry);
+      beat(entry);
 
       const live = () => ACTIVE.has(entry.snapshot.status);
       return {
         id,
         setStage(stage) {
           if (!live()) return;
-          entry.heartbeatAt = now();
+          beat(entry);
           entry.snapshot = { ...entry.snapshot, stage };
         },
         setItem(itemId, status, detail) {
           if (!live()) return;
-          entry.heartbeatAt = now();
+          beat(entry);
           const nextItems = entry.snapshot.items.map((item) =>
             item.id === itemId ? { ...item, status, detail: detail ?? item.detail } : item
           );
@@ -124,7 +138,7 @@ export function createOperationRegistry(options: OperationRegistryOptions = {}) 
         },
         isCancelRequested: () => entry.cancelRequested,
         touch() {
-          if (live()) entry.heartbeatAt = now();
+          if (live()) beat(entry);
         },
         finish(result = {}) {
           if (!live()) return;
