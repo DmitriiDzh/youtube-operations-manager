@@ -2870,7 +2870,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
   // Bumped 0.14.0 -> 0.15.0, Phase 11: new channel_workspace.get_channel_workspace capability
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11).
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (AC-P12-13): breaking agent-contract change -> MAJOR.
-  assert.equal(payload.agentApiVersion, "3.0.0"); // MAJOR bump, BL-118 (docs/decisions/0018): agent_query_channel_analytics.previousTotals can be null
+  assert.equal(payload.agentApiVersion, "3.1.0"); // 3.0.0 (BL-118, ADR 0018) + MINOR: new capability agent_export_research_data (ADR 0019)
   assert.ok(
     payload.capabilities.some(
       (c: { id: string; permission: string }) => c.id === "channel_workspace.get_channel_workspace" && c.permission === "READ"
@@ -5615,6 +5615,63 @@ test("MCP server registers agent_get_channel_workspace and no tool that can set 
   assert.ok(tools.agent_get_channel_workspace, "agent_get_channel_workspace must be registered");
   const workspaceTools = Object.keys(tools).filter((name) => name.includes("workspace"));
   assert.deepEqual(workspaceTools.sort(), ["agent_get_channel_workspace"]);
+});
+
+// Research export (ADR 0019, docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- agent_export_research_data.
+function makeResearchExportHandlers(
+  channelAccessCore: Parameters<typeof createMcpToolHandlers>[4],
+  exportResearchData: (input: unknown) => Promise<unknown>
+) {
+  return createMcpToolHandlers(
+    makeCoreStub(),
+    makeAuthStub(),
+    makeOperationsCoreStub(),
+    undefined,
+    channelAccessCore,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { exportResearchData } as never
+  );
+}
+
+test("MCP agent_export_research_data passes the parsed input (defaults filled in) to the core and returns only its summary", async () => {
+  let received: unknown;
+  const summary = { generatedAt: "2026-10-04T07:15:30.000Z", exportsDir: "/ws/exports", files: [], watchlistChannels: { exported: 0, withoutSnapshots: [] }, retentionNote: "x" };
+  const handlers = makeResearchExportHandlers(makeChannelAccessCoreStub(), async (input) => {
+    received = input;
+    return summary;
+  });
+  const result = await handlers.agentExportResearchData({ channelId: "UC_1" });
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(received, { channelId: "UC_1", includeOwnChannel: true, formats: ["csv"] });
+  assert.deepEqual(JSON.parse(result.content[0]?.text ?? "{}"), summary);
+});
+
+test("MCP agent_export_research_data rejects a non-active channel before the core is ever reached", async () => {
+  const handlers = makeResearchExportHandlers(makeRestrictiveChannelAccessStub(), async () => {
+    throw new Error("must not be called");
+  });
+  const result = await handlers.agentExportResearchData({ channelId: "UC_OTHER" });
+  assert.equal(result.isError, true);
+  assert.equal(JSON.parse(result.content[0]?.text ?? "{}").error.code, "CHANNEL_NOT_ACTIVE");
+});
+
+test("MCP agent_export_research_data rejects a caller-chosen path or file name (the Manager chooses both)", async () => {
+  const handlers = makeResearchExportHandlers(makeChannelAccessCoreStub(), async () => {
+    throw new Error("must not be called");
+  });
+  for (const extra of [{ path: "/tmp/evil" }, { fileName: "x.csv" }, { directory: "/" }]) {
+    const result = await handlers.agentExportResearchData({ channelId: "UC_1", ...extra });
+    assert.equal(result.isError, true);
+    assert.equal(JSON.parse(result.content[0]?.text ?? "{}").error.code, "validation_failed");
+  }
 });
 
 // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-01/02/08).

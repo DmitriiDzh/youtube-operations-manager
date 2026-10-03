@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import { sqliteTable, text, integer, real, primaryKey, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 import path from "path";
 import { API_DATA_RETENTION_DAYS, YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contracts";
-import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { AttemptOutcome, AttemptPhase, LedgerStatus } from "@/lib/batches/ledger-state";
 import { getProductionAppPaths, isRunningUnderTestRunner, resolveLegacyDbPath } from "@/lib/platform-paths";
 import { copyDatabaseConsistently, isMissingTableError } from "@/lib/db-backup";
@@ -837,6 +837,28 @@ export const analyticsVideoHistory = sqliteTable("analytics_video_history", {
     .notNull()
     .$defaultFn(() => new Date()),
 });
+
+/**
+ * SCHEMA_MIGRATIONS version 46 (research export, ADR 0019) -- ledger of the files the Manager itself wrote into a channel's workspace
+ * `exports/` folder. It is what the expiry sweeper deletes by (file name inside the recorded folder), so nothing in the operator's folder is
+ * ever found by scanning or globbing. Device-local: it names files on this computer.
+ */
+export const workspaceExportFiles = sqliteTable(
+  "workspace_export_files",
+  {
+    id: text("id").primaryKey(),
+    channelId: text("channel_id").notNull(),
+    exportsDir: text("exports_dir").notNull(),
+    fileName: text("file_name").notNull(),
+    dataset: text("dataset").notNull(),
+    format: text("format").notNull(),
+    rowCount: integer("row_count").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    expiresAt: integer("expires_at", { mode: "timestamp" }),
+    deletedAt: integer("deleted_at", { mode: "timestamp" }),
+  },
+  (table) => [index("workspace_export_files_expires_at_idx").on(table.expiresAt)]
+);
 
 /**
  * SCHEMA_MIGRATIONS version 14 -- Phase 8 follow-up, slice 4 (docs/roadmap/FUTURE_PHASES.md §4's
@@ -2605,6 +2627,27 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       } catch (error) {
         if (!isDuplicateColumnError(error)) throw error;
       }
+    },
+  },
+  {
+    version: 46,
+    description:
+      "workspace_export_files -- ledger of the research export files the Manager wrote into a channel workspace, so it can delete the expired ones itself",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS workspace_export_files (" +
+          "id TEXT PRIMARY KEY, " +
+          "channel_id TEXT NOT NULL, " +
+          "exports_dir TEXT NOT NULL, " +
+          "file_name TEXT NOT NULL, " +
+          "dataset TEXT NOT NULL, " +
+          "format TEXT NOT NULL, " +
+          "row_count INTEGER NOT NULL, " +
+          "created_at INTEGER NOT NULL, " +
+          "expires_at INTEGER, " +
+          "deleted_at INTEGER)"
+      );
+      await client.execute("CREATE INDEX IF NOT EXISTS workspace_export_files_expires_at_idx ON workspace_export_files (expires_at)");
     },
   },
 ];
@@ -6056,6 +6099,47 @@ export async function listVideoMetricsByChannel(
     .orderBy(videoMetricsDaily.videoId, videoMetricsDaily.metricDate, videoMetricsDaily.metricName);
 
   return rows.map(mapStoredVideoMetric);
+}
+
+// --- Research export ledger (ADR 0019) --------------------------------------------------------------------
+
+export type StoredWorkspaceExportFile = {
+  id: string;
+  channelId: string;
+  exportsDir: string;
+  fileName: string;
+  dataset: string;
+  format: string;
+  rowCount: number;
+  createdAt: Date;
+  expiresAt: Date | null;
+};
+
+export async function insertWorkspaceExportFile(record: StoredWorkspaceExportFile, database: AppDb = db): Promise<void> {
+  await database.insert(workspaceExportFiles).values(record);
+}
+
+/** Files not yet deleted whose expiry has passed (files with no expiry never appear). */
+export async function listExpiredWorkspaceExportFiles(now: Date, database: AppDb = db): Promise<StoredWorkspaceExportFile[]> {
+  const rows = await database
+    .select()
+    .from(workspaceExportFiles)
+    .where(and(isNull(workspaceExportFiles.deletedAt), isNotNull(workspaceExportFiles.expiresAt), lte(workspaceExportFiles.expiresAt, now)));
+  return rows.map((row) => ({
+    id: row.id,
+    channelId: row.channelId,
+    exportsDir: row.exportsDir,
+    fileName: row.fileName,
+    dataset: row.dataset,
+    format: row.format,
+    rowCount: row.rowCount,
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt,
+  }));
+}
+
+export async function markWorkspaceExportFileDeleted(id: string, at: Date, database: AppDb = db): Promise<void> {
+  await database.update(workspaceExportFiles).set({ deletedAt: at }).where(eq(workspaceExportFiles.id, id));
 }
 
 // --- BL-118: channel-level daily totals and per-video history coverage ------------------------------------

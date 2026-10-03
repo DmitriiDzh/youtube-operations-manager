@@ -78,6 +78,12 @@ import {
   getChannelWorkspaceInputSchema,
   type ChannelWorkspacesCore,
 } from "@/lib/channel-workspaces";
+import {
+  createResearchExportCore,
+  exportResearchDataInputSchema,
+  listResearchOverviewInputSchema,
+  type ResearchExportCore,
+} from "@/lib/research-export";
 import { createMarketResearchRequestInputSchema, getWatchlistEntryInputSchema } from "@/lib/market-intelligence/schemas";
 import { createDecisionEngineCore, type DecisionEngineCore } from "@/lib/decision-engine";
 import {
@@ -270,6 +276,8 @@ type McpToolHandlers = {
   agentGetHypothesisTrail: (input: unknown) => Promise<ToolResponse>;
   createExperimentProposal: (input: unknown) => Promise<ToolResponse>;
   agentGetChannelWorkspace: (input: unknown) => Promise<ToolResponse>;
+  agentExportResearchData: (input: unknown) => Promise<ToolResponse>;
+  queryMarketOverview: (input: unknown) => Promise<ToolResponse>;
 };
 
 function toolErrorResult(error: unknown) {
@@ -512,7 +520,9 @@ export function createMcpToolHandlers(
   // subset: the sync that talks to Google is the app's own (dashboard/Sync now), never an agent tool.
   reachReportsCore: Pick<ReachReportsCore, "getChannelReach"> = createReachReportsCore(),
   // BL-118 -- the channel breakdown (traffic sources, devices, ...) the Content tab already computes; a LIVE Analytics API read.
-  breakdownCore: Pick<AnalyticsCore, "getChannelBreakdown"> = createAnalyticsCore()
+  breakdownCore: Pick<AnalyticsCore, "getChannelBreakdown"> = createAnalyticsCore(),
+  // Research export (ADR 0019) -- the Manager writes flat CSV/JSON files into the channel's workspace `exports/` folder.
+  researchExportCore: Pick<ResearchExportCore, "exportResearchData" | "listResearchOverview"> = createResearchExportCore()
 ) {
   async function resolveCredentialRef(explicitCredentialRef: unknown) {
     return auth.resolveEffectiveCredentialRef({
@@ -1182,6 +1192,48 @@ export function createMcpToolHandlers(
           channelId: parsedInput.data.channelId,
         });
         const result = await channelWorkspacesCore.getWorkspace(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * Research export (ADR 0019). Active-channel scoped like `agentGetChannelWorkspace` (the files go into THAT channel's workspace folder, which
+     * the operator set; the caller picks neither folder nor file names -- the input schema is strict). Writes local files, so it passes the
+     * mutation gate below like the other local writes.
+     */
+    async agentExportResearchData(input: unknown): Promise<ToolResponse> {
+      const parsedInput = exportResearchDataInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const credentialRef = await resolveCredentialRef(undefined);
+        await channelAccessCore.assertActiveChannel({
+          userId: getCredentialUserId(credentialRef),
+          channelId: parsedInput.data.channelId,
+        });
+        const result = await researchExportCore.exportResearchData(parsedInput.data);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /**
+     * Compact bulk read of the watchlist (research export slice 2). Global data narrowed to the caller's assignments by the same
+     * `filterForAgent`/`assertAvailableToAgent` the single-channel read uses (inside the core's deps); a local read, never a live YouTube
+     * call, no active-channel check -- like `queryCompetitors`.
+     */
+    async queryMarketOverview(input: unknown): Promise<ToolResponse> {
+      const parsedInput = listResearchOverviewInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+      try {
+        const result = await researchExportCore.listResearchOverview(parsedInput.data);
         return toolSuccessResult(result as unknown as Record<string, unknown>);
       } catch (error) {
         return toolErrorResult(error);
@@ -1934,6 +1986,10 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // Phase 11 -- a pure local read of one stored string, never a mutation -- ungated, same
     // classification as agentGetChannelContext above.
     agentGetChannelWorkspace: handlers.agentGetChannelWorkspace,
+    // Research export -- writes files and a ledger row: gated.
+    agentExportResearchData: async (input) => (await assertMcpDeviceAvailable()) ?? handlers.agentExportResearchData(input),
+    // Pure local read -- ungated, like queryCompetitors.
+    queryMarketOverview: handlers.queryMarketOverview,
   };
 }
 
@@ -2255,7 +2311,7 @@ export function createMcpServer(
     "channel_video_list",
     {
       description:
-        "List a synchronized channel's videos with their existing localization languages. Read-only. credentialRef is OPTIONAL and falls back to active local auth context.",
+        "List a synchronized channel's videos with their existing localization languages. Read-only. credentialRef is OPTIONAL and falls back to active local auth context. With no other input it returns every field of every video, which for a large channel is very big (descriptions, thumbnails, etags, localizations): pass `fields` (e.g. [\"title\",\"publishedAt\",\"viewCount\"]; videoId is always included) and/or `limit`/`offset` (limit max 500) to get a slim, paged answer {channelId, videos, total, offset, nextOffset} -- nextOffset is null on the last page.",
       inputSchema: listSyncedVideosInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.channelVideoList(args)
@@ -2395,7 +2451,7 @@ export function createMcpServer(
     "agent_query_channel_reach",
     {
       description:
-        "Thumbnail impressions and click-through rate (CTR) for a date range, from YouTube's Reporting API Reach report that this app downloads and stores locally -- a LOCAL read, no live YouTube call. These two metrics are NOT available from the Analytics API, so they are absent from agent_query_channel_analytics. `state` is explicit: `no_job` (the report subscription does not exist yet), `waiting_for_first_report` (it exists but YouTube has not delivered a file yet, up to ~48h -- this is NOT zero impressions), or `ready`. Days without data are absent, never zero-filled. `daily` and `videos` (top 50 by impressions, by canonical videoId) carry raw FACT values; `totals` are DERIVED and the CTR is impressions-weighted, never an average of per-row CTRs -- a CTR of null means the report left it empty. `coverage` shows which days have data. Data is refreshed when the app's dashboard is opened, so check coverage.lastDate for freshness. Requires channelId to be the caller's currently-active channel.",
+        "Thumbnail impressions and click-through rate (CTR) for a date range, from YouTube's Reporting API Reach report that this app downloads and stores locally -- a LOCAL read, no live YouTube call. These two metrics are NOT available from the Analytics API, so they are absent from agent_query_channel_analytics. `state` is explicit: `no_job` (the report subscription does not exist yet), `waiting_for_first_report` (it exists but YouTube has not delivered a file yet, up to ~48h -- this is NOT zero impressions), or `ready`. Days without data are absent, never zero-filled. `daily` and `videos` (top 50 by impressions, by canonical videoId) carry raw FACT values; `totals` are DERIVED and the CTR is impressions-weighted, never an average of per-row CTRs -- a CTR of null means the report left it empty. `coverage` shows which days have data. Optional `videoId` scopes daily/videos/totals to that one video (echoed back); optional `groupBy: video_day` also returns `videoDaily` -- the stored rows, one per video per day (videos in id order, days ascending, ctr null when the report left it empty), at most 5000 rows with `videoDailyTruncated` saying when there were more -- so per-video per-day CTR is ONE call, not one per day. `coverage` shows which days have data. Data is refreshed when the app's dashboard is opened, so check coverage.lastDate for freshness. Requires channelId to be the caller's currently-active channel.",
       inputSchema: getChannelReachInputObjectSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.agentQueryChannelReach(args)
@@ -2405,7 +2461,7 @@ export function createMcpServer(
     "agent_query_video_analytics",
     {
       description:
-        "Agent-oriented per-video daily analytics rows already collected locally (raw, un-aggregated FACT rows -- compute any sum/average yourself), with explicit metric definitions and a freshness note pointing at analytics_data_quality for exact per-date coverage. Wraps the existing analytics_list capability -- a local read only, never a live YouTube call. Optional videoId/startDate/endDate/metricNames narrow the result; omitting metricNames describes every metric this instance actually collects (never an invented one). Requires channelId to be the caller's currently-active channel.",
+        "Agent-oriented per-video daily analytics rows already collected locally (raw, un-aggregated FACT rows -- compute any sum/average yourself), with explicit metric definitions and a freshness note pointing at analytics_data_quality for exact per-date coverage. Wraps the existing analytics_list capability -- a local read only, never a live YouTube call. Optional videoId/startDate/endDate/metricNames narrow the result; omitting metricNames describes every metric this instance actually collects (never an invented one). Optional `format: wide` returns `wideRows` instead of `rows` (which is then empty): one row per video per day with a column per metric (null where that metric has no row that day) -- 6 metrics x 6 days is 6 rows, not 36. Requires channelId to be the caller's currently-active channel.",
       inputSchema: queryVideoAnalyticsInputSchema.partial({ credentialRef: true }),
     },
     (args) => handlers.agentQueryVideoAnalytics(args)
@@ -2548,6 +2604,26 @@ export function createMcpServer(
       inputSchema: getChannelWorkspaceInputSchema,
     },
     (args) => handlers.agentGetChannelWorkspace(args)
+  );
+
+  registerTool(
+    "query_market_overview",
+    {
+      description:
+        "Compact bulk read of the research watchlist: several channels in ONE call, paged (limit default 50, max 200; offset; nextOffset is null on the last page). Per channel: channelId, handleOrUrl, its newest stored channel snapshot (observedAt, subscriberCount, viewCount, videoCount, hiddenSubscriberCount -- raw values as stored, null when none), channelSnapshotCount, videoSnapshotCount, evidenceCount and dataQualityFlags -- no evidence text and no snapshot lists (use query_market_intelligence for one channel's detail, or agent_export_research_data to get every row as files). Omit channelIds for every watchlist channel you may see; naming one you cannot see fails with RESEARCH_CHANNEL_NOT_AVAILABLE. Other channels' API-sourced snapshots are returned only for the last 30 days (YouTube API Developer Policies III.E.4.d). Nothing is computed from competitor statistics (no ranking, rate or median: III.E.4.h). A local read only, never a live YouTube call.",
+      inputSchema: listResearchOverviewInputSchema,
+    },
+    (args) => handlers.queryMarketOverview(args)
+  );
+
+  registerTool(
+    "agent_export_research_data",
+    {
+      description:
+        "Write the research watchlist's snapshots (and our own channel's videos) as flat, script-ready files, so a script can read them instead of you retyping tool output. The Manager writes them into `exports/` inside this channel's workspace folder (the same folder agent_get_channel_workspace returns) and chooses every file name; you choose neither. Returns, per file: dataset, format, absolute path, data-row count, bytes and expiresAt -- the data itself is NOT returned (open the files with your own tools or run a script on them). Files: `research_channel_snapshots` (channel, channelId, observedAt, subscriberCount, viewCount, videoCount, hiddenSubscriberCount, videoSnapshotCount, evidenceCount, dataQualityFlags -- one row per stored channel snapshot), `research_video_snapshots` (channel, channelId, videoId, publishedAt, observedAt, viewCount, likeCount, commentCount, title -- one row per stored video snapshot) and, with includeOwnChannel (default true), `own_video_snapshots` in exactly the same columns (our public videos, observedAt = last sync, so one method compares both). `channel` is the watchlist handle/URL (channel id when none). Row counts equal what query_market_intelligence returns for the same channels; omit researchChannelIds for every watchlist channel you may see. formats: `csv` (default; RFC 4180, a title that starts with = + - @ gets a leading apostrophe) and/or `json` (every value exactly as stored). RETENTION: other channels' API-sourced statistics may be kept at most 30 days (YouTube API policy III.E.4.d): research_* files carry expiresAt (30 days after the oldest observation inside) and the Manager deletes them itself then; treat any copy you make as short-lived. own_video_snapshots has no expiry. Errors: RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED when the operator has not set a folder for this channel (only the operator can, in Settings -> Channels), RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE when the folder is not usable; nothing is written then. Requires channelId to be the caller's currently-active channel. Local only, never a live YouTube call.",
+      inputSchema: exportResearchDataInputSchema,
+    },
+    (args) => handlers.agentExportResearchData(args)
   );
 
   // Phase 9 slice 4 (docs/roadmap/plans/PHASE_9_SLICE_4_PLAN.md) -- fulfils the two capability

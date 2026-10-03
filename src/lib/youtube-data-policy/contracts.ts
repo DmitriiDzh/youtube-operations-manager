@@ -133,6 +133,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   research_evidence: nonAuthorized("collected_at", "API-sourced notes about watchlist channels", {
     apiRowsWhere: apiSourceWhere,
   }),
+  workspace_export_files: notApiData("ledger of export files the Manager wrote: names, paths and expiry, no YouTube content (the files themselves expire after 30 days)"),
   market_intelligence_collection_runs: notApiData("collection bookkeeping (status, units spent)"),
   market_discovery_runs: notApiData("discovery bookkeeping (the operator's query, units spent)"),
   market_research_requests: notApiData("agent-drafted research requests (query text, status)"),

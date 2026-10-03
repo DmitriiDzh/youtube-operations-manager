@@ -25,6 +25,10 @@ export const getChannelReachInputObjectSchema = z
     channelId: z.string().min(1),
     startDate: isoDateSchema,
     endDate: isoDateSchema,
+    /** Only this video's rows (`daily`, `videos` and `totals` are then over that one video). */
+    videoId: z.string().min(1).max(64).optional(),
+    /** `video_day`: also return one row per video per day (`videoDaily`), instead of one call per day or per video. */
+    groupBy: z.enum(["video_day"]).optional(),
   })
   .strict();
 

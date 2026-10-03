@@ -17,6 +17,7 @@ import {
   listChannelsInputSchema,
   listChannelsOutputSchema,
   listSyncedVideosInputSchema,
+  listSyncedVideosPagedOutputSchema,
   listSyncedVideosOutputSchema,
   parseWithSchema,
   syncChannelInputSchema,
@@ -327,6 +328,21 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
         });
 
         const records = await deps.channelStore.listVideosByChannel(parsedInput.channelId);
+        if (parsedInput.fields || parsedInput.limit !== undefined || parsedInput.offset !== undefined) {
+          const all = records.map(mapStoredVideo);
+          const offset = parsedInput.offset ?? 0;
+          const page = parsedInput.limit === undefined ? all.slice(offset) : all.slice(offset, offset + parsedInput.limit);
+          const wanted = parsedInput.fields ? ["videoId", ...parsedInput.fields.filter((f) => f !== "videoId")] : null;
+          const videos = wanted
+            ? page.map((video) => Object.fromEntries(wanted.map((field) => [field, video[field as keyof typeof video]])))
+            : page;
+          const end = offset + page.length;
+          return parseWithSchema(
+            listSyncedVideosPagedOutputSchema,
+            { channelId: parsedInput.channelId, videos, total: all.length, offset, nextOffset: end < all.length ? end : null },
+            "list synced videos paged output"
+          );
+        }
         return parseWithSchema(
           listSyncedVideosOutputSchema,
           {

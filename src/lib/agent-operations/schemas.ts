@@ -294,6 +294,8 @@ export const queryVideoAnalyticsInputSchema = z
     endDate: z.string().min(1).optional(),
     videoId: z.string().min(1).optional(),
     metricNames: z.array(z.string().min(1)).min(1).optional(),
+    /** `long` (default): one row per metric per day. `wide`: one row per video per day with a column per metric (`wideRows`; `rows` is then empty). */
+    format: z.enum(["long", "wide"]).optional(),
   })
   .strict();
 
@@ -316,6 +318,10 @@ export const videoAnalyticsContextOutputSchema = z
         })
         .strict()
     ),
+    /** Echo of the requested layout; present only when the caller asked for one. */
+    format: z.enum(["long", "wide"]).optional(),
+    /** Present only with `format: "wide"`: `{ videoId, metricDate, <metricName>: value | null, ... }`. */
+    wideRows: z.array(z.record(z.string(), z.union([z.string(), z.number(), z.null()]))).optional(),
   })
   .strict();
 

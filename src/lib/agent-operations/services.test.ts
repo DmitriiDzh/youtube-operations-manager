@@ -236,7 +236,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11): new channel_workspace capability.
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-13): a breaking
   // agent-contract change (token required, identity/credential overrides removed) -> MAJOR.
-  assert.equal(result.agentApiVersion, "3.0.0"); // MAJOR bump, BL-118 (docs/decisions/0018): agent_query_channel_analytics.previousTotals can be null
+  assert.equal(result.agentApiVersion, "3.1.0"); // 3.0.0 (BL-118, ADR 0018) + MINOR: new capability agent_export_research_data (ADR 0019)
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -323,7 +323,7 @@ test("plannedFutureCapabilities is exactly the one remaining reserved extension 
 // AGENTS.md §L): a fourth capability joined, this domain's first DRAFT-class one -- the exact-list
 // assertion changed to a per-id permission check (only this fourth entry is DRAFT, per §L's own
 // "state which requirement changed" discipline for a previously-approved test).
-test("capabilities includes market_intelligence's four real capabilities, with agent_create_market_research_request DRAFT and the rest READ", async () => {
+test("capabilities includes market_intelligence's real capabilities, with the two that create something locally (research request, research export, ADR 0019) DRAFT and the rest READ", async () => {
   const { services } = createFixture();
   const result = await services.getSystemCapabilities({});
 
@@ -333,12 +333,15 @@ test("capabilities includes market_intelligence's four real capabilities, with a
     [
       "market_intelligence.agent_create_market_research_request",
       "market_intelligence.agent_list_market_records",
+      "market_intelligence.export_research_data",
       "market_intelligence.query_competitors",
       "market_intelligence.query_market_intelligence",
+      "market_intelligence.query_market_overview",
     ]
   );
   for (const capability of marketIntelligenceCapabilities) {
-    const expectedPermission = capability.id === "market_intelligence.agent_create_market_research_request" ? "DRAFT" : "READ";
+    const draftIds = ["market_intelligence.agent_create_market_research_request", "market_intelligence.export_research_data"];
+    const expectedPermission = draftIds.includes(capability.id) ? "DRAFT" : "READ";
     assert.equal(capability.permission, expectedPermission, `${capability.id} has an unexpected permission`);
   }
 });
@@ -1125,6 +1128,44 @@ test("queryVideoAnalytics forwards input unchanged to listMetrics and wraps the 
   assert.equal(result.metricDefinitions.length, 28);
   assert.equal(result.freshness.source, "local_collected_data");
   assert.deepEqual(result.rows, [{ videoId: "v1", metricDate: "2026-09-01", metricName: "views", metricValue: 42 }]);
+});
+
+test("queryVideoAnalytics with format wide returns one row per video per day with a column per requested metric, rows empty, and does not forward `format` to listMetrics", async () => {
+  let captured: unknown;
+  const { services } = createFixture({
+    listMetrics: async (input) => {
+      captured = input;
+      return {
+        channelId: "UC_A",
+        rows: [
+          { videoId: "v1", metricDate: "2026-09-02", metricName: "views", metricValue: 4 },
+          { videoId: "v1", metricDate: "2026-09-01", metricName: "views", metricValue: 3 },
+          { videoId: "v1", metricDate: "2026-09-01", metricName: "estimatedMinutesWatched", metricValue: 10 },
+        ],
+      };
+    },
+  });
+  const result = await services.queryVideoAnalytics({
+    credentialRef: { userId: "u1" },
+    channelId: "UC_A",
+    metricNames: ["views", "estimatedMinutesWatched"],
+    format: "wide",
+  });
+  assert.deepEqual(captured, { credentialRef: { userId: "u1" }, channelId: "UC_A", metricNames: ["views", "estimatedMinutesWatched"] });
+  assert.equal(result.format, "wide");
+  assert.deepEqual(result.rows, []);
+  assert.deepEqual(result.wideRows, [
+    { videoId: "v1", metricDate: "2026-09-01", views: 3, estimatedMinutesWatched: 10 },
+    { videoId: "v1", metricDate: "2026-09-02", views: 4, estimatedMinutesWatched: null },
+  ]);
+});
+
+test("queryVideoAnalytics rejects an unknown format value", async () => {
+  const { services } = createFixture();
+  await assert.rejects(
+    () => services.queryVideoAnalytics({ credentialRef: { userId: "u1" }, channelId: "UC_A", format: "csv" }),
+    (error: unknown) => error instanceof DomainError && error.code === "validation_failed"
+  );
 });
 
 test("queryVideoAnalytics narrows metricDefinitions to exactly the requested metricNames, and never fabricates a definition for an unrecognized name", async () => {

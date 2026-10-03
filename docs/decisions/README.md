@@ -70,3 +70,4 @@ A decision made before this policy existed (e.g. the Phase 2 choice to keep addi
 | [0014](0014-youtube-reporting-api-gateway-child.md) | YouTube Reporting API as a read-gateway child; a reporting job is not a YouTube write | Accepted |
 | [0015](0015-operation-progress-overlay.md) | Shared operation-progress overlay for long writes and syncs; cooperative Cancel | Accepted |
 | [0016](0016-batch-cancel.md) | Cooperative cancel for a running Batch; new terminal ledger status CANCELLED | Accepted |
+| [0019](0019-research-export.md) | Research export: the Manager writes script-ready files into the channel workspace `exports/` folder; 30-day expiry; no derived competitor metrics | Accepted |

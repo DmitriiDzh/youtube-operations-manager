@@ -2005,6 +2005,8 @@ the path string. It never enumerates, reads, writes, or validates anything insid
 The operational agent uses its own native filesystem tools. There is therefore no file-access
 surface on this side to secure. Validation of the path itself happens once, at set time.
 
+**Exception (BL-119, ADR 0019):** `src/lib/research-export/` (a separate module; this one keeps its contract) writes generated files into an `exports/` subfolder of this path when the agent asks for a research export — it re-validates the path, refuses a symlinked `exports`, names every file itself, and deletes its own expired files by ledger (`workspace_export_files`). Nothing else under the path is opened.
+
 **Data flow.**
 - *Operator writes.* Settings → Channels row → `ChannelWorkspaceField` → `PUT /api/channel-workspaces`
   → `setWorkspace`. That call checks, in order:

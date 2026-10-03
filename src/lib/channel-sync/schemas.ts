@@ -78,10 +78,36 @@ export const listChannelsOutputSchema = z
   })
   .strict();
 
+/** Fields a caller may ask `channel_video_list` for (video fields; `videoId` is always included). */
+export const SYNCED_VIDEO_FIELDS = [
+  "videoId",
+  "channelId",
+  "title",
+  "description",
+  "publishedAt",
+  "privacyStatus",
+  "defaultLanguage",
+  "defaultAudioLanguage",
+  "thumbnails",
+  "existingLocalizations",
+  "existingLocalizationLanguages",
+  "lastSyncedAt",
+  "etag",
+  "viewCount",
+  "commentCount",
+  "likeCount",
+  "publishAt",
+] as const;
+
 export const listSyncedVideosInputSchema = z
   .object({
     credentialRef: credentialRefSchema,
     channelId: z.string().min(1),
+    /** Only these fields per video (plus `videoId`). Omitted = every field, as before. */
+    fields: z.array(z.enum(SYNCED_VIDEO_FIELDS)).min(1).optional(),
+    /** Page size; with `offset` selects a page. Omitted (with no `offset`) = every video, as before. */
+    limit: z.number().int().min(1).max(500).optional(),
+    offset: z.number().int().min(0).optional(),
   })
   .strict();
 
@@ -89,6 +115,18 @@ export const listSyncedVideosOutputSchema = z
   .object({
     channelId: z.string().min(1),
     videos: z.array(syncedVideoSchema),
+  })
+  .strict();
+
+/** Result when `fields`, `limit` or `offset` was given: projected videos plus paging info. */
+export const listSyncedVideosPagedOutputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    videos: z.array(z.record(z.string(), z.unknown())),
+    total: z.number().int().nonnegative(),
+    offset: z.number().int().nonnegative(),
+    /** `offset` of the next page, or `null` on the last page. */
+    nextOffset: z.number().int().nonnegative().nullable(),
   })
   .strict();
 
