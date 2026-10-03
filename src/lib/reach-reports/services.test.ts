@@ -441,3 +441,60 @@ test("getReachStatus rejects a channel that is not the active one", async () => 
   const { services } = createFixture({ activeChannelId: "UC_OTHER" });
   await assert.rejects(services.getReachStatus(SYNC), (e: unknown) => e instanceof DomainError);
 });
+
+// Research/agent feedback (2026-10-04): per-video per-day CTR in one call.
+test("getChannelReach with groupBy video_day returns the stored rows per video per day (videos in id order, days ascending), CTR as stored", async () => {
+  const { services } = createFixture({
+    storedJob: { jobId: "job-1", jobCreatedAt: "2026-09-20T00:00:00Z" },
+    coverage: { firstDate: "2026-10-01", lastDate: "2026-10-03", importedFiles: 3 },
+    dailyRows: [
+      { date: "2026-10-02", videoId: "vidB", impressions: 40, ctr: 0.05 },
+      { date: "2026-10-01", videoId: "vidB", impressions: 20, ctr: null },
+      { date: "2026-10-03", videoId: "vidA", impressions: 100, ctr: 0.1 },
+      { date: "2026-10-01", videoId: "vidA", impressions: 10, ctr: 0.2 },
+    ],
+  });
+  const result = await services.getChannelReach({ ...SYNC, startDate: "2026-10-01", endDate: "2026-10-03", groupBy: "video_day" });
+  assert.deepEqual(result.videoDaily, [
+    { videoId: "vidA", date: "2026-10-01", impressions: 10, ctr: 0.2 },
+    { videoId: "vidA", date: "2026-10-03", impressions: 100, ctr: 0.1 },
+    { videoId: "vidB", date: "2026-10-01", impressions: 20, ctr: null },
+    { videoId: "vidB", date: "2026-10-02", impressions: 40, ctr: 0.05 },
+  ]);
+  assert.equal(result.videoDailyTruncated, false);
+  assert.equal(result.totals.impressions, 170); // 10 + 100 + 20 + 40, unchanged by groupBy
+});
+
+test("getChannelReach with a videoId filter scopes daily, videos and totals to that video and echoes the id", async () => {
+  const { services } = createFixture({
+    storedJob: { jobId: "job-1", jobCreatedAt: "2026-09-20T00:00:00Z" },
+    coverage: { firstDate: "2026-10-01", lastDate: "2026-10-02", importedFiles: 2 },
+    dailyRows: [
+      { date: "2026-10-01", videoId: "vidA", impressions: 10, ctr: 0.2 },
+      { date: "2026-10-02", videoId: "vidA", impressions: 30, ctr: 0.1 },
+      { date: "2026-10-02", videoId: "vidB", impressions: 999, ctr: 0.5 },
+    ],
+  });
+  const result = await services.getChannelReach({ ...SYNC, startDate: "2026-10-01", endDate: "2026-10-02", videoId: "vidA" });
+  assert.equal(result.videoId, "vidA");
+  assert.deepEqual(result.daily, [
+    { date: "2026-10-01", impressions: 10, ctr: 0.2 },
+    { date: "2026-10-02", impressions: 30, ctr: 0.1 },
+  ]);
+  assert.deepEqual(result.videos.map((v) => v.videoId), ["vidA"]);
+  assert.equal(result.totals.impressions, 40);
+  assert.equal(result.videoDaily, undefined, "no videoDaily unless groupBy is asked for");
+});
+
+test("getChannelReach groupBy video_day is capped at 5000 rows and says so; an unknown groupBy value is rejected", async () => {
+  const many: ReachRow[] = Array.from({ length: 5001 }, (_, i) => ({ date: "2026-10-01", videoId: `v${String(i).padStart(5, "0")}`, impressions: 1, ctr: null }));
+  const { services } = createFixture({
+    storedJob: { jobId: "job-1", jobCreatedAt: "2026-09-20T00:00:00Z" },
+    coverage: { firstDate: "2026-10-01", lastDate: "2026-10-01", importedFiles: 1 },
+    dailyRows: many,
+  });
+  const result = await services.getChannelReach({ ...SYNC, startDate: "2026-10-01", endDate: "2026-10-01", groupBy: "video_day" });
+  assert.equal(result.videoDaily?.length, 5000);
+  assert.equal(result.videoDailyTruncated, true);
+  await assert.rejects(() => services.getChannelReach({ ...SYNC, startDate: "2026-10-01", endDate: "2026-10-01", groupBy: "video" as never }), (e: unknown) => e instanceof DomainError);
+});

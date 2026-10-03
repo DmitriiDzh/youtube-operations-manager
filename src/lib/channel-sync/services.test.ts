@@ -431,3 +431,47 @@ test("syncChannel without a reporter is unchanged", async () => {
   assert.equal(result.videoCount, 2);
   assert.equal(videoMetadataCalls.length, 1);
 });
+
+// Agent feedback (2026-10-04): channel_video_list needs field selection and paging.
+test("listSyncedVideos with fields returns only those fields plus videoId, in the requested order, and pages with total/nextOffset", async () => {
+  const { services, channelAccess } = createServicesFixture({ videoIds: ["v1", "v2", "v3"] });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_TEST" });
+  await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+
+  const first = await services.listSyncedVideos({
+    credentialRef: { userId: "user-1" },
+    channelId: "UC_TEST",
+    fields: ["title", "viewCount"],
+    limit: 2,
+  });
+  assert.equal("videos" in first && first.videos.length, 2);
+  assert.ok("total" in first);
+  assert.equal(first.total, 3);
+  assert.equal(first.offset, 0);
+  assert.equal(first.nextOffset, 2);
+  assert.deepEqual(Object.keys(first.videos[0]), ["videoId", "title", "viewCount"]);
+
+  const second = await services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST", fields: ["title"], limit: 2, offset: 2 });
+  assert.ok("total" in second);
+  assert.equal(second.videos.length, 1);
+  assert.equal(second.nextOffset, null);
+  assert.notEqual(first.videos[0].videoId, second.videos[0].videoId);
+});
+
+test("listSyncedVideos with no fields/limit/offset still returns the full legacy shape (every field, no paging keys)", async () => {
+  const { services, channelAccess } = createServicesFixture({ videoIds: ["v1"] });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_TEST" });
+  await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  const result = await services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  assert.equal("total" in result, false);
+  assert.ok("description" in result.videos[0] && "thumbnails" in result.videos[0]);
+});
+
+test("listSyncedVideos rejects an unknown field name and a limit above 500", async () => {
+  const { services, channelAccess } = createServicesFixture({ videoIds: ["v1"] });
+  await channelAccess.activateChannel({ userId: "user-1", channelId: "UC_TEST" });
+  await services.syncChannel({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST" });
+  for (const bad of [{ fields: ["nope"] }, { limit: 501 }, { limit: 0 }, { offset: -1 }]) {
+    await assert.rejects(() => services.listSyncedVideos({ credentialRef: { userId: "user-1" }, channelId: "UC_TEST", ...bad }));
+  }
+});

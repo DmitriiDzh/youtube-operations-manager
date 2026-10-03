@@ -177,6 +177,7 @@ export const SNAPSHOT_DEVICE_LOCAL_TABLES: Readonly<Record<string, string>> = Ob
   analytics_video_history: "collection bookkeeping: how far back each video's daily metrics are collected (BL-118)",
   quota_ledger: "per-device log of YouTube API calls and their quota cost (BL-117); written constantly by every device, shared between devices through per-device files, never a replace-style snapshot",
   reporting_sync_attempts: "last Reporting API sync attempt of this device (BL-114): time, outcome, error text",
+  workspace_export_files: "ledger of research export files written on THIS computer (ADR 0019): paths and expiry, meaningless on another device",
   channel_reach_daily: "accepted limitation (RISK-52, same as video_metrics_daily): collected impressions/CTR stay local (BL-114)",
 });
 

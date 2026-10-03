@@ -59,7 +59,7 @@ export const GRANTED_PERMISSIONS: readonly PermissionClass[] = ["READ", "DRAFT"]
  * `AGENT_CAPABILITIES` (`src/lib/agent-operations/services.ts`) for the current, authoritative
  * list of capabilities.
  */
-export const AGENT_API_VERSION = "3.0.0";
+export const AGENT_API_VERSION = "3.1.0";
 
 /**
  * One entry per capability an agent can actually call today -- never a speculative/planned entry
@@ -326,4 +326,8 @@ export type VideoAnalyticsContext = {
    * these rows, per owner spec §9: "Provide raw-enough structured data for independent agent
    * reasoning. Do not only return pre-written human summaries"). */
   rows: Array<{ videoId: string; metricDate: string; metricName: string; metricValue: number }>;
+  /** Echo of the requested layout; present only when the caller asked for one. */
+  format?: "long" | "wide";
+  /** Only with `format: "wide"` (then `rows` is empty): one row per video per day, a column per metric, `null` where a metric has no row that day. */
+  wideRows?: Array<Record<string, string | number | null>>;
 };

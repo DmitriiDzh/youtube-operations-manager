@@ -52,6 +52,7 @@ import {
   videoAnalyticsContextOutputSchema,
   videoContextOutputSchema,
 } from "./schemas";
+import { toWideMetricRows } from "./wide-rows";
 import { ANALYTICS_METRIC_NAMES, CHANNEL_OVERVIEW_METRIC_NAMES } from "@/lib/analytics";
 import type { CreativeAsset } from "@/lib/asset-catalog";
 import type { StoredGenerationProvenance } from "@/lib/ai-localization/contracts";
@@ -312,6 +313,25 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     permission: "READ",
     description:
       "Single-channel deep dive into the research watchlist: one watchlisted channel's own record plus its evidence history, channel/video snapshots, topic assignments, and a derived dataQualityFlags array, by channelId. Another channel's YouTube-API-sourced snapshots and evidence are returned only for the last 30 days (YouTube API Developer Policies III.E.4.d); operator-entered rows at any age. Velocity, breakout and emerging-channel values for other channels are withheld (III.E.4.h). Fails with RESEARCH_CHANNEL_NOT_AVAILABLE if the given channelId is not on the watchlist. Implemented as the pre-existing `query_market_intelligence` MCP tool/`agent market-intelligence` CLI command (`src/lib/market-intelligence/`), not a new function. Local read only, never a live YouTube call. Global, not scoped to any owned channel -- see market_intelligence.query_competitors above for the same caveat. Every evidence row is a raw, sourced public observation -- never a ranking or profitability conclusion (`docs/roadmap/plans/PHASE_9_PLAN.md` §4/§7). `confidence` is free text, not a calibrated probability -- a row from the 'fetch public snapshot' action can read \"high\" even when every underlying count was hidden or absent (a known, still-open vocabulary question, `docs/roadmap/plans/PHASE_9_PLAN.md` §8). Phase 12 (channel-bound agent session): results are narrowed to records the operator assigned to the agent's own channel; a record not assigned to it behaves exactly like one that does not exist.",
+  },
+  {
+    id: "market_intelligence.query_market_overview",
+    mcpTools: ["query_market_overview"],
+    domain: "market_intelligence",
+    permission: "READ",
+    description:
+      "Compact bulk read of the research watchlist: several channels in one paged call, each with its newest raw channel snapshot and snapshot/evidence counts (no evidence text, no snapshot lists). Other channels' API-sourced snapshots only for the last 30 days (YouTube API policy III.E.4.d); nothing computed from competitor statistics (III.E.4.h). Implemented as the `query_market_overview` MCP tool (`src/lib/research-export/`). Local read only, never a live YouTube call.",
+  },
+  // Research export (ADR 0019): the Manager writes flat CSV/JSON files of watchlist snapshots (and our own channel's videos) into the
+  // channel's workspace `exports/` folder so a script can read them. DRAFT, not READ: it creates local files and a ledger row (never
+  // anything on YouTube). The agent chooses neither folder nor file names.
+  {
+    id: "market_intelligence.export_research_data",
+    mcpTools: ["agent_export_research_data"],
+    domain: "market_intelligence",
+    permission: "DRAFT",
+    description:
+      "Write the research watchlist's channel snapshots and video snapshots (and our own channel's public videos in the same columns) as CSV and/or JSON files into `exports/` inside this channel's workspace folder, chosen and named by the Manager; returns only paths, row counts, sizes and expiry. Other channels' API-sourced data is kept at most 30 days (YouTube API policy III.E.4.d): research files carry `expiresAt` and the Manager deletes them itself. Fails with RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED when the operator has not set a workspace folder for the channel. Implemented as the `agent_export_research_data` MCP tool (`src/lib/research-export/`). Requires channelId to be the caller's currently-active channel.",
   },
   // Phase 9 slice 9G, part A (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md) -- one list tool with a
   // `kind` discriminator (owner spec §28: "prefer a small number of powerful composable MCP tools"),
@@ -775,7 +795,9 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
     async queryVideoAnalytics(input: unknown): Promise<VideoAnalyticsContext> {
       const parsedInput = parseWithSchema(queryVideoAnalyticsInputSchema, input, "query video analytics input");
 
-      const result = await deps.listMetrics(parsedInput);
+      const { format, ...listInput } = parsedInput;
+      const result = await deps.listMetrics(listInput);
+      const metricNames = parsedInput.metricNames ?? ANALYTICS_METRIC_NAMES;
 
       const output: VideoAnalyticsContext = {
         channelId: result.channelId,
@@ -788,7 +810,9 @@ export function createAgentOperationsServices(deps: ServiceDependencies) {
           note:
             "Reflects whatever was last collected locally (via 'Collect now' or daily auto-collection), not a live read. Call the existing analytics_data_quality tool for exact per-date coverage of this range.",
         },
-        rows: result.rows,
+        rows: format === "wide" ? [] : result.rows,
+        ...(format ? { format } : {}),
+        ...(format === "wide" ? { wideRows: toWideMetricRows(result.rows, metricNames) } : {}),
       };
 
       return parseWithSchema(videoAnalyticsContextOutputSchema, output, "query video analytics output");

@@ -74,9 +74,19 @@ export type GetChannelReachResult = {
   videos: ReachVideoPoint[];
   /** Impressions-weighted over the whole range; `null` ctr when no row carried one. */
   totals: { impressions: number; ctr: number | null };
+  /** Echo of the `videoId` filter when one was given (every figure above is then over that video only). */
+  videoId?: string;
+  /** Present only with `groupBy: "video_day"`: the stored rows as they are, oldest day first within each video, videos in id order. */
+  videoDaily?: ReachVideoDayPoint[];
+  videoDailyTruncated?: boolean;
 };
 
 export const TOP_VIDEOS_LIMIT = 50;
+
+/** `groupBy: "video_day"` returns at most this many rows; `videoDailyTruncated` says when more existed (narrow the range or pass a videoId). */
+export const MAX_VIDEO_DAY_ROWS = 5000;
+
+export type ReachVideoDayPoint = { videoId: string; date: string; impressions: number; ctr: number | null };
 
 /** Google produces the first report file up to this long after a job is created (ADR 0014). */
 export const FIRST_REPORT_EXPECTED_WITHIN_HOURS = 48;

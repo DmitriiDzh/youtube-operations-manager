@@ -108,6 +108,12 @@ export type DomainErrorCode =
   // one of this installation's connected channels (never "does not exist" vs. "not connected").
   | "CHANNEL_WORKSPACE_PATH_INVALID"
   | "CHANNEL_WORKSPACE_CHANNEL_NOT_CONNECTED"
+  // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
+  // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
+  // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.
+  | "RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED"
+  | "RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE"
+  | "RESEARCH_EXPORT_WRITE_FAILED"
   // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md) -- channel-bound agent sessions.
   // INVALID: missing/unknown/revoked token (never distinguishes which). CHANNEL_NOT_CONNECTED: the
   // operator tried to issue a token for a channel that is not connected. IDENTITY_MISMATCH: the

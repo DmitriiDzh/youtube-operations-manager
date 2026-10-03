@@ -1695,3 +1695,17 @@ No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a d
 - **Gate(s):** none blocking (read-only data collection; a failure leaves the previous state and is planned again).
 - **Approval required from:** none to verify; the owner decides when to run it.
 - **Status:** OPEN, tracked.
+
+## RISK-98 — Research export files and agent-side figures sit outside the Manager's retention control — OPEN, 2026-10-04
+
+- **Affected components:** `src/lib/research-export/` (expiry sweep), ADR 0019, Phase 13 D1 / RISK-92.
+- **Actual risk:** (1) the Manager deletes the export files IT wrote 30 days after the oldest other-channel observation inside, but any copy the
+  agent or operator makes elsewhere, and any figure derived from those files, is outside that control; (2) the sweep runs only while the app
+  runs (a file can outlive its expiry by the downtime); (3) the agent's own planned medians/percentiles of competitor statistics are derived
+  metrics from API data (YouTube policy III.E.4.h) even though the Manager computes none; (4) the export is only verified with fakes and an
+  isolated database, not yet against a real watchlist and workspace folder.
+- **To close:** owner decision on (3) (policy reading); one real export on the owner's machine (rows equal `query_market_intelligence`), then a
+  sweep after a shortened expiry in a scratch workspace.
+- **Gate(s):** none blocking the merge; (3) is a policy question for the owner.
+- **Approval required from:** the project owner for (3).
+- **Status:** OPEN, tracked.

@@ -134,6 +134,13 @@ async function startServerSession() {
   setTimeout(retainQuietly, 60_000).unref();
   setInterval(retainQuietly, API_DATA_RETENTION_INTERVAL_MS).unref();
 
+  // Research export (ADR 0019): the competitor data inside an export file follows the same 30-day rule, so the files the Manager wrote are
+  // deleted by the Manager itself when their recorded expiry passes (ledger only -- never a scan of the operator's folder).
+  const { sweepExpiredResearchExports } = await import("@/lib/research-export");
+  const sweepExportsQuietly = () => void sweepExpiredResearchExports().catch(() => undefined);
+  setTimeout(sweepExportsQuietly, 75_000).unref();
+  setInterval(sweepExportsQuietly, API_DATA_RETENTION_INTERVAL_MS).unref();
+
   // Phase 13 slice 13.8: Wikipedia page views for topic-linked articles (free, no quota). Each run
   // fetches only days not stored yet; off when Settings → Wikipedia reads is off (the gateway refuses).
   const { WIKIPEDIA_COLLECTION_INTERVAL_MS, createWikipediaSignalsCore } = await import("@/lib/wikipedia-signals");

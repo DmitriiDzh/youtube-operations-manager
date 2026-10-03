@@ -8,6 +8,8 @@ import {
   type GetChannelReachResult,
   type ReachRow,
   type ReachState,
+  type ReachVideoDayPoint,
+  MAX_VIDEO_DAY_ROWS,
   type ResolvedCredentials,
   type SyncReachFailure,
   type SyncReachReportsResult,
@@ -20,6 +22,13 @@ import {
 import { aggregateReach } from "./reach-aggregate";
 import { mapReachBasicRows } from "./reach-csv";
 import { getChannelReachInputSchema, getReachStatusInputSchema, parseWithSchema, syncReachReportsInputSchema } from "./schemas";
+
+function toVideoDayPoints(rows: readonly ReachRow[]): { points: ReachVideoDayPoint[]; truncated: boolean } {
+  const sorted = rows
+    .map((row) => ({ videoId: row.videoId, date: row.date, impressions: row.impressions, ctr: row.ctr }))
+    .sort((a, b) => a.videoId.localeCompare(b.videoId) || a.date.localeCompare(b.date));
+  return { points: sorted.slice(0, MAX_VIDEO_DAY_ROWS), truncated: sorted.length > MAX_VIDEO_DAY_ROWS };
+}
 
 /** Hard cap on files downloaded in ONE sync: Google keeps ~30-60 days of daily files, so this only bounds a runaway listing. */
 const MAX_FILES_PER_SYNC = 120;
@@ -242,6 +251,8 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
       ]);
 
       const state: ReachState = !job ? "no_job" : coverage.importedFiles === 0 ? "waiting_for_first_report" : "ready";
+      const scoped = parsed.videoId ? rows.filter((row) => row.videoId === parsed.videoId) : rows;
+      const videoDaily = parsed.groupBy === "video_day" ? toVideoDayPoints(scoped) : null;
       return {
         channelId: parsed.channelId,
         state,
@@ -249,7 +260,9 @@ export function createReachReportsServices(deps: ReachReportsDependencies) {
         coverage,
         startDate: parsed.startDate,
         endDate: parsed.endDate,
-        ...aggregateReach(rows),
+        ...aggregateReach(scoped),
+        ...(parsed.videoId ? { videoId: parsed.videoId } : {}),
+        ...(videoDaily ? { videoDaily: videoDaily.points, videoDailyTruncated: videoDaily.truncated } : {}),
       };
     },
 
