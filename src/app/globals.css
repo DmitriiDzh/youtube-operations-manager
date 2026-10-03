@@ -35,3 +35,19 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Success mark shown by the shared progress dialog when an operation ends successfully (circle pops in, tick is drawn). */
+@keyframes ytom-success-pop {
+  0% { transform: scale(0.4); opacity: 0; }
+  60% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes ytom-success-draw {
+  from { stroke-dashoffset: 24; }
+  to { stroke-dashoffset: 0; }
+}
+.ytom-success-pop { animation: ytom-success-pop 0.4s ease-out both; }
+.ytom-success-tick { stroke-dasharray: 24; animation: ytom-success-draw 0.35s ease-out 0.25s both; }
+@media (prefers-reduced-motion: reduce) {
+  .ytom-success-pop, .ytom-success-tick { animation: none; stroke-dashoffset: 0; }
+}
