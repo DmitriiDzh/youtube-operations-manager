@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { BlockingDialog } from "./blocking-dialog";
-import { formatDisplayDateTime } from "@/lib/shared-formatting";
+import { QuotaResetTime } from "./quota-reset-time";
 
 /**
  * What the server said when it refused to START a write run because of quota (BL-117 slice 2, owner decisions 2026-10-03):
@@ -152,7 +152,7 @@ export function QuotaBlockDialog({
       <p className="text-xs text-zinc-400">
         It needs about <span className="text-zinc-200">{block.estimatedUnits.toLocaleString()}</span> units ({block.rowsToWrite} video(s)), but only{" "}
         <span className="text-zinc-200">{block.remainingUnits.toLocaleString()}</span> are available
-        {block.resetsAt ? <> (the quota resets {formatDisplayDateTime(block.resetsAt)})</> : null}. It was not started, so nothing was written and
+        {block.resetsAt ? <> (the quota resets <QuotaResetTime iso={block.resetsAt} />)</> : null}. It was not started, so nothing was written and
         nothing can be cut off half way.
       </p>
       {block.canSplit && onSplit ? (

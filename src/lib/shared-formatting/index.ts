@@ -132,3 +132,29 @@ export function resolvePublishDate(video: {
   if (!iso || Number.isNaN(new Date(iso).getTime())) return null;
   return iso;
 }
+
+/**
+ * Renders a timestamp as "DD.MM.YYYY HH:MM" (24-hour) in an explicit IANA time zone (e.g. the operator's
+ * configured Analytics timezone), in the same fixed format as `formatDisplayDateTime` regardless of the
+ * viewer's locale. An unknown/invalid zone falls back to the viewer's local time.
+ */
+export function formatDisplayDateTimeInZone(value: string | number | Date, timeZone: string | null | undefined): string {
+  const date = toDate(value);
+  if (Number.isNaN(date.getTime())) return "Invalid date";
+  if (!timeZone) return formatDisplayDateTime(date);
+  try {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(date);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+    return `${get("day")}.${get("month")}.${get("year")} ${get("hour")}:${get("minute")}`;
+  } catch {
+    return formatDisplayDateTime(date);
+  }
+}
