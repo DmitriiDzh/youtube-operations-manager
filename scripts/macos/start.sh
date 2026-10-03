@@ -105,7 +105,7 @@ READY=0
 ATTEMPT=0
 while [ "$ATTEMPT" -lt 60 ]; do
   if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-    kill "$TAIL_PID" 2>/dev/null || true
+    { kill "$TAIL_PID"; wait "$TAIL_PID"; } 2>/dev/null || true
     echo "[ERROR] The server process exited before becoming ready -- see the output above (also saved in $LOG)."
     rm -f "$PIDFILE"
     exit 1
@@ -117,7 +117,7 @@ while [ "$ATTEMPT" -lt 60 ]; do
   ATTEMPT=$((ATTEMPT + 1))
   sleep 1
 done
-kill "$TAIL_PID" 2>/dev/null || true
+{ kill "$TAIL_PID"; wait "$TAIL_PID"; } 2>/dev/null || true
 
 if [ "$READY" = "1" ]; then
   if [ -z "$YTOM_NO_BROWSER" ] && command -v open >/dev/null 2>&1; then
