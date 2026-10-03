@@ -149,3 +149,12 @@ test("the last-activity timestamp lives on globalThis, so the proxy's, a route's
   const shared = (globalThis as Record<symbol, unknown>)[Symbol.for("ytom.idleShutdown.lastActivityAt")];
   assert.equal(shared, stamp.getTime());
 });
+
+test("startIdleShutdownWatcher: onIdle runs once even when the exit sequence outlasts several check intervals", async () => {
+  recordActivity(new Date(Date.now() - 500));
+  let calls = 0;
+  const stop = startIdleShutdownWatcher({ timeoutMs: 20, checkIntervalMs: 10, onIdle: () => { calls += 1; } });
+  await new Promise((r) => setTimeout(r, 120)); // many intervals after the first expiry
+  stop();
+  assert.equal(calls, 1);
+});

@@ -96,8 +96,9 @@ export function startIdleShutdownWatcher(
   const onIdle = opts.onIdle ?? (() => process.exit(0));
 
   let checking = false;
+  let exiting = false; // the exit sequence (flush, then process.exit) must start once, however long it takes
   const interval = setInterval(() => {
-    if (checking) return;
+    if (checking || exiting) return;
     checking = true;
     void (async () => {
       try {
@@ -111,7 +112,10 @@ export function startIdleShutdownWatcher(
           }
         }
         const decision = decideIdleShutdown({ lastActivityAt, now: new Date(), timeoutMs, busy, maxDeferralMs: opts.maxDeferralMs });
-        if (decision === "exit") onIdle();
+        if (decision === "exit") {
+          exiting = true;
+          onIdle();
+        }
       } finally {
         checking = false;
       }
