@@ -38,3 +38,8 @@ test("hostile title: formula lead AND comma AND quote together is guarded first,
 test("no rows: just the header line", () => {
   assert.equal(toCsv(["a", "b"], []), "a,b\r\n");
 });
+
+test("handle columns are guarded for = + tab CR but keep a leading @ or - (watchlist handles are legitimate values)", () => {
+  const csv = toCsv(["channel"], [{ channel: "@TheNeiro" }, { channel: "=1+1" }, { channel: "+x" }, { channel: "-dash" }], [], ["channel"]);
+  assert.equal(csv, "channel\r\n@TheNeiro\r\n'=1+1\r\n'+x\r\n-dash\r\n");
+});

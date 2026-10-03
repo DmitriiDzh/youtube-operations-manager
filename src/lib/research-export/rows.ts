@@ -74,16 +74,18 @@ function toIsoOrNull(value: string): string | null {
 /**
  * When a file holding other people's API data must be gone (YouTube policy III.E.4.d, `API_DATA_RETENTION_DAYS`): 30 days after the OLDEST
  * API-sourced observation it contains, so no value outlives its own window. `null` when no row is API-sourced (operator-entered rows are not
- * API data).
+ * API data). A row with an unreadable observation time counts as observed at `now`.
  */
-export function computeResearchFileExpiry(contexts: WatchlistContextForExport[]): Date | null {
+export function computeResearchFileExpiry(contexts: WatchlistContextForExport[], now: Date): Date | null {
   const apiSources = new Set<string>(YOUTUBE_API_SNAPSHOT_SOURCES);
   let oldest: number | null = null;
   for (const context of contexts) {
     for (const snapshot of [...context.channelSnapshots, ...context.videoSnapshots]) {
       if (!apiSources.has(snapshot.source)) continue;
-      const time = Date.parse(snapshot.observedAt);
-      if (!Number.isNaN(time) && (oldest === null || time < oldest)) oldest = time;
+      // Fail closed: an API row whose time cannot be read counts as observed at export time, so its file still gets an expiry.
+      const parsed = Date.parse(snapshot.observedAt);
+      const time = Number.isNaN(parsed) ? now.getTime() : parsed;
+      if (oldest === null || time < oldest) oldest = time;
     }
   }
   return oldest === null ? null : new Date(oldest + API_DATA_RETENTION_DAYS * MS_PER_DAY);

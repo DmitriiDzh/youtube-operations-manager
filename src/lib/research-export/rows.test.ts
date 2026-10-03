@@ -86,12 +86,17 @@ test("expiry = 30 days after the OLDEST API-sourced observation; operator-entere
     ...neiro,
     channelSnapshots: [{ ...neiro.channelSnapshots[0], observedAt: "2026-09-20T00:00:00.000Z" }],
   };
-  assert.equal(computeResearchFileExpiry([neiro, old])?.toISOString(), "2026-10-20T00:00:00.000Z");
+  assert.equal(computeResearchFileExpiry([neiro, old], new Date("2026-10-04T00:00:00Z"))?.toISOString(), "2026-10-20T00:00:00.000Z");
   const manualOnly: WatchlistContextForExport = {
     ...neiro,
     channelSnapshots: [{ ...neiro.channelSnapshots[0], source: "operator entry" }],
     videoSnapshots: [{ ...neiro.videoSnapshots[0], source: "operator entry" }],
   };
-  assert.equal(computeResearchFileExpiry([manualOnly]), null);
-  assert.equal(computeResearchFileExpiry([]), null);
+  assert.equal(computeResearchFileExpiry([manualOnly], new Date("2026-10-04T00:00:00Z")), null);
+  assert.equal(computeResearchFileExpiry([], new Date("2026-10-04T00:00:00Z")), null);
+});
+
+test("expiry fails closed: an API row with an unreadable observation time counts as observed at export time (2026-10-04 + 30 d = 2026-11-03)", () => {
+  const broken: WatchlistContextForExport = { ...neiro, channelSnapshots: [{ ...neiro.channelSnapshots[0], observedAt: "not a date" }], videoSnapshots: [] };
+  assert.equal(computeResearchFileExpiry([broken], new Date("2026-10-04T00:00:00Z"))?.toISOString(), "2026-11-03T00:00:00.000Z");
 });

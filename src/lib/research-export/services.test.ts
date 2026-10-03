@@ -184,10 +184,10 @@ test("AC-RE-9: an exports folder that is a symlink out of the workspace is refus
   assert.deepEqual(await readdir(outside), []);
 });
 
-test("AC-RE-10: a write failure part-way leaves no file of that call behind and records nothing", async () => {
+test("AC-RE-10: a write failure part-way leaves no file of that call behind; every row recorded for it is marked deleted (changed after review: rows are recorded BEFORE writing, so a file can never exist without one)", async () => {
   const real = createNodeExportFs();
   let renames = 0;
-  const { services, ledger, workspace } = await setup({
+  const { services, workspace, deleted, ledger } = await setup({
     fs: {
       ...real,
       rename: async (from, to) => {
@@ -198,7 +198,7 @@ test("AC-RE-10: a write failure part-way leaves no file of that call behind and 
   });
   await assert.rejects(services.exportResearchData({ channelId: "UCown" }), (e: unknown) => e instanceof DomainError && e.code === "RESEARCH_EXPORT_WRITE_FAILED");
   assert.deepEqual(await readdir(path.join(workspace, "exports")), []);
-  assert.equal(ledger.length, 0);
+  assert.equal(deleted.length, ledger.length);
 });
 
 test("AC-RE-11: unknown fields (a path or file name chosen by the caller) are rejected", async () => {
@@ -284,4 +284,41 @@ test("AC-RE-16 (bulk read): limit above 200, offset below 0 and unknown fields a
   for (const bad of [{ limit: 201 }, { limit: 0 }, { offset: -1 }, { sortBy: "views" }]) {
     await assert.rejects(services.listResearchOverview(bad), (e: unknown) => e instanceof DomainError && e.code === "validation_failed");
   }
+});
+
+test("AC-RE-17 (review): if recording in the ledger fails, NOTHING has been written (no file can exist without a ledger row)", async () => {
+  let calls = 0;
+  const { services, workspace } = await setup({
+    ledger: {
+      insert: async () => {
+        if (++calls === 2) throw new Error("database is locked");
+      },
+      listExpired: async () => [],
+      markDeleted: async () => undefined,
+    },
+  });
+  await assert.rejects(services.exportResearchData({ channelId: "UCown" }), /database is locked/);
+  const dir = path.join(workspace, "exports");
+  assert.deepEqual(await readdir(dir).catch(() => []), []);
+});
+
+test("AC-RE-19 (review): the sweep also removes a leftover temp file of a crashed write", async () => {
+  const { services } = await setup();
+  const result = await services.exportResearchData({ channelId: "UCown", researchChannelIds: ["UCneiro"], includeOwnChannel: false });
+  const tmp = path.join(result.exportsDir, `.${path.basename(result.files[0].path)}.tmp`);
+  await writeFile(tmp, "half written");
+  const swept = await services.sweepExpiredExports(new Date("2026-11-02T00:00:00Z"));
+  assert.deepEqual(swept, { deleted: 2, alreadyGone: 0, skipped: 0 });
+  await assert.rejects(lstat(tmp));
+});
+
+test("AC-RE-20 (review): a record whose folder is no longer the recorded real folder (e.g. now reached through a link) is skipped and nothing is deleted", async () => {
+  const { services, root, ledger } = await setup();
+  const result = await services.exportResearchData({ channelId: "UCown", researchChannelIds: ["UCneiro"], includeOwnChannel: false });
+  const link = path.join(root, "link-to-exports");
+  await symlink(result.exportsDir, link);
+  for (const record of ledger) record.exportsDir = link; // the ledger now names the folder through a link
+  const swept = await services.sweepExpiredExports(new Date("2026-11-02T00:00:00Z"));
+  assert.deepEqual(swept, { deleted: 0, alreadyGone: 0, skipped: 2 });
+  assert.ok((await lstat(result.files[0].path)).isFile());
 });

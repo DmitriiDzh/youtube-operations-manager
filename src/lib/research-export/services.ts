@@ -138,7 +138,7 @@ export function createResearchExportServices(deps: ResearchExportDeps) {
 
       const channelRows = buildChannelSnapshotRows(contexts);
       const videoRows = buildVideoSnapshotRows(contexts);
-      const researchExpiry = computeResearchFileExpiry(contexts);
+      const researchExpiry = computeResearchFileExpiry(contexts, now);
       const datasets: Array<{ dataset: ExportDataset; stem: string; columns: readonly string[]; rows: Array<Record<string, CsvCell>>; expiresAt: Date | null }> = [
         { dataset: "research_channel_snapshots", stem: "research-channel-snapshots", columns: CHANNEL_SNAPSHOT_COLUMNS, rows: channelRows, expiresAt: researchExpiry },
         { dataset: "research_video_snapshots", stem: "research-video-snapshots", columns: VIDEO_SNAPSHOT_COLUMNS, rows: videoRows, expiresAt: researchExpiry },
@@ -158,24 +158,31 @@ export function createResearchExportServices(deps: ResearchExportDeps) {
           dataset: d.dataset,
           format,
           fileName: `${d.stem}-${suffix}.${format}`,
-          content: format === "csv" ? toCsv(d.columns, d.rows, d.columns.filter((c) => c === "title")) : `${JSON.stringify(d.rows, null, 2)}\n`,
+          content: format === "csv" ? toCsv(d.columns, d.rows, d.columns.filter((c) => c === "title"), d.columns.filter((c) => c === "channel")) : `${JSON.stringify(d.rows, null, 2)}\n`,
           rows: d.rows.length,
           expiresAt: d.expiresAt,
         }))
       );
-      const files = await writeAll(exportsDir, prepared);
-      for (const [index, file] of files.entries()) {
-        await deps.ledger.insert({
-          id: deps.newId(),
-          channelId: parsed.channelId,
-          exportsDir,
-          fileName: prepared[index].fileName,
-          dataset: file.dataset,
-          format: file.format,
-          rowCount: file.rows,
-          createdAt: now,
-          expiresAt: prepared[index].expiresAt,
-        });
+      // The ledger rows come FIRST: a file that exists on disk always has a row, so the sweep can always find it (a row whose file was never
+      // written is harmless -- the sweep counts it as already gone). If recording fails nothing has been written yet.
+      const records: LedgerFileRecord[] = prepared.map((file) => ({
+        id: deps.newId(),
+        channelId: parsed.channelId,
+        exportsDir,
+        fileName: file.fileName,
+        dataset: file.dataset,
+        format: file.format,
+        rowCount: file.rows,
+        createdAt: now,
+        expiresAt: file.expiresAt,
+      }));
+      for (const record of records) await deps.ledger.insert(record);
+      let files: ExportedFile[];
+      try {
+        files = await writeAll(exportsDir, prepared);
+      } catch (error) {
+        for (const record of records) await deps.ledger.markDeleted(record.id, now).catch(() => undefined);
+        throw error;
       }
 
       return {
@@ -232,7 +239,19 @@ export function createResearchExportServices(deps: ResearchExportDeps) {
       const result = { deleted: 0, alreadyGone: 0, skipped: 0 };
       for (const record of await deps.ledger.listExpired(now)) {
         const target = path.join(record.exportsDir, record.fileName);
+        const leftoverTemp = path.join(record.exportsDir, `.${record.fileName}.tmp`);
         try {
+          // The recorded folder must still be that very folder (not moved, not replaced by a link elsewhere).
+          const dirNow = await deps.fs.realpath(record.exportsDir).catch(() => null);
+          if (dirNow === null) {
+            result.alreadyGone += 1;
+            await deps.ledger.markDeleted(record.id, now);
+            continue;
+          }
+          if (dirNow !== record.exportsDir) {
+            result.skipped += 1;
+            continue;
+          }
           const info = await deps.fs.lstat(target);
           if (!info) {
             result.alreadyGone += 1;
@@ -243,6 +262,8 @@ export function createResearchExportServices(deps: ResearchExportDeps) {
             result.skipped += 1;
             continue;
           }
+          const temp = await deps.fs.lstat(leftoverTemp); // a crash between write and rename can leave this behind
+          if (temp && temp.isFile && !temp.isSymbolicLink) await deps.fs.unlink(leftoverTemp);
           await deps.ledger.markDeleted(record.id, now);
         } catch {
           result.skipped += 1;
