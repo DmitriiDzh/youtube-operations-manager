@@ -295,3 +295,15 @@ test("BL-118 isRangeFullyCovered: requireVideos=false lets a run that attempted 
   assert.equal(isRangeFullyCovered({ startDate: "2026-08-01", endDate: "2026-08-03", runs, now }), false);
   assert.equal(isRangeFullyCovered({ startDate: "2026-08-01", endDate: "2026-08-03", runs, now, requireVideos: false }), true);
 });
+
+test("BL-120 isRangeFullyCovered: dates before the channel's start are not applicable -- a comparison period reaching back past the start is covered once everything since the start is", () => {
+  const now = new Date("2026-10-03T13:00:00Z");
+  // The channel was created 2026-08-13; a run covers 2026-08-13 .. 2026-10-01. The range below starts 2026-08-09 (4 days before the channel existed).
+  const runs = [{ requestedStartDate: "2026-08-13", requestedEndDate: "2026-10-01", videoCount: 0 }];
+  assert.equal(isRangeFullyCovered({ startDate: "2026-08-09", endDate: "2026-10-01", runs, now, requireVideos: false }), false, "without the start date those 4 days read as uncovered");
+  assert.equal(isRangeFullyCovered({ startDate: "2026-08-09", endDate: "2026-10-01", runs, now, requireVideos: false, channelStartDate: "2026-08-13" }), true);
+  // A day AFTER the start that no run covers still counts as uncovered.
+  assert.equal(isRangeFullyCovered({ startDate: "2026-08-09", endDate: "2026-10-01", runs: [{ requestedStartDate: "2026-08-14", requestedEndDate: "2026-10-01", videoCount: 0 }], now, requireVideos: false, channelStartDate: "2026-08-13" }), false, "2026-08-13 is on/after the start and not covered");
+  // Unknown start behaves as before (never guessed).
+  assert.equal(isRangeFullyCovered({ startDate: "2026-08-09", endDate: "2026-10-01", runs, now, requireVideos: false, channelStartDate: null }), false);
+});

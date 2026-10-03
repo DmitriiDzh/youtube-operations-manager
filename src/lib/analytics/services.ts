@@ -814,6 +814,18 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
      * that are not collected yet, and the span of channel-level dates no channel-level run covers. Empty plan = nothing to do. Videos are
      * asked from one day before their own publish date; a video with recorded history is asked only from the day after it ends.
      */
+    /** The channel's creation date (`YYYY-MM-DD`) for the Web UI's coverage display, `null` until a sync recorded it. Active-channel checked. */
+    async getChannelStartDate(input: unknown): Promise<string | null> {
+      const parsedInput = parseWithSchema(runAutoCollectionInputSchema, input, "channel start date input");
+      try {
+        await deps.channelAccess.assertActiveChannel({ userId: getCredentialUserId(parsedInput.credentialRef), channelId: parsedInput.channelId });
+        const publishedAt = await deps.channelStore.getChannelPublishedAt(parsedInput.channelId);
+        return publishedAt ? publishedAt.slice(0, 10) : null;
+      } catch (error) {
+        throw mapUnknownError(error, "unauthorized");
+      }
+    },
+
     async getHistoryCatchUpPlan(input: unknown): Promise<HistoryCatchUpPlan> {
       const parsedInput = parseWithSchema(runAutoCollectionInputSchema, input, "history catch-up plan input");
       try {
@@ -1039,12 +1051,18 @@ export function createAnalyticsServices(deps: ServiceDependencies) {
         // of both periods is covered by a run that stored them, answer from the database -- no live call, no quota. Anything else (or
         // `preferLocal` off, the Web UI Overview's default) is the live read below, exactly as before.
         if (parsedInput.preferLocal && deps.channelMetricStore?.listInRange) {
-          const runs = await deps.collectionRunStore.listByChannel(parsedInput.channelId);
+          const [runs, publishedAt] = await Promise.all([
+            deps.collectionRunStore.listByChannel(parsedInput.channelId),
+            deps.channelStore.getChannelPublishedAt(parsedInput.channelId),
+          ]);
           const covered = isRangeFullyCovered({
             startDate: previousStartDate,
             endDate: parsedInput.endDate,
             runs: runs.filter((run) => run.channelLevel === true),
             requireVideos: false,
+            // Days before the channel existed cannot have data: a comparison period that reaches back past the channel's start is still
+            // answerable from the stored totals once everything since the start is covered.
+            channelStartDate: publishedAt ? publishedAt.slice(0, 10) : null,
             now: deps.clock.now(),
           });
           if (covered) {

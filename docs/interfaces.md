@@ -954,6 +954,8 @@ MCP/CLI contract: `agent_list_hypotheses`/`agent_get_hypothesis_trail` (read) an
 
 ### Analytics API (Phase 8 + Studio-Parity S6b, BL-055..059/BL-072 — previously undocumented here)
 
+- BL-120: `GET /api/channels/{id}/analytics/overview` now answers from the stored channel totals when they cover both periods (`?refresh=1` forces a live Analytics API read) and also returns `source`, `collectedAt`, `channelStartDate`, `previousPeriod { status: full|partial|predates_channel, note }`, `provisionalFromDate`, `granularity`, `buckets` (`?granularity=day|week|month`). New `GET /api/channels/{id}/analytics/history-status` → `{ remainingVideos, hasChannelGap }` (local read). `GET /api/channels/{id}/reach` also takes `videoId` and `groupBy=video_day`.
+
 - `GET /api/channels/[channelId]/analytics` — every locally-collected `video_metrics_daily` row for the channel (read-only, no YouTube call)
 - `POST /api/channels/[channelId]/analytics/collect` — `{ startDate, endDate }`; manual per-video collection via the YouTube Analytics API, real local-persistence mutation, gated by the once-a-day freshness gate (`analytics_data_current`)
 - `POST /api/channels/[channelId]/analytics/auto-collect` — same collection, triggered once per dashboard mount if stale; no request body

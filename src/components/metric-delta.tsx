@@ -9,7 +9,19 @@
 // AI-generated analysis, not arithmetic on numbers already fetched. Real YouTube Studio itself
 // shows the identical kind of figure (e.g. "931% more than previous 28 days", live-verified
 // 2026-09-23) -- confirmed with the project owner before building this (Telegram, 2026-09-23).
-export function MetricDelta({ percent, periodLabel }: { percent: number | null; periodLabel: string }) {
+export function MetricDelta({
+  percent,
+  periodLabel,
+  previousStatus = "full",
+}: {
+  percent: number | null;
+  periodLabel: string;
+  /** BL-120: whether the comparison period existed at all (`predates_channel` = nothing to compare with, `partial` = only part of it did). */
+  previousStatus?: "full" | "partial" | "predates_channel";
+}) {
+  if (previousStatus === "predates_channel") {
+    return <span className="text-xs text-zinc-500">The channel did not exist in the previous period</span>;
+  }
   if (percent === null) {
     return <span className="text-xs text-zinc-500">No previous-period data to compare against</span>;
   }
@@ -20,9 +32,12 @@ export function MetricDelta({ percent, periodLabel }: { percent: number | null; 
   const arrow = isFlat ? "→" : isUp ? "↑" : "↓";
 
   return (
-    <span className={`inline-flex items-center gap-1 text-xs font-medium ${colorClass}`}>
-      <span aria-hidden="true">{arrow}</span>
-      {Math.abs(percent)}% {isUp ? "more" : isFlat ? "than" : "less"} than {periodLabel}
+    <span className="flex flex-col">
+      <span className={`inline-flex items-center gap-1 text-xs font-medium ${colorClass}`}>
+        <span aria-hidden="true">{arrow}</span>
+        {Math.abs(percent)}% {isUp ? "more" : isFlat ? "than" : "less"} than {periodLabel}
+      </span>
+      {previousStatus === "partial" && <span className="text-[11px] text-zinc-500">the channel existed for only part of that period</span>}
     </span>
   );
 }

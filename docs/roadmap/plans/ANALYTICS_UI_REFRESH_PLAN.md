@@ -1,13 +1,13 @@
 # BL-120 — Analytics tab: show the data we now collect
 
-Proposed 2026-10-04 at the owner's request (Telegram): after BL-114 (Reach: impressions/CTR), BL-117 (quota) and BL-118 (channel totals stored locally, history catch-up, channel start date, week/month buckets) the Analytics tab was not updated. **Plan only — nothing assigned or implemented.** Inventory below was read from the code (`analytics-tab.tsx` and the panels it mounts), not from a running app.
+Proposed 2026-10-04 at the owner's request (Telegram): after BL-114 (Reach: impressions/CTR), BL-117 (quota) and BL-118 (channel totals stored locally, history catch-up, channel start date, week/month buckets) the Analytics tab was not updated. **Status 2026-10-04: slices 1–3 assigned by the owner and implemented on `feature/analytics-ui-refresh` (owner answers: Overview on stored data with «Refresh live»; week/month for the chart only; slices 1–3 now; the per-video table replaces the top-5 list, the raw table stays behind its toggle). Slices 4–6 remain proposed.** Inventory below was read from the code (`analytics-tab.tsx` and the panels it mounts), not from a running app.
 
 ## What the tab shows today
 
 - **Overview** (`channel-overview-panel.tsx`): period presets 7/28/90/365 days; cards Views / Watch time / Net subscribers with a % delta; one daily line chart; top 5 videos; an amber «uncovered dates» box; the 27 Aug 2026 view-counting banner; «Collect now»; a «raw collected data» table (raw video ids).
 - **Content** (`content-analytics-panel.tsx`): Impressions and CTR (`reach-panel.tsx`: totals, daily impressions chart, top 10 videos by raw id) + «Report subscription status» block; traffic sources; top 10 videos; retention curve of a selected video.
 - **Audience** (`audience-analytics-panel.tsx`): five breakdown cards (device, geography, age/gender, subscribed status, content format) — all live reads.
-- Every panel picks `channels[0]` and keeps its own period selector; the UI never sends `granularity`.
+- Every panel picks `channels[0]` (this IS the active channel: `listChannels` returns only it) and keeps its own period selector; the UI never sent `granularity`.
 
 ## What exists in the backend but the UI does not use
 
@@ -29,7 +29,7 @@ Proposed 2026-10-04 at the owner's request (Telegram): after BL-114 (Reach: impr
 3. **Impressions and CTR next to the basics.** Impressions and CTR cards on Overview (same period, same delta rules); CTR line on the chart; Content: video titles instead of ids, a per-video drill-down (daily impressions and CTR from `video_day`), and one «packaging» table per video: impressions, CTR, views, watch time.
 4. **Compare by days since publish.** A view over `comparable-age` (a video against comparable ones at the same age) and the video titles in the raw table.
 5. **Weekly reports list.** Read-only list/detail of the generated weekly reports.
-6. **Consistency.** One period selector shared by the three sub-tabs; the panels use the channel the dashboard has active (today every panel takes `channels[0]` — to be checked against the active channel with two channels connected); retention: draw relative performance.
+6. **Consistency.** One period selector shared by the three sub-tabs; the panels already use the active channel (checked: `listChannels` returns only it); retention: draw relative performance.
 
 Suggested order: 1 → 2 → 3 (what the owner/agent look at first), then 6, 4, 5. Slices 1–2 need no new backend; 3 needs a thin route for `videoDaily` and a titles join; 4–5 reuse existing routes.
 

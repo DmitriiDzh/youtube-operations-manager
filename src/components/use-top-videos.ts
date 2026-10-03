@@ -4,7 +4,7 @@ import { computeDefaultPeriodRange } from "@/lib/analytics/period";
 type MetricRow = { videoId: string; metricDate: string; metricName: string; metricValue: number };
 type SyncedVideo = { videoId: string; title: string; thumbnails: Record<string, { url: string }> };
 
-export type TopVideoRow = { videoId: string; title: string; thumbnail: string | null; views: number };
+export type TopVideoRow = { videoId: string; title: string; thumbnail: string | null; views: number; watchMinutes: number };
 
 /**
  * Ranks this channel's already-locally-collected videos by views in the selected period --
@@ -46,10 +46,11 @@ export function useTopVideos(channelId: string | null, periodDays: number, limit
       }
 
       const viewsByVideo = new Map<string, number>();
+      const minutesByVideo = new Map<string, number>();
       for (const row of metricsData.rows as MetricRow[]) {
-        if (row.metricName !== "views") continue;
         if (row.metricDate < startDate || row.metricDate > endDate) continue;
-        viewsByVideo.set(row.videoId, (viewsByVideo.get(row.videoId) ?? 0) + row.metricValue);
+        if (row.metricName === "views") viewsByVideo.set(row.videoId, (viewsByVideo.get(row.videoId) ?? 0) + row.metricValue);
+        else if (row.metricName === "estimatedMinutesWatched") minutesByVideo.set(row.videoId, (minutesByVideo.get(row.videoId) ?? 0) + row.metricValue);
       }
 
       const videosById = new Map((videosData.videos as SyncedVideo[]).map((v) => [v.videoId, v]));
@@ -57,6 +58,7 @@ export function useTopVideos(channelId: string | null, periodDays: number, limit
         .map(([videoId, views]) => ({
           videoId,
           views,
+          watchMinutes: minutesByVideo.get(videoId) ?? 0,
           title: videosById.get(videoId)?.title ?? videoId,
           thumbnail: Object.values(videosById.get(videoId)?.thumbnails ?? {})[0]?.url ?? null,
         }))
