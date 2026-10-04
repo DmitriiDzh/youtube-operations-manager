@@ -188,6 +188,8 @@ type StoredMarketVideoSnapshotForService = {
   commentCount: number | null;
   publishedAt: Date | null;
   title: string | null;
+  durationSeconds?: number | null;
+  liveBroadcastContent?: string | null;
   source: string;
   createdVia: string;
 };
@@ -244,6 +246,8 @@ function toMarketVideoSnapshot(row: StoredMarketVideoSnapshotForService): Market
     commentCount: row.commentCount,
     publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
     title: row.title,
+    durationSeconds: row.durationSeconds ?? null,
+    liveBroadcastContent: row.liveBroadcastContent ?? null,
     source: row.source,
   };
 }
@@ -477,6 +481,8 @@ type ServiceDependencies = {
     commentCount?: number | null;
     publishedAt?: Date | null;
     title?: string | null;
+    durationSeconds?: number | null;
+    liveBroadcastContent?: string | null;
     source: string;
     createdVia: string;
   }): Promise<void>;
@@ -1007,6 +1013,8 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       topicAssignments: MarketTopicAssignment[];
       dataQualityFlags: DataQualityFlag[];
       neverObserved: boolean;
+      uniqueVideoCount: number;
+      latestVideoSnapshotAt: string | null;
     }> {
       const parsedInput = parseWithSchema(getWatchlistEntryInputSchema, input, "get watchlist entry context input");
 
@@ -1933,6 +1941,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
                   // Phase 9 slice 9H part C -- costs zero additional quota. Normalized to null (never
                   // "") so a genuinely uncaptured title is never stored as a "known, empty" one.
                   title: title.length > 0 ? title : null,
+                  // Operator request 2026-10-04: raw values only, null when the fetch did not return them (never 0).
+                  durationSeconds: videoSnapshot.durationSeconds ?? null,
+                  liveBroadcastContent: videoSnapshot.liveBroadcastContent ?? null,
                   source: statsSource,
                   createdVia: "web_ui",
                 });

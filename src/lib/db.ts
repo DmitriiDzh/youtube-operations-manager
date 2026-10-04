@@ -239,6 +239,8 @@ export const videos = sqliteTable("videos", {
   // Additive, schema version 19 (Phase 7 slice K, owner spec §10 "similar duration" filter) --
   // same nullable-until-next-sync convention as the three columns above.
   durationSeconds: integer("duration_seconds"),
+  // Additive, SCHEMA_MIGRATIONS version 47: YouTube's `snippet.liveBroadcastContent` ("none" | "live" | "upcoming") from the last sync; NULL = unknown.
+  liveBroadcastContent: text("live_broadcast_content"),
   // Additive, schema version 21 (owner instruction, 2026-09-26, Telegram: Content tab's "Publish"
   // column needs a scheduled-publish date for a still-private video, not only its actual
   // `publishedAt`). This is YouTube's own `status.publishAt` -- a distinct field from
@@ -1155,6 +1157,10 @@ export const marketVideoSnapshots = sqliteTable(
     // snapshot taken before this column existed; never backfilled or guessed from a later
     // snapshot's own (possibly since-changed) title.
     title: text("title"),
+    // SCHEMA_MIGRATIONS version 47 (operator request 2026-10-04) -- NULL honestly means "not captured" (every snapshot taken before this
+    // column existed, or a collection path that did not return it); never 0 and never backfilled.
+    durationSeconds: integer("duration_seconds"),
+    liveBroadcastContent: text("live_broadcast_content"),
     source: text("source").notNull(),
     createdVia: text("created_via").notNull(),
   },
@@ -2650,6 +2656,24 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
       await client.execute("CREATE INDEX IF NOT EXISTS workspace_export_files_expires_at_idx ON workspace_export_files (expires_at)");
     },
   },
+  {
+    version: 47,
+    description:
+      "market_video_snapshots.duration_seconds + live_broadcast_content and videos.live_broadcast_content -- operator request 2026-10-04: video length and live/upcoming state in research and own-video exports; existing rows stay NULL (unknown), never 0",
+    apply: async (client) => {
+      for (const statement of [
+        "ALTER TABLE market_video_snapshots ADD COLUMN duration_seconds INTEGER",
+        "ALTER TABLE market_video_snapshots ADD COLUMN live_broadcast_content TEXT",
+        "ALTER TABLE videos ADD COLUMN live_broadcast_content TEXT",
+      ]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+    },
+  },
 ];
 
 export const SCHEMA_CURRENT_VERSION =
@@ -3421,6 +3445,8 @@ export type StoredVideo = {
   commentCount: number | null;
   likeCount: number | null;
   durationSeconds: number | null;
+  /** `snippet.liveBroadcastContent` as of the last sync; absent/null = unknown. */
+  liveBroadcastContent?: string | null;
   publishAt: string | null;
   lastSyncedAt: Date;
 };
@@ -3459,6 +3485,7 @@ function mapStoredVideo(row: typeof videos.$inferSelect): StoredVideo {
     commentCount: row.commentCount,
     likeCount: row.likeCount,
     durationSeconds: row.durationSeconds,
+    liveBroadcastContent: row.liveBroadcastContent,
     publishAt: row.publishAt,
     lastSyncedAt: row.lastSyncedAt,
   };
@@ -4739,6 +4766,7 @@ export async function upsertVideos(
     commentCount?: number | null;
     likeCount?: number | null;
     durationSeconds?: number | null;
+    liveBroadcastContent?: string | null;
     publishAt?: string | null;
   }>,
   syncedAt: Date
@@ -4760,6 +4788,7 @@ export async function upsertVideos(
       commentCount: entry.commentCount ?? null,
       likeCount: entry.likeCount ?? null,
       durationSeconds: entry.durationSeconds ?? null,
+      liveBroadcastContent: entry.liveBroadcastContent ?? null,
       publishAt: entry.publishAt ?? null,
       lastSyncedAt: syncedAt,
     };
@@ -6900,6 +6929,9 @@ export type StoredMarketVideoSnapshot = {
   commentCount: number | null;
   publishedAt: Date | null;
   title: string | null;
+  /** NULL = not captured (see the column's comment). */
+  durationSeconds: number | null;
+  liveBroadcastContent: string | null;
   source: string;
   createdVia: string;
 };
@@ -6914,6 +6946,8 @@ export async function insertMarketVideoSnapshot(
     commentCount?: number | null;
     publishedAt?: Date | null;
     title?: string | null;
+    durationSeconds?: number | null;
+    liveBroadcastContent?: string | null;
     source: string;
     createdVia: string;
   },
@@ -6928,6 +6962,8 @@ export async function insertMarketVideoSnapshot(
     commentCount: input.commentCount ?? null,
     publishedAt: input.publishedAt ?? null,
     title: input.title ?? null,
+    durationSeconds: input.durationSeconds ?? null,
+    liveBroadcastContent: input.liveBroadcastContent ?? null,
     source: input.source,
     createdVia: input.createdVia,
   });

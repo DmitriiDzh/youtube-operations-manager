@@ -330,6 +330,10 @@ export type PublicVideoSnapshot = {
   viewCount: number | null;
   likeCount: number | null;
   commentCount: number | null;
+  /** Raw video length; `null`/absent when the fetch did not return it (never 0). Operator request 2026-10-04. */
+  durationSeconds?: number | null;
+  /** YouTube's `snippet.liveBroadcastContent` ("none" | "live" | "upcoming"); only the `videos.list` path returns it. */
+  liveBroadcastContent?: string | null;
 };
 
 /**
@@ -350,13 +354,15 @@ export async function getPublicVideoSnapshots(youtube: youtube_v3.Youtube, video
 
   const results: PublicVideoSnapshot[] = [];
   for (const batch of chunk(videoIds, YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
-    const res = await youtube.videos.list({ part: ["snippet", "statistics"], id: batch });
+    const res = await youtube.videos.list({ part: ["snippet", "statistics", "contentDetails"], id: batch });
     for (const item of res.data.items ?? []) {
       if (!item.id) continue;
       results.push({
         videoId: item.id,
         title: item.snippet?.title ?? "",
         publishedAt: item.snippet?.publishedAt ?? null,
+        durationSeconds: parseIso8601DurationToSeconds(item.contentDetails?.duration),
+        liveBroadcastContent: item.snippet?.liveBroadcastContent ?? null,
         viewCount: parseStatCount(item.statistics?.viewCount),
         likeCount: parseStatCount(item.statistics?.likeCount),
         commentCount: parseStatCount(item.statistics?.commentCount),
@@ -827,7 +833,7 @@ export async function getPublicVideoStatsBatch(youtube: youtube_v3.Youtube, vide
   for (const batch of chunk(videoIds, YOUTUBE_VIDEOS_LIST_BATCH_SIZE)) {
     const res = await request.call(auth, {
       url: "https://www.googleapis.com/youtube/v3/videos:batchGetStats",
-      params: { id: batch.join(","), part: "id,snippet,statistics" },
+      params: { id: batch.join(","), part: "id,snippet,statistics,contentDetails" },
     });
     const items = (res.data as { items?: unknown[] } | null)?.items ?? [];
     for (const raw of items) {
@@ -837,6 +843,9 @@ export async function getPublicVideoStatsBatch(youtube: youtube_v3.Youtube, vide
         id?: string;
         snippet?: { publishTime?: string };
         statistics?: { viewCount?: string | number; likeCount?: string | number; commentCount?: string | number };
+        // Documented (videos/batchGetStats reference, read 2026-10-04): `contentDetails` returns `duration` (ISO 8601) and `durationMillis`;
+        // `snippet` has no `liveBroadcastContent` here.
+        contentDetails?: { duration?: string; durationMillis?: string | number };
       };
       if (!item.id) continue;
       const stat = (v: string | number | undefined) => (v === undefined ? null : parseStatCount(String(v)));
@@ -847,10 +856,19 @@ export async function getPublicVideoStatsBatch(youtube: youtube_v3.Youtube, vide
         viewCount: stat(item.statistics?.viewCount),
         likeCount: stat(item.statistics?.likeCount),
         commentCount: stat(item.statistics?.commentCount),
+        durationSeconds: parseBatchDuration(item.contentDetails),
       });
     }
   }
   return results;
+}
+
+/** ISO 8601 `duration` first, else `durationMillis`; `null` when neither is usable (zero length counts as unknown, like the own-video parser). */
+function parseBatchDuration(contentDetails: { duration?: string; durationMillis?: string | number } | undefined): number | null {
+  const fromIso = parseIso8601DurationToSeconds(contentDetails?.duration);
+  if (fromIso !== null) return fromIso;
+  const millis = contentDetails?.durationMillis === undefined ? NaN : Number(contentDetails.durationMillis);
+  return Number.isFinite(millis) && millis > 0 ? Math.round(millis / 1000) : null;
 }
 
 export type MusicChartEntry = {

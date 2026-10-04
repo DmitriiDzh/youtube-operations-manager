@@ -204,6 +204,10 @@ export const marketVideoSnapshotSchema = z
     // Phase 9 slice 9H part C (v28) -- additive; every existing consumer (Web UI, MCP
     // query_market_intelligence, CLI agent market-intelligence) gains one new field.
     title: z.string().nullable(),
+    // Additive (SCHEMA_MIGRATIONS v47, operator request 2026-10-04): null = not captured (snapshots taken before, or a collection path that
+    // did not return it) -- never 0. `liveBroadcastContent` is YouTube's own value ("none" | "live" | "upcoming").
+    durationSeconds: z.number().int().nonnegative().nullable(),
+    liveBroadcastContent: z.string().nullable(),
     source: z.string(),
   })
   .strict();
