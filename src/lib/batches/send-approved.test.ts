@@ -15,6 +15,7 @@ function candidate(partial: Partial<SendableChangeCandidate> & { id: string; vid
     conflictStatus: "none",
     approvedValue: "value",
     proposedValue: "value",
+    updatedAt: "2026-10-01T00:00:00.000Z",
     ...partial,
   };
 }
@@ -176,8 +177,9 @@ test("AC-SEND-06: once the first batch has finished (terminal), a new send creat
   const { service, batches, rows } = build({ CS1: { channelId: "UC_A", changes: fixtureF() } });
   const first = await service.createLiveBatchForChangeSet({ channelId: "UC_A", changeSetId: "CS1" });
 
+  // Finished, but nothing was written (every row FAILED): the changes still need sending, so a new batch is allowed.
   batches[0] = { ...batches[0]!, status: "COMPLETED" };
-  rows.set(first.batch.id, rows.get(first.batch.id)!.map((row) => ({ ...row, status: "SUCCESS" as LedgerStatus })));
+  rows.set(first.batch.id, rows.get(first.batch.id)!.map((row) => ({ ...row, status: "FAILED" as LedgerStatus })));
 
   const second = await service.createLiveBatchForChangeSet({ channelId: "UC_A", changeSetId: "CS1" });
 
@@ -215,4 +217,55 @@ test("AC-SEND-02: with Live writes off the send is refused with live_writes_disa
   assert.equal(error.code, "live_writes_disabled");
   assert.equal(batches.length, 0);
   assert.equal(createCalls(), 0);
+});
+
+// AC-SEND-13 (added after independent review, 2026-10-04): changes a real batch already wrote are not sent a second time.
+function markBatch(ctx: ReturnType<typeof build>, input: { id: string; dryRun: boolean; status: LedgerStatus; changeIds: string[]; at: string }) {
+  ctx.batches.push({
+    id: input.id,
+    channelId: "UC_A",
+    status: "COMPLETED",
+    concurrency: 1,
+    dryRun: input.dryRun,
+    runId: null,
+    createdAt: input.at,
+    startedAt: null,
+    completedAt: input.at,
+  });
+  ctx.rows.set(input.id, [
+    { id: `${input.id}-r`, batchId: input.id, videoId: "v1", changeIds: input.changeIds, status: input.status, error: null, verificationResult: null, activeAttemptId: null, createdAt: input.at, updatedAt: input.at },
+  ]);
+}
+
+test("AC-SEND-13: after a real batch wrote c1,c2,c3 (SUCCESS), sending the same set again has nothing to send", async () => {
+  const ctx = build({ CS1: { channelId: "UC_A", changes: fixtureF() } });
+  markBatch(ctx, { id: "done", dryRun: false, status: "SUCCESS", changeIds: ["c1", "c2", "c3"], at: "2026-10-02T00:00:00.000Z" });
+
+  const error = await rejection(ctx.service.createLiveBatchForChangeSet({ channelId: "UC_A", changeSetId: "CS1" }));
+
+  assert.equal(error.code, "send_nothing_to_send");
+  assert.equal(ctx.batches.length, 1, "no new batch");
+});
+
+test("AC-SEND-13: only the changes not yet written are sent (c1,c2 written -> only c3)", async () => {
+  const ctx = build({ CS1: { channelId: "UC_A", changes: fixtureF() } });
+  markBatch(ctx, { id: "done", dryRun: false, status: "SUCCESS", changeIds: ["c1", "c2"], at: "2026-10-02T00:00:00.000Z" });
+
+  const result = await ctx.service.createLiveBatchForChangeSet({ channelId: "UC_A", changeSetId: "CS1" });
+
+  assert.equal(result.changeCount, 1);
+  assert.deepEqual(ctx.rows.get(result.batch.id)!.map((row) => row.changeIds), [["c3"]]);
+});
+
+test("AC-SEND-13: a change edited and re-approved AFTER it was written is sent again; a dry-run SUCCESS or a FAILED row never counts as written", async () => {
+  const changes = fixtureF();
+  changes[0] = candidate({ id: "c1", videoId: "v1", updatedAt: "2026-10-05T00:00:00.000Z" }); // edited after the write below
+  const ctx = build({ CS1: { channelId: "UC_A", changes } });
+  markBatch(ctx, { id: "real", dryRun: false, status: "SUCCESS", changeIds: ["c1"], at: "2026-10-02T00:00:00.000Z" });
+  markBatch(ctx, { id: "dry", dryRun: true, status: "SUCCESS", changeIds: ["c2"], at: "2026-10-04T00:00:00.000Z" });
+  markBatch(ctx, { id: "failed", dryRun: false, status: "FAILED", changeIds: ["c3"], at: "2026-10-04T00:00:00.000Z" });
+
+  const result = await ctx.service.createLiveBatchForChangeSet({ channelId: "UC_A", changeSetId: "CS1" });
+
+  assert.equal(result.changeCount, 3, "c1 (edited later), c2 (only dry-run) and c3 (failed) are all sent");
 });

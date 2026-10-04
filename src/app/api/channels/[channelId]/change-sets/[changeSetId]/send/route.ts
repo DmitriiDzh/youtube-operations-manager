@@ -6,8 +6,17 @@ import { DomainError } from "@/lib/batches/contracts";
 import { createChannelAccessCore } from "@/lib/channel-access";
 import { getVideoMetadataErrorStatus } from "@/app/api/video-metadata/error-status";
 
-const core = createSendApprovedCore();
-const channelAccess = createChannelAccessCore();
+type SendRouteDeps = {
+  getSession: () => Promise<{ user?: { id?: string | null } } | null>;
+  core: Pick<ReturnType<typeof createSendApprovedCore>, "createLiveBatchForChangeSet">;
+  channelAccess: Pick<ReturnType<typeof createChannelAccessCore>, "assertActiveChannel">;
+};
+
+const defaultDeps: SendRouteDeps = {
+  getSession: () => getServerSession(authOptions),
+  core: createSendApprovedCore(),
+  channelAccess: createChannelAccessCore(),
+};
 
 /**
  * BL-124 / ADR 0020 -- the one-click "send approved changes" button's server half. It only SELECTS the
@@ -19,35 +28,36 @@ const channelAccess = createChannelAccessCore();
  * With Live writes off the service refuses FIRST with `live_writes_disabled` and creates nothing, so a disabled
  * toggle never leaves a batch behind (unlike `POST .../batches`, which silently downgrades to a dry run).
  */
-export async function POST(
-  _request: Request,
-  { params }: { params: Promise<{ channelId: string; changeSetId: string }> }
-) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  try {
-    const { channelId, changeSetId } = await params;
-    await channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
-
-    const result = await core.createLiveBatchForChangeSet({ channelId, changeSetId });
-    return NextResponse.json(
-      { batchId: result.batch.id, changeCount: result.changeCount, videoCount: result.videoCount, batch: result.batch },
-      { status: 201 }
-    );
-  } catch (error) {
-    if (error instanceof DomainError) {
-      return NextResponse.json(
-        { error: error.code, message: error.message, details: error.details },
-        { status: getVideoMetadataErrorStatus(error.code) }
-      );
+export function createSendHandler(deps: SendRouteDeps = defaultDeps) {
+  return async function POST(_request: Request, { params }: { params: Promise<{ channelId: string; changeSetId: string }> }) {
+    const session = await deps.getSession();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    return NextResponse.json(
-      { error: "internal_error", message: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500 }
-    );
-  }
+    try {
+      const { channelId, changeSetId } = await params;
+      await deps.channelAccess.assertActiveChannel({ userId: session.user.id, channelId });
+
+      const result = await deps.core.createLiveBatchForChangeSet({ channelId, changeSetId });
+      return NextResponse.json(
+        { batchId: result.batch.id, changeCount: result.changeCount, videoCount: result.videoCount, batch: result.batch },
+        { status: 201 }
+      );
+    } catch (error) {
+      if (error instanceof DomainError) {
+        return NextResponse.json(
+          { error: error.code, message: error.message, details: error.details },
+          { status: getVideoMetadataErrorStatus(error.code) }
+        );
+      }
+
+      return NextResponse.json(
+        { error: "internal_error", message: error instanceof Error ? error.message : "Unknown error" },
+        { status: 500 }
+      );
+    }
+  };
 }
+
+export const POST = createSendHandler();

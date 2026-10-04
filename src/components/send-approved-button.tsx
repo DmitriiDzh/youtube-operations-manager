@@ -77,6 +77,10 @@ export function SendApprovedButton({
         const data = (await res.json()) as ApiError & { batchId?: string };
         if (res.ok) {
           batchId = data.batchId ?? null;
+          if (!batchId) {
+            op.finish({ error: true, message: "The server did not return a batch — nothing was sent." });
+            return;
+          }
         } else if (data.error === "send_already_in_progress" && data.details?.batchId) {
           // An earlier click created the batch but it never finished: continue that one, never create another.
           batchId = data.details.batchId;

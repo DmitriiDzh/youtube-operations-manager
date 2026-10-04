@@ -231,6 +231,7 @@ function build(options: { failVideoIds?: string[] } = {}) {
         return [...store.changes.values()].map((c) => ({
           id: c.id, videoId: c.videoId, approvalStatus: c.approvalStatus, validationStatus: c.validationStatus,
           conflictStatus: c.conflictStatus, approvedValue: c.approvedValue, proposedValue: c.proposedValue,
+          updatedAt: "2000-01-01T00:00:00.000Z",
         }));
       },
     },

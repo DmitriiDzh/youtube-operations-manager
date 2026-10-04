@@ -92,6 +92,7 @@ export function createChangeSetReaderAdapter() {
         conflictStatus: change.conflictStatus,
         approvedValue: change.approvedValue,
         proposedValue: change.proposedValue,
+        updatedAt: change.updatedAt.toISOString(),
       }));
     },
   };
@@ -105,4 +106,6 @@ export type SendableChangeCandidate = {
   conflictStatus: string;
   approvedValue: string | null;
   proposedValue: string;
+  /** ISO time of the change's last update -- a SUCCESS ledger row older than this does not cover its current value. */
+  updatedAt: string;
 };

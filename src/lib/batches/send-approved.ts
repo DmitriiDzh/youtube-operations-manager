@@ -41,6 +41,14 @@ export function selectSendableChanges(changes: SendableChangeCandidate[]): Senda
   );
 }
 
+/** A change counts as already written when a SUCCESS row of a real (non-dry-run) batch is at least as new as the change's last update. */
+function excludeAlreadyWritten(changes: SendableChangeCandidate[], writtenAtByChangeId: Map<string, number>): SendableChangeCandidate[] {
+  return changes.filter((change) => {
+    const writtenAt = writtenAtByChangeId.get(change.id);
+    return writtenAt === undefined || writtenAt < Date.parse(change.updatedAt);
+  });
+}
+
 export function createSendApprovedServices(deps: SendApprovedDeps) {
   // Creation is serialized per channel in this process (the server is one Node process), so two clicks
   // arriving together cannot both pass the "already in flight" check before either has created its batch.
@@ -70,6 +78,19 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
     return null;
   }
 
+  async function writtenAtByChangeId(channelId: string): Promise<Map<string, number>> {
+    const writtenAt = new Map<string, number>();
+    for (const batch of await deps.batches.listBatchesByChannel(channelId)) {
+      if (batch.dryRun) continue;
+      for (const row of await deps.batches.listLedgerRows(batch.id)) {
+        if (row.status !== "SUCCESS") continue;
+        const at = Date.parse(row.updatedAt);
+        for (const id of row.changeIds) writtenAt.set(id, Math.max(writtenAt.get(id) ?? 0, at));
+      }
+    }
+    return writtenAt;
+  }
+
   async function createLiveBatchForChangeSet(input: { channelId: string; changeSetId: string }): Promise<SendApprovedResult> {
     // AC-SEND-02: with Live writes off this refuses before touching anything, so no batch row is left behind
     // (the execute route re-checks the same toggle independently, Layer 1 and Layer 2).
@@ -90,11 +111,16 @@ export function createSendApprovedServices(deps: SendApprovedDeps) {
         });
       }
 
-      const sendable = selectSendableChanges(await deps.changeSets.listChanges(input.changeSetId));
+      // Changes a real batch already wrote (and that were not edited since) are not sent a second time: that would only spend quota and a backup
+      // to hit the pre-write conflict check against the value that is already live (AC-SEND-13).
+      const sendable = excludeAlreadyWritten(
+        selectSendableChanges(await deps.changeSets.listChanges(input.changeSetId)),
+        await writtenAtByChangeId(input.channelId)
+      );
       if (sendable.length === 0) {
         throw new DomainError({
           code: "send_nothing_to_send",
-          message: "This change set has no approved, valid, conflict-free changes to send.",
+          message: "This change set has no approved, valid, conflict-free changes left to send (changes already written are not sent again).",
           details: { changeSetId: input.changeSetId },
         });
       }
