@@ -107,6 +107,7 @@ type Tab = (typeof NAV_ITEMS)[number]["value"];
 // provider connections (how this app connects OUT to an AI provider for AI Localization) -- per
 // the owner's own explicit choice after this distinction was raised and confirmed understood.
 const SETTINGS_SUB_TABS = [
+  { value: "general", label: "General" },
   { value: "api", label: "API" },
   { value: "channels", label: "Channels" },
   { value: "ai-agent", label: "AI Agent" },
@@ -118,7 +119,7 @@ type SettingsSubTab = (typeof SETTINGS_SUB_TABS)[number]["value"];
 export default function Dashboard() {
   const { data: session, status } = useSession();
   const [tab, setTab] = useState<Tab>("home");
-  const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>("api");
+  const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>("general");
   const [channel, setChannel] = useState<ChannelInfo | null>(null);
   // BL-115: the channel request failed (typically a stale Google sign-in) -- say so, don't spin on "Loading..." forever.
   const [channelUnavailable, setChannelUnavailable] = useState(false);
@@ -451,6 +452,17 @@ export default function Dashboard() {
             `if (!draft) return null` render) every single time, even for a sub-tab already
             visited this session. Hidden-not-unmounted keeps each card's already-fetched state,
             so only the FIRST visit to a sub-tab shows a loading moment. */}
+        {/* General: settings that are not about an API connection (owner instruction, 2026-10-04: the API
+            sub-tab was collecting too much unrelated content). */}
+        <div className={settingsSubTab === "general" ? "space-y-6" : "hidden"}>
+          <FeatureErrorBoundary label="Settings — Retention">
+            <RetentionSettings />
+          </FeatureErrorBoundary>
+          <FeatureErrorBoundary label="Settings — Analytics collection">
+            <AnalyticsCollectionSettings />
+          </FeatureErrorBoundary>
+        </div>
+
         <div className={settingsSubTab === "api" ? "space-y-6" : "hidden"}>
           <FeatureErrorBoundary label="Settings — Live writes">
             <LiveWritesSettings />
@@ -463,12 +475,6 @@ export default function Dashboard() {
           </FeatureErrorBoundary>
           <FeatureErrorBoundary label="Settings — Quota reserve">
             <QuotaReserveSettings />
-          </FeatureErrorBoundary>
-          <FeatureErrorBoundary label="Settings — Retention">
-            <RetentionSettings />
-          </FeatureErrorBoundary>
-          <FeatureErrorBoundary label="Settings — Analytics collection">
-            <AnalyticsCollectionSettings />
           </FeatureErrorBoundary>
           <FeatureErrorBoundary label="Settings — Market intelligence collection">
             <MarketIntelligenceCollectionSettings />
