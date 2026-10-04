@@ -81,18 +81,21 @@ type ChangeSetSummary = {
   createdAt: string;
 };
 
-type SubTab = "all" | "in_progress" | "approved";
+type SubTab = "in_progress" | "approved" | "rejected" | "all";
 
 const SUB_TABS: Array<{ value: SubTab; label: string }> = [
-  { value: "all", label: "Все" },
-  { value: "in_progress", label: "В процессе" },
-  { value: "approved", label: "Одобрено" },
+  { value: "in_progress", label: "In progress" },
+  { value: "approved", label: "Approved" },
+  { value: "rejected", label: "Rejected" },
+  { value: "all", label: "All" },
 ];
 
 function matchesSubTab(cs: ChangeSetSummary, subTab: SubTab): boolean {
   if (subTab === "all") return true;
-  if (subTab === "in_progress") return cs.status === "in_review" || cs.status === "partially_approved";
-  return cs.status === "approved";
+  // In progress = still needs a decision; Approved = fully decided with something to send (partially_approved included).
+  if (subTab === "in_progress") return cs.status === "in_review";
+  if (subTab === "rejected") return cs.status === "rejected";
+  return cs.status === "approved" || cs.status === "partially_approved";
 }
 
 // --- AI generation types (moved from the former "AI Localization" tab) ---
@@ -219,10 +222,10 @@ type GenerateScope = { kind: "bulk" } | { kind: "row"; videoId: string };
  * "Recommended languages" placeholder pending the Phase 8 Analytics integration (E4b). One shared
  * selection set now drives both AI generation and XLSX export (previously two independent sets).
  *
- * Sub-tabs ("Все/В процессе/Одобрено") mirror Studio's own Languages page but are mapped onto this
+ * Sub-tabs ("In progress / Approved / Rejected / All", in that order -- owner request 2026-10-04) mirror Studio's own Languages page but are mapped onto this
  * app's real unit of work -- a Change Set's approval status, not a per-video "draft/published"
  * state Studio's literal UI assumes and this app's batch/approval workflow doesn't have.
- * "Одобрено" never means "Опубликовано" -- Phase 5 live YouTube writes remain barrier-disabled
+ * "Approved" never means "Published" -- Phase 5 live YouTube writes remain barrier-disabled
  * (docs/TECHNICAL_DEBT.md RISK-09).
  */
 export function LanguagesManager() {
@@ -261,7 +264,7 @@ export function LanguagesManager() {
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
 
   const [changeSets, setChangeSets] = useState<ChangeSetSummary[]>([]);
-  const [subTab, setSubTab] = useState<SubTab>("all");
+  const [subTab, setSubTab] = useState<SubTab>("in_progress");
   const [openChangeSetId, setOpenChangeSetId] = useState<string | null>(null);
 
   // --- One shared row-selection set (E4/§4.5) -- drives both AI generation and XLSX export. ---

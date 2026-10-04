@@ -214,3 +214,45 @@ test("a set whose purge was only partly done (not reported as purged) keeps its 
   assert.deepEqual(deleted, [], "c-1 is still in a surviving set, so its batch stays");
   assert.equal(result.purgedBatches, 0);
 });
+
+test("manual delete (owner request 2026-10-04): any status goes, including in_review and ones the sweep never touches; the document and SQL rows both lose it", async () => {
+  await upsertChannel({ channelId: CHANNEL, title: "Test", thumbnailUrl: null, uploadsPlaylistId: "UU_ret", connectedUserId: null });
+  const drafts = memoryDrafts();
+  await addSet(drafts, "m-in-review", ["pending", "rejected"], "in_review");
+  await addSet(drafts, "m-other", ["approved"], "approved");
+
+  const result = await core(drafts).deleteChangeSet({ channelId: CHANNEL, changeSetId: "m-in-review" });
+
+  assert.deepEqual(result, { changeSets: 1, changes: 2, provenance: 1 });
+  assert.equal(await getStoredChangeSet("m-in-review"), null);
+  assert.ok(await getStoredChangeSet("m-other"));
+  assert.deepEqual(Object.keys((await drafts.getDocument({ channelId: CHANNEL })).changeSets), ["m-other"]);
+});
+
+test("manual delete is refused while a real write carrying one of its changes is waiting or running, but a dry run does not block it", async () => {
+  await upsertChannel({ channelId: CHANNEL, title: "Test", thumbnailUrl: null, uploadsPlaylistId: "UU_ret", connectedUserId: null });
+  const drafts = memoryDrafts();
+  await addSet(drafts, "m-live", ["approved"], "approved");
+  await addSet(drafts, "m-dry", ["approved"], "approved");
+  await createBatchWithLedger({ id: "b-live", channelId: CHANNEL, concurrency: 1, dryRun: false, ledgerRows: [{ id: "b-live-r0", videoId: "v-m-live-0", changeIds: ["m-live-c0"] }] });
+  await createBatchWithLedger({ id: "b-dry", channelId: CHANNEL, concurrency: 1, dryRun: true, ledgerRows: [{ id: "b-dry-r0", videoId: "v-m-dry-0", changeIds: ["m-dry-c0"] }] });
+
+  await assert.rejects(
+    core(drafts).deleteChangeSet({ channelId: CHANNEL, changeSetId: "m-live" }),
+    (e: unknown) => (e as { code?: string }).code === "change_set_in_use"
+  );
+  assert.ok(await getStoredChangeSet("m-live"));
+  await core(drafts).deleteChangeSet({ channelId: CHANNEL, changeSetId: "m-dry" });
+  assert.equal(await getStoredChangeSet("m-dry"), null);
+});
+
+test("manual delete of an id that is not in this channel is a named 'not found' and deletes nothing", async () => {
+  await upsertChannel({ channelId: CHANNEL, title: "Test", thumbnailUrl: null, uploadsPlaylistId: "UU_ret", connectedUserId: null });
+  const drafts = memoryDrafts();
+  await addSet(drafts, "m-keep", ["pending"], "in_review");
+  await assert.rejects(
+    core(drafts).deleteChangeSet({ channelId: CHANNEL, changeSetId: "nope" }),
+    (e: unknown) => (e as { code?: string }).code === "change_set_not_found"
+  );
+  assert.ok(await getStoredChangeSet("m-keep"));
+});

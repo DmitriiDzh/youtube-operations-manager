@@ -37,6 +37,6 @@ export async function sweepSettledWork(now: Date = new Date()) {
 }
 
 export type { RetentionCore } from "./services";
-export { createRetentionCore } from "./services";
+export { createRetentionCore, ManualDeleteRefusedError } from "./services";
 export { planDraftPurge, planWriteLogPurge } from "./planner";
 export type * from "./contracts";

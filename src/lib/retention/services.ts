@@ -23,10 +23,43 @@ export type RetentionDependencies = {
   logger?: Logger;
 };
 
+/** Ledger rows in these states belong to a write that is running or whose outcome is unknown: its draft must not disappear under it. */
+const IN_FLIGHT_ROW_STATUSES = new Set(["PENDING", "AWAITING_EXECUTION", "APPLYING", "UNKNOWN"]);
+
+export class ManualDeleteRefusedError extends Error {
+  constructor(
+    readonly code: "change_set_not_found" | "change_set_in_use",
+    message: string
+  ) {
+    super(message);
+    this.name = "ManualDeleteRefusedError";
+  }
+}
+
 export function createRetentionCore(deps: RetentionDependencies) {
   const logger = () => deps.logger ?? createDefaultLogger();
 
   return {
+    /**
+     * The user deletes one change set by hand (owner request 2026-10-04), whatever its status -- the age and status rules above only govern the automatic
+     * sweep. Refused only while a real write that carries one of its changes is running or unresolved. Goes through the same purge as the sweep, so
+     * the deletion reaches the other devices exactly like an automatic one.
+     */
+    async deleteChangeSet(input: { channelId: string; changeSetId: string }): Promise<{ changeSets: number; changes: number; provenance: number }> {
+      const [changeSets, ledgerRows] = await Promise.all([deps.source.listChangeSets(input.channelId), deps.source.listLedgerRows(input.channelId)]);
+      const set = changeSets.find((candidate) => candidate.id === input.changeSetId);
+      if (!set) throw new ManualDeleteRefusedError("change_set_not_found", "Change set not found in this channel.");
+      const changeIds = new Set(set.changes.map((change) => change.id));
+      const busy = ledgerRows.some(
+        (row) => !row.batchDryRun && IN_FLIGHT_ROW_STATUSES.has(row.status) && row.changeIds.some((changeId) => changeIds.has(changeId))
+      );
+      if (busy) {
+        throw new ManualDeleteRefusedError("change_set_in_use", "A write that includes this change set is running or unresolved. Wait for it to finish (or resolve it in Batches), then delete.");
+      }
+      const purged = await deps.drafts.purgeChangeSets({ channelId: input.channelId, changeSetIds: [set.id] });
+      return { changeSets: purged.changeSets, changes: purged.changes, provenance: purged.provenance };
+    },
+
     /** One sweep for one channel: settled drafts first, then the write log of batches nothing depends on any more. Safe to repeat. */
     async sweepChannel(channelId: string, now: Date = new Date()): Promise<RetentionSweepResult> {
       const [draftDays, logDays] = await Promise.all([deps.settings.draftRetentionDays(), deps.settings.writeLogRetentionDays()]);
