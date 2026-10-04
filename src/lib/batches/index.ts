@@ -5,7 +5,7 @@ import { createBackupCore } from "@/lib/backup";
 import { createAuditCore } from "@/lib/audit";
 import { createBatchStoreAdapter, createChangeSetReaderAdapter, createChangeSetStoreAdapter, createIdGenerator } from "./adapters/store";
 import { createBatchYoutubeApiAdapter } from "./adapters/youtube-api";
-import { getChannelExpectedLanguages, getLiveWritesEnabled, rawSqlClient, splitPendingBatchForQuota } from "@/lib/db";
+import { applyConfirmedWriteToStoredVideo, getChannelExpectedLanguages, getLiveWritesEnabled, rawSqlClient, splitPendingBatchForQuota } from "@/lib/db";
 import { createQuotaGuardCore } from "@/lib/quota-guard";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createBatchServices } from "./services";
@@ -41,6 +41,7 @@ export function createBatchCore() {
       getExpectedDefaultLanguage: async (channelId) => (await getChannelExpectedLanguages(channelId)).defaultLanguage,
       getExpectedDefaultAudioLanguage: async (channelId) => (await getChannelExpectedLanguages(channelId)).defaultAudioLanguage,
     },
+    localMirror: { applyConfirmedWrite: (input) => applyConfirmedWriteToStoredVideo(input) },
     backup: createBackupCore(),
     audit: createAuditCore(),
     clock: createRealClock(),

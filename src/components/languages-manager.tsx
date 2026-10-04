@@ -1368,6 +1368,7 @@ export function LanguagesManager() {
                   changeSetId={openChangeSetId}
                   onClose={() => setOpenChangeSetId(null)}
                   onStatusChange={() => fetchChangeSets(channelId)}
+                  onWritten={() => void fetchOverview(channelId)}
                 />
               </div>
             )}
