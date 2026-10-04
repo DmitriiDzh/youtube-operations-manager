@@ -55,6 +55,13 @@ type Row = {
   addedAt: Date;
   lastAutoCollectedAt: Date | null;
   collectionClaimedAt: Date | null;
+  maxVideosPerChannel?: number | null;
+  publishedAfter?: string | null;
+  videosComplete?: number | null;
+  videosCompleteReason?: string | null;
+  videosNextPageToken?: string | null;
+  videosCapAtRun?: number | null;
+  videosPublishedAfterAtRun?: string | null;
 };
 
 type CollectionRunRow = {
@@ -64,6 +71,7 @@ type CollectionRunRow = {
   videosRequested: number | null;
   videosReturned: number | null;
   errorMessage: string | null;
+  feedFallback?: boolean;
   ranAt: Date;
 };
 
@@ -175,6 +183,8 @@ type VideoSnapshotRow = {
   commentCount: number | null;
   publishedAt: Date | null;
   title: string | null;
+  durationSeconds?: number | null;
+  liveBroadcastContent?: string | null;
   source: string;
   createdVia: string;
 };
@@ -193,6 +203,7 @@ function createFakeStore() {
   const trendEvidence: TrendEvidenceRow[] = [];
   const marketResearchRequests = new Map<string, MarketResearchRequestRow>();
   let quotaBudget: number | null = null;
+  let depthDefaults: { maxVideosPerChannel: number | null; publishedAfter: string | null } = { maxVideosPerChannel: null, publishedAfter: null };
   let nextId = 1;
   let failNextSuccessRunInsert = false;
   let failVideoSnapshotInsertAfter: number | null = null;
@@ -333,6 +344,8 @@ function createFakeStore() {
       commentCount?: number | null;
       publishedAt?: Date | null;
       title?: string | null;
+      durationSeconds?: number | null;
+      liveBroadcastContent?: string | null;
       source: string;
       createdVia: string;
     }) {
@@ -350,6 +363,8 @@ function createFakeStore() {
         commentCount: input.commentCount ?? null,
         publishedAt: input.publishedAt ?? null,
         title: input.title ?? null,
+        durationSeconds: input.durationSeconds ?? null,
+        liveBroadcastContent: input.liveBroadcastContent ?? null,
         source: input.source,
         createdVia: input.createdVia,
       });
@@ -371,6 +386,42 @@ function createFakeStore() {
     },
     async setMarketIntelligenceDailyQuotaBudgetUnits(units: number | null) {
       quotaBudget = units;
+    },
+    // Operator request 2026-10-04 -- collection depth.
+    async getMarketIntelligenceCollectionDepthDefaults() {
+      return { ...depthDefaults };
+    },
+    async setMarketIntelligenceCollectionDepthDefaults(input: { maxVideosPerChannel: number | null; publishedAfter: string | null }) {
+      depthDefaults = { ...input };
+    },
+    async setResearchChannelCollectionDepth(
+      researchChannelId: string,
+      input: { maxVideosPerChannel: number | null; publishedAfter: string | null }
+    ) {
+      const row = channels.get(researchChannelId);
+      if (row) {
+        row.maxVideosPerChannel = input.maxVideosPerChannel;
+        row.publishedAfter = input.publishedAfter;
+      }
+    },
+    async saveResearchChannelCollectionProgress(
+      researchChannelId: string,
+      input: {
+        complete: boolean;
+        completeReason: "exhausted" | "cap" | "date" | null;
+        nextPageToken: string | null;
+        capAtRun: number;
+        publishedAfterAtRun: string | null;
+      }
+    ) {
+      const row = channels.get(researchChannelId);
+      if (row) {
+        row.videosComplete = input.complete ? 1 : 0;
+        row.videosCompleteReason = input.completeReason;
+        row.videosNextPageToken = input.nextPageToken;
+        row.videosCapAtRun = input.capAtRun;
+        row.videosPublishedAfterAtRun = input.publishedAfterAtRun;
+      }
     },
     // Sums BOTH tables -- mirrors db.ts's own real implementation exactly (one shared budget
     // across collection and discovery, not two independent ones).
@@ -426,6 +477,7 @@ function createFakeStore() {
       videosRequested?: number | null;
       videosReturned?: number | null;
       errorMessage?: string | null;
+      feedFallback?: boolean;
       ranAt?: Date;
     }) {
       if (failNextSuccessRunInsert && input.status === "success") {
@@ -439,6 +491,7 @@ function createFakeStore() {
         videosRequested: input.videosRequested ?? null,
         videosReturned: input.videosReturned ?? null,
         errorMessage: input.errorMessage ?? null,
+        feedFallback: input.feedFallback ?? false,
         ranAt: input.ranAt ?? new Date(),
       });
     },
@@ -742,6 +795,13 @@ function createFixture(overrides?: {
   batchStats?: PublicVideoSnapshot[];
   playlistFails?: boolean;
   playlistTitles?: Record<string, string>;
+  /** Operator request 2026-10-04: a paged uploads playlist (page N has token `page-N`; the first page has none). Overrides `uploadsPlaylistVideoIds`. */
+  playlistPages?: string[][];
+  playlistPublishedAt?: Record<string, string>;
+  /** Calls with these page tokens throw (a rejected/expired cursor). */
+  rejectedPageTokens?: string[];
+  /** "batch": videos.batchGetStats answers for any requested ids; "list": batch throws and videos.list answers for any ids. */
+  autoStats?: "batch" | "list";
 }) {
   const store = createFakeStore();
   const feedCalls: unknown[] = [];
@@ -754,6 +814,8 @@ function createFixture(overrides?: {
   const searchCalls: unknown[] = [];
   const assertReadsAvailableCalls: undefined[] = [];
   let currentNow = overrides?.now ?? new Date();
+  let currentPlaylistPages = overrides?.playlistPages;
+  let currentRejectedTokens = overrides?.rejectedPageTokens;
   const services = createMarketIntelligenceServices({
     ...store,
     clock: { now: () => currentNow },
@@ -780,17 +842,28 @@ function createFixture(overrides?: {
               uploadsPlaylistId: null,
             };
       },
-      async listUploadsPlaylistFirstPage(args: { credentials: ResolvedCredentials; uploadsPlaylistId: string }) {
+      async listUploadsPlaylistPage(args: { credentials: ResolvedCredentials; uploadsPlaylistId: string; pageToken?: string }) {
         playlistCalls.push(args);
         if (overrides?.playlistFails) throw new Error("playlistItems failed (test)");
-        return (overrides?.uploadsPlaylistVideoIds ?? []).map((videoId) => ({
-          videoId,
-          title: overrides?.playlistTitles?.[videoId] ?? "",
-          publishedAt: null,
-        }));
+        if (args.pageToken && currentRejectedTokens?.includes(args.pageToken)) throw new Error("invalid pageToken (test)");
+        const pages = currentPlaylistPages ?? [overrides?.uploadsPlaylistVideoIds ?? []];
+        const index = args.pageToken ? Number(args.pageToken.replace("page-", "")) - 1 : 0;
+        const ids = pages[index];
+        if (!ids) throw new Error("no such page (test)");
+        return {
+          items: ids.map((videoId) => ({
+            videoId,
+            title: overrides?.playlistTitles?.[videoId] ?? "",
+            publishedAt: overrides?.playlistPublishedAt?.[videoId] ?? null,
+          })),
+          nextPageToken: index + 1 < pages.length ? `page-${index + 2}` : null,
+        };
       },
       async getPublicVideoSnapshots(args: { credentials: ResolvedCredentials; videoIds: string[] }) {
         videoSnapshotCalls.push(args);
+        if (overrides?.autoStats === "list") {
+          return args.videoIds.map((videoId) => ({ videoId, title: "", publishedAt: null, viewCount: 1, likeCount: 1, commentCount: 1 }));
+        }
         return overrides?.publicVideoSnapshots ?? [];
       },
       async getMostPopularMusicVideos(args: { credentials: ResolvedCredentials; regionCode: string }) {
@@ -806,6 +879,10 @@ function createFixture(overrides?: {
       },
       async getPublicVideoStatsBatch(args: { credentials: ResolvedCredentials; videoIds: string[] }) {
         batchStatsCalls.push(args);
+        if (overrides?.autoStats === "batch") {
+          return args.videoIds.map((videoId) => ({ videoId, title: "", publishedAt: null, viewCount: 1, likeCount: 1, commentCount: 1 }));
+        }
+        if (overrides?.autoStats === "list") throw new Error("batchGetStats unavailable (test)");
         if (!overrides?.batchStats) throw new Error("batchGetStats unavailable (test default)");
         return overrides.batchStats;
       },
@@ -836,6 +913,12 @@ function createFixture(overrides?: {
     musicChartCalls,
     setNow(date: Date) {
       currentNow = date;
+    },
+    setPlaylistPages(pages: string[][]) {
+      currentPlaylistPages = pages;
+    },
+    setRejectedPageTokens(tokens: string[]) {
+      currentRejectedTokens = tokens;
     },
   };
 }
@@ -1312,6 +1395,22 @@ test("AC-9G-04: the channel's most recent collection run drives missing_snapshot
   const result = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
   assert.ok(result.dataQualityFlags.includes("missing_snapshot"));
   assert.ok(result.dataQualityFlags.includes("quota_limited"));
+});
+
+test("operator request 2026-10-04: uniqueVideoCount counts distinct videoId among the snapshot rows (3 rows of 2 videos -> 2); none -> 0 and latestVideoSnapshotAt null", async () => {
+  const { services } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  const empty = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  assert.equal(empty.uniqueVideoCount, 0);
+  assert.equal(empty.latestVideoSnapshotAt, null);
+
+  for (const videoId of ["dQw4w9WgXcQ", "dQw4w9WgXcQ", "9bZkp7q19f0"]) {
+    await services.recordVideoSnapshot({ researchChannelId: VALID_CHANNEL_ID, videoId, viewCount: 10, source: "manual observation" }, { createdVia: "web_ui" });
+  }
+  const result = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  assert.equal(result.videoSnapshots.length, 3);
+  assert.equal(result.uniqueVideoCount, 2);
+  assert.equal(result.latestVideoSnapshotAt, result.videoSnapshots.map((v) => v.observedAt).sort().at(-1));
 });
 
 test("AC-9G-05: channelSnapshots/videoSnapshots/topicAssignments in the context round-trip exactly what the independent list actions return", async () => {
@@ -3610,6 +3709,37 @@ test("13.6: playlist + batchGetStats: 2 pool units, no videos.list; title/publis
   assert.equal(snap.source, "youtube.videos.batchGetStats");
 });
 
+test("operator request 2026-10-04: collection stores the raw duration (batchGetStats) and leaves live state NULL there; the videos.list fallback stores both; absent -> NULL, never 0", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const viaBatch = createFixture({
+    now,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    uploadsPlaylistVideoIds: ["v1", "v2"],
+    batchStats: [
+      { videoId: "v1", title: "", publishedAt: null, viewCount: 1, likeCount: null, commentCount: null, durationSeconds: 7200 },
+      { videoId: "v2", title: "", publishedAt: null, viewCount: 1, likeCount: null, commentCount: null },
+    ],
+  });
+  viaBatch.store.setQuotaBudget(100);
+  await viaBatch.services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await viaBatch.services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+  assert.deepEqual(viaBatch.store.videoSnapshots.map((v) => [v.videoId, v.durationSeconds, v.liveBroadcastContent]), [["v1", 7200, null], ["v2", null, null]]);
+
+  const viaList = createFixture({
+    now,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    uploadsPlaylistVideoIds: ["v1"],
+    publicVideoSnapshots: [{ videoId: "v1", title: "V1", publishedAt: null, viewCount: 7, likeCount: null, commentCount: null, durationSeconds: 59, liveBroadcastContent: "none" }],
+  });
+  viaList.store.setQuotaBudget(100);
+  await viaList.services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await viaList.services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+  assert.deepEqual(viaList.store.videoSnapshots.map((v) => [v.durationSeconds, v.liveBroadcastContent]), [[59, "none"]]);
+  const context = await viaList.services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  assert.equal(context.videoSnapshots[0].durationSeconds, 59);
+  assert.equal(context.videoSnapshots[0].liveBroadcastContent, "none");
+});
+
 test("13.6: if batchGetStats fails, statistics come from videos.list (1 more unit) -- nothing is lost", async () => {
   const now = new Date("2026-09-27T12:00:00.000Z");
   const { store, services, videoSnapshotCalls } = createFixture({
@@ -3787,4 +3917,440 @@ test("P13: manual evidence/snapshot entries refuse a source reserved for API-col
   }
   // An ordinary free-text source is still accepted.
   await services.recordEvidence({ researchChannelId: VALID_CHANNEL_ID, observation: "n", source: "manual observation" }, { createdVia: "web_ui" });
+});
+
+// ---------------------------------------------------------------------------
+// Operator request 2026-10-04 -- paged collection deeper than 50 videos. Acceptance criteria, derived from the request (not from the
+// implementation); every number below was worked out by hand:
+//  * cost of a collection = 1 channels.list + 1 per playlist page [+1 per page whose batch stats failed -> videos.list];
+//  * first collection follows nextPageToken until the cap (distinct videos stored) or the publishedAfter date;
+//  * a later collection stops at the first page holding only stored videos, or at the cap;
+//  * a budget that cannot cover the whole backfill ends it early with a saved cursor; the next stale run resumes there.
+// ---------------------------------------------------------------------------
+
+const RUN_INPUT = { credentialRef: { userId: "u1" } };
+const T0 = new Date("2026-10-04T12:00:00.000Z");
+const DAY_MS = 25 * 60 * 60 * 1000;
+
+function ids(prefix: string, from: number, to: number): string[] {
+  const out: string[] = [];
+  for (let i = from; i <= to; i++) out.push(`${prefix}${i}`);
+  return out;
+}
+const PAGE_A = ids("a", 1, 50);
+const PAGE_B = ids("b", 1, 50);
+const PAGE_C = ids("c", 1, 50);
+const PAGE_D = ids("d", 1, 50);
+
+function distinctStored(store: { videoSnapshots: { videoId: string }[] }): number {
+  return new Set(store.videoSnapshots.map((row) => row.videoId)).size;
+}
+
+test("depth: cap 120 over a 3-page playlist fetches 3 pages, stores exactly 120 distinct videos (50+50+20), costs 1+3 = 4 units, stats via batch (0 pool units)", async () => {
+  const { store, services, playlistCalls, batchStatsCalls, videoSnapshotCalls } = createFixture({
+    now: T0,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    playlistPages: [PAGE_A, PAGE_B, PAGE_C],
+    autoStats: "batch",
+  });
+  store.setQuotaBudget(1000);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 120, publishedAfter: null });
+
+  const result = await services.runCollectionIfStale(RUN_INPUT);
+
+  assert.deepEqual(result, { attempted: 1, succeeded: 1, failed: 0, quotaLimited: 0, unitsSpent: 4 });
+  assert.equal(playlistCalls.length, 3);
+  assert.equal(distinctStored(store), 120);
+  assert.deepEqual(batchStatsCalls.map((c) => (c as { videoIds: string[] }).videoIds.length), [50, 50, 20]);
+  assert.equal(videoSnapshotCalls.length, 0, "no videos.list fallback");
+  const row = store.channels.get(VALID_CHANNEL_ID)!;
+  assert.deepEqual(
+    [row.videosComplete, row.videosCompleteReason, row.videosNextPageToken, row.videosCapAtRun, row.videosPublishedAfterAtRun],
+    [1, "cap", null, 120, null]
+  );
+  assert.equal(store.collectionRuns[0].unitsSpent, 4);
+  assert.equal(store.collectionRuns[0].videosRequested, 120);
+  assert.equal(store.collectionRuns[0].videosReturned, 120);
+});
+
+test("depth: the cap decides how many pages are read -- cap 100 over the same playlist stops after page 2 (1+2 = 3 units)", async () => {
+  const { store, services, playlistCalls } = createFixture({ now: T0, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO, playlistPages: [PAGE_A, PAGE_B, PAGE_C], autoStats: "batch" });
+  store.setQuotaBudget(1000);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 100, publishedAfter: null });
+  const result = await services.runCollectionIfStale(RUN_INPUT);
+  assert.equal(result.unitsSpent, 3);
+  assert.equal(playlistCalls.length, 2);
+  assert.equal(distinctStored(store), 100);
+});
+
+test("depth: steady state -- a second run when page 1 holds only stored videos reads exactly 1 page (2 units)", async () => {
+  const { store, services, playlistCalls, setNow } = createFixture({ now: T0, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO, playlistPages: [PAGE_A, PAGE_B, PAGE_C], autoStats: "batch" });
+  store.setQuotaBudget(1000);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 120, publishedAfter: null });
+  await services.runCollectionIfStale(RUN_INPUT);
+  playlistCalls.length = 0;
+
+  setNow(new Date(T0.getTime() + DAY_MS));
+  const second = await services.runCollectionIfStale(RUN_INPUT);
+
+  assert.equal(second.unitsSpent, 2);
+  assert.equal(playlistCalls.length, 1);
+  assert.equal(distinctStored(store), 120, "nothing new was stored");
+  assert.equal(store.videoSnapshots.length, 170, "page 1's 50 videos were re-observed (append-only), as before this feature");
+});
+
+test("depth: steady state -- page 1 with 5 new videos reads page 2 too; page 2 holds only stored videos, so paging stops there (2 pages, 3 units)", async () => {
+  const { store, services, playlistCalls, batchStatsCalls, setNow, setPlaylistPages } = createFixture({
+    now: T0,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    playlistPages: [PAGE_A, PAGE_B],
+    autoStats: "batch",
+  });
+  store.setQuotaBudget(1000);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 120, publishedAfter: null });
+  const first = await services.runCollectionIfStale(RUN_INPUT);
+  assert.equal(first.unitsSpent, 3, "100 videos: 2 pages, the playlist ends -> exhausted");
+  assert.equal(store.channels.get(VALID_CHANNEL_ID)!.videosCompleteReason, "exhausted");
+
+  // 5 uploads since: page 1 = 5 new + a1..a45; page 2 = a46..a50 + b1..b45; page 3 = b46..b50 (never needed).
+  setPlaylistPages([[...ids("n", 1, 5), ...ids("a", 1, 45)], [...ids("a", 46, 50), ...ids("b", 1, 45)], ids("b", 46, 50)]);
+  playlistCalls.length = 0;
+  batchStatsCalls.length = 0;
+  setNow(new Date(T0.getTime() + DAY_MS));
+  const second = await services.runCollectionIfStale(RUN_INPUT);
+
+  assert.equal(second.unitsSpent, 3);
+  assert.equal(playlistCalls.length, 2);
+  assert.equal(distinctStored(store), 105);
+  assert.equal(batchStatsCalls.length, 1, "the all-stored page that ends the walk gets no statistics call");
+  assert.equal((batchStatsCalls[0] as { videoIds: string[] }).videoIds.length, 50);
+});
+
+test("depth: with the default depth (nothing set) one page is read as before, even when a new upload appears -- 2 units, state complete at the cap of 50", async () => {
+  const { store, services, playlistCalls, setNow, setPlaylistPages } = createFixture({
+    now: T0,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    playlistPages: [PAGE_A, PAGE_B, PAGE_C],
+    autoStats: "batch",
+  });
+  store.setQuotaBudget(1000);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  const first = await services.runCollectionIfStale(RUN_INPUT);
+  assert.equal(first.unitsSpent, 2);
+  assert.equal(playlistCalls.length, 1);
+  const row = store.channels.get(VALID_CHANNEL_ID)!;
+  assert.deepEqual([row.videosComplete, row.videosCompleteReason, row.videosCapAtRun], [1, "cap", 50]);
+
+  setPlaylistPages([["new1", ...ids("a", 1, 49)], [...ids("a", 50, 50), ...ids("b", 1, 49)]]);
+  playlistCalls.length = 0;
+  setNow(new Date(T0.getTime() + DAY_MS));
+  const second = await services.runCollectionIfStale(RUN_INPUT);
+  assert.equal(second.unitsSpent, 2, "the stored count (50) already reaches the cap of 50, so page 2 is not read");
+  assert.equal(playlistCalls.length, 1);
+  assert.equal(distinctStored(store), 51, "the new upload itself is still captured");
+});
+
+test("depth: a budget too small for the whole backfill stops early with a saved cursor; the next stale run resumes from it and finishes", async () => {
+  const { store, services, playlistCalls, setNow } = createFixture({
+    now: T0,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    playlistPages: [PAGE_A, PAGE_B, PAGE_C, PAGE_D],
+    autoStats: "batch",
+  });
+  store.setQuotaBudget(5);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 200, publishedAfter: null });
+
+  // Budget 5: channels.list (4 left) + page 1 (3 left); page 2 needs 2 spare (3-2>=0) -> 2 left; page 3 (2-2>=0) -> 1 left; page 4 needs 2 > 1: stop.
+  const first = await services.runCollectionIfStale(RUN_INPUT);
+  assert.equal(first.unitsSpent, 4);
+  assert.equal(first.succeeded, 1);
+  assert.equal(playlistCalls.length, 3);
+  assert.equal(distinctStored(store), 150);
+  const afterFirst = store.channels.get(VALID_CHANNEL_ID)!;
+  assert.deepEqual([afterFirst.videosComplete, afterFirst.videosNextPageToken], [0, "page-4"]);
+  assert.notEqual(afterFirst.lastAutoCollectedAt, null, "a budget-limited backfill is a recorded success; the next stale run (24h) resumes it");
+
+  playlistCalls.length = 0;
+  setNow(new Date(T0.getTime() + DAY_MS));
+  const second = await services.runCollectionIfStale(RUN_INPUT);
+  // channels.list + page 1 (refresh) + the cursor page 4 = 3 units; 150 + 50 = 200 = the cap.
+  assert.equal(second.unitsSpent, 3);
+  assert.deepEqual(playlistCalls.map((c) => (c as { pageToken?: string }).pageToken ?? null), [null, "page-4"]);
+  assert.equal(distinctStored(store), 200);
+  const done = store.channels.get(VALID_CHANNEL_ID)!;
+  assert.deepEqual([done.videosComplete, done.videosCompleteReason, done.videosNextPageToken, done.videosCapAtRun], [1, "cap", null, 200]);
+});
+
+test("depth: a rejected cursor restarts from page 1's own next page -- stored pages are walked without new snapshots, page 1 is still refreshed", async () => {
+  const { store, services, setNow, setRejectedPageTokens } = createFixture({
+    now: T0,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    playlistPages: [PAGE_A, PAGE_B, PAGE_C, PAGE_D],
+    autoStats: "batch",
+  });
+  store.setQuotaBudget(5);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 200, publishedAfter: null });
+  await services.runCollectionIfStale(RUN_INPUT); // 150 stored, cursor page-4 (see the previous test)
+  assert.equal(store.videoSnapshots.length, 150);
+
+  setRejectedPageTokens(["page-4"]);
+  setNow(new Date(T0.getTime() + DAY_MS));
+  // channels.list (4 left), page 1 (3), cursor page-4 rejected but charged (2), restart: page 2 (1) = all stored -> no snapshots; page 3 needs 2 > 1: stop.
+  const second = await services.runCollectionIfStale(RUN_INPUT);
+  assert.equal(second.unitsSpent, 4);
+  assert.equal(second.failed, 0);
+  assert.equal(distinctStored(store), 150, "nothing new yet");
+  assert.equal(store.videoSnapshots.length, 200, "only page 1's 50 videos were re-observed; the stored videos of page 2 were not duplicated");
+  assert.equal(store.videoSnapshots.filter((row) => row.videoId.startsWith("b")).length, 50, "each b-video has exactly one snapshot");
+  const row = store.channels.get(VALID_CHANNEL_ID)!;
+  assert.deepEqual([row.videosComplete, row.videosNextPageToken], [0, "page-3"]);
+});
+
+test("depth: publishedAfter stops paging at the first older item; videos from that item on are not stored, a video exactly on the date is", async () => {
+  const dates: Record<string, string> = {};
+  for (const id of PAGE_A) dates[id] = "2026-04-01T00:00:00Z";
+  for (const id of ids("b", 1, 29)) dates[id] = "2026-03-10T00:00:00Z";
+  dates.b30 = "2026-03-01T00:00:00Z"; // exactly on the date: kept
+  for (const id of ids("b", 31, 50)) dates[id] = "2026-02-01T00:00:00Z";
+  const { store, services, playlistCalls } = createFixture({
+    now: T0,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    playlistPages: [PAGE_A, PAGE_B, PAGE_C],
+    playlistPublishedAt: dates,
+    autoStats: "batch",
+  });
+  store.setQuotaBudget(1000);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 500, publishedAfter: "2026-03-01" });
+
+  const result = await services.runCollectionIfStale(RUN_INPUT);
+
+  assert.equal(result.unitsSpent, 3, "channels.list + pages 1 and 2; page 3 is never read");
+  assert.equal(playlistCalls.length, 2);
+  assert.equal(distinctStored(store), 80, "50 from page 1 + b1..b30");
+  assert.equal(store.videoSnapshots.some((row) => row.videoId === "b31"), false);
+  const row = store.channels.get(VALID_CHANNEL_ID)!;
+  assert.deepEqual([row.videosComplete, row.videosCompleteReason, row.videosPublishedAfterAtRun], [1, "date", "2026-03-01"]);
+});
+
+test("depth: raising the cap after a collection that stopped on the cap makes the next stale run a backfill again (walks stored pages, stores only the new ones)", async () => {
+  const { store, services, playlistCalls, batchStatsCalls, setNow } = createFixture({
+    now: T0,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    playlistPages: [PAGE_A, PAGE_B, PAGE_C, PAGE_D],
+    autoStats: "batch",
+  });
+  store.setQuotaBudget(1000);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 100, publishedAfter: null });
+  await services.runCollectionIfStale(RUN_INPUT);
+  assert.equal(distinctStored(store), 100);
+  assert.equal((await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID })).collectionProgress.complete, true);
+
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 150, publishedAfter: null });
+  assert.equal((await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID })).collectionProgress.complete, false, "the raised cap needs a new backfill");
+
+  playlistCalls.length = 0;
+  batchStatsCalls.length = 0;
+  setNow(new Date(T0.getTime() + DAY_MS));
+  const result = await services.runCollectionIfStale(RUN_INPUT);
+
+  // channels.list + page 1 (refresh) + page 2 (stored, walked) + page 3 (50 new -> 150) = 4 units.
+  assert.equal(result.unitsSpent, 4);
+  assert.equal(playlistCalls.length, 3);
+  assert.deepEqual(batchStatsCalls.map((c) => (c as { videoIds: string[] }).videoIds.length), [50, 50]);
+  assert.equal(distinctStored(store), 150);
+  const row = store.channels.get(VALID_CHANNEL_ID)!;
+  assert.deepEqual([row.videosComplete, row.videosCompleteReason, row.videosCapAtRun], [1, "cap", 150]);
+});
+
+test("depth: a lowered cap does not trigger a new backfill", async () => {
+  const { store, services, playlistCalls, setNow } = createFixture({ now: T0, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO, playlistPages: [PAGE_A, PAGE_B, PAGE_C], autoStats: "batch" });
+  store.setQuotaBudget(1000);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 100, publishedAfter: null });
+  await services.runCollectionIfStale(RUN_INPUT);
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 60, publishedAfter: null });
+  assert.equal((await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID })).collectionProgress.complete, true);
+  playlistCalls.length = 0;
+  setNow(new Date(T0.getTime() + DAY_MS));
+  const result = await services.runCollectionIfStale(RUN_INPUT);
+  assert.equal(result.unitsSpent, 2);
+  assert.equal(playlistCalls.length, 1);
+});
+
+test("depth: each page whose batch stats fail costs one more unit (videos.list per page, never pooled) -- cap 100 = 1 + 2 + 2 = 5 units", async () => {
+  const { store, services, videoSnapshotCalls } = createFixture({ now: T0, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO, playlistPages: [PAGE_A, PAGE_B, PAGE_C], autoStats: "list" });
+  store.setQuotaBudget(1000);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 100, publishedAfter: null });
+  const result = await services.runCollectionIfStale(RUN_INPUT);
+  assert.equal(result.unitsSpent, 5);
+  assert.deepEqual(videoSnapshotCalls.map((c) => (c as { videoIds: string[] }).videoIds.length), [50, 50], "one videos.list call per page, each <= 50 ids");
+  assert.equal(store.collectionRuns[0].unitsSpent, 5, "the ledger row matches the spend");
+});
+
+test("depth: a failure on a later page records the run as failed with its real spend and keeps the cursor of the pages already stored", async () => {
+  const { store, services, setRejectedPageTokens } = createFixture({ now: T0, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO, playlistPages: [PAGE_A, PAGE_B], autoStats: "batch" });
+  store.setQuotaBudget(1000);
+  setRejectedPageTokens(["page-2"]);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 100, publishedAfter: null });
+
+  const result = await services.runCollectionIfStale(RUN_INPUT);
+
+  assert.deepEqual(result, { attempted: 1, succeeded: 0, failed: 1, quotaLimited: 0, unitsSpent: 3 });
+  assert.equal(store.collectionRuns.length, 1);
+  assert.equal(store.collectionRuns[0].status, "failed");
+  assert.equal(store.collectionRuns[0].unitsSpent, 3, "channels.list + page 1 + the failed page 2 call");
+  assert.equal(store.collectionRuns[0].videosReturned, 50);
+  const row = store.channels.get(VALID_CHANNEL_ID)!;
+  assert.deepEqual([row.videosComplete, row.videosNextPageToken], [0, "page-2"]);
+  assert.equal(row.lastAutoCollectedAt, null, "a failed channel is not marked collected");
+});
+
+test("depth: a deep backfill does not starve the other watched channels -- the remaining budget keeps 3 units for each channel still waiting", async () => {
+  const { store, services } = createFixture({
+    now: T0,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    playlistPages: [PAGE_A, PAGE_B, PAGE_C, PAGE_D],
+    autoStats: "batch",
+    getPublicChannelSnapshotImpl: async (args) => ({ ...FULL_SNAPSHOT_WITH_VIDEO, channelId: args.channelId }),
+  });
+  store.setQuotaBudget(8);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.addToWatchlist({ channelId: OTHER_VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  for (const channelId of [VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID]) {
+    await services.setChannelCollectionDepth({ channelId, maxVideosPerChannel: 200, publishedAfter: null });
+  }
+
+  // Channel 1: channels.list (7 left), page 1 (6); page 2 needs 6-2 >= 3 (one channel waits) -> 5; page 3: 5-2 >= 3 -> 4; page 4: 4-2 = 2 < 3 -> stop. 4 units.
+  // Channel 2: starts with 4 (>= 3): channels.list (3), page 1 (2); page 2: 2-2 >= 0 -> 1; page 3: 1-2 < 0 -> stop. 3 units.
+  const result = await services.runCollectionIfStale(RUN_INPUT);
+
+  assert.deepEqual(result, { attempted: 2, succeeded: 2, failed: 0, quotaLimited: 0, unitsSpent: 7 });
+  assert.equal(store.channels.get(VALID_CHANNEL_ID)!.videosNextPageToken, "page-4");
+  assert.equal(store.channels.get(OTHER_VALID_CHANNEL_ID)!.videosNextPageToken, "page-3");
+});
+
+test("depth: the RSS fallback marks the run (feed_fallback_used), changes no deep-collection state, and a normal run carries no such flag", async () => {
+  const feed = createFixture({
+    now: T0,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    playlistFails: true,
+    feedVideos: [{ videoId: "f1", title: "F", publishedAt: null }],
+    autoStats: "batch",
+  });
+  feed.store.setQuotaBudget(100);
+  await feed.services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await feed.services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 200, publishedAfter: null });
+  await feed.services.runCollectionIfStale(RUN_INPUT);
+  assert.equal(feed.store.collectionRuns[0].feedFallback, true);
+  assert.equal(feed.store.channels.get(VALID_CHANNEL_ID)!.videosComplete ?? null, null, "the feed is no deep collection: state untouched");
+  const flagged = await feed.services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  assert.ok(flagged.dataQualityFlags.includes("feed_fallback_used"));
+  assert.ok((await feed.services.getMarketOverview()).collectionWarnings[0].dataQualityFlags.includes("feed_fallback_used"));
+
+  const normal = createFixture({ now: T0, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO, playlistPages: [PAGE_A], autoStats: "batch" });
+  normal.store.setQuotaBudget(100);
+  await normal.services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await normal.services.runCollectionIfStale(RUN_INPUT);
+  assert.equal(normal.store.collectionRuns[0].feedFallback, false);
+  assert.equal((await normal.services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID })).dataQualityFlags.includes("feed_fallback_used"), false);
+});
+
+test("depth: getWatchlistEntryContext reports the effective depth, stored count, completion and cost estimates", async () => {
+  const { store, services } = createFixture({ now: T0, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO, playlistPages: [PAGE_A, PAGE_B, PAGE_C], autoStats: "batch" });
+  store.setQuotaBudget(1000);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+
+  // Nothing collected, nothing set: 50 / no date; first collection = 1 + 1 page = 2 units, worst case 1 + 2*1 = 3.
+  assert.deepEqual((await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID })).collectionProgress, {
+    maxVideosPerChannel: 50,
+    maxVideosPerChannelOverride: null,
+    publishedAfter: null,
+    publishedAfterOverride: null,
+    videosStored: 0,
+    complete: false,
+    completeReason: null,
+    estimatedFirstCollectionUnits: 2,
+    estimatedFirstCollectionWorstCaseUnits: 3,
+  });
+
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 120, publishedAfter: "2026-01-15" });
+  await services.runCollectionIfStale(RUN_INPUT);
+  // 120 videos = 3 pages: 1 + 3 = 4 units, worst case 1 + 6 = 7.
+  assert.deepEqual((await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID })).collectionProgress, {
+    maxVideosPerChannel: 120,
+    maxVideosPerChannelOverride: 120,
+    publishedAfter: "2026-01-15",
+    publishedAfterOverride: "2026-01-15",
+    videosStored: 120,
+    complete: true,
+    completeReason: "cap",
+    estimatedFirstCollectionUnits: 4,
+    estimatedFirstCollectionWorstCaseUnits: 7,
+  });
+});
+
+test("depth: the global default applies to a channel without an override; a channel override wins; clearing the override falls back", async () => {
+  const { store, services, playlistCalls } = createFixture({ now: T0, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO, playlistPages: [PAGE_A, PAGE_B, PAGE_C], autoStats: "batch" });
+  store.setQuotaBudget(1000);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.setCollectionDepthDefaults({ maxVideosPerChannel: 100, publishedAfter: null });
+  assert.deepEqual(await services.getCollectionDepthDefaults(), {
+    maxVideosPerChannel: 100,
+    publishedAfter: null,
+    effectiveMaxVideosPerChannel: 100,
+    estimatedFirstCollectionUnits: 3,
+    estimatedFirstCollectionWorstCaseUnits: 5,
+  });
+
+  await services.runCollectionIfStale(RUN_INPUT);
+  assert.equal(playlistCalls.length, 2, "global default 100 -> 2 pages");
+
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 50, publishedAfter: null });
+  assert.equal((await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID })).collectionProgress.maxVideosPerChannel, 50);
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: null, publishedAfter: null });
+  assert.equal((await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID })).collectionProgress.maxVideosPerChannel, 100);
+  await services.setCollectionDepthDefaults({ maxVideosPerChannel: null, publishedAfter: null });
+  assert.equal((await services.getCollectionDepthDefaults()).effectiveMaxVideosPerChannel, 50, "unset = today's 50");
+});
+
+test("depth: settings validation -- integer 1..2000 and a real YYYY-MM-DD date; unknown channel refused", async () => {
+  const { services } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  for (const bad of [0, -5, 2001, 1.5]) {
+    await assert.rejects(() => services.setCollectionDepthDefaults({ maxVideosPerChannel: bad, publishedAfter: null }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  }
+  for (const badDate of ["2026-02-30", "2026/01/01", "01-02-2026", "2026-1-5", ""]) {
+    await assert.rejects(() => services.setCollectionDepthDefaults({ maxVideosPerChannel: null, publishedAfter: badDate }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  }
+  await services.setCollectionDepthDefaults({ maxVideosPerChannel: 1, publishedAfter: "2024-02-29" });
+  await services.setCollectionDepthDefaults({ maxVideosPerChannel: 2000, publishedAfter: null });
+  await assert.rejects(
+    () => services.setChannelCollectionDepth({ channelId: OTHER_VALID_CHANNEL_ID, maxVideosPerChannel: 100, publishedAfter: null }),
+    (e: unknown) => isDomainError(e) && e.code === "RESEARCH_CHANNEL_NOT_AVAILABLE"
+  );
+});
+
+test("depth: getChannelCollectionProgress matches the context's collectionProgress and refuses a channel that is not watched", async () => {
+  const { store, services } = createFixture({ now: T0, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO, playlistPages: [PAGE_A, PAGE_B], autoStats: "batch" });
+  store.setQuotaBudget(1000);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 100, publishedAfter: null });
+  await services.runCollectionIfStale(RUN_INPUT);
+  const progress = await services.getChannelCollectionProgress({ channelId: VALID_CHANNEL_ID });
+  assert.deepEqual(progress, (await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID })).collectionProgress);
+  assert.equal(progress.videosStored, 100);
+  await assert.rejects(
+    () => services.getChannelCollectionProgress({ channelId: OTHER_VALID_CHANNEL_ID }),
+    (e: unknown) => isDomainError(e) && e.code === "RESEARCH_CHANNEL_NOT_AVAILABLE"
+  );
 });

@@ -32,6 +32,8 @@ function context(id: string, handle: string | null, videos: number): WatchlistCo
       source: "youtube.videos.list",
     })),
     dataQualityFlags: [],
+    // Default depth (cap 50, no date); a channel with 50 stored videos has reached the cap.
+    collectionProgress: { maxVideosPerChannel: 50, publishedAfter: null, videosStored: videos, complete: videos >= 50, completeReason: videos >= 50 ? "cap" : null },
   };
 }
 
@@ -92,7 +94,7 @@ test("AC-RE-1 (the agent's retest): one watchlist channel with 1 channel snapsho
   for (const file of result.files) assert.ok(file.path.startsWith(result.exportsDir + path.sep));
   const lines = (await readFile(byDataset.research_video_snapshots.path, "utf8")).split("\r\n");
   assert.equal(lines.length, 50 + 2); // header + 50 + trailing empty after the last CRLF
-  assert.equal(lines[0], "channel,channelId,videoId,publishedAt,observedAt,viewCount,likeCount,commentCount,title");
+  assert.equal(lines[0], "channel,channelId,videoId,publishedAt,observedAt,viewCount,likeCount,commentCount,title,durationSeconds,liveBroadcastContent");
 });
 
 test("AC-RE-2: CSV content is exactly the hand-written expectation (header order, hostile title guarded and quoted), file names carry no title/handle", async () => {
@@ -102,14 +104,14 @@ test("AC-RE-2: CSV content is exactly the hand-written expectation (header order
   const channelFile = result.files.find((f) => f.dataset === "research_channel_snapshots")!;
   assert.equal(
     await readFile(channelFile.path, "utf8"),
-    "channel,channelId,observedAt,subscriberCount,viewCount,videoCount,hiddenSubscriberCount,videoSnapshotCount,evidenceCount,dataQualityFlags\r\n" +
-      "@TheNeiro,UCneiro,2026-10-02T10:00:00.000Z,1200,90000,40,false,1,2,\r\n"
+    "channel,channelId,observedAt,subscriberCount,viewCount,videoCount,hiddenSubscriberCount,videoSnapshotCount,evidenceCount,dataQualityFlags,uniqueVideoCount,latestVideoSnapshotAt\r\n" +
+      "@TheNeiro,UCneiro,2026-10-02T10:00:00.000Z,1200,90000,40,false,1,2,,1,2026-10-02T10:00:00.000Z\r\n"
   );
   const videoFile = result.files.find((f) => f.dataset === "research_video_snapshots")!;
   assert.equal(
     await readFile(videoFile.path, "utf8"),
-    "channel,channelId,videoId,publishedAt,observedAt,viewCount,likeCount,commentCount,title\r\n" +
-      "@TheNeiro,UCneiro,UCneiro-v0,2026-09-20T08:00:00.000Z,2026-10-02T10:00:00.000Z,100,1,0,\"'=cmd|\"\"x\"\", y\"\r\n"
+    "channel,channelId,videoId,publishedAt,observedAt,viewCount,likeCount,commentCount,title,durationSeconds,liveBroadcastContent\r\n" +
+      "@TheNeiro,UCneiro,UCneiro-v0,2026-09-20T08:00:00.000Z,2026-10-02T10:00:00.000Z,100,1,0,\"'=cmd|\"\"x\"\", y\",,\r\n"
   );
   assert.equal(path.basename(videoFile.path), "research-video-snapshots-20261004T071530Z-ab12.csv");
 });
@@ -135,7 +137,7 @@ test("AC-RE-4: our own channel comes out with the same columns as the competitor
   assert.equal((await readFile(own.path, "utf8")).split("\r\n")[0], (await readFile(comp.path, "utf8")).split("\r\n")[0]);
   assert.equal(
     (await readFile(own.path, "utf8")).split("\r\n")[1],
-    "Rural Japan Music,UCown,own1,2026-09-01T10:00:00.000Z,2026-10-03T12:00:00.000Z,7,1,0,Mine"
+    "Rural Japan Music,UCown,own1,2026-09-01T10:00:00.000Z,2026-10-03T12:00:00.000Z,7,1,0,Mine,,"
   );
 });
 
@@ -261,9 +263,13 @@ test("AC-RE-14 (bulk read): pages the visible watchlist, newest snapshot + count
     latestChannelSnapshot: { observedAt: "2026-10-02T10:00:00.000Z", subscriberCount: 1200, viewCount: 90000, videoCount: 40, hiddenSubscriberCount: false },
     channelSnapshotCount: 1,
     videoSnapshotCount: 50,
+    uniqueVideoCount: 50,
+    latestVideoSnapshotAt: "2026-10-02T10:00:00.000Z",
     evidenceCount: 2,
     dataQualityFlags: [],
+    collection: { maxVideosPerChannel: 50, publishedAfter: null, videosStored: 50, complete: true, completeReason: "cap" },
   });
+  assert.deepEqual(first.channels[1].collection, { maxVideosPerChannel: 50, publishedAfter: null, videosStored: 3, complete: false, completeReason: null });
   const second = await services.listResearchOverview({ limit: 2, offset: 2 });
   assert.deepEqual(second.channels.map((c) => c.channelId), ["UCthird"]);
   assert.equal(second.nextOffset, null);

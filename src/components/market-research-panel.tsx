@@ -2,6 +2,7 @@
 
 import { FeatureErrorBoundary } from "./feature-error-boundary";
 import { MarketChannelAssignment } from "./market-channel-assignment";
+import { MarketChannelCollectionDepth } from "./market-channel-collection-depth";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { InfoTooltip } from "./info-tooltip";
 import { ConfirmDialog } from "./confirm-dialog";
@@ -477,6 +478,10 @@ export function MarketResearchPanel() {
                       </p>
                     </div>
                   ))}
+
+                <FeatureErrorBoundary label="Collection depth">
+                  <MarketChannelCollectionDepth channelId={c.channelId} />
+                </FeatureErrorBoundary>
 
                 <div className="rounded-lg border border-zinc-800 p-3">
                   <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-zinc-300">

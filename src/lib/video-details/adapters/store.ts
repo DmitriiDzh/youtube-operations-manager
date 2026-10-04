@@ -49,6 +49,8 @@ export function createVideoDetailsLocalCacheAdapter() {
             commentCount: current.commentCount,
             likeCount: current.likeCount,
             durationSeconds: current.durationSeconds,
+            // A targeted patch must not erase what the last sync stored (the upsert writes NULL for an omitted field).
+            liveBroadcastContent: current.liveBroadcastContent,
             // No `?? current.publishAt` fallback (unlike `privacyStatus` above, whose real-world
             // null case is negligible): `args.after.publishAt` is a fresh, authoritative read
             // straight from YouTube (adapters/youtube-api.ts), and `null` there is a genuine,

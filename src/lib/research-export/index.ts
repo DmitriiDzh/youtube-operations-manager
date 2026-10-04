@@ -44,6 +44,13 @@ export function createResearchExportCore() {
         channelSnapshots: context.channelSnapshots,
         videoSnapshots: context.videoSnapshots,
         dataQualityFlags: context.dataQualityFlags,
+        collectionProgress: {
+          maxVideosPerChannel: context.collectionProgress.maxVideosPerChannel,
+          publishedAfter: context.collectionProgress.publishedAfter,
+          videosStored: context.collectionProgress.videosStored,
+          complete: context.collectionProgress.complete,
+          completeReason: context.collectionProgress.completeReason,
+        },
       };
     },
     async getOwnChannel(channelId) {
@@ -59,6 +66,8 @@ export function createResearchExportCore() {
         viewCount: video.viewCount,
         likeCount: video.likeCount,
         commentCount: video.commentCount,
+        durationSeconds: video.durationSeconds,
+        liveBroadcastContent: video.liveBroadcastContent ?? null,
         lastSyncedAt: video.lastSyncedAt,
       }));
     },

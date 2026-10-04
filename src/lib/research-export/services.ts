@@ -13,7 +13,7 @@ import {
   type WatchlistContextForExport,
 } from "./contracts";
 import { toCsv, type CsvCell } from "./csv";
-import { buildChannelSnapshotRows, buildOwnVideoRows, buildVideoSnapshotRows, computeResearchFileExpiry } from "./rows";
+import { buildChannelSnapshotRows, buildOwnVideoRows, buildVideoSnapshotRows, computeResearchFileExpiry, summarizeVideoSnapshots } from "./rows";
 import { exportResearchDataInputSchema, listResearchOverviewInputSchema, parseWithSchema } from "./schemas";
 
 export type WorkspacePathValidationResult = { ok: true } | { ok: false; reason: string };
@@ -243,8 +243,10 @@ export function createResearchExportServices(deps: ResearchExportDeps) {
           },
           channelSnapshotCount: context.channelSnapshots.length,
           videoSnapshotCount: context.videoSnapshots.length,
+          ...summarizeVideoSnapshots(context.videoSnapshots),
           evidenceCount: context.evidenceCount,
           dataQualityFlags: context.dataQualityFlags,
+          collection: context.collectionProgress,
         });
       }
       const end = parsed.offset + page.length;

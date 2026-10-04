@@ -29,6 +29,9 @@ export const CHANNEL_SNAPSHOT_COLUMNS = [
   "videoSnapshotCount",
   "evidenceCount",
   "dataQualityFlags",
+  // Appended 2026-10-04 (operator request): existing columns keep their position and meaning.
+  "uniqueVideoCount",
+  "latestVideoSnapshotAt",
 ] as const;
 
 /** Stable column order of `research_video_snapshots` and `own_video_snapshots` (the same shape on purpose: one comparison method). */
@@ -42,10 +45,27 @@ export const VIDEO_SNAPSHOT_COLUMNS = [
   "likeCount",
   "commentCount",
   "title",
+  // Appended 2026-10-04 (operator request): raw values from YouTube, empty when unknown (never 0); no Shorts flag is derived here.
+  "durationSeconds",
+  "liveBroadcastContent",
 ] as const;
 
 export type ExportDataset = "research_channel_snapshots" | "research_video_snapshots" | "own_video_snapshots";
 export type ExportFormat = "csv" | "json";
+
+/** How deep one watchlist channel's uploads are collected and how far it has got (operator request 2026-10-04). */
+export type ResearchCollectionProgress = {
+  /** The effective cap of distinct videos kept per channel (per-channel override, else the global default, else 50). */
+  maxVideosPerChannel: number;
+  /** `YYYY-MM-DD`: videos published before this day are not collected; `null` = no date limit. */
+  publishedAfter: string | null;
+  /** Distinct videos stored for the channel right now (inside the 30-day window) = `uniqueVideoCount`. */
+  videosStored: number;
+  /** True once a collection finished under the settings in force (cap reached, date reached, or the playlist ended). */
+  complete: boolean;
+  /** Why it finished: `cap`, `date` or `exhausted` (the channel has no more uploads); `null` while `complete` is false. */
+  completeReason: "cap" | "date" | "exhausted" | null;
+};
 
 /** What the export reads about one watchlist channel -- a subset of `getWatchlistEntryContext`, already narrowed to what the caller may see. */
 export type WatchlistContextForExport = {
@@ -67,9 +87,12 @@ export type WatchlistContextForExport = {
     commentCount: number | null;
     publishedAt: string | null;
     title: string | null;
+    durationSeconds?: number | null;
+    liveBroadcastContent?: string | null;
     source: string;
   }>;
   dataQualityFlags: string[];
+  collectionProgress: ResearchCollectionProgress;
 };
 
 export type OwnVideoForExport = {
@@ -80,6 +103,8 @@ export type OwnVideoForExport = {
   viewCount: number | null;
   likeCount: number | null;
   commentCount: number | null;
+  durationSeconds?: number | null;
+  liveBroadcastContent?: string | null;
   /** When this device last synced the video from YouTube -- the `observedAt` of the row. */
   lastSyncedAt: Date;
 };
@@ -128,9 +153,16 @@ export type ResearchOverviewEntry = {
     hiddenSubscriberCount: boolean;
   } | null;
   channelSnapshotCount: number;
+  /** Stored video-snapshot ROWS (a video snapshotted in several runs counts several times); see `uniqueVideoCount` for videos. */
   videoSnapshotCount: number;
+  /** Distinct `videoId` among the stored video snapshots (inside the 30-day window). */
+  uniqueVideoCount: number;
+  /** Newest `observedAt` among the stored video snapshots; `null` when there are none. */
+  latestVideoSnapshotAt: string | null;
   evidenceCount: number;
   dataQualityFlags: string[];
+  /** Collection depth and progress of this channel (see `ResearchCollectionProgress`). */
+  collection: ResearchCollectionProgress;
 };
 
 export type ListResearchOverviewResult = {
