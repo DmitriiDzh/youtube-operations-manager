@@ -173,6 +173,21 @@ type ServiceDependencies = {
   backup: BackupDeps;
   audit: AuditDeps;
   clock: ClockDeps;
+  /**
+   * Optional: after a write is confirmed by the read-back, the local copy of the video takes the confirmed values (owner request 2026-10-04: the
+   * Languages table must not need Sync Now after a send). A failure here never changes the row's SUCCESS -- YouTube already has the write.
+   */
+  localMirror?: {
+    applyConfirmedWrite(input: {
+      channelId: string;
+      videoId: string;
+      title: string;
+      description: string;
+      defaultLanguage: string | null;
+      defaultAudioLanguage: string | null;
+      localizations: Record<string, { title: string; description: string }>;
+    }): Promise<boolean>;
+  };
   retryConfig?: RetryConfig;
   /**
    * Pauses (ms) before each EXTRA post-write verification read when the first read still shows the
@@ -538,6 +553,29 @@ export function createBatchServices(deps: ServiceDependencies) {
       },
       localizations: raw.localizations,
     };
+  }
+
+  /** After a confirmed write: the local copy takes the read-back values (see `localMirror`). Never throws -- a failure only leaves the copy for the next Sync Now. */
+  async function confirmLocalMirror(
+    batch: StoredBatchRecord,
+    row: StoredLedgerRowRecord,
+    verifyRaw: { snippet: Record<string, unknown>; localizations: Record<string, { title: string; description: string }> } | null
+  ): Promise<void> {
+    if (!deps.localMirror || !verifyRaw) return;
+    try {
+      const confirmed = toFreshVideoContext(verifyRaw);
+      await deps.localMirror.applyConfirmedWrite({
+        channelId: batch.channelId,
+        videoId: row.videoId,
+        title: confirmed.snippet.title,
+        description: confirmed.snippet.description,
+        defaultLanguage: confirmed.snippet.defaultLanguage,
+        defaultAudioLanguage: typeof confirmed.snippet.defaultAudioLanguage === "string" ? confirmed.snippet.defaultAudioLanguage : null,
+        localizations: confirmed.localizations,
+      });
+    } catch (error) {
+      await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "VERIFICATION", detail: { localMirrorUpdateFailed: error instanceof Error ? error.message : String(error) } });
+    }
   }
 
   async function loadChangesForRow(row: StoredLedgerRowRecord): Promise<PendingChangeRecord[]> {
@@ -1291,6 +1329,7 @@ export function createBatchServices(deps: ServiceDependencies) {
           await transitionLedgerStatus(row.id, "SUCCESS", {
             verificationResult: { resolvedVia: "own_response", ownResponseObserved: true, confirmedAt: new Date().toISOString() },
           });
+          await confirmLocalMirror(batch, row, verifyRaw);
           // The audio language is not in YouTube's documented settable list: record what was asked and what is
           // now live, so a silently ignored field is visible in the audit instead of only on the video later.
           const requestedAudio = typeof payload.snippet.defaultAudioLanguage === "string" ? payload.snippet.defaultAudioLanguage : null;
@@ -1421,6 +1460,7 @@ export function createBatchServices(deps: ServiceDependencies) {
         verificationResult: { resolvedVia: "crash_recovery_reverification", ownResponseObserved: true, confirmedAt: new Date().toISOString() },
       });
       await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "VERIFICATION", detail: { resolvedVia: "crash_recovery_reverification", ownResponseObserved: true } });
+      await confirmLocalMirror(batch, row, verifyRaw);
       await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
       return "SUCCESS";
     }

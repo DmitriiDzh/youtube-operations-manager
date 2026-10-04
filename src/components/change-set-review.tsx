@@ -54,6 +54,7 @@ export function ChangeSetReview({
   changeSetId,
   onClose,
   onStatusChange,
+  onWritten,
 }: {
   channelId: string;
   changeSetId: string;
@@ -62,6 +63,8 @@ export function ChangeSetReview({
    * parent showing a stale summary (e.g. status-based sub-tab filtering) can refresh it. Not
    * called on the initial load. */
   onStatusChange?: () => void;
+  /** Called when a send to YouTube has finished, so the parent can reload what it shows from the local copy (which the write has just updated). */
+  onWritten?: () => void;
 }) {
   const [changeSet, setChangeSet] = useState<ChangeSet | null>(null);
   const [changes, setChanges] = useState<Change[]>([]);
@@ -270,6 +273,7 @@ export function ChangeSetReview({
               onFinished={() => {
                 void load();
                 onStatusChange?.();
+                onWritten?.();
               }}
             />
           )}

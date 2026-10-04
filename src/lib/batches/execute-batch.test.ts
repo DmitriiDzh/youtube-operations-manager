@@ -233,6 +233,7 @@ function createHarness(options: {
   /** BL-117 slice 2: the pre-flight quota guard and the atomic split, both optional like in production wiring tests. */
   quotaGuard?: Parameters<typeof createBatchServices>[0]["quotaGuard"];
   splitPendingBatch?: Parameters<typeof createBatchServices>[0]["splitPendingBatch"];
+  localMirror?: Parameters<typeof createBatchServices>[0]["localMirror"];
 } = {}) {
   const store = createFakeStore();
   let counter = 0;
@@ -300,6 +301,7 @@ function createHarness(options: {
     assertMutationAllowed: options.assertMutationAllowed,
     quotaGuard: options.quotaGuard,
     splitPendingBatch: options.splitPendingBatch,
+    localMirror: options.localMirror,
     idGenerator: () => `id-${++counter}`,
     logger: { info() {}, error() {} },
   });
@@ -1397,4 +1399,73 @@ test("BL-117: if the atomic split reports the batch is no longer splittable (it 
     harness.services.splitBatchForQuota({ batchId: batch.id }),
     (error: unknown) => error instanceof DomainError && error.code === "batch_already_running"
   );
+});
+
+test("local copy (owner request 2026-10-04): a confirmed write puts the READ-BACK values into the local copy, so the table needs no Sync Now", async () => {
+  const applied: unknown[] = [];
+  const harness = createHarness({
+    localMirror: { applyConfirmedWrite: async (input) => (applied.push(input), true) },
+    freshSequenceByVideoId: {
+      v1: [
+        PRE_SEND_BASELINE,
+        PRE_SEND_BASELINE,
+        { snippet: { title: "Read back T", description: "Read back D", defaultLanguage: "en", defaultAudioLanguage: "en" }, localizations: { es: { title: "New Value", description: "" } } },
+      ],
+    },
+  });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: scriptedExecutor([{ outcome: "SUCCESS" }]) });
+  assert.equal(summary.results[0].status, "SUCCESS");
+  assert.deepEqual(applied, [
+    {
+      channelId: "UC_TEST",
+      videoId: "v1",
+      title: "Read back T",
+      description: "Read back D",
+      defaultLanguage: "en",
+      defaultAudioLanguage: "en",
+      localizations: { es: { title: "New Value", description: "" } },
+    },
+  ]);
+});
+
+test("local copy: it is NOT touched when the write fails or the read-back does not confirm it", async () => {
+  const applied: unknown[] = [];
+  const harness = createHarness({ localMirror: { applyConfirmedWrite: async (input) => (applied.push(input), true) } });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+  const summary = await harness.services.executeBatch({
+    batchId: batch.id,
+    credentialRef: { userId: "user-1" },
+    executor: scriptedExecutor([{ outcome: "FAILED", detail: "400", classification: "permanent" }]),
+  });
+  assert.equal(summary.results[0].status, "FAILED");
+  assert.deepEqual(applied, []);
+});
+
+test("local copy: a failure updating it never turns a confirmed write into a failure (recorded in the audit)", async () => {
+  const harness = createHarness({
+    localMirror: {
+      applyConfirmedWrite: async () => {
+        throw new Error("database is locked");
+      },
+    },
+  });
+  const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+  const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: scriptedExecutor([{ outcome: "SUCCESS" }]) });
+  assert.equal(summary.results[0].status, "SUCCESS");
+  assert.ok(harness.auditEvents.some((e) => JSON.stringify(e.detail).includes("localMirrorUpdateFailed")));
+});
+
+test("local copy: a read-back that still shows the pre-write state (lag) or something else never reaches the local copy", async () => {
+  for (const readBack of [PRE_SEND_BASELINE, { snippet: { title: "T", description: "D", defaultLanguage: "en" }, localizations: { es: { title: "Somebody else", description: "" } } }]) {
+    const applied: unknown[] = [];
+    const harness = createHarness({
+      localMirror: { applyConfirmedWrite: async (input) => (applied.push(input), true) },
+      freshSequenceByVideoId: { v1: [PRE_SEND_BASELINE, PRE_SEND_BASELINE, readBack] },
+    });
+    const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+    const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: scriptedExecutor([{ outcome: "SUCCESS" }]) });
+    assert.notEqual(summary.results[0].status, "SUCCESS");
+    assert.deepEqual(applied, []);
+  }
 });

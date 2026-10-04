@@ -4800,6 +4800,34 @@ export async function upsertVideos(
   }
 }
 
+/**
+ * After a Batch write was read back from YouTube and matched what was sent, the local copy of that video takes the confirmed values, so the
+ * Languages table does not wait for the next Sync Now. Only the fields a batch can change are written; counts, thumbnails, `lastSyncedAt` and
+ * the rest still belong to the real sync. Returns false when the video is not in this channel's local copy (nothing is created here).
+ */
+export async function applyConfirmedWriteToStoredVideo(input: {
+  channelId: string;
+  videoId: string;
+  title: string;
+  description: string;
+  defaultLanguage: string | null;
+  defaultAudioLanguage: string | null;
+  localizations: Record<string, LocaleMetadataRecord>;
+}): Promise<boolean> {
+  const updated = await db
+    .update(videos)
+    .set({
+      title: input.title,
+      description: input.description,
+      defaultLanguage: input.defaultLanguage,
+      defaultAudioLanguage: input.defaultAudioLanguage,
+      localizationsJson: JSON.stringify(input.localizations),
+    })
+    .where(and(eq(videos.id, input.videoId), eq(videos.channelId, input.channelId)))
+    .returning({ id: videos.id });
+  return updated.length > 0;
+}
+
 export async function listStoredVideosByChannel(channelId: string): Promise<StoredVideo[]> {
   const rows = await db
     .select()
