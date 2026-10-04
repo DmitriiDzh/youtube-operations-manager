@@ -1,6 +1,6 @@
 # Agent-initiated competitor collection, approved by a human — plan
 
-Status: PLAN, awaiting the owner's go-ahead (2026-10-04). Source: operator request in `2026-10-04-research-data-not-scriptable.md` ("Feature request 2026-10-04"), owner direction 2026-10-04 ("add the ability for the agent to request research collection through MCP; we can compute the estimate ourselves; I approve such requests on the Research tab").
+Status: PLAN, owner decisions recorded 2026-10-04 (section 7); implementation on `feature/agent-collection-request`. Source: operator request in `2026-10-04-research-data-not-scriptable.md` ("Feature request 2026-10-04"), owner direction 2026-10-04 ("add the ability for the agent to request research collection through MCP; we can compute the estimate ourselves; I approve such requests on the Research tab").
 
 ## 1. What exists (code facts, verified by reading)
 - Competitor snapshots are created only by `runCollectionIfStale` (fire-and-forget `POST /api/market-intelligence/collect-if-stale`, once per dashboard mount) and the manual "fetch public snapshot". No timer. Needs `market_intelligence_daily_quota_budget_units` set (owner set 1000). Unit = YouTube quota unit (not model tokens).
@@ -43,3 +43,11 @@ Not in the first slice. A series approved once ("daily for N days, stop button")
 - How the cap is set: Settings → API → "Competitor collection depth" (global default) and per channel in an opened watchlist entry (override); both `maxVideosPerChannel` (1–2000) and `publishedAfter` (`YYYY-MM-DD`). A collection starts when the dashboard is opened (stale channels, budget set) — or, after this plan, by an approved request.
 - `collection.complete`: true when a deep collection finished under the settings in force; `completeReason` `exhausted` (whole uploads list read), `cap`, or `date`. A channel never collected under the new logic has `complete=false` and null reason even if everything is stored (the state columns are NULL until the first collection, e.g. Silent Temple with 44 of 44). Its first collection under the new logic sets `complete=true`, `exhausted`.
 - Stale tool descriptions after `/mcp` Reconnect: descriptions are static strings built per request by a stateless endpoint, no server cache; the live build contains the new text. A stale view comes from the client's own tool-list cache (or another app instance on another machine/port). Capabilities come from a different, always-fresh call.
+
+## 7. Owner decisions (2026-10-04, Telegram) — they override sections 2/4/5 where they differ
+1. Estimate = upper bound (`expectedUnits`, `worstCaseUnits`): OK.
+2. A channel collected successfully inside the 24 h window is reported `not_needed` in the tool result (variant A: other channels still go into the request); no record for it.
+3. Approval runs as a BLOCKING pop-up in the Web UI (like "Send to YouTube"), not a background job; a boot-time sweep still turns an orphaned `running` row into `failed (interrupted)`.
+4. No fixed channel cap: the limits are the owner's own daily limits (`market_intelligence_daily_quota_budget_units`); the agent gets a READ tool for the current limits and remaining budget (`agent_get_collection_limits`). An estimate above today's remaining budget is still created (`fitsToday: false`); collection stops at the budget and resumes next day from the saved cursor.
+5. Recurring requests: not in v1; later as an internal feature a human can switch on, which only CREATES a pending request every N days (never runs one); never more than one open request per channel (no stack of missed requests); value is the moment of approval, not of creation. Needs its own ADR.
+6. NO `force` and NO bypass: an approved request runs the REGULAR collection rules for the listed channels (24 h stale window, 24 h failed-channel pause, daily budget) — it only removes the wait for a dashboard visit.
