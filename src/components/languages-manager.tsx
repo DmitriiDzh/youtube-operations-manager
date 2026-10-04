@@ -1314,7 +1314,11 @@ export function LanguagesManager() {
               {SUB_TABS.map((t) => (
                 <button
                   key={t.value}
-                  onClick={() => setSubTab(t.value)}
+                  onClick={() => {
+                    // An opened set does not follow the user to another tab (owner request 2026-10-04).
+                    setOpenChangeSetId(null);
+                    setSubTab(t.value);
+                  }}
                   className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
                     subTab === t.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"
                   }`}
