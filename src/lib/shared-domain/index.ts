@@ -41,6 +41,8 @@ export type DomainErrorCode =
   | "batch_invalid_selection"
   | "batch_not_found"
   | "batch_already_running"
+  | "send_nothing_to_send"
+  | "send_already_in_progress"
   | "ledger_row_not_found"
   | "ledger_invalid_transition"
   | "video_locked"

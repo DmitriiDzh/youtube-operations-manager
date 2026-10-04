@@ -3987,6 +3987,55 @@ export async function setQuotaReservePercent(percent: number, database: AppDb = 
   await setAppSetting(QUOTA_RESERVE_PERCENT_SETTING_KEY, String(Math.round(percent)), database);
 }
 
+// --- BL-125: retention of settled drafts and of the write log ----------------------------------------------
+
+const DRAFT_RETENTION_DAYS_SETTING_KEY = "draft_retention_days";
+const WRITE_LOG_RETENTION_DAYS_SETTING_KEY = "write_log_retention_days";
+export const DEFAULT_DRAFT_RETENTION_DAYS = 7;
+export const MIN_DRAFT_RETENTION_DAYS = 1;
+export const DEFAULT_WRITE_LOG_RETENTION_DAYS = 30;
+export const MIN_WRITE_LOG_RETENTION_DAYS = 7;
+const MAX_RETENTION_DAYS = 3650;
+
+function parseRetentionDays(raw: string | null, fallback: number, min: number): number {
+  if (raw === null || raw === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed)) return fallback;
+  return Math.min(MAX_RETENTION_DAYS, Math.max(min, parsed));
+}
+
+/** How many days a settled (rejected, or approved and successfully written) change set stays before the sweep deletes it. Default 7, at least 1. */
+export async function getDraftRetentionDays(database: AppDb = db): Promise<number> {
+  return parseRetentionDays(
+    await getAppSetting(DRAFT_RETENTION_DAYS_SETTING_KEY, database),
+    DEFAULT_DRAFT_RETENTION_DAYS,
+    MIN_DRAFT_RETENTION_DAYS
+  );
+}
+
+export async function setDraftRetentionDays(days: number, database: AppDb = db): Promise<void> {
+  if (!Number.isInteger(days) || days < MIN_DRAFT_RETENTION_DAYS || days > MAX_RETENTION_DAYS) {
+    throw new Error(`Draft retention must be a whole number of days from ${MIN_DRAFT_RETENTION_DAYS} to ${MAX_RETENTION_DAYS}`);
+  }
+  await setAppSetting(DRAFT_RETENTION_DAYS_SETTING_KEY, String(days), database);
+}
+
+/** How many days the write log (batches, ledger rows, attempts, audit events) of a fully successful batch stays. Default 30; never below 7, even if a lower value is stored. */
+export async function getWriteLogRetentionDays(database: AppDb = db): Promise<number> {
+  return parseRetentionDays(
+    await getAppSetting(WRITE_LOG_RETENTION_DAYS_SETTING_KEY, database),
+    DEFAULT_WRITE_LOG_RETENTION_DAYS,
+    MIN_WRITE_LOG_RETENTION_DAYS
+  );
+}
+
+export async function setWriteLogRetentionDays(days: number, database: AppDb = db): Promise<void> {
+  if (!Number.isInteger(days) || days < MIN_WRITE_LOG_RETENTION_DAYS || days > MAX_RETENTION_DAYS) {
+    throw new Error(`Write log retention must be a whole number of days from ${MIN_WRITE_LOG_RETENTION_DAYS} to ${MAX_RETENTION_DAYS}`);
+  }
+  await setAppSetting(WRITE_LOG_RETENTION_DAYS_SETTING_KEY, String(days), database);
+}
+
 // --- BL-117: quota ledger ---------------------------------------------------------------------------
 
 export const QUOTA_LEDGER_RETENTION_SECONDS = 45 * 24 * 3600;
@@ -5464,6 +5513,29 @@ export async function getStoredBatch(
 ): Promise<StoredBatch | null> {
   const [row] = await database.select().from(batches).where(eq(batches.id, batchId));
   return row ? mapStoredBatch(row) : null;
+}
+
+/**
+ * BL-125: deletes whole batches -- their audit events, attempts, stale video locks, ledger rows and the batch row itself, in
+ * foreign-key order, in one transaction. Only the retention sweep calls this, and only for batches it has judged settled
+ * (completed, every row SUCCESS or DRY_RUN_COMPLETE, older than the write-log retention).
+ */
+export async function deleteStoredBatchesWithChildren(batchIds: string[], database: AppDb = db): Promise<number> {
+  if (batchIds.length === 0) return 0;
+  return database.transaction(async (tx) => {
+    let deleted = 0;
+    for (const batchId of batchIds) {
+      const rows = await tx.select({ id: batchLedgerRows.id }).from(batchLedgerRows).where(eq(batchLedgerRows.batchId, batchId));
+      const rowIds = rows.map((row) => row.id);
+      await tx.delete(auditEvents).where(eq(auditEvents.batchId, batchId));
+      await tx.delete(videoExecutionLocks).where(eq(videoExecutionLocks.batchId, batchId));
+      if (rowIds.length > 0) await tx.delete(batchAttempts).where(inArray(batchAttempts.ledgerRowId, rowIds));
+      await tx.delete(batchLedgerRows).where(eq(batchLedgerRows.batchId, batchId));
+      await tx.delete(batches).where(eq(batches.id, batchId));
+      deleted += 1;
+    }
+    return deleted;
+  });
 }
 
 /** Newest first -- the natural order for a "your batches" list. */

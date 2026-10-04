@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { LoadingIndicator } from "./operation-progress";
+import { SendApprovedButton } from "./send-approved-button";
 
 type Change = {
   id: string;
@@ -217,6 +218,17 @@ export function ChangeSetReview({
           >
             Approve all valid
           </button>
+          {changeSet && changeSet.approvedCount > 0 && (
+            <SendApprovedButton
+              channelId={channelId}
+              changeSetId={changeSetId}
+              approvedCount={changeSet.approvedCount}
+              onFinished={() => {
+                void load();
+                onStatusChange?.();
+              }}
+            />
+          )}
           <button
             onClick={() => handleBulk("reject-all")}
             disabled={bulkBusy}

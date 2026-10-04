@@ -3,12 +3,13 @@ import { resolveGoogleCredentials } from "@/lib/google-credentials";
 import { createWriteContextCore } from "@/lib/write-context";
 import { createBackupCore } from "@/lib/backup";
 import { createAuditCore } from "@/lib/audit";
-import { createBatchStoreAdapter, createChangeSetStoreAdapter, createIdGenerator } from "./adapters/store";
+import { createBatchStoreAdapter, createChangeSetReaderAdapter, createChangeSetStoreAdapter, createIdGenerator } from "./adapters/store";
 import { createBatchYoutubeApiAdapter } from "./adapters/youtube-api";
-import { getChannelExpectedLanguages, rawSqlClient, splitPendingBatchForQuota } from "@/lib/db";
+import { getChannelExpectedLanguages, getLiveWritesEnabled, rawSqlClient, splitPendingBatchForQuota } from "@/lib/db";
 import { createQuotaGuardCore } from "@/lib/quota-guard";
 import { assertDeviceAvailableForMutation } from "@/lib/device-mutation-gate";
 import { createBatchServices } from "./services";
+import { createSendApprovedServices } from "./send-approved";
 
 function createRealClock() {
   return {
@@ -53,6 +54,16 @@ export function createBatchCore() {
 }
 
 export type BatchCore = ReturnType<typeof createBatchCore>;
+
+/** BL-124 / ADR 0020: select a change set's sendable changes and create a LIVE batch from them (creates only, never executes). */
+export function createSendApprovedCore() {
+  const batches = createBatchCore();
+  return createSendApprovedServices({
+    batches,
+    changeSets: createChangeSetReaderAdapter(),
+    isLiveWritesEnabled: () => getLiveWritesEnabled(),
+  });
+}
 
 // Architecture audit 2026-10-01 (M8): exported through the barrel so app-layer callers never reach
 // into this module's services/adapters directly.

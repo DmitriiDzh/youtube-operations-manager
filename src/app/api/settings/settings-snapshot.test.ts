@@ -22,6 +22,8 @@ function readers(overrides: Partial<Parameters<typeof buildSettingsSnapshot>[0]>
     operatorCliEnabled: async () => false,
     deviceAutoSyncEnabled: async () => true,
     quotaReservePercent: async () => 20,
+    draftRetentionDays: async () => 7,
+    writeLogRetentionDays: async () => 30,
     ...overrides,
   };
 }

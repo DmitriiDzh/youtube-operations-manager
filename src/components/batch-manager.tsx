@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatDisplayDateTime } from "@/lib/shared-formatting";
-import { deriveBatchStage, ledgerRowToItem, summarizeBatchRows } from "./batch-progress";
+import { runBatchWithProgress } from "./batch-run";
 import { ConfirmDialog } from "./confirm-dialog";
 import { OperationOverlay, useOperation } from "./operation-progress";
-import { parseQuotaBlock, QuotaBlockDialog, type QuotaBlock, type SplitOutcome } from "./quota-block-dialog";
+import { QuotaBlockDialog, type QuotaBlock, type SplitOutcome } from "./quota-block-dialog";
 
 type ChangeSetSummary = {
   id: string;
@@ -218,14 +218,7 @@ export function BatchManager({
     if (batchId) await executeBatch(batchId);
   }
 
-  /**
-   * Runs one blocking batch request (`execute` / `prepare`) while polling the batch GET route, which
-   * reports each ledger row's status as the server commits it -- so the overlay shows real
-   * per-video progress without any server-side change. Polling lives only as long as THIS request,
-   * so a stale batch left PENDING in the database can never produce an unclosable overlay.
-   * Cancel (live execution only) asks the SERVER to stop before the next video (ADR 0016); the overlay
-   * keeps polling until the execute request itself returns, so it never claims a stop that did not happen.
-   */
+  /** Runs one blocking batch request with live progress (shared implementation: `batch-run.ts`). */
   async function runBatchRequest(
     batchId: string,
     kind: "execute" | "prepare",
@@ -234,70 +227,26 @@ export function BatchManager({
     options: { acknowledgeUnknownQuota?: boolean } = {}
   ) {
     if (!channelId) return;
-    const base = `/api/channels/${encodeURIComponent(channelId)}/batches/${encodeURIComponent(batchId)}`;
-    const dryRun = kind === "prepare";
     runningBatchIdRef.current = batchId;
-    // Only a live execution can be cancelled (ADR 0016); a dry run writes nothing and is short.
-    op.start({ title, cancellable: kind === "execute", quotaServices: ["dataApi"] });
-    op.setStage(dryRun ? deriveBatchStage([], true) : "Preparing: identity, backup and conflict checks");
-
-    let polling = false;
-    async function poll() {
-      if (polling) return;
-      polling = true;
-      try {
-        const res = await fetch(base);
-        if (!res.ok) return;
-        const data = await res.json();
-        const rows = (data.ledgerRows ?? []) as Parameters<typeof ledgerRowToItem>[0][];
-        op.setItems(rows.map(ledgerRowToItem));
-        op.setStage(deriveBatchStage(rows, dryRun));
-      } catch {
-        // A missed poll only delays the display; the request below is the source of truth.
-      } finally {
-        polling = false;
-      }
-    }
-    void poll();
-    const timer = setInterval(() => void poll(), 1500);
-
     try {
-      const res = await fetch(`${base}/${kind}`, {
-        method: "POST",
-        ...(options.acknowledgeUnknownQuota
-          ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ acknowledgeUnknownQuota: true }) }
-          : {}),
+      const result = await runBatchWithProgress({
+        channelId,
+        batchId,
+        kind,
+        op,
+        title,
+        failureMessage,
+        acknowledgeUnknownQuota: options.acknowledgeUnknownQuota,
       });
-      const data = await res.json();
-      clearInterval(timer);
-      if (!res.ok) {
-        // BL-117: a quota refusal is not an error to dump in the red line: it is a decision for the user (nothing was started).
-        const quota = kind === "execute" ? parseQuotaBlock(data) : null;
-        if (quota) {
-          op.reset();
-          setSplitOutcome(null);
-          setQuotaBlock({ batchId, block: quota });
-          return;
-        }
-        const err = data as ApiError;
-        throw new Error(err.message ?? failureMessage);
+      if (result.kind === "quota_block") {
+        setSplitOutcome(null);
+        setQuotaBlock({ batchId, block: result.block });
+      } else if (result.kind === "error") {
+        setError(result.message);
+      } else {
+        await openBatch(batchId);
+        if (kind === "execute") await fetchBatches(channelId);
       }
-      const finalRes = await fetch(base);
-      const finalRows = finalRes.ok ? (((await finalRes.json()).ledgerRows ?? []) as Parameters<typeof ledgerRowToItem>[0][]) : [];
-      // Synchronous with finish below, so a poll still in flight can never overwrite the final state.
-      op.setItems(finalRows.map(ledgerRowToItem));
-      op.finish({
-        // Cancel may arrive too late (everything already written): trust the server's own answer.
-        outcome: data.cancelled === true ? "cancelled" : "success",
-        message: summarizeBatchRows(finalRows, dryRun),
-      });
-      await openBatch(batchId);
-      if (kind === "execute") await fetchBatches(channelId);
-    } catch (e) {
-      clearInterval(timer);
-      const message = e instanceof Error ? e.message : failureMessage;
-      setError(message);
-      op.finish({ error: true, message });
     } finally {
       runningBatchIdRef.current = null;
     }
