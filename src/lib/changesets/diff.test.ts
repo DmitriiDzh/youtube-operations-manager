@@ -196,3 +196,24 @@ test("currentRemoteValueFor falls back to existingLocalizations when defaultLang
   const video = makeVideo({ defaultLanguage: null, existingLocalizations: { en: { title: "Not the primary", description: "" } } });
   assert.equal(currentRemoteValueFor(video, "en", "title"), "Not the primary");
 });
+
+test("revalidateChangeAgainstCurrentRemote (owner report 2026-10-04): a remote value equal to the PROPOSED value is the change having taken effect -- no conflict, the approval stays", () => {
+  const approved = makeChange({ baselineValue: "Old", proposedValue: "New", approvalStatus: "approved", approvedValue: "New", conflictStatus: "none" });
+  const result = revalidateChangeAgainstCurrentRemote(approved, "New");
+  assert.equal(result.conflictStatus, "none");
+  assert.equal(result.approvalStatus, "approved");
+  assert.equal(result.approvedValue, "New");
+});
+
+test("revalidateChangeAgainstCurrentRemote: a remote value that is neither the baseline nor the proposal is still a conflict and still invalidates the approval", () => {
+  const approved = makeChange({ baselineValue: "Old", proposedValue: "New", approvalStatus: "approved", approvedValue: "New", conflictStatus: "none" });
+  const result = revalidateChangeAgainstCurrentRemote(approved, "Edited in Studio");
+  assert.equal(result.conflictStatus, "conflict");
+  assert.equal(result.approvalStatus, "pending");
+  assert.equal(result.approvedValue, null);
+});
+
+test("revalidateChangeAgainstCurrentRemote: a previously conflicted change whose remote now equals the proposal clears to none", () => {
+  const conflicted = makeChange({ baselineValue: "Old", proposedValue: "New", approvalStatus: "pending", conflictStatus: "conflict" });
+  assert.equal(revalidateChangeAgainstCurrentRemote(conflicted, "New").conflictStatus, "none");
+});

@@ -130,10 +130,17 @@ export function revalidateChangeAgainstCurrentRemote(
   // `null` = the video (or its language entry) is no longer present in synchronized
   // data at all (e.g. video removed from channel-sync results). Treat conservatively
   // as a conflict rather than silently clearing it.
+  // A value that already equals what the change proposes is not a conflict: it is the change having taken effect (owner report 2026-10-04: after a
+  // set was approved and sent, the next load compared the unchanged baseline with the now-live proposed value, called it a conflict and reset every
+  // approval to pending -- the set fell back to "In progress" and, with pending changes, could never be purged). An approval is only invalidated when
+  // the remote value moved to something ELSE than both the baseline and the proposal.
+  const alreadyInEffect = currentRemoteValue !== null && currentRemoteValue === change.proposedValue;
   const conflictStatus: ChangeConflictStatus =
     currentRemoteValue === null
       ? "conflict"
-      : computeConflictStatus(change.baselineValue, currentRemoteValue);
+      : alreadyInEffect
+        ? "none"
+        : computeConflictStatus(change.baselineValue, currentRemoteValue);
 
   if (conflictStatus === change.conflictStatus) {
     return change;
