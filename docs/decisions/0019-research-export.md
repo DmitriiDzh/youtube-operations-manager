@@ -18,7 +18,7 @@ data set was therefore the tool response itself. The CLI is the operator's tool 
 ## Decision
 
 1. New module `src/lib/research-export/` (AGENTS.md §M: its own module, not part of `channel-workspaces`, which keeps its contract). Tool
-   `agent_export_research_data` (permission DRAFT, channel-bound, passes the mutation gate) writes flat files into `<workspace>/99 Data Inbox/` (see the amendment below):
+   `agent_export_research_data` (permission DRAFT, channel-bound, passes the mutation gate) writes flat files into `<workspace>/99 Data Exchange/From YTM/` (see the amendment below):
    `research_channel_snapshots`, `research_video_snapshots` and our own channel's public videos as `own_video_snapshots` (same columns as the
    video file). CSV (RFC 4180, formula guard on the `title` column only) and/or JSON (values exactly as stored). The caller chooses neither the
    folder nor any file name (strict input; names are dataset + UTC time + random suffix, never a title or handle). The response is only paths,
@@ -26,7 +26,7 @@ data set was therefore the tool response itself. The CLI is the operator's tool 
 2. **Reads only through existing cores**: market-intelligence's `getWatchlistEntryContext` (already limited to the 30-day window) and the
    market-assignment confinement (`filterForAgent` / `assertAvailableToAgent`), so an export can never show more than `query_competitors` /
    `query_market_intelligence` show an agent.
-3. **Path safety at export time**, not only at set time: the workspace is re-validated, `99 Data Inbox/` must be a plain folder (not a symlink) whose
+3. **Path safety at export time**, not only at set time: the workspace is re-validated, `99 Data Exchange/From YTM/` must be a plain folder (not a symlink) whose
    real path stays strictly inside the workspace's real path, files are written to a temp name and renamed, and a failure part-way removes what
    that call wrote.
 4. **Retention (YouTube policy III.E.4.d, ADR D1 = a)**: a file holding other channels' API-sourced rows expires 30 days after the oldest such
@@ -44,18 +44,22 @@ data set was therefore the tool response itself. The CLI is the operator's tool 
 ## Consequences
 
 - A script (or an agent's own script) can read files the Manager produced; the agent still cannot write anywhere or choose a path.
-- A copy of a research file the agent makes outside `99 Data Inbox/` is outside the Manager's control; the tool description and `retentionNote` say
+- A copy of a research file the agent makes outside `99 Data Exchange/From YTM/` is outside the Manager's control; the tool description and `retentionNote` say
   to treat copies as short-lived (RISK-98).
 - The expiry sweep runs only while the app runs; a file can outlive its expiry by the time the app was off, deleted at the next start.
 
-## Amendment 2026-10-04 — fixed destination «99 Data Inbox» (owner decision, BL-123)
+## Amendment 2026-10-04 — fixed destination «99 Data Exchange/From YTM» (owner decision, BL-123)
 
 The operations agent's updated request set a boundary: the Manager must not touch the agent's project files. The owner approved ONE deliberate exception
 (Telegram, 2026-10-04: «Да, вместо» / «мы добавляем осознанное исключение, что в эту папку мы можем делать записи»): the export folder is the fixed name
-`99 Data Inbox` directly inside the stored workspace path, **replacing** `exports/` (nothing had ever been exported, so there is nothing to migrate).
-Limits: the stored workspace setting is never changed; the Manager writes only research exports there and only creates `99 Data Inbox` itself; it never
+`99 Data Exchange/From YTM` directly inside the stored workspace path, **replacing** `exports/` (nothing had ever been exported, so there is nothing to migrate).
+Limits: the stored workspace setting is never changed; the Manager writes only research exports there and only creates `99 Data Exchange/From YTM` itself; it never
 modifies or deletes anything it did not create (the expiry sweep acts on the ledger only); if the folder cannot be created the call fails with
 `RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE` and nothing is written or recorded. Everything after the export (what scripts or agents do with the files, copies,
 figures derived from them) is outside the application's scope; the response and tool description state only the 30-day rule. The agent's other asks were
 settled in the same pass: no CLI for agents (ADR 0013), no competitor summaries (III.E.4.h/III.E.2.a); the optional read-only HTTP route (slice 2 of
 `docs/roadmap/plans/RESEARCH_DATA_INBOX_PLAN.md`) is **not built** — the owner's answer was that the application's work ends with the export into the folder.
+
+## Amendment 2026-10-04 (owner): `99 Data Exchange/From YTM` and `Sent to YTM`
+
+The folder `99 Data Inbox` is replaced by `99 Data Exchange` with two fixed subfolders: `From YTM` (the Manager writes research exports here) and `Sent to YTM` (reserved for future inbound material such as videos to upload; the Manager only creates the empty folder and writes nothing there yet). All three are created on first use. They are a hand-over buffer, not storage: the receiving side deletes what it has processed. The Manager's own expiry sweep (30-day API-policy rule) stays as a safety net for research files it wrote; ledger rows written under the old `99 Data Inbox` path are still swept. A pre-existing `99 Data Inbox` folder is left untouched.

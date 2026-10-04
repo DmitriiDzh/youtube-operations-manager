@@ -55,7 +55,11 @@ export type ResearchExportDeps = {
  * deliberate exception to "the Manager touches nothing in a project". Only research exports go here, and only files this module created
  * are ever deleted from it.
  */
-export const DATA_INBOX_DIR_NAME = "99 Data Inbox";
+export const DATA_EXCHANGE_DIR_NAME = "99 Data Exchange";
+/** Manager -> project scripts (what this module writes). */
+export const FROM_YTM_DIR_NAME = "From YTM";
+/** Project -> Manager (reserved for future inbound material; the Manager only creates the empty folder, it never writes there). */
+export const SENT_TO_YTM_DIR_NAME = "Sent to YTM";
 
 function stamp(date: Date): string {
   return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
@@ -67,7 +71,7 @@ const RETENTION_NOTE =
 type Prepared = { dataset: ExportDataset; format: ExportFormat; fileName: string; content: string; rows: number; expiresAt: Date | null };
 
 export function createResearchExportServices(deps: ResearchExportDeps) {
-  /** Folder = <realpath(workspace)>/99 Data Inbox, created if missing and proven (after symlink resolution) to still lie strictly inside the workspace. */
+  /** Folder = <realpath(workspace)>/99 Data Exchange/From YTM, created if missing and proven (after symlink resolution) to still lie strictly inside the workspace. */
   async function resolveExportsDir(channelId: string): Promise<string> {
     const workspace = await deps.getWorkspacePath(channelId);
     if (!workspace) {
@@ -88,20 +92,25 @@ export function createResearchExportServices(deps: ResearchExportDeps) {
 
     const realWorkspace = await deps.fs.realpath(workspace).catch(() => null);
     if (!realWorkspace) throw unavailable("path does not exist or is not accessible");
-    const dir = path.join(realWorkspace, DATA_INBOX_DIR_NAME);
-    const existing = await deps.fs.lstat(dir);
-    if (existing && (existing.isSymbolicLink || !existing.isDirectory)) throw unavailable(`${DATA_INBOX_DIR_NAME} is not a plain folder inside the workspace`);
-    if (!existing) {
-      // The folder cannot be created (read-only volume, permissions, ...): a clear error and nothing written.
-      try {
-        await deps.fs.mkdir(dir);
-      } catch (error) {
-        throw unavailable(`${DATA_INBOX_DIR_NAME} could not be created (${error instanceof Error ? error.message : String(error)})`);
+    const exchange = path.join(realWorkspace, DATA_EXCHANGE_DIR_NAME);
+    const dir = path.join(exchange, FROM_YTM_DIR_NAME);
+    // Buffer folders, not storage: each is created if missing (a symlink or non-folder is refused), and the receiving side deletes what it has processed.
+    for (const folder of [exchange, dir, path.join(exchange, SENT_TO_YTM_DIR_NAME)]) {
+      const label = path.relative(realWorkspace, folder);
+      const existing = await deps.fs.lstat(folder);
+      if (existing && (existing.isSymbolicLink || !existing.isDirectory)) throw unavailable(`${label} is not a plain folder inside the workspace`);
+      if (!existing) {
+        // The folder cannot be created (read-only volume, permissions, ...): a clear error and nothing written.
+        try {
+          await deps.fs.mkdir(folder);
+        } catch (error) {
+          throw unavailable(`${label} could not be created (${error instanceof Error ? error.message : String(error)})`);
+        }
       }
     }
     const realDir = await deps.fs.realpath(dir).catch(() => null);
     if (!realDir || realDir === realWorkspace || !deps.isPathInsideOrEqual(realWorkspace, realDir)) {
-      throw unavailable(`${DATA_INBOX_DIR_NAME} resolves outside the workspace`);
+      throw unavailable(`${DATA_EXCHANGE_DIR_NAME}/${FROM_YTM_DIR_NAME} resolves outside the workspace`);
     }
     return realDir;
   }
