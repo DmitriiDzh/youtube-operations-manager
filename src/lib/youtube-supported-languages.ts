@@ -80,6 +80,8 @@ export const SUPPORTED_YOUTUBE_LANGUAGES: ReadonlyArray<{ code: string; name: st
   { code: "pa", name: "Punjabi" },
   { code: "pl", name: "Polish" },
   { code: "pt", name: "Portuguese" },
+  // Not in YouTube's own i18nLanguages list (like en-US, see the file comment) but added at the owner's request 2026-10-04: translations are made in Brazilian Portuguese.
+  { code: "pt-BR", name: "Portuguese (Brazil)" },
   { code: "pt-PT", name: "Portuguese (Portugal)" },
   { code: "ro", name: "Romanian" },
   { code: "ru", name: "Russian" },
