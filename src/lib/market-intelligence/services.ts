@@ -1853,6 +1853,12 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * mount, once the budget is merely small, would spam the audit log for no new information
      * beyond "the budget ran out here"), and the whole run stops.
      *
+     * Operator request 2026-10-04 (deeper collection): a channel's minimum is still that one-page worst case; beyond it, each
+     * further playlist page needs 2 spare units (the page plus a possible `videos.list` fallback) AND must leave 3 units for every
+     * channel still waiting in this run, so a deep backfill never starves the others. A page is fully processed (stats fetched, rows
+     * inserted) or not started; when the budget ends a backfill the channel is recorded as a `success` with its cursor saved
+     * (`videos_next_page_token`) and the next stale run resumes there.
+     *
      * Each call's own cost is charged to `remaining`/`unitsSpentThisChannel` BEFORE that call
      * resolves, not after -- a thrown error (e.g. a transient network failure) must still be
      * recorded with its real spend (YouTube's own quota accounting charges a failed/invalid request
@@ -1869,11 +1875,14 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
      * lands, narrowing but not eliminating the race between two concurrent callers (e.g. two
      * dashboard tabs opened within moments of each other) each starting from the same
      * not-yet-updated spend total. Two such runs could each independently decide they have enough
-     * budget for one full channel and both proceed, together spending up to
-     * `2 * PER_CHANNEL_WORST_CASE_UNIT_COST` against a budget that only covered one. This is judged
-     * an acceptable, bounded overshoot for a same-machine, low-frequency trigger (never a
+     * budget and both proceed, together spending up to about twice the remaining budget (since the
+     * 2026-10-04 deeper collection a single channel may use most of `remaining`, so the overshoot is no
+     * longer capped at `2 * PER_CHANNEL_WORST_CASE_UNIT_COST`; tracked in `docs/TECHNICAL_DEBT.md`
+     * RISK-103). This is judged an acceptable, bounded overshoot for a same-machine, low-frequency trigger (never a
      * distributed system), not a gap silently left unrecognized -- the channel-level `collectionClaimedAt`
-     * claim above still guarantees the two runs never spend budget on the SAME channel twice.
+     * claim above still guarantees the two runs never spend budget on the SAME channel twice. The same
+     * applies to a crash mid-backfill: the ledger row is written at the end of a channel, so up to about
+     * 2 units per page already fetched may go unrecorded (same RISK-103).
      */
     async runCollectionIfStale(input: unknown): Promise<{
       attempted: number;

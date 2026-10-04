@@ -1736,3 +1736,10 @@ No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a d
 ## RISK-102 — Single-item `video-metadata` apply can still reset `defaultAudioLanguage` — OPEN, 2026-10-04
 
 Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet field is reset by `videos.update`; Tropico batch of 2026-10-04 turned 53 videos to `en-US`). The single-item apply path (`src/lib/video-metadata/services.ts`, `removeReadOnlySnippetFields`) still sends a snippet without it and has the same exposure. `src/lib/video-details/adapters/youtube-api.ts` has the same exposure: the audio field is sent only when the patch contains it, so editing just a title/description resets it. Not changed in this slice (separate write surfaces, no owner decision yet); apply the same baseline rule there before relying on it for videos whose audio language matters.
+
+## RISK-103 — Deep competitor collection: monthly re-backfill, a larger concurrency overshoot, and unrecorded spend on a crash — OPEN, 2026-10-04
+
+- **What:** (1) Videos collected deeper than page 1 are not refreshed daily, so under the 30-day API retention (III.E.4.d) their snapshots age out; the stored count then drops below the cap and the channel quietly walks the playlist again about monthly (a few units; the completion state is unchanged). (2) `runCollectionIfStale`'s known two-concurrent-callers overshoot used to be capped at 2 x 3 units; one channel may now use most of the remaining budget, so it is about 2 x the remaining budget. (3) The ledger row is written when a channel's work ends, so a crash in the middle of a backfill can leave up to about 2 units per fetched page unrecorded in `market_intelligence_collection_runs`.
+- **Effect:** (1) bounded extra spend, always inside the daily budget; (2)/(3) the daily budget can be overshot once, by a bounded amount, on a same-machine low-frequency trigger.
+- **Possible fix:** (1) refresh a rolling slice of deeper pages, or accept; (2)/(3) write the ledger row per page.
+- **Gate(s):** none. **Status:** open.
