@@ -141,18 +141,39 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
    * specific operation affect" at each call site (a `mergeIncoming` can introduce or change any
    * number of rows at once, unlike a single `updateProposedValue` call).
    */
-  async function projectToSql(doc: Automerge.Doc<ChannelDraftDocument>): Promise<void> {
+  /**
+   * Each row is projected on its own: ONE row the database refuses (a record whose change set or video no longer exists here, e.g. a stray
+   * entry merged in from another device) must never stop the rest of the document from being projected. The earlier all-or-nothing loop
+   * did exactly that -- it threw at the first refused row and silently left every row after it unprojected, so a Change Set showed only a
+   * random-looking subset of its changes (found 2026-10-04: an agent submitted 106 changes and saw 75, then 80; the document held all 106).
+   * Returns what could not be projected so the caller can report it; never throws for a single row.
+   */
+  async function projectToSql(
+    doc: Automerge.Doc<ChannelDraftDocument>
+  ): Promise<Array<{ kind: "change_set" | "change" | "provenance"; id: string; cause: string }>> {
+    const failures: Array<{ kind: "change_set" | "change" | "provenance"; id: string; cause: string }> = [];
+    const attempt = async (kind: "change_set" | "change" | "provenance", id: string, project: () => Promise<void>) => {
+      try {
+        await project();
+      } catch (error) {
+        // Only the statement part of the message: a database error message appends the bound values after "params:", which must never reach a log.
+        const message = error instanceof Error ? error.message : String(error);
+        failures.push({ kind, id, cause: message.split(/\n?params:/)[0].slice(0, 200) });
+      }
+    };
+    // Order matters for the database's foreign keys: change sets first, then their changes and provenance.
     for (const changeSet of Object.values(doc.changeSets)) {
-      await deps.projection.upsertChangeSet(changeSet);
+      await attempt("change_set", changeSet.id, () => deps.projection.upsertChangeSet(changeSet));
     }
     for (const change of Object.values(doc.changes)) {
-      await deps.projection.upsertChange(change);
+      await attempt("change", change.id, () => deps.projection.upsertChange(change));
     }
     // `provenance` may be entirely absent on a document saved before M4 added this field
     // (`contracts.ts`'s own doc comment) -- never assume it exists.
     for (const provenance of Object.values(doc.provenance ?? {})) {
-      await deps.projection.upsertProvenance(provenance);
+      await attempt("provenance", provenance.id, () => deps.projection.upsertProvenance(provenance));
     }
+    return failures;
   }
 
   async function saveDocument(channelId: string, doc: Automerge.Doc<ChannelDraftDocument>): Promise<void> {
@@ -170,7 +191,13 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
     // not.
     await deps.store.saveDocumentBytes(channelId, Automerge.save(doc));
     try {
-      await projectToSql(doc);
+      const failures = await projectToSql(doc);
+      if (failures.length > 0) {
+        (deps.logger ?? createDefaultLogger()).error({
+          event: "change_drafts.projection.failed",
+          context: { channelId, failedRows: failures.length, failures: failures.slice(0, 20) },
+        });
+      }
     } catch (error) {
       (deps.logger ?? createDefaultLogger()).error({
         event: "change_drafts.projection.failed",

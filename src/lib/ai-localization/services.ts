@@ -521,12 +521,6 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
           });
         }
 
-        const changeSet = await deps.changeSetServices.createChangeSetFromProposals({
-          channelId: channel.channelId,
-          source: "ai_localization",
-          changes: changesToPersist,
-        });
-
         // A provenance row is always recorded, unconditionally (owner spec §22) -- every
         // agent-created object must be traceable, and `callOrigin`'s `createdVia`/
         // `agentApiVersion` are SERVER-STAMPED identity, not a caller-supplied claim, so they
@@ -535,19 +529,39 @@ export function createAiLocalizationServices(deps: ServiceDependencies) {
         // independently-verified claims (`docs/acceptance/PHASE_6_ACCEPTANCE.md` AC-PROFILE-08/09's
         // "frozen at generation time" guarantee is unaffected -- they're simply `null` when
         // omitted).
-        await deps.provenanceStore.create({
-          id: deps.idGenerator(),
-          changeSetId: changeSet.id,
-          channelId: channel.channelId,
-          profileVersion: parsedInput.provenance?.profileVersion ?? null,
-          effectiveContextJson: parsedInput.provenance?.effectiveContext
-            ? JSON.stringify(parsedInput.provenance.effectiveContext)
-            : null,
-          evidenceJson: parsedInput.evidence ? JSON.stringify(parsedInput.evidence) : null,
-          rationale: parsedInput.rationale ?? null,
-          createdVia: callOrigin.createdVia,
-          agentApiVersion: callOrigin.agentApiVersion ?? null,
-        });
+        const recordProvenance = (changeSetId: string) =>
+          deps.provenanceStore.create({
+            id: deps.idGenerator(),
+            changeSetId,
+            channelId: channel.channelId,
+            profileVersion: parsedInput.provenance?.profileVersion ?? null,
+            effectiveContextJson: parsedInput.provenance?.effectiveContext
+              ? JSON.stringify(parsedInput.provenance.effectiveContext)
+              : null,
+            evidenceJson: parsedInput.evidence ? JSON.stringify(parsedInput.evidence) : null,
+            rationale: parsedInput.rationale ?? null,
+            createdVia: callOrigin.createdVia,
+            agentApiVersion: callOrigin.agentApiVersion ?? null,
+          });
+
+        let changeSet: ChangeSet;
+        try {
+          changeSet = await deps.changeSetServices.createChangeSetFromProposals({
+            channelId: channel.channelId,
+            source: "ai_localization",
+            changes: changesToPersist,
+          });
+        } catch (error) {
+          // The Change Set WAS stored but reads back incomplete (`change_set_incomplete`): it exists and is visible, so it must carry its
+          // provenance like any other agent-created set -- then the caller still gets the explicit error.
+          if (isDomainError(error) && error.code === "change_set_incomplete") {
+            const storedId = (error.details as { changeSetId?: unknown } | undefined)?.changeSetId;
+            if (typeof storedId === "string") await recordProvenance(storedId);
+          }
+          throw error;
+        }
+
+        await recordProvenance(changeSet.id);
 
         deps.logger.info({
           event: "ai_localization.create_change_set.success",

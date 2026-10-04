@@ -123,6 +123,53 @@ test("createChangeSet then addChange persists and is readable back via getDocume
   assert.equal(doc.changes["c-1"].proposedValue, "Original");
 });
 
+// 2026-10-04 incident: one change the database refused made the whole projection stop, so a Change Set showed only part of its changes.
+test("a row the SQL projection refuses does not stop the other rows from being projected; the failure is logged with its id", async () => {
+  const projection = fakeProjection();
+  const refusing: SqlProjectionAdapter = {
+    ...projection,
+    async upsertChange(change) {
+      if (change.id === "c-poison") throw new Error("Failed query: insert into \"changes\" (\"id\") values (?)\nparams: c-poison,SECRET PROPOSED TEXT");
+      return projection.upsertChange(change);
+    },
+  };
+  const logged: Array<{ event: string; context?: Record<string, unknown> }> = [];
+  const core = createChangeDraftsCore(makeDeps({ projection: refusing, logger: { info: () => undefined, error: (p) => void logged.push(p) } }));
+
+  // Seven changes; the refused one sits FIRST so the old all-or-nothing loop would have projected none of the others.
+  await core.createChangeSetWithChanges({
+    channelId: CHANNEL,
+    changeSetId: "cs-1",
+    source: "ai_localization",
+    initialStatus: "in_review",
+    importedFilename: null,
+    schemaVersion: null,
+    exportedAt: null,
+    changes: ["c-poison", "c-1", "c-2", "c-3", "c-4", "c-5", "c-6"].map((id) => ({
+      changeId: id,
+      videoId: `v-${id}`,
+      language: "es",
+      field: "title" as const,
+      baselineValue: "",
+      proposedValue: `T ${id}`,
+      changeType: "add" as const,
+      validationStatus: "valid" as const,
+      validationError: null,
+      conflictStatus: "none" as const,
+    })),
+  });
+
+  assert.deepEqual([...projection.projectedChanges.keys()].sort(), ["c-1", "c-2", "c-3", "c-4", "c-5", "c-6"]);
+  assert.equal(projection.projectedChangeSets.has("cs-1"), true);
+  // The document (source of truth) still holds all seven.
+  assert.equal(Object.keys((await core.getDocument({ channelId: CHANNEL })).changes).length, 7);
+  const failure = logged.find((entry) => entry.event === "change_drafts.projection.failed");
+  assert.ok(failure, "the refused row is logged, not silent");
+  assert.equal(failure.context?.failedRows, 1);
+  assert.deepEqual((failure.context?.failures as Array<{ kind: string; id: string }>).map((f) => [f.kind, f.id]), [["change", "c-poison"]]);
+  assert.equal(JSON.stringify(failure.context).includes("SECRET PROPOSED TEXT"), false, "bound values after params: never reach the log");
+});
+
 // M4 (docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md §4, Category C).
 test("createProvenance: stored alongside the change set and projected to SQL", async () => {
   const projection = fakeProjection();

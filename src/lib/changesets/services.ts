@@ -376,6 +376,27 @@ async function persistChangeSet(
   }
   const storedChanges = await deps.changeSetStore.listChangesByChangeSet(changeSetId);
 
+  // Never report success for a Change Set that reads back smaller than what was submitted (2026-10-04: an agent sent 106 changes and was told
+  // «created» while only 75 were visible, with no error). The draft itself is stored; this says so and names what is missing, so the caller
+  // does not blindly resubmit (which would create a second, equally incomplete set).
+  const storedIds = new Set(storedChanges.map((change) => change.id));
+  const missing = input.changesToPersist.filter((change) => !storedIds.has(change.id));
+  if (missing.length > 0) {
+    throw new DomainError({
+      code: "change_set_incomplete",
+      message:
+        `Change Set ${changeSetId} was created but only ${storedChanges.length} of ${input.changesToPersist.length} changes could be read back. ` +
+        "The draft is stored; do not resubmit the same proposals, tell the operator (the server log names the rows the database refused).",
+      details: {
+        changeSetId,
+        expectedChanges: input.changesToPersist.length,
+        storedChanges: storedChanges.length,
+        missing: missing.slice(0, 20).map((change) => ({ videoId: change.videoId, language: change.language, field: change.field })),
+        missingTotal: missing.length,
+      },
+    });
+  }
+
   return toChangeSetRecord(storedChangeSet, storedChanges.map(toChangeRecord));
 }
 
