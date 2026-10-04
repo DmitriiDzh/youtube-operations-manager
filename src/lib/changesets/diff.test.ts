@@ -196,3 +196,42 @@ test("currentRemoteValueFor falls back to existingLocalizations when defaultLang
   const video = makeVideo({ defaultLanguage: null, existingLocalizations: { en: { title: "Not the primary", description: "" } } });
   assert.equal(currentRemoteValueFor(video, "en", "title"), "Not the primary");
 });
+
+test("revalidateChangeAgainstCurrentRemote (owner report 2026-10-04): a remote value equal to the PROPOSED value is the change having taken effect -- no conflict, the approval stays", () => {
+  const approved = makeChange({ baselineValue: "Old", proposedValue: "New", approvalStatus: "approved", approvedValue: "New", conflictStatus: "none" });
+  const result = revalidateChangeAgainstCurrentRemote(approved, "New");
+  assert.equal(result.conflictStatus, "none");
+  assert.equal(result.approvalStatus, "approved");
+  assert.equal(result.approvedValue, "New");
+});
+
+test("revalidateChangeAgainstCurrentRemote: a remote value that is neither the baseline nor the proposal is still a conflict and still invalidates the approval", () => {
+  const approved = makeChange({ baselineValue: "Old", proposedValue: "New", approvalStatus: "approved", approvedValue: "New", conflictStatus: "none" });
+  const result = revalidateChangeAgainstCurrentRemote(approved, "Edited in Studio");
+  assert.equal(result.conflictStatus, "conflict");
+  assert.equal(result.approvalStatus, "pending");
+  assert.equal(result.approvedValue, null);
+});
+
+test("revalidateChangeAgainstCurrentRemote: a previously conflicted change whose remote now equals the proposal clears to none", () => {
+  const conflicted = makeChange({ baselineValue: "Old", proposedValue: "New", approvalStatus: "pending", conflictStatus: "conflict" });
+  assert.equal(revalidateChangeAgainstCurrentRemote(conflicted, "New").conflictStatus, "none");
+});
+
+test("revalidateChangeAgainstCurrentRemote: edge cases of the 'already in effect' rule -- null stays a conflict, pending/rejected keep their status, baseline = proposed = remote is no conflict, a delete (proposed empty) already applied is in effect", () => {
+  const equalButGone = makeChange({ baselineValue: "Old", proposedValue: "", approvalStatus: "approved", approvedValue: "", conflictStatus: "none" });
+  assert.equal(revalidateChangeAgainstCurrentRemote(equalButGone, null).conflictStatus, "conflict", "a video gone from synced data is still a conflict");
+
+  const pending = makeChange({ baselineValue: "Old", proposedValue: "New", approvalStatus: "pending", conflictStatus: "conflict" });
+  assert.equal(revalidateChangeAgainstCurrentRemote(pending, "New").approvalStatus, "pending");
+  const rejected = makeChange({ baselineValue: "Old", proposedValue: "New", approvalStatus: "rejected", conflictStatus: "none" });
+  assert.equal(revalidateChangeAgainstCurrentRemote(rejected, "New").approvalStatus, "rejected");
+
+  const same = makeChange({ baselineValue: "Same", proposedValue: "Same", approvalStatus: "pending", conflictStatus: "none" });
+  assert.equal(revalidateChangeAgainstCurrentRemote(same, "Same").conflictStatus, "none");
+
+  const applied = makeChange({ baselineValue: "Old", proposedValue: "", changeType: "delete", approvalStatus: "approved", approvedValue: "", conflictStatus: "none" });
+  const result = revalidateChangeAgainstCurrentRemote(applied, "");
+  assert.equal(result.conflictStatus, "none");
+  assert.equal(result.approvalStatus, "approved");
+});
