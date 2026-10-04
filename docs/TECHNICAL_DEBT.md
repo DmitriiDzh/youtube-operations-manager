@@ -1732,4 +1732,3 @@ No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a d
 - **Effect:** starting such an experiment fails closed with the normal "change set not found" error; nothing is written to YouTube and nothing else breaks.
 - **Possible fix:** have the planner keep a set while an experiment in a non-final state references it. Not done in slice 1 (no experiment facts in the retention module yet); decide with the owner whether it matters in practice.
 - **Gate(s):** none. **Status:** open.
-
