@@ -23,6 +23,9 @@ type Readers = {
   deviceAutoSyncEnabled: () => Promise<boolean>;
   /** BL-117: percent of the daily quota background reads leave untouched (default 20). */
   quotaReservePercent: () => Promise<number>;
+  /** BL-125: days a settled draft is kept (default 7) and days a successful write log is kept (default 30, minimum 7). */
+  draftRetentionDays: () => Promise<number>;
+  writeLogRetentionDays: () => Promise<number>;
 };
 
 export async function buildSettingsSnapshot(readers: Readers) {
@@ -59,6 +62,8 @@ export async function buildSettingsSnapshot(readers: Readers) {
     operatorCliEnabled: values.operatorCliEnabled as boolean | null,
     deviceAutoSyncEnabled: values.deviceAutoSyncEnabled as boolean | null,
     quotaReservePercent: values.quotaReservePercent as number | null,
+    draftRetentionDays: values.draftRetentionDays as number | null,
+    writeLogRetentionDays: values.writeLogRetentionDays as number | null,
     /** Names of the reads that failed this time (their fields are `null`). Empty when all succeeded. */
     unavailable,
   };

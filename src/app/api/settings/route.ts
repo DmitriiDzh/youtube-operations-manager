@@ -18,6 +18,12 @@ import {
   getOperatorCliEnabled,
   getOperationsWorkspacePath,
   getQuotaReservePercent,
+  getDraftRetentionDays,
+  getWriteLogRetentionDays,
+  setDraftRetentionDays,
+  setWriteLogRetentionDays,
+  MIN_DRAFT_RETENTION_DAYS,
+  MIN_WRITE_LOG_RETENTION_DAYS,
   setQuotaReservePercent,
   setAnalyticsReadsEnabled,
   setReportingReadsEnabled,
@@ -127,6 +133,8 @@ async function getSettingsSnapshot() {
     operatorCliEnabled: () => getOperatorCliEnabled(),
     deviceAutoSyncEnabled: () => getDeviceAutoSyncEnabled(),
     quotaReservePercent: () => getQuotaReservePercent(),
+    draftRetentionDays: () => getDraftRetentionDays(),
+    writeLogRetentionDays: () => getWriteLogRetentionDays(),
   });
 }
 
@@ -229,6 +237,28 @@ export async function POST(request: Request) {
     quotaReservePercentToSet = body.quotaReservePercent;
   }
 
+  // BL-125: whole days, drafts at least 1, write log at least 7 (owner decision 2026-10-04).
+  let draftRetentionDaysToSet: number | undefined;
+  if (body.draftRetentionDays !== undefined) {
+    if (typeof body.draftRetentionDays !== "number" || !Number.isInteger(body.draftRetentionDays) || body.draftRetentionDays < MIN_DRAFT_RETENTION_DAYS || body.draftRetentionDays > 3650) {
+      return NextResponse.json(
+        { error: "validation_failed", message: `draftRetentionDays must be a whole number of days from ${MIN_DRAFT_RETENTION_DAYS} to 3650` },
+        { status: 400 }
+      );
+    }
+    draftRetentionDaysToSet = body.draftRetentionDays;
+  }
+  let writeLogRetentionDaysToSet: number | undefined;
+  if (body.writeLogRetentionDays !== undefined) {
+    if (typeof body.writeLogRetentionDays !== "number" || !Number.isInteger(body.writeLogRetentionDays) || body.writeLogRetentionDays < MIN_WRITE_LOG_RETENTION_DAYS || body.writeLogRetentionDays > 3650) {
+      return NextResponse.json(
+        { error: "validation_failed", message: `writeLogRetentionDays must be a whole number of days from ${MIN_WRITE_LOG_RETENTION_DAYS} to 3650` },
+        { status: 400 }
+      );
+    }
+    writeLogRetentionDaysToSet = body.writeLogRetentionDays;
+  }
+
   let operationsWorkspacePathToSet: { present: true; value: string | null } | { present: false } = { present: false };
   if (body.operationsWorkspacePath !== undefined) {
     if (body.operationsWorkspacePath === null || body.operationsWorkspacePath === "") {
@@ -287,6 +317,12 @@ export async function POST(request: Request) {
   }
   if (quotaReservePercentToSet !== undefined) {
     await setQuotaReservePercent(quotaReservePercentToSet);
+  }
+  if (draftRetentionDaysToSet !== undefined) {
+    await setDraftRetentionDays(draftRetentionDaysToSet);
+  }
+  if (writeLogRetentionDaysToSet !== undefined) {
+    await setWriteLogRetentionDays(writeLogRetentionDaysToSet);
   }
   if (operationsWorkspacePathToSet.present) {
     await setOperationsWorkspacePath(operationsWorkspacePathToSet.value);
