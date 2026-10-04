@@ -141,6 +141,13 @@ async function startServerSession() {
   setTimeout(sweepExportsQuietly, 75_000).unref();
   setInterval(sweepExportsQuietly, API_DATA_RETENTION_INTERVAL_MS).unref();
 
+  // BL-125: settled drafts (rejected, or approved and verified on YouTube) and fully successful write logs are deleted after the periods set
+  // in Settings (default 7 / 30 days). Once a few minutes after boot, then hourly; in-review work and anything failed is never touched.
+  const { sweepSettledWork } = await import("@/lib/retention");
+  const sweepRetentionQuietly = () => void sweepSettledWork().catch(() => undefined);
+  setTimeout(sweepRetentionQuietly, 120_000).unref();
+  setInterval(sweepRetentionQuietly, 60 * 60 * 1000).unref();
+
   // Phase 13 slice 13.8: Wikipedia page views for topic-linked articles (free, no quota). Each run
   // fetches only days not stored yet; off when Settings → Wikipedia reads is off (the gateway refuses).
   const { WIKIPEDIA_COLLECTION_INTERVAL_MS, createWikipediaSignalsCore } = await import("@/lib/wikipedia-signals");
