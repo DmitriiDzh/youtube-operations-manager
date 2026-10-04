@@ -350,7 +350,7 @@ export default function Dashboard() {
               the agent&rsquo;s proposals before creating a Change Set. Importing an edited XLSX
               workbook remains available as a secondary, bulk action. No metadata is written to
               YouTube anywhere in this tab &mdash; approval here is a local decision only, and
-              &ldquo;Одобрено&rdquo; never means a real YouTube write happened.
+              &ldquo;Approved&rdquo; never means a real YouTube write happened.
             </p>
             <LanguagesManager />
           </div>
