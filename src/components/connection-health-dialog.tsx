@@ -42,16 +42,20 @@ export function ConnectionHealthDialog({ health }: { health: ConnectionHealth[] 
   }, [blocking]);
 
   if (prompt.mode === "none") return null;
+  // A dismissable dialog can still list a grant that is already dead (a lone Google Cloud grant never blocks).
+  const anyExpired = prompt.rows.some((row) => row.state === "reauth_required");
 
   return (
     <BlockingDialog label="Sign in with Google again" maxWidthClass="max-w-md">
       <p className="text-sm font-medium text-zinc-100">
-        {blocking ? "Sign in with Google again" : "A Google sign-in is about to expire"}
+        {blocking || anyExpired ? "Sign in with Google again" : "A Google sign-in is about to expire"}
       </p>
       <p className="text-xs text-zinc-400">
         {blocking
           ? "Google no longer accepts the saved sign-in for the account(s) below. Choose the account to sign in with first."
-          : "Sign in again before it expires to avoid an interruption."}
+          : anyExpired
+            ? "Google no longer accepts the saved sign-in below. Sign in again when convenient; the app keeps working without it."
+            : "Sign in again before it expires to avoid an interruption."}
       </p>
       <ul className="space-y-2">
         {prompt.rows.map((row) => (

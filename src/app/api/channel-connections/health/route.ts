@@ -6,6 +6,8 @@ import { createCloudConnectionCore } from "@/lib/cloud-connection";
 
 // One core for the process, so its short-lived cache of real token checks survives between requests.
 const core = createChannelConnectionsCore();
+// Same for the Cloud grant: a core built per request would start with an empty cache and call Google on every page load.
+const cloudCore = createCloudConnectionCore();
 
 /**
  * BL-115 -- health of every connected channel's stored Google grant, for the dashboard's re-login prompt and the
@@ -25,7 +27,7 @@ export async function GET(request: Request) {
   // BL-126: the one Google Cloud grant (quota statistics) is checked by the same rules and listed beside the channels.
   // A failure here only leaves it out, never the channel rows.
   try {
-    const cloud = await createCloudConnectionCore().getHealth({ forceRefresh });
+    const cloud = await cloudCore.getHealth({ forceRefresh });
     if (cloud.connected) {
       health.push({
         kind: "cloud",
