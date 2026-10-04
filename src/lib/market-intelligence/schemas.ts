@@ -2,6 +2,7 @@ import { YOUTUBE_API_SNAPSHOT_SOURCES } from "@/lib/youtube-data-policy/contract
 import { z } from "zod";
 import { createdViaSchema } from "@/lib/shared-provenance";
 import { credentialRefSchema } from "@/lib/video-metadata/schemas";
+import { MAX_VIDEOS_PER_CHANNEL_LIMIT, isValidIsoDate } from "./collection-depth";
 export { parseWithSchema, formatZodError } from "./contracts";
 
 // Same pattern as `src/lib/cli-auth/schemas.ts`'s `selectWriteChannelInputSchema` -- duplicated
@@ -123,6 +124,7 @@ const dataQualityFlagSchema = z.enum([
   "hidden_subscriber_count",
   "partial_discovery",
   "quota_limited",
+  "feed_fallback_used",
 ]);
 
 // Phase 9 slice 3 -- the one action in this module that makes a real outbound YouTube API call.
@@ -262,6 +264,19 @@ export const captureChannelSnapshotOutputSchema = marketChannelSnapshotSchema;
 // Same shape as fetchPublicSnapshotInputSchema/captureChannelSnapshotInputSchema's own
 // credentialRef field -- this trigger is global (every stale watchlisted channel at once), not
 // scoped to one researchChannelId, so that is its only input.
+// Operator request 2026-10-04 -- collection depth. `null` clears a value (global: back to 50 / no date; per channel: use the global default).
+const collectionDepthFields = {
+  maxVideosPerChannel: z.number().int().min(1).max(MAX_VIDEOS_PER_CHANNEL_LIMIT).nullable(),
+  publishedAfter: z
+    .string()
+    .refine(isValidIsoDate, "publishedAfter must be a real calendar date written YYYY-MM-DD")
+    .nullable(),
+};
+export const setCollectionDepthDefaultsInputSchema = z.object(collectionDepthFields).strict();
+export const setResearchChannelCollectionDepthInputSchema = z
+  .object({ channelId: youtubeChannelIdSchema, ...collectionDepthFields })
+  .strict();
+
 export const runCollectionIfStaleInputSchema = z
   .object({
     credentialRef: credentialRefSchema,
@@ -401,6 +416,23 @@ export const listTopicsForSubjectInputSchema = z.discriminatedUnion("subjectType
 ]);
 export const listTopicsForSubjectOutputSchema = z.object({ assignments: z.array(marketTopicAssignmentSchema) }).strict();
 
+// Operator request 2026-10-04 -- the effective collection depth of one watchlist channel and its progress. `videosStored` = distinct
+// videoIds with a stored snapshot (inside the 30-day window); `complete` = a deep collection finished under the settings in force
+// (false while a backfill is under way, never collected yet, or after the cap was raised / the date moved earlier).
+export const collectionProgressSchema = z
+  .object({
+    maxVideosPerChannel: z.number().int().positive(),
+    maxVideosPerChannelOverride: z.number().int().positive().nullable(),
+    publishedAfter: z.string().nullable(),
+    publishedAfterOverride: z.string().nullable(),
+    videosStored: z.number().int().nonnegative(),
+    complete: z.boolean(),
+    completeReason: z.enum(["exhausted", "cap", "date"]).nullable(),
+    estimatedFirstCollectionUnits: z.number().int().positive(),
+    estimatedFirstCollectionWorstCaseUnits: z.number().int().positive(),
+  })
+  .strict();
+
 // Phase 9 slice 4's original shape was just `{ channel, evidence }`; extended in 9G, part A
 // (docs/roadmap/plans/PHASE_9_SLICE_9G_PLAN.md §2) with 9A/9E-part-A read surfaces and 9I's derived
 // `dataQualityFlags` -- additive only, so any caller reading just the original two fields is
@@ -425,6 +457,8 @@ export const getWatchlistEntryContextOutputSchema = z
     // among them, null when none. Nothing here is computed from statistics.
     uniqueVideoCount: z.number().int().nonnegative(),
     latestVideoSnapshotAt: z.string().nullable(),
+    // Added 2026-10-04 (operator request, additive): how deep this channel's uploads are collected and how far it has got.
+    collectionProgress: collectionProgressSchema,
   })
   .strict();
 
@@ -707,7 +741,7 @@ export const rejectMarketResearchRequestOutputSchema = marketResearchRequestSche
 
 // Narrower than the full 7-value dataQualityFlagSchema (plan §3a) -- hidden_subscriber_count and
 // every other value outside these three are deliberately excluded from a "collection warning".
-const overviewCollectionWarningFlagSchema = z.enum(["stale_observation", "quota_limited", "missing_snapshot"]);
+const overviewCollectionWarningFlagSchema = z.enum(["stale_observation", "quota_limited", "missing_snapshot", "feed_fallback_used"]);
 
 export const getMarketOverviewOutputSchema = z
   .object({

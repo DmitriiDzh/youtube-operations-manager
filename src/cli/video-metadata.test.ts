@@ -24,6 +24,19 @@ import { parseWithSchema, registerExternalArtifactInputSchema } from "@/lib/cont
 import { listAssetPerformanceInputSchema } from "@/lib/agent-operations/schemas";
 import { runCliCommand, runCliProcess, getCredentialRef, parseArgs } from "./video-metadata";
 
+// Default depth (50 videos, no date), nothing collected yet: first collection = 1 channels.list + 1 page = 2 units, worst case 3.
+const STUB_COLLECTION_PROGRESS = {
+  maxVideosPerChannel: 50,
+  maxVideosPerChannelOverride: null,
+  publishedAfter: null,
+  publishedAfterOverride: null,
+  videosStored: 0,
+  complete: false,
+  completeReason: null,
+  estimatedFirstCollectionUnits: 2,
+  estimatedFirstCollectionWorstCaseUnits: 3,
+};
+
 // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-10): without an agent token the CLI runs only
 // in operator mode, which the persisted "Operator CLI access" setting gates (off by default). These
 // tests exercise operator-mode behavior, so they state that mode explicitly via the injectable seam.
@@ -3597,6 +3610,7 @@ test("CLI agent market-intelligence requires --channelId and returns the channel
       neverObserved: false,
       uniqueVideoCount: 0,
       latestVideoSnapshotAt: null,
+      collectionProgress: STUB_COLLECTION_PROGRESS,
     };
   };
 
@@ -3788,6 +3802,7 @@ test("CLI agent competitors/market-intelligence/market-records are never blocked
       neverObserved: false,
       uniqueVideoCount: 0,
       latestVideoSnapshotAt: null,
+      collectionProgress: STUB_COLLECTION_PROGRESS,
     });
 
     const competitorsExit = await runCliCommand({

@@ -22,6 +22,19 @@ import { rawSqlClient } from "@/lib/db";
 import { acquireOperationLock, releaseOperationLock } from "@/lib/operation-lock";
 import { createMcpServer, createMcpToolHandlers } from "./server";
 
+// Default depth (50 videos, no date), nothing collected yet: first collection = 1 channels.list + 1 page = 2 units, worst case 3.
+const STUB_COLLECTION_PROGRESS = {
+  maxVideosPerChannel: 50,
+  maxVideosPerChannelOverride: null,
+  publishedAfter: null,
+  publishedAfterOverride: null,
+  videosStored: 0,
+  complete: false,
+  completeReason: null,
+  estimatedFirstCollectionUnits: 2,
+  estimatedFirstCollectionWorstCaseUnits: 3,
+};
+
 // Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-01): tools are registered only for a
 // channel-bound agent session. Tests that exercise registered tools inject one explicitly (a test
 // seam, never a relaxed production rule); its token is treated as always valid.
@@ -5034,6 +5047,7 @@ test("MCP query_market_intelligence returns the channel's own record with an emp
       neverObserved: false,
       uniqueVideoCount: 0,
       latestVideoSnapshotAt: null,
+      collectionProgress: STUB_COLLECTION_PROGRESS,
     };
   };
 
@@ -5088,6 +5102,7 @@ test("MCP query_market_intelligence returns the channel's own record plus its fu
       neverObserved: false,
       uniqueVideoCount: 0,
       latestVideoSnapshotAt: null,
+      collectionProgress: STUB_COLLECTION_PROGRESS,
     };
   };
 

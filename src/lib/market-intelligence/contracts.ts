@@ -219,7 +219,9 @@ export type DataQualityFlag =
   | "video_no_longer_public"
   | "hidden_subscriber_count"
   | "partial_discovery"
-  | "quota_limited";
+  | "quota_limited"
+  // Operator request 2026-10-04: the latest collection used the ~15-video RSS feed because the uploads playlist call failed.
+  | "feed_fallback_used";
 
 /**
  * A channel/video observation older than this is `"stale_observation"` (9I) -- the SAME constant

@@ -1063,6 +1063,19 @@ export const researchChannels = sqliteTable("research_channels", {
    * reclaimed -- never requires a manual operator unlock, unlike `operation-lock`'s deliberately
    * stricter export/import/migration guard. */
   collectionClaimedAt: integer("collection_claimed_at", { mode: "timestamp" }),
+  // SCHEMA_MIGRATIONS version 48 (operator request 2026-10-04, deeper competitor collection). NULL = "use the global default"
+  // (50 videos / no date until the operator sets one); the per-channel override of the two settings.
+  maxVideosPerChannel: integer("max_videos_per_channel"),
+  publishedAfter: text("published_after"),
+  // Collection progress for the depth feature. `videosComplete` NULL = not yet known (treated as a first collection, still capped
+  // at the effective cap), 0 = a backfill is under way, 1 = finished. `videosCompleteReason` = exhausted | cap | date;
+  // `videosNextPageToken` = where the next run resumes; `videosCapAtRun`/`videosPublishedAfterAtRun` = the settings in force when
+  // it completed, so a later raised cap or earlier date is noticed.
+  videosComplete: integer("videos_complete"),
+  videosCompleteReason: text("videos_complete_reason"),
+  videosNextPageToken: text("videos_next_page_token"),
+  videosCapAtRun: integer("videos_cap_at_run"),
+  videosPublishedAfterAtRun: text("videos_published_after_at_run"),
 });
 
 /**
@@ -1198,6 +1211,8 @@ export const marketIntelligenceCollectionRuns = sqliteTable(
     videosRequested: integer("videos_requested"),
     videosReturned: integer("videos_returned"),
     errorMessage: text("error_message"),
+    // SCHEMA_MIGRATIONS version 48 -- true when the uploads playlist call failed and the ~15-video RSS feed was used instead.
+    feedFallback: integer("feed_fallback", { mode: "boolean" }).notNull().default(false),
   },
   (table) => [
     index("market_intelligence_collection_runs_research_channel_id_idx").on(table.researchChannelId),
@@ -2665,6 +2680,29 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
         "ALTER TABLE market_video_snapshots ADD COLUMN duration_seconds INTEGER",
         "ALTER TABLE market_video_snapshots ADD COLUMN live_broadcast_content TEXT",
         "ALTER TABLE videos ADD COLUMN live_broadcast_content TEXT",
+      ]) {
+        try {
+          await client.execute(statement);
+        } catch (error) {
+          if (!isDuplicateColumnError(error)) throw error;
+        }
+      }
+    },
+  },
+  {
+    version: 48,
+    description:
+      "research_channels depth settings + collection progress (max_videos_per_channel, published_after, videos_complete, videos_complete_reason, videos_next_page_token, videos_cap_at_run, videos_published_after_at_run) and market_intelligence_collection_runs.feed_fallback -- operator request 2026-10-04: collect competitor uploads deeper than 50 videos; existing rows keep NULL/false and behave exactly as before",
+    apply: async (client) => {
+      for (const statement of [
+        "ALTER TABLE research_channels ADD COLUMN max_videos_per_channel INTEGER",
+        "ALTER TABLE research_channels ADD COLUMN published_after TEXT",
+        "ALTER TABLE research_channels ADD COLUMN videos_complete INTEGER",
+        "ALTER TABLE research_channels ADD COLUMN videos_complete_reason TEXT",
+        "ALTER TABLE research_channels ADD COLUMN videos_next_page_token TEXT",
+        "ALTER TABLE research_channels ADD COLUMN videos_cap_at_run INTEGER",
+        "ALTER TABLE research_channels ADD COLUMN videos_published_after_at_run TEXT",
+        "ALTER TABLE market_intelligence_collection_runs ADD COLUMN feed_fallback INTEGER NOT NULL DEFAULT 0",
       ]) {
         try {
           await client.execute(statement);
@@ -6755,6 +6793,13 @@ export type StoredResearchChannel = {
   addedAt: Date;
   lastAutoCollectedAt: Date | null;
   collectionClaimedAt: Date | null;
+  maxVideosPerChannel: number | null;
+  publishedAfter: string | null;
+  videosComplete: number | null;
+  videosCompleteReason: string | null;
+  videosNextPageToken: string | null;
+  videosCapAtRun: number | null;
+  videosPublishedAfterAtRun: string | null;
 };
 
 export async function insertResearchChannel(
@@ -7125,6 +7170,8 @@ export async function insertMarketIntelligenceCollectionRun(
     videosRequested?: number | null;
     videosReturned?: number | null;
     errorMessage?: string | null;
+    /** True when the RSS feed (~15 newest) was used because the playlist call failed. */
+    feedFallback?: boolean;
     // Injectable so the orchestration's own staleness/backoff-window tests can control exactly
     // what this row's ranAt reads as -- omitted (real callers outside a test) defaults to the
     // table's own `$defaultFn(() => new Date())`, unchanged from before this parameter existed.
@@ -7139,6 +7186,7 @@ export async function insertMarketIntelligenceCollectionRun(
     videosRequested: input.videosRequested ?? null,
     videosReturned: input.videosReturned ?? null,
     errorMessage: input.errorMessage ?? null,
+    feedFallback: input.feedFallback ?? false,
     ...(input.ranAt ? { ranAt: input.ranAt } : {}),
   });
 }
@@ -7152,6 +7200,7 @@ export type StoredMarketIntelligenceCollectionRun = {
   videosRequested: number | null;
   videosReturned: number | null;
   errorMessage: string | null;
+  feedFallback: boolean;
 };
 
 /**
@@ -7234,6 +7283,76 @@ export async function getMarketIntelligenceDailyQuotaBudgetUnits(database: AppDb
  * (the API route boundary), same convention `setAnalyticsSyncSettings` already uses. */
 export async function setMarketIntelligenceDailyQuotaBudgetUnits(units: number | null, database: AppDb = db): Promise<void> {
   await setAppSetting(MARKET_INTELLIGENCE_DAILY_QUOTA_BUDGET_SETTING_KEY, units === null ? "" : String(units), database);
+}
+
+const MARKET_INTELLIGENCE_DEFAULT_MAX_VIDEOS_SETTING_KEY = "market_intelligence_default_max_videos_per_channel";
+const MARKET_INTELLIGENCE_DEFAULT_PUBLISHED_AFTER_SETTING_KEY = "market_intelligence_default_published_after";
+
+/**
+ * The global default collection depth (operator request 2026-10-04). `null` = not set: 50 videos / no date. A corrupted stored
+ * value reads as unset (same defensive parse as the daily budget above). Range validation is the caller's job.
+ */
+export async function getMarketIntelligenceCollectionDepthDefaults(
+  database: AppDb = db
+): Promise<{ maxVideosPerChannel: number | null; publishedAfter: string | null }> {
+  const rawMax = await getAppSetting(MARKET_INTELLIGENCE_DEFAULT_MAX_VIDEOS_SETTING_KEY, database);
+  const rawDate = await getAppSetting(MARKET_INTELLIGENCE_DEFAULT_PUBLISHED_AFTER_SETTING_KEY, database);
+  const parsed = rawMax === null || rawMax === "" ? NaN : Number(rawMax);
+  return {
+    maxVideosPerChannel: Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : null,
+    publishedAfter: rawDate === null || rawDate === "" ? null : rawDate,
+  };
+}
+
+export async function setMarketIntelligenceCollectionDepthDefaults(
+  input: { maxVideosPerChannel: number | null; publishedAfter: string | null },
+  database: AppDb = db
+): Promise<void> {
+  await setAppSetting(
+    MARKET_INTELLIGENCE_DEFAULT_MAX_VIDEOS_SETTING_KEY,
+    input.maxVideosPerChannel === null ? "" : String(input.maxVideosPerChannel),
+    database
+  );
+  await setAppSetting(MARKET_INTELLIGENCE_DEFAULT_PUBLISHED_AFTER_SETTING_KEY, input.publishedAfter ?? "", database);
+}
+
+/** The per-channel override of the depth settings (`null` = use the global default). Range validation is the caller's job. */
+export async function setResearchChannelCollectionDepth(
+  researchChannelId: string,
+  input: { maxVideosPerChannel: number | null; publishedAfter: string | null },
+  database: AppDb = db
+): Promise<void> {
+  await database
+    .update(researchChannels)
+    .set({ maxVideosPerChannel: input.maxVideosPerChannel, publishedAfter: input.publishedAfter })
+    .where(eq(researchChannels.id, researchChannelId));
+}
+
+/**
+ * Persists how far a channel's deep collection has got (cursor + completion state). Written after every fully processed page
+ * of a backfill and once at the end; never touched by an incremental run or the RSS fallback.
+ */
+export async function saveResearchChannelCollectionProgress(
+  researchChannelId: string,
+  input: {
+    complete: boolean;
+    completeReason: "exhausted" | "cap" | "date" | null;
+    nextPageToken: string | null;
+    capAtRun: number;
+    publishedAfterAtRun: string | null;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database
+    .update(researchChannels)
+    .set({
+      videosComplete: input.complete ? 1 : 0,
+      videosCompleteReason: input.completeReason,
+      videosNextPageToken: input.nextPageToken,
+      videosCapAtRun: input.capAtRun,
+      videosPublishedAfterAtRun: input.publishedAfterAtRun,
+    })
+    .where(eq(researchChannels.id, researchChannelId));
 }
 
 // ---------------------------------------------------------------------------

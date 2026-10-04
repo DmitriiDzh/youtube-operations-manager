@@ -293,33 +293,51 @@ export async function listUploadsPlaylistVideoIds(
 }
 
 
+export type UploadsPlaylistPage = {
+  items: { videoId: string; title: string; publishedAt: string | null }[];
+  /** `null` when this is the last page. */
+  nextPageToken: string | null;
+};
+
 /**
- * Phase 13 (review round 1): the uploads playlist's first page WITH each item's title and publish
+ * Phase 13 (review round 1): ONE page of the uploads playlist WITH each item's title and publish
  * time -- `playlistItems.list` costs 1 unit whatever parts are requested, and `videos.batchGetStats`
- * (which supplies the statistics) returns no title. Up to 50 newest uploads.
+ * (which supplies the statistics) returns no title. Up to 50 uploads, newest first. Operator request
+ * 2026-10-04: `pageToken` (omitted = the first page) lets the caller page deeper; every call is still
+ * exactly 1 unit and returns at most 50 items, so the caller's flat per-page charge stays exact.
  */
-export async function listUploadsPlaylistFirstPage(
+export async function listUploadsPlaylistPage(
   youtube: youtube_v3.Youtube,
-  uploadsPlaylistId: string
-): Promise<{ videoId: string; title: string; publishedAt: string | null }[]> {
+  uploadsPlaylistId: string,
+  pageToken?: string
+): Promise<UploadsPlaylistPage> {
   const res = await youtube.playlistItems.list({
     part: ["snippet", "contentDetails"],
     playlistId: uploadsPlaylistId,
     maxResults: 50,
+    ...(pageToken ? { pageToken } : {}),
   });
   const seen = new Set<string>();
-  const out: { videoId: string; title: string; publishedAt: string | null }[] = [];
+  const items: UploadsPlaylistPage["items"] = [];
   for (const item of res.data.items ?? []) {
     const videoId = item.contentDetails?.videoId;
     if (!videoId || seen.has(videoId)) continue;
     seen.add(videoId);
-    out.push({
+    items.push({
       videoId,
       title: item.snippet?.title ?? "",
       publishedAt: item.contentDetails?.videoPublishedAt ?? null,
     });
   }
-  return out;
+  return { items, nextPageToken: res.data.nextPageToken ?? null };
+}
+
+/** The uploads playlist's first page (up to 50 newest uploads) -- `listUploadsPlaylistPage` without a token. */
+export async function listUploadsPlaylistFirstPage(
+  youtube: youtube_v3.Youtube,
+  uploadsPlaylistId: string
+): Promise<{ videoId: string; title: string; publishedAt: string | null }[]> {
+  return (await listUploadsPlaylistPage(youtube, uploadsPlaylistId)).items;
 }
 
 export type PublicVideoSnapshot = {

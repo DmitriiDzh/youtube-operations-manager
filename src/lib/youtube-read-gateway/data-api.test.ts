@@ -13,6 +13,7 @@ import {
   getVideosMetadataContextBatch,
   listSupportedLanguages,
   listUploadsPlaylistFirstPage,
+  listUploadsPlaylistPage,
   getPublicVideoStatsBatch,
   listUploadsPlaylistVideoIds,
   parseIso8601DurationToSeconds,
@@ -609,6 +610,33 @@ test("listUploadsPlaylistFirstPage dedupes ids within the single page and return
     playlistItemsList: (async () => ({ data: { items: [] } })) as unknown as youtube_v3.Youtube["playlistItems"]["list"],
   });
   assert.deepEqual(await listUploadsPlaylistFirstPage(emptyYoutube, "UU_EMPTY"), []);
+});
+
+// Operator request 2026-10-04 -- listUploadsPlaylistPage: one call per page, token passed through, next token returned.
+test("listUploadsPlaylistPage sends the given pageToken (and none for the first page), makes one call, and returns nextPageToken", async () => {
+  const requests: Array<Record<string, unknown>> = [];
+  const youtube = fakeYoutubeClient({
+    playlistItemsList: (async (params: Record<string, unknown>) => {
+      requests.push(params);
+      return {
+        data: {
+          items: [{ snippet: { title: "T" }, contentDetails: { videoId: "v9", videoPublishedAt: "2026-01-02T00:00:00Z" } }],
+          nextPageToken: params.pageToken ? undefined : "TOKEN_2",
+        },
+      };
+    }) as unknown as youtube_v3.Youtube["playlistItems"]["list"],
+  });
+
+  const first = await listUploadsPlaylistPage(youtube, "UU_TEST");
+  assert.deepEqual(first, { items: [{ videoId: "v9", title: "T", publishedAt: "2026-01-02T00:00:00Z" }], nextPageToken: "TOKEN_2" });
+  assert.equal(requests.length, 1);
+  assert.equal("pageToken" in requests[0], false);
+  assert.equal(requests[0].maxResults, 50);
+
+  const second = await listUploadsPlaylistPage(youtube, "UU_TEST", "TOKEN_2");
+  assert.equal(second.nextPageToken, null, "the last page has no token");
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].pageToken, "TOKEN_2");
 });
 
 // Phase 9 slice 9B -- getPublicVideoSnapshots, a lean public batch video-stats fetch.
