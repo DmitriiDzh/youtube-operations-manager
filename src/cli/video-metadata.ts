@@ -964,7 +964,12 @@ export async function runCliCommand(args: {
           { createdVia: "cli", agentApiVersion: null }
         );
         if (result.request) await marketAssignmentCore.recordAgentOwnership("collection_request", result.request.requestId);
-        writeStdout(serializeSuccess(result));
+        // An existing request this agent does not own is not disclosed: channelId only, no requestId.
+        const visibleIds = new Set(
+          (await marketAssignmentCore.filterForAgent("collection_request", result.alreadyRequested, (a) => a.requestId)).map((a) => a.requestId)
+        );
+        const alreadyRequested = result.alreadyRequested.map((a) => (visibleIds.has(a.requestId) ? a : { channelId: a.channelId }));
+        writeStdout(serializeSuccess({ ...result, alreadyRequested }));
         return 0;
       }
 

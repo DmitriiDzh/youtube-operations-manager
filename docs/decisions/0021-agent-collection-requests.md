@@ -34,7 +34,8 @@ the Research tab, atomic status transitions, approval symbols fenced from `src/m
    units spent are recorded. The background-reserve guard of the automatic refresh does not apply (a person approved this run).
 6. **Fenced:** `runApprovedCollectionRequest` / `rejectCollectionRequest` and the db transitions are not reachable from `src/mcp`, `src/cli`,
    `src/lib/agent-operations` (`market-research-request-approval-inventory.test.ts`); the MCP/CLI core subsets list only create/list/limits.
-7. **Recovery:** a boot-time sweep turns an approved/running request older than 30 minutes into `failed` ("interrupted") so its channels stop being blocked.
+7. **Recovery:** a boot-time sweep (run at boot, no age cutoff: at boot of the single server process no run can be alive) turns every approved/running request into `failed` ("interrupted") so its channels stop being blocked. A long run renews the claim of its not-yet-processed channels before each channel, so the 15-minute claim expiry cannot let a dashboard run take them mid-run; a throw mid-run records the units actually charged and the results so far.
+8. **A request can end `done` with every channel `skipped_*`** (fresh, in the failure pause, or no budget); an agent must read the per-channel results. Estimates: incremental refresh about 2, at most 5 units; `alreadyRequested` discloses a requestId only for a request the agent owns.
 
 ## Consequences
 

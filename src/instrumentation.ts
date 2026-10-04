@@ -158,10 +158,10 @@ async function startServerSession() {
 
   // Agent-created collection requests (docs/decisions/0021): a request left approved/running by a process that died mid-run becomes
   // failed ("interrupted") so its channels stop counting as having an open request. Quiet like the other boot sweeps.
+  // Every approved/running request at boot is an orphan (this is the single server process, so no run can be alive yet): no age cutoff,
+  // and it runs now, before requests are served, so it can never catch a run started in this process.
   const { createMarketIntelligenceCore } = await import("@/lib/market-intelligence");
-  const sweepCollectionRequestsQuietly = () =>
-    void createMarketIntelligenceCore().sweepInterruptedCollectionRequests().catch(() => undefined);
-  setTimeout(sweepCollectionRequestsQuietly, 30_000).unref();
+  await createMarketIntelligenceCore().sweepInterruptedCollectionRequests().catch(() => undefined);
 
   // BL-117 slice 1b: publish this device's quota-spend log to the shared Syncthing folder (its own file only), so every
   // device's history shows the whole picture of the shared Cloud quota. Never creates the folder; quiet on any failure.

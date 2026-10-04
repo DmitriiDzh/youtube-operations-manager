@@ -6,6 +6,7 @@ import { MUSIC_CHART_REGIONS } from "./contracts";
 import {
   DEFAULT_MAX_VIDEOS_PER_CHANNEL,
   PLAYLIST_PAGE_SIZE,
+  STEADY_STATE_WORST_CASE_UNITS,
   estimateCollectionUnits,
   needsBackfill,
   pagesForCap,
@@ -508,8 +509,16 @@ function toMarketCollectionRequest(row: StoredMarketCollectionRequestForService)
   };
 }
 
-/** An approved/running request older than this was orphaned by a process that died mid-run (boot sweep marks it failed). */
-export const COLLECTION_REQUEST_INTERRUPTED_AFTER_MS = 30 * 60 * 1000;
+/** What a collection pass has gathered so far; the caller reads it when the pass throws (units actually charged, results so far). */
+type CollectionRunSink = { channels: CollectionChannelResult[]; unitsSpent: number; claimed: string[] };
+type CollectionPassResult = {
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  quotaLimited: number;
+  unitsSpent: number;
+  channels: CollectionChannelResult[];
+};
 
 function roundedHours(fromMs: number, toMs: number): number {
   return Math.round(((toMs - fromMs) / 3_600_000) * 10) / 10;
@@ -640,6 +649,8 @@ type ServiceDependencies = {
     onlyResearchChannelIds?: string[];
   }): Promise<string[]>;
   releaseResearchChannelCollectionClaim(researchChannelId: string): Promise<void>;
+  /** Moves the claim of the given channels from `expectedClaimedAt` to `newClaimedAt` where they still carry it; returns the renewed ids. */
+  renewResearchChannelCollectionClaims(ids: string[], expectedClaimedAt: Date, newClaimedAt: Date): Promise<string[]>;
   listRecentlyFailedResearchChannelIds(since: Date): Promise<string[]>;
   markResearchChannelAutoCollected(researchChannelId: string, at: Date): Promise<void>;
   insertMarketIntelligenceCollectionRun(input: {
@@ -951,7 +962,28 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
    */
   async function collectStaleChannels(
     parsedInput: { credentialRef: CredentialRef },
-    onlyIds?: string[]
+    onlyIds?: string[],
+    sink: CollectionRunSink = { channels: [], unitsSpent: 0, claimed: [] }
+  ): Promise<CollectionPassResult> {
+    try {
+      return await collectStaleChannelsInner(parsedInput, onlyIds, sink);
+    } catch (error) {
+      // A throw mid-run must not leave this run's remaining channels claimed until the claim expires.
+      for (const id of sink.claimed) {
+        try {
+          await deps.releaseResearchChannelCollectionClaim(id);
+        } catch {
+          // Best effort; the claim expiry is the fallback.
+        }
+      }
+      throw error;
+    }
+  }
+
+  async function collectStaleChannelsInner(
+    parsedInput: { credentialRef: CredentialRef },
+    onlyIds: string[] | undefined,
+    sink: CollectionRunSink
   ): Promise<{
     attempted: number;
     succeeded: number;
@@ -961,7 +993,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
     channels: CollectionChannelResult[];
   }> {
     const zeroed = { attempted: 0, succeeded: 0, failed: 0, quotaLimited: 0, unitsSpent: 0 };
-    const results: CollectionChannelResult[] = [];
+    const results: CollectionChannelResult[] = sink.channels;
     let recentlyFailedIds: string[] = [];
     // Channels of the request this pass did not process get the reason they were passed over; a processed channel keeps its own result.
     const finish = (
@@ -1031,6 +1063,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       ...(onlyIds ? { onlyResearchChannelIds: onlyIds } : {}),
     });
 
+    sink.claimed = [...claimedIds];
     if (claimedIds.length === 0) {
       return finish("skipped_not_stale");
     }
@@ -1055,8 +1088,23 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
     let quotaLimited = 0;
     let unitsSpentTotal = 0;
 
+    // The value this run last wrote into every still-unprocessed channel's claim (see the renewal below).
+    let claimToken = now;
+
     for (let i = 0; i < claimedIds.length; i++) {
       const researchChannelId = claimedIds[i];
+
+      // A long run (e.g. an approved request) can outlive the claim expiry; renew the claim of every channel not yet processed before
+      // each channel, so a dashboard run cannot reclaim them mid-run. Only claims this run still holds are renewed; a channel whose
+      // claim was lost is not processed (it belongs to someone else now).
+      const nextToken = deps.clock.now();
+      const renewed = await deps.renewResearchChannelCollectionClaims(claimedIds.slice(i), claimToken, nextToken);
+      claimToken = nextToken;
+      if (!renewed.includes(researchChannelId)) {
+        sink.claimed = sink.claimed.filter((id) => id !== researchChannelId);
+        results.push({ channelId: researchChannelId, outcome: "skipped_not_stale", videosStored: 0, newSnapshotsObservedAt: null, unitsSpent: 0 });
+        continue;
+      }
 
       // Checked against the full worst-case cost, not just the next call's cost -- a channel is
       // either fully processed or not started at all this run, never cut short partway (see
@@ -1399,6 +1447,7 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       } finally {
         await deps.releaseResearchChannelCollectionClaim(researchChannelId);
         unitsSpentTotal += unitsSpentThisChannel;
+        sink.unitsSpent = unitsSpentTotal;
         results.push({
           channelId: researchChannelId,
           outcome: channelOutcome,
@@ -3339,8 +3388,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         const depth = resolveCollectionDepth(row, depthDefaults);
         const stored = new Set((await deps.listMarketVideoSnapshotsByChannel(id)).map((snapshot) => snapshot.videoId)).size;
         if (!needsBackfill(row, depth, stored)) {
-          // Steady state: 1 channels.list + 1 playlist page [+1 when page 1 held new videos] [+ a videos.list fallback] -> 2 to 3.
-          channelEstimates.push({ channelId: id, mode: "incremental", expectedUnits: 2, worstCaseUnits: 3 });
+          // Steady state: expected 1 channels.list + 1 playlist page = 2. Worst case: page 1 held new videos so page 2 is read too, and
+          // each of the two pages falls back to one videos.list = 1 + 2 + 2 = 5 (STEADY_STATE_WORST_CASE_UNITS).
+          channelEstimates.push({ channelId: id, mode: "incremental", expectedUnits: 2, worstCaseUnits: STEADY_STATE_WORST_CASE_UNITS });
           continue;
         }
         // A backfill reads page 1 (refresh) plus the pages for what is not stored yet. With no saved cursor it re-walks the stored pages
@@ -3483,8 +3533,9 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
 
       const channelIds = JSON.parse(running.channelIdsJson) as string[];
       let finished: StoredMarketCollectionRequestForService | null;
+      const sink: CollectionRunSink = { channels: [], unitsSpent: 0, claimed: [] };
       try {
-        const run = await collectStaleChannels({ credentialRef: parsedInput.credentialRef }, channelIds);
+        const run = await collectStaleChannels({ credentialRef: parsedInput.credentialRef }, channelIds, sink);
         const resultJson = JSON.stringify(run.channels.map((c) => parseWithSchema(collectionChannelResultSchema, c, "collection channel result")));
         if (run.attempted > 0 && run.succeeded === 0 && run.failed === run.attempted) {
           finished = await deps.finishMarketCollectionRequestIfRunning(
@@ -3502,7 +3553,13 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       } catch (error) {
         finished = await deps.finishMarketCollectionRequestIfRunning(
           parsedInput.requestId,
-          { status: "failed", resultJson: null, unitsSpentTotal: 0, error: error instanceof Error ? error.message : String(error) },
+          {
+            status: "failed",
+            // What the run had charged and finished before it threw -- never a fabricated 0.
+            resultJson: sink.channels.length > 0 ? JSON.stringify(sink.channels) : null,
+            unitsSpentTotal: sink.unitsSpent,
+            error: error instanceof Error ? error.message : String(error),
+          },
           deps.clock.now()
         );
       }
@@ -3532,10 +3589,14 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       return parseWithSchema(marketCollectionRequestSchema, toMarketCollectionRequest(rejected), "reject collection request output");
     },
 
-    /** Boot-time recovery (src/instrumentation.ts): an approved/running request whose run was orphaned by a dead process becomes failed. */
-    async sweepInterruptedCollectionRequests(): Promise<{ failed: number }> {
+    /**
+     * Boot-time recovery (src/instrumentation.ts): every approved/running request approved before `approvedBefore` (default: now) is an
+     * orphan of a dead process and becomes failed. At boot of the single server process no run can be alive, so boot passes no cutoff
+     * (= now, no age threshold); the explicit argument only keeps the helper testable.
+     */
+    async sweepInterruptedCollectionRequests(input: { approvedBefore?: Date } = {}): Promise<{ failed: number }> {
       const now = deps.clock.now();
-      const failed = await deps.failInterruptedMarketCollectionRequests(new Date(now.getTime() - COLLECTION_REQUEST_INTERRUPTED_AFTER_MS), now);
+      const failed = await deps.failInterruptedMarketCollectionRequests(input.approvedBefore ?? now, now);
       return { failed };
     },
   };

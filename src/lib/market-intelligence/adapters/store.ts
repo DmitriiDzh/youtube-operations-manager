@@ -57,6 +57,7 @@ import {
   recordMarketResearchRequestExecutionOutcome,
   rejectMarketResearchRequestIfPending,
   releaseResearchChannelCollectionClaim,
+  renewResearchChannelCollectionClaims,
   setMarketDiscoveryCandidateStatus,
   setMarketIntelligenceDailyQuotaBudgetUnits,
   touchMarketDiscoveryCandidateLastSeen,
@@ -94,6 +95,7 @@ export function createMarketIntelligenceStoreAdapter() {
     saveResearchChannelCollectionProgress,
     claimStaleResearchChannelsForCollection,
     releaseResearchChannelCollectionClaim,
+    renewResearchChannelCollectionClaims,
     listRecentlyFailedResearchChannelIds,
     // Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md).
     getMarketDiscoveryCandidateById,

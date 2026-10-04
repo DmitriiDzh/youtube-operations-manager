@@ -6294,3 +6294,23 @@ test("CLI agent collection-limits prints the core's limits", async () => {
   assert.equal(exitCode, 0);
   assert.deepEqual(JSON.parse(stdout[0] ?? "{}"), { ok: true, data: { dailyBudgetUnits: 1000 } });
 });
+
+test("CLI agent create-collection-request: alreadyRequested hides the requestId of a request the agent does not own", async () => {
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  marketIntelligenceCore.createCollectionRequest = async () =>
+    ({ created: false, request: null, notNeeded: [], alreadyRequested: [{ channelId: "UCaaaaaaaaaaaaaaaaaaaaaa", requestId: "cr-other" }] }) as never;
+  const stdout: string[] = [];
+  const assignment = makeCollectionAssignmentStub(["UCaaaaaaaaaaaaaaaaaaaaaa"], []);
+  const base = assignment.filterForAgent;
+  assignment.filterForAgent = async (kind: string, items: never[], idOf: never) => (kind === "collection_request" ? [] : base(kind, items, idOf));
+  await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "create-collection-request", "--researchChannelIds", "UCaaaaaaaaaaaaaaaaaaaaaa"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    marketAssignmentCore: assignment as never,
+    writeStdout: (line) => stdout.push(line),
+  });
+  assert.deepEqual(JSON.parse(stdout[0] ?? "{}").data.alreadyRequested, [{ channelId: "UCaaaaaaaaaaaaaaaaaaaaaa" }]);
+});

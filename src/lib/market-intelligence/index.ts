@@ -40,6 +40,7 @@ export function createMarketIntelligenceCore() {
     countMarketDiscoverySearchesSince: store.countMarketDiscoverySearchesSince,
     claimStaleResearchChannelsForCollection: store.claimStaleResearchChannelsForCollection,
     releaseResearchChannelCollectionClaim: store.releaseResearchChannelCollectionClaim,
+    renewResearchChannelCollectionClaims: store.renewResearchChannelCollectionClaims,
     listRecentlyFailedResearchChannelIds: store.listRecentlyFailedResearchChannelIds,
     markResearchChannelAutoCollected: store.markResearchChannelAutoCollected,
     insertMarketIntelligenceCollectionRun: store.insertMarketIntelligenceCollectionRun,

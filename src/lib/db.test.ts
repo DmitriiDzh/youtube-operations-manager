@@ -8,6 +8,7 @@ import { createClient, type Client } from "@libsql/client";
 import { eq } from "drizzle-orm";
 import {
   approveMarketCollectionRequestIfPending,
+  renewResearchChannelCollectionClaims,
   failInterruptedMarketCollectionRequests,
   finishMarketCollectionRequestIfRunning,
   findOpenMarketCollectionRequestForChannel,
@@ -3185,4 +3186,25 @@ test("failInterruptedMarketCollectionRequests: approved/running requests approve
     assert.equal((await getMarketCollectionRequestById("recent-running", isolatedDb))?.status, "running");
     assert.equal((await getMarketCollectionRequestById("old-pending", isolatedDb))?.status, "pending");
     assert.equal((await getMarketCollectionRequestById("old-done", isolatedDb))?.status, "done");
+  }));
+
+test("renewResearchChannelCollectionClaims: renews only claims still carrying the expected value; a reclaimed or released channel is left alone", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const t0 = new Date("2026-09-27T12:00:00.000Z");
+    const t1 = new Date("2026-09-27T12:20:00.000Z");
+    const other = new Date("2026-09-27T12:10:00.000Z");
+    await isolatedDb.insert(researchChannels).values([
+      { id: "UC_MINE", reason: "r", createdVia: "web_ui", collectionClaimedAt: t0 },
+      { id: "UC_TAKEN", reason: "r", createdVia: "web_ui", collectionClaimedAt: other },
+      { id: "UC_FREE", reason: "r", createdVia: "web_ui" },
+    ]);
+    assert.deepEqual(await renewResearchChannelCollectionClaims([], t0, t1, isolatedDb), []);
+    assert.deepEqual(await renewResearchChannelCollectionClaims(["UC_MINE", "UC_TAKEN", "UC_FREE"], t0, t1, isolatedDb), ["UC_MINE"]);
+    const rows = await isolatedDb.select().from(researchChannels);
+    const at = (id: string) => rows.find((r) => r.id === id)?.collectionClaimedAt?.getTime() ?? null;
+    assert.equal(at("UC_MINE"), t1.getTime());
+    assert.equal(at("UC_TAKEN"), other.getTime());
+    assert.equal(at("UC_FREE"), null);
   }));

@@ -7192,6 +7192,26 @@ export async function claimStaleResearchChannelsForCollection(
 }
 
 /**
+ * Keeps a long run's claims alive: moves `collectionClaimedAt` from `expectedClaimedAt` (the value this run itself last wrote) to
+ * `newClaimedAt` for the given channels, ONLY where they still carry that value -- a channel another run reclaimed (or that was released)
+ * is left alone and is not returned. One atomic `UPDATE ... WHERE ... RETURNING`.
+ */
+export async function renewResearchChannelCollectionClaims(
+  ids: string[],
+  expectedClaimedAt: Date,
+  newClaimedAt: Date,
+  database: AppDb = db
+): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const rows = await database
+    .update(researchChannels)
+    .set({ collectionClaimedAt: newClaimedAt })
+    .where(and(inArray(researchChannels.id, ids), eq(researchChannels.collectionClaimedAt, expectedClaimedAt)))
+    .returning({ id: researchChannels.id });
+  return rows.map((row) => row.id);
+}
+
+/**
  * Releases one channel's claim once its attempt reaches ANY terminal outcome (success, failure, or
  * a quota-limited skip) -- called unconditionally in the orchestration's own `finally`, so a claim
  * never outlives the single collection pass that took it, regardless of that pass's own duration

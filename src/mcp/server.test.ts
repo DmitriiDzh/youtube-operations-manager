@@ -5921,3 +5921,23 @@ test("MCP server: the three collection-request tools are registered for a bound 
   }
   assert.ok(!names.some((n) => /approve|reject|run_.*collection|collection.*(run|approve|reject)/.test(n)), "no approve/run/reject collection tool may exist");
 });
+
+test("MCP agent_create_collection_request: alreadyRequested discloses a requestId only when that request is assigned to the agent", async () => {
+  const { handlers } = makeCollectionHandlers({
+    assigned: { research_channel: ["UCaaaaaaaaaaaaaaaaaaaaaa", "UCbbbbbbbbbbbbbbbbbbbbbb"], collection_request: ["cr-mine"] },
+    createResult: {
+      created: false,
+      request: null,
+      notNeeded: [],
+      alreadyRequested: [
+        { channelId: "UCaaaaaaaaaaaaaaaaaaaaaa", requestId: "cr-mine" },
+        { channelId: "UCbbbbbbbbbbbbbbbbbbbbbb", requestId: "cr-someone-else" },
+      ],
+    },
+  });
+  const result = await handlers.agentCreateCollectionRequest({ researchChannelIds: ["UCaaaaaaaaaaaaaaaaaaaaaa", "UCbbbbbbbbbbbbbbbbbbbbbb"] });
+  assert.deepEqual(parseToolJson(result).alreadyRequested, [
+    { channelId: "UCaaaaaaaaaaaaaaaaaaaaaa", requestId: "cr-mine" },
+    { channelId: "UCbbbbbbbbbbbbbbbbbbbbbb" },
+  ]);
+});

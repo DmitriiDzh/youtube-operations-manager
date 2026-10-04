@@ -228,6 +228,7 @@ function createFakeStore() {
   let failVideoSnapshotInsertAfter: number | null = null;
   let videoSnapshotInsertCount = 0;
   let failNextMark = false;
+  let failNextFailedRunInsert = false;
   let failInsertMarketDiscoveryCandidateFor: string | null = null;
   let failNextGetResearchChannelByIdFor: string | null = null;
   let throwNextGetResearchChannelByIdFor: string | null = null;
@@ -256,6 +257,9 @@ function createFakeStore() {
     },
     failVideoSnapshotInsertAfterNth(n: number) {
       failVideoSnapshotInsertAfter = n;
+    },
+    failNextFailedRunInsertOnce() {
+      failNextFailedRunInsert = true;
     },
     failNextMarkOnce() {
       failNextMark = true;
@@ -473,6 +477,17 @@ function createFakeStore() {
       }
       return claimed;
     },
+    async renewResearchChannelCollectionClaims(ids: string[], expectedClaimedAt: Date, newClaimedAt: Date) {
+      const renewed: string[] = [];
+      for (const id of ids) {
+        const row = channels.get(id);
+        if (row?.collectionClaimedAt && row.collectionClaimedAt.getTime() === expectedClaimedAt.getTime()) {
+          row.collectionClaimedAt = newClaimedAt;
+          renewed.push(id);
+        }
+      }
+      return renewed;
+    },
     async releaseResearchChannelCollectionClaim(researchChannelId: string) {
       const row = channels.get(researchChannelId);
       if (row) row.collectionClaimedAt = null;
@@ -502,6 +517,10 @@ function createFakeStore() {
       feedFallback?: boolean;
       ranAt?: Date;
     }) {
+      if (failNextFailedRunInsert && input.status === "failed") {
+        failNextFailedRunInsert = false;
+        throw new Error("simulated failed-run insert failure");
+      }
       if (failNextSuccessRunInsert && input.status === "success") {
         failNextSuccessRunInsert = false;
         throw new Error("simulated insertMarketIntelligenceCollectionRun failure");
@@ -1025,6 +1044,9 @@ function createFixture(overrides?: {
     musicChartCalls,
     setNow(date: Date) {
       currentNow = date;
+    },
+    currentNow() {
+      return currentNow;
     },
     setPlaylistPages(pages: string[][]) {
       currentPlaylistPages = pages;
@@ -4505,7 +4527,7 @@ function runRequest(services: ReturnType<typeof createFixture>["services"], requ
   return services.runApprovedCollectionRequest({ requestId, credentialRef: { userId: "u1" } });
 }
 
-test("collection request: estimate arithmetic per mode -- cap 300 never collected: pages 7 -> 8/15; cursor resume with 100 stored: 5 pages -> 6/11; raised cap with 100 stored and no cursor: 6 pages -> 7/13; steady state 2/3; totals 23/42; remaining 40 so it does not fit today", async () => {
+test("collection request: estimate arithmetic per mode -- cap 300 never collected: pages 7 -> 8/15; cursor resume with 100 stored: 5 pages -> 6/11; raised cap with 100 stored and no cursor: 6 pages -> 7/13; steady state 2/5; totals 23/44; remaining 40 so it does not fit today", async () => {
   const { store, services } = createFixture({ now: CR_NOW });
   store.setQuotaBudget(40);
   await watchChannels(services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID, THIRD_VALID_CHANNEL_ID, "UC0000000000000000000004");
@@ -4517,7 +4539,8 @@ test("collection request: estimate arithmetic per mode -- cap 300 never collecte
   // C: 100 stored, finished at cap 100, cap now 300, no cursor: max(ceil(200/50)+1 = 5, 6) = 6 pages -> 7 / 13.
   seedStoredVideos(store, THIRD_VALID_CHANNEL_ID, 100);
   Object.assign(store.channels.get(THIRD_VALID_CHANNEL_ID)!, { videosComplete: 1, videosCompleteReason: "cap", videosCapAtRun: 100 });
-  // D: finished by reaching the end of the playlist -> incremental, 2 / 3.
+  // D: finished by reaching the end of the playlist -> incremental: expected 1+1 = 2; worst case 1 + 2 pages + 2 videos.list fallbacks = 5.
+  // Totals: expected 8+6+7+2 = 23; worst 15+11+13+5 = 44.
   Object.assign(store.channels.get("UC0000000000000000000004")!, { videosComplete: 1, videosCompleteReason: "exhausted", videosCapAtRun: 300 });
 
   const result = await services.createCollectionRequest({ reason: "weekly check" }, CR_AGENT);
@@ -4530,37 +4553,37 @@ test("collection request: estimate arithmetic per mode -- cap 300 never collecte
       [VALID_CHANNEL_ID, "backfill", 8, 15],
       [OTHER_VALID_CHANNEL_ID, "backfill", 6, 11],
       [THIRD_VALID_CHANNEL_ID, "backfill", 7, 13],
-      ["UC0000000000000000000004", "incremental", 2, 3],
+      ["UC0000000000000000000004", "incremental", 2, 5],
     ]
   );
   assert.equal(estimate.totalExpectedUnits, 23);
-  assert.equal(estimate.totalWorstCaseUnits, 42);
+  assert.equal(estimate.totalWorstCaseUnits, 44);
   assert.equal(estimate.dailyBudgetUnits, 40);
   assert.equal(estimate.unitsSpentToday, 0);
   assert.equal(estimate.remainingTodayUnits, 40);
-  assert.equal(estimate.fitsToday, false, "worst case 42 exceeds the 40 left");
+  assert.equal(estimate.fitsToday, false, "worst case 44 exceeds the 40 left");
   assert.equal(result.request!.status, "pending");
   assert.equal(result.request!.reason, "weekly check");
   assert.equal(result.request!.createdVia, "mcp");
   assert.equal(result.request!.agentApiVersion, "3.2.0");
 });
 
-test("collection request: the default depth (cap 50) steady state is 2/3 and fits exactly when the worst case equals what is left; units already spent today reduce the remainder", async () => {
+test("collection request: the default depth (cap 50) steady state is 2/5 and fits exactly when the worst case equals what is left; units already spent today reduce the remainder", async () => {
   const { store, services } = createFixture({ now: CR_NOW });
   await watchChannels(services, VALID_CHANNEL_ID);
   Object.assign(store.channels.get(VALID_CHANNEL_ID)!, { videosComplete: 1, videosCompleteReason: "exhausted", videosCapAtRun: 50 });
   store.collectionRuns.push({ researchChannelId: "UC_OTHER", status: "success", unitsSpent: 10, videosRequested: 0, videosReturned: 0, errorMessage: null, ranAt: CR_NOW });
-  store.setQuotaBudget(13);
+  store.setQuotaBudget(15);
   const fits = await services.createCollectionRequest({}, CR_AGENT);
   assert.deepEqual(
     [fits.request!.estimate.totalExpectedUnits, fits.request!.estimate.totalWorstCaseUnits, fits.request!.estimate.unitsSpentToday, fits.request!.estimate.remainingTodayUnits, fits.request!.estimate.fitsToday],
-    [2, 3, 10, 3, true],
-    "13 budget - 10 spent = 3 left; worst case 3 fits"
+    [2, 5, 10, 5, true],
+    "15 budget - 10 spent = 5 left; worst case 5 fits exactly"
   );
   store.collectionRequests.clear();
-  store.setQuotaBudget(12);
+  store.setQuotaBudget(14);
   const tight = await services.createCollectionRequest({}, CR_AGENT);
-  assert.equal(tight.request!.estimate.remainingTodayUnits, 2);
+  assert.equal(tight.request!.estimate.remainingTodayUnits, 4);
   assert.equal(tight.request!.estimate.fitsToday, false, "an estimate above what is left is still created, flagged fitsToday=false");
   assert.equal(tight.created, true);
 });
@@ -4909,7 +4932,7 @@ test("collection requests: list returns newest first; get by id returns the reco
   await assert.rejects(() => f.services.getCollectionRequest({ requestId: "nope" }), (e: unknown) => isDomainError(e) && e.code === "COLLECTION_REQUEST_NOT_FOUND");
 });
 
-test("collection requests: the boot sweep fails an approved/running request older than 30 minutes ('interrupted') and leaves newer and pending ones", async () => {
+test("collection requests: the boot sweep (no cutoff) fails EVERY approved/running request -- even one approved 5 minutes ago -- and leaves pending ones; an explicit cutoff still spares newer ones", async () => {
   const f = createFixture({ now: CR_NOW });
   f.store.setQuotaBudget(1000);
   await watchChannels(f.services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID, THIRD_VALID_CHANNEL_ID);
@@ -4919,14 +4942,20 @@ test("collection requests: the boot sweep fails an approved/running request olde
   const oldRow = f.store.collectionRequests.get(old.request!.requestId)!;
   oldRow.status = "running";
   oldRow.approvedAt = new Date(CR_NOW.getTime() - 31 * 60 * 1000);
+  // Explicit cutoff 30 minutes back: only the 31-minute-old one is swept; the 5-minute-old one is spared.
+  const recentApprovedAt = new Date(CR_NOW.getTime() - 5 * 60 * 1000);
   const recentRow = f.store.collectionRequests.get(recent.request!.requestId)!;
   recentRow.status = "running";
-  recentRow.approvedAt = new Date(CR_NOW.getTime() - 29 * 60 * 1000);
+  recentRow.approvedAt = recentApprovedAt;
 
-  assert.deepEqual(await f.services.sweepInterruptedCollectionRequests(), { failed: 1 });
+  assert.deepEqual(await f.services.sweepInterruptedCollectionRequests({ approvedBefore: new Date(CR_NOW.getTime() - 30 * 60 * 1000) }), { failed: 1 });
   assert.equal(oldRow.status, "failed");
   assert.equal(oldRow.error, "interrupted");
   assert.equal(recentRow.status, "running");
+  // Boot: no cutoff -- the running request approved 5 minutes ago IS swept (no run can be alive at boot of the single server process).
+  assert.deepEqual(await f.services.sweepInterruptedCollectionRequests(), { failed: 1 });
+  assert.equal(recentRow.status, "failed");
+  assert.equal(recentRow.error, "interrupted");
   assert.equal(f.store.collectionRequests.get(pending.request!.requestId)!.status, "pending");
   assert.equal((await f.services.createCollectionRequest({ researchChannelIds: [VALID_CHANNEL_ID] }, CR_AGENT)).created, true, "the swept request no longer blocks its channel");
 });
@@ -4937,4 +4966,64 @@ test("runCollectionIfStale keeps its exact summary shape (no per-channel list le
   await watchChannels(f.services, VALID_CHANNEL_ID);
   const result = await f.services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
   assert.deepEqual(Object.keys(result).sort(), ["attempted", "failed", "quotaLimited", "succeeded", "unitsSpent"]);
+});
+
+test("collection run: claims of not-yet-processed channels are renewed, so a claim attempt after the 15-minute expiry cannot take them mid-run", async () => {
+  const f = createFixture({
+    now: CR_NOW,
+    getPublicChannelSnapshotImpl: async (args) => {
+      if (args.channelId === OTHER_VALID_CHANNEL_ID) {
+        // The run is now on its second channel and 20 minutes have passed since the claim (expiry is 15). Channel C is still waiting.
+        let claimed: string[] = [];
+        claimed = await f.store.claimStaleResearchChannelsForCollection({
+          now: f.currentNow(),
+          staleCutoff: new Date(f.currentNow().getTime() - 24 * HOUR_MS),
+          claimExpiryCutoff: new Date(f.currentNow().getTime() - 15 * 60 * 1000),
+          excludeResearchChannelIds: [],
+          onlyResearchChannelIds: [THIRD_VALID_CHANNEL_ID],
+        });
+        concurrentClaim.push(...claimed);
+      }
+      f.setNow(new Date(f.currentNow().getTime() + 20 * 60 * 1000));
+      return { channelId: args.channelId, title: "T", subscriberCount: 1, hiddenSubscriberCount: false, viewCount: 1, videoCount: 1, uploadsPlaylistId: null };
+    },
+    feedVideos: [],
+  });
+  const concurrentClaim: string[] = [];
+  f.store.setQuotaBudget(100);
+  await watchChannels(f.services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID, THIRD_VALID_CHANNEL_ID);
+  const created = await f.services.createCollectionRequest({}, CR_AGENT);
+  await runRequest(f.services, created.request!.requestId);
+  // Timeline: claim at T0. Before channel A: renew (claim = T0). A's call moves the clock to T0+20. Before channel B: renew (claim = T0+20).
+  // B's call sees a clock of T0+20: C's claim is T0+20, the cutoff T0+5 -> not claimable. Without renewal C's claim would be T0 < T0+5 -> claimable.
+  assert.deepEqual(concurrentClaim, []);
+});
+
+test("collection run: a throw mid-run records the units actually charged and the per-channel results gathered so far, and releases the remaining claims", async () => {
+  const f = createFixture({
+    now: CR_NOW,
+    getPublicChannelSnapshotImpl: async (args) =>
+      args.channelId === OTHER_VALID_CHANNEL_ID
+        ? null
+        : { channelId: args.channelId, title: "T", subscriberCount: 1, hiddenSubscriberCount: false, viewCount: 1, videoCount: 1, uploadsPlaylistId: null },
+    feedVideos: [],
+  });
+  f.store.setQuotaBudget(100);
+  await watchChannels(f.services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID, THIRD_VALID_CHANNEL_ID);
+  const created = await f.services.createCollectionRequest({}, CR_AGENT);
+  // Channel A succeeds via the RSS feed: channels.list 1 + playlist skipped (no uploads playlist) = 1 unit. Channel B: channels.list 1 unit, YouTube
+  // reports nothing -> failed, and writing its failed ledger row throws, aborting the whole pass before channel C.
+  f.store.failNextFailedRunInsertOnce();
+  const done = await runRequest(f.services, created.request!.requestId);
+  assert.equal(done.status, "failed");
+  assert.match(done.error ?? "", /simulated failed-run insert failure/);
+  assert.equal(done.unitsSpentTotal, 2, "1 unit for A + 1 unit charged for B before it failed");
+  assert.deepEqual(
+    done.result!.map((r) => [r.channelId, r.outcome, r.unitsSpent]),
+    [
+      [VALID_CHANNEL_ID, "completed", 1],
+      [OTHER_VALID_CHANNEL_ID, "failed", 1],
+    ]
+  );
+  assert.equal(f.store.channels.get(THIRD_VALID_CHANNEL_ID)!.collectionClaimedAt, null, "the unprocessed channel's claim was released");
 });
