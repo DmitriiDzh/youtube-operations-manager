@@ -1743,3 +1743,10 @@ Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet
 - **Effect:** (1) bounded extra spend, always inside the daily budget; (2)/(3) the daily budget can be overshot once, by a bounded amount, on a same-machine low-frequency trigger.
 - **Possible fix:** (1) refresh a rolling slice of deeper pages, or accept; (2)/(3) write the ledger row per page.
 - **Gate(s):** none. **Status:** open.
+
+## RISK-104 — Collection requests: estimate is an upper bound, create-time race, and no forced run — OPEN, 2026-10-04
+
+- **What:** (1) The per-channel estimate (ADR 0021) is a local upper bound; a channel with fewer videos than the cap, or a backfill with a stale cursor, costs less, and a no-cursor re-walk is estimated from the cap rather than measured. (2) "One open request per channel" is checked and then inserted without a transaction, so two simultaneous creates can both succeed; the second one then runs as `skipped_not_stale` (no double spend). (3) A forced run (ignoring the 24 h window) is deliberately NOT supported (owner decision 2026-10-04); recurring requests are deferred.
+- **Effect:** none on quota safety; the owner may see a duplicate pending request or an over-estimate.
+- **Possible fix:** (2) a partial unique index or one transaction; (3) its own ADR if the owner asks for it.
+- **Gate(s):** none. **Status:** open.

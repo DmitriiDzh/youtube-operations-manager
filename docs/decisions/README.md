@@ -72,3 +72,4 @@ A decision made before this policy existed (e.g. the Phase 2 choice to keep addi
 | [0016](0016-batch-cancel.md) | Cooperative cancel for a running Batch; new terminal ledger status CANCELLED | Accepted |
 | [0019](0019-research-export.md) | Research export: the Manager writes script-ready files into the channel workspace `exports/` folder; 30-day expiry; no derived competitor metrics | Accepted |
 | [0020](0020-send-approved-from-languages.md) | Send approved changes from the Languages tab in one click through the existing live-batch pipeline (no second write path) | Accepted |
+| [0021](0021-agent-collection-requests.md) | Agent-created competitor collection requests, approved by a human (blocking run of the regular collection; no force) | Accepted |
