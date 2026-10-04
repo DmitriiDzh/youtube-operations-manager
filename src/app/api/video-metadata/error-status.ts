@@ -20,6 +20,8 @@ const DOMAIN_ERROR_STATUS = {
   batch_invalid_selection: 400,
   batch_not_found: 404,
   batch_already_running: 409,
+  send_nothing_to_send: 409,
+  send_already_in_progress: 409,
   ledger_row_not_found: 404,
   ledger_invalid_transition: 409,
   video_locked: 409,
