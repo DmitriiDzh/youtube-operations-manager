@@ -112,3 +112,22 @@ test("shared log: another device's calls appear as their own entries, count as e
   assert.equal(other?.calls, 8);
   assert.equal(result.entries.find((e) => e.contextId === "b1")?.onOtherDevice, false);
 });
+
+test("getLedgerUnits adds this device and the other devices inside the quota window: since the reset boundary 300+200 own plus 2650 peer = 3150, the 500 before it is ignored", async () => {
+  const calls = [call("2026-10-02T20:00:00Z", { units: 500 }), call("2026-10-03T08:00:00Z", { units: 300 }), call("2026-10-03T09:00:00Z", { units: 200 })];
+  const peerCalls = [call("2026-10-03T10:00:00Z", { units: 2650 })];
+  const { services } = make({ calls, peerCalls });
+  assert.equal(await services.getLedgerUnits({ service: "data", window: "since_reset" }), 3150);
+});
+
+test("getLedgerUnits with a rolling 24 h window starts at now minus 24 h (2026-10-02T18:00Z), so the 500 logged at 20:00Z counts: 500+300+200+2650 = 3650", async () => {
+  const calls = [call("2026-10-02T17:00:00Z", { units: 999 }), call("2026-10-02T20:00:00Z", { units: 500 }), call("2026-10-03T08:00:00Z", { units: 300 }), call("2026-10-03T09:00:00Z", { units: 200 })];
+  const peerCalls = [call("2026-10-03T10:00:00Z", { units: 2650 })];
+  const { services } = make({ calls, peerCalls });
+  assert.equal(await services.getLedgerUnits({ service: "data", window: "rolling_24h" }), 3650);
+});
+
+test("getLedgerUnits treats calls with unknown cost as 0 and returns 0 for an empty log", async () => {
+  const { services } = make({ calls: [call("2026-10-03T08:00:00Z", { units: null })] });
+  assert.equal(await services.getLedgerUnits({ service: "analytics", window: "since_reset" }), 0);
+});
