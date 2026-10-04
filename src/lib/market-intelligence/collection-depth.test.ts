@@ -71,3 +71,16 @@ test("needsBackfill: unknown/unfinished always; finished only when a raised cap 
   assert.equal(needsBackfill(exhausted, depth(2000)), false, "the playlist has nothing deeper to give");
   assert.equal(needsBackfill(exhausted, depth(100, "2020-01-01")), false);
 });
+
+test("needsBackfill (review 2026-10-04): a finished 'cap' collection walks deeper again when retention has shrunk the readable stored count below 90% of the depth reached; unknown count never triggers", () => {
+  const depth = (max: number) => ({ maxVideosPerChannel: max, publishedAfter: null });
+  const done = { videosComplete: 1, videosCompleteReason: "cap", videosCapAtRun: 120 };
+  assert.equal(needsBackfill(done, depth(120), 120), false);
+  assert.equal(needsBackfill(done, depth(120), 108), false, "90% of 120 is 108: exactly at the line is still fine");
+  assert.equal(needsBackfill(done, depth(120), 107), true);
+  assert.equal(needsBackfill(done, depth(120), 50), true, "the 30-day expiry of deeper pages leaves about one page");
+  assert.equal(needsBackfill(done, depth(60), 54), false, "a lowered cap lowers the target: 90% of min(60,120) = 54");
+  assert.equal(needsBackfill(done, depth(60), 53), true);
+  assert.equal(needsBackfill(done, depth(120)), false, "no count given: unchanged behaviour");
+  assert.equal(needsBackfill({ videosComplete: 1, videosCompleteReason: "exhausted" }, depth(120), 5), false, "exhausted playlists have nothing deeper");
+});

@@ -53,11 +53,16 @@ export function resolveCollectionDepth(
  * a finished one does again only when the settings moved past what it covered: a raised cap after it stopped on the cap, or an
  * earlier/removed date after it stopped on the date. An `exhausted` playlist has nothing deeper to find.
  */
-export function needsBackfill(state: CollectionProgressState, depth: EffectiveCollectionDepth): boolean {
+export function needsBackfill(state: CollectionProgressState, depth: EffectiveCollectionDepth, storedVideoCount?: number): boolean {
   if (state.videosComplete === null || state.videosComplete === undefined) return true;
   if (state.videosComplete === 0) return true;
   if (state.videosCompleteReason === "cap") {
-    return state.videosCapAtRun === null || state.videosCapAtRun === undefined || depth.maxVideosPerChannel > state.videosCapAtRun;
+    if (state.videosCapAtRun === null || state.videosCapAtRun === undefined || depth.maxVideosPerChannel > state.videosCapAtRun) return true;
+    // Review (2026-10-04): snapshots older than the 30-day API retention window drop out of every read, and deeper pages are only
+    // snapshotted once -- so a finished deep collection would silently shrink back toward one page. When the readable stored count has fallen
+    // below 90% of the depth it reached, walk deeper again. (90%, not 100%: a few videos can never be stored, e.g. private or blocked ones.)
+    const reached = Math.min(depth.maxVideosPerChannel, state.videosCapAtRun);
+    return storedVideoCount !== undefined && storedVideoCount * 10 < reached * 9;
   }
   if (state.videosCompleteReason === "date") {
     const before = state.videosPublishedAfterAtRun ?? null;

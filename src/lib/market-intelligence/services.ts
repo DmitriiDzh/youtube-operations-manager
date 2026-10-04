@@ -230,7 +230,7 @@ function buildCollectionProgress(
   const depth = resolveCollectionDepth(channelRow, defaults);
   const estimate = estimateCollectionUnits(depth.maxVideosPerChannel);
   // "Complete" = a deep collection finished under the settings in force now; never-collected and unfinished are false.
-  const complete = !needsBackfill(channelRow, depth);
+  const complete = !needsBackfill(channelRow, depth, new Set(storedVideoIds).size);
   return {
     maxVideosPerChannel: depth.maxVideosPerChannel,
     maxVideosPerChannelOverride: channelRow.maxVideosPerChannel ?? null,
@@ -2004,7 +2004,8 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           const afterMs = depth.publishedAfter === null ? null : Date.parse(`${depth.publishedAfter}T00:00:00Z`);
           // Backfill = walk deeper (first collection, unfinished, cap raised, date moved earlier); otherwise incremental = refresh
           // the newest page and read further only while pages still hold videos we have not stored.
-          const backfill = channelRow ? needsBackfill(channelRow, depth) : true;
+          const storedAtStart = new Set((await deps.listMarketVideoSnapshotsByChannel(researchChannelId)).map((row) => row.videoId)).size;
+          const backfill = channelRow ? needsBackfill(channelRow, depth, storedAtStart) : true;
           let resumeToken = backfill && channelRow?.videosComplete === 0 ? (channelRow.videosNextPageToken ?? null) : null;
 
           // Charged BEFORE the call resolves, not after -- YouTube's own quota accounting charges
