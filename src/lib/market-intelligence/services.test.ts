@@ -161,6 +161,24 @@ type MarketResearchRequestRow = {
   executionError: string | null;
 };
 
+type CollectionRequestRow = {
+  id: string;
+  channelIdsJson: string;
+  reason: string;
+  status: "pending" | "approved" | "running" | "done" | "rejected" | "failed";
+  estimateJson: string;
+  createdVia: string;
+  agentApiVersion: string | null;
+  createdAt: Date;
+  approvedAt: Date | null;
+  approvedByUserId: string | null;
+  resolvedAt: Date | null;
+  resolvedReason: string | null;
+  resultJson: string | null;
+  unitsSpentTotal: number | null;
+  error: string | null;
+};
+
 type ChannelSnapshotRow = {
   id: string;
   researchChannelId: string;
@@ -202,6 +220,7 @@ function createFakeStore() {
   const trendCandidates = new Map<string, TrendCandidateRow>();
   const trendEvidence: TrendEvidenceRow[] = [];
   const marketResearchRequests = new Map<string, MarketResearchRequestRow>();
+  const collectionRequests = new Map<string, CollectionRequestRow>();
   let quotaBudget: number | null = null;
   let depthDefaults: { maxVideosPerChannel: number | null; publishedAfter: string | null } = { maxVideosPerChannel: null, publishedAfter: null };
   let nextId = 1;
@@ -209,6 +228,7 @@ function createFakeStore() {
   let failVideoSnapshotInsertAfter: number | null = null;
   let videoSnapshotInsertCount = 0;
   let failNextMark = false;
+  let failNextFailedRunInsert = false;
   let failInsertMarketDiscoveryCandidateFor: string | null = null;
   let failNextGetResearchChannelByIdFor: string | null = null;
   let throwNextGetResearchChannelByIdFor: string | null = null;
@@ -225,6 +245,7 @@ function createFakeStore() {
     trendCandidates,
     trendEvidence,
     marketResearchRequests,
+    collectionRequests,
     discoveryRuns,
     setQuotaBudget(units: number | null) {
       quotaBudget = units;
@@ -236,6 +257,9 @@ function createFakeStore() {
     },
     failVideoSnapshotInsertAfterNth(n: number) {
       failVideoSnapshotInsertAfter = n;
+    },
+    failNextFailedRunInsertOnce() {
+      failNextFailedRunInsert = true;
     },
     failNextMarkOnce() {
       failNextMark = true;
@@ -438,9 +462,11 @@ function createFakeStore() {
       staleCutoff: Date;
       claimExpiryCutoff: Date;
       excludeResearchChannelIds: string[];
+      onlyResearchChannelIds?: string[];
     }) {
       const claimed: string[] = [];
       for (const [id, row] of channels) {
+        if (args.onlyResearchChannelIds && !args.onlyResearchChannelIds.includes(id)) continue;
         const isStale = row.lastAutoCollectedAt === null || row.lastAutoCollectedAt.getTime() < args.staleCutoff.getTime();
         const isUnclaimed =
           row.collectionClaimedAt === null || row.collectionClaimedAt.getTime() < args.claimExpiryCutoff.getTime();
@@ -450,6 +476,17 @@ function createFakeStore() {
         }
       }
       return claimed;
+    },
+    async renewResearchChannelCollectionClaims(ids: string[], expectedClaimedAt: Date, newClaimedAt: Date) {
+      const renewed: string[] = [];
+      for (const id of ids) {
+        const row = channels.get(id);
+        if (row?.collectionClaimedAt && row.collectionClaimedAt.getTime() === expectedClaimedAt.getTime()) {
+          row.collectionClaimedAt = newClaimedAt;
+          renewed.push(id);
+        }
+      }
+      return renewed;
     },
     async releaseResearchChannelCollectionClaim(researchChannelId: string) {
       const row = channels.get(researchChannelId);
@@ -480,6 +517,10 @@ function createFakeStore() {
       feedFallback?: boolean;
       ranAt?: Date;
     }) {
+      if (failNextFailedRunInsert && input.status === "failed") {
+        failNextFailedRunInsert = false;
+        throw new Error("simulated failed-run insert failure");
+      }
       if (failNextSuccessRunInsert && input.status === "success") {
         failNextSuccessRunInsert = false;
         throw new Error("simulated insertMarketIntelligenceCollectionRun failure");
@@ -773,6 +814,96 @@ function createFakeStore() {
       }
       return row;
     },
+    // Agent-created collection requests -- the same atomic WHERE-status guards as db.ts (real atomicity is proven in db.test.ts).
+    async insertMarketCollectionRequest(input: {
+      id: string;
+      channelIdsJson: string;
+      reason: string;
+      estimateJson: string;
+      createdVia: string;
+      agentApiVersion?: string | null;
+      at?: Date;
+    }) {
+      collectionRequests.set(input.id, {
+        id: input.id,
+        channelIdsJson: input.channelIdsJson,
+        reason: input.reason,
+        status: "pending",
+        estimateJson: input.estimateJson,
+        createdVia: input.createdVia,
+        agentApiVersion: input.agentApiVersion ?? null,
+        createdAt: input.at ?? new Date(),
+        approvedAt: null,
+        approvedByUserId: null,
+        resolvedAt: null,
+        resolvedReason: null,
+        resultJson: null,
+        unitsSpentTotal: null,
+        error: null,
+      });
+    },
+    async getMarketCollectionRequestById(id: string) {
+      return collectionRequests.get(id) ?? null;
+    },
+    async listMarketCollectionRequests() {
+      return [...collectionRequests.values()].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    },
+    async findOpenMarketCollectionRequestForChannel(channelId: string) {
+      for (const row of collectionRequests.values()) {
+        if (["pending", "approved", "running"].includes(row.status) && (JSON.parse(row.channelIdsJson) as string[]).includes(channelId)) return row;
+      }
+      return null;
+    },
+    async approveMarketCollectionRequestIfPending(id: string, approvedByUserId: string | null, at: Date) {
+      const row = collectionRequests.get(id);
+      if (!row || row.status !== "pending") return null;
+      row.status = "approved";
+      row.approvedAt = at;
+      row.approvedByUserId = approvedByUserId;
+      return row;
+    },
+    async startMarketCollectionRequestIfApproved(id: string) {
+      const row = collectionRequests.get(id);
+      if (!row || row.status !== "approved") return null;
+      row.status = "running";
+      return row;
+    },
+    async rejectMarketCollectionRequestIfPending(id: string, reason: string, at: Date) {
+      const row = collectionRequests.get(id);
+      if (!row || row.status !== "pending") return null;
+      row.status = "rejected";
+      row.resolvedAt = at;
+      row.resolvedReason = reason;
+      return row;
+    },
+    async finishMarketCollectionRequestIfRunning(
+      id: string,
+      outcome:
+        | { status: "done"; resultJson: string; unitsSpentTotal: number }
+        | { status: "failed"; resultJson: string | null; unitsSpentTotal: number; error: string },
+      at: Date
+    ) {
+      const row = collectionRequests.get(id);
+      if (!row || row.status !== "running") return null;
+      row.status = outcome.status;
+      row.resolvedAt = at;
+      row.resultJson = outcome.resultJson;
+      row.unitsSpentTotal = outcome.unitsSpentTotal;
+      if (outcome.status === "failed") row.error = outcome.error;
+      return row;
+    },
+    async failInterruptedMarketCollectionRequests(approvedBefore: Date, at: Date) {
+      let n = 0;
+      for (const row of collectionRequests.values()) {
+        if ((row.status === "approved" || row.status === "running") && row.approvedAt && row.approvedAt.getTime() < approvedBefore.getTime()) {
+          row.status = "failed";
+          row.resolvedAt = at;
+          row.error = "interrupted";
+          n += 1;
+        }
+      }
+      return n;
+    },
   };
 }
 
@@ -913,6 +1044,9 @@ function createFixture(overrides?: {
     musicChartCalls,
     setNow(date: Date) {
       currentNow = date;
+    },
+    currentNow() {
+      return currentNow;
     },
     setPlaylistPages(pages: string[][]) {
       currentPlaylistPages = pages;
@@ -4353,4 +4487,543 @@ test("depth: getChannelCollectionProgress matches the context's collectionProgre
     () => services.getChannelCollectionProgress({ channelId: OTHER_VALID_CHANNEL_ID }),
     (e: unknown) => isDomainError(e) && e.code === "RESEARCH_CHANNEL_NOT_AVAILABLE"
   );
+});
+
+// ---------------------------------------------------------------------------
+// Agent-created collection requests (docs/decisions/0021-agent-collection-requests.md; plan section 7 owner decisions). Expected
+// numbers are derived by hand from the documented rules, not read back from the implementation:
+//   * one channels.list (1) + one playlistItems.list per page (1 each); worst case adds one videos.list fallback per page;
+//   * a backfill reads page 1 plus ceil((cap - stored) / 50) further pages (resuming from a cursor), or ceil(cap / 50) pages when it
+//     must re-walk from page 1; steady state costs 2 (worst 3).
+// ---------------------------------------------------------------------------
+
+const CR_NOW = new Date("2026-09-27T12:00:00.000Z");
+const HOUR_MS = 60 * 60 * 1000;
+const CR_AGENT = { createdVia: "mcp" as const, agentApiVersion: "3.2.0" };
+
+async function watchChannels(services: ReturnType<typeof createFixture>["services"], ...channelIds: string[]) {
+  for (const channelId of channelIds) await services.addToWatchlist({ channelId, reason: "r" }, { createdVia: "web_ui" });
+}
+
+function seedStoredVideos(store: ReturnType<typeof createFixture>["store"], channelId: string, count: number) {
+  for (let i = 1; i <= count; i++) {
+    store.videoSnapshots.push({
+      id: `seed-${channelId}-${i}`,
+      researchChannelId: channelId,
+      videoId: `seed${i}`,
+      observedAt: new Date(CR_NOW.getTime() - HOUR_MS),
+      viewCount: 1,
+      likeCount: 1,
+      commentCount: 1,
+      publishedAt: null,
+      title: null,
+      source: "test",
+      createdVia: "web_ui",
+    });
+  }
+}
+
+function runRequest(services: ReturnType<typeof createFixture>["services"], requestId: string) {
+  return services.runApprovedCollectionRequest({ requestId, credentialRef: { userId: "u1" } });
+}
+
+test("collection request: estimate arithmetic per mode -- cap 300 never collected: pages 7 -> 8/15; cursor resume with 100 stored: 5 pages -> 6/11; raised cap with 100 stored and no cursor: 6 pages -> 7/13; steady state 2/5; totals 23/44; remaining 40 so it does not fit today", async () => {
+  const { store, services } = createFixture({ now: CR_NOW });
+  store.setQuotaBudget(40);
+  await watchChannels(services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID, THIRD_VALID_CHANNEL_ID, "UC0000000000000000000004");
+  await services.setCollectionDepthDefaults({ maxVideosPerChannel: 300, publishedAfter: null });
+  // A: never collected, nothing stored. Backfill, no cursor: max(ceil(300/50)+1 = 7, ceil(300/50) = 6) = 7 pages -> 1+7 = 8 expected, 1+2*7 = 15 worst.
+  // B: 100 stored, unfinished backfill with a cursor: ceil((300-100)/50)+1 = 5 pages -> 6 / 11.
+  seedStoredVideos(store, OTHER_VALID_CHANNEL_ID, 100);
+  Object.assign(store.channels.get(OTHER_VALID_CHANNEL_ID)!, { videosComplete: 0, videosNextPageToken: "tok", videosCapAtRun: 300 });
+  // C: 100 stored, finished at cap 100, cap now 300, no cursor: max(ceil(200/50)+1 = 5, 6) = 6 pages -> 7 / 13.
+  seedStoredVideos(store, THIRD_VALID_CHANNEL_ID, 100);
+  Object.assign(store.channels.get(THIRD_VALID_CHANNEL_ID)!, { videosComplete: 1, videosCompleteReason: "cap", videosCapAtRun: 100 });
+  // D: finished by reaching the end of the playlist -> incremental: expected 1+1 = 2; worst case 1 + 2 pages + 2 videos.list fallbacks = 5.
+  // Totals: expected 8+6+7+2 = 23; worst 15+11+13+5 = 44.
+  Object.assign(store.channels.get("UC0000000000000000000004")!, { videosComplete: 1, videosCompleteReason: "exhausted", videosCapAtRun: 300 });
+
+  const result = await services.createCollectionRequest({ reason: "weekly check" }, CR_AGENT);
+
+  assert.equal(result.created, true);
+  const estimate = result.request!.estimate;
+  assert.deepEqual(
+    estimate.channels.map((c) => [c.channelId, c.mode, c.expectedUnits, c.worstCaseUnits]),
+    [
+      [VALID_CHANNEL_ID, "backfill", 8, 15],
+      [OTHER_VALID_CHANNEL_ID, "backfill", 6, 11],
+      [THIRD_VALID_CHANNEL_ID, "backfill", 7, 13],
+      ["UC0000000000000000000004", "incremental", 2, 5],
+    ]
+  );
+  assert.equal(estimate.totalExpectedUnits, 23);
+  assert.equal(estimate.totalWorstCaseUnits, 44);
+  assert.equal(estimate.dailyBudgetUnits, 40);
+  assert.equal(estimate.unitsSpentToday, 0);
+  assert.equal(estimate.remainingTodayUnits, 40);
+  assert.equal(estimate.fitsToday, false, "worst case 44 exceeds the 40 left");
+  assert.equal(result.request!.status, "pending");
+  assert.equal(result.request!.reason, "weekly check");
+  assert.equal(result.request!.createdVia, "mcp");
+  assert.equal(result.request!.agentApiVersion, "3.2.0");
+});
+
+test("collection request: the default depth (cap 50) steady state is 2/5 and fits exactly when the worst case equals what is left; units already spent today reduce the remainder", async () => {
+  const { store, services } = createFixture({ now: CR_NOW });
+  await watchChannels(services, VALID_CHANNEL_ID);
+  Object.assign(store.channels.get(VALID_CHANNEL_ID)!, { videosComplete: 1, videosCompleteReason: "exhausted", videosCapAtRun: 50 });
+  store.collectionRuns.push({ researchChannelId: "UC_OTHER", status: "success", unitsSpent: 10, videosRequested: 0, videosReturned: 0, errorMessage: null, ranAt: CR_NOW });
+  store.setQuotaBudget(15);
+  const fits = await services.createCollectionRequest({}, CR_AGENT);
+  assert.deepEqual(
+    [fits.request!.estimate.totalExpectedUnits, fits.request!.estimate.totalWorstCaseUnits, fits.request!.estimate.unitsSpentToday, fits.request!.estimate.remainingTodayUnits, fits.request!.estimate.fitsToday],
+    [2, 5, 10, 5, true],
+    "15 budget - 10 spent = 5 left; worst case 5 fits exactly"
+  );
+  store.collectionRequests.clear();
+  store.setQuotaBudget(14);
+  const tight = await services.createCollectionRequest({}, CR_AGENT);
+  assert.equal(tight.request!.estimate.remainingTodayUnits, 4);
+  assert.equal(tight.request!.estimate.fitsToday, false, "an estimate above what is left is still created, flagged fitsToday=false");
+  assert.equal(tight.created, true);
+});
+
+test("collection request: creating makes zero YouTube/credential calls and writes no quota-ledger rows; default channels = whole watchlist", async () => {
+  const f = createFixture({ now: CR_NOW });
+  f.store.setQuotaBudget(1000);
+  await watchChannels(f.services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID);
+  const result = await f.services.createCollectionRequest({}, CR_AGENT);
+  assert.deepEqual(result.request!.channelIds, [VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID]);
+  assert.equal(f.snapshotCalls.length + f.playlistCalls.length + f.videoSnapshotCalls.length + f.batchStatsCalls.length + f.feedCalls.length + f.searchCalls.length, 0);
+  assert.equal(f.assertReadsAvailableCalls.length, 0);
+  assert.equal(f.resolveCalls.length, 0);
+  assert.equal(f.store.collectionRuns.length, 0);
+});
+
+test("collection request: at most one open request per channel -- an overlapping request only covers the free channel and reports the existing request id", async () => {
+  const { store, services } = createFixture({ now: CR_NOW });
+  store.setQuotaBudget(1000);
+  await watchChannels(services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID, THIRD_VALID_CHANNEL_ID);
+  const first = await services.createCollectionRequest({ researchChannelIds: [VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID] }, CR_AGENT);
+  const second = await services.createCollectionRequest({ researchChannelIds: [OTHER_VALID_CHANNEL_ID, THIRD_VALID_CHANNEL_ID] }, CR_AGENT);
+  assert.deepEqual(second.request!.channelIds, [THIRD_VALID_CHANNEL_ID]);
+  assert.deepEqual(second.alreadyRequested, [{ channelId: OTHER_VALID_CHANNEL_ID, requestId: first.request!.requestId }]);
+  const third = await services.createCollectionRequest({ researchChannelIds: [VALID_CHANNEL_ID] }, CR_AGENT);
+  assert.equal(third.created, false);
+  assert.equal(third.request, null);
+  assert.deepEqual(third.alreadyRequested, [{ channelId: VALID_CHANNEL_ID, requestId: first.request!.requestId }]);
+  assert.equal(store.collectionRequests.size, 2, "the refused request created no row");
+});
+
+test("collection request: a rejected request frees its channels for a new request", async () => {
+  const { store, services } = createFixture({ now: CR_NOW });
+  store.setQuotaBudget(1000);
+  await watchChannels(services, VALID_CHANNEL_ID);
+  const first = await services.createCollectionRequest({}, CR_AGENT);
+  await services.rejectCollectionRequest({ requestId: first.request!.requestId, reason: "not now" });
+  const again = await services.createCollectionRequest({}, CR_AGENT);
+  assert.equal(again.created, true);
+});
+
+test("collection request: a channel collected 2h ago is not_needed (2 hours); one that failed 3h ago is not_needed (recent_failure, 3 hours); the free channel is requested; hours use one decimal", async () => {
+  const { store, services } = createFixture({ now: CR_NOW });
+  store.setQuotaBudget(1000);
+  await watchChannels(services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID, THIRD_VALID_CHANNEL_ID);
+  store.channels.get(VALID_CHANNEL_ID)!.lastAutoCollectedAt = new Date(CR_NOW.getTime() - 2 * HOUR_MS);
+  store.collectionRuns.push({
+    researchChannelId: OTHER_VALID_CHANNEL_ID,
+    status: "failed",
+    unitsSpent: 1,
+    videosRequested: null,
+    videosReturned: null,
+    errorMessage: "boom",
+    ranAt: new Date(CR_NOW.getTime() - 3 * HOUR_MS),
+  });
+  const result = await services.createCollectionRequest({}, CR_AGENT);
+  assert.deepEqual(result.notNeeded, [
+    { channelId: VALID_CHANNEL_ID, reason: "collected_recently", hoursSince: 2 },
+    { channelId: OTHER_VALID_CHANNEL_ID, reason: "recent_failure", hoursSince: 3 },
+  ]);
+  assert.deepEqual(result.request!.channelIds, [THIRD_VALID_CHANNEL_ID]);
+
+  // 90 minutes -> 1.5 hours.
+  store.collectionRequests.clear();
+  store.channels.get(VALID_CHANNEL_ID)!.lastAutoCollectedAt = new Date(CR_NOW.getTime() - 90 * 60 * 1000);
+  const again = await services.createCollectionRequest({ researchChannelIds: [VALID_CHANNEL_ID] }, CR_AGENT);
+  assert.deepEqual(again.notNeeded, [{ channelId: VALID_CHANNEL_ID, reason: "collected_recently", hoursSince: 1.5 }]);
+});
+
+test("collection request: a channel collected 25h ago (outside the 24h window) is needed", async () => {
+  const { store, services } = createFixture({ now: CR_NOW });
+  store.setQuotaBudget(1000);
+  await watchChannels(services, VALID_CHANNEL_ID);
+  store.channels.get(VALID_CHANNEL_ID)!.lastAutoCollectedAt = new Date(CR_NOW.getTime() - 25 * HOUR_MS);
+  const result = await services.createCollectionRequest({}, CR_AGENT);
+  assert.equal(result.created, true);
+  assert.deepEqual(result.notNeeded, []);
+});
+
+test("collection request: when nothing is needed the result is created:false with no record", async () => {
+  const { store, services } = createFixture({ now: CR_NOW });
+  store.setQuotaBudget(1000);
+  await watchChannels(services, VALID_CHANNEL_ID);
+  store.channels.get(VALID_CHANNEL_ID)!.lastAutoCollectedAt = new Date(CR_NOW.getTime() - HOUR_MS);
+  const result = await services.createCollectionRequest({}, CR_AGENT);
+  assert.equal(result.created, false);
+  assert.equal(result.request, null);
+  assert.equal(result.notNeeded.length, 1);
+  assert.equal(store.collectionRequests.size, 0);
+  const empty = createFixture({ now: CR_NOW });
+  empty.store.setQuotaBudget(1000);
+  const none = await empty.services.createCollectionRequest({}, CR_AGENT);
+  assert.deepEqual([none.created, none.notNeeded, none.alreadyRequested], [false, [], []], "an empty watchlist is nothing to collect, not an error");
+});
+
+test("collection request: refused with MARKET_INTELLIGENCE_QUOTA_DISABLED while no daily budget is set; unknown channel, long reason and a force field are rejected; nothing is stored", async () => {
+  const { store, services } = createFixture({ now: CR_NOW });
+  await watchChannels(services, VALID_CHANNEL_ID);
+  await assert.rejects(
+    () => services.createCollectionRequest({}, CR_AGENT),
+    (error: unknown) => isDomainError(error) && error.code === "MARKET_INTELLIGENCE_QUOTA_DISABLED"
+  );
+  store.setQuotaBudget(1000);
+  await assert.rejects(
+    () => services.createCollectionRequest({ researchChannelIds: [OTHER_VALID_CHANNEL_ID] }, CR_AGENT),
+    (error: unknown) => isDomainError(error) && error.code === "RESEARCH_CHANNEL_NOT_AVAILABLE"
+  );
+  await assert.rejects(
+    () => services.createCollectionRequest({ reason: "x".repeat(501) }, CR_AGENT),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+  await assert.rejects(
+    () => services.createCollectionRequest({ force: true }, CR_AGENT),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+  await assert.rejects(
+    () => services.createCollectionRequest({ researchChannelIds: [] }, CR_AGENT),
+    (error: unknown) => isDomainError(error) && error.code === "validation_failed"
+  );
+  const ok = await services.createCollectionRequest({ reason: "x".repeat(500) }, CR_AGENT);
+  assert.equal(ok.created, true, "exactly 500 characters is allowed");
+  assert.equal(store.collectionRequests.size, 1);
+});
+
+test("collection limits: budget, spent today, remaining, the next Pacific midnight, depth defaults and per-channel overrides", async () => {
+  const { store, services } = createFixture({ now: CR_NOW });
+  const unset = await services.getCollectionLimits();
+  assert.equal(unset.dailyBudgetUnits, null);
+  assert.equal(unset.remainingTodayUnits, null);
+  store.setQuotaBudget(1000);
+  await watchChannels(services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID);
+  await services.setCollectionDepthDefaults({ maxVideosPerChannel: 300, publishedAfter: "2026-01-01" });
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 100, publishedAfter: null });
+  store.collectionRuns.push({ researchChannelId: VALID_CHANNEL_ID, status: "success", unitsSpent: 120, videosRequested: 0, videosReturned: 0, errorMessage: null, ranAt: CR_NOW });
+  // Yesterday's spend (before 2026-09-27T07:00Z, the Pacific day start) is not counted.
+  store.collectionRuns.push({ researchChannelId: VALID_CHANNEL_ID, status: "success", unitsSpent: 500, videosRequested: 0, videosReturned: 0, errorMessage: null, ranAt: new Date("2026-09-27T06:59:00.000Z") });
+  const limits = await services.getCollectionLimits();
+  assert.deepEqual(limits, {
+    dailyBudgetUnits: 1000,
+    unitsSpentToday: 120,
+    remainingTodayUnits: 880,
+    // 2026-09-27 12:00Z is in the Pacific day that began 2026-09-27 07:00Z (PDT, UTC-7); the next one begins 2026-09-28 07:00Z.
+    quotaDayResetsAt: "2026-09-28T07:00:00.000Z",
+    defaultMaxVideosPerChannel: 300,
+    defaultPublishedAfter: "2026-01-01",
+    staleWindowHours: 24,
+    perChannelOverrides: [{ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 100, publishedAfter: null }],
+  });
+});
+
+test("collection run: approving runs ONLY the request's channels (a third stale channel is untouched), records per-channel results and units, stamps the approver", async () => {
+  const f = createFixture({
+    now: CR_NOW,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    uploadsPlaylistVideoIds: ["v1"],
+    publicVideoSnapshots: [{ videoId: "v1", title: "V1", publishedAt: "2026-01-01T00:00:00.000Z", viewCount: 10, likeCount: 1, commentCount: 0 }],
+  });
+  f.store.setQuotaBudget(100);
+  await watchChannels(f.services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID, THIRD_VALID_CHANNEL_ID);
+  const created = await f.services.createCollectionRequest({ researchChannelIds: [VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID] }, CR_AGENT);
+
+  const done = await runRequest(f.services, created.request!.requestId);
+
+  // Each channel: channels.list 1 + playlistItems.list 1 + videos.list fallback 1 = 3 units (as in AC-9B-01); two channels = 6.
+  assert.equal(done.status, "done");
+  assert.equal(done.unitsSpentTotal, 6);
+  assert.deepEqual(
+    done.result!.map((r) => [r.channelId, r.outcome, r.videosStored, r.unitsSpent]),
+    [
+      [VALID_CHANNEL_ID, "completed", 1, 3],
+      [OTHER_VALID_CHANNEL_ID, "completed", 1, 3],
+    ]
+  );
+  assert.ok(done.result!.every((r) => typeof r.newSnapshotsObservedAt === "string"), "new snapshots were observed for both");
+  assert.deepEqual(
+    f.snapshotCalls.map((c) => (c as { channelId: string }).channelId).sort(),
+    [VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID].sort(),
+    "the third stale channel must not be fetched"
+  );
+  assert.equal(f.store.channels.get(THIRD_VALID_CHANNEL_ID)!.lastAutoCollectedAt, null);
+  assert.equal(f.store.collectionRuns.length, 2);
+  assert.equal(f.store.collectionRequests.get(created.request!.requestId)!.approvedByUserId, "u1");
+  assert.ok(done.approvedAt);
+  assert.ok(done.resolvedAt);
+});
+
+test("collection run: the regular rules apply -- a channel collected after the request was created is skipped_not_stale, one that failed 3h ago is skipped_recent_failure; nothing is spent", async () => {
+  const f = createFixture({ now: CR_NOW, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO });
+  f.store.setQuotaBudget(100);
+  await watchChannels(f.services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID);
+  const created = await f.services.createCollectionRequest({}, CR_AGENT);
+  f.store.channels.get(VALID_CHANNEL_ID)!.lastAutoCollectedAt = new Date(CR_NOW.getTime() - 2 * HOUR_MS);
+  f.store.collectionRuns.push({ researchChannelId: OTHER_VALID_CHANNEL_ID, status: "failed", unitsSpent: 1, videosRequested: null, videosReturned: null, errorMessage: "boom", ranAt: new Date(CR_NOW.getTime() - 3 * HOUR_MS) });
+
+  const done = await runRequest(f.services, created.request!.requestId);
+
+  assert.equal(done.status, "done");
+  assert.deepEqual(
+    done.result!.map((r) => [r.channelId, r.outcome, r.unitsSpent]),
+    [
+      [VALID_CHANNEL_ID, "skipped_not_stale", 0],
+      [OTHER_VALID_CHANNEL_ID, "skipped_recent_failure", 0],
+    ]
+  );
+  assert.equal(done.unitsSpentTotal, 0);
+  assert.equal(f.snapshotCalls.length, 0, "no bypass: the stale window and the failure pause stay in force");
+});
+
+test("collection run: the daily budget gate -- budget 5 covers one channel (3 units) and the second is skipped_quota_limited with zero spend", async () => {
+  const f = createFixture({
+    now: CR_NOW,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    uploadsPlaylistVideoIds: ["v1"],
+    publicVideoSnapshots: [{ videoId: "v1", title: "V1", publishedAt: null, viewCount: 10, likeCount: null, commentCount: null }],
+  });
+  f.store.setQuotaBudget(5);
+  await watchChannels(f.services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID);
+  const created = await f.services.createCollectionRequest({}, CR_AGENT);
+  const done = await runRequest(f.services, created.request!.requestId);
+  // First channel needs 5 >= 3 and spends 3 (5 -> 2); the second needs 3 but only 2 remain.
+  assert.deepEqual(
+    done.result!.map((r) => [r.channelId, r.outcome, r.unitsSpent]),
+    [
+      [VALID_CHANNEL_ID, "completed", 3],
+      [OTHER_VALID_CHANNEL_ID, "skipped_quota_limited", 0],
+    ]
+  );
+  assert.equal(done.unitsSpentTotal, 3);
+  assert.equal(done.status, "done");
+});
+
+test("collection run: a backfill the budget cannot finish is partial_budget (cursor kept), never reported as complete", async () => {
+  const f = createFixture({ now: CR_NOW, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO, playlistPages: [PAGE_A, PAGE_B, PAGE_C], autoStats: "batch" });
+  f.store.setQuotaBudget(3);
+  await watchChannels(f.services, VALID_CHANNEL_ID);
+  await f.services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 120, publishedAfter: null });
+  const created = await f.services.createCollectionRequest({}, CR_AGENT);
+  const done = await runRequest(f.services, created.request!.requestId);
+  // Budget 3: channels.list 1 + page 1 (1) = 2 spent, 1 left; another page needs 2 -> stops with a saved cursor. 50 videos stored.
+  assert.deepEqual(
+    done.result!.map((r) => [r.outcome, r.videosStored, r.unitsSpent]),
+    [["partial_budget", 50, 2]]
+  );
+  assert.equal(f.store.channels.get(VALID_CHANNEL_ID)!.videosNextPageToken, "page-2");
+  assert.equal(done.unitsSpentTotal, 2);
+});
+
+test("collection run: a channel YouTube reports no data for fails; when every attempted channel failed the request is failed with the error and the per-channel result", async () => {
+  const f = createFixture({ now: CR_NOW, getPublicChannelSnapshotImpl: async () => null });
+  f.store.setQuotaBudget(100);
+  await watchChannels(f.services, VALID_CHANNEL_ID);
+  const created = await f.services.createCollectionRequest({}, CR_AGENT);
+  const done = await runRequest(f.services, created.request!.requestId);
+  assert.equal(done.status, "failed");
+  assert.equal(done.error, "All 1 attempted channel(s) failed");
+  assert.deepEqual(done.result!.map((r) => [r.outcome, r.videosStored, r.unitsSpent, r.newSnapshotsObservedAt]), [["failed", 0, 1, null]]);
+  assert.equal(done.unitsSpentTotal, 1, "channels.list was charged before the call resolved");
+});
+
+test("collection run: preconditions that fail (budget unset, budget used up, Data API reads off, credentials) leave the request pending and make no YouTube call", async () => {
+  const noBudget = createFixture({ now: CR_NOW });
+  noBudget.store.setQuotaBudget(100);
+  await watchChannels(noBudget.services, VALID_CHANNEL_ID);
+  const created = await noBudget.services.createCollectionRequest({}, CR_AGENT);
+  const id = created.request!.requestId;
+  noBudget.store.setQuotaBudget(null);
+  await assert.rejects(() => runRequest(noBudget.services, id), (e: unknown) => isDomainError(e) && e.code === "MARKET_INTELLIGENCE_QUOTA_DISABLED");
+  noBudget.store.setQuotaBudget(10);
+  noBudget.store.collectionRuns.push({ researchChannelId: "UC_X", status: "success", unitsSpent: 10, videosRequested: 0, videosReturned: 0, errorMessage: null, ranAt: CR_NOW });
+  await assert.rejects(() => runRequest(noBudget.services, id), (e: unknown) => isDomainError(e) && e.code === "MARKET_INTELLIGENCE_QUOTA_EXCEEDED");
+  assert.equal(noBudget.store.collectionRequests.get(id)!.status, "pending");
+  assert.equal(noBudget.snapshotCalls.length, 0);
+
+  const reads = createFixture({ now: CR_NOW, dataApiReadsDisabled: true });
+  reads.store.setQuotaBudget(100);
+  await watchChannels(reads.services, VALID_CHANNEL_ID);
+  const readsReq = await reads.services.createCollectionRequest({}, CR_AGENT);
+  await assert.rejects(() => runRequest(reads.services, readsReq.request!.requestId), (e: unknown) => isDomainError(e) && e.code === "data_api_reads_disabled");
+  assert.equal(reads.store.collectionRequests.get(readsReq.request!.requestId)!.status, "pending");
+
+  const creds = createFixture({ now: CR_NOW, resolveError: new Error("credentials expired") });
+  creds.store.setQuotaBudget(100);
+  await watchChannels(creds.services, VALID_CHANNEL_ID);
+  const credsReq = await creds.services.createCollectionRequest({}, CR_AGENT);
+  await assert.rejects(() => runRequest(creds.services, credsReq.request!.requestId), /credentials expired/);
+  const row = creds.store.collectionRequests.get(credsReq.request!.requestId)!;
+  assert.equal(row.status, "pending");
+  assert.equal(row.approvedAt, null);
+  assert.equal(creds.snapshotCalls.length, 0);
+  assert.equal(creds.store.channels.get(VALID_CHANNEL_ID)!.collectionClaimedAt, null, "no channel was claimed");
+});
+
+test("collection run: two concurrent approvals of the same request -- exactly one runs (one set of YouTube calls), the other is COLLECTION_REQUEST_NOT_PENDING", async () => {
+  const f = createFixture({ now: CR_NOW, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO, uploadsPlaylistVideoIds: ["v1"], publicVideoSnapshots: [{ videoId: "v1", title: "V1", publishedAt: null, viewCount: 1, likeCount: 1, commentCount: 1 }] });
+  f.store.setQuotaBudget(100);
+  await watchChannels(f.services, VALID_CHANNEL_ID);
+  const created = await f.services.createCollectionRequest({}, CR_AGENT);
+  const id = created.request!.requestId;
+  const results = await Promise.allSettled([runRequest(f.services, id), runRequest(f.services, id)]);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  const rejected = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+  assert.ok(isDomainError(rejected.reason) && rejected.reason.code === "COLLECTION_REQUEST_NOT_PENDING");
+  assert.equal(f.snapshotCalls.length, 1, "the channel was fetched once, not twice");
+  assert.equal(f.store.collectionRuns.length, 1);
+});
+
+test("collection run: only a pending request can be run; unknown id is COLLECTION_REQUEST_NOT_FOUND; a finished request cannot be run again", async () => {
+  const f = createFixture({ now: CR_NOW, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO, uploadsPlaylistVideoIds: ["v1"], publicVideoSnapshots: [{ videoId: "v1", title: "V1", publishedAt: null, viewCount: 1, likeCount: 1, commentCount: 1 }] });
+  f.store.setQuotaBudget(100);
+  await watchChannels(f.services, VALID_CHANNEL_ID);
+  await assert.rejects(() => runRequest(f.services, "nope"), (e: unknown) => isDomainError(e) && e.code === "COLLECTION_REQUEST_NOT_FOUND");
+  const created = await f.services.createCollectionRequest({}, CR_AGENT);
+  await runRequest(f.services, created.request!.requestId);
+  const calls = f.snapshotCalls.length;
+  await assert.rejects(() => runRequest(f.services, created.request!.requestId), (e: unknown) => isDomainError(e) && e.code === "COLLECTION_REQUEST_NOT_PENDING");
+  assert.equal(f.snapshotCalls.length, calls);
+});
+
+test("collection reject: records the human's reason, collects nothing, makes zero YouTube calls; a second reject and a later run are refused", async () => {
+  const f = createFixture({ now: CR_NOW, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO });
+  f.store.setQuotaBudget(100);
+  await watchChannels(f.services, VALID_CHANNEL_ID);
+  const created = await f.services.createCollectionRequest({}, CR_AGENT);
+  const rejected = await f.services.rejectCollectionRequest({ requestId: created.request!.requestId, reason: "too expensive" });
+  assert.equal(rejected.status, "rejected");
+  assert.equal(rejected.resolvedReason, "too expensive");
+  assert.ok(rejected.resolvedAt);
+  assert.equal(f.snapshotCalls.length + f.playlistCalls.length, 0);
+  assert.equal(f.store.collectionRuns.length, 0);
+  await assert.rejects(() => f.services.rejectCollectionRequest({ requestId: created.request!.requestId, reason: "again" }), (e: unknown) => isDomainError(e) && e.code === "COLLECTION_REQUEST_NOT_PENDING");
+  await assert.rejects(() => runRequest(f.services, created.request!.requestId), (e: unknown) => isDomainError(e) && e.code === "COLLECTION_REQUEST_NOT_PENDING");
+  await assert.rejects(() => f.services.rejectCollectionRequest({ requestId: created.request!.requestId, reason: "" }), (e: unknown) => isDomainError(e) && e.code === "validation_failed");
+  await assert.rejects(() => f.services.rejectCollectionRequest({ requestId: "nope", reason: "x" }), (e: unknown) => isDomainError(e) && e.code === "COLLECTION_REQUEST_NOT_FOUND");
+});
+
+test("collection requests: list returns newest first; get by id returns the record or COLLECTION_REQUEST_NOT_FOUND", async () => {
+  const f = createFixture({ now: CR_NOW });
+  f.store.setQuotaBudget(1000);
+  await watchChannels(f.services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID);
+  const a = await f.services.createCollectionRequest({ researchChannelIds: [VALID_CHANNEL_ID] }, CR_AGENT);
+  f.setNow(new Date(CR_NOW.getTime() + 1000));
+  const b = await f.services.createCollectionRequest({ researchChannelIds: [OTHER_VALID_CHANNEL_ID] }, CR_AGENT);
+  const list = await f.services.listCollectionRequests();
+  assert.deepEqual(list.requests.map((r) => r.requestId), [b.request!.requestId, a.request!.requestId]);
+  assert.equal((await f.services.getCollectionRequest({ requestId: a.request!.requestId })).channelIds[0], VALID_CHANNEL_ID);
+  await assert.rejects(() => f.services.getCollectionRequest({ requestId: "nope" }), (e: unknown) => isDomainError(e) && e.code === "COLLECTION_REQUEST_NOT_FOUND");
+});
+
+test("collection requests: the boot sweep (no cutoff) fails EVERY approved/running request -- even one approved 5 minutes ago -- and leaves pending ones; an explicit cutoff still spares newer ones", async () => {
+  const f = createFixture({ now: CR_NOW });
+  f.store.setQuotaBudget(1000);
+  await watchChannels(f.services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID, THIRD_VALID_CHANNEL_ID);
+  const old = await f.services.createCollectionRequest({ researchChannelIds: [VALID_CHANNEL_ID] }, CR_AGENT);
+  const recent = await f.services.createCollectionRequest({ researchChannelIds: [OTHER_VALID_CHANNEL_ID] }, CR_AGENT);
+  const pending = await f.services.createCollectionRequest({ researchChannelIds: [THIRD_VALID_CHANNEL_ID] }, CR_AGENT);
+  const oldRow = f.store.collectionRequests.get(old.request!.requestId)!;
+  oldRow.status = "running";
+  oldRow.approvedAt = new Date(CR_NOW.getTime() - 31 * 60 * 1000);
+  // Explicit cutoff 30 minutes back: only the 31-minute-old one is swept; the 5-minute-old one is spared.
+  const recentApprovedAt = new Date(CR_NOW.getTime() - 5 * 60 * 1000);
+  const recentRow = f.store.collectionRequests.get(recent.request!.requestId)!;
+  recentRow.status = "running";
+  recentRow.approvedAt = recentApprovedAt;
+
+  assert.deepEqual(await f.services.sweepInterruptedCollectionRequests({ approvedBefore: new Date(CR_NOW.getTime() - 30 * 60 * 1000) }), { failed: 1 });
+  assert.equal(oldRow.status, "failed");
+  assert.equal(oldRow.error, "interrupted");
+  assert.equal(recentRow.status, "running");
+  // Boot: no cutoff -- the running request approved 5 minutes ago IS swept (no run can be alive at boot of the single server process).
+  assert.deepEqual(await f.services.sweepInterruptedCollectionRequests(), { failed: 1 });
+  assert.equal(recentRow.status, "failed");
+  assert.equal(recentRow.error, "interrupted");
+  assert.equal(f.store.collectionRequests.get(pending.request!.requestId)!.status, "pending");
+  assert.equal((await f.services.createCollectionRequest({ researchChannelIds: [VALID_CHANNEL_ID] }, CR_AGENT)).created, true, "the swept request no longer blocks its channel");
+});
+
+test("runCollectionIfStale keeps its exact summary shape (no per-channel list leaks into the public result)", async () => {
+  const f = createFixture({ now: CR_NOW, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO });
+  f.store.setQuotaBudget(100);
+  await watchChannels(f.services, VALID_CHANNEL_ID);
+  const result = await f.services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+  assert.deepEqual(Object.keys(result).sort(), ["attempted", "failed", "quotaLimited", "succeeded", "unitsSpent"]);
+});
+
+test("collection run: claims of not-yet-processed channels are renewed, so a claim attempt after the 15-minute expiry cannot take them mid-run", async () => {
+  const f = createFixture({
+    now: CR_NOW,
+    getPublicChannelSnapshotImpl: async (args) => {
+      if (args.channelId === OTHER_VALID_CHANNEL_ID) {
+        // The run is now on its second channel and 20 minutes have passed since the claim (expiry is 15). Channel C is still waiting.
+        let claimed: string[] = [];
+        claimed = await f.store.claimStaleResearchChannelsForCollection({
+          now: f.currentNow(),
+          staleCutoff: new Date(f.currentNow().getTime() - 24 * HOUR_MS),
+          claimExpiryCutoff: new Date(f.currentNow().getTime() - 15 * 60 * 1000),
+          excludeResearchChannelIds: [],
+          onlyResearchChannelIds: [THIRD_VALID_CHANNEL_ID],
+        });
+        concurrentClaim.push(...claimed);
+      }
+      f.setNow(new Date(f.currentNow().getTime() + 20 * 60 * 1000));
+      return { channelId: args.channelId, title: "T", subscriberCount: 1, hiddenSubscriberCount: false, viewCount: 1, videoCount: 1, uploadsPlaylistId: null };
+    },
+    feedVideos: [],
+  });
+  const concurrentClaim: string[] = [];
+  f.store.setQuotaBudget(100);
+  await watchChannels(f.services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID, THIRD_VALID_CHANNEL_ID);
+  const created = await f.services.createCollectionRequest({}, CR_AGENT);
+  await runRequest(f.services, created.request!.requestId);
+  // Timeline: claim at T0. Before channel A: renew (claim = T0). A's call moves the clock to T0+20. Before channel B: renew (claim = T0+20).
+  // B's call sees a clock of T0+20: C's claim is T0+20, the cutoff T0+5 -> not claimable. Without renewal C's claim would be T0 < T0+5 -> claimable.
+  assert.deepEqual(concurrentClaim, []);
+});
+
+test("collection run: a throw mid-run records the units actually charged and the per-channel results gathered so far, and releases the remaining claims", async () => {
+  const f = createFixture({
+    now: CR_NOW,
+    getPublicChannelSnapshotImpl: async (args) =>
+      args.channelId === OTHER_VALID_CHANNEL_ID
+        ? null
+        : { channelId: args.channelId, title: "T", subscriberCount: 1, hiddenSubscriberCount: false, viewCount: 1, videoCount: 1, uploadsPlaylistId: null },
+    feedVideos: [],
+  });
+  f.store.setQuotaBudget(100);
+  await watchChannels(f.services, VALID_CHANNEL_ID, OTHER_VALID_CHANNEL_ID, THIRD_VALID_CHANNEL_ID);
+  const created = await f.services.createCollectionRequest({}, CR_AGENT);
+  // Channel A succeeds via the RSS feed: channels.list 1 + playlist skipped (no uploads playlist) = 1 unit. Channel B: channels.list 1 unit, YouTube
+  // reports nothing -> failed, and writing its failed ledger row throws, aborting the whole pass before channel C.
+  f.store.failNextFailedRunInsertOnce();
+  const done = await runRequest(f.services, created.request!.requestId);
+  assert.equal(done.status, "failed");
+  assert.match(done.error ?? "", /simulated failed-run insert failure/);
+  assert.equal(done.unitsSpentTotal, 2, "1 unit for A + 1 unit charged for B before it failed");
+  assert.deepEqual(
+    done.result!.map((r) => [r.channelId, r.outcome, r.unitsSpent]),
+    [
+      [VALID_CHANNEL_ID, "completed", 1],
+      [OTHER_VALID_CHANNEL_ID, "failed", 1],
+    ]
+  );
+  assert.equal(f.store.channels.get(THIRD_VALID_CHANNEL_ID)!.collectionClaimedAt, null, "the unprocessed channel's claim was released");
 });

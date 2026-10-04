@@ -151,6 +151,9 @@ export type DomainErrorCode =
   // research requests.
   | "RESEARCH_REQUEST_NOT_FOUND"
   | "RESEARCH_REQUEST_NOT_PENDING"
+  // Agent-created collection requests (docs/decisions/0021-agent-collection-requests.md).
+  | "COLLECTION_REQUEST_NOT_FOUND"
+  | "COLLECTION_REQUEST_NOT_PENDING"
   // Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md) -- Decision & Experiment
   // Engine, manual-entry record-keeping foundation.
   | "HYPOTHESIS_NOT_FOUND"

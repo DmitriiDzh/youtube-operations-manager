@@ -256,4 +256,94 @@ export type MarketResearchRequest = {
   executionError: string | null;
 };
 
+// ---------------------------------------------------------------------------
+// Agent-created collection requests (docs/decisions/0021-agent-collection-requests.md): an agent asks for a set of watchlist channels
+// to be collected; a human approves in the Research tab; the approval runs the REGULAR collection restricted to those channels.
+// ---------------------------------------------------------------------------
+
+export type MarketCollectionRequestStatus = "pending" | "approved" | "running" | "done" | "rejected" | "failed";
+
+export type CollectionEstimateMode = "backfill" | "incremental";
+
+/** YouTube Data API quota units (NOT model tokens). Both numbers are upper bounds computed locally, before any call. */
+export type CollectionChannelEstimate = {
+  channelId: string;
+  mode: CollectionEstimateMode;
+  expectedUnits: number;
+  worstCaseUnits: number;
+};
+
+export type CollectionEstimate = {
+  channels: CollectionChannelEstimate[];
+  totalExpectedUnits: number;
+  totalWorstCaseUnits: number;
+  dailyBudgetUnits: number;
+  unitsSpentToday: number;
+  remainingTodayUnits: number;
+  /** True when the worst-case total fits the budget remaining at creation time. */
+  fitsToday: boolean;
+};
+
+export type CollectionChannelOutcome =
+  | "completed"
+  | "partial_budget"
+  | "failed"
+  | "skipped_not_stale"
+  | "skipped_recent_failure"
+  | "skipped_quota_limited";
+
+export type CollectionChannelResult = {
+  channelId: string;
+  outcome: CollectionChannelOutcome;
+  /** Video snapshots stored by this run for the channel. */
+  videosStored: number;
+  /** When the channel snapshot written by this run was observed (ISO); null when nothing new was observed. */
+  newSnapshotsObservedAt: string | null;
+  unitsSpent: number;
+};
+
+export type MarketCollectionRequest = {
+  requestId: string;
+  channelIds: string[];
+  reason: string;
+  status: MarketCollectionRequestStatus;
+  estimate: CollectionEstimate;
+  createdVia: string;
+  agentApiVersion: string | null;
+  createdAt: string;
+  approvedAt: string | null;
+  resolvedAt: string | null;
+  resolvedReason: string | null;
+  result: CollectionChannelResult[] | null;
+  unitsSpentTotal: number | null;
+  error: string | null;
+};
+
+export type CollectionNotNeededReason = "collected_recently" | "recent_failure";
+
+export type CollectionNotNeeded = {
+  channelId: string;
+  reason: CollectionNotNeededReason;
+  /** Hours since the last successful collection (collected_recently) or since the failure (recent_failure), one decimal. */
+  hoursSince: number;
+};
+
+export type CreateCollectionRequestResult = {
+  created: boolean;
+  request: MarketCollectionRequest | null;
+  notNeeded: CollectionNotNeeded[];
+  alreadyRequested: Array<{ channelId: string; requestId: string }>;
+};
+
+export type CollectionLimits = {
+  dailyBudgetUnits: number | null;
+  unitsSpentToday: number;
+  remainingTodayUnits: number | null;
+  quotaDayResetsAt: string;
+  defaultMaxVideosPerChannel: number;
+  defaultPublishedAfter: string | null;
+  staleWindowHours: number;
+  perChannelOverrides: Array<{ channelId: string; maxVideosPerChannel: number | null; publishedAfter: string | null }>;
+};
+
 export { MUSIC_CHART_REGIONS } from "./music-chart-regions";

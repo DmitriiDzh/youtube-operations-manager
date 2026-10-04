@@ -79,11 +79,14 @@ export function pagesForCap(maxVideos: number): number {
  * Pool units of a first (or backfilling) collection at depth `maxVideos`: 1 `channels.list` plus one `playlistItems.list` per page;
  * statistics normally cost no pool units (`videos.batchGetStats`, own bucket), but each page whose batch call fails falls back to one
  * `videos.list` (1 unit). Steady state (everything already stored): 1 + 1 page [+1 when page 1 had new videos so page 2 is read]
- * [+1 per page for the fallback] -- 2 to 3 in practice.
+ * [+1 per page for the fallback] -- about 2, at most 5 (`STEADY_STATE_WORST_CASE_UNITS`: channels.list 1 + 2 pages + a videos.list fallback for each).
  */
+/** channels.list 1 + page 1 + page 2 + one videos.list fallback per page. */
+export const STEADY_STATE_WORST_CASE_UNITS = 5;
+
 export function estimateCollectionUnits(maxVideos: number): { firstCollection: number; firstCollectionWorstCase: number; steadyState: string } {
   const pages = pagesForCap(maxVideos);
-  return { firstCollection: 1 + pages, firstCollectionWorstCase: 1 + 2 * pages, steadyState: "2-3" };
+  return { firstCollection: 1 + pages, firstCollectionWorstCase: 1 + 2 * pages, steadyState: `2-${STEADY_STATE_WORST_CASE_UNITS}` };
 }
 
 /** One channel's effective depth and progress, as returned by `getWatchlistEntryContext` (`collectionProgressSchema`). */

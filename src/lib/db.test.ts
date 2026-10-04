@@ -7,6 +7,15 @@ import path from "node:path";
 import { createClient, type Client } from "@libsql/client";
 import { eq } from "drizzle-orm";
 import {
+  approveMarketCollectionRequestIfPending,
+  renewResearchChannelCollectionClaims,
+  failInterruptedMarketCollectionRequests,
+  finishMarketCollectionRequestIfRunning,
+  findOpenMarketCollectionRequestForChannel,
+  getMarketCollectionRequestById,
+  insertMarketCollectionRequest,
+  rejectMarketCollectionRequestIfPending,
+  startMarketCollectionRequestIfApproved,
   channels,
   clearStoredCloudConnection,
   contentProposalArtifacts,
@@ -3036,4 +3045,166 @@ test("13.2: snapshot and evidence reads hide expired API-sourced rows but keep m
     assert.deepEqual(snaps, ["fresh-api", "old-manual"]);
     const evidence = (await listResearchEvidenceByChannel("UC_READ_FILTER00000000", isolatedDb)).map((e) => e.id);
     assert.deepEqual(evidence, ["ev-old-manual"]);
+  }));
+
+// ---------------------------------------------------------------------------
+// Agent-created collection requests (docs/decisions/0021-agent-collection-requests.md). Expected values are hand-derived from the
+// documented lifecycle: pending -> approved -> running -> done|failed, pending -> rejected, nothing else.
+// ---------------------------------------------------------------------------
+
+const COLLECTION_REQUEST_BASE = { channelIdsJson: '["UC_A","UC_B"]', reason: "r", estimateJson: "{}", createdVia: "mcp" };
+
+test("claimStaleResearchChannelsForCollection: onlyResearchChannelIds restricts the claim to those channels (an empty list claims nothing); the stale rule still applies", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    await isolatedDb.insert(researchChannels).values([
+      { id: "UC_ONE", reason: "r", createdVia: "web_ui" },
+      { id: "UC_TWO", reason: "r", createdVia: "web_ui" },
+      { id: "UC_FRESH", reason: "r", createdVia: "web_ui", lastAutoCollectedAt: new Date(now.getTime() - 60 * 60 * 1000) },
+    ]);
+    const args = {
+      now,
+      staleCutoff: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+      claimExpiryCutoff: new Date(now.getTime() - 15 * 60 * 1000),
+      excludeResearchChannelIds: [],
+    };
+    assert.deepEqual(await claimStaleResearchChannelsForCollection({ ...args, onlyResearchChannelIds: [] }, isolatedDb), []);
+    assert.deepEqual(
+      (await claimStaleResearchChannelsForCollection({ ...args, onlyResearchChannelIds: ["UC_ONE", "UC_FRESH"] }, isolatedDb)).sort(),
+      ["UC_ONE"],
+      "UC_FRESH was collected 1h ago, so even when listed it is not claimable; UC_TWO was not listed"
+    );
+  }));
+
+test("market_collection_requests: insert starts pending; reject only from pending; a second reject returns null", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertMarketCollectionRequest({ id: "cr-1", ...COLLECTION_REQUEST_BASE }, isolatedDb);
+    assert.equal((await getMarketCollectionRequestById("cr-1", isolatedDb))?.status, "pending");
+    const at = new Date("2026-09-27T12:00:00.000Z");
+    const rejected = await rejectMarketCollectionRequestIfPending("cr-1", "too expensive", at, isolatedDb);
+    assert.equal(rejected?.status, "rejected");
+    assert.equal(rejected?.resolvedReason, "too expensive");
+    assert.equal(await rejectMarketCollectionRequestIfPending("cr-1", "again", at, isolatedDb), null);
+    assert.equal(await approveMarketCollectionRequestIfPending("cr-1", "u1", at, isolatedDb), null, "a rejected request can never be approved");
+  }));
+
+test("market_collection_requests: two literally-concurrent approvals of one pending request -- exactly one wins", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertMarketCollectionRequest({ id: "cr-race", ...COLLECTION_REQUEST_BASE }, isolatedDb);
+    const at = new Date("2026-09-27T12:00:00.000Z");
+    const results = await Promise.all([
+      approveMarketCollectionRequestIfPending("cr-race", "u1", at, isolatedDb),
+      approveMarketCollectionRequestIfPending("cr-race", "u2", at, isolatedDb),
+    ]);
+    assert.equal(results.filter((r) => r !== null).length, 1);
+    const row = await getMarketCollectionRequestById("cr-race", isolatedDb);
+    assert.equal(row?.status, "approved");
+    assert.equal(row?.approvedAt?.getTime(), at.getTime());
+  }));
+
+test("market_collection_requests: the lifecycle cannot skip a step (start needs approved, finish needs running, pending cannot jump to done)", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    await insertMarketCollectionRequest({ id: "cr-2", ...COLLECTION_REQUEST_BASE }, isolatedDb);
+    const at = new Date("2026-09-27T12:00:00.000Z");
+    assert.equal(await startMarketCollectionRequestIfApproved("cr-2", isolatedDb), null, "pending cannot start");
+    assert.equal(
+      await finishMarketCollectionRequestIfRunning("cr-2", { status: "done", resultJson: "[]", unitsSpentTotal: 0 }, at, isolatedDb),
+      null,
+      "pending cannot finish"
+    );
+    await approveMarketCollectionRequestIfPending("cr-2", "u1", at, isolatedDb);
+    assert.equal(
+      await finishMarketCollectionRequestIfRunning("cr-2", { status: "done", resultJson: "[]", unitsSpentTotal: 0 }, at, isolatedDb),
+      null,
+      "approved (not running) cannot finish"
+    );
+    assert.equal((await startMarketCollectionRequestIfApproved("cr-2", isolatedDb))?.status, "running");
+    assert.equal(await startMarketCollectionRequestIfApproved("cr-2", isolatedDb), null, "a running request cannot start again");
+    const done = await finishMarketCollectionRequestIfRunning(
+      "cr-2",
+      { status: "done", resultJson: '[{"channelId":"UC_A"}]', unitsSpentTotal: 7 },
+      at,
+      isolatedDb
+    );
+    assert.equal(done?.status, "done");
+    assert.equal(done?.unitsSpentTotal, 7);
+    assert.equal(done?.resultJson, '[{"channelId":"UC_A"}]');
+    assert.equal(await rejectMarketCollectionRequestIfPending("cr-2", "x", at, isolatedDb), null);
+  }));
+
+test("findOpenMarketCollectionRequestForChannel: pending/approved/running count as open; done/rejected/failed do not; membership is exact", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const at = new Date("2026-09-27T12:00:00.000Z");
+    await insertMarketCollectionRequest({ id: "cr-open", ...COLLECTION_REQUEST_BASE }, isolatedDb);
+    assert.equal((await findOpenMarketCollectionRequestForChannel("UC_A", isolatedDb))?.id, "cr-open");
+    assert.equal(await findOpenMarketCollectionRequestForChannel("UC_C", isolatedDb), null, "a channel not in the list has no open request");
+    assert.equal(await findOpenMarketCollectionRequestForChannel("UC_", isolatedDb), null, "a prefix of an id is not membership");
+    await approveMarketCollectionRequestIfPending("cr-open", null, at, isolatedDb);
+    assert.equal((await findOpenMarketCollectionRequestForChannel("UC_B", isolatedDb))?.id, "cr-open");
+    await startMarketCollectionRequestIfApproved("cr-open", isolatedDb);
+    assert.equal((await findOpenMarketCollectionRequestForChannel("UC_B", isolatedDb))?.id, "cr-open");
+    await finishMarketCollectionRequestIfRunning("cr-open", { status: "failed", resultJson: null, unitsSpentTotal: 0, error: "x" }, at, isolatedDb);
+    assert.equal(await findOpenMarketCollectionRequestForChannel("UC_A", isolatedDb), null);
+  }));
+
+test("failInterruptedMarketCollectionRequests: approved/running requests approved before the cutoff become failed 'interrupted'; newer ones, pending ones and finished ones are untouched", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    const old = new Date(now.getTime() - 40 * 60 * 1000);
+    const recent = new Date(now.getTime() - 5 * 60 * 1000);
+    for (const id of ["old-running", "old-approved", "recent-running", "old-pending", "old-done"]) {
+      await insertMarketCollectionRequest({ id, ...COLLECTION_REQUEST_BASE }, isolatedDb);
+    }
+    await approveMarketCollectionRequestIfPending("old-running", null, old, isolatedDb);
+    await startMarketCollectionRequestIfApproved("old-running", isolatedDb);
+    await approveMarketCollectionRequestIfPending("old-approved", null, old, isolatedDb);
+    await approveMarketCollectionRequestIfPending("recent-running", null, recent, isolatedDb);
+    await startMarketCollectionRequestIfApproved("recent-running", isolatedDb);
+    await approveMarketCollectionRequestIfPending("old-done", null, old, isolatedDb);
+    await startMarketCollectionRequestIfApproved("old-done", isolatedDb);
+    await finishMarketCollectionRequestIfRunning("old-done", { status: "done", resultJson: "[]", unitsSpentTotal: 0 }, old, isolatedDb);
+
+    const cutoff = new Date(now.getTime() - 30 * 60 * 1000);
+    assert.equal(await failInterruptedMarketCollectionRequests(cutoff, now, isolatedDb), 2);
+    for (const id of ["old-running", "old-approved"]) {
+      const row = await getMarketCollectionRequestById(id, isolatedDb);
+      assert.equal(row?.status, "failed");
+      assert.equal(row?.error, "interrupted");
+    }
+    assert.equal((await getMarketCollectionRequestById("recent-running", isolatedDb))?.status, "running");
+    assert.equal((await getMarketCollectionRequestById("old-pending", isolatedDb))?.status, "pending");
+    assert.equal((await getMarketCollectionRequestById("old-done", isolatedDb))?.status, "done");
+  }));
+
+test("renewResearchChannelCollectionClaims: renews only claims still carrying the expected value; a reclaimed or released channel is left alone", () =>
+  withTempClient(async (client) => {
+    await initializeDatabaseSchema(client);
+    const isolatedDb = createIsolatedDb(client);
+    const t0 = new Date("2026-09-27T12:00:00.000Z");
+    const t1 = new Date("2026-09-27T12:20:00.000Z");
+    const other = new Date("2026-09-27T12:10:00.000Z");
+    await isolatedDb.insert(researchChannels).values([
+      { id: "UC_MINE", reason: "r", createdVia: "web_ui", collectionClaimedAt: t0 },
+      { id: "UC_TAKEN", reason: "r", createdVia: "web_ui", collectionClaimedAt: other },
+      { id: "UC_FREE", reason: "r", createdVia: "web_ui" },
+    ]);
+    assert.deepEqual(await renewResearchChannelCollectionClaims([], t0, t1, isolatedDb), []);
+    assert.deepEqual(await renewResearchChannelCollectionClaims(["UC_MINE", "UC_TAKEN", "UC_FREE"], t0, t1, isolatedDb), ["UC_MINE"]);
+    const rows = await isolatedDb.select().from(researchChannels);
+    const at = (id: string) => rows.find((r) => r.id === id)?.collectionClaimedAt?.getTime() ?? null;
+    assert.equal(at("UC_MINE"), t1.getTime());
+    assert.equal(at("UC_TAKEN"), other.getTime());
+    assert.equal(at("UC_FREE"), null);
   }));

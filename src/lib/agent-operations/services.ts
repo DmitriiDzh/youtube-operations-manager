@@ -358,6 +358,33 @@ const AGENT_CAPABILITIES: AgentCapabilityDescriptor[] = [
     description:
       "Creates a structured research/discovery draft (query, rationale, optional monitorDurationDays -- stored as descriptive metadata only, never consulted by any scheduler, since none exists in this application). Always starts status:\"pending\". Makes zero YouTube calls and spends zero quota -- a human must separately approve it through the Web UI before the one real search.list run it can ever trigger actually happens (owner spec §29: \"this must not automatically create unlimited collection jobs\"). createdVia/agentApiVersion (owner spec §22) are SERVER-STAMPED, never caller-supplied. Implemented as the `agent_create_market_research_request` MCP tool/`agent create-research-request` CLI command (`src/lib/market-intelligence/`). Mutates local application state, so this tool is gated by the same device-availability/recovery-mode check as agent_create_content_proposal. Phase 12: a request created in a channel-bound agent session is owned by that agent's channel.",
   },
+  // Agent-created collection requests (docs/decisions/0021-agent-collection-requests.md). An agent may CREATE a request and READ its
+  // progress and the limits; running (approving) or rejecting one is reachable ONLY through the Web UI (fenced by the approval inventory
+  // test). Units are YouTube Data API quota units, never model tokens.
+  {
+    id: "market_intelligence.agent_create_collection_request",
+    mcpTools: ["agent_create_collection_request"],
+    domain: "market_intelligence",
+    permission: "DRAFT",
+    description:
+      "Asks the human to collect fresh public snapshots of watchlist channels. Input { researchChannelIds?: string[] (default: every watchlist channel assigned to you), reason?: string (max 500, shown to the human verbatim) }; no force flag exists. Makes zero YouTube calls and spends nothing: it stores a pending request with a local estimate per channel ({ mode: backfill|incremental, expectedUnits, worstCaseUnits } -- UPPER BOUNDS in YouTube Data API quota units, not model tokens; an incremental refresh is about 2, at most 5), totals, dailyBudgetUnits, unitsSpentToday, remainingTodayUnits and fitsToday (worst-case total <= units left today; a request that does not fit is still created, and the collection stops at the daily budget and resumes from its saved cursor next day). The human approves or rejects it in the Research tab; you can neither approve nor run it. An approved request runs the REGULAR collection for its channels only (24 h stale window, 24 h pause after a failure, daily budget) -- it only removes the wait for a dashboard visit. Result { created, request, notNeeded, alreadyRequested }: notNeeded lists channels left out because they were collected successfully within 24 h (reason collected_recently) or failed within 24 h (recent_failure) with hoursSince; alreadyRequested lists channels that already have an open (pending/approved/running) request -- at most one open request per channel -- with that request's id; when nothing is left, created is false and no record exists. Read progress with agent_get_collection_request. A request can end `done` even when every channel was skipped_* (nothing collected: already fresh, in the failure pause, or no budget left) -- always read the per-channel `result` of agent_get_collection_request instead of assuming the data is fresh. alreadyRequested exposes a requestId only for a request assigned to you. Implemented as the `agent_create_collection_request` MCP tool/`agent create-collection-request` CLI command (`src/lib/market-intelligence/`). Mutates local application state, gated like agent_create_market_research_request. A request created in a channel-bound agent session is owned by that agent's channel.",
+  },
+  {
+    id: "market_intelligence.agent_get_collection_request",
+    mcpTools: ["agent_get_collection_request"],
+    domain: "market_intelligence",
+    permission: "READ",
+    description:
+      "One collection request by requestId, or (no requestId) the most recent ones you can see: status (pending|approved|running|done|rejected|failed), reason, the creation-time estimate, and after a run the per-channel result (outcome completed|partial_budget|failed|skipped_not_stale|skipped_recent_failure|skipped_quota_limited, videosStored, newSnapshotsObservedAt, unitsSpent in YouTube quota units) and unitsSpentTotal. A `done` request can have every channel skipped_* (nothing collected) -- check the per-channel results. partial_budget means the budget ran out mid-collection; the cursor is kept and the next regular collection continues. Local read only, never a live YouTube call. Implemented as the `agent_get_collection_request` MCP tool (`src/lib/market-intelligence/`). A request not assigned to your channel behaves like one that does not exist.",
+  },
+  {
+    id: "market_intelligence.agent_get_collection_limits",
+    mcpTools: ["agent_get_collection_limits"],
+    domain: "market_intelligence",
+    permission: "READ",
+    description:
+      "The owner's own collection limits and what is left today, in YouTube Data API quota units (not model tokens): dailyBudgetUnits (null = no budget set, so collection requests are refused), unitsSpentToday, remainingTodayUnits, quotaDayResetsAt (next Pacific midnight), the default collection depth (defaultMaxVideosPerChannel, defaultPublishedAfter), staleWindowHours (24), and the channels that override the depth. Local read only, never a live YouTube call. Implemented as the `agent_get_collection_limits` MCP tool/`agent collection-limits` CLI command (`src/lib/market-intelligence/`).",
+  },
   // Phase 10 slice 2 (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md, FUTURE_PHASES.md §6) -- the
   // reserved `create_experiment_proposal` capability, now real. Channel-scoped where the
   // referenced hypothesis itself has a channelId, global (a "new channel concept" hypothesis) when

@@ -26,7 +26,7 @@ test("estimateCollectionUnits: 1 channels.list + one page per 50 videos; worst c
     assert.equal(estimate.firstCollection, first, `cap ${cap}`);
     assert.equal(estimate.firstCollectionWorstCase, worst, `cap ${cap}`);
   }
-  assert.equal(estimateCollectionUnits(50).steadyState, "2-3");
+  assert.equal(estimateCollectionUnits(50).steadyState, "2-5");
 });
 
 test("isValidMaxVideosPerChannel: integers 1..2000 only", () => {

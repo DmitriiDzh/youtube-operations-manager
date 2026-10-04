@@ -1,8 +1,12 @@
 import type { MusicChartEntry } from "@/lib/youtube-read-gateway";
-import { SEARCH_LIST_DAILY_CALL_LIMIT, SEARCH_LIST_UNIT_COST, startOfYoutubeQuotaDay } from "@/lib/youtube-quota";
+import type { CredentialRef } from "@/lib/shared-domain";
+import { SEARCH_LIST_DAILY_CALL_LIMIT, SEARCH_LIST_UNIT_COST, nextYoutubeQuotaReset, startOfYoutubeQuotaDay } from "@/lib/youtube-quota";
 import { API_DATA_RETENTION_DAYS } from "@/lib/youtube-data-policy/contracts";
 import { MUSIC_CHART_REGIONS } from "./contracts";
 import {
+  DEFAULT_MAX_VIDEOS_PER_CHANNEL,
+  PLAYLIST_PAGE_SIZE,
+  STEADY_STATE_WORST_CASE_UNITS,
   estimateCollectionUnits,
   needsBackfill,
   pagesForCap,
@@ -27,8 +31,16 @@ import {
   DomainError,
   isDomainError,
   MARKET_INTELLIGENCE_STALE_WINDOW_MS,
+  type CollectionChannelOutcome,
+  type CollectionChannelResult,
+  type CollectionEstimate,
+  type CollectionLimits,
+  type CollectionNotNeeded,
+  type CreateCollectionRequestResult,
   type DataQualityFlag,
   type DiscoveryCandidateStatus,
+  type MarketCollectionRequest,
+  type MarketCollectionRequestStatus,
   type MarketChannelSnapshot,
   type MarketDiscoveryCandidate,
   type MarketResearchRequest,
@@ -56,6 +68,8 @@ import {
   assignTopicOutputSchema,
   captureChannelSnapshotInputSchema,
   captureChannelSnapshotOutputSchema,
+  createCollectionRequestInputSchema,
+  createCollectionRequestOutputSchema,
   createMarketResearchRequestInputSchema,
   createMarketResearchRequestOutputSchema,
   createTopicInputSchema,
@@ -72,8 +86,15 @@ import {
   getChannelVideoSnapshotHistoryInputSchema,
   getChannelVideoSnapshotHistoryOutputSchema,
   getMarketOverviewOutputSchema,
+  collectionLimitsSchema,
+  collectionChannelResultSchema,
+  getCollectionRequestInputSchema,
   getMarketResearchRequestInputSchema,
   getMarketVideosOverviewOutputSchema,
+  listCollectionRequestsOutputSchema,
+  marketCollectionRequestSchema,
+  rejectCollectionRequestInputSchema,
+  runApprovedCollectionRequestInputSchema,
   getTrendEvidenceSummaryOutputSchema,
   getWatchlistEntryContextOutputSchema,
   getWatchlistEntryInputSchema,
@@ -164,6 +185,8 @@ type StoredResearchChannelForService = {
   reason: string;
   createdVia: string;
   addedAt: Date;
+  /** Set only on a channel's own full collection success (the stale-window clock); absent on rows from stores that do not expose it. */
+  lastAutoCollectedAt?: Date | null;
   // Operator request 2026-10-04 (collection depth); absent/null = default depth, progress not yet known.
   maxVideosPerChannel?: number | null;
   publishedAfter?: string | null;
@@ -216,6 +239,7 @@ type StoredMarketVideoSnapshotForService = {
 // only the fields assessSnapshotCompleteness/the quota_limited check actually need.
 type StoredMarketIntelligenceCollectionRunForService = {
   status: "success" | "skipped_quota_limited" | "failed";
+  ranAt?: Date;
   videosRequested: number | null;
   videosReturned: number | null;
   feedFallback?: boolean;
@@ -447,6 +471,59 @@ function toMarketResearchRequest(row: StoredMarketResearchRequestForService): Ma
   };
 }
 
+// Agent-created collection requests (docs/decisions/0021-agent-collection-requests.md).
+type StoredMarketCollectionRequestForService = {
+  id: string;
+  channelIdsJson: string;
+  reason: string;
+  status: MarketCollectionRequestStatus;
+  estimateJson: string;
+  createdVia: string;
+  agentApiVersion: string | null;
+  createdAt: Date;
+  approvedAt: Date | null;
+  approvedByUserId?: string | null;
+  resolvedAt: Date | null;
+  resolvedReason: string | null;
+  resultJson: string | null;
+  unitsSpentTotal: number | null;
+  error: string | null;
+};
+
+function toMarketCollectionRequest(row: StoredMarketCollectionRequestForService): MarketCollectionRequest {
+  return {
+    requestId: row.id,
+    channelIds: JSON.parse(row.channelIdsJson) as string[],
+    reason: row.reason,
+    status: row.status,
+    estimate: JSON.parse(row.estimateJson) as CollectionEstimate,
+    createdVia: row.createdVia,
+    agentApiVersion: row.agentApiVersion,
+    createdAt: row.createdAt.toISOString(),
+    approvedAt: row.approvedAt ? row.approvedAt.toISOString() : null,
+    resolvedAt: row.resolvedAt ? row.resolvedAt.toISOString() : null,
+    resolvedReason: row.resolvedReason,
+    result: row.resultJson === null ? null : (JSON.parse(row.resultJson) as CollectionChannelResult[]),
+    unitsSpentTotal: row.unitsSpentTotal,
+    error: row.error,
+  };
+}
+
+/** What a collection pass has gathered so far; the caller reads it when the pass throws (units actually charged, results so far). */
+type CollectionRunSink = { channels: CollectionChannelResult[]; unitsSpent: number; claimed: string[] };
+type CollectionPassResult = {
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  quotaLimited: number;
+  unitsSpent: number;
+  channels: CollectionChannelResult[];
+};
+
+function roundedHours(fromMs: number, toMs: number): number {
+  return Math.round(((toMs - fromMs) / 3_600_000) * 10) / 10;
+}
+
 type ServiceDependencies = {
   idGenerator(): string;
   insertResearchChannel(input: {
@@ -568,8 +645,12 @@ type ServiceDependencies = {
     staleCutoff: Date;
     claimExpiryCutoff: Date;
     excludeResearchChannelIds: string[];
+    /** Only these channels may be claimed (an approved collection request). */
+    onlyResearchChannelIds?: string[];
   }): Promise<string[]>;
   releaseResearchChannelCollectionClaim(researchChannelId: string): Promise<void>;
+  /** Moves the claim of the given channels from `expectedClaimedAt` to `newClaimedAt` where they still carry it; returns the renewed ids. */
+  renewResearchChannelCollectionClaims(ids: string[], expectedClaimedAt: Date, newClaimedAt: Date): Promise<string[]>;
   listRecentlyFailedResearchChannelIds(since: Date): Promise<string[]>;
   markResearchChannelAutoCollected(researchChannelId: string, at: Date): Promise<void>;
   insertMarketIntelligenceCollectionRun(input: {
@@ -697,6 +778,38 @@ type ServiceDependencies = {
       | { status: "executed"; candidatesFound: number; candidatesNew: number }
       | { status: "execution_failed"; executionError: string }
   ): Promise<StoredMarketResearchRequestForService | null>;
+  // Agent-created collection requests (docs/decisions/0021-agent-collection-requests.md).
+  insertMarketCollectionRequest(input: {
+    id: string;
+    channelIdsJson: string;
+    reason: string;
+    estimateJson: string;
+    createdVia: string;
+    agentApiVersion?: string | null;
+    at?: Date;
+  }): Promise<void>;
+  getMarketCollectionRequestById(id: string): Promise<StoredMarketCollectionRequestForService | null>;
+  listMarketCollectionRequests(): Promise<StoredMarketCollectionRequestForService[]>;
+  findOpenMarketCollectionRequestForChannel(channelId: string): Promise<StoredMarketCollectionRequestForService | null>;
+  approveMarketCollectionRequestIfPending(
+    id: string,
+    approvedByUserId: string | null,
+    at: Date
+  ): Promise<StoredMarketCollectionRequestForService | null>;
+  startMarketCollectionRequestIfApproved(id: string): Promise<StoredMarketCollectionRequestForService | null>;
+  rejectMarketCollectionRequestIfPending(
+    id: string,
+    reason: string,
+    at: Date
+  ): Promise<StoredMarketCollectionRequestForService | null>;
+  finishMarketCollectionRequestIfRunning(
+    id: string,
+    outcome:
+      | { status: "done"; resultJson: string; unitsSpentTotal: number }
+      | { status: "failed"; resultJson: string | null; unitsSpentTotal: number; error: string },
+    at: Date
+  ): Promise<StoredMarketCollectionRequestForService | null>;
+  failInterruptedMarketCollectionRequests(approvedBefore: Date, at: Date): Promise<number>;
 };
 
 // Phase 9 slice 9H, part A (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_A_PLAN.md §2) -- named,
@@ -840,6 +953,513 @@ export const MUSIC_CHART_CACHE_MS = 30 * 60 * 1000;
 export function createMarketIntelligenceServices(deps: ServiceDependencies) {
   // Per services instance (one per process in production); current-only, never persisted (13.9).
   const musicChartCache = new Map<string, { fetchedAt: Date; entries: MusicChartEntry[] }>();
+
+  /**
+   * The one collection pass: `runCollectionIfStale` (every stale channel, the automatic refresh) and `runApprovedCollectionRequest` (only
+   * the channels of an approved request, `onlyIds`) both run THIS function -- same budget gate, same stale window, same failed-channel
+   * pause, same claim/charge/ledger rules, no force and no bypass. Besides the summary it reports each channel's outcome; channels it
+   * did not process are reported as skipped (not stale / failed within the pause / budget) so a caller never has to guess.
+   */
+  async function collectStaleChannels(
+    parsedInput: { credentialRef: CredentialRef },
+    onlyIds?: string[],
+    sink: CollectionRunSink = { channels: [], unitsSpent: 0, claimed: [] }
+  ): Promise<CollectionPassResult> {
+    try {
+      return await collectStaleChannelsInner(parsedInput, onlyIds, sink);
+    } catch (error) {
+      // A throw mid-run must not leave this run's remaining channels claimed until the claim expires.
+      for (const id of sink.claimed) {
+        try {
+          await deps.releaseResearchChannelCollectionClaim(id);
+        } catch {
+          // Best effort; the claim expiry is the fallback.
+        }
+      }
+      throw error;
+    }
+  }
+
+  async function collectStaleChannelsInner(
+    parsedInput: { credentialRef: CredentialRef },
+    onlyIds: string[] | undefined,
+    sink: CollectionRunSink
+  ): Promise<{
+    attempted: number;
+    succeeded: number;
+    failed: number;
+    quotaLimited: number;
+    unitsSpent: number;
+    channels: CollectionChannelResult[];
+  }> {
+    const zeroed = { attempted: 0, succeeded: 0, failed: 0, quotaLimited: 0, unitsSpent: 0 };
+    const results: CollectionChannelResult[] = sink.channels;
+    let recentlyFailedIds: string[] = [];
+    // Channels of the request this pass did not process get the reason they were passed over; a processed channel keeps its own result.
+    const finish = (
+      fallback: CollectionChannelOutcome,
+      claimedButSkippedForBudget: string[] = [],
+      summary: typeof zeroed = zeroed
+    ) => {
+      const done = new Map(results.map((r) => [r.channelId, r]));
+      for (const id of claimedButSkippedForBudget) {
+        if (!done.has(id)) {
+          done.set(id, { channelId: id, outcome: "skipped_quota_limited", videosStored: 0, newSnapshotsObservedAt: null, unitsSpent: 0 });
+        }
+      }
+      for (const id of onlyIds ?? []) {
+        if (done.has(id)) continue;
+        const outcome: CollectionChannelOutcome =
+          fallback === "skipped_quota_limited" ? fallback : recentlyFailedIds.includes(id) ? "skipped_recent_failure" : fallback;
+        done.set(id, { channelId: id, outcome, videosStored: 0, newSnapshotsObservedAt: null, unitsSpent: 0 });
+      }
+      const ordered = onlyIds ? onlyIds.map((id) => done.get(id)).filter((r): r is CollectionChannelResult => r !== undefined) : [...done.values()];
+      return { ...summary, channels: ordered };
+    };
+    const latestChannelObservationIso = async (researchChannelId: string): Promise<string | null> => {
+      try {
+        const snapshots = await deps.listMarketChannelSnapshotsByChannel(researchChannelId);
+        if (snapshots.length === 0) return null;
+        return new Date(Math.max(...snapshots.map((row) => row.observedAt.getTime()))).toISOString();
+      } catch {
+        return null;
+      }
+    };
+
+    const budget = await deps.getMarketIntelligenceDailyQuotaBudgetUnits();
+    if (budget === null) {
+      return finish("skipped_quota_limited");
+    }
+
+    const now = deps.clock.now();
+    const spentToday = await deps.getMarketIntelligenceUnitsSpentSince(startOfQuotaDay(now));
+    let remaining = budget - spentToday;
+    if (remaining <= 0) {
+      return finish("skipped_quota_limited");
+    }
+
+    // A disabled "Data API reads" toggle is a purely local, no-network condition -- checked
+    // upfront, before any channel is claimed or any budget spent, so it can never be mischarged
+    // as if it were a real, failed call (found by independent review: the per-call catch blocks
+    // below charge the call's own cost unconditionally, which is correct for a genuine network
+    // failure but wrong for a precondition that never reached YouTube at all).
+    await deps.youtubeApi.assertReadsAvailable();
+
+    // Credentials must resolve BEFORE any channel is claimed -- a scope/credential failure must
+    // never leave a channel claimed with nothing actually attempted (advisor review).
+    const credentials = await deps.authResolver.resolve({
+      credentialRef: parsedInput.credentialRef,
+      requiredScopes: [YOUTUBE_READ_SCOPE],
+    });
+
+    const staleCutoff = new Date(now.getTime() - MARKET_INTELLIGENCE_STALE_WINDOW_MS);
+    const claimExpiryCutoff = new Date(now.getTime() - MARKET_INTELLIGENCE_CLAIM_EXPIRY_MS);
+    recentlyFailedIds = await deps.listRecentlyFailedResearchChannelIds(staleCutoff);
+    const claimedIds = await deps.claimStaleResearchChannelsForCollection({
+      now,
+      staleCutoff,
+      claimExpiryCutoff,
+      excludeResearchChannelIds: recentlyFailedIds,
+      ...(onlyIds ? { onlyResearchChannelIds: onlyIds } : {}),
+    });
+
+    sink.claimed = [...claimedIds];
+    if (claimedIds.length === 0) {
+      return finish("skipped_not_stale");
+    }
+
+    // Recomputed AFTER the claim, from the ledger's own current state -- narrows (does not fully
+    // eliminate -- see this function's own top-level doc comment) the race window a second
+    // concurrent caller's own stale pre-claim `spentToday` read would otherwise leave open
+    // (advisor review, before implementation).
+    const spentAfterClaim = await deps.getMarketIntelligenceUnitsSpentSince(startOfQuotaDay(now));
+    remaining = budget - spentAfterClaim;
+    if (remaining <= 0) {
+      for (const claimedId of claimedIds) {
+        await deps.releaseResearchChannelCollectionClaim(claimedId);
+      }
+      return finish("skipped_not_stale", claimedIds);
+    }
+
+    const depthDefaults = await deps.getMarketIntelligenceCollectionDepthDefaults();
+    let attempted = 0;
+    let succeeded = 0;
+    let failedCount = 0;
+    let quotaLimited = 0;
+    let unitsSpentTotal = 0;
+
+    // The value this run last wrote into every still-unprocessed channel's claim (see the renewal below).
+    let claimToken = now;
+
+    for (let i = 0; i < claimedIds.length; i++) {
+      const researchChannelId = claimedIds[i];
+
+      // A long run (e.g. an approved request) can outlive the claim expiry; renew the claim of every channel not yet processed before
+      // each channel, so a dashboard run cannot reclaim them mid-run. Only claims this run still holds are renewed; a channel whose
+      // claim was lost is not processed (it belongs to someone else now).
+      const nextToken = deps.clock.now();
+      const renewed = await deps.renewResearchChannelCollectionClaims(claimedIds.slice(i), claimToken, nextToken);
+      claimToken = nextToken;
+      if (!renewed.includes(researchChannelId)) {
+        sink.claimed = sink.claimed.filter((id) => id !== researchChannelId);
+        results.push({ channelId: researchChannelId, outcome: "skipped_not_stale", videosStored: 0, newSnapshotsObservedAt: null, unitsSpent: 0 });
+        continue;
+      }
+
+      // Checked against the full worst-case cost, not just the next call's cost -- a channel is
+      // either fully processed or not started at all this run, never cut short partway (see
+      // PER_CHANNEL_WORST_CASE_UNIT_COST's own doc comment).
+      if (remaining < PER_CHANNEL_WORST_CASE_UNIT_COST) {
+        // Every remaining claimed channel (not just this one) is recorded and released here, not
+        // silently dropped -- found by independent review: releasing j>i's claims with no row and
+        // no counter meant getWatchlistEntryContext's data-quality flag and getMarketOverview's
+        // collectionWarnings both under-reported how many channels this cycle actually affected
+        // (e.g. 1 warning shown instead of 7 for a 10-channel claim that ran out of budget at #4).
+        for (let j = i; j < claimedIds.length; j++) {
+          attempted += 1;
+          quotaLimited += 1;
+          await deps.insertMarketIntelligenceCollectionRun({
+            researchChannelId: claimedIds[j],
+            status: "skipped_quota_limited",
+            unitsSpent: 0,
+            ranAt: now,
+          });
+          await deps.releaseResearchChannelCollectionClaim(claimedIds[j]);
+          results.push({ channelId: claimedIds[j], outcome: "skipped_quota_limited", videosStored: 0, newSnapshotsObservedAt: null, unitsSpent: 0 });
+        }
+        break;
+      }
+
+      attempted += 1;
+      let unitsSpentThisChannel = 0;
+      let videosRequested: number | null = null;
+      let videosReturned: number | null = null;
+      // True once the ~15-video RSS feed (not the uploads playlist) supplied this run's videos.
+      let feedFallback = false;
+      // Guards the catch block below against writing a SECOND collection-run row for the same
+      // attempt (found by independent review: without this, a throw from
+      // markResearchChannelAutoCollected -- AFTER the success row already landed -- fell into the
+      // catch, which wrote a second "failed" row with the identical unitsSpent, double-counting
+      // real spend in the quota ledger AND wrongly putting a channel that actually succeeded into
+      // the 24h failure-retry backoff).
+      let successRowWritten = false;
+      let channelOutcome: CollectionChannelOutcome = "failed";
+      // What to persist about the channel's deep-collection progress AFTER the success row (null = leave it untouched: an
+      // incremental run, or the RSS fallback).
+      let finalProgress: { complete: boolean; completeReason: CollectionCompleteReason | null; nextPageToken: string | null } | null = null;
+
+      try {
+        const channelRow = await deps.getResearchChannelById(researchChannelId);
+        const depth = resolveCollectionDepth(channelRow ?? {}, depthDefaults);
+        const cap = depth.maxVideosPerChannel;
+        const afterMs = depth.publishedAfter === null ? null : Date.parse(`${depth.publishedAfter}T00:00:00Z`);
+        // Backfill = walk deeper (first collection, unfinished, cap raised, date moved earlier); otherwise incremental = refresh
+        // the newest page and read further only while pages still hold videos we have not stored.
+        const storedAtStart = new Set((await deps.listMarketVideoSnapshotsByChannel(researchChannelId)).map((row) => row.videoId)).size;
+        const backfill = channelRow ? needsBackfill(channelRow, depth, storedAtStart) : true;
+        let resumeToken = backfill && channelRow?.videosComplete === 0 ? (channelRow.videosNextPageToken ?? null) : null;
+
+        // Charged BEFORE the call resolves, not after -- YouTube's own quota accounting charges
+        // a failed/invalid request too (its public quota docs), so a thrown error below must
+        // never erase this channel's real spend down to a fabricated 0 (found by advisor review).
+        unitsSpentThisChannel += CHANNELS_LIST_UNIT_COST;
+        remaining -= CHANNELS_LIST_UNIT_COST;
+        const snapshot = await deps.youtubeApi.getPublicChannelSnapshot({ credentials, channelId: researchChannelId });
+
+        if (!snapshot) {
+          throw new Error("YouTube reports no public channel for this id");
+        }
+
+        await deps.insertMarketChannelSnapshot({
+          id: deps.idGenerator(),
+          researchChannelId,
+          subscriberCount: snapshot.subscriberCount,
+          viewCount: snapshot.viewCount,
+          videoCount: snapshot.videoCount,
+          hiddenSubscriberCount: snapshot.hiddenSubscriberCount,
+          source: "youtube.channels.list",
+          createdVia: "web_ui",
+        });
+
+        // Phase 13 slices 13.5/13.6, as revised by review round 1: the uploads list (ids, titles,
+        // publish times) comes from the uploads playlist -- 1 pool unit per page, up to 50 videos each;
+        // the RSS feed (newest ~15, no quota) is its FALLBACK, so collection still finds uploads when
+        // that call fails (e.g. the pool is exhausted). Statistics come from videos.batchGetStats (its
+        // own bucket) with videos.list (1 pool unit) as the fallback, once per page.
+        type ListedVideo = { videoId: string; title: string; publishedAt: string | null };
+        type ListedPage = { items: ListedVideo[]; nextPageToken: string | null };
+        let firstPage: ListedPage | null = null;
+        let playlistError: unknown = null;
+        if (snapshot.uploadsPlaylistId) {
+          unitsSpentThisChannel += PLAYLIST_ITEMS_LIST_UNIT_COST;
+          remaining -= PLAYLIST_ITEMS_LIST_UNIT_COST;
+          try {
+            firstPage = await deps.youtubeApi.listUploadsPlaylistPage({ credentials, uploadsPlaylistId: snapshot.uploadsPlaylistId });
+          } catch (error) {
+            playlistError = error;
+          }
+        }
+        if (firstPage === null) {
+          try {
+            firstPage = { items: await deps.youtubeApi.listChannelFeedVideoIds({ channelId: researchChannelId }), nextPageToken: null };
+            feedFallback = true;
+          } catch (feedError) {
+            // Review round 2: fail closed. When the playlist call failed and the RSS fallback failed
+            // too, this channel's collection FAILED (recorded as such, retried on the failure
+            // backoff) -- never a "success" with no video data. Without an uploads playlist at all,
+            // the feed is the only source, so its failure is the failure.
+            throw playlistError ?? feedError;
+          }
+        }
+
+        const knownIds = new Set((await deps.listMarketVideoSnapshotsByChannel(researchChannelId)).map((row) => row.videoId));
+        const knownAtStart = knownIds.size;
+        const maxPages = pagesForCap(cap) + pagesForCap(knownAtStart) + 2;
+        // A cursor on a playlist that now ends at page 1 is moot.
+        if (firstPage.nextPageToken === null) resumeToken = null;
+        const firstPageNext = firstPage.nextPageToken;
+
+        videosRequested = 0;
+        videosReturned = 0;
+
+        // Processes one listed page completely (or throws): date filter, which items get statistics, the stats call(s), the inserts.
+        // Returns what the stop rules need.
+        const processPage = async (
+          page: ListedPage,
+          isFirstPage: boolean
+        ): Promise<{ newOnPage: number; dateReached: boolean }> => {
+          const considered = isFirstPage ? page.items.slice(0, cap) : page.items;
+          const kept: ListedVideo[] = [];
+          let dateReached = false;
+          for (const item of considered) {
+            if (afterMs !== null && item.publishedAt && Date.parse(item.publishedAt) < afterMs) {
+              dateReached = true;
+              break;
+            }
+            kept.push(item);
+          }
+          const newOnPage = kept.filter((item) => !knownIds.has(item.videoId)).length;
+
+          // The first page is always refreshed in full (as before this feature); a deeper page only gets statistics for videos not
+          // stored yet (a restart that walks already-stored pages must not re-snapshot them). Only a backfill stops at the cap.
+          let toSnapshot: ListedVideo[];
+          if (isFirstPage) {
+            toSnapshot = kept;
+          } else {
+            toSnapshot = [];
+            let count = knownIds.size;
+            for (const item of kept) {
+              if (knownIds.has(item.videoId)) continue;
+              if (backfill && count >= cap) break;
+              toSnapshot.push(item);
+              count += 1;
+            }
+          }
+
+          const metaById = new Map(toSnapshot.map((v) => [v.videoId, { title: v.title, publishedAt: v.publishedAt }]));
+          const videoIds = toSnapshot.map((v) => v.videoId);
+          videosRequested = (videosRequested ?? 0) + videoIds.length;
+          if (videoIds.length > 0) {
+            let videoSnapshots: PublicVideoSnapshot[];
+            let statsSource = "youtube.videos.batchGetStats";
+            try {
+              videoSnapshots = await deps.youtubeApi.getPublicVideoStatsBatch({ credentials, videoIds });
+            } catch {
+              statsSource = "youtube.videos.list";
+              unitsSpentThisChannel += VIDEOS_LIST_UNIT_COST;
+              remaining -= VIDEOS_LIST_UNIT_COST;
+              videoSnapshots = await deps.youtubeApi.getPublicVideoSnapshots({ credentials, videoIds });
+            }
+
+            // Counts only what was ACTUALLY persisted, not the raw API response length (found by
+            // independent review: the previous version set videosReturned from the response
+            // length before this loop ran, so a mid-loop insert failure left the audit row
+            // overstating what genuinely landed in market_video_snapshots). videosReturned stays
+            // accurate even if a later iteration throws, since it only counts completed inserts.
+            for (const videoSnapshot of videoSnapshots) {
+              const meta = metaById.get(videoSnapshot.videoId);
+              const title = videoSnapshot.title.length > 0 ? videoSnapshot.title : (meta?.title ?? "");
+              const publishedAt = videoSnapshot.publishedAt ?? meta?.publishedAt ?? null;
+              await deps.insertMarketVideoSnapshot({
+                id: deps.idGenerator(),
+                researchChannelId,
+                videoId: videoSnapshot.videoId,
+                viewCount: videoSnapshot.viewCount,
+                likeCount: videoSnapshot.likeCount,
+                commentCount: videoSnapshot.commentCount,
+                publishedAt: publishedAt ? new Date(publishedAt) : null,
+                // Phase 9 slice 9H part C -- costs zero additional quota. Normalized to null (never
+                // "") so a genuinely uncaptured title is never stored as a "known, empty" one.
+                title: title.length > 0 ? title : null,
+                // Operator request 2026-10-04: raw values only, null when the fetch did not return them (never 0).
+                durationSeconds: videoSnapshot.durationSeconds ?? null,
+                liveBroadcastContent: videoSnapshot.liveBroadcastContent ?? null,
+                source: statsSource,
+                createdVia: "web_ui",
+              });
+              knownIds.add(videoSnapshot.videoId);
+              videosReturned = (videosReturned ?? 0) + 1;
+            }
+          }
+          return { newOnPage, dateReached };
+        };
+
+        let current: ListedPage = firstPage;
+        let isFirstPage = true;
+        // Where the next unread page starts (a backfill resumes there); the cursor is kept while page 1 is only being refreshed.
+        let pendingToken: string | null = resumeToken ?? firstPageNext;
+        let jumpingFromCursor = resumeToken !== null;
+        let pagesFetched = 1;
+
+        for (;;) {
+          const { newOnPage, dateReached } = await processPage(current, isFirstPage);
+          isFirstPage = false;
+          // The RSS fallback is a single page by construction: nothing to page and no state to remember.
+          if (feedFallback) break;
+
+          const reachedCap = knownIds.size >= cap;
+          if (backfill) {
+            // Stop rules, in this order: the cap, the date, the end of the playlist.
+            if (reachedCap) {
+              finalProgress = { complete: true, completeReason: "cap", nextPageToken: null };
+              break;
+            }
+            if (dateReached) {
+              finalProgress = { complete: true, completeReason: "date", nextPageToken: null };
+              break;
+            }
+            if (pendingToken === null) {
+              finalProgress = { complete: true, completeReason: "exhausted", nextPageToken: null };
+              break;
+            }
+            // Progress survives a crash/failure on a later page: the cursor is saved once this page is fully stored.
+            await deps.saveResearchChannelCollectionProgress(researchChannelId, {
+              complete: false,
+              completeReason: null,
+              nextPageToken: pendingToken,
+              capAtRun: cap,
+              publishedAfterAtRun: depth.publishedAfter,
+            });
+          } else if (reachedCap || dateReached || pendingToken === null || newOnPage === 0) {
+            // Incremental: the cap, the date, the end, or a page with nothing new ends it; its state is left as it was.
+            break;
+          }
+
+          // One more page needs a `playlistItems.list` unit plus a possible `videos.list` fallback unit, and must leave the
+          // 3-unit minimum for every channel still waiting in this run (a deep backfill must not starve the others).
+          const channelsAfterThis = claimedIds.length - i - 1;
+          const canAffordAnotherPage =
+            pagesFetched < maxPages &&
+            remaining - (PLAYLIST_ITEMS_LIST_UNIT_COST + VIDEOS_LIST_UNIT_COST) >= PER_CHANNEL_WORST_CASE_UNIT_COST * channelsAfterThis;
+          if (!canAffordAnotherPage) {
+            if (backfill) finalProgress = { complete: false, completeReason: null, nextPageToken: pendingToken };
+            break;
+          }
+
+          unitsSpentThisChannel += PLAYLIST_ITEMS_LIST_UNIT_COST;
+          remaining -= PLAYLIST_ITEMS_LIST_UNIT_COST;
+          pagesFetched += 1;
+          let next: ListedPage;
+          try {
+            next = await deps.youtubeApi.listUploadsPlaylistPage({
+              credentials,
+              uploadsPlaylistId: snapshot.uploadsPlaylistId as string,
+              pageToken: pendingToken,
+            });
+          } catch (error) {
+            if (!jumpingFromCursor) throw error;
+            // The saved cursor was rejected (expired/invalid): continue from where page 1 leaves off instead, walking pages we
+            // already stored (they get no new snapshots) until the unstored part begins. The failed call's unit is already charged.
+            jumpingFromCursor = false;
+            pendingToken = firstPageNext;
+            if (pendingToken === null) {
+              finalProgress = { complete: true, completeReason: "exhausted", nextPageToken: null };
+              break;
+            }
+            // An empty stand-in page: nothing to process; the loop saves the new cursor and fetches from pendingToken.
+            current = { items: [], nextPageToken: pendingToken };
+            continue;
+          }
+          jumpingFromCursor = false;
+          current = next;
+          pendingToken = next.nextPageToken;
+        }
+
+        // The audit row is written BEFORE the mark, not after (found by independent review): if
+        // this insert itself throws, the catch below correctly records "failed" and
+        // last_auto_collected_at is never touched. The reverse order left a window where
+        // markResearchChannelAutoCollected could succeed and this insert then fail -- the channel
+        // would end up marked fresh (skipped for 24h) while its own audit trail said "failed",
+        // directly contradicting this module's own "marked ONLY on full success" invariant. This
+        // is not a full transaction (neither write shares one), so the MARK itself can still throw
+        // AFTER this insert succeeds -- guarded by `successRowWritten` above, so that specific
+        // case is treated as the real success it is (no second, double-counting audit row), with
+        // the channel simply staying stale for a free retry next run, rather than being
+        // misrecorded as a failure it never actually was.
+        await deps.insertMarketIntelligenceCollectionRun({
+          researchChannelId,
+          status: "success",
+          unitsSpent: unitsSpentThisChannel,
+          videosRequested,
+          videosReturned,
+          feedFallback,
+          ranAt: now,
+        });
+        successRowWritten = true;
+        // The deep-collection state goes after the success row and before the mark: a throw here is still covered by
+        // `successRowWritten` (the run is recorded as the success it was; the state is simply written again by the next run).
+        if (finalProgress !== null) {
+          await deps.saveResearchChannelCollectionProgress(researchChannelId, {
+            ...finalProgress,
+            capAtRun: cap,
+            publishedAfterAtRun: depth.publishedAfter,
+          });
+        }
+        await deps.markResearchChannelAutoCollected(researchChannelId, now);
+        succeeded += 1;
+        channelOutcome = finalProgress !== null && !finalProgress.complete ? "partial_budget" : "completed";
+      } catch (error) {
+        // If the success row already landed, this catch exists only because the MARK itself
+        // threw afterward -- the attempt genuinely succeeded and already has its own audit row,
+        // so a second "failed" row here would double-count unitsSpent in the ledger and wrongly
+        // trigger the 24h failure backoff for a channel that didn't actually fail. The channel
+        // simply stays stale (the mark never landed) and is retried, at no extra ledger cost, on
+        // the next run.
+        if (!successRowWritten) {
+          await deps.insertMarketIntelligenceCollectionRun({
+            researchChannelId,
+            status: "failed",
+            unitsSpent: unitsSpentThisChannel,
+            // Preserves whatever was actually known before the failure (e.g. enumeration
+            // finished but the stats fetch itself threw) instead of discarding it back to null
+            // (found by advisor review).
+            videosRequested,
+            videosReturned,
+            feedFallback,
+            errorMessage: error instanceof Error ? error.message : String(error),
+            ranAt: now,
+          });
+          failedCount += 1;
+        } else {
+          succeeded += 1;
+          channelOutcome = finalProgress !== null && !finalProgress.complete ? "partial_budget" : "completed";
+        }
+      } finally {
+        await deps.releaseResearchChannelCollectionClaim(researchChannelId);
+        unitsSpentTotal += unitsSpentThisChannel;
+        sink.unitsSpent = unitsSpentTotal;
+        results.push({
+          channelId: researchChannelId,
+          outcome: channelOutcome,
+          videosStored: channelOutcome === "failed" ? 0 : (videosReturned ?? 0),
+          newSnapshotsObservedAt: channelOutcome === "failed" ? null : await latestChannelObservationIso(researchChannelId),
+          unitsSpent: unitsSpentThisChannel,
+        });
+      }
+    }
+
+    return finish("skipped_not_stale", [], { attempted, succeeded, failed: failedCount, quotaLimited, unitsSpent: unitsSpentTotal });
+  }
 
   // Captured in a local `const` (rather than returned directly) so `approveMarketResearchRequest`
   // (Phase 9 slice 9G, part B) can call `services.discoverChannels(...)` directly, reusing its
@@ -1892,414 +2512,10 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
       unitsSpent: number;
     }> {
       const parsedInput = parseWithSchema(runCollectionIfStaleInputSchema, input, "run collection if stale input");
-      const zeroed = { attempted: 0, succeeded: 0, failed: 0, quotaLimited: 0, unitsSpent: 0 };
-
-      const budget = await deps.getMarketIntelligenceDailyQuotaBudgetUnits();
-      if (budget === null) {
-        return parseWithSchema(runCollectionIfStaleOutputSchema, zeroed, "run collection if stale output");
-      }
-
-      const now = deps.clock.now();
-      const spentToday = await deps.getMarketIntelligenceUnitsSpentSince(startOfQuotaDay(now));
-      let remaining = budget - spentToday;
-      if (remaining <= 0) {
-        return parseWithSchema(runCollectionIfStaleOutputSchema, zeroed, "run collection if stale output");
-      }
-
-      // A disabled "Data API reads" toggle is a purely local, no-network condition -- checked
-      // upfront, before any channel is claimed or any budget spent, so it can never be mischarged
-      // as if it were a real, failed call (found by independent review: the per-call catch blocks
-      // below charge the call's own cost unconditionally, which is correct for a genuine network
-      // failure but wrong for a precondition that never reached YouTube at all).
-      await deps.youtubeApi.assertReadsAvailable();
-
-      // Credentials must resolve BEFORE any channel is claimed -- a scope/credential failure must
-      // never leave a channel claimed with nothing actually attempted (advisor review).
-      const credentials = await deps.authResolver.resolve({
-        credentialRef: parsedInput.credentialRef,
-        requiredScopes: [YOUTUBE_READ_SCOPE],
-      });
-
-      const staleCutoff = new Date(now.getTime() - MARKET_INTELLIGENCE_STALE_WINDOW_MS);
-      const claimExpiryCutoff = new Date(now.getTime() - MARKET_INTELLIGENCE_CLAIM_EXPIRY_MS);
-      const recentlyFailedIds = await deps.listRecentlyFailedResearchChannelIds(staleCutoff);
-      const claimedIds = await deps.claimStaleResearchChannelsForCollection({
-        now,
-        staleCutoff,
-        claimExpiryCutoff,
-        excludeResearchChannelIds: recentlyFailedIds,
-      });
-
-      if (claimedIds.length === 0) {
-        return parseWithSchema(runCollectionIfStaleOutputSchema, zeroed, "run collection if stale output");
-      }
-
-      // Recomputed AFTER the claim, from the ledger's own current state -- narrows (does not fully
-      // eliminate -- see this function's own top-level doc comment) the race window a second
-      // concurrent caller's own stale pre-claim `spentToday` read would otherwise leave open
-      // (advisor review, before implementation).
-      const spentAfterClaim = await deps.getMarketIntelligenceUnitsSpentSince(startOfQuotaDay(now));
-      remaining = budget - spentAfterClaim;
-      if (remaining <= 0) {
-        for (const claimedId of claimedIds) {
-          await deps.releaseResearchChannelCollectionClaim(claimedId);
-        }
-        return parseWithSchema(runCollectionIfStaleOutputSchema, zeroed, "run collection if stale output");
-      }
-
-      const depthDefaults = await deps.getMarketIntelligenceCollectionDepthDefaults();
-      let attempted = 0;
-      let succeeded = 0;
-      let failedCount = 0;
-      let quotaLimited = 0;
-      let unitsSpentTotal = 0;
-
-      for (let i = 0; i < claimedIds.length; i++) {
-        const researchChannelId = claimedIds[i];
-
-        // Checked against the full worst-case cost, not just the next call's cost -- a channel is
-        // either fully processed or not started at all this run, never cut short partway (see
-        // PER_CHANNEL_WORST_CASE_UNIT_COST's own doc comment).
-        if (remaining < PER_CHANNEL_WORST_CASE_UNIT_COST) {
-          // Every remaining claimed channel (not just this one) is recorded and released here, not
-          // silently dropped -- found by independent review: releasing j>i's claims with no row and
-          // no counter meant getWatchlistEntryContext's data-quality flag and getMarketOverview's
-          // collectionWarnings both under-reported how many channels this cycle actually affected
-          // (e.g. 1 warning shown instead of 7 for a 10-channel claim that ran out of budget at #4).
-          for (let j = i; j < claimedIds.length; j++) {
-            attempted += 1;
-            quotaLimited += 1;
-            await deps.insertMarketIntelligenceCollectionRun({
-              researchChannelId: claimedIds[j],
-              status: "skipped_quota_limited",
-              unitsSpent: 0,
-              ranAt: now,
-            });
-            await deps.releaseResearchChannelCollectionClaim(claimedIds[j]);
-          }
-          break;
-        }
-
-        attempted += 1;
-        let unitsSpentThisChannel = 0;
-        let videosRequested: number | null = null;
-        let videosReturned: number | null = null;
-        // True once the ~15-video RSS feed (not the uploads playlist) supplied this run's videos.
-        let feedFallback = false;
-        // Guards the catch block below against writing a SECOND collection-run row for the same
-        // attempt (found by independent review: without this, a throw from
-        // markResearchChannelAutoCollected -- AFTER the success row already landed -- fell into the
-        // catch, which wrote a second "failed" row with the identical unitsSpent, double-counting
-        // real spend in the quota ledger AND wrongly putting a channel that actually succeeded into
-        // the 24h failure-retry backoff).
-        let successRowWritten = false;
-        // What to persist about the channel's deep-collection progress AFTER the success row (null = leave it untouched: an
-        // incremental run, or the RSS fallback).
-        let finalProgress: { complete: boolean; completeReason: CollectionCompleteReason | null; nextPageToken: string | null } | null = null;
-
-        try {
-          const channelRow = await deps.getResearchChannelById(researchChannelId);
-          const depth = resolveCollectionDepth(channelRow ?? {}, depthDefaults);
-          const cap = depth.maxVideosPerChannel;
-          const afterMs = depth.publishedAfter === null ? null : Date.parse(`${depth.publishedAfter}T00:00:00Z`);
-          // Backfill = walk deeper (first collection, unfinished, cap raised, date moved earlier); otherwise incremental = refresh
-          // the newest page and read further only while pages still hold videos we have not stored.
-          const storedAtStart = new Set((await deps.listMarketVideoSnapshotsByChannel(researchChannelId)).map((row) => row.videoId)).size;
-          const backfill = channelRow ? needsBackfill(channelRow, depth, storedAtStart) : true;
-          let resumeToken = backfill && channelRow?.videosComplete === 0 ? (channelRow.videosNextPageToken ?? null) : null;
-
-          // Charged BEFORE the call resolves, not after -- YouTube's own quota accounting charges
-          // a failed/invalid request too (its public quota docs), so a thrown error below must
-          // never erase this channel's real spend down to a fabricated 0 (found by advisor review).
-          unitsSpentThisChannel += CHANNELS_LIST_UNIT_COST;
-          remaining -= CHANNELS_LIST_UNIT_COST;
-          const snapshot = await deps.youtubeApi.getPublicChannelSnapshot({ credentials, channelId: researchChannelId });
-
-          if (!snapshot) {
-            throw new Error("YouTube reports no public channel for this id");
-          }
-
-          await deps.insertMarketChannelSnapshot({
-            id: deps.idGenerator(),
-            researchChannelId,
-            subscriberCount: snapshot.subscriberCount,
-            viewCount: snapshot.viewCount,
-            videoCount: snapshot.videoCount,
-            hiddenSubscriberCount: snapshot.hiddenSubscriberCount,
-            source: "youtube.channels.list",
-            createdVia: "web_ui",
-          });
-
-          // Phase 13 slices 13.5/13.6, as revised by review round 1: the uploads list (ids, titles,
-          // publish times) comes from the uploads playlist -- 1 pool unit per page, up to 50 videos each;
-          // the RSS feed (newest ~15, no quota) is its FALLBACK, so collection still finds uploads when
-          // that call fails (e.g. the pool is exhausted). Statistics come from videos.batchGetStats (its
-          // own bucket) with videos.list (1 pool unit) as the fallback, once per page.
-          type ListedVideo = { videoId: string; title: string; publishedAt: string | null };
-          type ListedPage = { items: ListedVideo[]; nextPageToken: string | null };
-          let firstPage: ListedPage | null = null;
-          let playlistError: unknown = null;
-          if (snapshot.uploadsPlaylistId) {
-            unitsSpentThisChannel += PLAYLIST_ITEMS_LIST_UNIT_COST;
-            remaining -= PLAYLIST_ITEMS_LIST_UNIT_COST;
-            try {
-              firstPage = await deps.youtubeApi.listUploadsPlaylistPage({ credentials, uploadsPlaylistId: snapshot.uploadsPlaylistId });
-            } catch (error) {
-              playlistError = error;
-            }
-          }
-          if (firstPage === null) {
-            try {
-              firstPage = { items: await deps.youtubeApi.listChannelFeedVideoIds({ channelId: researchChannelId }), nextPageToken: null };
-              feedFallback = true;
-            } catch (feedError) {
-              // Review round 2: fail closed. When the playlist call failed and the RSS fallback failed
-              // too, this channel's collection FAILED (recorded as such, retried on the failure
-              // backoff) -- never a "success" with no video data. Without an uploads playlist at all,
-              // the feed is the only source, so its failure is the failure.
-              throw playlistError ?? feedError;
-            }
-          }
-
-          const knownIds = new Set((await deps.listMarketVideoSnapshotsByChannel(researchChannelId)).map((row) => row.videoId));
-          const knownAtStart = knownIds.size;
-          const maxPages = pagesForCap(cap) + pagesForCap(knownAtStart) + 2;
-          // A cursor on a playlist that now ends at page 1 is moot.
-          if (firstPage.nextPageToken === null) resumeToken = null;
-          const firstPageNext = firstPage.nextPageToken;
-
-          videosRequested = 0;
-          videosReturned = 0;
-
-          // Processes one listed page completely (or throws): date filter, which items get statistics, the stats call(s), the inserts.
-          // Returns what the stop rules need.
-          const processPage = async (
-            page: ListedPage,
-            isFirstPage: boolean
-          ): Promise<{ newOnPage: number; dateReached: boolean }> => {
-            const considered = isFirstPage ? page.items.slice(0, cap) : page.items;
-            const kept: ListedVideo[] = [];
-            let dateReached = false;
-            for (const item of considered) {
-              if (afterMs !== null && item.publishedAt && Date.parse(item.publishedAt) < afterMs) {
-                dateReached = true;
-                break;
-              }
-              kept.push(item);
-            }
-            const newOnPage = kept.filter((item) => !knownIds.has(item.videoId)).length;
-
-            // The first page is always refreshed in full (as before this feature); a deeper page only gets statistics for videos not
-            // stored yet (a restart that walks already-stored pages must not re-snapshot them). Only a backfill stops at the cap.
-            let toSnapshot: ListedVideo[];
-            if (isFirstPage) {
-              toSnapshot = kept;
-            } else {
-              toSnapshot = [];
-              let count = knownIds.size;
-              for (const item of kept) {
-                if (knownIds.has(item.videoId)) continue;
-                if (backfill && count >= cap) break;
-                toSnapshot.push(item);
-                count += 1;
-              }
-            }
-
-            const metaById = new Map(toSnapshot.map((v) => [v.videoId, { title: v.title, publishedAt: v.publishedAt }]));
-            const videoIds = toSnapshot.map((v) => v.videoId);
-            videosRequested = (videosRequested ?? 0) + videoIds.length;
-            if (videoIds.length > 0) {
-              let videoSnapshots: PublicVideoSnapshot[];
-              let statsSource = "youtube.videos.batchGetStats";
-              try {
-                videoSnapshots = await deps.youtubeApi.getPublicVideoStatsBatch({ credentials, videoIds });
-              } catch {
-                statsSource = "youtube.videos.list";
-                unitsSpentThisChannel += VIDEOS_LIST_UNIT_COST;
-                remaining -= VIDEOS_LIST_UNIT_COST;
-                videoSnapshots = await deps.youtubeApi.getPublicVideoSnapshots({ credentials, videoIds });
-              }
-
-              // Counts only what was ACTUALLY persisted, not the raw API response length (found by
-              // independent review: the previous version set videosReturned from the response
-              // length before this loop ran, so a mid-loop insert failure left the audit row
-              // overstating what genuinely landed in market_video_snapshots). videosReturned stays
-              // accurate even if a later iteration throws, since it only counts completed inserts.
-              for (const videoSnapshot of videoSnapshots) {
-                const meta = metaById.get(videoSnapshot.videoId);
-                const title = videoSnapshot.title.length > 0 ? videoSnapshot.title : (meta?.title ?? "");
-                const publishedAt = videoSnapshot.publishedAt ?? meta?.publishedAt ?? null;
-                await deps.insertMarketVideoSnapshot({
-                  id: deps.idGenerator(),
-                  researchChannelId,
-                  videoId: videoSnapshot.videoId,
-                  viewCount: videoSnapshot.viewCount,
-                  likeCount: videoSnapshot.likeCount,
-                  commentCount: videoSnapshot.commentCount,
-                  publishedAt: publishedAt ? new Date(publishedAt) : null,
-                  // Phase 9 slice 9H part C -- costs zero additional quota. Normalized to null (never
-                  // "") so a genuinely uncaptured title is never stored as a "known, empty" one.
-                  title: title.length > 0 ? title : null,
-                  // Operator request 2026-10-04: raw values only, null when the fetch did not return them (never 0).
-                  durationSeconds: videoSnapshot.durationSeconds ?? null,
-                  liveBroadcastContent: videoSnapshot.liveBroadcastContent ?? null,
-                  source: statsSource,
-                  createdVia: "web_ui",
-                });
-                knownIds.add(videoSnapshot.videoId);
-                videosReturned = (videosReturned ?? 0) + 1;
-              }
-            }
-            return { newOnPage, dateReached };
-          };
-
-          let current: ListedPage = firstPage;
-          let isFirstPage = true;
-          // Where the next unread page starts (a backfill resumes there); the cursor is kept while page 1 is only being refreshed.
-          let pendingToken: string | null = resumeToken ?? firstPageNext;
-          let jumpingFromCursor = resumeToken !== null;
-          let pagesFetched = 1;
-
-          for (;;) {
-            const { newOnPage, dateReached } = await processPage(current, isFirstPage);
-            isFirstPage = false;
-            // The RSS fallback is a single page by construction: nothing to page and no state to remember.
-            if (feedFallback) break;
-
-            const reachedCap = knownIds.size >= cap;
-            if (backfill) {
-              // Stop rules, in this order: the cap, the date, the end of the playlist.
-              if (reachedCap) {
-                finalProgress = { complete: true, completeReason: "cap", nextPageToken: null };
-                break;
-              }
-              if (dateReached) {
-                finalProgress = { complete: true, completeReason: "date", nextPageToken: null };
-                break;
-              }
-              if (pendingToken === null) {
-                finalProgress = { complete: true, completeReason: "exhausted", nextPageToken: null };
-                break;
-              }
-              // Progress survives a crash/failure on a later page: the cursor is saved once this page is fully stored.
-              await deps.saveResearchChannelCollectionProgress(researchChannelId, {
-                complete: false,
-                completeReason: null,
-                nextPageToken: pendingToken,
-                capAtRun: cap,
-                publishedAfterAtRun: depth.publishedAfter,
-              });
-            } else if (reachedCap || dateReached || pendingToken === null || newOnPage === 0) {
-              // Incremental: the cap, the date, the end, or a page with nothing new ends it; its state is left as it was.
-              break;
-            }
-
-            // One more page needs a `playlistItems.list` unit plus a possible `videos.list` fallback unit, and must leave the
-            // 3-unit minimum for every channel still waiting in this run (a deep backfill must not starve the others).
-            const channelsAfterThis = claimedIds.length - i - 1;
-            const canAffordAnotherPage =
-              pagesFetched < maxPages &&
-              remaining - (PLAYLIST_ITEMS_LIST_UNIT_COST + VIDEOS_LIST_UNIT_COST) >= PER_CHANNEL_WORST_CASE_UNIT_COST * channelsAfterThis;
-            if (!canAffordAnotherPage) {
-              if (backfill) finalProgress = { complete: false, completeReason: null, nextPageToken: pendingToken };
-              break;
-            }
-
-            unitsSpentThisChannel += PLAYLIST_ITEMS_LIST_UNIT_COST;
-            remaining -= PLAYLIST_ITEMS_LIST_UNIT_COST;
-            pagesFetched += 1;
-            let next: ListedPage;
-            try {
-              next = await deps.youtubeApi.listUploadsPlaylistPage({
-                credentials,
-                uploadsPlaylistId: snapshot.uploadsPlaylistId as string,
-                pageToken: pendingToken,
-              });
-            } catch (error) {
-              if (!jumpingFromCursor) throw error;
-              // The saved cursor was rejected (expired/invalid): continue from where page 1 leaves off instead, walking pages we
-              // already stored (they get no new snapshots) until the unstored part begins. The failed call's unit is already charged.
-              jumpingFromCursor = false;
-              pendingToken = firstPageNext;
-              if (pendingToken === null) {
-                finalProgress = { complete: true, completeReason: "exhausted", nextPageToken: null };
-                break;
-              }
-              // An empty stand-in page: nothing to process; the loop saves the new cursor and fetches from pendingToken.
-              current = { items: [], nextPageToken: pendingToken };
-              continue;
-            }
-            jumpingFromCursor = false;
-            current = next;
-            pendingToken = next.nextPageToken;
-          }
-
-          // The audit row is written BEFORE the mark, not after (found by independent review): if
-          // this insert itself throws, the catch below correctly records "failed" and
-          // last_auto_collected_at is never touched. The reverse order left a window where
-          // markResearchChannelAutoCollected could succeed and this insert then fail -- the channel
-          // would end up marked fresh (skipped for 24h) while its own audit trail said "failed",
-          // directly contradicting this module's own "marked ONLY on full success" invariant. This
-          // is not a full transaction (neither write shares one), so the MARK itself can still throw
-          // AFTER this insert succeeds -- guarded by `successRowWritten` above, so that specific
-          // case is treated as the real success it is (no second, double-counting audit row), with
-          // the channel simply staying stale for a free retry next run, rather than being
-          // misrecorded as a failure it never actually was.
-          await deps.insertMarketIntelligenceCollectionRun({
-            researchChannelId,
-            status: "success",
-            unitsSpent: unitsSpentThisChannel,
-            videosRequested,
-            videosReturned,
-            feedFallback,
-            ranAt: now,
-          });
-          successRowWritten = true;
-          // The deep-collection state goes after the success row and before the mark: a throw here is still covered by
-          // `successRowWritten` (the run is recorded as the success it was; the state is simply written again by the next run).
-          if (finalProgress !== null) {
-            await deps.saveResearchChannelCollectionProgress(researchChannelId, {
-              ...finalProgress,
-              capAtRun: cap,
-              publishedAfterAtRun: depth.publishedAfter,
-            });
-          }
-          await deps.markResearchChannelAutoCollected(researchChannelId, now);
-          succeeded += 1;
-        } catch (error) {
-          // If the success row already landed, this catch exists only because the MARK itself
-          // threw afterward -- the attempt genuinely succeeded and already has its own audit row,
-          // so a second "failed" row here would double-count unitsSpent in the ledger and wrongly
-          // trigger the 24h failure backoff for a channel that didn't actually fail. The channel
-          // simply stays stale (the mark never landed) and is retried, at no extra ledger cost, on
-          // the next run.
-          if (!successRowWritten) {
-            await deps.insertMarketIntelligenceCollectionRun({
-              researchChannelId,
-              status: "failed",
-              unitsSpent: unitsSpentThisChannel,
-              // Preserves whatever was actually known before the failure (e.g. enumeration
-              // finished but the stats fetch itself threw) instead of discarding it back to null
-              // (found by advisor review).
-              videosRequested,
-              videosReturned,
-              feedFallback,
-              errorMessage: error instanceof Error ? error.message : String(error),
-              ranAt: now,
-            });
-            failedCount += 1;
-          } else {
-            succeeded += 1;
-          }
-        } finally {
-          await deps.releaseResearchChannelCollectionClaim(researchChannelId);
-          unitsSpentTotal += unitsSpentThisChannel;
-        }
-      }
-
+      const { attempted, succeeded, failed, quotaLimited, unitsSpent } = await collectStaleChannels(parsedInput);
       return parseWithSchema(
         runCollectionIfStaleOutputSchema,
-        { attempted, succeeded, failed: failedCount, quotaLimited, unitsSpent: unitsSpentTotal },
+        { attempted, succeeded, failed, quotaLimited, unitsSpent },
         "run collection if stale output"
       );
     },
@@ -3089,6 +3305,299 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         toMarketResearchRequest(rejected),
         "reject market research request output"
       );
+    },
+
+    // ------------------------------------------------------------------------------------------
+    // Agent-created collection requests (docs/decisions/0021-agent-collection-requests.md).
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * An agent-created (or operator-created) DRAFT asking for watchlist channels to be collected -- never self-approving. Makes ZERO
+     * YouTube calls and writes no quota-ledger rows: the estimate is computed locally from the stored depth settings and stored video
+     * counts. `channelIds` default to every watchlist channel (an agent-facing caller passes the already-confined list explicitly --
+     * this module does not know about agent assignments, `AGENTS.md` §M). A channel is left out (and reported) when it was collected
+     * inside the 24h stale window (`collected_recently`), failed inside the 24h pause (`recent_failure`), or already has an open
+     * (pending/approved/running) request (`alreadyRequested`); when nothing is left, no record is created. No force flag exists.
+     */
+    async createCollectionRequest(
+      input: unknown,
+      callOrigin: { createdVia: CreatedVia; agentApiVersion?: string | null }
+    ): Promise<CreateCollectionRequestResult> {
+      const parsedInput = parseWithSchema(createCollectionRequestInputSchema, input, "create collection request input");
+
+      const budget = await deps.getMarketIntelligenceDailyQuotaBudgetUnits();
+      if (budget === null) {
+        throw new DomainError({
+          code: "MARKET_INTELLIGENCE_QUOTA_DISABLED",
+          message: "Set a daily YouTube API unit budget in Settings before requesting a collection",
+          details: {},
+        });
+      }
+
+      const now = deps.clock.now();
+      const watchlist = await deps.listResearchChannels();
+      const byId = new Map(watchlist.map((row) => [row.id, row]));
+      const requestedIds = parsedInput.researchChannelIds ? [...new Set(parsedInput.researchChannelIds)] : watchlist.map((row) => row.id);
+      for (const id of requestedIds) {
+        if (!byId.has(id)) {
+          throw new DomainError({
+            code: "RESEARCH_CHANNEL_NOT_AVAILABLE",
+            message: "No watchlist channel with this id",
+            details: { channelId: id },
+          });
+        }
+      }
+
+      const staleCutoff = new Date(now.getTime() - MARKET_INTELLIGENCE_STALE_WINDOW_MS);
+      const recentlyFailed = new Set(await deps.listRecentlyFailedResearchChannelIds(staleCutoff));
+      const needed: string[] = [];
+      const notNeeded: CollectionNotNeeded[] = [];
+      const alreadyRequested: Array<{ channelId: string; requestId: string }> = [];
+      for (const id of requestedIds) {
+        const open = await deps.findOpenMarketCollectionRequestForChannel(id);
+        if (open) {
+          alreadyRequested.push({ channelId: id, requestId: open.id });
+          continue;
+        }
+        const last = byId.get(id)?.lastAutoCollectedAt ?? null;
+        if (last && last.getTime() >= staleCutoff.getTime()) {
+          notNeeded.push({ channelId: id, reason: "collected_recently", hoursSince: roundedHours(last.getTime(), now.getTime()) });
+          continue;
+        }
+        if (recentlyFailed.has(id)) {
+          const latestRun = await deps.getLatestMarketIntelligenceCollectionRunForChannel(id);
+          const failedAt = latestRun?.status === "failed" && latestRun.ranAt ? latestRun.ranAt : null;
+          notNeeded.push({ channelId: id, reason: "recent_failure", hoursSince: failedAt ? roundedHours(failedAt.getTime(), now.getTime()) : 0 });
+          continue;
+        }
+        needed.push(id);
+      }
+
+      if (needed.length === 0) {
+        return parseWithSchema(
+          createCollectionRequestOutputSchema,
+          { created: false, request: null, notNeeded, alreadyRequested },
+          "create collection request output"
+        );
+      }
+
+      const depthDefaults = await deps.getMarketIntelligenceCollectionDepthDefaults();
+      const channelEstimates: CollectionEstimate["channels"] = [];
+      for (const id of needed) {
+        const row = byId.get(id)!;
+        const depth = resolveCollectionDepth(row, depthDefaults);
+        const stored = new Set((await deps.listMarketVideoSnapshotsByChannel(id)).map((snapshot) => snapshot.videoId)).size;
+        if (!needsBackfill(row, depth, stored)) {
+          // Steady state: expected 1 channels.list + 1 playlist page = 2. Worst case: page 1 held new videos so page 2 is read too, and
+          // each of the two pages falls back to one videos.list = 1 + 2 + 2 = 5 (STEADY_STATE_WORST_CASE_UNITS).
+          channelEstimates.push({ channelId: id, mode: "incremental", expectedUnits: 2, worstCaseUnits: STEADY_STATE_WORST_CASE_UNITS });
+          continue;
+        }
+        // A backfill reads page 1 (refresh) plus the pages for what is not stored yet. With no saved cursor it re-walks the stored pages
+        // from page 1, so it is never cheaper than the cap's own page count. An upper bound -- a channel may have fewer videos than the cap.
+        const resumesFromCursor = row.videosComplete === 0 && !!row.videosNextPageToken;
+        const pages = Math.max(
+          pagesForCap(Math.max(0, depth.maxVideosPerChannel - stored)) + 1,
+          resumesFromCursor ? 0 : pagesForCap(depth.maxVideosPerChannel)
+        );
+        const units = estimateCollectionUnits(pages * PLAYLIST_PAGE_SIZE);
+        channelEstimates.push({ channelId: id, mode: "backfill", expectedUnits: units.firstCollection, worstCaseUnits: units.firstCollectionWorstCase });
+      }
+      const spentToday = await deps.getMarketIntelligenceUnitsSpentSince(startOfQuotaDay(now));
+      const remainingToday = Math.max(0, budget - spentToday);
+      const totalWorstCaseUnits = channelEstimates.reduce((sum, e) => sum + e.worstCaseUnits, 0);
+      const estimate: CollectionEstimate = {
+        channels: channelEstimates,
+        totalExpectedUnits: channelEstimates.reduce((sum, e) => sum + e.expectedUnits, 0),
+        totalWorstCaseUnits,
+        dailyBudgetUnits: budget,
+        unitsSpentToday: spentToday,
+        remainingTodayUnits: remainingToday,
+        fitsToday: totalWorstCaseUnits <= remainingToday,
+      };
+
+      const id = deps.idGenerator();
+      await deps.insertMarketCollectionRequest({
+        id,
+        channelIdsJson: JSON.stringify(needed),
+        reason: parsedInput.reason?.trim() ?? "",
+        estimateJson: JSON.stringify(estimate),
+        createdVia: callOrigin.createdVia,
+        agentApiVersion: callOrigin.agentApiVersion ?? null,
+        at: now,
+      });
+      const row = (await deps.getMarketCollectionRequestById(id))!;
+      return parseWithSchema(
+        createCollectionRequestOutputSchema,
+        { created: true, request: toMarketCollectionRequest(row), notNeeded, alreadyRequested },
+        "create collection request output"
+      );
+    },
+
+    /** The owner's own daily limits and what is left today (local read, no YouTube call). */
+    async getCollectionLimits(): Promise<CollectionLimits> {
+      const now = deps.clock.now();
+      const budget = await deps.getMarketIntelligenceDailyQuotaBudgetUnits();
+      const spentToday = await deps.getMarketIntelligenceUnitsSpentSince(startOfQuotaDay(now));
+      const defaults = await deps.getMarketIntelligenceCollectionDepthDefaults();
+      const watchlist = await deps.listResearchChannels();
+      return parseWithSchema(
+        collectionLimitsSchema,
+        {
+          dailyBudgetUnits: budget,
+          unitsSpentToday: spentToday,
+          remainingTodayUnits: budget === null ? null : Math.max(0, budget - spentToday),
+          quotaDayResetsAt: nextYoutubeQuotaReset(now).toISOString(),
+          defaultMaxVideosPerChannel: defaults.maxVideosPerChannel ?? DEFAULT_MAX_VIDEOS_PER_CHANNEL,
+          defaultPublishedAfter: defaults.publishedAfter,
+          staleWindowHours: MARKET_INTELLIGENCE_STALE_WINDOW_MS / 3_600_000,
+          perChannelOverrides: watchlist
+            .filter((row) => (row.maxVideosPerChannel ?? null) !== null || (row.publishedAfter ?? null) !== null)
+            .map((row) => ({ channelId: row.id, maxVideosPerChannel: row.maxVideosPerChannel ?? null, publishedAfter: row.publishedAfter ?? null })),
+        },
+        "get collection limits output"
+      );
+    },
+
+    async listCollectionRequests(): Promise<{ requests: MarketCollectionRequest[] }> {
+      const rows = await deps.listMarketCollectionRequests();
+      return parseWithSchema(
+        listCollectionRequestsOutputSchema,
+        { requests: rows.map(toMarketCollectionRequest) },
+        "list collection requests output"
+      );
+    },
+
+    async getCollectionRequest(input: unknown): Promise<MarketCollectionRequest> {
+      const parsedInput = parseWithSchema(getCollectionRequestInputSchema, input, "get collection request input");
+      const row = parsedInput.requestId ? await deps.getMarketCollectionRequestById(parsedInput.requestId) : null;
+      if (!row) {
+        throw new DomainError({
+          code: "COLLECTION_REQUEST_NOT_FOUND",
+          message: "No collection request with this id",
+          details: { requestId: parsedInput.requestId ?? null },
+        });
+      }
+      return parseWithSchema(marketCollectionRequestSchema, toMarketCollectionRequest(row), "get collection request output");
+    },
+
+    /**
+     * Web UI ONLY -- no MCP tool or CLI command calls this (fenced by this module's approval inventory test). Order: (1) the request
+     * must exist and be pending; (2) the zero-cost preconditions (budget set and not used up, Data API reads on, credentials resolve) run
+     * BEFORE any transition, so a failure leaves the request pending; (3) atomic pending -> approved -> running (a double click or
+     * two tabs can never both win); (4) the REGULAR collection (`collectStaleChannels`: same 24h stale window, same 24h failed-channel
+     * pause, same daily budget) restricted to this request's channels -- never a forced run; (5) the per-channel outcome is recorded and
+     * the request becomes done (or failed when the pass threw or every attempted channel failed). The caller waits for all of this.
+     */
+    async runApprovedCollectionRequest(input: unknown): Promise<MarketCollectionRequest> {
+      const parsedInput = parseWithSchema(runApprovedCollectionRequestInputSchema, input, "run approved collection request input");
+      const notFound = () =>
+        new DomainError({
+          code: "COLLECTION_REQUEST_NOT_FOUND",
+          message: "No collection request with this id",
+          details: { requestId: parsedInput.requestId },
+        });
+      const notPending = (message = "This collection request is no longer pending") =>
+        new DomainError({ code: "COLLECTION_REQUEST_NOT_PENDING", message, details: { requestId: parsedInput.requestId } });
+
+      const existing = await deps.getMarketCollectionRequestById(parsedInput.requestId);
+      if (!existing) throw notFound();
+      if (existing.status !== "pending") throw notPending();
+
+      const now = deps.clock.now();
+      const budget = await deps.getMarketIntelligenceDailyQuotaBudgetUnits();
+      if (budget === null) {
+        throw new DomainError({
+          code: "MARKET_INTELLIGENCE_QUOTA_DISABLED",
+          message: "Set a daily YouTube API unit budget in Settings before running a collection",
+          details: {},
+        });
+      }
+      const spentToday = await deps.getMarketIntelligenceUnitsSpentSince(startOfQuotaDay(now));
+      if (budget - spentToday <= 0) {
+        throw new DomainError({
+          code: "MARKET_INTELLIGENCE_QUOTA_EXCEEDED",
+          message: "The daily YouTube API unit budget is used up; it resets at midnight Pacific time. The request stays pending.",
+          details: { remaining: 0 },
+        });
+      }
+      await deps.youtubeApi.assertReadsAvailable();
+      await deps.authResolver.resolve({ credentialRef: parsedInput.credentialRef, requiredScopes: [YOUTUBE_READ_SCOPE] });
+
+      const credentialRef = parsedInput.credentialRef as CredentialRef;
+      const approvedBy = "userId" in credentialRef ? credentialRef.userId : null;
+      const approved = await deps.approveMarketCollectionRequestIfPending(parsedInput.requestId, approvedBy, now);
+      if (!approved) throw notPending();
+      const running = await deps.startMarketCollectionRequestIfApproved(parsedInput.requestId);
+      if (!running) throw notPending("This collection request was no longer 'approved' when its run started");
+
+      const channelIds = JSON.parse(running.channelIdsJson) as string[];
+      let finished: StoredMarketCollectionRequestForService | null;
+      const sink: CollectionRunSink = { channels: [], unitsSpent: 0, claimed: [] };
+      try {
+        const run = await collectStaleChannels({ credentialRef: parsedInput.credentialRef }, channelIds, sink);
+        const resultJson = JSON.stringify(run.channels.map((c) => parseWithSchema(collectionChannelResultSchema, c, "collection channel result")));
+        if (run.attempted > 0 && run.succeeded === 0 && run.failed === run.attempted) {
+          finished = await deps.finishMarketCollectionRequestIfRunning(
+            parsedInput.requestId,
+            { status: "failed", resultJson, unitsSpentTotal: run.unitsSpent, error: `All ${run.failed} attempted channel(s) failed` },
+            deps.clock.now()
+          );
+        } else {
+          finished = await deps.finishMarketCollectionRequestIfRunning(
+            parsedInput.requestId,
+            { status: "done", resultJson, unitsSpentTotal: run.unitsSpent },
+            deps.clock.now()
+          );
+        }
+      } catch (error) {
+        finished = await deps.finishMarketCollectionRequestIfRunning(
+          parsedInput.requestId,
+          {
+            status: "failed",
+            // What the run had charged and finished before it threw -- never a fabricated 0.
+            resultJson: sink.channels.length > 0 ? JSON.stringify(sink.channels) : null,
+            unitsSpentTotal: sink.unitsSpent,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          deps.clock.now()
+        );
+      }
+      if (!finished) throw notPending("This collection request was no longer 'running' when its outcome was recorded");
+      return parseWithSchema(marketCollectionRequestSchema, toMarketCollectionRequest(finished), "run approved collection request output");
+    },
+
+    /** Web UI ONLY. Rejects a pending request with the human's reason; collects nothing and makes no YouTube call. */
+    async rejectCollectionRequest(input: unknown): Promise<MarketCollectionRequest> {
+      const parsedInput = parseWithSchema(rejectCollectionRequestInputSchema, input, "reject collection request input");
+      const existing = await deps.getMarketCollectionRequestById(parsedInput.requestId);
+      if (!existing) {
+        throw new DomainError({
+          code: "COLLECTION_REQUEST_NOT_FOUND",
+          message: "No collection request with this id",
+          details: { requestId: parsedInput.requestId },
+        });
+      }
+      const rejected = await deps.rejectMarketCollectionRequestIfPending(parsedInput.requestId, parsedInput.reason, deps.clock.now());
+      if (!rejected) {
+        throw new DomainError({
+          code: "COLLECTION_REQUEST_NOT_PENDING",
+          message: "This collection request is no longer pending",
+          details: { requestId: parsedInput.requestId },
+        });
+      }
+      return parseWithSchema(marketCollectionRequestSchema, toMarketCollectionRequest(rejected), "reject collection request output");
+    },
+
+    /**
+     * Boot-time recovery (src/instrumentation.ts): every approved/running request approved before `approvedBefore` (default: now) is an
+     * orphan of a dead process and becomes failed. At boot of the single server process no run can be alive, so boot passes no cutoff
+     * (= now, no age threshold); the explicit argument only keeps the helper testable.
+     */
+    async sweepInterruptedCollectionRequests(input: { approvedBefore?: Date } = {}): Promise<{ failed: number }> {
+      const now = deps.clock.now();
+      const failed = await deps.failInterruptedMarketCollectionRequests(input.approvedBefore ?? now, now);
+      return { failed };
     },
   };
   return services;

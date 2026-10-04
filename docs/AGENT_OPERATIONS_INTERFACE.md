@@ -1057,6 +1057,15 @@ credential on the app's own MCP endpoint (`POST /api/mcp`); stdio MCP and the CL
   app's MCP URL with that token as a Bearer credential (no launch command, no project path), drop
   `AGENT_CONNECTION_ID`, and stop passing `credentialRef`. Setup: `docs/AGENT_ISOLATION_SETUP.md`.
 
+## 4o. Collection requests (ADR 0021) -- IMPLEMENTED; `AGENT_API_VERSION` 3.2.0
+
+MINOR bump 3.1.0 -> 3.2.0: three new capabilities in `market_intelligence`. `agent_create_collection_request` (`DRAFT`, channel-bound, passes the
+device mutation gate) stores a pending request with a local upper-bound estimate in YouTube quota units (not model tokens); it makes no YouTube call
+and has no `force`. `agent_get_collection_request` and `agent_get_collection_limits` are `READ`. The agent can neither approve nor run nor reject a
+request (Web only, mechanically fenced); an approved request runs the REGULAR collection for its channels (24 h stale window, 24 h failure pause,
+daily budget). Channels collected or failed within 24 h are reported `not_needed`; a channel with an open request is `alreadyRequested`. A request is
+a request may end `done` with every channel `skipped_*` (read the per-channel results); incremental estimate about 2, at most 5 units; owned by the creating agent's channel (assignment kind `collection_request`); another request behaves as nonexistent. Contract: `docs/interfaces.md`.
+
 ## 8. Safety invariants this interface must never violate
 
 - Never expose Google OAuth tokens, AI-provider API keys, encryption keys, raw credential records,

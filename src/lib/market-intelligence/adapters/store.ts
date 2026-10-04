@@ -1,5 +1,14 @@
 import {
+  approveMarketCollectionRequestIfPending,
   approveMarketResearchRequestIfPending,
+  failInterruptedMarketCollectionRequests,
+  finishMarketCollectionRequestIfRunning,
+  findOpenMarketCollectionRequestForChannel,
+  getMarketCollectionRequestById,
+  insertMarketCollectionRequest,
+  listMarketCollectionRequests,
+  rejectMarketCollectionRequestIfPending,
+  startMarketCollectionRequestIfApproved,
   claimStaleResearchChannelsForCollection,
   deleteMarketTopic,
   deleteMarketTopicAssignment,
@@ -48,6 +57,7 @@ import {
   recordMarketResearchRequestExecutionOutcome,
   rejectMarketResearchRequestIfPending,
   releaseResearchChannelCollectionClaim,
+  renewResearchChannelCollectionClaims,
   setMarketDiscoveryCandidateStatus,
   setMarketIntelligenceDailyQuotaBudgetUnits,
   touchMarketDiscoveryCandidateLastSeen,
@@ -85,6 +95,7 @@ export function createMarketIntelligenceStoreAdapter() {
     saveResearchChannelCollectionProgress,
     claimStaleResearchChannelsForCollection,
     releaseResearchChannelCollectionClaim,
+    renewResearchChannelCollectionClaims,
     listRecentlyFailedResearchChannelIds,
     // Phase 9 slice 9C (docs/roadmap/plans/PHASE_9_SLICE_9C_PLAN.md).
     getMarketDiscoveryCandidateById,
@@ -128,6 +139,16 @@ export function createMarketIntelligenceStoreAdapter() {
     approveMarketResearchRequestIfPending,
     rejectMarketResearchRequestIfPending,
     recordMarketResearchRequestExecutionOutcome,
+    // Agent-created collection requests (docs/decisions/0021-agent-collection-requests.md).
+    insertMarketCollectionRequest,
+    getMarketCollectionRequestById,
+    listMarketCollectionRequests,
+    findOpenMarketCollectionRequestForChannel,
+    approveMarketCollectionRequestIfPending,
+    startMarketCollectionRequestIfApproved,
+    rejectMarketCollectionRequestIfPending,
+    finishMarketCollectionRequestIfRunning,
+    failInterruptedMarketCollectionRequests,
   };
 }
 

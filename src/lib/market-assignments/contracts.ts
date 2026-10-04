@@ -27,6 +27,7 @@ export const MARKET_RECORD_KINDS = [
   "trend_candidate",
   "discovery_candidate",
   "research_request",
+  "collection_request",
 ] as const;
 export type MarketRecordKind = (typeof MARKET_RECORD_KINDS)[number];
 
