@@ -50,6 +50,9 @@ export type PerMinuteQuotaStatus = { limit: number; usedLastMinute: number } | n
 
 export type CloudQuotaStatus = {
   connected: boolean;
+  /** BL-126: connected, but the stored grant could not be turned into an access token (expired/revoked refresh token), so every
+   * number below is unknown. Lets the UI say "reconnect" instead of showing nothing. Absent/false otherwise. */
+  tokenRefreshFailed?: boolean;
   /** Covers Data API v3 reads AND Live writes (same underlying Google service). */
   dataApi: ServiceQuotaStatus;
   analytics: ServiceQuotaStatus;

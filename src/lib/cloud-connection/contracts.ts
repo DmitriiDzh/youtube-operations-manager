@@ -48,6 +48,23 @@ export type CloudConnectionStatus =
       connectedAt: string;
     };
 
+/**
+ * Health of the stored Cloud grant (BL-126), the same verdict the channel logins get (`@/lib/channel-connections`
+ * `classifyConnectionHealth`): Google expires a Testing-status refresh token 7 days after it was issued, and the Cloud
+ * quota numbers silently disappear when it does. Never includes a token.
+ */
+export type CloudConnectionHealth =
+  | { connected: false }
+  | {
+      connected: true;
+      connectedEmail: string;
+      state: "ok" | "expiring_soon" | "reauth_required" | "unknown";
+      ageDays: number | null;
+      daysLeft: number | null;
+      /** ISO time of the real token check the verdict used; `null` when none completed. */
+      checkedAt: string | null;
+    };
+
 export type CloudConnectionCredentials = {
   accessToken: string;
 };

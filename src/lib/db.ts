@@ -6657,6 +6657,9 @@ export async function upsertStoredCloudConnection(
     ciphertext: string;
     iv: string;
     authTag: string;
+    /** Set ONLY when Google issued a new refresh token (a (re)connection): the 7-day Testing-status limit counts from
+     * it. A plain access-token refresh leaves it out, so the original date stays. */
+    connectedAt?: Date;
   },
   database: AppDb = db
 ): Promise<void> {

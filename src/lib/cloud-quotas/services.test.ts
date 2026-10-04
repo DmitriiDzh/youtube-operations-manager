@@ -159,10 +159,13 @@ test("getQuotaStatus: Cloud Monitoring's own per-minute quota query fails -> mon
 // Found live 2026-09-30: a revoked Cloud grant made resolveCloudCredentials throw, which propagated
 // out of GET /api/settings as a 500 and broke the whole Settings tab. It must degrade like any other
 // quota failure: connected, all three unknown, no Monitoring call attempted.
-test("getQuotaStatus: Cloud credentials cannot be refreshed -> degrades to unknown rather than throwing", async () => {
+// BL-126 (requirement change, not an implementation convenience): the UI must be able to tell "connected but the grant expired"
+// from "not connected" so it can say "reconnect" instead of showing nothing, hence the extra `tokenRefreshFailed: true`. The
+// not-connected case above deliberately has no such flag.
+test("getQuotaStatus: Cloud credentials cannot be refreshed -> degrades to unknown rather than throwing, and says the token refresh failed", async () => {
   const { services, getMonitoringCallCount } = createFixture({ connected: true, throwOnResolveCredentials: true });
   const status = await services.getQuotaStatus();
-  assert.deepEqual(status, { connected: true, dataApi: null, analytics: null, reporting: null, monitoring: null });
+  assert.deepEqual(status, { connected: true, tokenRefreshFailed: true, dataApi: null, analytics: null, reporting: null, monitoring: null });
   assert.equal(getMonitoringCallCount(), 0);
 });
 

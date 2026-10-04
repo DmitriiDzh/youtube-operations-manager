@@ -104,3 +104,13 @@ write. No change to Live writes / write-safety gates.
   stays `unknown` and never blocks.
 - Adds one nullable column to a persisted table: needs the full schema-change reading pass and a pre-migration backup
   (the app already takes one).
+
+## Addendum 2026-10-04 (BL-126): the Google Cloud grant gets the same check
+
+Raised by the owner (Telegram, msg 1374): the Cloud/Monitoring connection also dies 7 days after it is issued (found live: connected 2026-09-22, last refresh 2026-09-29, no Monitoring call since, quota bars empty without a word).
+- **Same rules, one implementation.** `cloud-connection` `getHealth()` reuses `classifyConnectionHealth` and the 10-minute probe cache from `channel-connections`; the age counts from `cloud_connection.connected_at`.
+- **Date fix.** `connected_at` is now reset by a (re)connection (`completeConnect` passes it) and NOT by an access-token refresh; before, an in-place reconnect kept the old date and would have shown "expired" forever.
+- **Known limits (review 2026-10-04).** A row reconnected before this fix may show a false "expiring soon" for ages in [6, 7) days until its next reconnect; a passing real check clears it at 7+ days. `cloud-connection` imports the classifier from the `channel-connections` barrel, a dependency of one feature module on another (AGENTS §M); moving the pure classifier to a shared module is a separate task.
+- **Same list.** `GET /api/channel-connections/health` appends the Cloud row (`kind: "cloud"`); the dashboard dialog lists it with "Reconnect Google Cloud" (the existing consent flow). Unlike a dead channel login, a dead Cloud grant never blocks the app (it only feeds quota statistics): a dismissable dialog.
+- **No more silence.** `getQuotaStatus` sets `tokenRefreshFailed: true` when the grant cannot be turned into an access token; the Settings quota bars then show "Google Cloud connection expired - reconnect" instead of an empty space, and the Cloud card shows an expired/expiring notice with a Reconnect button.
+- No schema change.
