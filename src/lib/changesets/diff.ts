@@ -81,17 +81,22 @@ type ChangeStatusInput = Pick<Change, "validationStatus" | "conflictStatus" | "a
  * docs/PROJECT_SPEC.md §12 ("State transitions must be deterministic and testable").
  * Only "actionable" changes (valid, non-conflicting) drive approved/rejected/
  * partially_approved; invalid/conflicting changes always keep a set "in_review"
- * until resolved, so bulk approval can never silently clear them.
+ * until resolved, so bulk approval can never silently clear them. A change the user
+ * REJECTED is resolved whatever its validity/conflict state (a rejection never writes
+ * anything, owner request 2026-10-04: a set whose every change was rejected stayed
+ * "in_review" because some were conflicted): when every change is rejected the set is
+ * "rejected", and rejected changes never block the other changes' verdict.
  */
 export function computeChangeSetStatus(changeList: ChangeStatusInput[]): ChangeSetStatus {
   if (changeList.length === 0) return "in_review";
+  if (changeList.every((c) => c.approvalStatus === "rejected")) return "rejected";
 
   const actionable = changeList.filter(
     (c) => c.validationStatus === "valid" && c.conflictStatus === "none"
   );
 
   const blocked = changeList.some(
-    (c) => c.validationStatus === "invalid" || c.conflictStatus === "conflict"
+    (c) => c.approvalStatus !== "rejected" && (c.validationStatus === "invalid" || c.conflictStatus === "conflict")
   );
 
   if (actionable.length === 0) {

@@ -78,6 +78,25 @@ test("isValidLanguageCode accepts simple and region-tagged codes, rejects garbag
   assert.equal(isValidLanguageCode("!!"), false);
 });
 
+test("computeChangeSetStatus (owner request 2026-10-04): every change rejected is rejected even when some are conflicted or invalid", () => {
+  const changes = [
+    makeChange({ approvalStatus: "rejected" }),
+    makeChange({ id: "c2", approvalStatus: "rejected", conflictStatus: "conflict" }),
+    makeChange({ id: "c3", approvalStatus: "rejected", validationStatus: "invalid" }),
+  ];
+  assert.equal(computeChangeSetStatus(changes), "rejected");
+});
+
+test("computeChangeSetStatus: a pending conflicted change still keeps the set in_review even if the others are rejected", () => {
+  const changes = [makeChange({ approvalStatus: "rejected" }), makeChange({ id: "c2", approvalStatus: "pending", conflictStatus: "conflict" })];
+  assert.equal(computeChangeSetStatus(changes), "in_review");
+});
+
+test("computeChangeSetStatus: a rejected conflicted change does not block an otherwise fully approved set", () => {
+  const changes = [makeChange({ approvalStatus: "approved" }), makeChange({ id: "c2", approvalStatus: "rejected", conflictStatus: "conflict" })];
+  assert.equal(computeChangeSetStatus(changes), "approved");
+});
+
 test("computeChangeSetStatus: empty change list is in_review", () => {
   assert.equal(computeChangeSetStatus([]), "in_review");
 });

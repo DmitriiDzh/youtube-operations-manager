@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { ConfirmDialog } from "./confirm-dialog";
 import { LoadingIndicator } from "./operation-progress";
 import { SendApprovedButton } from "./send-approved-button";
 
@@ -70,6 +71,8 @@ export function ChangeSetReview({
   const [languageFilter, setLanguageFilter] = useState("");
   const [videoFilter, setVideoFilter] = useState("");
   const [busyChangeId, setBusyChangeId] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -125,6 +128,28 @@ export function ChangeSetReview({
     }
   }
 
+  async function handleDelete() {
+    setDeleting(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/change-sets/${encodeURIComponent(changeSetId)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setConfirmDelete(false);
+        setError(data.message ?? data.error ?? `Error ${res.status}`);
+        return;
+      }
+      setConfirmDelete(false);
+      onStatusChange?.();
+      onClose();
+    } catch (e) {
+      setConfirmDelete(false);
+      setError(String(e));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   async function handleBulk(action: "approve-all" | "reject-all") {
     setBulkBusy(true);
     setError(null);
@@ -166,13 +191,32 @@ export function ChangeSetReview({
             </p>
           )}
         </div>
-        <button
-          onClick={onClose}
-          className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
-        >
-          Close
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setConfirmDelete(true)}
+            disabled={deleting || bulkBusy || busyChangeId !== null}
+            className="rounded-lg border border-red-900 px-3 py-1.5 text-xs text-red-400 hover:border-red-700 hover:text-red-300 disabled:opacity-50"
+          >
+            Delete set
+          </button>
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+          >
+            Close
+          </button>
+        </div>
       </div>
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete this change set?"
+          description="The set and all its changes are removed from every device. Nothing already written to YouTube is affected. This cannot be undone."
+          confirmLabel={deleting ? "Deleting..." : "Delete"}
+          confirmVariant="danger"
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => void handleDelete()}
+        />
+      )}
 
       {changeSet && (
         <div className="flex flex-wrap gap-2 text-xs">
