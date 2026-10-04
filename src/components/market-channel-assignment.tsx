@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-type RecordKind = "research_channel" | "topic" | "trend_candidate" | "discovery_candidate" | "research_request";
+type RecordKind = "research_channel" | "topic" | "trend_candidate" | "discovery_candidate" | "research_request" | "collection_request";
 type Assignment = { recordKind: RecordKind; recordId: string; channelIds: string[] };
 
 type ConnectedChannel = { channelId: string; title: string };

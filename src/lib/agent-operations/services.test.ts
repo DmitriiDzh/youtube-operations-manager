@@ -236,7 +236,7 @@ test("getSystemCapabilities returns every field the spec requires, sourced from 
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11): new channel_workspace capability.
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (docs/roadmap/plans/PHASE_12_PLAN.md AC-P12-13): a breaking
   // agent-contract change (token required, identity/credential overrides removed) -> MAJOR.
-  assert.equal(result.agentApiVersion, "3.1.0"); // 3.0.0 (BL-118, ADR 0018) + MINOR: new capability agent_export_research_data (ADR 0019)
+  assert.equal(result.agentApiVersion, "3.2.0"); // 3.1.0 (agent_export_research_data, ADR 0019) + MINOR: new capabilities agent_create_collection_request / agent_get_collection_request / agent_get_collection_limits (ADR 0021)
   assert.equal(result.schemaVersions.app, 14);
   assert.ok(Array.isArray(result.capabilities));
   assert.ok(Array.isArray(result.dataDomains));
@@ -323,7 +323,7 @@ test("plannedFutureCapabilities is exactly the one remaining reserved extension 
 // AGENTS.md §L): a fourth capability joined, this domain's first DRAFT-class one -- the exact-list
 // assertion changed to a per-id permission check (only this fourth entry is DRAFT, per §L's own
 // "state which requirement changed" discipline for a previously-approved test).
-test("capabilities includes market_intelligence's real capabilities, with the two that create something locally (research request, research export, ADR 0019) DRAFT and the rest READ", async () => {
+test("capabilities includes market_intelligence's real capabilities, with the three that create something locally (research request, collection request ADR 0021, research export ADR 0019) DRAFT and the rest READ", async () => {
   const { services } = createFixture();
   const result = await services.getSystemCapabilities({});
 
@@ -331,7 +331,10 @@ test("capabilities includes market_intelligence's real capabilities, with the tw
   assert.deepEqual(
     marketIntelligenceCapabilities.map((c) => c.id).sort(),
     [
+      "market_intelligence.agent_create_collection_request",
       "market_intelligence.agent_create_market_research_request",
+      "market_intelligence.agent_get_collection_limits",
+      "market_intelligence.agent_get_collection_request",
       "market_intelligence.agent_list_market_records",
       "market_intelligence.export_research_data",
       "market_intelligence.query_competitors",
@@ -340,7 +343,11 @@ test("capabilities includes market_intelligence's real capabilities, with the tw
     ]
   );
   for (const capability of marketIntelligenceCapabilities) {
-    const draftIds = ["market_intelligence.agent_create_market_research_request", "market_intelligence.export_research_data"];
+    const draftIds = [
+      "market_intelligence.agent_create_collection_request",
+      "market_intelligence.agent_create_market_research_request",
+      "market_intelligence.export_research_data",
+    ];
     const expectedPermission = draftIds.includes(capability.id) ? "DRAFT" : "READ";
     assert.equal(capability.permission, expectedPermission, `${capability.id} has an unexpected permission`);
   }

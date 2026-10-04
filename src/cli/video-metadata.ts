@@ -87,6 +87,9 @@ type MarketIntelligenceCliCoreSubset = Pick<
   | "listTrendCandidates"
   | "listDiscoveryCandidates"
   | "createMarketResearchRequest"
+  // Collection requests (ADR 0021): create + limits only; running/rejecting one is Web-UI-only (fenced by the approval inventory test).
+  | "createCollectionRequest"
+  | "getCollectionLimits"
 >;
 
 // Phase 10 slice 2 -- CLI parity for the agent_list_hypotheses/agent_get_hypothesis_trail/
@@ -163,6 +166,8 @@ export type ParsedArgs = {
     | "market-intelligence"
     | "market-records"
     | "create-research-request"
+    | "create-collection-request"
+    | "collection-limits"
     | "list-hypotheses"
     | "get-hypothesis-trail"
     | "create-experiment-proposal"
@@ -204,6 +209,8 @@ export const CLI_COMMANDS_BY_NAMESPACE: Record<ExplicitNamespace, readonly strin
     "market-intelligence",
     "market-records",
     "create-research-request",
+    "create-collection-request",
+    "collection-limits",
     "list-hypotheses",
     "get-hypothesis-trail",
     "create-experiment-proposal",
@@ -393,7 +400,7 @@ export function optionalStringFlag(
 // Read-only per docs/DEVELOPMENT_PLAYBOOK.md §6.7's three-way classification: returns data (local or a live read) but mutates
 // nothing locally or on YouTube. `auth select-channel`/`auth select-user` persist a local selection and are gated, consistent
 // with the MCP write_channel_select/auth_user_select tools. `channel sync`, `changeset import`, `ai-localization create-change-set`,
-// `agent create-content-proposal`/`register-external-artifact`/`create-research-request`/`create-experiment-proposal` and
+// `agent create-content-proposal`/`register-external-artifact`/`create-research-request`/`create-collection-request`/`create-experiment-proposal` and
 // `asset register` each persist rows and stay gated. No CLI command can set the operations-workspace or a channel-workspace path
 // (Web UI Settings only), and `analytics weekly-reports*` only read: generation is Web-UI-triggered.
 export type CliGateKey = `${string} ${string}`;
@@ -441,6 +448,7 @@ const READ_ONLY_CLI_COMMANDS: ReadonlySet<string> = new Set([
   "agent competitors",
   "agent market-intelligence",
   "agent market-records",
+  "agent collection-limits",
   "agent list-hypotheses",
   "agent get-hypothesis-trail",
 ]);
@@ -923,6 +931,45 @@ export async function runCliCommand(args: {
         );
         await marketAssignmentCore.recordAgentOwnership("research_request", result.requestId);
         writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      // Collection requests (ADR 0021) -- an agent-created DRAFT, never self-approving; zero YouTube calls. Same confinement as the MCP tool:
+      // an explicit --researchChannelIds list (comma-separated) must be assigned to the agent's channel; the default is every watchlist
+      // channel assigned to it. Running/rejecting a request is Web-UI-only.
+      if (parsedArgs.command === "create-collection-request") {
+        const idsFlag = optionalStringFlag(parsedArgs.flags, "researchChannelIds");
+        let researchChannelIds = idsFlag
+          ? idsFlag
+              .split(",")
+              .map((id) => id.trim())
+              .filter((id) => id.length > 0)
+          : undefined;
+        if (researchChannelIds) {
+          for (const channelId of researchChannelIds) {
+            await marketAssignmentCore.assertAvailableToAgent("research_channel", channelId);
+          }
+        } else {
+          const watchlist = await marketIntelligenceCore.listWatchlist();
+          researchChannelIds = (await marketAssignmentCore.filterForAgent("research_channel", watchlist.channels, (c) => c.channelId)).map(
+            (c) => c.channelId
+          );
+          if (researchChannelIds.length === 0) {
+            writeStdout(serializeSuccess({ created: false, request: null, notNeeded: [], alreadyRequested: [] }));
+            return 0;
+          }
+        }
+        const result = await marketIntelligenceCore.createCollectionRequest(
+          { researchChannelIds, reason: optionalStringFlag(parsedArgs.flags, "reason") },
+          { createdVia: "cli", agentApiVersion: null }
+        );
+        if (result.request) await marketAssignmentCore.recordAgentOwnership("collection_request", result.request.requestId);
+        writeStdout(serializeSuccess(result));
+        return 0;
+      }
+
+      if (parsedArgs.command === "collection-limits") {
+        writeStdout(serializeSuccess(await marketIntelligenceCore.getCollectionLimits()));
         return 0;
       }
 

@@ -2882,7 +2882,7 @@ test("MCP agent_get_capabilities returns version/capabilities/permission-model w
   // Bumped 0.14.0 -> 0.15.0, Phase 11: new channel_workspace.get_channel_workspace capability
   // (docs/roadmap/plans/PHASE_11_PLAN.md AC-P11-11).
   // Bumped 0.15.0 -> 1.0.0, Phase 12 (AC-P12-13): breaking agent-contract change -> MAJOR.
-  assert.equal(payload.agentApiVersion, "3.1.0"); // 3.0.0 (BL-118, ADR 0018) + MINOR: new capability agent_export_research_data (ADR 0019)
+  assert.equal(payload.agentApiVersion, "3.2.0"); // 3.1.0 (agent_export_research_data, ADR 0019) + MINOR: new capabilities agent_create_collection_request / agent_get_collection_request / agent_get_collection_limits (ADR 0021)
   assert.ok(
     payload.capabilities.some(
       (c: { id: string; permission: string }) => c.id === "channel_workspace.get_channel_workspace" && c.permission === "READ"
@@ -4878,9 +4878,19 @@ function makeMarketIntelligenceCoreStub(): Pick<
   | "listTrendCandidates"
   | "listDiscoveryCandidates"
   | "createMarketResearchRequest"
+  | "createCollectionRequest"
+  | "listCollectionRequests"
+  | "getCollectionLimits"
 > {
   return {
     listWatchlist: async () => ({ channels: [] }),
+    createCollectionRequest: async () => {
+      throw new Error("not used");
+    },
+    listCollectionRequests: async () => ({ requests: [] }),
+    getCollectionLimits: async () => {
+      throw new Error("not used");
+    },
     getWatchlistEntryContext: async () => {
       throw new DomainError({ code: "RESEARCH_CHANNEL_NOT_AVAILABLE", message: "No watchlist entry for the requested channel" });
     },
@@ -5765,4 +5775,149 @@ test("AC-HM-08: a tool call with no ambient scope, or another token's scope, is 
     assert.equal(wrongScope.isError, true);
   });
   assert.equal(handlerRan, false);
+});
+
+// ---------------------------------------------------------------------------
+// Agent-created collection requests (docs/decisions/0021-agent-collection-requests.md): agent_create_collection_request (DRAFT, gated),
+// agent_get_collection_request / agent_get_collection_limits (READ). Expected behavior is derived from the plan section 2/7 rules.
+// ---------------------------------------------------------------------------
+
+function makeCollectionHandlers(options: {
+  assigned: Record<string, string[]>;
+  watchlist?: string[];
+  createResult?: unknown;
+  requests?: Array<{ requestId: string }>;
+  limits?: unknown;
+}) {
+  const created: Array<{ input: unknown; callOrigin: unknown }> = [];
+  const owned: Array<[string, string]> = [];
+  const marketAssignmentCore = {
+    async filterForAgent<T>(kind: string, items: T[], idOf: (item: T) => string) {
+      return items.filter((item) => (options.assigned[kind] ?? []).includes(idOf(item)));
+    },
+    async assertAvailableToAgent(kind: string, id: string) {
+      if (!(options.assigned[kind] ?? []).includes(id)) throw new DomainError({ code: "RESEARCH_CHANNEL_NOT_AVAILABLE", message: "no" });
+    },
+    async recordAgentOwnership(kind: string, id: string) {
+      owned.push([kind, id]);
+    },
+  };
+  const marketIntelligenceCore = {
+    ...makeMarketIntelligenceCoreStub(),
+    listWatchlist: async () => ({ channels: (options.watchlist ?? []).map((channelId) => ({ channelId })) }),
+    createCollectionRequest: async (input: unknown, callOrigin: unknown) => {
+      created.push({ input, callOrigin });
+      return options.createResult ?? { created: true, request: { requestId: "cr-1" }, notNeeded: [], alreadyRequested: [] };
+    },
+    listCollectionRequests: async () => ({ requests: options.requests ?? [] }),
+    getCollectionLimits: async () => options.limits ?? { dailyBudgetUnits: 1000 },
+  } as never;
+  const handlers = createMcpToolHandlers(
+    makeCoreStub(), makeAuthStub(), makeOperationsCoreStub(), undefined, makeChannelAccessCoreStub(),
+    undefined, undefined, undefined, marketIntelligenceCore, undefined, undefined, marketAssignmentCore as never
+  );
+  return { handlers, created, owned };
+}
+const parseToolJson = (r: { content: Array<{ text?: string }> }) => JSON.parse(r.content[0]?.text ?? "{}");
+
+test("MCP agent_create_collection_request: server-stamps mcp + AGENT_API_VERSION, forwards the explicit ids and reason, records ownership of the new request", async () => {
+  const { handlers, created, owned } = makeCollectionHandlers({ assigned: { research_channel: ["UCaaaaaaaaaaaaaaaaaaaaaa"] } });
+  const result = await handlers.agentCreateCollectionRequest({ researchChannelIds: ["UCaaaaaaaaaaaaaaaaaaaaaa"], reason: "weekly check" });
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(created, [
+    {
+      input: { researchChannelIds: ["UCaaaaaaaaaaaaaaaaaaaaaa"], reason: "weekly check" },
+      callOrigin: { createdVia: "mcp", agentApiVersion: AGENT_API_VERSION },
+    },
+  ]);
+  assert.deepEqual(owned, [["collection_request", "cr-1"]]);
+  assert.equal(parseToolJson(result).created, true);
+});
+
+test("MCP agent_create_collection_request: a channel not assigned to the agent is refused like a nonexistent one, before anything is created", async () => {
+  const { handlers, created, owned } = makeCollectionHandlers({ assigned: { research_channel: ["UCaaaaaaaaaaaaaaaaaaaaaa"] } });
+  const result = await handlers.agentCreateCollectionRequest({ researchChannelIds: ["UCaaaaaaaaaaaaaaaaaaaaaa", "UCbbbbbbbbbbbbbbbbbbbbbb"] });
+  assert.equal(result.isError, true);
+  assert.equal(parseToolJson(result).error.code, "RESEARCH_CHANNEL_NOT_AVAILABLE");
+  assert.deepEqual(created, []);
+  assert.deepEqual(owned, []);
+});
+
+test("MCP agent_create_collection_request: with no ids the default is the watchlist narrowed to the agent's assignments; an empty narrowed list is created:false without calling the core", async () => {
+  const withOne = makeCollectionHandlers({
+    assigned: { research_channel: ["UCaaaaaaaaaaaaaaaaaaaaaa"] },
+    watchlist: ["UCaaaaaaaaaaaaaaaaaaaaaa", "UCbbbbbbbbbbbbbbbbbbbbbb"],
+  });
+  await withOne.handlers.agentCreateCollectionRequest({});
+  assert.deepEqual((withOne.created[0].input as { researchChannelIds: string[] }).researchChannelIds, ["UCaaaaaaaaaaaaaaaaaaaaaa"]);
+
+  const none = makeCollectionHandlers({ assigned: { research_channel: [] }, watchlist: ["UCbbbbbbbbbbbbbbbbbbbbbb"] });
+  const result = await none.handlers.agentCreateCollectionRequest({});
+  assert.deepEqual(parseToolJson(result), { created: false, request: null, notNeeded: [], alreadyRequested: [] });
+  assert.deepEqual(none.created, []);
+});
+
+test("MCP agent_create_collection_request: no ownership is recorded when nothing was created (created:false)", async () => {
+  const { handlers, owned } = makeCollectionHandlers({
+    assigned: { research_channel: ["UCaaaaaaaaaaaaaaaaaaaaaa"] },
+    createResult: { created: false, request: null, notNeeded: [{ channelId: "UCaaaaaaaaaaaaaaaaaaaaaa", reason: "collected_recently", hoursSince: 2 }], alreadyRequested: [] },
+  });
+  const result = await handlers.agentCreateCollectionRequest({ researchChannelIds: ["UCaaaaaaaaaaaaaaaaaaaaaa"] });
+  assert.equal(parseToolJson(result).created, false);
+  assert.deepEqual(owned, []);
+});
+
+test("MCP agent_create_collection_request: strict input -- a force flag, a >500-character reason, an empty id list and a malformed id are validation_failed", async () => {
+  const { handlers, created } = makeCollectionHandlers({ assigned: { research_channel: [] } });
+  for (const bad of [{ force: true }, { reason: "x".repeat(501) }, { researchChannelIds: [] }, { researchChannelIds: ["not-an-id"] }]) {
+    const result = await handlers.agentCreateCollectionRequest(bad);
+    assert.equal(result.isError, true, JSON.stringify(bad));
+    assert.equal(parseToolJson(result).error.code, "validation_failed");
+  }
+  assert.deepEqual(created, []);
+});
+
+test("MCP agent_create_collection_request is rejected while the operation lock is held; the two reads are not gated", async () => {
+  await acquireOperationLock(rawSqlClient, "export");
+  try {
+    const { handlers, created } = makeCollectionHandlers({ assigned: { research_channel: ["UCaaaaaaaaaaaaaaaaaaaaaa"] } });
+    const blocked = await handlers.agentCreateCollectionRequest({ researchChannelIds: ["UCaaaaaaaaaaaaaaaaaaaaaa"] });
+    assert.equal(blocked.isError, true);
+    assert.equal(parseToolJson(blocked).error.code, "operation_lock_held");
+    assert.deepEqual(created, []);
+    assert.equal((await handlers.agentGetCollectionLimits({})).isError, undefined);
+    assert.equal((await handlers.agentGetCollectionRequest({})).isError, undefined);
+  } finally {
+    await releaseOperationLock(rawSqlClient);
+  }
+});
+
+test("MCP agent_get_collection_request: shows only requests assigned to the agent; an unassigned id is COLLECTION_REQUEST_NOT_FOUND, same as an unknown one", async () => {
+  const { handlers } = makeCollectionHandlers({
+    assigned: { collection_request: ["cr-mine"] },
+    requests: [{ requestId: "cr-other" }, { requestId: "cr-mine" }],
+  });
+  assert.deepEqual(parseToolJson(await handlers.agentGetCollectionRequest({ requestId: "cr-mine" })).request, { requestId: "cr-mine" });
+  for (const id of ["cr-other", "cr-missing"]) {
+    const result = await handlers.agentGetCollectionRequest({ requestId: id });
+    assert.equal(result.isError, true);
+    assert.equal(parseToolJson(result).error.code, "COLLECTION_REQUEST_NOT_FOUND");
+  }
+  assert.deepEqual(parseToolJson(await handlers.agentGetCollectionRequest({})).requests, [{ requestId: "cr-mine" }]);
+  assert.equal((await handlers.agentGetCollectionRequest({ requestId: "x", extra: 1 })).isError, true);
+});
+
+test("MCP agent_get_collection_limits returns the core's limits unchanged and accepts only an empty input", async () => {
+  const limits = { dailyBudgetUnits: 1000, unitsSpentToday: 120, remainingTodayUnits: 880 };
+  const { handlers } = makeCollectionHandlers({ assigned: {}, limits });
+  assert.deepEqual(parseToolJson(await handlers.agentGetCollectionLimits({})), limits);
+  assert.equal((await handlers.agentGetCollectionLimits({ foo: 1 })).isError, true);
+});
+
+test("MCP server: the three collection-request tools are registered for a bound agent session, and nothing that approves, runs or rejects one is", () => {
+  const names = registeredToolNames(createMcpServer(makeCoreStub(), { connectionEnabled: true, agentSession: TEST_AGENT_SESSION }));
+  for (const tool of ["agent_create_collection_request", "agent_get_collection_request", "agent_get_collection_limits"]) {
+    assert.ok(names.includes(tool), tool);
+  }
+  assert.ok(!names.some((n) => /approve|reject|run_.*collection|collection.*(run|approve|reject)/.test(n)), "no approve/run/reject collection tool may exist");
 });

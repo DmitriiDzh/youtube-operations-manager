@@ -3557,9 +3557,17 @@ function makeMarketIntelligenceCliCoreStub(): Pick<
   | "listTrendCandidates"
   | "listDiscoveryCandidates"
   | "createMarketResearchRequest"
+  | "createCollectionRequest"
+  | "getCollectionLimits"
 > {
   return {
     listWatchlist: async () => ({ channels: [] }),
+    createCollectionRequest: async () => {
+      throw new Error("not used");
+    },
+    getCollectionLimits: async () => {
+      throw new Error("not used");
+    },
     getWatchlistEntryContext: async () => {
       throw new DomainError({ code: "RESEARCH_CHANNEL_NOT_AVAILABLE", message: "No watchlist entry for the requested channel" });
     },
@@ -6189,4 +6197,100 @@ test("AC-P12-10: the refusal message points the operator at the setting and agen
   const message = JSON.parse(stderr[0]).error.message as string;
   assert.match(message, /Operator CLI access/);
   assert.match(message, /MCP endpoint/);
+});
+
+// ---------------------------------------------------------------------------
+// Collection requests (docs/decisions/0021-agent-collection-requests.md) -- CLI parity: agent create-collection-request, agent collection-limits.
+// ---------------------------------------------------------------------------
+
+function makeCollectionAssignmentStub(assigned: string[], owned: Array<[string, string]>) {
+  return {
+    async filterForAgent<T>(kind: string, items: T[], idOf: (item: T) => string) {
+      return kind === "research_channel" ? items.filter((item) => assigned.includes(idOf(item))) : items;
+    },
+    async assertAvailableToAgent(kind: string, id: string) {
+      if (kind === "research_channel" && !assigned.includes(id)) throw new DomainError({ code: "RESEARCH_CHANNEL_NOT_AVAILABLE", message: "no" });
+    },
+    async recordAgentOwnership(kind: string, id: string) {
+      owned.push([kind, id]);
+    },
+  };
+}
+
+test("CLI agent create-collection-request stamps createdVia:\"cli\"/agentApiVersion:null, splits --researchChannelIds on commas and records ownership", async () => {
+  let captured: { input: unknown; callOrigin: unknown } | null = null;
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  marketIntelligenceCore.createCollectionRequest = async (input, callOrigin) => {
+    captured = { input, callOrigin };
+    return { created: true, request: { requestId: "cr-1" }, notNeeded: [], alreadyRequested: [] } as never;
+  };
+  const owned: Array<[string, string]> = [];
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "create-collection-request", "--researchChannelIds", "UCaaaaaaaaaaaaaaaaaaaaaa, UCbbbbbbbbbbbbbbbbbbbbbb", "--reason", "weekly"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    marketAssignmentCore: makeCollectionAssignmentStub(["UCaaaaaaaaaaaaaaaaaaaaaa", "UCbbbbbbbbbbbbbbbbbbbbbb"], owned),
+    writeStdout: (line) => stdout.push(line),
+  });
+  assert.equal(exitCode, 0);
+  assert.deepEqual(captured, {
+    input: { researchChannelIds: ["UCaaaaaaaaaaaaaaaaaaaaaa", "UCbbbbbbbbbbbbbbbbbbbbbb"], reason: "weekly" },
+    callOrigin: { createdVia: "cli", agentApiVersion: null },
+  });
+  assert.deepEqual(owned, [["collection_request", "cr-1"]]);
+  assert.equal(JSON.parse(stdout[0] ?? "{}").data.created, true);
+});
+
+test("CLI agent create-collection-request refuses a channel not assigned to the agent and, with no flag, defaults to the assigned watchlist channels", async () => {
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  const seen: unknown[] = [];
+  marketIntelligenceCore.createCollectionRequest = async (input) => {
+    seen.push(input);
+    return { created: false, request: null, notNeeded: [], alreadyRequested: [] } as never;
+  };
+  marketIntelligenceCore.listWatchlist = async () => ({ channels: [{ channelId: "UCaaaaaaaaaaaaaaaaaaaaaa" }, { channelId: "UCbbbbbbbbbbbbbbbbbbbbbb" }] }) as never;
+  const stderr: string[] = [];
+  const refused = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "create-collection-request", "--researchChannelIds", "UCbbbbbbbbbbbbbbbbbbbbbb"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    marketAssignmentCore: makeCollectionAssignmentStub(["UCaaaaaaaaaaaaaaaaaaaaaa"], []),
+    writeStdout: () => {},
+    writeStderr: (line) => stderr.push(line),
+  });
+  assert.equal(refused, 1);
+  assert.equal(JSON.parse(stderr[0] ?? "{}").error.code, "RESEARCH_CHANNEL_NOT_AVAILABLE");
+  assert.deepEqual(seen, []);
+
+  await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "create-collection-request"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    marketAssignmentCore: makeCollectionAssignmentStub(["UCaaaaaaaaaaaaaaaaaaaaaa"], []),
+    writeStdout: () => {},
+  });
+  assert.deepEqual(seen, [{ researchChannelIds: ["UCaaaaaaaaaaaaaaaaaaaaaa"], reason: undefined }]);
+});
+
+test("CLI agent collection-limits prints the core's limits", async () => {
+  const marketIntelligenceCore = makeMarketIntelligenceCliCoreStub();
+  marketIntelligenceCore.getCollectionLimits = async () => ({ dailyBudgetUnits: 1000 }) as never;
+  const stdout: string[] = [];
+  const exitCode = await runCliCommand({
+    operatorCliEnabled: OPERATOR_MODE,
+    argv: ["agent", "collection-limits"],
+    core: makeCoreStub(),
+    auth: makeAuthStub(),
+    marketIntelligenceCore,
+    writeStdout: (line) => stdout.push(line),
+  });
+  assert.equal(exitCode, 0);
+  assert.deepEqual(JSON.parse(stdout[0] ?? "{}"), { ok: true, data: { dailyBudgetUnits: 1000 } });
 });

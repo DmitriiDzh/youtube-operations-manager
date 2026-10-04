@@ -84,7 +84,12 @@ import {
   listResearchOverviewInputSchema,
   type ResearchExportCore,
 } from "@/lib/research-export";
-import { createMarketResearchRequestInputSchema, getWatchlistEntryInputSchema } from "@/lib/market-intelligence/schemas";
+import {
+  createCollectionRequestInputSchema,
+  createMarketResearchRequestInputSchema,
+  getCollectionRequestInputSchema,
+  getWatchlistEntryInputSchema,
+} from "@/lib/market-intelligence/schemas";
 import { createDecisionEngineCore, type DecisionEngineCore } from "@/lib/decision-engine";
 import {
   agentGetHypothesisTrailInputSchema,
@@ -166,6 +171,11 @@ type MarketIntelligenceCoreSubset = Pick<
   | "listTrendCandidates"
   | "listDiscoveryCandidates"
   | "createMarketResearchRequest"
+  // Collection requests (ADR 0021): create + reads only. Running (approving) or rejecting one is Web-UI-only and is deliberately NOT in
+  // this subset (fenced by the approval inventory test).
+  | "createCollectionRequest"
+  | "listCollectionRequests"
+  | "getCollectionLimits"
 >;
 
 // Phase 10 slice 2 (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md): same "registered directly here,
@@ -178,6 +188,7 @@ type MarketIntelligenceCoreSubset = Pick<
 type DecisionEngineCoreSubset = Pick<DecisionEngineCore, "listHypotheses" | "getHypothesisTrail" | "createExperiment">;
 
 const agentListHypothesesInputSchema = z.object({}).strict();
+const agentGetCollectionLimitsInputSchema = z.object({}).strict();
 
 // BL-075/BL-078 (docs/roadmap/BACKLOG.md): the same "generate proposals" -> "create Change Set"
 // two-step workflow the Web UI's own ai-localization routes already expose, now reachable by an
@@ -272,6 +283,9 @@ type McpToolHandlers = {
   queryMarketIntelligence: (input: unknown) => Promise<ToolResponse>;
   agentListMarketRecords: (input: unknown) => Promise<ToolResponse>;
   agentCreateMarketResearchRequest: (input: unknown) => Promise<ToolResponse>;
+  agentCreateCollectionRequest: (input: unknown) => Promise<ToolResponse>;
+  agentGetCollectionRequest: (input: unknown) => Promise<ToolResponse>;
+  agentGetCollectionLimits: (input: unknown) => Promise<ToolResponse>;
   agentListHypotheses: (input: unknown) => Promise<ToolResponse>;
   agentGetHypothesisTrail: (input: unknown) => Promise<ToolResponse>;
   createExperimentProposal: (input: unknown) => Promise<ToolResponse>;
@@ -1756,6 +1770,84 @@ export function createMcpToolHandlers(
       }
     },
 
+    /**
+     * Agent-created collection request (ADR 0021) -- a DRAFT, never self-approving; makes zero YouTube calls. Confinement: an explicit
+     * `researchChannelIds` list must be assigned to the agent's channel (same error as a nonexistent one); with no list the default is
+     * every watchlist channel assigned to it. `createdVia: "mcp"`/`agentApiVersion` are SERVER-STAMPED. The created request is recorded
+     * as owned by the agent's channel. Mutates local state, so it is gated by `assertMcpDeviceAvailable` below.
+     */
+    async agentCreateCollectionRequest(input: unknown): Promise<ToolResponse> {
+      const parsedInput = createCollectionRequestInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        let researchChannelIds = parsedInput.data.researchChannelIds;
+        if (researchChannelIds) {
+          for (const channelId of researchChannelIds) {
+            await marketAssignmentCore.assertAvailableToAgent("research_channel", channelId);
+          }
+        } else {
+          const watchlist = await marketIntelligenceCore.listWatchlist();
+          researchChannelIds = (await marketAssignmentCore.filterForAgent("research_channel", watchlist.channels, (c) => c.channelId)).map(
+            (c) => c.channelId
+          );
+          if (researchChannelIds.length === 0) {
+            return toolSuccessResult({ created: false, request: null, notNeeded: [], alreadyRequested: [] });
+          }
+        }
+        const result = await marketIntelligenceCore.createCollectionRequest(
+          { ...parsedInput.data, researchChannelIds },
+          { createdVia: "mcp", agentApiVersion: AGENT_API_VERSION }
+        );
+        if (result.request) await marketAssignmentCore.recordAgentOwnership("collection_request", result.request.requestId);
+        return toolSuccessResult(result as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    /** One collection request by id, or the most recent ones, narrowed to those assigned to the agent's channel (an unassigned id = not found). */
+    async agentGetCollectionRequest(input: unknown): Promise<ToolResponse> {
+      const parsedInput = getCollectionRequestInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        const all = await marketIntelligenceCore.listCollectionRequests();
+        const visible = await marketAssignmentCore.filterForAgent("collection_request", all.requests, (r) => r.requestId);
+        if (parsedInput.data.requestId !== undefined) {
+          const request = visible.find((r) => r.requestId === parsedInput.data.requestId);
+          if (!request) {
+            throw new DomainError({
+              code: "COLLECTION_REQUEST_NOT_FOUND",
+              message: "No collection request with this id",
+              details: { requestId: parsedInput.data.requestId },
+            });
+          }
+          return toolSuccessResult({ request } as unknown as Record<string, unknown>);
+        }
+        return toolSuccessResult({ requests: visible.slice(0, 20) } as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
+    async agentGetCollectionLimits(input: unknown): Promise<ToolResponse> {
+      const parsedInput = agentGetCollectionLimitsInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return mapValidationErrorResult(parsedInput.error);
+      }
+
+      try {
+        return toolSuccessResult((await marketIntelligenceCore.getCollectionLimits()) as unknown as Record<string, unknown>);
+      } catch (error) {
+        return toolErrorResult(error);
+      }
+    },
+
     // Phase 10 slice 2 (docs/roadmap/plans/PHASE_10_SLICE_2_PLAN.md) -- decision-engine's own
     // service layer already does channel-access assertion internally (assertHypothesisAccessible/
     // assertExperimentAccessible in services.ts), so this handler need not repeat it, unlike
@@ -1970,6 +2062,11 @@ function wrapMcpHandlersWithMutationGate(handlers: McpToolHandlers): McpToolHand
     // like `agentCreateContentProposal` above.
     agentCreateMarketResearchRequest: async (input) =>
       (await assertMcpDeviceAvailable()) ?? handlers.agentCreateMarketResearchRequest(input),
+    // Collection requests (ADR 0021): create writes a local pending row -- gated; the two reads are pure local reads -- ungated.
+    agentCreateCollectionRequest: async (input) =>
+      (await assertMcpDeviceAvailable()) ?? handlers.agentCreateCollectionRequest(input),
+    agentGetCollectionRequest: handlers.agentGetCollectionRequest,
+    agentGetCollectionLimits: handlers.agentGetCollectionLimits,
     // Phase 10 slice 2 -- pure local reads over decision-engine's own hypothesis/experiment/
     // outcome storage, same classification as queryCompetitors/queryMarketIntelligence above.
     agentListHypotheses: handlers.agentListHypotheses,
@@ -2665,6 +2762,36 @@ export function createMcpServer(
       inputSchema: createMarketResearchRequestInputSchema,
     },
     (args) => handlers.agentCreateMarketResearchRequest(args)
+  );
+
+  registerTool(
+    "agent_create_collection_request",
+    {
+      description:
+        "Asks the human to collect fresh public snapshots of watchlist channels (ADR 0021). Input { researchChannelIds?: string[] (default: every watchlist channel assigned to you), reason?: string (max 500, shown to the human verbatim) }; there is no force flag. Makes zero YouTube calls and spends nothing: it stores a PENDING request with a local estimate per channel ({ mode: backfill|incremental, expectedUnits, worstCaseUnits }) -- UPPER BOUNDS in YouTube Data API quota units (not model tokens), plus totals, dailyBudgetUnits, unitsSpentToday, remainingTodayUnits and fitsToday (worst-case total <= units left today; a request that does not fit is still created, and collection stops at the daily budget and resumes from its saved cursor next day). The human approves or rejects it in the Research tab; you can neither approve nor run it, and an approved request runs the REGULAR collection for its channels only (24 h stale window, 24 h pause after a failure, daily budget). Result { created, request, notNeeded, alreadyRequested }: notNeeded = channels left out because they were collected successfully within 24 h (collected_recently) or failed within 24 h (recent_failure), with hoursSince; alreadyRequested = channels that already have an open (pending/approved/running) request -- at most one open request per channel -- with that request's id; when nothing is left, created is false and no record exists. Fails with MARKET_INTELLIGENCE_QUOTA_DISABLED when the owner has not set a daily budget. Follow progress with agent_get_collection_request; see the owner's limits with agent_get_collection_limits.",
+      inputSchema: createCollectionRequestInputSchema,
+    },
+    (args) => handlers.agentCreateCollectionRequest(args)
+  );
+
+  registerTool(
+    "agent_get_collection_request",
+    {
+      description:
+        "One collection request by requestId, or (no requestId) the most recent ones assigned to you: status (pending|approved|running|done|rejected|failed), reason, the creation-time estimate, and after a run the per-channel result (outcome completed|partial_budget|failed|skipped_not_stale|skipped_recent_failure|skipped_quota_limited, videosStored, newSnapshotsObservedAt = when the new snapshot was observed, unitsSpent in YouTube quota units) and unitsSpentTotal. partial_budget = the budget ran out mid-collection; the cursor is kept and the next regular collection continues it. A rejected request carries the human's resolvedReason. Local read only, never a live YouTube call. An id not assigned to you behaves exactly like one that does not exist (COLLECTION_REQUEST_NOT_FOUND).",
+      inputSchema: getCollectionRequestInputSchema,
+    },
+    (args) => handlers.agentGetCollectionRequest(args)
+  );
+
+  registerTool(
+    "agent_get_collection_limits",
+    {
+      description:
+        "The owner's own collection limits and what is left today, in YouTube Data API quota units (not model tokens): dailyBudgetUnits (null = no budget set, so agent_create_collection_request is refused), unitsSpentToday, remainingTodayUnits, quotaDayResetsAt (next Pacific midnight), the default collection depth (defaultMaxVideosPerChannel, defaultPublishedAfter), staleWindowHours (24) and perChannelOverrides. Local read only, never a live YouTube call. Use it to size a request before creating it.",
+      inputSchema: agentGetCollectionLimitsInputSchema,
+    },
+    (args) => handlers.agentGetCollectionLimits(args)
   );
 
   registerTool(

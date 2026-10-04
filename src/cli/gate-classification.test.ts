@@ -20,6 +20,7 @@ const HAND_WRITTEN_GATED = [
   "agent create-content-proposal",
   "agent register-external-artifact",
   "agent create-research-request",
+  "agent create-collection-request",
   "agent create-experiment-proposal",
   "asset register",
 ].sort();
@@ -39,11 +40,11 @@ test("exactly the commands that persist something are gated; login/logout/revoke
   assert.deepEqual(exempt, ["auth login", "auth logout", "auth revoke"]);
 });
 
-test("every other command is read-only: hand count 3+3+1+3+2+2+6+1+21 = 42 read-only, plus 16 gated and 3 exempt", () => {
+test("every other command is read-only: hand count 3+3+1+3+2+2+6+1+22 = 43 read-only, plus 17 gated and 3 exempt", () => {
   const all = everyCommand();
   const readOnly = all.filter((c) => classifyCliCommand(c.namespace, c.command) === "read_only");
-  assert.equal(readOnly.length, 42);
-  assert.equal(all.length, 42 + HAND_WRITTEN_GATED.length + 3);
+  assert.equal(readOnly.length, 43);
+  assert.equal(all.length, 43 + HAND_WRITTEN_GATED.length + 3);
 });
 
 test("a bare command word is never enough: the same word is read-only in one namespace and gated in another or an unknown one", () => {

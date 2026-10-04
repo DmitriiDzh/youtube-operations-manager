@@ -28,6 +28,8 @@ export function createMarketAssignmentCore() {
           return (await marketIntelligence.listTrendCandidates()).trendCandidates.some((t) => t.trendCandidateId === recordId);
         case "research_request":
           return (await marketIntelligence.listResearchRequests()).requests.some((r) => r.requestId === recordId);
+        case "collection_request":
+          return (await marketIntelligence.listCollectionRequests()).requests.some((r) => r.requestId === recordId);
       }
     },
   });
