@@ -160,6 +160,7 @@ type BackupDeps = {
  */
 type ChannelLanguageBaselineDeps = {
   getExpectedDefaultLanguage(channelId: string): Promise<string | null>;
+  getExpectedDefaultAudioLanguage?(channelId: string): Promise<string | null>;
 };
 
 type ServiceDependencies = {
@@ -595,32 +596,51 @@ export function createBatchServices(deps: ServiceDependencies) {
     }
     const fresh = toFreshVideoContext(rawFresh);
 
-    // Owner exception to DEC-OQ-2 (2026-10-02): a video with NO defaultLanguage on YouTube gets the
-    // channel's chosen baseline written together with its localizations (YouTube rejects a
-    // localizations write without snippet.defaultLanguage). Without a baseline it still blocks, and a
-    // video that already has its own defaultLanguage is never touched. `fresh` stays the untouched
-    // remote state (conflict detection, backup); only `mergeBase` carries the injected value.
+    // The channel's language baseline (Languages -> Language defaults) is the single source of truth for
+    // the video's language fields on every batch write (owner decision 2026-10-04): `videos.update`
+    // replaces the whole `snippet`, so a field left out is reset by YouTube (live: a Tropico batch sent
+    // no audio language and all 53 videos turned `en-US`). Per-video values are never echoed for these
+    // two fields. No baseline set -> the older behaviour (own defaultLanguage echoed, audio omitted).
+    // `fresh` stays the untouched remote state (conflict detection, backup); only `mergeBase` carries
+    // the baseline values.
     let appliedDefaultLanguage: string | null = null;
     let mergeBase = fresh;
+    const baselineLanguage = (await deps.channelLanguageBaseline?.getExpectedDefaultLanguage(batch.channelId)) ?? null;
+    const baselineAudio = (await deps.channelLanguageBaseline?.getExpectedDefaultAudioLanguage?.(batch.channelId)) ?? null;
     const defaultLanguageCheck = checkDefaultLanguage(fresh.snippet);
     if (!defaultLanguageCheck.ok) {
-      const baseline = (await deps.channelLanguageBaseline?.getExpectedDefaultLanguage(batch.channelId)) ?? null;
-      if (!baseline) {
+      // Owner exception to DEC-OQ-2 (2026-10-02): a video with NO defaultLanguage gets the baseline.
+      if (!baselineLanguage) {
         return { outcome: "FAILED", error: defaultLanguageCheck.reason };
       }
       // The baseline language's text would become the snippet title/description; a change for it,
       // or an existing remote localization under that code, would be silently overwritten/dropped.
       const collides =
-        changeRecords.some((change) => change.language === baseline) ||
-        Object.prototype.hasOwnProperty.call(fresh.localizations, baseline);
+        changeRecords.some((change) => change.language === baselineLanguage) ||
+        Object.prototype.hasOwnProperty.call(fresh.localizations, baselineLanguage);
       if (collides) {
         return {
           outcome: "FAILED",
-          error: `Video has no defaultLanguage and the channel default "${baseline}" cannot be applied: this video already has, or is being given, a "${baseline}" localization, which would collide with the snippet title/description. Set the video's language manually.`,
+          error: `Video has no defaultLanguage and the channel default "${baselineLanguage}" cannot be applied: this video already has, or is being given, a "${baselineLanguage}" localization, which would collide with the snippet title/description. Set the video's language manually.`,
         };
       }
-      appliedDefaultLanguage = baseline;
-      mergeBase = { ...fresh, snippet: { ...fresh.snippet, defaultLanguage: baseline } };
+      appliedDefaultLanguage = baselineLanguage;
+      mergeBase = { ...fresh, snippet: { ...fresh.snippet, defaultLanguage: baselineLanguage } };
+    } else if (baselineLanguage && fresh.snippet.defaultLanguage?.toLowerCase() !== baselineLanguage.toLowerCase()) {
+      // Re-labelling a video that already has another language would mislabel its existing title/description:
+      // fail closed and point to the tool that fixes the mismatch deliberately.
+      return {
+        outcome: "FAILED",
+        error: `Video's defaultLanguage on YouTube is "${fresh.snippet.defaultLanguage}" but the channel default is "${baselineLanguage}". Fix the mismatch first (Languages -> Language defaults), then retry.`,
+      };
+    }
+    // With the baseline source wired but no audio language set, the write would silently reset the video's
+    // audio language (the Tropico incident): fail closed, in dry runs too, so it is seen before a live batch.
+    if (deps.channelLanguageBaseline?.getExpectedDefaultAudioLanguage && !baselineAudio) {
+      return {
+        outcome: "FAILED",
+        error: "The channel has no audio language set (Languages -> Language defaults). A write without it would reset the video's audio language on YouTube; set it first, then retry.",
+      };
     }
 
     const pendingChanges = toPendingChanges(changeRecords);
@@ -649,7 +669,7 @@ export function createBatchServices(deps: ServiceDependencies) {
 
     let merged: ReturnType<typeof buildSafeLocalizationsPayload>;
     try {
-      merged = buildSafeLocalizationsPayload(mergeBase, pendingChanges);
+      merged = buildSafeLocalizationsPayload(mergeBase, pendingChanges, { defaultAudioLanguage: baselineAudio });
     } catch (error) {
       // Only the defense-in-depth defaultLanguage-deletion guard inside
       // buildSafeLocalizationsPayload throws (see merge.ts) -- fail closed the same way
@@ -1271,7 +1291,11 @@ export function createBatchServices(deps: ServiceDependencies) {
           await transitionLedgerStatus(row.id, "SUCCESS", {
             verificationResult: { resolvedVia: "own_response", ownResponseObserved: true, confirmedAt: new Date().toISOString() },
           });
-          await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "VERIFICATION", detail: { resolvedVia: "own_response", ownResponseObserved: true, confirmed: true } });
+          // The audio language is not in YouTube's documented settable list: record what was asked and what is
+          // now live, so a silently ignored field is visible in the audit instead of only on the video later.
+          const requestedAudio = typeof payload.snippet.defaultAudioLanguage === "string" ? payload.snippet.defaultAudioLanguage : null;
+          const observedAudio = verifyRaw && typeof verifyRaw.snippet.defaultAudioLanguage === "string" ? verifyRaw.snippet.defaultAudioLanguage : null;
+          await audit.record({ batchId: batch.id, ledgerRowId: row.id, videoId: row.videoId, eventType: "VERIFICATION", detail: { resolvedVia: "own_response", ownResponseObserved: true, confirmed: true, ...(requestedAudio ? { audioLanguage: { requested: requestedAudio, observed: observedAudio, matches: requestedAudio === observedAudio } } : {}) } });
           await releaseVideoLock({ batchId: batch.id, videoId: row.videoId });
           return { ledgerRowId: row.id, videoId: row.videoId, status: "SUCCESS", ownResponseObserved: true };
         }
