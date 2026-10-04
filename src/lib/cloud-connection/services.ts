@@ -4,8 +4,10 @@ import {
   generateOAuthState,
   revokeGoogleToken,
 } from "@/lib/auth";
+import { createHash } from "node:crypto";
+import { classifyConnectionHealth, HEALTH_PROBE_CACHE_MINUTES, type HealthProbe } from "@/lib/channel-connections";
 import { decryptSecret, encryptSecret, requireEncryptionKey, type ResolveEncryptionKey } from "./crypto";
-import { CLOUD_CONNECTION_REQUESTED_SCOPES, DomainError, type CloudConnectionStatus } from "./contracts";
+import { CLOUD_CONNECTION_REQUESTED_SCOPES, DomainError, type CloudConnectionHealth, type CloudConnectionStatus } from "./contracts";
 import { completeConnectInputSchema, parseWithSchema } from "./schemas";
 
 type StoredCloudConnection = {
@@ -26,7 +28,14 @@ type StoredTokenSet = {
 type ServiceDependencies = {
   store: {
     get(): Promise<StoredCloudConnection | null>;
-    upsert(input: { connectedEmail: string; scope: string; ciphertext: string; iv: string; authTag: string }): Promise<void>;
+    upsert(input: {
+      connectedEmail: string;
+      scope: string;
+      ciphertext: string;
+      iv: string;
+      authTag: string;
+      connectedAt?: Date;
+    }): Promise<void>;
     clear(): Promise<void>;
   };
   oauth: {
@@ -36,6 +45,8 @@ type ServiceDependencies = {
     generateState: typeof generateOAuthState;
   };
   resolveEncryptionKey: ResolveEncryptionKey;
+  /** One real token-endpoint call with the stored refresh token (same check the channel logins use); never throws. */
+  probeRefreshToken(refreshToken: string): Promise<HealthProbe>;
   clock: { now(): Date };
 };
 
@@ -51,7 +62,58 @@ function decryptTokenSet(stored: StoredCloudConnection, deps: ServiceDependencie
 }
 
 export function createCloudConnectionServices(deps: ServiceDependencies) {
+  // A real token check is reused for a few minutes (like the channel logins) so reloading the dashboard does not hammer Google.
+  let probeCache: { tokenKey: string; probe: HealthProbe; at: Date } | null = null;
+
   return {
+    /**
+     * Health of the Cloud grant (BL-126). The age counts from `connectedAt`, which is reset only by a (re)connection,
+     * never by an access-token refresh. A grant with no stored refresh token counts as `invalid_grant`; a token that cannot
+     * be read (missing encryption key) is `error`, so the age alone decides. Never returns or logs a token.
+     */
+    async getHealth(options: { forceRefresh?: boolean } = {}): Promise<CloudConnectionHealth> {
+      const stored = await deps.store.get();
+      if (!stored) return { connected: false };
+      const now = deps.clock.now();
+
+      let probe: HealthProbe = "error";
+      let checkedAt: Date | null = null;
+      try {
+        const tokens = decryptTokenSet(stored, deps);
+        if (!tokens.refreshToken) {
+          probe = "invalid_grant";
+        } else {
+          const tokenKey = createHash("sha256").update(tokens.refreshToken).digest("hex");
+          const fresh =
+            probeCache && probeCache.tokenKey === tokenKey && now.getTime() - probeCache.at.getTime() < HEALTH_PROBE_CACHE_MINUTES * 60_000;
+          if (probeCache && fresh && !options.forceRefresh) {
+            probe = probeCache.probe;
+            checkedAt = probeCache.at;
+          } else {
+            probe = await deps.probeRefreshToken(tokens.refreshToken);
+            if (probe === "error") {
+              probeCache = null;
+            } else {
+              checkedAt = now;
+              probeCache = { tokenKey, probe, at: now };
+            }
+          }
+        }
+      } catch {
+        probe = "error";
+      }
+
+      const verdict = classifyConnectionHealth({ refreshTokenIssuedAt: stored.connectedAt, probe, now });
+      return {
+        connected: true,
+        connectedEmail: stored.connectedEmail,
+        state: verdict.state,
+        ageDays: verdict.ageDays,
+        daysLeft: verdict.daysLeft,
+        checkedAt: checkedAt ? checkedAt.toISOString() : null,
+      };
+    },
+
     /**
      * Public status -- never the token. Called by the Settings tab and by
      * `/api/cloud-connection/status`.
@@ -148,6 +210,8 @@ export function createCloudConnectionServices(deps: ServiceDependencies) {
         ciphertext: encrypted.ciphertext,
         iv: encrypted.iv,
         authTag: encrypted.authTag,
+        // Google issued a new refresh token: the 7-day clock restarts (an in-place reconnect used to keep the old date).
+        connectedAt: deps.clock.now(),
       });
 
       const stored = await deps.store.get();

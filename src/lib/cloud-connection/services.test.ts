@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { HealthProbe } from "@/lib/channel-connections";
 import { createCloudConnectionServices } from "./services";
 import { CLOUD_CONNECTION_SCOPE, DomainError } from "./contracts";
 import { decryptSecret, encryptSecret } from "./crypto";
@@ -20,8 +21,11 @@ function createFixture(opts: {
   getToken?: () => Promise<{ tokens: Record<string, unknown> }>;
   refreshAccessToken?: () => Promise<{ credentials: Record<string, unknown> }>;
   revokeToken?: (token: string) => Promise<void>;
+  probe?: (refreshToken: string) => Promise<HealthProbe>;
 } = {}) {
   let row: FakeStoredRow | null = null;
+  let nowValue = opts.now ?? new Date("2026-09-22T12:00:00Z");
+  const probeCalls: string[] = [];
   const revokeCalls: string[] = [];
   const setCredentialsCalls: unknown[] = [];
 
@@ -29,8 +33,9 @@ function createFixture(opts: {
     async get() {
       return row;
     },
-    async upsert(input: { connectedEmail: string; scope: string; ciphertext: string; iv: string; authTag: string }) {
-      row = { ...input, connectedAt: row?.connectedAt ?? new Date("2026-09-22T12:00:00Z") };
+    async upsert(input: { connectedEmail: string; scope: string; ciphertext: string; iv: string; authTag: string; connectedAt?: Date }) {
+      // Mirrors db.ts: the date moves only when the caller passes one (a (re)connection), never on a token refresh.
+      row = { ...input, connectedAt: input.connectedAt ?? row?.connectedAt ?? new Date("2026-09-22T12:00:00Z") };
     },
     async clear() {
       row = null;
@@ -80,10 +85,14 @@ function createFixture(opts: {
     store,
     oauth,
     resolveEncryptionKey: () => FIXED_KEY,
-    clock: { now: () => opts.now ?? new Date("2026-09-22T12:00:00Z") },
+    probeRefreshToken: async (token: string) => {
+      probeCalls.push(token);
+      return opts.probe ? opts.probe(token) : "ok";
+    },
+    clock: { now: () => nowValue },
   });
 
-  return { services, revokeCalls, setCredentialsCalls, getRow: () => row };
+  return { services, revokeCalls, setCredentialsCalls, probeCalls, getRow: () => row, setNow: (d: Date) => { nowValue = d; } };
 }
 
 test("getStatus: nothing connected -> { connected: false }", async () => {
@@ -335,4 +344,120 @@ test("sanity: encryptSecret/decryptSecret round-trips a token-set JSON blob exac
 
   const decrypted = decryptSecret(encrypted, FIXED_KEY);
   assert.deepEqual(JSON.parse(decrypted), payload);
+});
+
+// ---------------------------------------------------------------------------
+// BL-126 -- Cloud grant health: the same 7-day rule the channel logins get. Connected at 2026-09-22T12:00Z in every test below;
+// expected values are computed by hand from "Google expires a Testing-status refresh token 7 days after issue, warn from day 6".
+// ---------------------------------------------------------------------------
+const CONNECT_INPUT = { code: "auth-code", state: "s", expectedState: "s", redirectUri: "http://localhost:3000/api/cloud-connection/callback" };
+const day = (n: number) => new Date(Date.parse("2026-09-22T12:00:00Z") + n * 86_400_000);
+
+test("getHealth: nothing connected -> { connected: false }", async () => {
+  const { services } = createFixture();
+  assert.deepEqual(await services.getHealth(), { connected: false });
+});
+
+test("getHealth: 6 days old and the real check could not run -> expiring_soon with 1 day left", async () => {
+  const { services, setNow } = createFixture({ probe: async () => "error" });
+  await services.completeConnect(CONNECT_INPUT);
+  setNow(day(6));
+  const health = await services.getHealth();
+  assert.deepEqual(health, { connected: true, connectedEmail: "owner@example.com", state: "expiring_soon", ageDays: 6, daysLeft: 1, checkedAt: null });
+});
+
+test("getHealth: exactly 7 days old and the real check could not run -> reauth_required, 0 days left", async () => {
+  const { services, setNow } = createFixture({ probe: async () => "error" });
+  await services.completeConnect(CONNECT_INPUT);
+  setNow(day(7));
+  const health = await services.getHealth();
+  assert.equal(health.connected && health.state, "reauth_required");
+  assert.equal(health.connected && health.daysLeft, 0);
+  assert.equal(health.connected && health.ageDays, 7);
+});
+
+test("getHealth: 3 days old and the real check passes -> ok, 4 days left", async () => {
+  const { services, setNow } = createFixture({ probe: async () => "ok" });
+  await services.completeConnect(CONNECT_INPUT);
+  setNow(day(3));
+  const health = await services.getHealth();
+  assert.equal(health.connected && health.state, "ok");
+  assert.equal(health.connected && health.daysLeft, 4);
+  assert.equal(health.connected && health.checkedAt, day(3).toISOString());
+});
+
+test("getHealth: a passing real check overrides the age (9 days old but Google still accepts it -> ok, no limit)", async () => {
+  const { services, setNow } = createFixture({ probe: async () => "ok" });
+  await services.completeConnect(CONNECT_INPUT);
+  setNow(day(9));
+  const health = await services.getHealth();
+  assert.equal(health.connected && health.state, "ok");
+  assert.equal(health.connected && health.daysLeft, null);
+});
+
+test("getHealth: invalid_grant from Google is final even for a 1-day-old connection", async () => {
+  const { services, setNow } = createFixture({ probe: async () => "invalid_grant" });
+  await services.completeConnect(CONNECT_INPUT);
+  setNow(day(1));
+  const health = await services.getHealth();
+  assert.equal(health.connected && health.state, "reauth_required");
+  assert.equal(health.connected && health.daysLeft, 0);
+});
+
+test("getHealth: a stored grant with no refresh token needs a new login without asking Google", async () => {
+  const { services, probeCalls } = createFixture({
+    getToken: async () => ({ tokens: { access_token: "fake-access-token", expiry_date: Date.parse("2026-09-22T13:00:00Z") } }),
+  });
+  await services.completeConnect(CONNECT_INPUT);
+  const health = await services.getHealth();
+  assert.equal(health.connected && health.state, "reauth_required");
+  assert.equal(probeCalls.length, 0);
+});
+
+test("getHealth: the real check is reused for 10 minutes, forceRefresh bypasses it, and a failed check is never cached", async () => {
+  let n = 0;
+  const { services, setNow, probeCalls } = createFixture({ probe: async () => (n++ === 0 ? "error" : "ok") });
+  await services.completeConnect(CONNECT_INPUT);
+  setNow(day(1));
+  await services.getHealth(); // call 1 -> "error": not cached
+  await services.getHealth(); // call 2 -> "ok": cached from here
+  await services.getHealth(); // served from the cache
+  assert.equal(probeCalls.length, 2);
+  setNow(new Date(day(1).getTime() + 9 * 60_000));
+  await services.getHealth(); // 9 minutes later: still cached
+  assert.equal(probeCalls.length, 2);
+  await services.getHealth({ forceRefresh: true });
+  assert.equal(probeCalls.length, 3);
+  setNow(new Date(day(1).getTime() + 20 * 60_000));
+  await services.getHealth(); // 11 minutes after the last real check: asks again
+  assert.equal(probeCalls.length, 4);
+});
+
+test("getHealth never exposes a token", async () => {
+  const { services } = createFixture();
+  await services.completeConnect(CONNECT_INPUT);
+  const json = JSON.stringify(await services.getHealth());
+  assert.ok(!json.includes("fake-refresh-token") && !json.includes("fake-access-token"));
+});
+
+test("a plain access-token refresh keeps the original connection date, but reconnecting restarts the 7-day clock", async () => {
+  const { services, getRow, setNow } = createFixture({ probe: async () => "error" });
+  await services.completeConnect(CONNECT_INPUT);
+  assert.equal(getRow()?.connectedAt.toISOString(), day(0).toISOString());
+
+  // Expire the stored access token, then refresh it 8 days later: the date must stay at day 0.
+  const expired = encryptSecret(JSON.stringify({ accessToken: "old", refreshToken: "fake-refresh-token", tokenExpiry: Math.floor(day(1).getTime() / 1000) }), FIXED_KEY);
+  await (async () => {
+    const row = getRow()!;
+    Object.assign(row, expired);
+  })();
+  setNow(day(8));
+  await services.resolveCloudCredentials();
+  assert.equal(getRow()?.connectedAt.toISOString(), day(0).toISOString());
+
+  // Reconnect in place (no disconnect first): the date moves to now.
+  await services.completeConnect(CONNECT_INPUT);
+  assert.equal(getRow()?.connectedAt.toISOString(), day(8).toISOString());
+  const health = await services.getHealth();
+  assert.equal(health.connected && health.ageDays, 0);
 });

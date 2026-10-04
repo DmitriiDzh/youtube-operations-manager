@@ -65,6 +65,8 @@ export type HealthProbe = "ok" | "invalid_grant" | "error" | "not_run";
 
 /** Public shape: NEVER includes a token or the internal `users.id`. */
 export type ConnectionHealth = {
+  /** BL-126: `"cloud"` marks the single Google Cloud (quota statistics) grant listed beside the channel logins; absent = a channel. */
+  kind?: "channel" | "cloud";
   channelId: string;
   title: string;
   connectedEmail: string;

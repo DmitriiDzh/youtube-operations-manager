@@ -21,18 +21,37 @@ export type ServiceQuotaStatusView = {
  * Monitoring API query failed -- renders nothing rather than a fabricated 0/0 bar in that case
  * (`src/lib/cloud-quotas` never invents a number it didn't actually get back from Google).
  */
+/** Shown in place of a quota bar whose numbers are unknown because the Cloud grant expired (BL-126). The link starts the
+ * existing Cloud consent flow (a full-page redirect, GET, same as the Settings card's own Connect button). */
+export function CloudConnectionExpiredNotice() {
+  return (
+    <p className="mt-1 text-xs text-amber-400">
+      Google Cloud connection expired — quota numbers are hidden.{" "}
+      <a href="/api/cloud-connection/start" className="font-medium text-indigo-300 underline hover:text-indigo-200">
+        Reconnect Google Cloud
+      </a>
+    </p>
+  );
+}
+
 export function CloudQuotaProgress({
   status,
   size = "sm",
   historyService,
+  tokenRefreshFailed,
 }: {
+  /** BL-126: connected, but the stored Cloud grant no longer yields an access token; with no `status` this shows a
+   * "reconnect" message instead of an empty space. */
+  tokenRefreshFailed?: boolean;
   status: ServiceQuotaStatusView | undefined;
   size?: "sm" | "lg";
   /** BL-117: when set, a small clock button next to the bar opens the quota-spend history popup for that API. */
   historyService?: "data" | "analytics";
 }) {
   const [historyOpen, setHistoryOpen] = useState(false);
-  if (!status) return null;
+  if (!status) {
+    return tokenRefreshFailed ? <CloudConnectionExpiredNotice /> : null;
+  }
 
   const sinceReset = status.window === "since_reset";
   return (

@@ -12,7 +12,7 @@ import { ToggleSwitch } from "./toggle-switch";
 type Settings = {
   liveWritesEnabled: boolean;
   gatewayTraffic?: GatewayTrafficWindowView[];
-  cloudQuotaStatus?: { dataApi: ServiceQuotaStatusView };
+  cloudQuotaStatus?: { dataApi: ServiceQuotaStatusView; tokenRefreshFailed?: boolean };
 };
 
 /**
@@ -114,7 +114,7 @@ export function LiveWritesSettings() {
             {/* Shared with Data API reads elsewhere -- same underlying Google service, owner
                 instruction 2026-09-22: "Можем пока что отображать на Live write и на Data reads
                 один и тот же счетчик". */}
-            <CloudQuotaProgress size="lg" status={settings?.cloudQuotaStatus?.dataApi} historyService="data" />
+            <CloudQuotaProgress size="lg" tokenRefreshFailed={settings?.cloudQuotaStatus?.tokenRefreshFailed} status={settings?.cloudQuotaStatus?.dataApi} historyService="data" />
           </>
         }
       />

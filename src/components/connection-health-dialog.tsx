@@ -7,6 +7,11 @@ import type { ConnectionHealth } from "@/lib/channel-connections/contracts";
 import { planReloginPrompt } from "@/lib/channel-connections/relogin-prompt";
 
 function describe(row: ConnectionHealth): string {
+  if (row.kind === "cloud") {
+    if (row.state === "reauth_required") return "Google Cloud connection expired — the quota numbers are hidden until you reconnect.";
+    if (row.daysLeft === null) return "Google Cloud connection expires soon.";
+    return row.daysLeft <= 1 ? "Google Cloud connection expires within a day." : `Google Cloud connection expires in about ${row.daysLeft} days.`;
+  }
   if (row.state === "reauth_required") return "Google sign-in expired — sign in again to keep using this channel.";
   if (row.daysLeft === null) return "Google sign-in expires soon.";
   return row.daysLeft <= 1 ? "Google sign-in expires within a day." : `Google sign-in expires in about ${row.daysLeft} days.`;
@@ -57,10 +62,14 @@ export function ConnectionHealthDialog({ health }: { health: ConnectionHealth[] 
               <p className={`text-xs ${row.state === "reauth_required" ? "text-red-400" : "text-amber-400"}`}>{describe(row)}</p>
             </div>
             <button
-              onClick={() => void signIn("google", undefined, { login_hint: row.connectedEmail })}
+              onClick={() => {
+                // The Cloud grant has its own consent flow (a full-page redirect), separate from the channel sign-in.
+                if (row.kind === "cloud") window.location.href = "/api/cloud-connection/start";
+                else void signIn("google", undefined, { login_hint: row.connectedEmail });
+              }}
               className="shrink-0 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
             >
-              Sign in with Google
+              {row.kind === "cloud" ? "Reconnect Google Cloud" : "Sign in with Google"}
             </button>
           </li>
         ))}

@@ -116,7 +116,7 @@ export function createCloudQuotasServices(deps: ServiceDependencies) {
       try {
         ({ accessToken } = await deps.cloudConnection.resolveCloudCredentials());
       } catch {
-        return { connected: true, dataApi: null, analytics: null, reporting: null, monitoring: null };
+        return { connected: true, tokenRefreshFailed: true, dataApi: null, analytics: null, reporting: null, monitoring: null };
       }
       const projectNumber = deps.projectNumber;
 

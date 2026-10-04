@@ -5,6 +5,7 @@ import { formatDisplayDateTime } from "@/lib/shared-formatting";
 import { CloudQuotaProgressPerMinute, type PerMinuteQuotaStatusView } from "./cloud-quota-progress";
 import { GatewayTrafficStats, type GatewayTrafficWindowView } from "./gateway-traffic-stats";
 import { InfoTooltip } from "./info-tooltip";
+import { useConnectionHealth } from "./use-connection-health";
 import { SettingsSectionRow } from "./settings-section-row";
 
 type Status = { connected: false } | { connected: true; connectedEmail: string; scope: string; connectedAt: string };
@@ -48,6 +49,9 @@ export function CloudConnectionSettings() {
   const [gatewayTraffic, setGatewayTraffic] = useState<GatewayTrafficWindowView[] | undefined>(undefined);
   const [monitoringQuota, setMonitoringQuota] = useState<PerMinuteQuotaStatusView | undefined>(undefined);
   const [disconnecting, setDisconnecting] = useState(false);
+  // BL-126: the same 7-day check the channel logins get (the list carries the Cloud grant as `kind: "cloud"`).
+  const { health } = useConnectionHealth();
+  const cloudHealth = health?.find((h) => h.kind === "cloud") ?? null;
   const [error, setError] = useState<string | null>(null);
   // Read directly from window.location rather than `useSearchParams()` -- this page is statically
   // prerendered (`○ /dashboard` in the build output), and `useSearchParams()` would force a
@@ -130,6 +134,26 @@ export function CloudConnectionSettings() {
                 Connected as <span className="font-mono text-zinc-100">{status.connectedEmail}</span>
               </p>
               <p className="text-xs text-zinc-500">Since {formatDisplayDateTime(status.connectedAt)}</p>
+              {cloudHealth?.state === "reauth_required" && (
+                <p className="text-xs text-red-400">
+                  Connection expired — Google no longer accepts the saved grant, so the quota numbers are hidden. Reconnect below.
+                </p>
+              )}
+              {cloudHealth?.state === "expiring_soon" && (
+                <p className="text-xs text-amber-400">
+                  {cloudHealth.daysLeft !== null && cloudHealth.daysLeft > 1
+                    ? `Connection expires in about ${cloudHealth.daysLeft} days — reconnect before then.`
+                    : "Connection expires within a day — reconnect before then."}
+                </p>
+              )}
+              {(cloudHealth?.state === "reauth_required" || cloudHealth?.state === "expiring_soon") && (
+                <a
+                  href="/api/cloud-connection/start"
+                  className="inline-block rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
+                >
+                  Reconnect Google Cloud
+                </a>
+              )}
               <button
                 onClick={handleDisconnect}
                 disabled={disconnecting}

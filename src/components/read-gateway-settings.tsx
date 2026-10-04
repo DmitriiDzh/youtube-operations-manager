@@ -15,7 +15,7 @@ type Settings = {
   wikipediaReadsEnabled: boolean;
   reportingReadsEnabled: boolean;
   gatewayTraffic?: GatewayTrafficWindowView[];
-  cloudQuotaStatus?: { connected?: boolean; dataApi: ServiceQuotaStatusView; analytics: ServiceQuotaStatusView; reporting?: ServiceQuotaStatusView };
+  cloudQuotaStatus?: { connected?: boolean; tokenRefreshFailed?: boolean; dataApi: ServiceQuotaStatusView; analytics: ServiceQuotaStatusView; reporting?: ServiceQuotaStatusView };
 };
 
 /**
@@ -126,7 +126,7 @@ export function ReadGatewaySettings() {
               size="lg"
               window={settings?.gatewayTraffic?.find((c) => c.category === "data_api_reads")}
             />
-            <CloudQuotaProgress size="lg" status={settings?.cloudQuotaStatus?.dataApi} historyService="data" />
+            <CloudQuotaProgress size="lg" tokenRefreshFailed={settings?.cloudQuotaStatus?.tokenRefreshFailed} status={settings?.cloudQuotaStatus?.dataApi} historyService="data" />
           </>
         }
       />
@@ -158,7 +158,7 @@ export function ReadGatewaySettings() {
                 size="lg"
                 window={settings?.gatewayTraffic?.find((c) => c.category === "analytics_reads")}
               />
-              <CloudQuotaProgress size="lg" status={settings?.cloudQuotaStatus?.analytics} historyService="analytics" />
+              <CloudQuotaProgress size="lg" tokenRefreshFailed={settings?.cloudQuotaStatus?.tokenRefreshFailed} status={settings?.cloudQuotaStatus?.analytics} historyService="analytics" />
             </>
           }
         />

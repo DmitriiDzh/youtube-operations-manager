@@ -1,7 +1,8 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { createChannelConnectionsCore } from "@/lib/channel-connections";
+import { createChannelConnectionsCore, type ConnectionHealth } from "@/lib/channel-connections";
+import { createCloudConnectionCore } from "@/lib/cloud-connection";
 
 // One core for the process, so its short-lived cache of real token checks survives between requests.
 const core = createChannelConnectionsCore();
@@ -19,6 +20,28 @@ export async function GET(request: Request) {
   }
 
   const forceRefresh = new URL(request.url).searchParams.get("refresh") === "1";
-  const health = await core.getConnectionHealth(session.user.id, { forceRefresh });
+  const health: ConnectionHealth[] = await core.getConnectionHealth(session.user.id, { forceRefresh });
+
+  // BL-126: the one Google Cloud grant (quota statistics) is checked by the same rules and listed beside the channels.
+  // A failure here only leaves it out, never the channel rows.
+  try {
+    const cloud = await createCloudConnectionCore().getHealth({ forceRefresh });
+    if (cloud.connected) {
+      health.push({
+        kind: "cloud",
+        channelId: "google-cloud-connection",
+        title: "Google Cloud (quota statistics)",
+        connectedEmail: cloud.connectedEmail,
+        isActive: false,
+        state: cloud.state,
+        ageDays: cloud.ageDays,
+        daysLeft: cloud.daysLeft,
+        checkedAt: cloud.checkedAt,
+      });
+    }
+  } catch {
+    // quiet by design
+  }
+
   return NextResponse.json({ health });
 }
