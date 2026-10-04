@@ -1066,6 +1066,8 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
           // Phase 13 (review round 9): API snapshots expire after 30 days (III.E.4.d), so an empty
           // visible series alone no longer means "never observed" -- a past successful collection does.
           neverObserved: channelSnapshotRows.length === 0 && !everCollectedSuccessfully,
+          uniqueVideoCount: new Set(videoSnapshotRows.map((row) => row.videoId)).size,
+          latestVideoSnapshotAt: videoSnapshotRows.reduce<Date | null>((latest, row) => (latest === null || row.observedAt > latest ? row.observedAt : latest), null)?.toISOString() ?? null,
         },
         "get watchlist entry context output"
       );

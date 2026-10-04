@@ -29,6 +29,9 @@ export const CHANNEL_SNAPSHOT_COLUMNS = [
   "videoSnapshotCount",
   "evidenceCount",
   "dataQualityFlags",
+  // Appended 2026-10-04 (operator request): existing columns keep their position and meaning.
+  "uniqueVideoCount",
+  "latestVideoSnapshotAt",
 ] as const;
 
 /** Stable column order of `research_video_snapshots` and `own_video_snapshots` (the same shape on purpose: one comparison method). */
@@ -128,7 +131,12 @@ export type ResearchOverviewEntry = {
     hiddenSubscriberCount: boolean;
   } | null;
   channelSnapshotCount: number;
+  /** Stored video-snapshot ROWS (a video snapshotted in several runs counts several times); see `uniqueVideoCount` for videos. */
   videoSnapshotCount: number;
+  /** Distinct `videoId` among the stored video snapshots (inside the 30-day window). */
+  uniqueVideoCount: number;
+  /** Newest `observedAt` among the stored video snapshots; `null` when there are none. */
+  latestVideoSnapshotAt: string | null;
   evidenceCount: number;
   dataQualityFlags: string[];
 };

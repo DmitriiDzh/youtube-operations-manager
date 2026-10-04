@@ -14,6 +14,16 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const label = (channel: { channelId: string; handleOrUrl: string | null }) => channel.handleOrUrl?.trim() || channel.channelId;
 
+/** Distinct videos and newest observation among a channel's stored video-snapshot rows. */
+export function summarizeVideoSnapshots(videoSnapshots: Array<{ videoId: string; observedAt: string }>): { uniqueVideoCount: number; latestVideoSnapshotAt: string | null } {
+  let latest: number | null = null;
+  for (const snapshot of videoSnapshots) {
+    const time = Date.parse(snapshot.observedAt);
+    if (!Number.isNaN(time) && (latest === null || time > latest)) latest = time;
+  }
+  return { uniqueVideoCount: new Set(videoSnapshots.map((snapshot) => snapshot.videoId)).size, latestVideoSnapshotAt: latest === null ? null : new Date(latest).toISOString() };
+}
+
 /** One row per stored channel snapshot (a channel with none contributes no row); per-channel counts repeat on each of its rows. */
 export function buildChannelSnapshotRows(contexts: WatchlistContextForExport[]): ChannelSnapshotRow[] {
   return contexts.flatMap((context) =>
@@ -28,6 +38,7 @@ export function buildChannelSnapshotRows(contexts: WatchlistContextForExport[]):
       videoSnapshotCount: context.videoSnapshots.length,
       evidenceCount: context.evidenceCount,
       dataQualityFlags: context.dataQualityFlags.join(";"),
+      ...summarizeVideoSnapshots(context.videoSnapshots),
     }))
   );
 }

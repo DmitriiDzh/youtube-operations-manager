@@ -416,6 +416,11 @@ export const getWatchlistEntryContextOutputSchema = z
     topicAssignments: z.array(marketTopicAssignmentSchema),
     dataQualityFlags: z.array(dataQualityFlagSchema),
     neverObserved: z.boolean(),
+    // Added 2026-10-04 (operator request, additive): the video snapshots above are append-only rows, so their count is not a number of
+    // videos. `uniqueVideoCount` = distinct `videoId` among them (inside the 30-day window); `latestVideoSnapshotAt` = newest `observedAt`
+    // among them, null when none. Nothing here is computed from statistics.
+    uniqueVideoCount: z.number().int().nonnegative(),
+    latestVideoSnapshotAt: z.string().nullable(),
   })
   .strict();
 

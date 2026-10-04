@@ -102,8 +102,8 @@ test("AC-RE-2: CSV content is exactly the hand-written expectation (header order
   const channelFile = result.files.find((f) => f.dataset === "research_channel_snapshots")!;
   assert.equal(
     await readFile(channelFile.path, "utf8"),
-    "channel,channelId,observedAt,subscriberCount,viewCount,videoCount,hiddenSubscriberCount,videoSnapshotCount,evidenceCount,dataQualityFlags\r\n" +
-      "@TheNeiro,UCneiro,2026-10-02T10:00:00.000Z,1200,90000,40,false,1,2,\r\n"
+    "channel,channelId,observedAt,subscriberCount,viewCount,videoCount,hiddenSubscriberCount,videoSnapshotCount,evidenceCount,dataQualityFlags,uniqueVideoCount,latestVideoSnapshotAt\r\n" +
+      "@TheNeiro,UCneiro,2026-10-02T10:00:00.000Z,1200,90000,40,false,1,2,,1,2026-10-02T10:00:00.000Z\r\n"
   );
   const videoFile = result.files.find((f) => f.dataset === "research_video_snapshots")!;
   assert.equal(
@@ -261,6 +261,8 @@ test("AC-RE-14 (bulk read): pages the visible watchlist, newest snapshot + count
     latestChannelSnapshot: { observedAt: "2026-10-02T10:00:00.000Z", subscriberCount: 1200, viewCount: 90000, videoCount: 40, hiddenSubscriberCount: false },
     channelSnapshotCount: 1,
     videoSnapshotCount: 50,
+    uniqueVideoCount: 50,
+    latestVideoSnapshotAt: "2026-10-02T10:00:00.000Z",
     evidenceCount: 2,
     dataQualityFlags: [],
   });

@@ -1314,6 +1314,22 @@ test("AC-9G-04: the channel's most recent collection run drives missing_snapshot
   assert.ok(result.dataQualityFlags.includes("quota_limited"));
 });
 
+test("operator request 2026-10-04: uniqueVideoCount counts distinct videoId among the snapshot rows (3 rows of 2 videos -> 2); none -> 0 and latestVideoSnapshotAt null", async () => {
+  const { services } = createFixture();
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  const empty = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  assert.equal(empty.uniqueVideoCount, 0);
+  assert.equal(empty.latestVideoSnapshotAt, null);
+
+  for (const videoId of ["dQw4w9WgXcQ", "dQw4w9WgXcQ", "9bZkp7q19f0"]) {
+    await services.recordVideoSnapshot({ researchChannelId: VALID_CHANNEL_ID, videoId, viewCount: 10, source: "manual observation" }, { createdVia: "web_ui" });
+  }
+  const result = await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  assert.equal(result.videoSnapshots.length, 3);
+  assert.equal(result.uniqueVideoCount, 2);
+  assert.equal(result.latestVideoSnapshotAt, result.videoSnapshots.map((v) => v.observedAt).sort().at(-1));
+});
+
 test("AC-9G-05: channelSnapshots/videoSnapshots/topicAssignments in the context round-trip exactly what the independent list actions return", async () => {
   const { services } = createFixture();
   await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });

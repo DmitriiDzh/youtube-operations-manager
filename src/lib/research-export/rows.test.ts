@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { WatchlistContextForExport } from "./contracts";
-import { buildChannelSnapshotRows, buildOwnVideoRows, buildVideoSnapshotRows, computeResearchFileExpiry } from "./rows";
+import { buildChannelSnapshotRows, buildOwnVideoRows, buildVideoSnapshotRows, computeResearchFileExpiry, summarizeVideoSnapshots } from "./rows";
 
 // Fixture values and expected rows are written by hand (AGENTS.md §L); the 30-day arithmetic is done by hand: 2026-09-20 + 30 days = 2026-10-20.
 
@@ -38,8 +38,22 @@ test("channel rows: one per snapshot, per-channel counts repeated, flags joined 
       videoSnapshotCount: 2,
       evidenceCount: 3,
       dataQualityFlags: "hidden_subscriber_count;stale_observation",
+      uniqueVideoCount: 2,
+      latestVideoSnapshotAt: "2026-10-02T10:00:00.000Z",
     },
   ]);
+});
+
+test("summarizeVideoSnapshots (operator request 2026-10-04): distinct videoId, not rows; newest observedAt; none -> 0 and null", () => {
+  assert.deepEqual(
+    summarizeVideoSnapshots([
+      { videoId: "a", observedAt: "2026-10-01T00:00:00.000Z" },
+      { videoId: "a", observedAt: "2026-10-03T00:00:00.000Z" },
+      { videoId: "b", observedAt: "2026-10-02T00:00:00.000Z" },
+    ]),
+    { uniqueVideoCount: 2, latestVideoSnapshotAt: "2026-10-03T00:00:00.000Z" }
+  );
+  assert.deepEqual(summarizeVideoSnapshots([]), { uniqueVideoCount: 0, latestVideoSnapshotAt: null });
 });
 
 test("video rows: one per snapshot with null kept as null; the channel label falls back to the channel id", () => {
