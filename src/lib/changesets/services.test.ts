@@ -611,3 +611,23 @@ test("a complete Change Set still reports success with the true counts", async (
   assert.equal(created.totalChanges, 2);
   assert.equal(created.pendingCount, 2);
 });
+
+test("owner report 2026-10-04: an approved change whose value then became live (sent + synced) stays approved and conflict-free; the set stays approved, not back in review", async () => {
+  const { services, setVideos } = createFixture();
+  const buffer = await buildWorkbookBuffer([
+    { video_id: "v1", language: "es", title: "Proposed", description: "", remote_title: "Baseline", remote_description: "" },
+  ]);
+  setVideos([makeVideo({ existingLocalizations: { es: { title: "Baseline", description: "" } } })]);
+  const created = await services.createChangeSetFromImport({ channelId: "UC_TEST", filename: "import.xlsx", buffer });
+  const changeSetId = created.changeSet.id;
+  const changeId = (await services.getChangeSet({ channelId: "UC_TEST", changeSetId })).changes[0]!.id;
+  await services.approveChange({ channelId: "UC_TEST", changeSetId, changeId });
+
+  // The write reached YouTube and the local copy now shows the proposed value.
+  setVideos([makeVideo({ existingLocalizations: { es: { title: "Proposed", description: "" } } })]);
+
+  const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId });
+  assert.equal(after.changes[0]!.conflictStatus, "none");
+  assert.equal(after.changes[0]!.approvalStatus, "approved");
+  assert.equal(after.changeSet.status, "approved");
+});
