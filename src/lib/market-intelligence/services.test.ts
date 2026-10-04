@@ -4339,3 +4339,18 @@ test("depth: settings validation -- integer 1..2000 and a real YYYY-MM-DD date; 
     (e: unknown) => isDomainError(e) && e.code === "RESEARCH_CHANNEL_NOT_AVAILABLE"
   );
 });
+
+test("depth: getChannelCollectionProgress matches the context's collectionProgress and refuses a channel that is not watched", async () => {
+  const { store, services } = createFixture({ now: T0, publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO, playlistPages: [PAGE_A, PAGE_B], autoStats: "batch" });
+  store.setQuotaBudget(1000);
+  await services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await services.setChannelCollectionDepth({ channelId: VALID_CHANNEL_ID, maxVideosPerChannel: 100, publishedAfter: null });
+  await services.runCollectionIfStale(RUN_INPUT);
+  const progress = await services.getChannelCollectionProgress({ channelId: VALID_CHANNEL_ID });
+  assert.deepEqual(progress, (await services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID })).collectionProgress);
+  assert.equal(progress.videosStored, 100);
+  await assert.rejects(
+    () => services.getChannelCollectionProgress({ channelId: OTHER_VALID_CHANNEL_ID }),
+    (e: unknown) => isDomainError(e) && e.code === "RESEARCH_CHANNEL_NOT_AVAILABLE"
+  );
+});

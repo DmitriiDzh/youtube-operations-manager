@@ -221,6 +221,29 @@ type StoredMarketIntelligenceCollectionRunForService = {
   feedFallback?: boolean;
 };
 
+/** One channel's effective collection depth, progress and cost estimate (operator request 2026-10-04). */
+function buildCollectionProgress(
+  channelRow: StoredResearchChannelForService,
+  defaults: { maxVideosPerChannel: number | null; publishedAfter: string | null },
+  storedVideoIds: readonly string[]
+): CollectionProgress {
+  const depth = resolveCollectionDepth(channelRow, defaults);
+  const estimate = estimateCollectionUnits(depth.maxVideosPerChannel);
+  // "Complete" = a deep collection finished under the settings in force now; never-collected and unfinished are false.
+  const complete = !needsBackfill(channelRow, depth);
+  return {
+    maxVideosPerChannel: depth.maxVideosPerChannel,
+    maxVideosPerChannelOverride: channelRow.maxVideosPerChannel ?? null,
+    publishedAfter: depth.publishedAfter,
+    publishedAfterOverride: channelRow.publishedAfter ?? null,
+    videosStored: new Set(storedVideoIds).size,
+    complete,
+    completeReason: complete ? ((channelRow.videosCompleteReason as CollectionCompleteReason | null | undefined) ?? null) : null,
+    estimatedFirstCollectionUnits: estimate.firstCollection,
+    estimatedFirstCollectionWorstCaseUnits: estimate.firstCollectionWorstCase,
+  };
+}
+
 function toResearchChannel(row: StoredResearchChannelForService): ResearchChannel {
   return {
     channelId: row.id,
@@ -1101,24 +1124,11 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
         if (latestRun.feedFallback) dataQualityFlags.push("feed_fallback_used");
       }
 
-      const depthDefaults = await deps.getMarketIntelligenceCollectionDepthDefaults();
-      const depth = resolveCollectionDepth(channelRow, depthDefaults);
-      const estimate = estimateCollectionUnits(depth.maxVideosPerChannel);
-      const collectionProgress = {
-        maxVideosPerChannel: depth.maxVideosPerChannel,
-        maxVideosPerChannelOverride: channelRow.maxVideosPerChannel ?? null,
-        publishedAfter: depth.publishedAfter,
-        publishedAfterOverride: channelRow.publishedAfter ?? null,
-        videosStored: new Set(videoSnapshotRows.map((row) => row.videoId)).size,
-        // "Complete" = a deep collection finished under the settings in force now; never-collected and unfinished are false.
-        complete: !needsBackfill(channelRow, depth),
-        completeReason:
-          channelRow.videosComplete === 1 && !needsBackfill(channelRow, depth)
-            ? ((channelRow.videosCompleteReason as CollectionCompleteReason | null | undefined) ?? null)
-            : null,
-        estimatedFirstCollectionUnits: estimate.firstCollection,
-        estimatedFirstCollectionWorstCaseUnits: estimate.firstCollectionWorstCase,
-      };
+      const collectionProgress = buildCollectionProgress(
+        channelRow,
+        await deps.getMarketIntelligenceCollectionDepthDefaults(),
+        videoSnapshotRows.map((row) => row.videoId)
+      );
 
       return parseWithSchema(
         getWatchlistEntryContextOutputSchema,
@@ -1772,6 +1782,21 @@ export function createMarketIntelligenceServices(deps: ServiceDependencies) {
     async setCollectionDepthDefaults(input: unknown): Promise<void> {
       const parsed = parseWithSchema(setCollectionDepthDefaultsInputSchema, input, "set collection depth defaults input");
       await deps.setMarketIntelligenceCollectionDepthDefaults(parsed);
+    },
+
+    /** One watchlist channel's effective depth, progress and cost estimate (what the watchlist UI shows). */
+    async getChannelCollectionProgress(input: unknown): Promise<CollectionProgress> {
+      const parsed = parseWithSchema(getWatchlistEntryInputSchema, input, "get channel collection progress input");
+      const row = await deps.getResearchChannelById(parsed.channelId);
+      if (!row) {
+        throw new DomainError({
+          code: "RESEARCH_CHANNEL_NOT_AVAILABLE",
+          message: "No watchlist entry for the requested channel",
+          details: { channelId: parsed.channelId },
+        });
+      }
+      const videos = await deps.listMarketVideoSnapshotsByChannel(parsed.channelId);
+      return buildCollectionProgress(row, await deps.getMarketIntelligenceCollectionDepthDefaults(), videos.map((v) => v.videoId));
     },
 
     /** The per-channel override of the depth settings (`null` = use the global default). */
