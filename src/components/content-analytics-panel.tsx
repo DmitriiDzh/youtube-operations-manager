@@ -140,7 +140,7 @@ export function ContentAnalyticsPanel() {
               <li key={item.videoId}>
                 <button
                   type="button"
-                  onClick={() => setSelectedVideoId(item.videoId)}
+                  onClick={() => setSelectedVideoId((current) => (current === item.videoId ? null : item.videoId))}
                   className={`flex w-full items-center gap-3 rounded-lg p-1.5 text-left text-sm transition-colors ${
                     selectedVideoId === item.videoId ? "bg-zinc-800 ring-1 ring-inset ring-indigo-500/60" : "hover:bg-zinc-800/60"
                   }`}

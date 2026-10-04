@@ -72,7 +72,8 @@ export function ReachPanel({ channelId, periodDays }: { channelId: string; perio
   }, [channelId, periodDays, selectedVideoId]);
 
   function selectVideo(videoId: string | null) {
-    setSelectedVideoId(videoId);
+    // Clicking the already-open row collapses it again.
+    setSelectedVideoId((current) => (videoId !== null && current === videoId ? null : videoId));
   }
 
   const load = useCallback(async () => {

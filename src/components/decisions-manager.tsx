@@ -216,6 +216,13 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
   }, []);
 
   function handleSelectHypothesis(hypothesisId: string) {
+    if (selectedHypothesisId === hypothesisId) {
+      // Clicking the open row collapses it again.
+      setSelectedHypothesisId(null);
+      setSelectedExperimentId(null);
+      setOutcomes([]);
+      return;
+    }
     setSelectedHypothesisId(hypothesisId);
     setSelectedExperimentId(null);
     setOutcomes([]);
@@ -224,6 +231,11 @@ export function DecisionsManager({ channel }: { channel: ChannelInfo | null }) {
   }
 
   function handleSelectExperiment(experimentId: string) {
+    if (selectedExperimentId === experimentId) {
+      setSelectedExperimentId(null);
+      setOutcomes([]);
+      return;
+    }
     setSelectedExperimentId(experimentId);
     void fetchOutcomes(experimentId);
   }

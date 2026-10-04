@@ -1304,6 +1304,70 @@ export function LanguagesManager() {
         </div>
       )}
 
+      {channelId && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
+            <div className="flex gap-1 rounded-lg bg-zinc-950 p-1">
+              {SUB_TABS.map((t) => (
+                <button
+                  key={t.value}
+                  onClick={() => setSubTab(t.value)}
+                  className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                    subTab === t.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <span className="text-xs text-zinc-500">Awaiting review across all videos &middot; {filteredChangeSets.length} change set(s)</span>
+          </div>
+          <div className="p-4">
+            {filteredChangeSets.length === 0 ? (
+              <p className="text-sm text-zinc-500">No change sets in this view yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {filteredChangeSets.map((cs) => (
+                  <button
+                    key={cs.id}
+                    onClick={() => setOpenChangeSetId(cs.id === openChangeSetId ? null : cs.id)}
+                    className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
+                      openChangeSetId === cs.id
+                        ? "border-zinc-500 bg-zinc-800"
+                        : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"
+                    }`}
+                  >
+                    <span>
+                      {cs.importedFilename ??
+                        (cs.source === "ai_localization"
+                          ? "AI Generated"
+                          : cs.source === "deletion"
+                            ? "Deletion"
+                            : "XLSX Import")}{" "}
+                      &middot;{" "}
+                      {cs.totalChanges} changes &middot; {formatDisplayDateTime(cs.createdAt)}
+                    </span>
+                    <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-300">
+                      {cs.status}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {openChangeSetId && (
+              <div className="mt-3">
+                <ChangeSetReview
+                  channelId={channelId}
+                  changeSetId={openChangeSetId}
+                  onClose={() => setOpenChangeSetId(null)}
+                  onStatusChange={() => fetchChangeSets(channelId)}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {overview && (
         <div className="rounded-xl border border-zinc-800 bg-zinc-900">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
@@ -1521,70 +1585,6 @@ export function LanguagesManager() {
           {!loadingOverview && sortedFilteredVideos.length === 0 && (
             <p className="px-4 py-6 text-center text-sm text-zinc-500">No videos match the current search.</p>
           )}
-        </div>
-      )}
-
-      {channelId && (
-        <div className="rounded-xl border border-zinc-800 bg-zinc-900">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
-            <div className="flex gap-1 rounded-lg bg-zinc-950 p-1">
-              {SUB_TABS.map((t) => (
-                <button
-                  key={t.value}
-                  onClick={() => setSubTab(t.value)}
-                  className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-                    subTab === t.value ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-            <span className="text-xs text-zinc-500">Awaiting review across all videos &middot; {filteredChangeSets.length} change set(s)</span>
-          </div>
-          <div className="p-4">
-            {filteredChangeSets.length === 0 ? (
-              <p className="text-sm text-zinc-500">No change sets in this view yet.</p>
-            ) : (
-              <div className="space-y-2">
-                {filteredChangeSets.map((cs) => (
-                  <button
-                    key={cs.id}
-                    onClick={() => setOpenChangeSetId(cs.id === openChangeSetId ? null : cs.id)}
-                    className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
-                      openChangeSetId === cs.id
-                        ? "border-zinc-500 bg-zinc-800"
-                        : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"
-                    }`}
-                  >
-                    <span>
-                      {cs.importedFilename ??
-                        (cs.source === "ai_localization"
-                          ? "AI Generated"
-                          : cs.source === "deletion"
-                            ? "Deletion"
-                            : "XLSX Import")}{" "}
-                      &middot;{" "}
-                      {cs.totalChanges} changes &middot; {formatDisplayDateTime(cs.createdAt)}
-                    </span>
-                    <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-300">
-                      {cs.status}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-            {openChangeSetId && (
-              <div className="mt-3">
-                <ChangeSetReview
-                  channelId={channelId}
-                  changeSetId={openChangeSetId}
-                  onClose={() => setOpenChangeSetId(null)}
-                  onStatusChange={() => fetchChangeSets(channelId)}
-                />
-              </div>
-            )}
-          </div>
         </div>
       )}
 
