@@ -164,6 +164,13 @@ export const channelIdInputSchema = z
   })
   .strict();
 
+export const purgeChangeSetsInputSchema = z
+  .object({
+    channelId: z.string().min(1),
+    changeSetIds: z.array(z.string().min(1)).max(5000),
+  })
+  .strict();
+
 export const mergeIncomingInputSchema = z
   .object({
     channelId: z.string().min(1),

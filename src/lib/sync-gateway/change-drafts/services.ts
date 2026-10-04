@@ -19,6 +19,7 @@ import {
   mergeIncomingInputSchema,
   parseWithSchema,
   patchChangeInputSchema,
+  purgeChangeSetsInputSchema,
   resolveConflictInputSchema,
   setApprovalStatusInputSchema,
   setChangeSetStatusInputSchema,
@@ -203,6 +204,67 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
         event: "change_drafts.projection.failed",
         context: { channelId, cause: error instanceof Error ? error.message : String(error) },
       });
+    }
+  }
+
+  /**
+   * Removes the SQL projection rows of every provenance entry, change and change set that is in
+   * `before` but no longer in `after` (a discard/adopt, a merge that carried a peer's purge, or a
+   * local purge). `saveDocument`'s projection only ever upserts, so without this a deleted record
+   * would stay visible in SQL forever. Provenance first, then changes, then change sets (FK order).
+   */
+  async function removeProjectionRowsMissingFrom(
+    channelId: string,
+    before: Automerge.Doc<ChannelDraftDocument>,
+    after: Automerge.Doc<ChannelDraftDocument>
+  ): Promise<void> {
+    const deleteRowSafely = async (event: string, context: Record<string, string>, op: () => Promise<void>) => {
+      try {
+        await op();
+      } catch (error) {
+        (deps.logger ?? createDefaultLogger()).error({
+          event,
+          context: { channelId, ...context, cause: error instanceof Error ? error.message : String(error) },
+        });
+      }
+    };
+
+    // Deletion order matters: `changes.change_set_id` AND `ai_localization_generation_
+    // provenance.change_set_id` are both NOT NULL, un-cascaded FKs to `change_sets(id)`, and
+    // this connection runs with `foreign_keys=ON` (src/lib/db.ts's `deleteStoredGeneration
+    // ProvenanceForChangeSet` comment). A change set being discarded here almost always has
+    // its own child changes discarded in the SAME run too, so both children must be deleted
+    // BEFORE their parent change-set row, or the real `deleteChangeSet` call throws a live FK
+    // violation. `deleteRowSafely` swallows that error (logs, doesn't rethrow) precisely so a
+    // transient failure never blocks the rest of cleanup or the discard itself -- but that
+    // same swallowing means a wrong order here fails SILENTLY, leaving the change-set row
+    // permanently orphaned (found by independent review: the previous order deleted change
+    // sets before changes, reproducing exactly the phantom-row bug this cleanup exists to fix,
+    // one level up -- undetected because every existing test used an in-memory fake projection
+    // with no FK enforcement to catch it; see sql-projection.test.ts's real-SQLite regression).
+    //
+    // Provenance is diffed independently by its OWN key set, NOT derived from which change
+    // sets are being removed: a change set that SURVIVES the discard, because the adopted
+    // peer's document also has it, can still have carried a provenance entry only the
+    // discarded document knew about -- the peer's own version of that change set may simply
+    // have no provenance recorded for it. Scoping cleanup to "only when the parent change set
+    // is removed" misses exactly that case and leaves a real orphan row.
+    for (const provenanceId of Object.keys(before.provenance ?? {})) {
+      if (provenanceId in (after.provenance ?? {})) continue;
+      const changeSetId = before.provenance![provenanceId]!.changeSetId;
+      await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { provenanceId, changeSetId }, () =>
+        deps.projection.deleteProvenanceForChangeSet(changeSetId)
+      );
+    }
+    for (const changeId of Object.keys(before.changes)) {
+      if (changeId in after.changes) continue;
+      await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { changeId }, () => deps.projection.deleteChange(changeId));
+    }
+    for (const changeSetId of Object.keys(before.changeSets)) {
+      if (changeSetId in after.changeSets) continue;
+      await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { changeSetId }, () =>
+        deps.projection.deleteChangeSet(changeSetId)
+      );
     }
   }
 
@@ -605,6 +667,9 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       });
 
       await saveDocument(parsed.channelId, merged);
+      // A peer's purge arrives as a real deletion inside the shared document; `saveDocument` only upserts, so the SQL rows
+      // for what the merge removed must be deleted here, or this device would keep showing deleted drafts.
+      if (existingBytes) await removeProjectionRowsMissingFrom(parsed.channelId, localDoc, merged);
       return { newConflicts };
     },
 
@@ -660,54 +725,7 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       // document write, the part that matters most, already succeeded) -- same reasoning as
       // `saveDocument`'s own projection isolation above.
       if (discardedDoc) {
-        const deleteRowSafely = async (event: string, context: Record<string, string>, op: () => Promise<void>) => {
-          try {
-            await op();
-          } catch (error) {
-            (deps.logger ?? createDefaultLogger()).error({
-              event,
-              context: { channelId: parsed.channelId, ...context, cause: error instanceof Error ? error.message : String(error) },
-            });
-          }
-        };
-
-        // Deletion order matters: `changes.change_set_id` AND `ai_localization_generation_
-        // provenance.change_set_id` are both NOT NULL, un-cascaded FKs to `change_sets(id)`, and
-        // this connection runs with `foreign_keys=ON` (src/lib/db.ts's `deleteStoredGeneration
-        // ProvenanceForChangeSet` comment). A change set being discarded here almost always has
-        // its own child changes discarded in the SAME run too, so both children must be deleted
-        // BEFORE their parent change-set row, or the real `deleteChangeSet` call throws a live FK
-        // violation. `deleteRowSafely` swallows that error (logs, doesn't rethrow) precisely so a
-        // transient failure never blocks the rest of cleanup or the discard itself -- but that
-        // same swallowing means a wrong order here fails SILENTLY, leaving the change-set row
-        // permanently orphaned (found by independent review: the previous order deleted change
-        // sets before changes, reproducing exactly the phantom-row bug this cleanup exists to fix,
-        // one level up -- undetected because every existing test used an in-memory fake projection
-        // with no FK enforcement to catch it; see sql-projection.test.ts's real-SQLite regression).
-        //
-        // Provenance is diffed independently by its OWN key set, NOT derived from which change
-        // sets are being removed: a change set that SURVIVES the discard, because the adopted
-        // peer's document also has it, can still have carried a provenance entry only the
-        // discarded document knew about -- the peer's own version of that change set may simply
-        // have no provenance recorded for it. Scoping cleanup to "only when the parent change set
-        // is removed" misses exactly that case and leaves a real orphan row.
-        for (const provenanceId of Object.keys(discardedDoc.provenance ?? {})) {
-          if (provenanceId in (adopted.provenance ?? {})) continue;
-          const changeSetId = discardedDoc.provenance![provenanceId]!.changeSetId;
-          await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { provenanceId, changeSetId }, () =>
-            deps.projection.deleteProvenanceForChangeSet(changeSetId)
-          );
-        }
-        for (const changeId of Object.keys(discardedDoc.changes)) {
-          if (changeId in adopted.changes) continue;
-          await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { changeId }, () => deps.projection.deleteChange(changeId));
-        }
-        for (const changeSetId of Object.keys(discardedDoc.changeSets)) {
-          if (changeSetId in adopted.changeSets) continue;
-          await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { changeSetId }, () =>
-            deps.projection.deleteChangeSet(changeSetId)
-          );
-        }
+        await removeProjectionRowsMissingFrom(parsed.channelId, discardedDoc, adopted);
       }
 
       return { backupPath };
@@ -772,6 +790,35 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       });
       await saveDocument(parsed.channelId, next);
       return next.changes[parsed.changeId];
+    },
+
+    /**
+     * BL-125: really deletes the given change sets -- with their changes and provenance -- from the channel's Automerge
+     * document (a deletion inside the shared document, so it reaches the other devices on their next merge and the old
+     * history is not pulled back), saves, then removes the matching SQL rows. Ids the document does not hold are ignored,
+     * so a repeated call is a no-op. Deciding WHICH sets may go is the caller's job (`src/lib/retention`); this only deletes.
+     */
+    async purgeChangeSets(input: unknown): Promise<{ changeSets: number; changes: number; provenance: number }> {
+      const parsed = parseWithSchema(purgeChangeSetsInputSchema, input, "purgeChangeSets input");
+      const before = await loadDocumentOrThrow(parsed.channelId);
+      const targetIds = new Set(parsed.changeSetIds.filter((id) => id in before.changeSets));
+      if (targetIds.size === 0) return { changeSets: 0, changes: 0, provenance: 0 };
+
+      const changeIds = Object.entries(before.changes)
+        .filter(([, change]) => targetIds.has(change.changeSetId))
+        .map(([id]) => id);
+      const provenanceIds = Object.entries(before.provenance ?? {})
+        .filter(([, entry]) => targetIds.has(entry.changeSetId))
+        .map(([id]) => id);
+
+      const after = Automerge.change(before, (draft) => {
+        for (const id of changeIds) delete draft.changes[id];
+        for (const id of provenanceIds) delete draft.provenance![id];
+        for (const id of targetIds) delete draft.changeSets[id];
+      });
+      await saveDocument(parsed.channelId, after);
+      await removeProjectionRowsMissingFrom(parsed.channelId, before, after);
+      return { changeSets: targetIds.size, changes: changeIds.length, provenance: provenanceIds.length };
     },
 
     /** The exact bytes another device's `mergeIncoming` expects -- see that function's own doc comment. */
