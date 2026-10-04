@@ -16,6 +16,7 @@ const neiro: WatchlistContextForExport = {
     { videoId: "v2", observedAt: "2026-10-02T10:00:00.000Z", viewCount: null, likeCount: null, commentCount: null, publishedAt: null, title: null, source: "youtube.videos.list" },
   ],
   dataQualityFlags: ["hidden_subscriber_count", "stale_observation"],
+  collectionProgress: { maxVideosPerChannel: 50, publishedAfter: null, videosStored: 2, complete: false, completeReason: null },
 };
 const noHandle: WatchlistContextForExport = {
   channel: { channelId: "UCnone", handleOrUrl: null },
@@ -23,6 +24,7 @@ const noHandle: WatchlistContextForExport = {
   channelSnapshots: [],
   videoSnapshots: [],
   dataQualityFlags: [],
+  collectionProgress: { maxVideosPerChannel: 50, publishedAfter: null, videosStored: 0, complete: false, completeReason: null },
 };
 
 test("channel rows: one per snapshot, per-channel counts repeated, flags joined by ';'; a channel without snapshots adds no row", () => {

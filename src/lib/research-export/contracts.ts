@@ -53,6 +53,20 @@ export const VIDEO_SNAPSHOT_COLUMNS = [
 export type ExportDataset = "research_channel_snapshots" | "research_video_snapshots" | "own_video_snapshots";
 export type ExportFormat = "csv" | "json";
 
+/** How deep one watchlist channel's uploads are collected and how far it has got (operator request 2026-10-04). */
+export type ResearchCollectionProgress = {
+  /** The effective cap of distinct videos kept per channel (per-channel override, else the global default, else 50). */
+  maxVideosPerChannel: number;
+  /** `YYYY-MM-DD`: videos published before this day are not collected; `null` = no date limit. */
+  publishedAfter: string | null;
+  /** Distinct videos stored for the channel right now (inside the 30-day window) = `uniqueVideoCount`. */
+  videosStored: number;
+  /** True once a collection finished under the settings in force (cap reached, date reached, or the playlist ended). */
+  complete: boolean;
+  /** Why it finished: `cap`, `date` or `exhausted` (the channel has no more uploads); `null` while `complete` is false. */
+  completeReason: "cap" | "date" | "exhausted" | null;
+};
+
 /** What the export reads about one watchlist channel -- a subset of `getWatchlistEntryContext`, already narrowed to what the caller may see. */
 export type WatchlistContextForExport = {
   channel: { channelId: string; handleOrUrl: string | null };
@@ -78,6 +92,7 @@ export type WatchlistContextForExport = {
     source: string;
   }>;
   dataQualityFlags: string[];
+  collectionProgress: ResearchCollectionProgress;
 };
 
 export type OwnVideoForExport = {
@@ -146,6 +161,8 @@ export type ResearchOverviewEntry = {
   latestVideoSnapshotAt: string | null;
   evidenceCount: number;
   dataQualityFlags: string[];
+  /** Collection depth and progress of this channel (see `ResearchCollectionProgress`). */
+  collection: ResearchCollectionProgress;
 };
 
 export type ListResearchOverviewResult = {

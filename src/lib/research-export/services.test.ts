@@ -32,6 +32,8 @@ function context(id: string, handle: string | null, videos: number): WatchlistCo
       source: "youtube.videos.list",
     })),
     dataQualityFlags: [],
+    // Default depth (cap 50, no date); a channel with 50 stored videos has reached the cap.
+    collectionProgress: { maxVideosPerChannel: 50, publishedAfter: null, videosStored: videos, complete: videos >= 50, completeReason: videos >= 50 ? "cap" : null },
   };
 }
 
@@ -265,7 +267,9 @@ test("AC-RE-14 (bulk read): pages the visible watchlist, newest snapshot + count
     latestVideoSnapshotAt: "2026-10-02T10:00:00.000Z",
     evidenceCount: 2,
     dataQualityFlags: [],
+    collection: { maxVideosPerChannel: 50, publishedAfter: null, videosStored: 50, complete: true, completeReason: "cap" },
   });
+  assert.deepEqual(first.channels[1].collection, { maxVideosPerChannel: 50, publishedAfter: null, videosStored: 3, complete: false, completeReason: null });
   const second = await services.listResearchOverview({ limit: 2, offset: 2 });
   assert.deepEqual(second.channels.map((c) => c.channelId), ["UCthird"]);
   assert.equal(second.nextOffset, null);

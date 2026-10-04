@@ -246,6 +246,7 @@ export function createResearchExportServices(deps: ResearchExportDeps) {
           ...summarizeVideoSnapshots(context.videoSnapshots),
           evidenceCount: context.evidenceCount,
           dataQualityFlags: context.dataQualityFlags,
+          collection: context.collectionProgress,
         });
       }
       const end = parsed.offset + page.length;
