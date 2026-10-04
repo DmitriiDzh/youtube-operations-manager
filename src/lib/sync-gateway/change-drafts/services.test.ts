@@ -1294,7 +1294,7 @@ test("BL-125 purgeChangeSets: removes exactly the named sets with their changes 
 
   const counts = await core.purgeChangeSets({ channelId: CHANNEL, changeSetIds: ["cs-old"] });
 
-  assert.deepEqual(counts, { changeSets: 1, changes: 2, provenance: 1 });
+  assert.deepEqual(counts, { changeSets: 1, changes: 2, provenance: 1, purgedChangeSetIds: ["cs-old"] });
   const doc = await core.getDocument({ channelId: CHANNEL });
   assert.deepEqual(Object.keys(doc.changeSets), ["cs-keep"]);
   assert.deepEqual(Object.keys(doc.changes).sort(), ["cs-keep-c1", "cs-keep-c2"]);
@@ -1311,7 +1311,8 @@ test("BL-125 purgeChangeSets: ids the document does not hold are ignored, so a s
 
   const again = await core.purgeChangeSets({ channelId: CHANNEL, changeSetIds: ["cs-old", "cs-never-existed"] });
 
-  assert.deepEqual(again, { changeSets: 0, changes: 0, provenance: 0 });
+  // nothing was removed (counts 0); both ids are reported as gone, which is what the retention sweep needs to know
+  assert.deepEqual(again, { changeSets: 0, changes: 0, provenance: 0, purgedChangeSetIds: ["cs-old", "cs-never-existed"] });
   assert.deepEqual(Object.keys((await core.getDocument({ channelId: CHANNEL })).changeSets), ["cs-keep"]);
 });
 
@@ -1353,4 +1354,69 @@ test("BL-125 two devices: a purge on device A reaches device B as a deletion (do
 test("BL-125 purgeChangeSets refuses to invent a document for a channel that has none", async () => {
   const core = createChangeDraftsCore(makeDeps());
   await assert.rejects(() => core.purgeChangeSets({ channelId: "UC_unknown", changeSetIds: ["cs-1"] }), DomainError);
+});
+
+// Review finding 1 (2026-10-04): the hourly sweep is a background writer. Both calls below start from the same stored bytes (the store is slow to
+// load), so without a per-channel queue the later save overwrites the earlier one: either the owner's approval or the purge is silently lost.
+test("BL-125 a purge and an approval running at the same time on one channel both take effect", async () => {
+  const inner = fakeStore();
+  let slow = false;
+  const store: ChangeDraftsStoreAdapter = {
+    async loadDocumentBytes(channelId) {
+      const bytes = await inner.loadDocumentBytes(channelId);
+      if (slow) await new Promise((resolve) => setTimeout(resolve, 15));
+      return bytes;
+    },
+    saveDocumentBytes: (channelId, bytes) => inner.saveDocumentBytes(channelId, bytes),
+  };
+  const core = createChangeDraftsCore(makeDeps({ store }));
+  await seedPurgeFixture(core);
+  slow = true;
+
+  await Promise.all([
+    core.purgeChangeSets({ channelId: CHANNEL, changeSetIds: ["cs-old"] }),
+    core.setApprovalStatus({ channelId: CHANNEL, changeId: "cs-keep-c1", approvalStatus: "approved", approvedValue: "Propuesta" }),
+  ]);
+
+  slow = false;
+  const doc = await core.getDocument({ channelId: CHANNEL });
+  assert.deepEqual(Object.keys(doc.changeSets), ["cs-keep"], "the purge took effect");
+  assert.equal(doc.changes["cs-keep-c1"].approvalStatus, "approved", "the concurrent approval was not overwritten");
+});
+
+// Review finding 4: a swallowed SQL delete must not leave rows for ever.
+test("BL-125 a SQL delete that failed once is finished by the next purge call, and only then is the set reported as purged", async () => {
+  const projection = fakeProjection();
+  let failOnce = true;
+  const flaky: SqlProjectionAdapter = {
+    ...projection,
+    async deleteChangeSet(changeSetId) {
+      if (failOnce && changeSetId === "cs-old") {
+        failOnce = false;
+        throw new Error("database is locked");
+      }
+      return projection.deleteChangeSet(changeSetId);
+    },
+  };
+  const sqlSource = fakeSqlSource({
+    async listChangeSetsForChannel() {
+      return [...projection.projectedChangeSets.values()];
+    },
+    async listChangesForChangeSet(changeSetId) {
+      return [...projection.projectedChanges.values()].filter((change) => change.changeSetId === changeSetId);
+    },
+  });
+  const core = createChangeDraftsCore(makeDeps({ projection: flaky, sqlSource, logger: { info: () => undefined, error: () => undefined } }));
+  await seedPurgeFixture(core);
+
+  const first = await core.purgeChangeSets({ channelId: CHANNEL, changeSetIds: ["cs-old"] });
+  assert.deepEqual(first.purgedChangeSetIds, [], "SQL still holds the set, so it is not reported as purged");
+  assert.equal(projection.projectedChangeSets.has("cs-old"), true);
+  assert.equal((await core.getDocument({ channelId: CHANNEL })).changeSets["cs-old"], undefined, "the document no longer has it");
+
+  const second = await core.purgeChangeSets({ channelId: CHANNEL, changeSetIds: ["cs-old"] });
+  assert.deepEqual(second.purgedChangeSetIds, ["cs-old"]);
+  assert.equal(second.changeSets, 1);
+  assert.deepEqual([...projection.projectedChangeSets.keys()], ["cs-keep"]);
+  assert.deepEqual([...projection.projectedChanges.keys()].sort(), ["cs-keep-c1", "cs-keep-c2"]);
 });

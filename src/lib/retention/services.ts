@@ -16,7 +16,7 @@ export type RetentionDependencies = {
   };
   /** The one place a draft is really deleted (the Automerge document through the change-drafts core, then its SQL rows). */
   drafts: {
-    purgeChangeSets(input: { channelId: string; changeSetIds: string[] }): Promise<{ changeSets: number; changes: number; provenance: number }>;
+    purgeChangeSets(input: { channelId: string; changeSetIds: string[] }): Promise<{ changeSets: number; changes: number; provenance: number; purgedChangeSetIds: string[] }>;
   };
   writeLog: { deleteBatches(batchIds: string[]): Promise<number> };
   settings: { draftRetentionDays(): Promise<number>; writeLogRetentionDays(): Promise<number> };
@@ -34,14 +34,17 @@ export function createRetentionCore(deps: RetentionDependencies) {
 
       const [changeSets, ledgerRows] = await Promise.all([deps.source.listChangeSets(channelId), deps.source.listLedgerRows(channelId)]);
       const draftPlan = planDraftPurge(changeSets, ledgerRows, now, draftDays);
+      let purgedIds: string[] = [];
       if (draftPlan.changeSetIds.length > 0) {
         const purged = await deps.drafts.purgeChangeSets({ channelId, changeSetIds: draftPlan.changeSetIds });
+        purgedIds = purged.purgedChangeSetIds;
         result.purgedChangeSets = purged.changeSets;
         result.purgedChanges = purged.changes;
         result.purgedProvenance = purged.provenance;
       }
 
-      const purgedSetIds = new Set(draftPlan.changeSetIds);
+      // What counts as gone is what the purge reports (document AND SQL rows removed), not what was merely planned.
+      const purgedSetIds = new Set(purgedIds);
       const survivingChangeIds = new Set<string>();
       for (const set of changeSets) {
         if (purgedSetIds.has(set.id)) continue;

@@ -180,3 +180,37 @@ test("a write-log value below 7 that ended up in the settings table anyway is re
   await rawSqlClient.execute({ sql: "INSERT INTO app_settings (key, value) VALUES ('write_log_retention_days', '2') ON CONFLICT(key) DO UPDATE SET value = '2'", args: [] });
   assert.equal(await getWriteLogRetentionDays(), 7);
 });
+
+// Review finding 4: the write log may only go once the draft really is gone; "planned" is not "purged".
+test("a set whose purge was only partly done (not reported as purged) keeps its batch in the write log", async () => {
+  const NOW = new Date("2026-10-20T12:00:00.000Z");
+  const old = new Date("2026-09-01T00:00:00.000Z");
+  let deleted: string[] = [];
+  const sweep = createRetentionCore({
+    source: {
+      async listChangeSets() {
+        return [{ id: "cs-1", status: "rejected" as const, updatedAt: old, changes: [{ id: "c-1", approvalStatus: "rejected" as const, updatedAt: old }] }];
+      },
+      async listLedgerRows() {
+        return [];
+      },
+      async listBatches() {
+        return [{ id: "b-1", status: "COMPLETED", completedAt: old, rows: [{ status: "SUCCESS", changeIds: ["c-1"] }] }];
+      },
+    },
+    drafts: { purgeChangeSets: async () => ({ changeSets: 0, changes: 0, provenance: 0, purgedChangeSetIds: [] }) },
+    writeLog: {
+      async deleteBatches(ids) {
+        deleted = ids;
+        return ids.length;
+      },
+    },
+    settings: { draftRetentionDays: async () => 7, writeLogRetentionDays: async () => 30 },
+    logger: { info: () => undefined, error: () => undefined },
+  });
+
+  const result = await sweep.sweepChannel("UC_x", NOW);
+
+  assert.deepEqual(deleted, [], "c-1 is still in a surviving set, so its batch stays");
+  assert.equal(result.purgedBatches, 0);
+});

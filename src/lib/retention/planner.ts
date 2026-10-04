@@ -20,6 +20,8 @@ function isOlderThan(moment: Date, now: Date, days: number): boolean {
  * - `approved` / `partially_approved` -> only if EVERY approved change appears in at least one ledger row that is SUCCESS in a real
  *   (non-dry-run) batch. A later success therefore supersedes an earlier failed attempt; a change that is only in FAILED / CONFLICT / UNKNOWN /
  *   APPLYING / CANCELLED / PENDING / AWAITING_EXECUTION rows (or in none) keeps the whole set.
+ * - A SUCCESS row only counts if it is not older than the change's last update (an edit / re-approval after the write means the new value was never sent).
+ * - Any change still `pending` keeps the set, whatever its stored status says.
  * - Age is the latest of the set's own update time, its changes' update times and the update times of the ledger rows that carry its changes,
  *   so a set is never deleted on the strength of an old creation date while something about it just happened.
  */
@@ -49,6 +51,10 @@ export function planDraftPurge(
     }
     if (!isOlderThan(new Date(latest), now, draftRetentionDays)) continue;
 
+    // Defense in depth: the stored status is derived and could be stale (e.g. after a merge from another device), so a set that still has an
+    // undecided change is never purged whatever it says.
+    if (set.changes.some((change) => change.approvalStatus === "pending")) continue;
+
     if (set.status === "rejected") {
       changeSetIds.push(set.id);
       continue;
@@ -57,7 +63,10 @@ export function planDraftPurge(
     const approved = set.changes.filter((change) => change.approvalStatus === "approved");
     if (approved.length === 0) continue;
     const everyApprovedWritten = approved.every((change) =>
-      (rowsByChangeId.get(change.id) ?? []).some((row) => row.status === "SUCCESS" && !row.batchDryRun)
+      // The SUCCESS row must be at least as new as the change: a change edited / re-approved after it was written carries a value nobody sent.
+      (rowsByChangeId.get(change.id) ?? []).some(
+        (row) => row.status === "SUCCESS" && !row.batchDryRun && change.updatedAt.getTime() <= row.updatedAt.getTime()
+      )
     );
     if (everyApprovedWritten) changeSetIds.push(set.id);
   }

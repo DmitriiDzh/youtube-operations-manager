@@ -110,6 +110,47 @@ function scanForConflicts(doc: Automerge.Doc<ChannelDraftDocument>): FieldConfli
   return conflicts;
 }
 
+/**
+ * One in-process queue per channel for every method that loads a channel's document, changes it and saves it back. Without it an interleaving
+ * (the hourly retention sweep loading the document while the owner approves a change, then the sweep saving its stale copy) silently loses the
+ * other write. Shared by every core instance in the process (routes, MCP, the sweep each build their own), hence the `globalThis` key. The
+ * read-only methods are not queued.
+ */
+const CHANNEL_LOCKS_KEY = "__changeDraftsChannelLocks";
+const READ_ONLY_METHODS = new Set(["getDocument", "listConflicts", "exportBytes"]);
+
+function channelLocks(): Map<string, Promise<unknown>> {
+  const holder = globalThis as unknown as Record<string, Map<string, Promise<unknown>> | undefined>;
+  return (holder[CHANNEL_LOCKS_KEY] ??= new Map());
+}
+
+function withChannelLocks<T extends Record<string, (input: unknown) => Promise<unknown>>>(core: T): T {
+  const wrapped: Record<string, (input: unknown) => Promise<unknown>> = {};
+  for (const [name, method] of Object.entries(core)) {
+    if (READ_ONLY_METHODS.has(name)) {
+      wrapped[name] = method;
+      continue;
+    }
+    wrapped[name] = (input: unknown) => {
+      const channelId = (input as { channelId?: unknown } | null)?.channelId;
+      if (typeof channelId !== "string" || channelId.length === 0) return method(input); // invalid input: let the method's own validation reject it
+      const locks = channelLocks();
+      const previous = locks.get(channelId) ?? Promise.resolve();
+      const run = previous.then(() => method(input));
+      const settled = run.then(
+        () => undefined,
+        () => undefined
+      );
+      locks.set(channelId, settled);
+      void settled.then(() => {
+        if (locks.get(channelId) === settled) locks.delete(channelId);
+      });
+      return run;
+    };
+  }
+  return wrapped as T;
+}
+
 export function createChangeDraftsCore(deps: ServiceDependencies) {
   /** Used by every write path (including `mergeIncoming`'s local side): a channel with no
    * document yet legitimately starts from an empty one -- this is not an error case. */
@@ -213,21 +254,33 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
    * local purge). `saveDocument`'s projection only ever upserts, so without this a deleted record
    * would stay visible in SQL forever. Provenance first, then changes, then change sets (FK order).
    */
-  async function removeProjectionRowsMissingFrom(
-    channelId: string,
-    before: Automerge.Doc<ChannelDraftDocument>,
-    after: Automerge.Doc<ChannelDraftDocument>
-  ): Promise<void> {
-    const deleteRowSafely = async (event: string, context: Record<string, string>, op: () => Promise<void>) => {
+  function createRowDeleter(channelId: string) {
+    const failedChangeSetIds = new Set<string>();
+    const deleteRowSafely = async (
+      event: string,
+      context: Record<string, string>,
+      op: () => Promise<void>,
+      changeSetId?: string
+    ) => {
       try {
         await op();
       } catch (error) {
+        if (changeSetId) failedChangeSetIds.add(changeSetId);
         (deps.logger ?? createDefaultLogger()).error({
           event,
           context: { channelId, ...context, cause: error instanceof Error ? error.message : String(error) },
         });
       }
     };
+    return { deleteRowSafely, failedChangeSetIds };
+  }
+
+  async function removeProjectionRowsMissingFrom(
+    channelId: string,
+    before: Automerge.Doc<ChannelDraftDocument>,
+    after: Automerge.Doc<ChannelDraftDocument>
+  ): Promise<{ failedChangeSetIds: Set<string> }> {
+    const { deleteRowSafely, failedChangeSetIds } = createRowDeleter(channelId);
 
     // Deletion order matters: `changes.change_set_id` AND `ai_localization_generation_
     // provenance.change_set_id` are both NOT NULL, un-cascaded FKs to `change_sets(id)`, and
@@ -252,23 +305,35 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
     for (const provenanceId of Object.keys(before.provenance ?? {})) {
       if (provenanceId in (after.provenance ?? {})) continue;
       const changeSetId = before.provenance![provenanceId]!.changeSetId;
-      await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { provenanceId, changeSetId }, () =>
-        deps.projection.deleteProvenanceForChangeSet(changeSetId)
+      await deleteRowSafely(
+        "change_drafts.discard_projection_cleanup_failed",
+        { provenanceId, changeSetId },
+        () => deps.projection.deleteProvenanceForChangeSet(changeSetId),
+        changeSetId
       );
     }
     for (const changeId of Object.keys(before.changes)) {
       if (changeId in after.changes) continue;
-      await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { changeId }, () => deps.projection.deleteChange(changeId));
+      await deleteRowSafely(
+        "change_drafts.discard_projection_cleanup_failed",
+        { changeId },
+        () => deps.projection.deleteChange(changeId),
+        before.changes[changeId]!.changeSetId
+      );
     }
     for (const changeSetId of Object.keys(before.changeSets)) {
       if (changeSetId in after.changeSets) continue;
-      await deleteRowSafely("change_drafts.discard_projection_cleanup_failed", { changeSetId }, () =>
-        deps.projection.deleteChangeSet(changeSetId)
+      await deleteRowSafely(
+        "change_drafts.discard_projection_cleanup_failed",
+        { changeSetId },
+        () => deps.projection.deleteChangeSet(changeSetId),
+        changeSetId
       );
     }
+    return { failedChangeSetIds };
   }
 
-  return {
+  const core = {
     async getDocument(input: unknown): Promise<ChannelDraftDocument> {
       const { channelId } = parseWithSchema(channelIdInputSchema, input, "getDocument input");
       return loadDocumentOrThrow(channelId);
@@ -798,27 +863,73 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
      * history is not pulled back), saves, then removes the matching SQL rows. Ids the document does not hold are ignored,
      * so a repeated call is a no-op. Deciding WHICH sets may go is the caller's job (`src/lib/retention`); this only deletes.
      */
-    async purgeChangeSets(input: unknown): Promise<{ changeSets: number; changes: number; provenance: number }> {
+    async purgeChangeSets(
+      input: unknown
+    ): Promise<{ changeSets: number; changes: number; provenance: number; purgedChangeSetIds: string[] }> {
       const parsed = parseWithSchema(purgeChangeSetsInputSchema, input, "purgeChangeSets input");
       const before = await loadDocumentOrThrow(parsed.channelId);
-      const targetIds = new Set(parsed.changeSetIds.filter((id) => id in before.changeSets));
-      if (targetIds.size === 0) return { changeSets: 0, changes: 0, provenance: 0 };
+      const requested = [...new Set(parsed.changeSetIds)];
+      const targetIds = new Set(requested.filter((id) => id in before.changeSets));
+      const failed = new Set<string>();
+      const found = new Set<string>(targetIds);
+      let changeCount = 0;
+      let provenanceCount = 0;
 
-      const changeIds = Object.entries(before.changes)
-        .filter(([, change]) => targetIds.has(change.changeSetId))
-        .map(([id]) => id);
-      const provenanceIds = Object.entries(before.provenance ?? {})
-        .filter(([, entry]) => targetIds.has(entry.changeSetId))
-        .map(([id]) => id);
+      if (targetIds.size > 0) {
+        const changeIds = Object.entries(before.changes)
+          .filter(([, change]) => targetIds.has(change.changeSetId))
+          .map(([id]) => id);
+        const provenanceIds = Object.entries(before.provenance ?? {})
+          .filter(([, entry]) => targetIds.has(entry.changeSetId))
+          .map(([id]) => id);
+        const after = Automerge.change(before, (draft) => {
+          for (const id of changeIds) delete draft.changes[id];
+          for (const id of provenanceIds) delete draft.provenance![id];
+          for (const id of targetIds) delete draft.changeSets[id];
+        });
+        await saveDocument(parsed.channelId, after);
+        for (const id of (await removeProjectionRowsMissingFrom(parsed.channelId, before, after)).failedChangeSetIds) failed.add(id);
+        changeCount = changeIds.length;
+        provenanceCount = provenanceIds.length;
+      }
 
-      const after = Automerge.change(before, (draft) => {
-        for (const id of changeIds) delete draft.changes[id];
-        for (const id of provenanceIds) delete draft.provenance![id];
-        for (const id of targetIds) delete draft.changeSets[id];
-      });
-      await saveDocument(parsed.channelId, after);
-      await removeProjectionRowsMissingFrom(parsed.channelId, before, after);
-      return { changeSets: targetIds.size, changes: changeIds.length, provenance: provenanceIds.length };
+      // Ids the document no longer holds but SQL still does: the leftover of an earlier purge whose SQL delete failed (the failure is only
+      // logged). The document is the truth, so finish the cleanup here instead of leaving the rows for ever.
+      const orphanIds = requested.filter((id) => !(id in before.changeSets));
+      if (orphanIds.length > 0) {
+        const sqlSetIds = new Set((await deps.sqlSource.listChangeSetsForChannel(parsed.channelId)).map((set) => set.id));
+        const { deleteRowSafely, failedChangeSetIds } = createRowDeleter(parsed.channelId);
+        for (const changeSetId of orphanIds) {
+          if (!sqlSetIds.has(changeSetId)) continue;
+          found.add(changeSetId);
+          await deleteRowSafely(
+            "change_drafts.purge_projection_cleanup_failed",
+            { changeSetId },
+            () => deps.projection.deleteProvenanceForChangeSet(changeSetId),
+            changeSetId
+          );
+          for (const change of await deps.sqlSource.listChangesForChangeSet(changeSetId)) {
+            await deleteRowSafely(
+              "change_drafts.purge_projection_cleanup_failed",
+              { changeId: change.id },
+              () => deps.projection.deleteChange(change.id),
+              changeSetId
+            );
+            changeCount += 1;
+          }
+          await deleteRowSafely(
+            "change_drafts.purge_projection_cleanup_failed",
+            { changeSetId },
+            () => deps.projection.deleteChangeSet(changeSetId),
+            changeSetId
+          );
+        }
+        for (const id of failedChangeSetIds) failed.add(id);
+      }
+
+      // Only sets whose document AND SQL rows are gone count as purged.
+      const purgedChangeSetIds = requested.filter((id) => !failed.has(id));
+      return { changeSets: [...found].filter((id) => !failed.has(id)).length, changes: changeCount, provenance: provenanceCount, purgedChangeSetIds };
     },
 
     /** The exact bytes another device's `mergeIncoming` expects -- see that function's own doc comment. */
@@ -877,6 +988,8 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       return { changeSetCount: changeSetsFromSql.length, changeCount };
     },
   };
+
+  return withChannelLocks(core);
 }
 
 export type ChangeDraftsCore = ReturnType<typeof createChangeDraftsCore>;

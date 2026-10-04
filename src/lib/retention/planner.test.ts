@@ -119,3 +119,21 @@ test("write log: kept while one of its changes still sits in a surviving change 
   const plan = planWriteLogPurge([batch("b", "COMPLETED", 60, ["SUCCESS"], [["c1"]])], new Set(["c1"]), NOW, 30);
   assert.deepEqual(plan.batchIds, []);
 });
+
+test("approved: written, then edited and re-approved afterwards -> kept (the new value was never sent)", () => {
+  const edited: RetentionChangeSetFacts = {
+    id: "a",
+    status: "approved",
+    updatedAt: days(10),
+    // change last updated 9 days ago; the SUCCESS row is 10 days old, so the write predates the edit
+    changes: [{ id: "a-c0", approvalStatus: "approved", updatedAt: days(9) }],
+  };
+  assert.deepEqual(planDraftPurge([edited], [row("b1", "SUCCESS", ["a-c0"], 10)], NOW, 7).changeSetIds, []);
+});
+
+test("a set with a pending change is kept even if its stored status says rejected or approved", () => {
+  for (const status of ["rejected", "approved", "partially_approved"] as const) {
+    const s = set("a", status, 30, ["approved", "pending"]);
+    assert.deepEqual(planDraftPurge([s], [row("b1", "SUCCESS", ["a-c0"], 29)], NOW, 7).changeSetIds, [], status);
+  }
+});
