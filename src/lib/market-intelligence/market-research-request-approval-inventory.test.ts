@@ -51,7 +51,18 @@ async function listTsFilesRecursively(dir: string): Promise<string[]> {
 // Named descriptively rather than spelling out the two guarded function names verbatim, so this
 // file's own prose can never trip its sibling's plain-substring scan the way a doc comment
 // elsewhere in this phase already did once (PHASE9-INV-02's own discovered false positive).
-const FORBIDDEN_APPROVAL_SYMBOLS = ["approveMarketResearchRequest", "rejectMarketResearchRequest"];
+// Collection requests (docs/decisions/0021-agent-collection-requests.md) follow the same rule: an agent may CREATE and READ them, never
+// run (approve) or reject one. The raw db.ts transitions are additionally kept inside this module by PHASE9-INV-02.
+const FORBIDDEN_APPROVAL_SYMBOLS = [
+  "approveMarketResearchRequest",
+  "rejectMarketResearchRequest",
+  "runApprovedCollectionRequest",
+  "rejectCollectionRequest",
+  "approveMarketCollectionRequestIfPending",
+  "startMarketCollectionRequestIfApproved",
+  "rejectMarketCollectionRequestIfPending",
+  "finishMarketCollectionRequestIfRunning",
+];
 
 test("PHASE9-INV-03: no file under src/mcp, src/cli, or src/lib/agent-operations references the research-request approve/reject actions", async () => {
   const offenders: string[] = [];
@@ -71,4 +82,16 @@ test("PHASE9-INV-03: no file under src/mcp, src/cli, or src/lib/agent-operations
     [],
     `Found a reference to the research-request approve/reject actions outside the Web-UI-only route it belongs to:\n${offenders.join("\n")}`
   );
+});
+
+test("collection-request inventory: the fenced symbol list covers every human-only collection-request action (a rename cannot silently escape the scan)", async () => {
+  const servicesSource = await readFile(path.join(THIS_DIR, "services.ts"), "utf8");
+  for (const symbol of ["runApprovedCollectionRequest", "rejectCollectionRequest"]) {
+    assert.ok(servicesSource.includes(`async ${symbol}(`), `${symbol} must still be the service method name the fence refers to`);
+    assert.ok(FORBIDDEN_APPROVAL_SYMBOLS.includes(symbol), `${symbol} must be fenced`);
+  }
+  // The agent-reachable collection-request actions must NOT be fenced (they are the allowed surface).
+  for (const allowed of ["createCollectionRequest", "getCollectionRequest", "listCollectionRequests", "getCollectionLimits"]) {
+    assert.ok(!FORBIDDEN_APPROVAL_SYMBOLS.includes(allowed), `${allowed} is agent-reachable by design`);
+  }
 });

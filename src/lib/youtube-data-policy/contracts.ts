@@ -137,6 +137,7 @@ export const YOUTUBE_DATA_CLASSIFICATION: Readonly<Record<string, YoutubeDataCla
   market_intelligence_collection_runs: notApiData("collection bookkeeping (status, units spent)"),
   market_discovery_runs: notApiData("discovery bookkeeping (the operator's query, units spent)"),
   market_research_requests: notApiData("agent-drafted research requests (query text, status)"),
+  market_collection_requests: notApiData("agent-drafted collection requests (channel ids, estimate, per-channel outcome, units spent)"),
   market_topics: notApiData("operator-defined topics"),
   topic_wikipedia_articles: notApiData("operator links from topics to Wikipedia articles (Phase 13.8)"),
   wikipedia_pageviews_daily: notApiData("Wikimedia page views (CC0), not YouTube API data (Phase 13.8)"),

@@ -734,6 +734,121 @@ export const rejectMarketResearchRequestInputSchema = z
 export const rejectMarketResearchRequestOutputSchema = marketResearchRequestSchema;
 
 // ---------------------------------------------------------------------------
+// Agent-created collection requests (docs/decisions/0021-agent-collection-requests.md).
+// ---------------------------------------------------------------------------
+
+export const COLLECTION_REQUEST_REASON_MAX_LENGTH = 500;
+
+const collectionRequestStatusSchema = z.enum(["pending", "approved", "running", "done", "rejected", "failed"]);
+
+const collectionChannelEstimateSchema = z
+  .object({
+    channelId: z.string().min(1),
+    mode: z.enum(["backfill", "incremental"]),
+    expectedUnits: nonNegativeIntSchema,
+    worstCaseUnits: nonNegativeIntSchema,
+  })
+  .strict();
+
+export const collectionEstimateSchema = z
+  .object({
+    channels: z.array(collectionChannelEstimateSchema),
+    totalExpectedUnits: nonNegativeIntSchema,
+    totalWorstCaseUnits: nonNegativeIntSchema,
+    dailyBudgetUnits: nonNegativeIntSchema,
+    unitsSpentToday: nonNegativeIntSchema,
+    remainingTodayUnits: nonNegativeIntSchema,
+    fitsToday: z.boolean(),
+  })
+  .strict();
+
+export const collectionChannelResultSchema = z
+  .object({
+    channelId: z.string().min(1),
+    outcome: z.enum(["completed", "partial_budget", "failed", "skipped_not_stale", "skipped_recent_failure", "skipped_quota_limited"]),
+    videosStored: nonNegativeIntSchema,
+    newSnapshotsObservedAt: z.string().nullable(),
+    unitsSpent: nonNegativeIntSchema,
+  })
+  .strict();
+
+export const marketCollectionRequestSchema = z
+  .object({
+    requestId: z.string().min(1),
+    channelIds: z.array(z.string().min(1)),
+    reason: z.string(),
+    status: collectionRequestStatusSchema,
+    estimate: collectionEstimateSchema,
+    createdVia: z.string(),
+    agentApiVersion: z.string().nullable(),
+    createdAt: z.string(),
+    approvedAt: z.string().nullable(),
+    resolvedAt: z.string().nullable(),
+    resolvedReason: z.string().nullable(),
+    result: z.array(collectionChannelResultSchema).nullable(),
+    unitsSpentTotal: nonNegativeIntSchema.nullable(),
+    error: z.string().nullable(),
+  })
+  .strict();
+
+/** `researchChannelIds` omitted = every watchlist channel visible to the caller. No force flag exists (the regular stale window always applies). */
+export const createCollectionRequestInputSchema = z
+  .object({
+    researchChannelIds: z.array(youtubeChannelIdSchema).min(1, "researchChannelIds must not be empty when given").optional(),
+    reason: z.string().max(COLLECTION_REQUEST_REASON_MAX_LENGTH).optional(),
+  })
+  .strict();
+
+export const createCollectionRequestOutputSchema = z
+  .object({
+    created: z.boolean(),
+    request: marketCollectionRequestSchema.nullable(),
+    notNeeded: z.array(
+      z
+        .object({
+          channelId: z.string().min(1),
+          reason: z.enum(["collected_recently", "recent_failure"]),
+          hoursSince: z.number().nonnegative(),
+        })
+        .strict()
+    ),
+    alreadyRequested: z.array(z.object({ channelId: z.string().min(1), requestId: z.string().min(1) }).strict()),
+  })
+  .strict();
+
+export const getCollectionRequestInputSchema = z.object({ requestId: z.string().min(1).optional() }).strict();
+export const listCollectionRequestsOutputSchema = z.object({ requests: z.array(marketCollectionRequestSchema) }).strict();
+
+export const collectionLimitsSchema = z
+  .object({
+    dailyBudgetUnits: nonNegativeIntSchema.nullable(),
+    unitsSpentToday: nonNegativeIntSchema,
+    remainingTodayUnits: nonNegativeIntSchema.nullable(),
+    quotaDayResetsAt: z.string(),
+    defaultMaxVideosPerChannel: z.number().int().positive(),
+    defaultPublishedAfter: z.string().nullable(),
+    staleWindowHours: z.number().positive(),
+    perChannelOverrides: z.array(
+      z
+        .object({
+          channelId: z.string().min(1),
+          maxVideosPerChannel: z.number().int().positive().nullable(),
+          publishedAfter: z.string().nullable(),
+        })
+        .strict()
+    ),
+  })
+  .strict();
+
+export const runApprovedCollectionRequestInputSchema = z
+  .object({ requestId: z.string().min(1), credentialRef: credentialRefSchema })
+  .strict();
+
+export const rejectCollectionRequestInputSchema = z
+  .object({ requestId: z.string().min(1), reason: z.string().min(1, "reason is required").max(2000) })
+  .strict();
+
+// ---------------------------------------------------------------------------
 // Phase 9 slice 9H, part B (docs/roadmap/plans/PHASE_9_SLICE_9H_PART_B_PLAN.md) -- Market Overview,
 // aggregating across the whole watchlist over already-existing 9C/9H-A/9G-a building blocks. No
 // input (mirrors `listWatchlist`'s own no-input shape); UI-only, no MCP/CLI contract.

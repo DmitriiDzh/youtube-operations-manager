@@ -164,6 +164,7 @@ async function deriveForbiddenDbSymbols(): Promise<string[]> {
     "market_trend_evidence",
     // Phase 9 slice 9G, part B (docs/roadmap/plans/PHASE_9_SLICE_9G_PART_B_PLAN.md).
     "market_research_requests",
+    "market_collection_requests",
     // Found by independent review during 9H part A planning (2026-09-27): these four `db.ts`
     // exports operate on market-intelligence tables (`marketTopicAssignments`/`marketTrendEvidence`)
     // but their own function names contain neither "research" nor "market", so the derivation

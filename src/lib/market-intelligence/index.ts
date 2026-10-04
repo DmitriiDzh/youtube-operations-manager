@@ -80,6 +80,16 @@ export function createMarketIntelligenceCore() {
     approveMarketResearchRequestIfPending: store.approveMarketResearchRequestIfPending,
     rejectMarketResearchRequestIfPending: store.rejectMarketResearchRequestIfPending,
     recordMarketResearchRequestExecutionOutcome: store.recordMarketResearchRequestExecutionOutcome,
+    // Agent-created collection requests (docs/decisions/0021-agent-collection-requests.md).
+    insertMarketCollectionRequest: store.insertMarketCollectionRequest,
+    getMarketCollectionRequestById: store.getMarketCollectionRequestById,
+    listMarketCollectionRequests: store.listMarketCollectionRequests,
+    findOpenMarketCollectionRequestForChannel: store.findOpenMarketCollectionRequestForChannel,
+    approveMarketCollectionRequestIfPending: store.approveMarketCollectionRequestIfPending,
+    startMarketCollectionRequestIfApproved: store.startMarketCollectionRequestIfApproved,
+    rejectMarketCollectionRequestIfPending: store.rejectMarketCollectionRequestIfPending,
+    finishMarketCollectionRequestIfRunning: store.finishMarketCollectionRequestIfRunning,
+    failInterruptedMarketCollectionRequests: store.failInterruptedMarketCollectionRequests,
   });
   // BL-117: API calls made by Research collection / discovery are logged against it in the quota history.
   const guard = createQuotaGuardCore();
@@ -92,6 +102,9 @@ export function createMarketIntelligenceCore() {
       if (!(await guard.isBackgroundReadAllowed())) return { attempted: 0, succeeded: 0, failed: 0, quotaLimited: 0, unitsSpent: 0 };
       return services.runCollectionIfStale(input);
     }, context),
+    // An approved collection request runs the regular collection for its own channels (same stale window, failed-channel pause and daily
+    // budget). The background-reserve guard above is for the AUTOMATIC refresh; a person approving the request is the explicit trigger.
+    runApprovedCollectionRequest: quotaScoped(services.runApprovedCollectionRequest, context),
     discoverChannels: quotaScoped(services.discoverChannels, context),
     captureChannelSnapshot: quotaScoped(services.captureChannelSnapshot, context),
     fetchPublicSnapshot: quotaScoped(services.fetchPublicSnapshot, context),
@@ -110,5 +123,6 @@ export type {
   MarketTrendCandidate,
   MarketTrendEvidence,
   MarketResearchRequest,
+  MarketCollectionRequest,
 } from "./contracts";
 export { DomainError, isDomainError } from "./contracts";

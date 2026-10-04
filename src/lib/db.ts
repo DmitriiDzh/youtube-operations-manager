@@ -1513,6 +1513,38 @@ export const marketResearchRequests = sqliteTable(
   (table) => [index("market_research_requests_status_idx").on(table.status)]
 );
 
+/**
+ * SCHEMA_MIGRATIONS version 49 (docs/decisions/0021-agent-collection-requests.md, owner-approved 2026-10-04): an agent-created
+ * request to collect a set of watchlist channels, approved by a human in the Research tab. JSON columns are stored as text and
+ * parsed by the market-intelligence service (the shape lives there, not here). `channel_ids_json` is a fixed list taken at creation;
+ * `estimate_json` is the local upper-bound estimate taken at creation; `result_json` is the per-channel outcome of the run.
+ */
+export const marketCollectionRequests = sqliteTable(
+  "market_collection_requests",
+  {
+    id: text("id").primaryKey(),
+    channelIdsJson: text("channel_ids_json").notNull(),
+    reason: text("reason").notNull(),
+    status: text("status", { enum: ["pending", "approved", "running", "done", "rejected", "failed"] })
+      .notNull()
+      .default("pending"),
+    estimateJson: text("estimate_json").notNull(),
+    createdVia: text("created_via").notNull(),
+    agentApiVersion: text("agent_api_version"),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    approvedAt: integer("approved_at", { mode: "timestamp" }),
+    approvedByUserId: text("approved_by_user_id"),
+    resolvedAt: integer("resolved_at", { mode: "timestamp" }),
+    resolvedReason: text("resolved_reason"),
+    resultJson: text("result_json"),
+    unitsSpentTotal: integer("units_spent_total"),
+    error: text("error"),
+  },
+  (table) => [index("market_collection_requests_status_idx").on(table.status)]
+);
+
 // Phase 10 slice 1 (docs/roadmap/plans/PHASE_10_SLICE_1_PLAN.md) -- Decision & Experiment Engine,
 // manual-entry record-keeping foundation. `channelId` nullable: a "new channel concept" hypothesis
 // has no existing channel yet (FUTURE_PHASES.md §6).
@@ -2710,6 +2742,34 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
           if (!isDuplicateColumnError(error)) throw error;
         }
       }
+    },
+  },
+  {
+    version: 49,
+    description:
+      "market_collection_requests -- agent-created requests to collect watchlist channels, approved by a human in the Research tab (docs/decisions/0021-agent-collection-requests.md); additive new table, existing data untouched",
+    apply: async (client) => {
+      await client.execute(
+        "CREATE TABLE IF NOT EXISTS market_collection_requests (" +
+          "id TEXT PRIMARY KEY, " +
+          "channel_ids_json TEXT NOT NULL, " +
+          "reason TEXT NOT NULL, " +
+          "status TEXT NOT NULL DEFAULT 'pending', " +
+          "estimate_json TEXT NOT NULL, " +
+          "created_via TEXT NOT NULL, " +
+          "agent_api_version TEXT, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "approved_at INTEGER, " +
+          "approved_by_user_id TEXT, " +
+          "resolved_at INTEGER, " +
+          "resolved_reason TEXT, " +
+          "result_json TEXT, " +
+          "units_spent_total INTEGER, " +
+          "error TEXT)"
+      );
+      await client.execute(
+        "CREATE INDEX IF NOT EXISTS market_collection_requests_status_idx ON market_collection_requests(status)"
+      );
     },
   },
 ];
@@ -7100,15 +7160,26 @@ export async function markResearchChannelAutoCollected(
  * retried a little sooner than ideal, never double-charged).
  */
 export async function claimStaleResearchChannelsForCollection(
-  args: { now: Date; staleCutoff: Date; claimExpiryCutoff: Date; excludeResearchChannelIds: string[] },
+  args: {
+    now: Date;
+    staleCutoff: Date;
+    claimExpiryCutoff: Date;
+    excludeResearchChannelIds: string[];
+    /** When set, only these channels may be claimed (an approved collection request); everything else about the claim is unchanged. */
+    onlyResearchChannelIds?: string[];
+  },
   database: AppDb = db
 ): Promise<string[]> {
+  if (args.onlyResearchChannelIds && args.onlyResearchChannelIds.length === 0) return [];
   const conditions = [
     or(isNull(researchChannels.lastAutoCollectedAt), lt(researchChannels.lastAutoCollectedAt, args.staleCutoff)),
     or(isNull(researchChannels.collectionClaimedAt), lt(researchChannels.collectionClaimedAt, args.claimExpiryCutoff)),
   ];
   if (args.excludeResearchChannelIds.length > 0) {
     conditions.push(notInArray(researchChannels.id, args.excludeResearchChannelIds));
+  }
+  if (args.onlyResearchChannelIds) {
+    conditions.push(inArray(researchChannels.id, args.onlyResearchChannelIds));
   }
 
   const rows = await database
@@ -7929,6 +8000,176 @@ export async function recordMarketResearchRequestExecutionOutcome(
     .where(and(eq(marketResearchRequests.id, id), eq(marketResearchRequests.status, "approved")))
     .returning();
   return rows[0] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Agent-created collection requests (docs/decisions/0021-agent-collection-requests.md). Read/written only by
+// `src/lib/market-intelligence/adapters/store.ts`. Every transition is one atomic `UPDATE ... WHERE status = <expected> RETURNING`
+// (never a read followed by a write), so two racing callers can never both win the same transition.
+// ---------------------------------------------------------------------------
+
+export type MarketCollectionRequestStatus = "pending" | "approved" | "running" | "done" | "rejected" | "failed";
+
+export type StoredMarketCollectionRequest = {
+  id: string;
+  channelIdsJson: string;
+  reason: string;
+  status: MarketCollectionRequestStatus;
+  estimateJson: string;
+  createdVia: string;
+  agentApiVersion: string | null;
+  createdAt: Date;
+  approvedAt: Date | null;
+  approvedByUserId: string | null;
+  resolvedAt: Date | null;
+  resolvedReason: string | null;
+  resultJson: string | null;
+  unitsSpentTotal: number | null;
+  error: string | null;
+};
+
+export async function insertMarketCollectionRequest(
+  input: {
+    id: string;
+    channelIdsJson: string;
+    reason: string;
+    estimateJson: string;
+    createdVia: string;
+    agentApiVersion?: string | null;
+    at?: Date;
+  },
+  database: AppDb = db
+): Promise<void> {
+  await database.insert(marketCollectionRequests).values({
+    id: input.id,
+    channelIdsJson: input.channelIdsJson,
+    reason: input.reason,
+    status: "pending",
+    estimateJson: input.estimateJson,
+    createdVia: input.createdVia,
+    agentApiVersion: input.agentApiVersion ?? null,
+    ...(input.at ? { createdAt: input.at } : {}),
+  });
+}
+
+export async function getMarketCollectionRequestById(
+  id: string,
+  database: AppDb = db
+): Promise<StoredMarketCollectionRequest | null> {
+  const [row] = await database.select().from(marketCollectionRequests).where(eq(marketCollectionRequests.id, id));
+  return row ?? null;
+}
+
+export async function listMarketCollectionRequests(database: AppDb = db): Promise<StoredMarketCollectionRequest[]> {
+  return database.select().from(marketCollectionRequests).orderBy(desc(marketCollectionRequests.createdAt));
+}
+
+/** The open (pending/approved/running) request whose fixed channel list contains `channelId`, or null. Exact membership, checked on the parsed list. */
+export async function findOpenMarketCollectionRequestForChannel(
+  channelId: string,
+  database: AppDb = db
+): Promise<StoredMarketCollectionRequest | null> {
+  const rows = await database
+    .select()
+    .from(marketCollectionRequests)
+    .where(inArray(marketCollectionRequests.status, ["pending", "approved", "running"]))
+    .orderBy(asc(marketCollectionRequests.createdAt));
+  for (const row of rows) {
+    try {
+      const ids: unknown = JSON.parse(row.channelIdsJson);
+      if (Array.isArray(ids) && ids.includes(channelId)) return row;
+    } catch {
+      // A row with unreadable JSON cannot claim a channel.
+    }
+  }
+  return null;
+}
+
+/** pending -> approved, stamping who approved it and when. `null` = it was no longer pending. */
+export async function approveMarketCollectionRequestIfPending(
+  id: string,
+  approvedByUserId: string | null,
+  at: Date,
+  database: AppDb = db
+): Promise<StoredMarketCollectionRequest | null> {
+  const rows = await database
+    .update(marketCollectionRequests)
+    .set({ status: "approved", approvedAt: at, approvedByUserId })
+    .where(and(eq(marketCollectionRequests.id, id), eq(marketCollectionRequests.status, "pending")))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** approved -> running. `null` = it was not (or no longer) approved. */
+export async function startMarketCollectionRequestIfApproved(
+  id: string,
+  database: AppDb = db
+): Promise<StoredMarketCollectionRequest | null> {
+  const rows = await database
+    .update(marketCollectionRequests)
+    .set({ status: "running" })
+    .where(and(eq(marketCollectionRequests.id, id), eq(marketCollectionRequests.status, "approved")))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** pending -> rejected with the human's reason. `null` = it was no longer pending. */
+export async function rejectMarketCollectionRequestIfPending(
+  id: string,
+  reason: string,
+  at: Date,
+  database: AppDb = db
+): Promise<StoredMarketCollectionRequest | null> {
+  const rows = await database
+    .update(marketCollectionRequests)
+    .set({ status: "rejected", resolvedAt: at, resolvedReason: reason })
+    .where(and(eq(marketCollectionRequests.id, id), eq(marketCollectionRequests.status, "pending")))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** running -> done|failed with the recorded result. `null` = it was not running (e.g. already swept as interrupted). */
+export async function finishMarketCollectionRequestIfRunning(
+  id: string,
+  outcome:
+    | { status: "done"; resultJson: string; unitsSpentTotal: number }
+    | { status: "failed"; resultJson: string | null; unitsSpentTotal: number; error: string },
+  at: Date,
+  database: AppDb = db
+): Promise<StoredMarketCollectionRequest | null> {
+  const rows = await database
+    .update(marketCollectionRequests)
+    .set(
+      outcome.status === "done"
+        ? { status: "done", resolvedAt: at, resultJson: outcome.resultJson, unitsSpentTotal: outcome.unitsSpentTotal }
+        : { status: "failed", resolvedAt: at, resultJson: outcome.resultJson, unitsSpentTotal: outcome.unitsSpentTotal, error: outcome.error }
+    )
+    .where(and(eq(marketCollectionRequests.id, id), eq(marketCollectionRequests.status, "running")))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/**
+ * Boot-time recovery: an approved/running request whose approval is older than `approvedBefore` was orphaned by a process that died
+ * mid-run -- it becomes `failed` ("interrupted") so its channels stop counting as "has an open request". Returns how many rows changed.
+ */
+export async function failInterruptedMarketCollectionRequests(
+  approvedBefore: Date,
+  at: Date,
+  database: AppDb = db
+): Promise<number> {
+  const rows = await database
+    .update(marketCollectionRequests)
+    .set({ status: "failed", resolvedAt: at, error: "interrupted" })
+    .where(
+      and(
+        inArray(marketCollectionRequests.status, ["approved", "running"]),
+        isNotNull(marketCollectionRequests.approvedAt),
+        lt(marketCollectionRequests.approvedAt, approvedBefore)
+      )
+    )
+    .returning({ id: marketCollectionRequests.id });
+  return rows.length;
 }
 
 // ---------------------------------------------------------------------------

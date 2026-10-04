@@ -1,5 +1,14 @@
 import {
+  approveMarketCollectionRequestIfPending,
   approveMarketResearchRequestIfPending,
+  failInterruptedMarketCollectionRequests,
+  finishMarketCollectionRequestIfRunning,
+  findOpenMarketCollectionRequestForChannel,
+  getMarketCollectionRequestById,
+  insertMarketCollectionRequest,
+  listMarketCollectionRequests,
+  rejectMarketCollectionRequestIfPending,
+  startMarketCollectionRequestIfApproved,
   claimStaleResearchChannelsForCollection,
   deleteMarketTopic,
   deleteMarketTopicAssignment,
@@ -128,6 +137,16 @@ export function createMarketIntelligenceStoreAdapter() {
     approveMarketResearchRequestIfPending,
     rejectMarketResearchRequestIfPending,
     recordMarketResearchRequestExecutionOutcome,
+    // Agent-created collection requests (docs/decisions/0021-agent-collection-requests.md).
+    insertMarketCollectionRequest,
+    getMarketCollectionRequestById,
+    listMarketCollectionRequests,
+    findOpenMarketCollectionRequestForChannel,
+    approveMarketCollectionRequestIfPending,
+    startMarketCollectionRequestIfApproved,
+    rejectMarketCollectionRequestIfPending,
+    finishMarketCollectionRequestIfRunning,
+    failInterruptedMarketCollectionRequests,
   };
 }
 
