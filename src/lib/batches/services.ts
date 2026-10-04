@@ -626,7 +626,7 @@ export function createBatchServices(deps: ServiceDependencies) {
       }
       appliedDefaultLanguage = baselineLanguage;
       mergeBase = { ...fresh, snippet: { ...fresh.snippet, defaultLanguage: baselineLanguage } };
-    } else if (baselineLanguage && fresh.snippet.defaultLanguage !== baselineLanguage) {
+    } else if (baselineLanguage && fresh.snippet.defaultLanguage?.toLowerCase() !== baselineLanguage.toLowerCase()) {
       // Re-labelling a video that already has another language would mislabel its existing title/description:
       // fail closed and point to the tool that fixes the mismatch deliberately.
       return {
@@ -634,6 +634,15 @@ export function createBatchServices(deps: ServiceDependencies) {
         error: `Video's defaultLanguage on YouTube is "${fresh.snippet.defaultLanguage}" but the channel default is "${baselineLanguage}". Fix the mismatch first (Languages -> Language defaults), then retry.`,
       };
     }
+    // With the baseline source wired but no audio language set, the write would silently reset the video's
+    // audio language (the Tropico incident): fail closed, in dry runs too, so it is seen before a live batch.
+    if (deps.channelLanguageBaseline?.getExpectedDefaultAudioLanguage && !baselineAudio) {
+      return {
+        outcome: "FAILED",
+        error: "The channel has no audio language set (Languages -> Language defaults). A write without it would reset the video's audio language on YouTube; set it first, then retry.",
+      };
+    }
+
     const pendingChanges = toPendingChanges(changeRecords);
 
     const conflict = detectPreWriteConflict(pendingChanges, fresh);
