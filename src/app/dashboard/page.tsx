@@ -27,6 +27,7 @@ import { MarketTopicsPanel } from "@/components/market-topics-panel";
 import { MusicChartPanel } from "@/components/music-chart-panel";
 import { MarketTrendsPanel } from "@/components/market-trends-panel";
 import { MarketResearchRequestsPanel } from "@/components/market-research-requests-panel";
+import { MarketCollectionRequestsPanel } from "@/components/market-collection-requests-panel";
 import { DecisionsManager } from "@/components/decisions-manager";
 import { ReadGatewaySettings } from "@/components/read-gateway-settings";
 import { CloudConnectionSettings } from "@/components/cloud-connection-settings";
@@ -402,6 +403,9 @@ export default function Dashboard() {
             </FeatureErrorBoundary>
             <FeatureErrorBoundary label="Research — Requests">
               <MarketResearchRequestsPanel />
+            </FeatureErrorBoundary>
+            <FeatureErrorBoundary label="Research — Collection requests">
+              <MarketCollectionRequestsPanel />
             </FeatureErrorBoundary>
           </div>
         </FeatureErrorBoundary>
