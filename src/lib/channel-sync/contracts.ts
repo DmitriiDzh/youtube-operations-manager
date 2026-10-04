@@ -80,6 +80,8 @@ export type VideoSyncMetadata = {
   commentCount: number | null;
   likeCount: number | null;
   durationSeconds: number | null;
+  /** `snippet.liveBroadcastContent` from the sync read; absent/null = unknown. */
+  liveBroadcastContent?: string | null;
   publishAt: string | null;
 };
 

@@ -92,7 +92,7 @@ test("AC-RE-1 (the agent's retest): one watchlist channel with 1 channel snapsho
   for (const file of result.files) assert.ok(file.path.startsWith(result.exportsDir + path.sep));
   const lines = (await readFile(byDataset.research_video_snapshots.path, "utf8")).split("\r\n");
   assert.equal(lines.length, 50 + 2); // header + 50 + trailing empty after the last CRLF
-  assert.equal(lines[0], "channel,channelId,videoId,publishedAt,observedAt,viewCount,likeCount,commentCount,title");
+  assert.equal(lines[0], "channel,channelId,videoId,publishedAt,observedAt,viewCount,likeCount,commentCount,title,durationSeconds,liveBroadcastContent");
 });
 
 test("AC-RE-2: CSV content is exactly the hand-written expectation (header order, hostile title guarded and quoted), file names carry no title/handle", async () => {
@@ -108,8 +108,8 @@ test("AC-RE-2: CSV content is exactly the hand-written expectation (header order
   const videoFile = result.files.find((f) => f.dataset === "research_video_snapshots")!;
   assert.equal(
     await readFile(videoFile.path, "utf8"),
-    "channel,channelId,videoId,publishedAt,observedAt,viewCount,likeCount,commentCount,title\r\n" +
-      "@TheNeiro,UCneiro,UCneiro-v0,2026-09-20T08:00:00.000Z,2026-10-02T10:00:00.000Z,100,1,0,\"'=cmd|\"\"x\"\", y\"\r\n"
+    "channel,channelId,videoId,publishedAt,observedAt,viewCount,likeCount,commentCount,title,durationSeconds,liveBroadcastContent\r\n" +
+      "@TheNeiro,UCneiro,UCneiro-v0,2026-09-20T08:00:00.000Z,2026-10-02T10:00:00.000Z,100,1,0,\"'=cmd|\"\"x\"\", y\",,\r\n"
   );
   assert.equal(path.basename(videoFile.path), "research-video-snapshots-20261004T071530Z-ab12.csv");
 });
@@ -135,7 +135,7 @@ test("AC-RE-4: our own channel comes out with the same columns as the competitor
   assert.equal((await readFile(own.path, "utf8")).split("\r\n")[0], (await readFile(comp.path, "utf8")).split("\r\n")[0]);
   assert.equal(
     (await readFile(own.path, "utf8")).split("\r\n")[1],
-    "Rural Japan Music,UCown,own1,2026-09-01T10:00:00.000Z,2026-10-03T12:00:00.000Z,7,1,0,Mine"
+    "Rural Japan Music,UCown,own1,2026-09-01T10:00:00.000Z,2026-10-03T12:00:00.000Z,7,1,0,Mine,,"
   );
 });
 

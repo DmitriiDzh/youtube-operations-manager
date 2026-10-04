@@ -56,6 +56,8 @@ export function buildVideoSnapshotRows(contexts: WatchlistContextForExport[]): V
       likeCount: snapshot.likeCount,
       commentCount: snapshot.commentCount,
       title: snapshot.title,
+      durationSeconds: snapshot.durationSeconds ?? null,
+      liveBroadcastContent: snapshot.liveBroadcastContent ?? null,
     }))
   );
 }
@@ -74,6 +76,8 @@ export function buildOwnVideoRows(channel: { channelId: string; title: string },
       likeCount: video.likeCount,
       commentCount: video.commentCount,
       title: video.title,
+      durationSeconds: video.durationSeconds ?? null,
+      liveBroadcastContent: video.liveBroadcastContent ?? null,
     }));
 }
 

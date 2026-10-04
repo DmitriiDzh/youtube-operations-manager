@@ -69,6 +69,10 @@ export type PublicVideoSnapshot = {
   viewCount: number | null;
   likeCount: number | null;
   commentCount: number | null;
+  /** Raw video length; absent/null when the fetch did not return it (never 0). */
+  durationSeconds?: number | null;
+  /** YouTube's `snippet.liveBroadcastContent`; only the `videos.list` path returns it. */
+  liveBroadcastContent?: string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -103,6 +107,9 @@ export type MarketVideoSnapshot = {
    * when YouTube's own response omitted a title (never the empty string -- normalized at capture
    * time, see `runCollectionIfStale`). */
   title: string | null;
+  /** SCHEMA_MIGRATIONS v47 -- `null` = not captured (older snapshots, or a path that did not return it); never 0. */
+  durationSeconds: number | null;
+  liveBroadcastContent: string | null;
   source: string;
 };
 

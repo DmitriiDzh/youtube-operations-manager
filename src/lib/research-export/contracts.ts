@@ -45,6 +45,9 @@ export const VIDEO_SNAPSHOT_COLUMNS = [
   "likeCount",
   "commentCount",
   "title",
+  // Appended 2026-10-04 (operator request): raw values from YouTube, empty when unknown (never 0); no Shorts flag is derived here.
+  "durationSeconds",
+  "liveBroadcastContent",
 ] as const;
 
 export type ExportDataset = "research_channel_snapshots" | "research_video_snapshots" | "own_video_snapshots";
@@ -70,6 +73,8 @@ export type WatchlistContextForExport = {
     commentCount: number | null;
     publishedAt: string | null;
     title: string | null;
+    durationSeconds?: number | null;
+    liveBroadcastContent?: string | null;
     source: string;
   }>;
   dataQualityFlags: string[];
@@ -83,6 +88,8 @@ export type OwnVideoForExport = {
   viewCount: number | null;
   likeCount: number | null;
   commentCount: number | null;
+  durationSeconds?: number | null;
+  liveBroadcastContent?: string | null;
   /** When this device last synced the video from YouTube -- the `observedAt` of the row. */
   lastSyncedAt: Date;
 };

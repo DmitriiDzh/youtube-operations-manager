@@ -69,6 +69,8 @@ test("video rows: one per snapshot with null kept as null; the channel label fal
     likeCount: null,
     commentCount: null,
     title: null,
+    durationSeconds: null,
+    liveBroadcastContent: null,
   });
   assert.equal(rows[2].channel, "UCnone");
   assert.equal(rows[2].videoId, "v9");
@@ -90,6 +92,8 @@ test("own channel rows: only public videos, published date normalised to ISO, ob
       likeCount: 1,
       commentCount: 0,
       title: "Pub",
+      durationSeconds: null,
+      liveBroadcastContent: null,
     },
   ]);
   assert.deepEqual(Object.keys(own[0]), Object.keys(buildVideoSnapshotRows([neiro])[0]));
@@ -113,4 +117,21 @@ test("expiry = 30 days after the OLDEST API-sourced observation; operator-entere
 test("expiry fails closed: an API row with an unreadable observation time counts as observed at export time (2026-10-04 + 30 d = 2026-11-03)", () => {
   const broken: WatchlistContextForExport = { ...neiro, channelSnapshots: [{ ...neiro.channelSnapshots[0], observedAt: "not a date" }], videoSnapshots: [] };
   assert.equal(computeResearchFileExpiry([broken], new Date("2026-10-04T00:00:00Z"))?.toISOString(), "2026-11-03T00:00:00.000Z");
+});
+
+test("operator request 2026-10-04: duration and live state are carried as stored (competitor and own rows), empty (null) when unknown, never 0", () => {
+  const withDuration: WatchlistContextForExport = {
+    ...neiro,
+    videoSnapshots: [{ ...neiro.videoSnapshots[0], durationSeconds: 125, liveBroadcastContent: "none" }, neiro.videoSnapshots[1]],
+  };
+  const rows = buildVideoSnapshotRows([withDuration]);
+  assert.equal(rows[0].durationSeconds, 125);
+  assert.equal(rows[0].liveBroadcastContent, "none");
+  assert.equal(rows[1].durationSeconds, null);
+  assert.equal(rows[1].liveBroadcastContent, null);
+  const own = buildOwnVideoRows({ channelId: "UCown", title: "Mine" }, [
+    { videoId: "a", publishedAt: "2026-09-01T10:00:00Z", privacyStatus: "public", title: "Pub", viewCount: 1, likeCount: 0, commentCount: 0, durationSeconds: 7200, liveBroadcastContent: "upcoming", lastSyncedAt: new Date("2026-10-03T12:00:00Z") },
+  ]);
+  assert.equal(own[0].durationSeconds, 7200);
+  assert.equal(own[0].liveBroadcastContent, "upcoming");
 });

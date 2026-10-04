@@ -637,8 +637,9 @@ test("getPublicVideoSnapshots requests snippet+statistics, parses stats, and nev
           items: [
             {
               id: "v1",
-              snippet: { title: "Video One", publishedAt: "2026-01-01T00:00:00.000Z" },
+              snippet: { title: "Video One", publishedAt: "2026-01-01T00:00:00.000Z", liveBroadcastContent: "none" },
               statistics: { viewCount: "100", likeCount: "10", commentCount: "2" },
+              contentDetails: { duration: "PT2M5S" },
             },
             {
               id: "v2",
@@ -653,10 +654,10 @@ test("getPublicVideoSnapshots requests snippet+statistics, parses stats, and nev
 
   const snapshots = await getPublicVideoSnapshots(youtube, ["v1", "v2"]);
 
-  assert.deepEqual(receivedArgs, { part: ["snippet", "statistics"], id: ["v1", "v2"] });
+  assert.deepEqual(receivedArgs, { part: ["snippet", "statistics", "contentDetails"], id: ["v1", "v2"] });
   assert.deepEqual(snapshots, [
-    { videoId: "v1", title: "Video One", publishedAt: "2026-01-01T00:00:00.000Z", viewCount: 100, likeCount: 10, commentCount: 2 },
-    { videoId: "v2", title: "Video Two", publishedAt: null, viewCount: null, likeCount: null, commentCount: null },
+    { videoId: "v1", title: "Video One", publishedAt: "2026-01-01T00:00:00.000Z", viewCount: 100, likeCount: 10, commentCount: 2, durationSeconds: 125, liveBroadcastContent: "none" },
+    { videoId: "v2", title: "Video Two", publishedAt: null, viewCount: null, likeCount: null, commentCount: null, durationSeconds: null, liveBroadcastContent: null },
   ]);
 });
 
@@ -780,9 +781,30 @@ test("getPublicVideoStatsBatch parses the documented batchGetStats response (sni
   const youtube = { context: { _options: { auth } } } as unknown as youtube_v3.Youtube;
   const result = await getPublicVideoStatsBatch(youtube, ["v1"]);
   assert.deepEqual(result, [
-    { videoId: "v1", title: "", publishedAt: "2026-09-02T00:00:00Z", viewCount: 1234, likeCount: 5, commentCount: 6 },
+    { videoId: "v1", title: "", publishedAt: "2026-09-02T00:00:00Z", viewCount: 1234, likeCount: 5, commentCount: 6, durationSeconds: 180 },
   ]);
   assert.equal(requested!.url, "https://www.googleapis.com/youtube/v3/videos:batchGetStats");
+  assert.equal(requested!.params.part, "id,snippet,statistics,contentDetails");
+});
+
+test("getPublicVideoStatsBatch: duration falls back to durationMillis (rounded to seconds), and is null -- never 0 -- when neither is usable", async () => {
+  const auth = {
+    async request() {
+      return {
+        data: {
+          items: [
+            { id: "a", statistics: {}, contentDetails: { durationMillis: "90500" } },
+            { id: "b", statistics: {}, contentDetails: {} },
+            { id: "c", statistics: {}, contentDetails: { duration: "PT0S", durationMillis: 0 } },
+            { id: "d", statistics: {} },
+          ],
+        },
+      };
+    },
+  };
+  const youtube = { context: { _options: { auth } } } as unknown as youtube_v3.Youtube;
+  const result = await getPublicVideoStatsBatch(youtube, ["a", "b", "c", "d"]);
+  assert.deepEqual(result.map((r) => r.durationSeconds), [91, null, null, null]);
 });
 
 // Progress callbacks (ADR 0015): optional, additive, never change what is requested or returned.

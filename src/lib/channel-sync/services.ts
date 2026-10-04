@@ -50,6 +50,7 @@ export type StoredVideoRecord = {
   commentCount: number | null;
   likeCount: number | null;
   durationSeconds: number | null;
+  liveBroadcastContent?: string | null;
   publishAt: string | null;
   lastSyncedAt: Date;
 };
@@ -110,6 +111,7 @@ type ServiceDependencies = {
         commentCount: number | null;
         likeCount: number | null;
         durationSeconds: number | null;
+        liveBroadcastContent?: string | null;
         publishAt: string | null;
       }>,
       syncedAt: Date
@@ -255,6 +257,7 @@ export function createChannelSyncServices(deps: ServiceDependencies) {
             commentCount: video.commentCount,
             likeCount: video.likeCount,
             durationSeconds: video.durationSeconds,
+            liveBroadcastContent: video.liveBroadcastContent,
             publishAt: video.publishAt,
           })),
           syncedAt

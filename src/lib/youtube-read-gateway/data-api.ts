@@ -444,6 +444,8 @@ export type VideoSyncMetadata = {
   commentCount: number | null;
   likeCount: number | null;
   durationSeconds: number | null;
+  /** `snippet.liveBroadcastContent` as returned by the sync read ("none" | "live" | "upcoming"); `null` when absent. */
+  liveBroadcastContent: string | null;
   publishAt: string | null;
 };
 
@@ -543,6 +545,8 @@ export async function getVideosMetadataContextBatch(
         likeCount: parseStatCount(item.statistics?.likeCount),
         // Phase 7 slice K (owner spec §10). Same "never fabricate" discipline as the stats above.
         durationSeconds: parseIso8601DurationToSeconds(item.contentDetails?.duration),
+        // Operator request 2026-10-04: already in the `snippet` part this read requests, no extra cost.
+        liveBroadcastContent: item.snippet.liveBroadcastContent ?? null,
         // Owner instruction, 2026-09-26: YouTube's own scheduled-publish time for a still-private
         // video (distinct from `snippet.publishedAt` above, which reflects when a PUBLIC video
         // actually went live). Already present in this same response -- `part: ["status", ...]`

@@ -59,6 +59,8 @@ export function createResearchExportCore() {
         viewCount: video.viewCount,
         likeCount: video.likeCount,
         commentCount: video.commentCount,
+        durationSeconds: video.durationSeconds,
+        liveBroadcastContent: video.liveBroadcastContent ?? null,
         lastSyncedAt: video.lastSyncedAt,
       }));
     },

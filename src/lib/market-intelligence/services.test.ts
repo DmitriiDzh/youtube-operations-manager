@@ -175,6 +175,8 @@ type VideoSnapshotRow = {
   commentCount: number | null;
   publishedAt: Date | null;
   title: string | null;
+  durationSeconds?: number | null;
+  liveBroadcastContent?: string | null;
   source: string;
   createdVia: string;
 };
@@ -333,6 +335,8 @@ function createFakeStore() {
       commentCount?: number | null;
       publishedAt?: Date | null;
       title?: string | null;
+      durationSeconds?: number | null;
+      liveBroadcastContent?: string | null;
       source: string;
       createdVia: string;
     }) {
@@ -350,6 +354,8 @@ function createFakeStore() {
         commentCount: input.commentCount ?? null,
         publishedAt: input.publishedAt ?? null,
         title: input.title ?? null,
+        durationSeconds: input.durationSeconds ?? null,
+        liveBroadcastContent: input.liveBroadcastContent ?? null,
         source: input.source,
         createdVia: input.createdVia,
       });
@@ -3624,6 +3630,37 @@ test("13.6: playlist + batchGetStats: 2 pool units, no videos.list; title/publis
   assert.equal(snap.title, "From playlist", "batchGetStats returns no title (documented shape) -- it comes from the playlist");
   assert.equal(snap.publishedAt?.toISOString(), "2026-09-20T00:00:00.000Z");
   assert.equal(snap.source, "youtube.videos.batchGetStats");
+});
+
+test("operator request 2026-10-04: collection stores the raw duration (batchGetStats) and leaves live state NULL there; the videos.list fallback stores both; absent -> NULL, never 0", async () => {
+  const now = new Date("2026-09-27T12:00:00.000Z");
+  const viaBatch = createFixture({
+    now,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    uploadsPlaylistVideoIds: ["v1", "v2"],
+    batchStats: [
+      { videoId: "v1", title: "", publishedAt: null, viewCount: 1, likeCount: null, commentCount: null, durationSeconds: 7200 },
+      { videoId: "v2", title: "", publishedAt: null, viewCount: 1, likeCount: null, commentCount: null },
+    ],
+  });
+  viaBatch.store.setQuotaBudget(100);
+  await viaBatch.services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await viaBatch.services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+  assert.deepEqual(viaBatch.store.videoSnapshots.map((v) => [v.videoId, v.durationSeconds, v.liveBroadcastContent]), [["v1", 7200, null], ["v2", null, null]]);
+
+  const viaList = createFixture({
+    now,
+    publicSnapshot: FULL_SNAPSHOT_WITH_VIDEO,
+    uploadsPlaylistVideoIds: ["v1"],
+    publicVideoSnapshots: [{ videoId: "v1", title: "V1", publishedAt: null, viewCount: 7, likeCount: null, commentCount: null, durationSeconds: 59, liveBroadcastContent: "none" }],
+  });
+  viaList.store.setQuotaBudget(100);
+  await viaList.services.addToWatchlist({ channelId: VALID_CHANNEL_ID, reason: "r" }, { createdVia: "web_ui" });
+  await viaList.services.runCollectionIfStale({ credentialRef: { userId: "u1" } });
+  assert.deepEqual(viaList.store.videoSnapshots.map((v) => [v.durationSeconds, v.liveBroadcastContent]), [[59, "none"]]);
+  const context = await viaList.services.getWatchlistEntryContext({ channelId: VALID_CHANNEL_ID });
+  assert.equal(context.videoSnapshots[0].durationSeconds, 59);
+  assert.equal(context.videoSnapshots[0].liveBroadcastContent, "none");
 });
 
 test("13.6: if batchGetStats fails, statistics come from videos.list (1 more unit) -- nothing is lost", async () => {
