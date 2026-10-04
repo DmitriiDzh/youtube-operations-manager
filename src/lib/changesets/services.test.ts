@@ -65,6 +65,8 @@ function createFixture() {
   const changesByChangeSet = new Map<string, StoredChangeRecord[]>();
   let idCounter = 0;
   const crdtConflictedChangeIds = new Set<string>();
+  // Simulates a read side (SQL projection) that is missing some stored changes.
+  const hiddenOnRead = new Set<string>();
 
   const channelStore = {
     async getChannel(channelId: string) {
@@ -110,7 +112,7 @@ function createFixture() {
       return changeSets.get(changeSetId) ?? null;
     },
     async listChangesByChangeSet(changeSetId: string) {
-      return changesByChangeSet.get(changeSetId) ?? [];
+      return (changesByChangeSet.get(changeSetId) ?? []).filter((c) => !hiddenOnRead.has(c.id));
     },
     async updateChangeSetStatus(changeSetId: string, status: StoredChangeSetRecord["status"]) {
       const cs = changeSets.get(changeSetId);
@@ -154,6 +156,9 @@ function createFixture() {
     },
     setChannel: (next: StoredChannelRecord) => {
       channel = next;
+    },
+    hideChangesOnRead: (ids: string[]) => {
+      for (const id of ids) hiddenOnRead.add(id);
     },
     setCrdtConflictedChangeIds: (ids: string[]) => {
       crdtConflictedChangeIds.clear();
@@ -563,4 +568,46 @@ test("a different source, or a new deletion set, never revokes anything", async 
 
   const after = await services.getChangeSet({ channelId: "UC_TEST", changeSetId: old.id });
   assert.equal(after.changes.find((c) => c.id === "o1")?.approvalStatus, "pending");
+});
+
+test("a Change Set that reads back smaller than what was submitted is never reported as created: change_set_incomplete names what is missing (2026-10-04 incident: 106 sent, 75 visible, no error)", async () => {
+  const { services, hideChangesOnRead } = createFixture();
+  hideChangesOnRead(["n2", "n4"]);
+  await assert.rejects(
+    () =>
+      services.createChangeSetFromProposals({
+        channelId: "UC_TEST",
+        source: "ai_localization",
+        changes: [
+          proposed("n1", "v1", "es", "title", "uno"),
+          proposed("n2", "v1", "es", "description", "dos"),
+          proposed("n3", "v1", "ja", "title", "tres"),
+          proposed("n4", "v1", "ja", "description", "cuatro"),
+        ],
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof DomainError);
+      assert.equal(error.code, "change_set_incomplete");
+      const details = error.details as { expectedChanges: number; storedChanges: number; missingTotal: number; missing: unknown };
+      assert.equal(details.expectedChanges, 4);
+      assert.equal(details.storedChanges, 2);
+      assert.equal(details.missingTotal, 2);
+      assert.deepEqual(details.missing, [
+        { videoId: "v1", language: "es", field: "description" },
+        { videoId: "v1", language: "ja", field: "description" },
+      ]);
+      return true;
+    }
+  );
+});
+
+test("a complete Change Set still reports success with the true counts", async () => {
+  const { services } = createFixture();
+  const created = await services.createChangeSetFromProposals({
+    channelId: "UC_TEST",
+    source: "ai_localization",
+    changes: [proposed("n1", "v1", "es", "title", "uno"), proposed("n2", "v1", "es", "description", "dos")],
+  });
+  assert.equal(created.totalChanges, 2);
+  assert.equal(created.pendingCount, 2);
 });

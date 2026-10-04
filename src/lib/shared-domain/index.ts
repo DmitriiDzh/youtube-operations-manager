@@ -111,6 +111,8 @@ export type DomainErrorCode =
   // Research export (docs/roadmap/plans/RESEARCH_EXPORT_PLAN.md) -- NOT_CONFIGURED: the channel has no workspace folder on this
   // device (the operator sets it in Settings). UNAVAILABLE: the folder (or its exports/ subfolder) failed re-validation at export
   // time. WRITE_FAILED: a file could not be written; nothing from that call is left behind.
+  // A Change Set was created but not every one of its changes could be read back (see changesets/services.ts persistChangeSet).
+  | "change_set_incomplete"
   | "RESEARCH_EXPORT_WORKSPACE_NOT_CONFIGURED"
   | "RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE"
   | "RESEARCH_EXPORT_WRITE_FAILED"

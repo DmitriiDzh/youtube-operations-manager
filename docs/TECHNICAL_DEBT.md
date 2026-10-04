@@ -1711,3 +1711,10 @@ No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a d
 - **Gate(s):** none blocking the merge; (3) is a policy question for the owner.
 - **Approval required from:** the project owner for (3).
 - **Status:** OPEN, tracked.
+
+## RISK-99 — A stray draft record made the SQL read-projection stop halfway, so Change Sets showed only part of their changes — FIXED on `fix/change-draft-projection-isolation`, 2026-10-04
+
+- **What happened:** an agent submitted 53 Spanish proposals (106 changes) through `ai_localization_create_change_set` and saw 75, then 80, with no error. The Automerge draft document (source of truth) held all 106; `projectToSql` stopped at the first row the database refused — a stray test record «c-fake-peer-change» (change set `cs-fake-peer`, from an earlier device-sync lineage test) that exists in the Tropico Jazz document — and silently left every later row unprojected. Which rows came after depended on map order, hence the «random» loss.
+- **Fix:** each row is projected on its own (a refused row is logged with its id and the rest continue); `persistChangeSet` now refuses to report success when the Change Set reads back smaller than submitted (`change_set_incomplete`, names the missing `(videoId, language, field)`), so the agent gets the real counts or an explicit error. The two affected Change Sets heal on the next save of that channel's document (the whole document is re-projected on every save).
+- **Open:** the stray `cs-fake-peer` record is still in that channel's draft document and will keep logging one refused row per save until it is removed (an operator-approved cleanup of real data, not done here).
+- **Gate(s):** none. **Status:** fixed in code, pending merge.
