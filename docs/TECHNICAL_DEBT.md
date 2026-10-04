@@ -1725,3 +1725,11 @@ No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a d
 - **Why it matters later:** only file size and load time; no correctness issue. Compacting means rebuilding the document from its current snapshot, which changes its genesis and therefore needs a coordinated re-baseline across synced devices (the discard/adopt-peer logic in `automerge-core` already keys on the genesis hash).
 - **Trigger to act:** a channel draft file above ~5 MB, or a noticeable load delay. Owner decision 2026-10-04: record it, do it later as its own task.
 - **Gate(s):** none. **Status:** open, deferred.
+
+## RISK-101 — Retention can delete a change set that an experiment still points at — OPEN, 2026-10-04
+
+- **What:** `experiments.changeSetId` is a plain TEXT reference (no FK, by design, see ARCHITECTURE decision-engine slice 5). The BL-125 sweep deletes settled change sets without looking at experiments, so an experiment attached to a purged set keeps a dangling id.
+- **Effect:** starting such an experiment fails closed with the normal "change set not found" error; nothing is written to YouTube and nothing else breaks.
+- **Possible fix:** have the planner keep a set while an experiment in a non-final state references it. Not done in slice 1 (no experiment facts in the retention module yet); decide with the owner whether it matters in practice.
+- **Gate(s):** none. **Status:** open.
+
