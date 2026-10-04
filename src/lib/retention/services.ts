@@ -28,7 +28,7 @@ const IN_FLIGHT_ROW_STATUSES = new Set(["PENDING", "AWAITING_EXECUTION", "APPLYI
 
 export class ManualDeleteRefusedError extends Error {
   constructor(
-    readonly code: "change_set_not_found" | "change_set_in_use",
+    readonly code: "change_set_not_found" | "change_set_in_use" | "change_set_delete_failed",
     message: string
   ) {
     super(message);
@@ -46,17 +46,29 @@ export function createRetentionCore(deps: RetentionDependencies) {
      * the deletion reaches the other devices exactly like an automatic one.
      */
     async deleteChangeSet(input: { channelId: string; changeSetId: string }): Promise<{ changeSets: number; changes: number; provenance: number }> {
-      const [changeSets, ledgerRows] = await Promise.all([deps.source.listChangeSets(input.channelId), deps.source.listLedgerRows(input.channelId)]);
+      const changeSets = await deps.source.listChangeSets(input.channelId);
       const set = changeSets.find((candidate) => candidate.id === input.changeSetId);
       if (!set) throw new ManualDeleteRefusedError("change_set_not_found", "Change set not found in this channel.");
       const changeIds = new Set(set.changes.map((change) => change.id));
-      const busy = ledgerRows.some(
-        (row) => !row.batchDryRun && IN_FLIGHT_ROW_STATUSES.has(row.status) && row.changeIds.some((changeId) => changeIds.has(changeId))
-      );
-      if (busy) {
-        throw new ManualDeleteRefusedError("change_set_in_use", "A write that includes this change set is running or unresolved. Wait for it to finish (or resolve it in Batches), then delete.");
-      }
+      // Checked twice: a send that creates its batch between the first check and the purge would otherwise leave a live batch pointing at deleted
+      // changes (it would fail closed with "change not found", but confusingly). Only this device's ledger is visible here; another device's
+      // unfinished write on the same change fails closed the same way after the next merge.
+      const assertNoWriteInFlight = async () => {
+        const ledgerRows = await deps.source.listLedgerRows(input.channelId);
+        const busy = ledgerRows.some(
+          (row) => !row.batchDryRun && IN_FLIGHT_ROW_STATUSES.has(row.status) && row.changeIds.some((changeId) => changeIds.has(changeId))
+        );
+        if (busy) {
+          throw new ManualDeleteRefusedError("change_set_in_use", "A write that includes this change set is running or unresolved. Wait for it to finish (or resolve it in Batches), then delete.");
+        }
+      };
+      await assertNoWriteInFlight();
+      await assertNoWriteInFlight();
       const purged = await deps.drafts.purgeChangeSets({ channelId: input.channelId, changeSetIds: [set.id] });
+      // The purge reports what it really removed (document AND SQL rows); anything else must not look like success.
+      if (!purged.purgedChangeSetIds.includes(set.id)) {
+        throw new ManualDeleteRefusedError("change_set_delete_failed", "The change set could not be fully deleted. Try again; if it persists, check the server log.");
+      }
       return { changeSets: purged.changeSets, changes: purged.changes, provenance: purged.provenance };
     },
 

@@ -77,7 +77,7 @@ export async function DELETE(
     return NextResponse.json(result);
   } catch (error) {
     if (error instanceof ManualDeleteRefusedError) {
-      return NextResponse.json({ error: error.code, message: error.message }, { status: error.code === "change_set_not_found" ? 404 : 409 });
+      return NextResponse.json({ error: error.code, message: error.message }, { status: error.code === "change_set_not_found" ? 404 : error.code === "change_set_in_use" ? 409 : 500 });
     }
     if (error instanceof DomainError) {
       return NextResponse.json(

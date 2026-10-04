@@ -194,7 +194,7 @@ export function ChangeSetReview({
         <div className="flex gap-2">
           <button
             onClick={() => setConfirmDelete(true)}
-            disabled={deleting}
+            disabled={deleting || bulkBusy || busyChangeId !== null}
             className="rounded-lg border border-red-900 px-3 py-1.5 text-xs text-red-400 hover:border-red-700 hover:text-red-300 disabled:opacity-50"
           >
             Delete set

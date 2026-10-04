@@ -256,3 +256,37 @@ test("manual delete of an id that is not in this channel is a named 'not found' 
   );
   assert.ok(await getStoredChangeSet("m-keep"));
 });
+
+test("manual delete is also refused for rows in APPLYING / UNKNOWN (outcome not known yet)", async () => {
+  await upsertChannel({ channelId: CHANNEL, title: "Test", thumbnailUrl: null, uploadsPlaylistId: "UU_ret", connectedUserId: null });
+  const drafts = memoryDrafts();
+  await addSet(drafts, "m-applying", ["approved"], "approved");
+  await createBatchWithLedger({ id: "b-applying", channelId: CHANNEL, concurrency: 1, dryRun: false, ledgerRows: [{ id: "b-applying-r0", videoId: "v-m-applying-0", changeIds: ["m-applying-c0"] }] });
+  await claimBatchExecution("b-applying", "run-b-applying");
+  await transitionLedgerRowStatus({ ledgerRowId: "b-applying-r0", from: ["PENDING"], to: "AWAITING_EXECUTION" });
+  await beginAttemptIntent({ id: "b-applying-a0", ledgerRowId: "b-applying-r0", attemptNumber: 1, payloadSnapshot: { x: 1 } });
+  await transitionLedgerRowStatus({ ledgerRowId: "b-applying-r0", from: ["AWAITING_EXECUTION"], to: "APPLYING" });
+  await assert.rejects(core(drafts).deleteChangeSet({ channelId: CHANNEL, changeSetId: "m-applying" }), (e: unknown) => (e as { code?: string }).code === "change_set_in_use");
+  assert.ok(await getStoredChangeSet("m-applying"));
+});
+
+test("manual delete: a set whose write already finished (SUCCESS) can be deleted; the finished batch stays for the write-log retention", async () => {
+  await upsertChannel({ channelId: CHANNEL, title: "Test", thumbnailUrl: null, uploadsPlaylistId: "UU_ret", connectedUserId: null });
+  const drafts = memoryDrafts();
+  await addSet(drafts, "m-done", ["approved"], "approved");
+  await addBatch("b-done", [{ changeIds: ["m-done-c0"], status: "SUCCESS" }]);
+  await core(drafts).deleteChangeSet({ channelId: CHANNEL, changeSetId: "m-done" });
+  assert.equal(await getStoredChangeSet("m-done"), null);
+  assert.ok(await getStoredBatch("b-done"));
+});
+
+test("manual delete reports a purge that did not remove the set instead of pretending success", async () => {
+  await upsertChannel({ channelId: CHANNEL, title: "Test", thumbnailUrl: null, uploadsPlaylistId: "UU_ret", connectedUserId: null });
+  const drafts = memoryDrafts();
+  await addSet(drafts, "m-stuck", ["pending"], "in_review");
+  const failing = createRetentionCore({
+    ...createSqlRetentionSource(),
+    drafts: { purgeChangeSets: async () => ({ changeSets: 0, changes: 0, provenance: 0, purgedChangeSetIds: [] }) },
+  });
+  await assert.rejects(failing.deleteChangeSet({ channelId: CHANNEL, changeSetId: "m-stuck" }), (e: unknown) => (e as { code?: string }).code === "change_set_delete_failed");
+});
