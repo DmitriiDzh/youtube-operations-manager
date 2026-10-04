@@ -1455,3 +1455,17 @@ test("local copy: a failure updating it never turns a confirmed write into a fai
   assert.equal(summary.results[0].status, "SUCCESS");
   assert.ok(harness.auditEvents.some((e) => JSON.stringify(e.detail).includes("localMirrorUpdateFailed")));
 });
+
+test("local copy: a read-back that still shows the pre-write state (lag) or something else never reaches the local copy", async () => {
+  for (const readBack of [PRE_SEND_BASELINE, { snippet: { title: "T", description: "D", defaultLanguage: "en" }, localizations: { es: { title: "Somebody else", description: "" } } }]) {
+    const applied: unknown[] = [];
+    const harness = createHarness({
+      localMirror: { applyConfirmedWrite: async (input) => (applied.push(input), true) },
+      freshSequenceByVideoId: { v1: [PRE_SEND_BASELINE, PRE_SEND_BASELINE, readBack] },
+    });
+    const batch = await createApprovedBatch(harness, { channelId: "UC_TEST", dryRun: false, selections: [{ videoId: "v1", changeIds: ["c1"] }] });
+    const summary = await harness.services.executeBatch({ batchId: batch.id, credentialRef: { userId: "user-1" }, executor: scriptedExecutor([{ outcome: "SUCCESS" }]) });
+    assert.notEqual(summary.results[0].status, "SUCCESS");
+    assert.deepEqual(applied, []);
+  }
+});
