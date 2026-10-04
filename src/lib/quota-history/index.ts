@@ -23,4 +23,4 @@ export function createQuotaHistoryCore() {
 }
 
 export type QuotaHistoryCore = ReturnType<typeof createQuotaHistoryCore>;
-export type { QuotaHistoryEntryView, QuotaHistoryResult, QuotaHistoryService } from "./services";
+export type { QuotaHistoryEntryView, QuotaHistoryResult, QuotaHistoryService, QuotaWindow } from "./services";

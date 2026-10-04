@@ -38,6 +38,7 @@ import {
   setOperationsWorkspacePath,
 } from "@/lib/db";
 import { validateOperationsWorkspacePath } from "@/lib/operations-instructions";
+import { createQuotaHistoryCore } from "@/lib/quota-history";
 import { buildSettingsSnapshot } from "./settings-snapshot";
 
 // A thin passthrough to the market-intelligence module's own quota-budget actions, never a direct
@@ -116,6 +117,25 @@ const marketIntelligenceCore = createMarketIntelligenceCore();
  * value, but a `GET` with a real side effect is worth stating plainly rather than discovering
  * later while debugging something unrelated.
  */
+/**
+ * Google's quota figures plus, for the Data and Analytics bars, `ledgerUnits`: what every device's own log recorded in the same
+ * window. Google's metric lags by minutes, so the bar draws this as a dimmer layer under Google's real figure (owner idea,
+ * 2026-10-04). A log problem only drops the extra layer, never the Google figure.
+ */
+async function cloudQuotaStatusWithLedger() {
+  const status = await createCloudQuotasCore().getQuotaStatus();
+  const history = createQuotaHistoryCore();
+  const withLedger = async <T extends { window: "since_reset" | "rolling_24h" } | null>(entry: T, service: "data" | "analytics") => {
+    if (!entry) return entry;
+    try {
+      return { ...entry, ledgerUnits: await history.getLedgerUnits({ service, window: entry.window }) };
+    } catch {
+      return entry;
+    }
+  };
+  return { ...status, dataApi: await withLedger(status.dataApi, "data"), analytics: await withLedger(status.analytics, "analytics") };
+}
+
 async function getSettingsSnapshot() {
   return buildSettingsSnapshot({
     liveWritesEnabled: () => getLiveWritesEnabled(),
@@ -127,7 +147,7 @@ async function getSettingsSnapshot() {
     wikipediaReadsEnabled: () => getWikipediaReadsEnabled(),
     reportingReadsEnabled: () => getReportingReadsEnabled(),
     gatewayTraffic: () => getGatewayTrafficLast24h(),
-    cloudQuotaStatus: () => createCloudQuotasCore().getQuotaStatus(),
+    cloudQuotaStatus: () => cloudQuotaStatusWithLedger(),
     operationsWorkspacePath: () => getOperationsWorkspacePath(),
     marketIntelligenceDailyQuotaBudgetUnits: () => marketIntelligenceCore.getDailyQuotaBudgetUnits(),
     operatorCliEnabled: () => getOperatorCliEnabled(),

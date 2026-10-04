@@ -11,6 +11,7 @@ export function ProgressBar({
   label,
   color = "red",
   size = "sm",
+  underlayValue,
 }: {
   value: number;
   max: number;
@@ -26,16 +27,27 @@ export function ProgressBar({
    * сделаем крупнее") -- taller track, larger label text. `"sm"` (default) is unchanged from
    * before that instruction. */
   size?: "sm" | "lg";
+  /** A second, dimmer layer drawn UNDER the main bar (owner idea, 2026-10-04): our own estimate that the real figure
+   * (`value`) catches up with. Shown only when given; the main bar always sits on top of it. */
+  underlayValue?: number;
 }) {
   const pct = max > 0 ? Math.min(100, Math.max(0, (value / max) * 100)) : 0;
+  const underlayPct = underlayValue === undefined || max <= 0 ? null : Math.min(100, Math.max(0, (underlayValue / max) * 100));
   const barColorClass = color === "indigo" ? "bg-indigo-600" : "bg-red-600";
   const trackHeightClass = size === "lg" ? "h-2.5" : "h-1.5";
   const labelClass = size === "lg" ? "text-sm text-zinc-300" : "text-xs text-zinc-500";
   return (
     <div className="mt-2">
       {label && <p className={`mb-1 ${labelClass}`}>{label}</p>}
-      <div className={`${trackHeightClass} w-full overflow-hidden rounded-full bg-zinc-800`}>
-        <div className={`h-full rounded-full ${barColorClass} transition-all`} style={{ width: `${pct}%` }} />
+      <div className={`relative ${trackHeightClass} w-full overflow-hidden rounded-full bg-zinc-800`}>
+        {underlayPct !== null && (
+          <div
+            data-testid="progress-underlay"
+            className="absolute inset-y-0 left-0 rounded-full bg-red-900/60 transition-all"
+            style={{ width: `${underlayPct}%` }}
+          />
+        )}
+        <div className={`absolute inset-y-0 left-0 rounded-full ${barColorClass} transition-all`} style={{ width: `${pct}%` }} />
       </div>
     </div>
   );

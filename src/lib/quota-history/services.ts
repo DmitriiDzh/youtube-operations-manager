@@ -34,11 +34,31 @@ export type QuotaHistoryDependencies = {
   clock: { now(): Date };
 };
 
+/** The two quota windows Google's figure can use (see `ServiceQuotaStatus.window`). */
+export type QuotaWindow = "since_reset" | "rolling_24h";
+
+export function quotaWindowStartSeconds(window: QuotaWindow, now: Date): number {
+  return window === "since_reset" ? Math.floor(startOfYoutubeQuotaDay(now).getTime() / 1000) : Math.floor(now.getTime() / 1000) - 86_400;
+}
+
 export const DEFAULT_HISTORY_DAYS = 14;
 export const MAX_HISTORY_DAYS = 45;
 
 export function createQuotaHistoryServices(deps: QuotaHistoryDependencies) {
   return {
+    /**
+     * Units every device's log recorded inside one quota window (this device plus the shared peer files): the figure the
+     * Settings bar draws as its own layer under Google's, which lags by minutes. Never throws on a peer problem.
+     */
+    async getLedgerUnits(args: { service: QuotaHistoryService; window: QuotaWindow }): Promise<number> {
+      const sinceSeconds = quotaWindowStartSeconds(args.window, deps.clock.now());
+      const [local, peers] = await Promise.all([
+        deps.listCalls({ sinceSeconds, service: args.service }),
+        deps.listPeerCalls({ sinceSeconds, service: args.service }),
+      ]);
+      return [...local, ...peers].filter((c) => c.occurredAt >= sinceSeconds).reduce((sum, c) => sum + (c.units ?? 0), 0);
+    },
+
     async getQuotaHistory(args: { service: QuotaHistoryService; days?: number }): Promise<QuotaHistoryResult> {
       const days = Math.min(Math.max(Math.floor(args.days ?? DEFAULT_HISTORY_DAYS), 1), MAX_HISTORY_DAYS);
       const now = deps.clock.now();
@@ -61,11 +81,7 @@ export function createQuotaHistoryServices(deps: QuotaHistoryDependencies) {
 
       // The local figure must cover exactly the window Google's `used` covers, or the difference means nothing.
       const status = cloudQuota.status;
-      const windowStartSeconds = !status
-        ? null
-        : status.window === "since_reset"
-          ? Math.floor(startOfYoutubeQuotaDay(now).getTime() / 1000)
-          : Math.floor(now.getTime() / 1000) - 86_400;
+      const windowStartSeconds = !status ? null : quotaWindowStartSeconds(status.window, now);
       const unitsInWindow = (rows: readonly QuotaCallLike[]) =>
         windowStartSeconds === null ? 0 : rows.filter((c) => c.occurredAt >= windowStartSeconds).reduce((sum, c) => sum + (c.units ?? 0), 0);
       const localUnits = unitsInWindow(localCalls);

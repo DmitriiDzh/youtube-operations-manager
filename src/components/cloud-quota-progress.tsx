@@ -10,6 +10,8 @@ export type ServiceQuotaStatusView = {
   usedLast24h: number;
   window?: "since_reset" | "rolling_24h";
   resetsAt?: string | null;
+  /** Units every device's own log recorded in the same window; drawn as the dimmer layer under Google's lagging figure. */
+  ledgerUnits?: number;
 } | null;
 
 /**
@@ -40,8 +42,14 @@ export function CloudQuotaProgress({
           value={status.usedLast24h}
           max={status.limit}
           size={size}
+          underlayValue={status.ledgerUnits}
           label={`Google Cloud quota (${sinceReset ? "since reset" : "24h"}): ${status.usedLast24h.toLocaleString()} / ${status.limit.toLocaleString()}`}
         />
+        {status.ledgerUnits !== undefined && (
+          <p className="mt-0.5 text-[11px] text-zinc-500">
+            Dim layer: our log of all devices, {status.ledgerUnits.toLocaleString()} units. Google&apos;s figure lags by minutes and catches up.
+          </p>
+        )}
         {status.resetsAt && (
           <p className="mt-0.5 text-[11px] text-zinc-500">Resets <QuotaResetTime iso={status.resetsAt} /> (midnight Pacific Time)</p>
         )}
