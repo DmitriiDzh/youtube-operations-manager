@@ -39,6 +39,7 @@ export function createBatchCore() {
     youtubeApi: createBatchYoutubeApiAdapter(),
     channelLanguageBaseline: {
       getExpectedDefaultLanguage: async (channelId) => (await getChannelExpectedLanguages(channelId)).defaultLanguage,
+      getExpectedDefaultAudioLanguage: async (channelId) => (await getChannelExpectedLanguages(channelId)).defaultAudioLanguage,
     },
     backup: createBackupCore(),
     audit: createAuditCore(),

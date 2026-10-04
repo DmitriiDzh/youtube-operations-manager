@@ -107,7 +107,7 @@ export type SafeLocalizationsPayload = {
    * specifying the default language", live Japan Music batch 2026-10-02: 25/41 rejected when
    * the snippet was omitted). The snippet part replaces the stored snippet wholesale, so it is
    * the full documented-writable set (`pickWritableSnippetFields`) from the FRESH fetch --
-   * `defaultAudioLanguage` is not settable and is not sent.
+   * `defaultAudioLanguage` is sent only when the channel baseline sets one.
    */
   snippet: Record<string, unknown>;
   localizations: Record<string, FreshVideoLocale>;
@@ -125,7 +125,7 @@ export { WRITABLE_SNIPPET_FIELDS, pickWritableSnippetFields } from "@/lib/youtub
  * AC-MERGE-01 (preserve untouched locales byte-for-byte), AC-MERGE-02 (built from the
  * FRESH fetch passed in, never a stale local mirror -- enforced by this function only
  * ever reading its `fresh` parameter, never touching any cache itself), AC-MERGE-03
- * (unrelated snippet fields like categoryId/tags/defaultAudioLanguage survive via the
+ * (unrelated snippet fields like categoryId/tags survive via the
  * explicit whitelist copy below), AC-MERGE-04 (caller's responsibility: only pass
  * already-approved, valid, non-conflicting changes in -- this function applies whatever
  * it is given), AC-MULTI-01 (multiple changes to one video merge into a single payload,
@@ -133,9 +133,12 @@ export { WRITABLE_SNIPPET_FIELDS, pickWritableSnippetFields } from "@/lib/youtub
  */
 export function buildSafeLocalizationsPayload(
   fresh: FreshVideoContext,
-  changes: PendingChange[]
+  changes: PendingChange[],
+  options: { defaultAudioLanguage?: string | null } = {}
 ): SafeLocalizationsPayload {
   const snippet: Record<string, unknown> = pickWritableSnippetFields(fresh.snippet);
+  // Sent only when the caller passes the channel baseline's value -- never the video's own, which would be echoed blindly (e.g. `zxx`).
+  if (options.defaultAudioLanguage) snippet.defaultAudioLanguage = options.defaultAudioLanguage;
 
   // The video's default language is represented by `snippet.title`/`description`, never by
   // a `localizations` entry -- if `fresh.localizations` defensively contains a stale entry

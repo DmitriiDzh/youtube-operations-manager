@@ -1732,3 +1732,7 @@ No risk in this register is marked RESOLVED as of Phase 4.5 — Phase 4.5 is a d
 - **Effect:** starting such an experiment fails closed with the normal "change set not found" error; nothing is written to YouTube and nothing else breaks.
 - **Possible fix:** have the planner keep a set while an experiment in a non-final state references it. Not done in slice 1 (no experiment facts in the retention module yet); decide with the owner whether it matters in practice.
 - **Gate(s):** none. **Status:** open.
+
+## RISK-102 — Single-item `video-metadata` apply can still reset `defaultAudioLanguage` — OPEN, 2026-10-04
+
+Batches now send the channel baseline `defaultAudioLanguage` (a left-out snippet field is reset by `videos.update`; Tropico batch of 2026-10-04 turned 53 videos to `en-US`). The single-item apply path (`src/lib/video-metadata/services.ts`, `removeReadOnlySnippetFields`) still sends a snippet without it and has the same exposure. Not changed in this slice (separate write surface, no owner decision yet); apply the same baseline rule there before relying on it for videos whose audio language matters.

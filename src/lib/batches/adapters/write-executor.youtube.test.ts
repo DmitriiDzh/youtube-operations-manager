@@ -175,6 +175,21 @@ test("performYoutubeWrite: RISK-11 defense-in-depth -- read-only snippet fields 
   assert.equal(sent.requestBody.snippet.title, preparedPayload.snippet.title);
 });
 
+test("performYoutubeWrite: the channel baseline's defaultAudioLanguage in the payload reaches YouTube (a snippet field left out is reset by videos.update)", async () => {
+  const calls: unknown[] = [];
+  const client: MinimalYoutubeWriteClient = {
+    videos: {
+      update: (async (params: unknown) => {
+        calls.push(params);
+        return { data: {} };
+      }) as MinimalYoutubeWriteClient["videos"]["update"],
+    },
+  };
+  await performYoutubeWrite(client, { ...preparedPayload, snippet: { ...preparedPayload.snippet, defaultAudioLanguage: "en" } });
+  const sent = calls[0] as { requestBody: { snippet: Record<string, unknown> } };
+  assert.equal(sent.requestBody.snippet.defaultAudioLanguage, "en");
+});
+
 test("performYoutubeWrite: a thrown googleapis error is classified, not propagated raw", async () => {
   const client: MinimalYoutubeWriteClient = {
     videos: {
