@@ -191,6 +191,14 @@ export function MarketResearchPanel() {
   }, []);
 
   function handleSelectChannel(channelId: string) {
+    if (selectedChannelId === channelId) {
+      // Clicking the open channel collapses it again.
+      setSelectedChannelId(null);
+      setExpandedVideoId(null);
+      setVideoHistory([]);
+      setVideoHistoryError(null);
+      return;
+    }
     setSelectedChannelId(channelId);
     setExpandedVideoId(null);
     setVideoHistory([]);

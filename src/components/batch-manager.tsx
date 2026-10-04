@@ -411,7 +411,14 @@ export function BatchManager({
           {changeSets.map((cs) => (
             <button
               key={cs.id}
-              onClick={() => openChangeSet(cs.id)}
+              onClick={() => {
+                if (selectedChangeSetId === cs.id) {
+                  setSelectedChangeSetId(null);
+                  setSelectedChangeIds(new Set());
+                  return;
+                }
+                void openChangeSet(cs.id);
+              }}
               className={`rounded-lg border px-3 py-1.5 text-xs ${
                 selectedChangeSetId === cs.id ? "border-zinc-400 bg-zinc-800 text-white" : "border-zinc-700 text-zinc-400 hover:border-zinc-500"
               }`}
@@ -491,7 +498,14 @@ export function BatchManager({
           {batches.map((b) => (
             <button
               key={b.id}
-              onClick={() => openBatch(b.id)}
+              onClick={() => {
+                if (selectedBatchId === b.id) {
+                  setSelectedBatchId(null);
+                  setLedgerRows([]);
+                  return;
+                }
+                void openBatch(b.id);
+              }}
               className={`block w-full rounded-lg border px-3 py-2 text-left text-xs ${
                 selectedBatchId === b.id ? "border-zinc-400 bg-zinc-800" : "border-zinc-800 hover:border-zinc-600"
               }`}
