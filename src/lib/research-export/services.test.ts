@@ -80,11 +80,11 @@ async function setup(overrides: Partial<ResearchExportDeps> = {}) {
   return { root, workspace, ledger, deleted, contexts, services: createResearchExportServices(deps) };
 }
 
-test("AC-RE-1 (the agent's retest): one watchlist channel with 1 channel snapshot and 50 video snapshots -> row counts equal the read tool's, files sit in <workspace>/99 Data Inbox", async () => {
+test("AC-RE-1 (the agent's retest): one watchlist channel with 1 channel snapshot and 50 video snapshots -> row counts equal the read tool's, files sit in <workspace>/99 Data Exchange/From YTM", async () => {
   const { workspace, services } = await setup();
   const result = await services.exportResearchData({ channelId: "UCown", researchChannelIds: ["UCneiro"] });
   const real = await realpath(workspace);
-  assert.equal(result.exportsDir, path.join(real, "99 Data Inbox")); // fixed folder name, owner decision 2026-10-04 (was "exports")
+  assert.equal(result.exportsDir, path.join(real, "99 Data Exchange", "From YTM")); // fixed folder name, owner decision 2026-10-04 (was "exports")
   const byDataset = Object.fromEntries(result.files.map((f) => [f.dataset, f]));
   assert.equal(byDataset.research_channel_snapshots.rows, 1);
   assert.equal(byDataset.research_video_snapshots.rows, 50);
@@ -161,7 +161,7 @@ test("AC-RE-7: a request naming a channel the caller cannot see fails before ANY
     (e: unknown) => e instanceof DomainError && e.code === "RESEARCH_CHANNEL_NOT_AVAILABLE"
   );
   assert.equal(ledger.length, 0);
-  assert.equal((await readdir(workspace)).includes("99 Data Inbox") ? (await readdir(path.join(workspace, "99 Data Inbox"))).length : 0, 0);
+  assert.equal((await readdir(workspace)).includes("99 Data Exchange") ? (await readdir(path.join(workspace, "99 Data Exchange", "From YTM")).catch(() => [])).length : 0, 0);
 });
 
 test("AC-RE-8: with no ids given, only the channels the caller may see (deps' narrowed list) are exported", async () => {
@@ -175,11 +175,11 @@ test("AC-RE-8: with no ids given, only the channels the caller may see (deps' na
   assert.ok(!text.includes("UCneiro"));
 });
 
-test("AC-RE-9: a 99 Data Inbox folder that is a symlink out of the workspace is refused and nothing lands outside", async () => {
+test("AC-RE-9: a 99 Data Exchange/From YTM folder that is a symlink out of the workspace is refused and nothing lands outside", async () => {
   const { services, root, workspace } = await setup();
   const outside = path.join(root, "outside");
   await mkdir(outside);
-  await symlink(outside, path.join(workspace, "99 Data Inbox"));
+  await symlink(outside, path.join(workspace, "99 Data Exchange"));
   await assert.rejects(services.exportResearchData({ channelId: "UCown" }), (e: unknown) => e instanceof DomainError && e.code === "RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE");
   assert.deepEqual(await readdir(outside), []);
 });
@@ -197,7 +197,7 @@ test("AC-RE-10: a write failure part-way leaves no file of that call behind; eve
     },
   });
   await assert.rejects(services.exportResearchData({ channelId: "UCown" }), (e: unknown) => e instanceof DomainError && e.code === "RESEARCH_EXPORT_WRITE_FAILED");
-  assert.deepEqual(await readdir(path.join(workspace, "99 Data Inbox")), []);
+  assert.deepEqual(await readdir(path.join(workspace, "99 Data Exchange", "From YTM")), []);
   assert.equal(deleted.length, ledger.length);
 });
 
@@ -298,7 +298,7 @@ test("AC-RE-17 (review): if recording in the ledger fails, NOTHING has been writ
     },
   });
   await assert.rejects(services.exportResearchData({ channelId: "UCown" }), /database is locked/);
-  const dir = path.join(workspace, "99 Data Inbox");
+  const dir = path.join(workspace, "99 Data Exchange", "From YTM");
   assert.deepEqual(await readdir(dir).catch(() => []), []);
 });
 
@@ -323,24 +323,25 @@ test("AC-RE-20 (review): a record whose folder is no longer the recorded real fo
   assert.ok((await lstat(result.files[0].path)).isFile());
 });
 
-test("AC-RE-21 (owner exception 2026-10-04): the first export creates exactly <workspace>/99 Data Inbox and writes nowhere else in the workspace", async () => {
+test("AC-RE-21 (owner exception 2026-10-04): the first export creates exactly <workspace>/99 Data Exchange/From YTM and writes nowhere else in the workspace", async () => {
   const { services, workspace } = await setup();
   await writeFile(path.join(workspace, "project-notes.md"), "mine");
   await mkdir(path.join(workspace, "03 Assets"));
   const before = (await readdir(workspace)).sort();
   const result = await services.exportResearchData({ channelId: "UCown", researchChannelIds: ["UCneiro"] });
-  assert.equal(path.basename(result.exportsDir), "99 Data Inbox");
-  assert.equal(path.dirname(result.exportsDir), await realpath(workspace));
-  assert.deepEqual((await readdir(workspace)).sort(), [...before, "99 Data Inbox"].sort()); // only the inbox was added at the workspace level
+  assert.equal(path.basename(result.exportsDir), "From YTM");
+  assert.equal(path.dirname(path.dirname(result.exportsDir)), await realpath(workspace));
+  assert.deepEqual((await readdir(path.join(workspace, "99 Data Exchange"))).sort(), ["From YTM", "Sent to YTM"]);
+  assert.deepEqual((await readdir(workspace)).sort(), [...before, "99 Data Exchange"].sort()); // only the inbox was added at the workspace level
   assert.deepEqual((await readdir(path.join(workspace, "03 Assets"))), []); // untouched subfolder
   for (const entry of await readdir(result.exportsDir)) assert.ok(/^(research|own)-.*-\d{8}T\d{6}Z-[0-9a-f]{4}\.(csv|json)$/.test(entry), entry); // only our files, no stray temp files
   assert.equal(await readFile(path.join(workspace, "project-notes.md"), "utf8"), "mine");
 });
 
-test("AC-RE-22 (owner exception): a file the user put into 99 Data Inbox is never modified or deleted -- not by an export, not by the expiry sweep", async () => {
+test("AC-RE-22 (owner exception): a file the user put into 99 Data Exchange/From YTM is never modified or deleted -- not by an export, not by the expiry sweep", async () => {
   const { services, workspace } = await setup();
-  const inbox = path.join(workspace, "99 Data Inbox");
-  await mkdir(inbox);
+  const inbox = path.join(workspace, "99 Data Exchange", "From YTM");
+  await mkdir(inbox, { recursive: true });
   await writeFile(path.join(inbox, "my-own-script-output.csv"), "do not touch");
   const result = await services.exportResearchData({ channelId: "UCown", researchChannelIds: ["UCneiro"] });
   await services.sweepExpiredExports(new Date("2026-12-01T00:00:00Z")); // far past every expiry
@@ -350,7 +351,7 @@ test("AC-RE-22 (owner exception): a file the user put into 99 Data Inbox is neve
   assert.ok(left.includes("my-own-script-output.csv"));
 });
 
-test("AC-RE-23 (owner exception): if 99 Data Inbox cannot be created, a clear named error and nothing is written or recorded", async () => {
+test("AC-RE-23 (owner exception): if 99 Data Exchange/From YTM cannot be created, a clear named error and nothing is written or recorded", async () => {
   const real = createNodeExportFs();
   const { services, ledger, workspace } = await setup({
     fs: {
@@ -362,7 +363,7 @@ test("AC-RE-23 (owner exception): if 99 Data Inbox cannot be created, a clear na
   });
   await assert.rejects(
     services.exportResearchData({ channelId: "UCown", researchChannelIds: ["UCneiro"] }),
-    (e: unknown) => e instanceof DomainError && e.code === "RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE" && /99 Data Inbox could not be created/.test(e.message)
+    (e: unknown) => e instanceof DomainError && e.code === "RESEARCH_EXPORT_WORKSPACE_UNAVAILABLE" && /99 Data Exchange could not be created/.test(e.message)
   );
   assert.deepEqual(await readdir(workspace), []);
   assert.equal(ledger.length, 0);
