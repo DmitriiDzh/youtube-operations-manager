@@ -129,7 +129,7 @@ test("a row the SQL projection refuses does not stop the other rows from being p
   const refusing: SqlProjectionAdapter = {
     ...projection,
     async upsertChange(change) {
-      if (change.id === "c-poison") throw new Error("FOREIGN KEY constraint failed");
+      if (change.id === "c-poison") throw new Error("Failed query: insert into \"changes\" (\"id\") values (?)\nparams: c-poison,SECRET PROPOSED TEXT");
       return projection.upsertChange(change);
     },
   };
@@ -167,6 +167,7 @@ test("a row the SQL projection refuses does not stop the other rows from being p
   assert.ok(failure, "the refused row is logged, not silent");
   assert.equal(failure.context?.failedRows, 1);
   assert.deepEqual((failure.context?.failures as Array<{ kind: string; id: string }>).map((f) => [f.kind, f.id]), [["change", "c-poison"]]);
+  assert.equal(JSON.stringify(failure.context).includes("SECRET PROPOSED TEXT"), false, "bound values after params: never reach the log");
 });
 
 // M4 (docs/roadmap/plans/FULL_DEVICE_HANDOFF_MIGRATION_PLAN.md §4, Category C).

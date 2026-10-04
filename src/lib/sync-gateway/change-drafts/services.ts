@@ -156,7 +156,9 @@ export function createChangeDraftsCore(deps: ServiceDependencies) {
       try {
         await project();
       } catch (error) {
-        failures.push({ kind, id, cause: (error instanceof Error ? error.message : String(error)).slice(0, 200) });
+        // Only the statement part of the message: a database error message appends the bound values after "params:", which must never reach a log.
+        const message = error instanceof Error ? error.message : String(error);
+        failures.push({ kind, id, cause: message.split(/\n?params:/)[0].slice(0, 200) });
       }
     };
     // Order matters for the database's foreign keys: change sets first, then their changes and provenance.

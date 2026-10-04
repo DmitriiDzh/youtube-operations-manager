@@ -140,6 +140,7 @@ function makeFixture(videos: StoredVideoRecord[] = [makeVideo()]) {
     extraDeps: {
       resolveConnectionProvider?: (connectionId: string) => Promise<LocalizationProvider>;
       assertDeviceAvailable?: () => Promise<void>;
+      changeSetServices?: typeof changeSetServices;
     } = {}
   ) {
     return createAiLocalizationServices({
@@ -788,4 +789,32 @@ test("AC-GEN-P1b: a target that ends in a provider error is still counted as fin
   const spy = reporterSpy();
   await build(provider).generateProposals({ channelId: "UC_TEST", videoIds: ["v1"], targetLanguages: ["es", "fr"] }, { progress: spy });
   assert.deepEqual(spy.events.filter((e) => e.startsWith("counts:")), ["counts:0/2", "counts:1/2", "counts:2/2"]);
+});
+
+test("RISK-99: a Change Set stored but read back incomplete still gets its provenance row (spec §22), and the caller still gets the explicit error", async () => {
+  const { build, provenanceStore } = makeFixture();
+  const incomplete = {
+    async createChangeSetFromProposals() {
+      throw new DomainError({
+        code: "change_set_incomplete",
+        message: "only 1 of 2 changes could be read back",
+        details: { changeSetId: "cs-partial", expectedChanges: 2, storedChanges: 1, missing: [], missingTotal: 1 },
+      });
+    },
+  } as never;
+  const services = build(fixedProvider(() => ({ status: "ok", title: "x", description: "y" })), { changeSetServices: incomplete });
+
+  await assert.rejects(
+    () =>
+      services.createChangeSetFromGeneration(
+        { channelId: "UC_TEST", proposals: [{ videoId: "v1", language: "es", title: "Uno", description: "Dos" }], rationale: "why" },
+        { createdVia: "mcp", agentApiVersion: "3.1.0" }
+      ),
+    (error: unknown) => error instanceof DomainError && error.code === "change_set_incomplete"
+  );
+  const provenance = await provenanceStore.getByChangeSetId("cs-partial");
+  assert.ok(provenance, "the stored (partial) Change Set carries provenance");
+  assert.equal(provenance.createdVia, "mcp");
+  assert.equal(provenance.agentApiVersion, "3.1.0");
+  assert.equal(provenance.rationale, "why");
 });
